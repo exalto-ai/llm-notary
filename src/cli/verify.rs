@@ -1,14 +1,14 @@
 use anyhow::Result;
-use certified::{load_bundle, verify_trace_bundle};
-use clap::Parser;
+use clap::Args;
 use std::path::PathBuf;
 
-#[derive(Parser, Debug)]
-#[command(about = "Verify a portable Certified TLS-notarized trace")]
-struct Args {
+use crate::{load_bundle, verify_trace_bundle};
+
+#[derive(Args, Debug)]
+pub struct VerifyArgs {
     bundle: PathBuf,
 
-    /// Hex-encoded secp256k1 SEC1 public key from the trusted Certified notary.
+    /// Hex-encoded secp256k1 SEC1 public key from the trusted LLM Notary notary.
     #[arg(long)]
     trusted_notary_key: String,
 
@@ -17,8 +17,7 @@ struct Args {
     summary: bool,
 }
 
-fn main() -> Result<()> {
-    let args = Args::parse();
+pub fn run(args: VerifyArgs) -> Result<()> {
     let bundle = load_bundle(&args.bundle)?;
     let trusted_notary_key = hex::decode(&args.trusted_notary_key)?;
     let (request, response) = verify_trace_bundle(&bundle, &trusted_notary_key)?;

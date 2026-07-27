@@ -1,0 +1,95 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.asset }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            asset: linux-x86_64
+            archive: tar.gz
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            asset: linux-aarch64
+            archive: tar.gz
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            asset: darwin-x86_64
+            archive: tar.gz
+          - runner: macos-14
+            target: aarch64-apple-darwin
+            asset: darwin-aarch64
+            archive: tar.gz
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            asset: windows-x86_64
+            archive: zip
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          targets: ${{ matrix.target }}
+      - name: Build release binaries
+        run: cargo build --release --target ${{ matrix.target }} --bin llm-notary
+      - name: Package archive
+        shell: bash
+        env:
+          ASSET: ${{ matrix.asset }}
+          ARCHIVE: ${{ matrix.archive }}
+          VERSION: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          version="${VERSION#v}"
+          folder="llm-notary-${version}-${ASSET}"
+          mkdir "$folder"
+          suffix=""
+          if [[ "$TARGET" == *windows* ]]; then suffix=".exe"; fi
+          cp "target/$TARGET/release/llm-notary${suffix}" "$folder/"
+          cp LICENSE* "$folder/" 2>/dev/null || true
+          if [[ "$ARCHIVE" == "zip" ]]; then
+            archive="${folder}.zip"
+            7z a "$archive" "$folder" >/dev/null
+          else
+            archive="${folder}.tar.gz"
+            tar -czf "$archive" "$folder"
+          fi
+          if command -v sha256sum >/dev/null; then
+            sha256sum "$archive" > "${archive}.sha256"
+          else
+            shasum -a 256 "$archive" > "${archive}.sha256"
+          fi
+          mkdir release
+          mv "$archive" "${archive}.sha256" release/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: release/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" release/* --generate-notes --title "LLM Notary $TAG"
