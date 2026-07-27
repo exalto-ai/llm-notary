@@ -19,8 +19,12 @@ struct Args {
 
     /// Exact provider hostnames this notary may connect to in Proxy-TLS mode.
     /// Supplying this explicitly is required in production; the development
-    /// defaults cover the two supported provider adapters.
-    #[arg(long, default_values_t = ["api.openai.com".to_owned(), "api.anthropic.com".to_owned()])]
+    /// defaults cover the supported provider adapters.
+    #[arg(long, default_values_t = [
+        "api.openai.com".to_owned(),
+        "api.anthropic.com".to_owned(),
+        "api.deepseek.com".to_owned(),
+    ])]
     allow_host: Vec<String>,
 }
 
