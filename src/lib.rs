@@ -4,7 +4,15 @@
 //! the API key, while the remote notary relays authenticated TLS traffic and
 //! signs an attestation for the committed transcript.
 
-use std::{future::IntoFuture, io, net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    fs,
+    future::IntoFuture,
+    io,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
@@ -46,8 +54,7 @@ pub mod cli;
 
 const MAX_FRAME_LEN: usize = 32 << 20;
 const REQUEST_WRITE_CHUNK: usize = 8 << 10;
-const TRACE_FORMAT: &str = "llm-notary.tlsn.v1";
-const LEGACY_TRACE_FORMAT: &str = "certified.tlsn.v1";
+const CAPTURE_FORMAT: &str = "llm-notary/capture/v1";
 
 /// A request body split into bounded frames, avoiding one unbounded local write
 /// for a large agent request.
@@ -71,15 +78,47 @@ pub struct LocalProof {
     pub secrets: Vec<u8>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TraceBundle {
+/// Metadata for a local capture directory. The manifest duplicates only facts
+/// that a verifier can derive from the evidence and artifact hashes; it is not
+/// itself an attestation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CaptureManifest {
     pub format: String,
-    pub server_name: String,
-    /// Hashes of exactly the authenticated, selectively disclosed transcript
-    /// bytes. They intentionally include redacted authorization values.
-    pub disclosed_request_sha256: String,
-    pub disclosed_response_sha256: String,
-    pub presentation: Vec<u8>,
+    pub capture_id: String,
+    pub created_at_unix_ms: u64,
+    pub provider: CaptureProvider,
+    pub notary: CaptureNotary,
+    pub artifacts: CaptureArtifacts,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CaptureProvider {
+    pub name: String,
+    pub host: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CaptureNotary {
+    /// Hex-encoded secp256k1 SEC1 public key carried by the presentation.
+    pub public_key: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct CaptureArtifacts {
+    pub evidence_sha256: String,
+    pub request_disclosed_sha256: String,
+    pub response_sha256: String,
+}
+
+/// Private, local-first record of one provider exchange. `request_disclosed`
+/// intentionally contains the authenticated selective disclosure rather than
+/// the original request: API-key values are never persisted.
+#[derive(Debug)]
+pub struct Capture {
+    pub manifest: CaptureManifest,
+    pub evidence: Vec<u8>,
+    pub request_disclosed: Vec<u8>,
+    pub response: Vec<u8>,
 }
 
 pub struct NotarizedResponse {
@@ -368,10 +407,15 @@ pub async fn run_notary_session(
     Ok(())
 }
 
-/// Creates a portable presentation that reveals the request and response while
-/// redacting every Authorization header value. A marketplace can store this as
-/// opaque encrypted data; a buyer verifies it locally.
-pub fn make_full_trace_bundle(proof: &LocalProof) -> Result<TraceBundle> {
+struct DisclosedPresentation {
+    presentation: tlsn::attestation::presentation::Presentation,
+    request_disclosed: Vec<u8>,
+    response: Vec<u8>,
+}
+
+/// Creates a selectively disclosed presentation that reveals the request and
+/// response while redacting every Authorization and x-api-key header value.
+fn make_disclosed_presentation(proof: &LocalProof) -> Result<DisclosedPresentation> {
     use tlsn::attestation::{Attestation, CryptoProvider, Secrets, presentation::Presentation};
 
     let attestation: Attestation = bincode::deserialize(&proof.attestation)?;
@@ -414,63 +458,222 @@ pub fn make_full_trace_bundle(proof: &LocalProof) -> Result<TraceBundle> {
     let partial = output
         .transcript
         .ok_or_else(|| anyhow!("locally built presentation omitted transcript"))?;
-    Ok(TraceBundle {
-        format: TRACE_FORMAT.to_owned(),
-        server_name: proof.server_name.clone(),
-        disclosed_request_sha256: sha256_hex(partial.sent_unsafe()),
-        disclosed_response_sha256: sha256_hex(partial.received_unsafe()),
-        presentation: bincode::serialize(&presentation)?,
+    Ok(DisclosedPresentation {
+        presentation,
+        request_disclosed: partial.sent_unsafe().to_vec(),
+        response: partial.received_unsafe().to_vec(),
     })
 }
 
-/// Verifies the signed TLS presentation and returns the disclosed transcript.
-pub fn verify_trace_bundle(
-    bundle: &TraceBundle,
+/// Builds a local capture directory payload. The raw provider response is
+/// retained locally; the request stores only the verifiable disclosure, so an
+/// API key cannot be recovered from a capture directory.
+pub fn make_capture(
+    proof: &LocalProof,
+    capture_id: String,
+    provider_name: String,
+) -> Result<Capture> {
+    validate_capture_id(&capture_id)?;
+    let disclosed = make_disclosed_presentation(proof)?;
+    let evidence = bincode::serialize(&disclosed.presentation)?;
+    let created_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_millis()
+        .try_into()
+        .context("capture timestamp does not fit in u64")?;
+    let manifest = CaptureManifest {
+        format: CAPTURE_FORMAT.to_owned(),
+        capture_id,
+        created_at_unix_ms,
+        provider: CaptureProvider {
+            name: provider_name,
+            host: proof.server_name.clone(),
+        },
+        notary: CaptureNotary {
+            public_key: hex::encode(disclosed.presentation.verifying_key().data.as_slice()),
+        },
+        artifacts: CaptureArtifacts {
+            evidence_sha256: sha256_hex(&evidence),
+            request_disclosed_sha256: sha256_hex(&disclosed.request_disclosed),
+            response_sha256: sha256_hex(&disclosed.response),
+        },
+    };
+    Ok(Capture {
+        manifest,
+        evidence,
+        request_disclosed: disclosed.request_disclosed,
+        response: disclosed.response,
+    })
+}
+
+/// Saves a capture atomically into `<capture_root>/<capture_id>/`.
+pub fn save_capture(capture_root: &Path, capture: &Capture) -> Result<PathBuf> {
+    validate_capture_id(&capture.manifest.capture_id)?;
+    fs::create_dir_all(capture_root)
+        .with_context(|| format!("creating capture root {}", capture_root.display()))?;
+    restrict_directory(capture_root)?;
+    let target = capture_root.join(&capture.manifest.capture_id);
+    if target.exists() {
+        bail!("capture directory already exists: {}", target.display());
+    }
+    let staging = capture_root.join(format!(
+        ".{}.{}.partial",
+        capture.manifest.capture_id,
+        std::process::id()
+    ));
+    if staging.exists() {
+        bail!(
+            "capture staging directory already exists: {}",
+            staging.display()
+        );
+    }
+    fs::create_dir(&staging).with_context(|| format!("creating {}", staging.display()))?;
+    restrict_directory(&staging)?;
+    write_private_file(&staging.join("evidence.tlsn"), &capture.evidence)?;
+    write_private_file(
+        &staging.join("request.disclosed.http"),
+        &capture.request_disclosed,
+    )?;
+    write_private_file(&staging.join("response.http"), &capture.response)?;
+    write_private_file(
+        &staging.join("manifest.json"),
+        &serde_json::to_vec_pretty(&capture.manifest)?,
+    )?;
+    fs::rename(&staging, &target)
+        .with_context(|| format!("finalizing capture {}", target.display()))?;
+    Ok(target)
+}
+
+pub fn load_capture(path: &Path) -> Result<Capture> {
+    let directory = if path.is_dir() {
+        path
+    } else if path.file_name().is_some_and(|name| name == "manifest.json") {
+        path.parent()
+            .ok_or_else(|| anyhow!("capture manifest has no parent directory"))?
+    } else {
+        bail!(
+            "expected a capture directory or its manifest.json: {}",
+            path.display()
+        );
+    };
+    let manifest: CaptureManifest = serde_json::from_slice(
+        &fs::read(directory.join("manifest.json"))
+            .with_context(|| format!("reading capture manifest in {}", directory.display()))?,
+    )
+    .context("parsing capture manifest")?;
+    if manifest.format != CAPTURE_FORMAT {
+        bail!("unsupported capture format: {}", manifest.format);
+    }
+    validate_capture_id(&manifest.capture_id)?;
+    Ok(Capture {
+        manifest,
+        evidence: read_capture_file(directory, "evidence.tlsn")?,
+        request_disclosed: read_capture_file(directory, "request.disclosed.http")?,
+        response: read_capture_file(directory, "response.http")?,
+    })
+}
+
+/// Verifies both the presentation and every local capture artifact.
+pub fn verify_capture(
+    path: &Path,
     trusted_notary_key: &[u8],
-) -> Result<(String, String)> {
+) -> Result<(CaptureManifest, String, String)> {
     use tlsn::attestation::{
         CryptoProvider,
         presentation::{Presentation, PresentationOutput},
     };
 
-    if bundle.format != TRACE_FORMAT && bundle.format != LEGACY_TRACE_FORMAT {
-        bail!("unsupported trace bundle format: {}", bundle.format);
+    let capture = load_capture(path)?;
+    if capture.manifest.artifacts.evidence_sha256 != sha256_hex(&capture.evidence)
+        || capture.manifest.artifacts.request_disclosed_sha256
+            != sha256_hex(&capture.request_disclosed)
+        || capture.manifest.artifacts.response_sha256 != sha256_hex(&capture.response)
+    {
+        bail!("capture artifact hashes do not match the manifest");
     }
-    let presentation: Presentation = bincode::deserialize(&bundle.presentation)?;
+    let presentation: Presentation = bincode::deserialize(&capture.evidence)?;
     if presentation.verifying_key().data.as_slice() != trusted_notary_key {
         bail!("presentation was not signed by the trusted notary key");
+    }
+    if hex::encode(presentation.verifying_key().data.as_slice())
+        != capture.manifest.notary.public_key
+    {
+        bail!("capture manifest notary key does not match the presentation");
     }
     let PresentationOutput {
         server_name,
         transcript,
         ..
     } = presentation.verify(&CryptoProvider::default())?;
-    let expected = server_name.ok_or_else(|| anyhow!("presentation omitted server identity"))?;
-    if expected.to_string() != bundle.server_name {
-        bail!("bundle server name does not match presentation");
+    let server_name = server_name.ok_or_else(|| anyhow!("presentation omitted server identity"))?;
+    if server_name.to_string() != capture.manifest.provider.host {
+        bail!("capture provider host does not match the presentation");
     }
     let transcript = transcript.ok_or_else(|| anyhow!("presentation omitted transcript"))?;
-    if sha256_hex(transcript.sent_unsafe()) != bundle.disclosed_request_sha256
-        || sha256_hex(transcript.received_unsafe()) != bundle.disclosed_response_sha256
+    if transcript.sent_unsafe() != capture.request_disclosed
+        || transcript.received_unsafe() != capture.response
     {
-        bail!("bundle transcript hashes do not match the authenticated presentation");
+        bail!("capture HTTP artifacts do not match the authenticated presentation");
     }
-    let sent = String::from_utf8_lossy(transcript.sent_unsafe()).into_owned();
-    let received = String::from_utf8_lossy(transcript.received_unsafe()).into_owned();
-    Ok((sent, received))
+    Ok((
+        capture.manifest,
+        String::from_utf8_lossy(&capture.request_disclosed).into_owned(),
+        String::from_utf8_lossy(&capture.response).into_owned(),
+    ))
 }
 
-pub fn save_bundle(path: &Path, bundle: &TraceBundle) -> Result<()> {
-    std::fs::write(path, serde_json::to_vec_pretty(bundle)?)
-        .with_context(|| format!("writing bundle to {}", path.display()))?;
+fn validate_capture_id(capture_id: &str) -> Result<()> {
+    if capture_id.is_empty()
+        || capture_id == "."
+        || capture_id == ".."
+        || capture_id.contains('/')
+        || capture_id.contains('\\')
+    {
+        bail!("capture ID must be a single, non-empty directory name");
+    }
     Ok(())
 }
 
-pub fn load_bundle(path: &Path) -> Result<TraceBundle> {
-    serde_json::from_slice(
-        &std::fs::read(path).with_context(|| format!("reading {}", path.display()))?,
-    )
-    .context("parsing trace bundle")
+fn read_capture_file(directory: &Path, name: &str) -> Result<Vec<u8>> {
+    fs::read(directory.join(name)).with_context(|| {
+        format!(
+            "reading capture artifact {}",
+            directory.join(name).display()
+        )
+    })
+}
+
+fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
+    fs::write(path, bytes)
+        .with_context(|| format!("writing capture artifact {}", path.display()))?;
+    restrict_file(path)
+}
+
+#[cfg(unix)]
+fn restrict_directory(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+        .with_context(|| format!("restricting capture directory {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn restrict_directory(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn restrict_file(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("restricting capture artifact {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn restrict_file(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -499,4 +702,72 @@ async fn read_frame<S: futures::AsyncRead + Unpin>(socket: &mut S) -> Result<Vec
     let mut value = vec![0u8; length];
     socket.read_exact(&mut value).await?;
     Ok(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_capture() -> Capture {
+        let evidence = b"presentation".to_vec();
+        let request_disclosed = b"POST /v1/messages HTTP/1.1\r\n\r\n{}".to_vec();
+        let response = b"HTTP/1.1 200 OK\r\n\r\n{}".to_vec();
+        Capture {
+            manifest: CaptureManifest {
+                format: CAPTURE_FORMAT.to_owned(),
+                capture_id: "cap-test-0001".to_owned(),
+                created_at_unix_ms: 1,
+                provider: CaptureProvider {
+                    name: "anthropic".to_owned(),
+                    host: "api.anthropic.com".to_owned(),
+                },
+                notary: CaptureNotary {
+                    public_key: "test-key".to_owned(),
+                },
+                artifacts: CaptureArtifacts {
+                    evidence_sha256: sha256_hex(&evidence),
+                    request_disclosed_sha256: sha256_hex(&request_disclosed),
+                    response_sha256: sha256_hex(&response),
+                },
+            },
+            evidence,
+            request_disclosed,
+            response,
+        }
+    }
+
+    #[test]
+    fn capture_directory_round_trips_with_named_artifacts() {
+        let root = std::env::temp_dir().join(format!(
+            "llm-notary-capture-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock after Unix epoch")
+                .as_nanos()
+        ));
+        let capture = test_capture();
+        let path = save_capture(&root, &capture).expect("save capture");
+        assert_eq!(path, root.join("cap-test-0001"));
+        assert!(path.join("manifest.json").is_file());
+        assert!(path.join("evidence.tlsn").is_file());
+        assert!(path.join("request.disclosed.http").is_file());
+        assert!(path.join("response.http").is_file());
+
+        let loaded = load_capture(&path).expect("load capture");
+        assert_eq!(loaded.manifest.capture_id, "cap-test-0001");
+        assert_eq!(loaded.request_disclosed, capture.request_disclosed);
+        assert_eq!(loaded.response, capture.response);
+        assert!(save_capture(&root, &capture).is_err());
+
+        fs::remove_dir_all(&root).expect("remove test capture directory");
+    }
+
+    #[test]
+    fn capture_ids_cannot_escape_the_capture_root() {
+        assert!(validate_capture_id("cap-01").is_ok());
+        assert!(validate_capture_id("../outside").is_err());
+        assert!(validate_capture_id("nested/capture").is_err());
+        assert!(validate_capture_id("").is_err());
+    }
 }
