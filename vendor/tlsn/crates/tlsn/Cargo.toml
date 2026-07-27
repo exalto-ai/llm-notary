@@ -17,6 +17,7 @@ rayon = ["mpz-zk/rayon", "mpz-garble/rayon"]
 web = ["dep:web-spawn"]
 hash-keccak256 = ["mpz-hash/keccak256"]
 hash-blake3 = ["mpz-hash/blake3"]
+test-utils = []
 
 [dependencies]
 tlsn-attestation = { workspace = true }
@@ -58,7 +59,9 @@ tracing = { workspace = true }
 tokio = { workspace = true, features = ["sync"] }
 serde = { workspace = true, features = ["derive"] }
 ghash = { workspace = true }
+hmac = { workspace = true }
 rustls = { workspace = true, features = ["std", "tls12", "ring"] }
+sha2 = { workspace = true }
 semver = { workspace = true, features = ["serde"] }
 once_cell = { workspace = true }
 rangeset = { workspace = true }

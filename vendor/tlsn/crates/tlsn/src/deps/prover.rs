@@ -31,8 +31,34 @@ cfg_select! {
 
         pub(crate) type ProverMpc =
             Garbler<DerandCOTSender<SharedRCOTSender<kos::Sender<co::Receiver>, Block>>>;
-        pub(crate) type ProverZk =
+pub(crate) type ProverZk =
             Prover<SharedRCOTReceiver<ferret::Receiver<kos::Receiver<co::Sender>>, bool, Block>>;
+    }
+}
+
+/// Creates an independent ZK VM for an opt-in ephemeral proof chunk.
+///
+/// Each instance has fresh OT state and is used sequentially on the existing
+/// proof channel. It intentionally does not share authenticated transcript
+/// values with the root VM; chunk code must bind its private traffic key to a
+/// root-VM commitment before accepting any plaintext proof.
+pub(crate) fn new_prover_zk_vm() -> ProverZk {
+    cfg_select! {
+        tlsn_insecure => { mpz_ideal_vm::IdealVm::new() }
+        _ => {{
+            let mut rng = rand::rng();
+            let base_ot_send = co::Sender::default();
+            let rcot_recv = kos::Receiver::new(kos::ReceiverConfig::default(), base_ot_send);
+            let rcot_recv = ferret::Receiver::new(
+                ferret::FerretConfig::builder()
+                    .lpn_type(ferret::LpnType::Regular)
+                    .build()
+                    .expect("ferret config is valid"),
+                Block::random(&mut rng),
+                rcot_recv,
+            );
+            ProverZk::new(Default::default(), SharedRCOTReceiver::new(rcot_recv))
+        }}
     }
 }
 
@@ -139,25 +165,7 @@ impl std::fmt::Debug for ProverProxyDeps {
 
 impl ProverProxyDeps {
     pub(crate) fn new(_config: &ProxyTlsConfig, ctx: Context) -> Self {
-        let vm = cfg_select! {
-            tlsn_insecure => { mpz_ideal_vm::IdealVm::new() }
-            _ => {{
-                let mut rng = rand::rng();
-
-                let base_ot_send = co::Sender::default();
-                let rcot_recv = kos::Receiver::new(kos::ReceiverConfig::default(), base_ot_send);
-                let rcot_recv = ferret::Receiver::new(
-                    ferret::FerretConfig::builder()
-                        .lpn_type(ferret::LpnType::Regular)
-                        .build()
-                        .expect("ferret config is valid"),
-                    Block::random(&mut rng),
-                    rcot_recv,
-                );
-                let rcot_recv = SharedRCOTReceiver::new(rcot_recv);
-                ProverZk::new(Default::default(), rcot_recv)
-            }}
-        };
+        let vm = new_prover_zk_vm();
 
         let id = ctx.id().to_owned();
         let prover = ProxyProver::new(vm, ctx);

@@ -57,6 +57,7 @@ pub struct Committed {
     pub(crate) vm: ProverZk,
     pub(crate) server_name: ServerName,
     pub(crate) keys: SessionKeys,
+    pub(crate) plain_keys: Option<crate::proxy::PlainSessionKeys>,
     pub(crate) tls_transcript: TlsTranscript,
     pub(crate) transcript: Transcript,
 }

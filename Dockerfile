@@ -11,6 +11,13 @@ COPY migrations ./migrations
 # reuse one compilation for the two final images.
 RUN cargo build --release --bin certified-notary --bin llm-notary-api
 
+# Opt-in target for the split-process resource benchmark. It deliberately is
+# not part of the production image: the test client also hosts a local TLS
+# fixture while the notary runs in a separate, memory-limited container.
+FROM builder AS profile
+COPY tests ./tests
+RUN cargo test --release --test proxy_tls_split_profile --no-run
+
 FROM debian:bookworm-slim AS api
 
 RUN apt-get update \
@@ -29,4 +36,4 @@ RUN apt-get update \
 COPY --from=builder /app/target/release/certified-notary /usr/local/bin/certified-notary
 
 EXPOSE 7047
-ENTRYPOINT ["/bin/sh", "-ec", "key_file=${NOTARY_SIGNING_KEY_FILE:-}; if [ -n \"$key_file\" ]; then test -r \"$key_file\"; cp \"$key_file\" /tmp/notary.key; elif [ -n \"${NOTARY_SIGNING_KEY:-}\" ]; then printf '%s' \"$NOTARY_SIGNING_KEY\" > /tmp/notary.key; else echo 'NOTARY_SIGNING_KEY_FILE or NOTARY_SIGNING_KEY is required' >&2; exit 1; fi; chmod 600 /tmp/notary.key; exec certified-notary --listen 0.0.0.0:7047 --signing-key /tmp/notary.key --allow-host api.openai.com --allow-host api.anthropic.com --allow-host api.deepseek.com"]
+ENTRYPOINT ["/bin/sh", "-ec", "key_file=${NOTARY_SIGNING_KEY_FILE:-}; if [ -n \"$key_file\" ]; then test -r \"$key_file\"; cp \"$key_file\" /tmp/notary.key; elif [ -n \"${NOTARY_SIGNING_KEY:-}\" ]; then printf '%s' \"$NOTARY_SIGNING_KEY\" > /tmp/notary.key; else echo 'NOTARY_SIGNING_KEY_FILE or NOTARY_SIGNING_KEY is required' >&2; exit 1; fi; chmod 600 /tmp/notary.key; exec certified-notary --listen 0.0.0.0:7047 --signing-key /tmp/notary.key --allow-host api.openai.com --allow-host api.anthropic.com --allow-host api.deepseek.com \"$@\"", "--"]

@@ -10,11 +10,12 @@ use crate::{
     deps::{VerifierDeps, VerifierMpcDeps, VerifierProxyDeps},
     msg::{ProveRequestMsg, Response, TlsCommitRequestMsg},
     proxy::InspectReader,
-    tag::verify_tags,
+    tag::verify_tags_streaming,
+    transcript_internal::commit::hash::supports_streaming_hash_alg,
 };
 use futures::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use mpz_common::Context;
-use mpz_vm_core::prelude::*;
+use rangeset::{ops::Set, set::RangeSet};
 use serio::{SinkExt, stream::IoStreamExt};
 use std::{marker::PhantomData, sync::Arc};
 use tlsn_core::{
@@ -24,7 +25,7 @@ use tlsn_core::{
         verifier::VerifierConfig,
     },
     connection::{ConnectionInfo, ServerName},
-    transcript::TlsTranscript,
+    transcript::{ContentType, Direction, Record, TlsTranscript},
 };
 use tlsn_mux::Handle;
 use tracing::{Span, debug, info, info_span, instrument};
@@ -36,6 +37,100 @@ pub struct SessionInfo {
     pub server_name: ServerName,
     /// Connection information.
     pub connection_info: ConnectionInfo,
+}
+
+fn application_data_len(records: &[Record]) -> usize {
+    records
+        .iter()
+        .filter(|record| record.typ == ContentType::ApplicationData)
+        .map(|record| record.ciphertext.len())
+        .sum()
+}
+
+fn validate_private_chunk_request(
+    request: &ProveRequest,
+    config: &VerifierConfig,
+    sent_len: usize,
+    recv_len: usize,
+) -> Result<()> {
+    let tlsn_core::config::prove::TranscriptProofMode::ChunkedPrivate { max_chunk_bytes } =
+        request.transcript_proof_mode()
+    else {
+        return Ok(());
+    };
+
+    if max_chunk_bytes == 0 {
+        return Err(Error::user().with_msg("private chunk size must be non-zero"));
+    }
+    if max_chunk_bytes > config.max_chunked_private_bytes() {
+        return Err(Error::user().with_msg(format!(
+            "private proof chunk ({max_chunk_bytes} bytes) exceeds verifier limit ({} bytes)",
+            config.max_chunked_private_bytes()
+        )));
+    }
+    if request
+        .reveal()
+        .is_some_and(|(sent, recv)| !sent.is_empty() || !recv.is_empty())
+    {
+        return Err(Error::user().with_msg("private chunk proofs cannot reveal transcript bytes"));
+    }
+
+    let Some(commitments) = request.transcript_commit() else {
+        return Err(Error::user().with_msg("private chunk proofs require hash commitments"));
+    };
+    let mut total = 0usize;
+    let mut sent_seen = RangeSet::default();
+    let mut recv_seen = RangeSet::default();
+    let mut count = 0usize;
+    for (direction, index, alg) in commitments.iter_hash() {
+        if index.is_empty() {
+            return Err(Error::user().with_msg("private chunk commitment must not be empty"));
+        }
+        count += 1;
+        if count > config.max_chunked_private_commitments() {
+            return Err(Error::user().with_msg(format!(
+                "private chunk commitment count ({count}) exceeds verifier limit ({})",
+                config.max_chunked_private_commitments()
+            )));
+        }
+        if !supports_streaming_hash_alg(*alg) {
+            return Err(Error::user().with_msg(format!(
+                "private chunk proofs do not support hash algorithm {alg:?}"
+            )));
+        }
+        if index.len() > max_chunk_bytes {
+            return Err(Error::user().with_msg("private chunk exceeds configured size"));
+        }
+        let transcript_len = match direction {
+            Direction::Sent => sent_len,
+            Direction::Received => recv_len,
+        };
+        if index.end().unwrap_or(0) > transcript_len {
+            return Err(Error::user().with_msg("private chunk exceeds transcript bounds"));
+        }
+        total = total.checked_add(index.len()).ok_or_else(|| {
+            Error::user().with_msg("private chunk commitment bytes overflow verifier policy")
+        })?;
+        if total > config.max_total_chunked_private_bytes() {
+            return Err(Error::user().with_msg(format!(
+                "private chunk commitments ({total} bytes) exceed verifier total limit ({} bytes)",
+                config.max_total_chunked_private_bytes()
+            )));
+        }
+        let seen = match direction {
+            Direction::Sent => &mut sent_seen,
+            Direction::Received => &mut recv_seen,
+        };
+        if seen.intersection(index).next().is_some() {
+            return Err(Error::user().with_msg("private chunk commitments must not overlap"));
+        }
+        seen.union_mut(index);
+    }
+    if count == 0 {
+        return Err(Error::user().with_msg("private chunk proofs require hash commitments"));
+    }
+
+    Ok(())
 }
 
 /// A Verifier instance.
@@ -250,31 +345,18 @@ impl Verifier<state::CommitAccepted<Mpc>> {
             .into_inner();
         let keys = keys.expect("keys should be available");
 
-        // Prepare for the prover to prove tag verification of the received
-        // records.
-        let tag_proof = verify_tags(
+        // Authenticate received records in bounded batches before accepting
+        // any transcript proof from the prover.
+        verify_tags_streaming(
+            &mut ctx,
             &mut vm,
             (keys.server_write_key, keys.server_write_iv),
             keys.server_write_mac_key,
             tls_transcript.version(),
-            tls_transcript.recv().to_vec(),
+            tls_transcript.recv(),
         )
+        .await
         .map_err(|e| {
-            Error::internal()
-                .with_msg("tag verification setup failed")
-                .with_source(e)
-        })?;
-
-        vm.execute_all(&mut ctx).await.map_err(|e| {
-            Error::internal()
-                .with_msg("tag verification zk execution failed")
-                .with_source(e)
-        })?;
-
-        // Verify the tags.
-        // After the verification, the entire TLS trancript becomes
-        // authenticated from the verifier's perspective.
-        tag_proof.verify().map_err(|e| {
             Error::internal()
                 .with_msg("tag verification failed")
                 .with_source(e)
@@ -360,29 +442,16 @@ impl Verifier<state::CommitAccepted<Proxy>> {
 
         // Prepare for the prover to prove tag verification of the received
         // records.
-        let tag_proof = verify_tags(
+        verify_tags_streaming(
+            &mut ctx,
             &mut vm,
             (keys.server_write_key, keys.server_write_iv),
             keys.server_write_mac_key,
             tls_transcript.version(),
-            tls_transcript.recv().to_vec(),
+            tls_transcript.recv(),
         )
+        .await
         .map_err(|e| {
-            Error::internal()
-                .with_msg("tag verification setup failed")
-                .with_source(e)
-        })?;
-
-        vm.execute_all(&mut ctx).await.map_err(|e| {
-            Error::internal()
-                .with_msg("tag verification zk execution failed")
-                .with_source(e)
-        })?;
-
-        // Verify the tags.
-        // After the verification, the entire TLS trancript becomes
-        // authenticated from the verifier's perspective.
-        tag_proof.verify().map_err(|e| {
             Error::internal()
                 .with_msg("tag verification failed")
                 .with_source(e)
@@ -468,6 +537,16 @@ impl Verifier<state::Verify> {
 
     /// Accepts the proving request.
     pub async fn accept(mut self) -> Result<(VerifierOutput, Verifier<state::Committed>)> {
+        let sent_len = application_data_len(self.state.tls_transcript.sent());
+        let recv_len = application_data_len(self.state.tls_transcript.recv());
+        if let Err(error) =
+            validate_private_chunk_request(self.request(), &self.config, sent_len, recv_len)
+        {
+            self.reject(Some("private proof request violates verifier policy"))
+                .await?;
+            return Err(error);
+        }
+
         let mut ctx = self
             .ctx
             .take()
@@ -551,5 +630,81 @@ impl Verifier<state::Verify> {
                 tls_transcript,
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tlsn_core::{
+        hash::HashAlgId,
+        transcript::{Transcript, TranscriptCommitConfig, TranscriptCommitmentKind},
+        webpki::RootCertStore,
+    };
+
+    fn request_with_hashes(alg: HashAlgId, ranges: &[std::ops::Range<usize>]) -> ProveRequest {
+        let transcript = Transcript::new(b"request!".to_vec(), b"response".to_vec());
+        let mut commitments = TranscriptCommitConfig::builder(&transcript);
+        for range in ranges {
+            commitments
+                .commit_with_kind(
+                    range.clone(),
+                    Direction::Sent,
+                    TranscriptCommitmentKind::Hash { alg },
+                )
+                .unwrap();
+        }
+        let mut config = tlsn_core::config::prove::ProveConfig::builder(&transcript);
+        config.transcript_commit(commitments.build().unwrap());
+        config.chunked_private_commitments(1024).unwrap();
+        config.build().unwrap().to_request()
+    }
+
+    fn verifier_config() -> VerifierConfig {
+        VerifierConfig::builder()
+            .root_store(RootCertStore { roots: Vec::new() })
+            .build()
+            .unwrap()
+    }
+
+    #[test]
+    fn rejects_unsupported_private_chunk_hash_before_acceptance() {
+        let error = validate_private_chunk_request(
+            &request_with_hashes(HashAlgId::KECCAK256, &[0..7]),
+            &verifier_config(),
+            7,
+            8,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("do not support hash algorithm"));
+    }
+
+    #[test]
+    fn rejects_private_chunk_outside_the_tls_transcript() {
+        let error = validate_private_chunk_request(
+            &request_with_hashes(HashAlgId::SHA256, &[7..8]),
+            &verifier_config(),
+            7,
+            8,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("exceeds transcript bounds"));
+    }
+
+    #[test]
+    fn rejects_too_many_private_chunks_before_acceptance() {
+        let config = VerifierConfig::builder()
+            .root_store(RootCertStore { roots: Vec::new() })
+            .max_chunked_private_commitments(1)
+            .build()
+            .unwrap();
+        let error = validate_private_chunk_request(
+            &request_with_hashes(HashAlgId::SHA256, &[0..1, 2..3]),
+            &config,
+            8,
+            8,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("commitment count"));
     }
 }
