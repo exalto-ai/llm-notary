@@ -29,7 +29,7 @@ struct Args {
 
     /// Largest private-proof chunk accepted from a client. This is a service
     /// resource limit; clients cannot raise it in their proof request.
-    #[arg(long, default_value_t = 1024 * 1024)]
+    #[arg(long, default_value_t = 128 * 1024)]
     max_private_chunk_bytes: usize,
 
     /// Largest total private transcript commitment set accepted in one proof.
@@ -39,7 +39,7 @@ struct Args {
 
     /// Largest number of private commitments accepted in one proof. Each
     /// commitment creates a child proof VM, so this bounds fixed proof work.
-    #[arg(long, default_value_t = 64)]
+    #[arg(long, default_value_t = 128)]
     max_private_chunk_commitments: usize,
 }
 

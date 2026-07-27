@@ -58,9 +58,9 @@ const REQUEST_WRITE_CHUNK: usize = 8 << 10;
 /// the overlapping HTTP-oriented commitment layout. The latter is convenient
 /// for small presentations, while the former bounds proof memory.
 const CHUNKED_PROOF_THRESHOLD_BYTES: usize = 64 << 10;
-/// Keeps the bounded proof path below the 2 GiB notary budget in the measured
+/// Keeps the bounded proof path below the 1 GiB notary budget in the measured
 /// Proxy-TLS configuration.
-const CHUNKED_PROOF_BYTES: usize = 1 << 20;
+const CHUNKED_PROOF_BYTES: usize = 128 << 10;
 const CAPTURE_FORMAT: &str = "llm-notary/capture/v1";
 
 /// Returns the Linux cgroup charge when this process runs in a container.
