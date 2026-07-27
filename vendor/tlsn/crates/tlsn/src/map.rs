@@ -56,6 +56,37 @@ where
         item.slice(range.start - *base..range.end - *base)
     }
 
+    /// Returns contiguous pieces that together cover `range`. Unlike [`Self::get`],
+    /// this permits `range` to cross entries in the map.
+    pub(crate) fn get_chunks(&self, range: Range<usize>) -> Option<Vec<T::Slice<'_>>> {
+        if range.start >= range.end {
+            return None;
+        }
+        if let Some(chunk) = self.get(range.clone()) {
+            return Some(vec![chunk]);
+        }
+
+        let mut pos = range.start;
+        let mut chunks = Vec::new();
+        while pos < range.end {
+            let entry = match self.map.binary_search_by(|(idx, _)| idx.cmp(&pos)) {
+                Ok(i) => i,
+                Err(0) => return None,
+                Err(i) => i - 1,
+            };
+            let (base, item) = &self.map[entry];
+            if pos < *base || pos >= *base + item.length() {
+                return None;
+            }
+
+            let end = range.end.min(*base + item.length());
+            chunks.push(item.slice(pos - *base..end - *base)?);
+            pos = end;
+        }
+
+        Some(chunks)
+    }
+
     pub(crate) fn index(&self, idx: &RangeSet<usize>) -> Option<Self> {
         let mut map = Vec::new();
         for idx in idx.iter() {

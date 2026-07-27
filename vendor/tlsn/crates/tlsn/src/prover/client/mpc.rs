@@ -303,6 +303,7 @@ impl TlsClient for MpcTlsClient {
                     let output = TlsOutput {
                         keys,
                         tls_transcript,
+                        plain_keys: None,
                     };
 
                     self.state = State::Finished;

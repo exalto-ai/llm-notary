@@ -1,7 +1,10 @@
 use crate::{
     Error as TlsnError, TlsOutput,
     deps::ProverZk,
-    proxy::{MsVisibility, References, TlsBytes, VerifyDataCheck, alloc_proxy_refs},
+    proxy::{
+        MsVisibility, References, TlsBytes, VerifyDataCheck, alloc_proxy_refs,
+        derive_tls12_session_keys,
+    },
 };
 use hmac_sha256::{MSMode, NetworkMode, Prf, PrfConfig};
 use mpz_common::Context;
@@ -90,6 +93,9 @@ impl ProxyProver {
             );
         };
 
+        let plain_keys =
+            derive_tls12_session_keys(ms, binding.client_random, binding.server_random);
+
         tracing::debug!("computing PRF...");
         self.vm
             .assign(refs.ms, ms)
@@ -165,6 +171,7 @@ impl ProxyProver {
         let output = TlsOutput {
             keys: refs.keys,
             tls_transcript,
+            plain_keys: Some(plain_keys),
         };
 
         Ok((self.ctx, self.vm, output))

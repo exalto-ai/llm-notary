@@ -55,6 +55,7 @@ services:
       NOTARY_SIGNING_KEY_FILE: /run/secrets/notary_signing_key
     ports:
       - "${NOTARY_PORT:-7047}:7047"
+    mem_limit: 1g
     secrets:
       - source: notary_signing_key
         target: notary_signing_key

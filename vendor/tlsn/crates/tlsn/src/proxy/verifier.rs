@@ -162,6 +162,7 @@ impl ProxyVerifier {
         let output = TlsOutput {
             keys: refs.keys,
             tls_transcript,
+            plain_keys: None,
         };
 
         Ok((

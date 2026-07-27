@@ -21,12 +21,12 @@ use crate::{
         future::FutureState,
         state::ConnectedProj,
     },
-    tag::verify_tags,
+    tag::verify_tags_streaming,
+    transcript_internal::commit::hash::supports_streaming_hash_alg,
 };
 
 use futures::{AsyncRead, AsyncWrite, ready};
 use mpz_common::Context;
-use mpz_vm_core::Execute;
 use serio::{SinkExt, stream::IoStreamExt};
 use std::{fmt::Debug, marker::PhantomData, pin::Pin, task::Poll};
 use tls_core::dns::ServerName as TlsServerName;
@@ -344,6 +344,7 @@ where
             TlsOutput {
                 keys,
                 tls_transcript,
+                plain_keys,
             },
         ) = self
             .state
@@ -352,26 +353,20 @@ where
 
         // Prove tag verification of received records.
         // The prover drops the proof output.
-        let _ = verify_tags(
+        verify_tags_streaming(
+            &mut ctx,
             &mut vm,
             (keys.server_write_key, keys.server_write_iv),
             keys.server_write_mac_key,
             tls_transcript.version(),
-            tls_transcript.recv().to_vec(),
+            tls_transcript.recv(),
         )
+        .await
         .map_err(|err| {
             Error::internal()
                 .with_msg("tag verification setup failed")
                 .with_source(err)
         })?;
-
-        vm.execute_all(&mut ctx).await.map_err(|err| {
-            Error::internal()
-                .with_msg("tag verification zk execution failed")
-                .with_source(err)
-        })?;
-
-        debug!("verified tags from server");
 
         let transcript = tls_transcript.to_transcript().map_err(|e| {
             Error::internal()
@@ -388,6 +383,7 @@ where
                 vm,
                 server_name: self.state.server_name,
                 keys,
+                plain_keys,
                 tls_transcript,
                 transcript,
             },
@@ -471,7 +467,10 @@ where
         }
 
         // buf -> server_socket
-        match state.server_to_client.poll_read_to(cx, state.server_socket.as_mut()) {
+        match state
+            .server_to_client
+            .poll_read_to(cx, state.server_socket.as_mut())
+        {
             // A mux stream may accept only one frame per poll. Schedule the
             // next drain immediately: otherwise a large TLS record remains
             // buffered until unrelated I/O wakes this prover, leaving the
@@ -520,6 +519,51 @@ impl Prover<state::Committed> {
         &self.state.transcript
     }
 
+    /// Corrupts the local child-VM traffic key for negative integration tests.
+    ///
+    /// This feature is never enabled by default and exists only to prove that
+    /// the root-to-child key binding rejects mismatched private inputs.
+    #[cfg(feature = "test-utils")]
+    #[doc(hidden)]
+    pub fn test_only_tamper_proxy_child_key(&mut self) -> Result<()> {
+        let keys =
+            self.state.plain_keys.as_mut().ok_or_else(|| {
+                Error::user().with_msg("test hook requires Proxy-TLS traffic keys")
+            })?;
+        keys.client_write_key[0] ^= 1;
+        Ok(())
+    }
+
+    fn preflight_private_chunk_proof(config: &ProveConfig, has_proxy_keys: bool) -> Result<()> {
+        let tlsn_core::config::prove::TranscriptProofMode::ChunkedPrivate { max_chunk_bytes } =
+            config.transcript_proof_mode()
+        else {
+            return Ok(());
+        };
+
+        if !has_proxy_keys {
+            return Err(
+                Error::user().with_msg("private chunk proofs require Proxy-TLS traffic keys")
+            );
+        }
+        if max_chunk_bytes == 0 {
+            return Err(Error::user().with_msg("private chunk size must be non-zero"));
+        }
+        for (_, alg) in config
+            .transcript_commit()
+            .into_iter()
+            .flat_map(|commitments| commitments.iter_hash())
+        {
+            if !supports_streaming_hash_alg(*alg) {
+                return Err(Error::user().with_msg(format!(
+                    "private chunk proofs do not support hash algorithm {alg:?}"
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Proves information to the verifier.
     ///
     /// # Arguments
@@ -534,11 +578,14 @@ impl Prover<state::Committed> {
         let state::Committed {
             vm,
             keys,
+            plain_keys,
             server_name,
             tls_transcript,
             transcript,
             ..
         } = &mut self.state;
+
+        Self::preflight_private_chunk_proof(config, plain_keys.is_some())?;
 
         let handshake = config.server_identity().then(|| {
             (
@@ -587,7 +634,28 @@ impl Prover<state::Committed> {
                     .with_source(e)
             })?;
 
-        let output = prove::prove(ctx, vm, keys, transcript, tls_transcript, config).await?;
+        let output = if let tlsn_core::config::prove::TranscriptProofMode::ChunkedPrivate {
+            max_chunk_bytes: chunk_bytes,
+        } = config.transcript_proof_mode()
+        {
+            let plain_keys = plain_keys.as_ref().ok_or_else(|| {
+                Error::user()
+                    .with_msg("private chunk proofs currently require Proxy-TLS traffic keys")
+            })?;
+            prove::prove_ephemeral_chunks(
+                ctx,
+                vm,
+                keys,
+                plain_keys,
+                transcript,
+                tls_transcript,
+                config,
+                chunk_bytes,
+            )
+            .await?
+        } else {
+            prove::prove(ctx, vm, keys, transcript, tls_transcript, config).await?
+        };
 
         Ok(output)
     }
@@ -596,5 +664,50 @@ impl Prover<state::Committed> {
     #[instrument(parent = &self.span, level = "info", skip_all, err)]
     pub async fn close(self) -> Result<()> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tlsn_core::{
+        hash::HashAlgId,
+        transcript::{Direction, TranscriptCommitConfig, TranscriptCommitmentKind},
+    };
+
+    fn private_chunk_config(alg: HashAlgId) -> ProveConfig {
+        let transcript = Transcript::new(b"request".to_vec(), b"response".to_vec());
+        let mut commitments = TranscriptCommitConfig::builder(&transcript);
+        commitments
+            .commit_with_kind(
+                0..transcript.sent().len(),
+                Direction::Sent,
+                TranscriptCommitmentKind::Hash { alg },
+            )
+            .unwrap();
+        let mut config = ProveConfig::builder(&transcript);
+        config.transcript_commit(commitments.build().unwrap());
+        config.chunked_private_commitments(1024).unwrap();
+        config.build().unwrap()
+    }
+
+    #[test]
+    fn private_chunk_proofs_fail_before_sending_when_proxy_keys_are_unavailable() {
+        let error = Prover::<state::Committed>::preflight_private_chunk_proof(
+            &private_chunk_config(HashAlgId::SHA256),
+            false,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("require Proxy-TLS traffic keys"));
+    }
+
+    #[test]
+    fn private_chunk_proofs_reject_unsupported_hashes_before_sending() {
+        let error = Prover::<state::Committed>::preflight_private_chunk_proof(
+            &private_chunk_config(HashAlgId::KECCAK256),
+            true,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("do not support hash algorithm"));
     }
 }

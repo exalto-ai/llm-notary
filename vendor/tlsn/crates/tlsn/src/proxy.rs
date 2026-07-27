@@ -3,6 +3,7 @@
 use crate::Error as TlsnError;
 use cipher::{Cipher, Keystream, aes::Aes128};
 use futures::{AsyncRead, ready};
+use hmac::{Hmac, Mac};
 use hmac_sha256::Prf;
 use mpc_tls::SessionKeys;
 use mpz_core::bitvec::BitVec;
@@ -11,6 +12,7 @@ use mpz_memory_core::{
     binary::{Binary, U8},
 };
 use mpz_vm_core::Vm;
+use sha2::Sha256;
 use std::{io, pin::Pin, task::Poll};
 
 mod prover;
@@ -20,6 +22,65 @@ mod verifier;
 pub(crate) use verifier::ProxyVerifier;
 
 const AES_GCM_START_COUNTER: u32 = 2;
+
+/// TLS traffic secrets retained only by the prover for the opt-in ephemeral
+/// chunk proof prototype. They are never serialized, sent to the verifier, or
+/// decoded from the ZK VM.
+#[derive(Clone)]
+pub(crate) struct PlainSessionKeys {
+    pub(crate) client_write_key: [u8; 16],
+    pub(crate) client_write_iv: [u8; 4],
+    pub(crate) server_write_key: [u8; 16],
+    pub(crate) server_write_iv: [u8; 4],
+}
+
+opaque_debug::implement!(PlainSessionKeys);
+
+/// Derives the AES-128-GCM TLS 1.2 key block used by Proxy-TLS.
+///
+/// The ZK PRF already derives the same values for the proof. This native copy
+/// stays local to the prover and lets an ephemeral child VM take the traffic
+/// key as a new private input without disclosing it to the verifier.
+pub(crate) fn derive_tls12_session_keys(
+    master_secret: [u8; 48],
+    client_random: [u8; 32],
+    server_random: [u8; 32],
+) -> PlainSessionKeys {
+    fn hmac(key: &[u8], message: &[u8]) -> [u8; 32] {
+        let mut mac = Hmac::<Sha256>::new_from_slice(key)
+            .expect("HMAC-SHA256 accepts a TLS master secret of any length");
+        mac.update(message);
+        mac.finalize().into_bytes().into()
+    }
+
+    let mut seed = b"key expansion".to_vec();
+    seed.extend_from_slice(&server_random);
+    seed.extend_from_slice(&client_random);
+
+    let mut a = hmac(&master_secret, &seed);
+    let mut key_block = Vec::with_capacity(40);
+    while key_block.len() < 40 {
+        let mut input = a.to_vec();
+        input.extend_from_slice(&seed);
+        key_block.extend_from_slice(&hmac(&master_secret, &input));
+        a = hmac(&master_secret, &a);
+    }
+
+    PlainSessionKeys {
+        client_write_key: key_block[..16]
+            .try_into()
+            .expect("TLS key block has a client write key"),
+        server_write_key: key_block[16..32]
+            .try_into()
+            .expect("TLS key block has a server write key"),
+        client_write_iv: key_block[32..36]
+            .try_into()
+            .expect("TLS key block has a client write IV"),
+        server_write_iv: key_block[36..40]
+            .try_into()
+            .expect("TLS key block has a server write IV"),
+    }
+}
 
 fn alloc_ghash_key(
     vm: &mut dyn Vm<Binary>,

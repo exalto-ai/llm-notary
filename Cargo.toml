@@ -52,3 +52,10 @@ uuid = { version = "1.16", features = ["v4"] }
 # fix required for multi-frame agent requests in Proxy-TLS mode.
 tlsn = { path = "vendor/tlsn/crates/tlsn", features = ["mozilla-certs"] }
 tlsn-formats = { path = "vendor/tlsn/crates/formats" }
+
+[dev-dependencies]
+dhat = "0.3"
+rangeset = "0.4"
+tiktoken-rs = "0.12"
+tls-server-fixture = { path = "vendor/tlsn/crates/tls-server-fixture" }
+tlsn = { path = "vendor/tlsn/crates/tlsn", features = ["mozilla-certs", "test-utils"] }
