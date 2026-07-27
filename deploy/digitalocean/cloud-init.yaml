@@ -3,9 +3,9 @@ package_update: true
 packages:
   - ca-certificates
   - docker.io
-  - git
+  - docker-compose-v2
   - openssl
 
 runcmd:
-  - mkdir -p /opt/certified
-  - umask 077 && openssl rand -hex 32 > /opt/certified/notary-signing-key
+  - mkdir -p /opt/llm-notary
+  - umask 077 && openssl rand -hex 32 > /opt/llm-notary/notary-signing-key

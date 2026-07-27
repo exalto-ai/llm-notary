@@ -1,0 +1,53 @@
+services:
+  web:
+    image: ${WEB_IMAGE:-llm-notary-web:local}
+    build:
+      context: ./js/app
+      dockerfile: Dockerfile
+    environment:
+      SITE_DOMAIN: ${SITE_DOMAIN:-localhost}
+    ports:
+      - "${WEB_HTTP_PORT:-80}:80"
+      - "${WEB_HTTPS_PORT:-443}:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    restart: unless-stopped
+
+  notary:
+    image: ${NOTARY_IMAGE:-llm-notary-notary:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      NOTARY_SIGNING_KEY_FILE: /run/secrets/notary_signing_key
+    ports:
+      - "${NOTARY_PORT:-7047}:7047"
+    secrets:
+      - source: notary_signing_key
+        target: notary_signing_key
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  tunnel:
+    image: cloudflare/cloudflared:2026.7.3
+    command: tunnel --no-autoupdate --url http://web:80
+    depends_on:
+      - web
+    profiles:
+      - tunnel
+    restart: unless-stopped
+
+secrets:
+  notary_signing_key:
+    file: ${NOTARY_SIGNING_KEY_FILE:?Set NOTARY_SIGNING_KEY_FILE to the host signing-key path}
+
+volumes:
+  caddy_data:
+  caddy_config:
