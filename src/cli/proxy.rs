@@ -23,6 +23,7 @@ use crate::{
 enum Provider {
     Openai,
     Anthropic,
+    Deepseek,
 }
 
 impl Provider {
@@ -30,6 +31,7 @@ impl Provider {
         match self {
             Self::Openai => "api.openai.com",
             Self::Anthropic => "api.anthropic.com",
+            Self::Deepseek => "api.deepseek.com",
         }
     }
 }
