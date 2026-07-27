@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - "**.md"
+      - "LICENSE*"
   workflow_dispatch:
 
 permissions:
@@ -29,11 +32,14 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
+          target: notary
           platforms: linux/amd64
           push: true
           provenance: false
           sbom: false
           tags: ${{ env.NOTARY_IMAGE }}
+          cache-from: type=gha,scope=rust-service-images
+          cache-to: type=gha,mode=max,scope=rust-service-images
       - name: Build and publish web image
         uses: docker/build-push-action@v7
         with:
@@ -44,16 +50,21 @@ jobs:
           provenance: false
           sbom: false
           tags: ${{ env.WEB_IMAGE }}
+          cache-from: type=gha,scope=web-image
+          cache-to: type=gha,mode=max,scope=web-image
       - name: Build and publish API image
         uses: docker/build-push-action@v7
         with:
           context: .
-          file: ./api/Dockerfile
+          file: ./Dockerfile
+          target: api
           platforms: linux/amd64
           push: true
           provenance: false
           sbom: false
           tags: ${{ env.API_IMAGE }}
+          cache-from: type=gha,scope=rust-service-images
+          cache-to: type=gha,mode=max,scope=rust-service-images
       - name: Upload Compose definition
         uses: appleboy/scp-action@v1
         with:
