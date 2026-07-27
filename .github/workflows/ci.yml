@@ -50,6 +50,7 @@ jobs:
             CLOUDFLARE_TUNNEL_TOKEN=ci-placeholder \
             GITHUB_OAUTH_CLIENT_ID=ci-placeholder \
             GITHUB_OAUTH_CLIENT_SECRET=ci-placeholder \
+            LLM_NOTARY_NOTARY_HOST=203.0.113.10 \
             SITE_DOMAIN=example.com \
             docker compose config --quiet
       - name: Build notary image
