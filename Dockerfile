@@ -1,10 +1,27 @@
 FROM rust:1.95-slim AS builder
 
 WORKDIR /app
-COPY . .
-RUN cargo build --release --bin certified-notary
+# Keep the Rust build cache independent of the SPA, deployment files, and docs.
+# This image needs only the Rust package and its vendored TLSNotary dependency.
+COPY Cargo.toml Cargo.lock ./
+COPY vendor/tlsn ./vendor/tlsn
+COPY src ./src
+COPY migrations ./migrations
+# The API and notary share a dependency graph. Building both here lets BuildKit
+# reuse one compilation for the two final images.
+RUN cargo build --release --bin certified-notary --bin llm-notary-api
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim AS api
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/llm-notary-api /usr/local/bin/llm-notary-api
+
+EXPOSE 8080
+ENTRYPOINT ["llm-notary-api"]
+
+FROM debian:bookworm-slim AS notary
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \

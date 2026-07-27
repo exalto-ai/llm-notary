@@ -3,7 +3,8 @@ services:
     image: ${API_IMAGE:-llm-notary-api:local}
     build:
       context: .
-      dockerfile: ./api/Dockerfile
+      dockerfile: Dockerfile
+      target: api
     environment:
       DATABASE_URL: sqlite:///var/lib/llm-notary/api.db
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:?Set GITHUB_OAUTH_CLIENT_ID to the GitHub OAuth App client ID}
@@ -43,6 +44,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: notary
     environment:
       NOTARY_SIGNING_KEY_FILE: /run/secrets/notary_signing_key
     ports:
