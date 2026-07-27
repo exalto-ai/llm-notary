@@ -74,18 +74,20 @@ jobs:
           CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
           GITHUB_OAUTH_CLIENT_ID: ${{ secrets.LLM_NOTARY_GITHUB_OAUTH_CLIENT_ID }}
           GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.LLM_NOTARY_GITHUB_OAUTH_CLIENT_SECRET }}
+          LLM_NOTARY_NOTARY_HOST: ${{ secrets.DO_SSH_HOST }}
         with:
           host: ${{ secrets.DO_SSH_HOST }}
           username: ${{ secrets.DO_SSH_USER }}
           key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
           port: ${{ secrets.DO_SSH_PORT || 22 }}
-          envs: NOTARY_IMAGE,WEB_IMAGE,API_IMAGE,SITE_DOMAIN,CLOUDFLARE_TUNNEL_TOKEN,GITHUB_OAUTH_CLIENT_ID,GITHUB_OAUTH_CLIENT_SECRET
+          envs: NOTARY_IMAGE,WEB_IMAGE,API_IMAGE,SITE_DOMAIN,CLOUDFLARE_TUNNEL_TOKEN,GITHUB_OAUTH_CLIENT_ID,GITHUB_OAUTH_CLIENT_SECRET,LLM_NOTARY_NOTARY_HOST
           script: |
             set -eu
             test -n "$SITE_DOMAIN"
             test -n "$CLOUDFLARE_TUNNEL_TOKEN"
             test -n "$GITHUB_OAUTH_CLIENT_ID"
             test -n "$GITHUB_OAUTH_CLIENT_SECRET"
+            test -n "$LLM_NOTARY_NOTARY_HOST"
             test -r /opt/llm-notary/notary-signing-key
             cd /opt/llm-notary
             cat > deploy.env <<EOF
@@ -94,6 +96,7 @@ jobs:
             API_IMAGE=$API_IMAGE
             NOTARY_SIGNING_KEY_FILE=/opt/llm-notary/notary-signing-key
             SITE_DOMAIN=$SITE_DOMAIN
+            LLM_NOTARY_NOTARY_HOST=$LLM_NOTARY_NOTARY_HOST
             CLOUDFLARE_TUNNEL_TOKEN=$CLOUDFLARE_TUNNEL_TOKEN
             GITHUB_OAUTH_CLIENT_ID=$GITHUB_OAUTH_CLIENT_ID
             GITHUB_OAUTH_CLIENT_SECRET=$GITHUB_OAUTH_CLIENT_SECRET
