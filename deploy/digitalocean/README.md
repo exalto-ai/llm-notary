@@ -8,9 +8,8 @@ local proxies ──────> notary                  port 7047
 ```
 
 The website and the raw TCP notary are deliberately separate entry points.
-The optional Cloudflare Quick Tunnel profile exposes only the website; the
-current local proxy continues to connect directly to the Droplet’s IP on TCP
-7047.
+The named Cloudflare Tunnel exposes only the website; the local proxy continues
+to connect directly to the Droplet’s IP on TCP 7047.
 
 ## First-time Droplet setup
 
@@ -33,6 +32,7 @@ Configure these GitHub repository secrets before the first deployment:
 - `DO_SSH_HOST`, `DO_SSH_USER`, and `DO_SSH_PRIVATE_KEY` for the Droplet.
 - `DO_SSH_PORT` only when SSH is not on port 22.
 - `SITE_DOMAIN` for the website’s DNS name.
+- `CLOUDFLARE_TUNNEL_TOKEN` for the remotely managed Cloudflare Tunnel.
 
 The generated notary signing key intentionally stays on the Droplet. Do not
 add it to a GitHub secret, image, or `.env` file.
@@ -60,10 +60,16 @@ docker compose --env-file deploy/digitalocean/deploy.env pull
 docker compose --env-file deploy/digitalocean/deploy.env up -d
 ```
 
-For a temporary public SPA URL without DNS, run the optional profile and inspect
-its logs for the generated `trycloudflare.com` URL:
+## Cloudflare hostname
 
-```bash
-docker compose --env-file deploy/digitalocean/deploy.env --profile tunnel up -d
-docker compose logs -f tunnel
-```
+In the Cloudflare dashboard, open **Networking → Tunnels**, select this named
+tunnel, then under **Routes** add a **Published application**:
+
+- **Hostname:** `llmnotary.exalto.ai`
+- **Service type:** HTTP
+- **Service URL:** `http://web:80`
+
+`web` is the Compose service name, so it resolves only inside the Compose
+network, exactly where `cloudflared` runs. Saving the route creates the tunnel
+DNS record automatically when `exalto.ai` is managed by Cloudflare. Public TLS
+terminates at Cloudflare; the tunnel-to-web hop stays private HTTP.

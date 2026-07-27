@@ -37,11 +37,11 @@ services:
 
   tunnel:
     image: cloudflare/cloudflared:2026.7.3
-    command: tunnel --no-autoupdate --url http://web:80
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN to the named Cloudflare Tunnel token}
     depends_on:
       - web
-    profiles:
-      - tunnel
     restart: unless-stopped
 
 secrets:
