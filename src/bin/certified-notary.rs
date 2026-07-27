@@ -7,7 +7,7 @@ use k256::ecdsa::SigningKey;
 use tokio::net::TcpListener;
 
 #[derive(Parser, Debug)]
-#[command(about = "Certified TLSNotary notary")]
+#[command(about = "LLM Notary TLSNotary service")]
 struct Args {
     #[arg(long, default_value = "127.0.0.1:7047")]
     listen: SocketAddr,
@@ -43,8 +43,8 @@ async fn main() -> Result<()> {
     );
     let public_key = hex::encode(key.verifying_key().to_sec1_bytes());
     let listener = TcpListener::bind(args.listen).await?;
-    tracing::info!(address = %args.listen, public_key, "Certified notary listening");
-    println!("Certified notary public key: {public_key}");
+    tracing::info!(address = %args.listen, public_key, "LLM Notary service listening");
+    println!("LLM Notary public key: {public_key}");
 
     loop {
         let (stream, address) = listener.accept().await?;

@@ -2,8 +2,17 @@
 name = "certified"
 version = "0.1.0"
 edition = "2024"
+autobins = false
 license = "MIT OR Apache-2.0"
 description = "Local, privacy-preserving TLS-notarized LLM traces"
+
+[[bin]]
+name = "certified-notary"
+path = "src/bin/certified-notary.rs"
+
+[[bin]]
+name = "llm-notary"
+path = "src/bin/llm-notary.rs"
 
 [dependencies]
 anyhow = "1.0"
