@@ -28,8 +28,6 @@
   }
 
   .nav-wrap { background: var(--nav-surface); }
-  .pen-mark { background: #101010; color: var(--green); }
-  .pen-mark--inverse { background: var(--inverse-text); color: #101010; }
   nav a { color: var(--muted); }
   .button-dark { background: var(--inverse-surface); color: var(--inverse-text); }
   .button-dark:hover { background: #303030; }

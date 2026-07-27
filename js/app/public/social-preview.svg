@@ -1,0 +1,22 @@
+<svg width="1200" height="630" viewBox="0 0 1200 630" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="630" fill="#101010"/>
+  <circle cx="1080" cy="58" r="260" fill="#1E1E1D"/>
+  <circle cx="1080" cy="58" r="170" fill="#282827"/>
+  <rect x="72" y="70" width="56" height="56" rx="14" fill="#B9FF38"/>
+  <path d="M87 109L91.4 94.6L108.5 77.5A5.8 5.8 0 0 1 116.7 85.7L99.6 102.8L87 109Z" stroke="#101010" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M105.3 80.7L113.5 88.9M87 109L96.8 104.1" stroke="#101010" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="150" y="108" fill="#F6F5F2" font-family="Arial, Helvetica, sans-serif" font-size="34" font-weight="700" letter-spacing="-2">LLM Notary</text>
+  <text x="72" y="259" fill="#B9FF38" font-family="Arial, Helvetica, sans-serif" font-size="80" font-weight="700" letter-spacing="-5">Verifiable</text>
+  <text x="72" y="345" fill="#F6F5F2" font-family="Arial, Helvetica, sans-serif" font-size="80" font-weight="700" letter-spacing="-5">AI traces.</text>
+  <text x="76" y="421" fill="#B8B8B2" font-family="Arial, Helvetica, sans-serif" font-size="29" letter-spacing="-.5">Capture interactions locally. Share evidence deliberately.</text>
+  <rect x="72" y="500" width="370" height="58" rx="8" fill="#F6F5F2"/>
+  <text x="96" y="537" fill="#101010" font-family="monospace" font-size="21" font-weight="700">llm-notary verify receipt</text>
+  <rect x="837" y="224" width="250" height="280" rx="12" fill="#F6F5F2"/>
+  <rect x="862" y="252" width="200" height="12" rx="6" fill="#101010"/>
+  <rect x="862" y="288" width="132" height="12" rx="6" fill="#D8D7D2"/>
+  <rect x="862" y="336" width="200" height="1" fill="#D8D7D2"/>
+  <text x="862" y="370" fill="#6E6D68" font-family="monospace" font-size="15">PROVIDER</text>
+  <text x="862" y="396" fill="#101010" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700">api.openai.com</text>
+  <text x="862" y="438" fill="#6E6D68" font-family="monospace" font-size="15">EVIDENCE</text>
+  <text x="862" y="466" fill="#315400" font-family="monospace" font-size="18" font-weight="700">VERIFIED ✓</text>
+</svg>
