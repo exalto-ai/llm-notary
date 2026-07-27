@@ -1,2 +1,0 @@
-/* The branch uses one exact junction: proxy edge → trunk → each local outcome. */
-.v2-proxy::before{right:-34px;width:34px;z-index:4}.v2-proxy::after{right:-35px;z-index:4}.v2-agent::before,.v2-certificate::before{left:-32px;width:32px;height:1px;z-index:4;background:var(--ink)}

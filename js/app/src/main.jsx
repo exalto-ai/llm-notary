@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Children, cloneElement, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 import './refinements.css';
@@ -8,18 +8,8 @@ import './branding.css';
 import './account.css';
 import './collections.css';
 import './docs.css';
-import './featured-relay-v2.css';
-import './featured-relay-polish.css';
-import './featured-relay-full-bleed.css';
-import './featured-relay-section.css';
-import './featured-relay-packets.css';
-import './featured-relay-live-details.css';
-import './featured-relay-final-timing.css';
-import './provider-typing-polish.css';
-import './proxy-branch-alignment.css';
-import './relay-visual-centering.css';
-import './proxy-decrypt-wave.css';
-import './relay-mobile-flow.css';
+import './relay-animation.css';
+import { RelayAnimation } from './RelayAnimation';
 
 const collections = [
   {
@@ -181,7 +171,7 @@ function FeaturedRelayStudy() {
 }
 
 function MotionStudies() {
-  return <FeaturedRelayStudyV2 />;
+  return <RelayAnimation />;
 }
 
 function FeaturedRelayStudyV2() {
@@ -194,12 +184,18 @@ function VerifierDialog({ onClose }) {
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="verifier-modal" role="dialog" aria-modal="true" aria-labelledby="verifier-title" onMouseDown={(event) => event.stopPropagation()}><button className="icon-button" onClick={onClose} aria-label="Close verifier"><CloseIcon /></button><span className="eyebrow">Stamp verifier</span><h2 id="verifier-title">Inspect a publication</h2><p>Choose an OTLP trace or its accompanying LLM Notary stamp. The verifier checks that the stamp signs this exact standardized trace.</p><label className="drop-zone"><input type="file" accept=".json" onChange={(event) => setFileName(event.target.files?.[0]?.name || '')} /><strong>{fileName || 'Choose a trace or stamp'}</strong><small>{fileName ? 'Selected locally' : 'trace.otlp.json or stamp.json'}</small></label><div className="verification-state"><i /> Use <code>llm-notary verify-public</code> for a cryptographic check</div></section></div>;
 }
 
-function Landing({ onVerify }) {
+function LandingBase({ onVerify }) {
 // Current landing content.
   return <main id="top"><section className="hero"><span className="eyebrow">LLM Notary</span><h1>Publish model behavior<br />as portable spans.</h1><p>LLM Notary verifies a private provider capture, then publishes a standardized OpenTelemetry trace with a signed platform stamp. The raw exchange stays out of the collection.</p><div className="hero-actions"><a className="button button-dark" href="#/docs/publish">Publish a trace</a><a className="button button-plain" href="#/collections">Browse collections</a></div><div className="hero-metadata"><span>For research, evaluation, and safety work</span><b /><span>Private proof. Public standard.</span></div></section><section className="section architecture" id="how-it-works"><div className="section-head"><span className="eyebrow">How publishing works</span><h2>Verify the source.<br />Keep the standard.</h2></div><div className="architecture-grid"><Diagram /><div className="step-list"><article><span>01</span><div><h3>Capture privately</h3><p>Your local proxy records a provider call and its TLSNotary evidence. API keys and private capture data remain under your control.</p></div></article><article><span>02</span><div><h3>Publish standardized spans</h3><p>The platform checks the capture, then admits a normalized OTLP trace: messages, model spans, tool calls, timing, and usage.</p></div></article><article><span>03</span><div><h3>Verify the platform stamp</h3><p>Readers compare the trace hash with a compact signed stamp. They do not need your raw request, response, or TLS evidence.</p></div></article></div></div><div className="section-link"><a href="#/docs/how-it-works">Read the publishing trust model</a></div></section><section className="privacy"><div><span className="eyebrow">Private by design</span><h2>Proof is not the product.</h2></div><p>The private capture proves the trace is real at publication time. The shared artifact is clean OTLP JSON plus a platform signature, built for reuse rather than archival of raw provider traffic.</p></section><section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Collections</span><h2>Traces with a shared language.</h2></div><p>Filter published work by provider, model, span kind, and topic. Inspect the graph before using a result.</p></div><div className="preview-records">{collections.slice(0, 3).map((collection) => <article key={collection.id}><i aria-hidden="true" /><div><h3>{collection.title}</h3><p>{collection.spanCount} spans · {collection.provider} · {collection.model}</p></div><span>VERIFIED</span></article>)}</div><a className="button button-dark" href="#/collections">Open collections</a></section><section className="section verify" id="verify"><div><span className="eyebrow">Independent verification</span><h2>One small stamp.<br />One exact trace.</h2><p>The stamp binds a trace hash to LLM Notary’s verification result. Download the standardized trace, check the platform signature, and use it in your own tooling.</p><div className="verify-points"><span>OTLP JSON</span><span>Signed hash</span><span>No raw capture</span></div><div className="button-row"><a className="button button-dark" href="#/docs/verify">Verify with the CLI</a><button className="button button-plain" onClick={onVerify}>Preview verifier</button></div></div><div className="receipt"><header><PenMark inverse /><b>Publication stamp</b></header><h3>Verified</h3><dl><div><dt>Artifact</dt><dd>trace.otlp.json</dd></div><div><dt>Schema</dt><dd>OTel GenAI / v1</dd></div><div><dt>Source</dt><dd>Provider capture checked</dd></div><div><dt>Signature</dt><dd>LLM Notary platform key</dd></div></dl><footer>LLM NOTARY / STAMP v1</footer></div></section><section className="section install"><div><span className="eyebrow">Get started</span><h2>Capture locally.<br />Publish clearly.</h2></div><div className="terminal"><div><i /><i /><i /></div><pre><code><b>$</b> {installCommand}{'\n\n'}<b>$</b> {publishCommand}{'\n\n'}published  <em>trace.otlp.json + stamp.json</em></code></pre><a href="#/docs/publish">Publishing and format details</a></div></section></main>;
-// Legacy landing content.
+/* Legacy landing content retained in the historical commit:
   return <main id="top"><section className="hero"><span className="eyebrow">LLM Notary</span><h1>Share evidence of<br />how models behave.</h1><p>Keep model calls on your machine. Retain a trace package with a receipt that others can independently verify.</p><div className="hero-actions"><a className="button button-dark" href="#/docs/install">Install the CLI</a><a className="button button-plain" href="#/library">Browse the Library</a></div><div className="hero-metadata"><span>For research, evaluation, and safety work</span><b /><span>Local capture. Deliberate sharing.</span></div></section><MotionStudies /><section className="section architecture" id="how-it-works"><div className="section-head"><span className="eyebrow">How it works</span><h2>Capture locally. Verify anywhere.</h2></div><div className="architecture-grid"><Diagram /><div className="step-list"><article><span>01</span><div><h3>Run the local proxy</h3><p>Your SDK keeps its normal API shape while the proxy saves a trace package on your machine.</p></div></article><article><span>02</span><div><h3>Keep the evidence</h3><p>The notary signs evidence that the response came from the named provider connection.</p></div></article><article><span>03</span><div><h3>Share a chosen trace</h3><p>Review redactions and reuse terms before adding work to a research or evaluation collection.</p></div></article></div></div><div className="section-link"><a href="#/docs/how-it-works">Read how the trust model works</a></div></section><section className="privacy"><div><span className="eyebrow">Privacy by default</span><h2>Evidence without handing over your work.</h2></div><p>Captures stay local until you choose otherwise. The public Library is for intentionally shared, redacted records with clear reuse terms.</p></section><section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Library</span><h2>Trace records with useful context.</h2></div><p>Searchable by provider, model, and topic. The records below are illustrative while the Library service is being built.</p></div><div className="preview-records">{records.slice(0, 3).map((record) => <article key={record.id}><i aria-hidden="true"/><div><h3>{record.title}</h3><p>{record.provider} · {record.model}</p></div><span>{record.tags[0]}</span></article>)}</div><a className="button button-dark" href="#/library">Open Library</a></section><section className="section verify" id="verify"><div><span className="eyebrow">Independent verification</span><h2>Inspect before you use it.</h2><p>Check a trace package and the trusted notary key locally. No account or upload is required for the CLI verifier.</p><div className="verify-points"><span>No account</span><span>No upload</span><span>Open format</span></div><div className="button-row"><a className="button button-dark" href="#/docs/verify">Verify with the CLI</a><button className="button button-plain" onClick={onVerify}>Preview browser flow</button></div></div><div className="receipt"><header><PenMark inverse /><b>Trace package</b></header><h3>Receipt</h3><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Model</dt><dd>gpt-4.1</dd></div><div><dt>Evidence</dt><dd>TLSNotary presentation</dd></div><div><dt>Reuse</dt><dd>CC BY 4.0</dd></div></dl><footer>LLM NOTARY / v0.1</footer></div></section><section className="section install"><div><span className="eyebrow">Get started</span><h2>Install once.<br />Keep using your tools.</h2></div><div className="terminal"><div><i /><i /><i /></div><pre><code><b>$</b> {installCommand}{'\n\n'}<b>$</b> llm-notary proxy start --provider openai{'\n\n'}listening  <em>127.0.0.1:8787</em>{'\n'}ready</code></pre><a href="#/docs/install">Installation and setup</a></div></section></main>;
-// End legacy landing content.
+*/
+}
+
+function Landing({ onVerify }) {
+  const landing = LandingBase({ onVerify });
+  const children = Children.toArray(landing.props.children);
+  return cloneElement(landing, undefined, children[0], <MotionStudies key="relay-animation" />, ...children.slice(1));
 }
 
 const docPages = {
