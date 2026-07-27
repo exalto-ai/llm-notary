@@ -5,7 +5,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use axum::{
     Router,
     body::Body,
@@ -16,6 +16,7 @@ use axum::{
 };
 use clap::{Args, ValueEnum};
 use http_body_util::BodyExt as _;
+use serde::Deserialize;
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -57,8 +58,9 @@ pub struct ProxyArgs {
     #[arg(long, value_enum, default_value_t = Provider::Openai)]
     provider: Provider,
 
-    #[arg(long, default_value = "127.0.0.1:7047")]
-    notary: SocketAddr,
+    /// Override the notary address discovered from LLM Notary's public API.
+    #[arg(long)]
+    notary: Option<SocketAddr>,
 
     /// Where private, independently-verifiable local captures are written.
     #[arg(long, visible_alias = "trace-dir", default_value = "captures")]
@@ -75,17 +77,50 @@ struct AppState {
 
 pub async fn run(args: ProxyArgs) -> Result<()> {
     std::fs::create_dir_all(&args.capture_dir)?;
+    let notary = match args.notary {
+        Some(notary) => notary,
+        None => discover_notary().await?,
+    };
     let state = AppState {
         provider: args.provider,
-        notary: args.notary,
+        notary,
         capture_dir: args.capture_dir,
         serial: Arc::new(Mutex::new(0)),
     };
     let app = Router::new().fallback(any(proxy)).with_state(state);
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
-    tracing::info!(address = %args.listen, "LLM Notary proxy listening");
+    tracing::info!(address = %args.listen, notary = %notary, "LLM Notary proxy listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+const NOTARY_DIRECTORY_URL: &str = "https://llmnotary.exalto.ai/api/notary";
+
+#[derive(Deserialize)]
+struct NotaryDirectoryEntry {
+    host: String,
+    port: u16,
+}
+
+async fn discover_notary() -> Result<SocketAddr> {
+    let endpoint = reqwest::Client::builder()
+        .user_agent("LLM-Notary/0.1")
+        .build()?
+        .get(NOTARY_DIRECTORY_URL)
+        .send()
+        .await
+        .with_context(|| format!("fetching notary endpoint from {NOTARY_DIRECTORY_URL}"))?
+        .error_for_status()
+        .with_context(|| format!("fetching notary endpoint from {NOTARY_DIRECTORY_URL}"))?
+        .json::<NotaryDirectoryEntry>()
+        .await
+        .context("decoding notary endpoint from LLM Notary API")?;
+
+    tokio::net::lookup_host((endpoint.host.as_str(), endpoint.port))
+        .await
+        .with_context(|| format!("resolving notary host {}", endpoint.host))?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("notary host {} resolved to no addresses", endpoint.host))
 }
 
 #[axum::debug_handler]

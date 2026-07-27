@@ -57,10 +57,12 @@ cargo run --bin certified-notary -- --signing-key notary.dev.key
 The notary prints its public key at startup. Save that value; it is required to
 verify a receipt and is the explicit trust anchor.
 
-In another terminal start the proxy:
+In another terminal start the proxy. By default the released CLI discovers the
+current public notary endpoint from `https://llmnotary.exalto.ai/api/notary`.
+For a local notary, pass its address explicitly:
 
 ```bash
-cargo run --bin llm-notary -- proxy start --provider openai --capture-dir captures
+cargo run --bin llm-notary -- proxy start --notary 127.0.0.1:7047 --provider openai --capture-dir captures
 ```
 
 Point an OpenAI-compatible SDK at `http://127.0.0.1:8787/v1`; keep the API key
@@ -173,10 +175,13 @@ credentials in the local `.env`. Start the API alongside the SPA with:
 cargo run --bin llm-notary-api
 ```
 
-The API has `GET /api/auth/github`, `GET /api/auth/github/callback`,
-`GET /api/me`, `POST /api/auth/logout`, and `GET /api/healthz`. Publish API
-keys and trace uploads intentionally come next; authentication is kept separate
-from publication authorization.
+The API has `GET /api/notary` for CLI endpoint discovery,
+`GET /api/auth/github`, `GET /api/auth/github/callback`, `GET /api/me`,
+`POST /api/auth/logout`, and `GET /api/healthz`. Set
+`LLM_NOTARY_NOTARY_HOST` to the public TCP notary hostname or reserved IP;
+this keeps that deployment detail out of released clients and permits endpoint
+rotation. Publish API keys and trace uploads intentionally come next;
+authentication is kept separate from publication authorization.
 
 ## Important trust statement
 

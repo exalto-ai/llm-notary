@@ -35,6 +35,8 @@ struct AppState {
     callback_url: Url,
     app_url: Url,
     secure_cookies: bool,
+    notary_host: String,
+    notary_port: u16,
 }
 
 #[derive(Deserialize)]
@@ -59,6 +61,12 @@ struct GitHubUser {
 #[derive(Serialize)]
 struct Health {
     status: &'static str,
+}
+
+#[derive(Serialize)]
+struct NotaryDirectoryEntry {
+    host: String,
+    port: u16,
 }
 
 #[derive(Serialize)]
@@ -139,6 +147,7 @@ async fn main() -> Result<()> {
         .context("LLM_NOTARY_API_LISTEN must be a socket address")?;
     let app = Router::new()
         .route("/api/healthz", get(health))
+        .route("/api/notary", get(notary))
         .route("/api/auth/github", get(start_github_login))
         .route("/api/auth/github/callback", get(finish_github_login))
         .route("/api/auth/logout", post(logout))
@@ -167,6 +176,15 @@ impl AppState {
             .context("building GitHub OAuth callback URL")?;
         let database_url =
             env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://llm-notary-api.db".to_owned());
+        let notary_host =
+            env::var("LLM_NOTARY_NOTARY_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
+        if notary_host.is_empty() || notary_host.chars().any(char::is_whitespace) {
+            bail!("LLM_NOTARY_NOTARY_HOST must be a non-empty hostname or IP address");
+        }
+        let notary_port = env::var("LLM_NOTARY_NOTARY_PORT")
+            .unwrap_or_else(|_| "7047".to_owned())
+            .parse::<u16>()
+            .context("LLM_NOTARY_NOTARY_PORT must be a valid TCP port")?;
         let options = SqliteConnectOptions::from_str(&database_url)
             .context("DATABASE_URL must be a SQLite connection URL")?
             .create_if_missing(true)
@@ -192,6 +210,8 @@ impl AppState {
             callback_url,
             secure_cookies: app_url.scheme() == "https",
             app_url,
+            notary_host,
+            notary_port,
         })
     }
 
@@ -217,6 +237,13 @@ impl AppState {
     fn expired_cookie(&self, name: &'static str) -> Cookie<'static> {
         self.cookie(name, String::new(), 0)
     }
+}
+
+async fn notary(State(state): State<AppState>) -> Json<NotaryDirectoryEntry> {
+    Json(NotaryDirectoryEntry {
+        host: state.notary_host,
+        port: state.notary_port,
+    })
 }
 
 async fn health() -> Json<Health> {
@@ -474,6 +501,8 @@ mod tests {
                 .expect("callback URL"),
             app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
             secure_cookies: true,
+            notary_host: "notary.example.com".to_owned(),
+            notary_port: 7047,
         };
         let url = state
             .authorization_url("state-token")
