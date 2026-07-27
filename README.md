@@ -1,10 +1,12 @@
 # LLM Notary
 
-LLM Notary is an early Rust implementation of independently verifiable
-LLM traces. A local proxy receives an ordinary API request, performs a real
-TLSNotary Proxy-TLS session with a remote notary, and stores a portable
-TLSNotary presentation. The API key remains in the local request; the notary
-relays encrypted TLS packets and never receives application plaintext.
+LLM Notary publishes provider-origin model behavior as portable OpenTelemetry
+traces. A local proxy receives an ordinary API request and performs a real
+TLSNotary Proxy-TLS session with a remote notary. When the author publishes,
+LLM Notary verifies that private source capture and admits a standardized OTLP
+trace with a signed platform stamp. The API key remains in the local request;
+the notary relays encrypted TLS packets and never receives application
+plaintext.
 
 ## Current scope
 
@@ -20,6 +22,9 @@ relays encrypted TLS packets and never receives application plaintext.
 - A private local capture directory with an independently verifiable
   presentation, a selectively disclosed request, and the authenticated provider
   response. `Authorization` and `x-api-key` values are never saved.
+- Published artifacts are `trace.otlp.json` and `stamp.json`, not a capture
+  directory. The OTLP trace carries normalized GenAI spans; the platform stamp
+  signs its exact hash after LLM Notary verifies the private source capture.
 - The notary, not the local machine, resolves and connects to the allowed
   provider hostname. The local TLS client validates that provider's certificate
   chain with Mozilla roots, so local DNS cannot substitute an endpoint.
@@ -28,9 +33,10 @@ Streaming responses are relayed from the provider without synthetic events.
 Their trace package is written only after the terminal frame, because a TLS
 transcript cannot be attested until it is complete.
 
-It is **not production-ready**. In particular, receipt-key distribution,
-notary authentication, rate limiting, raw WebSockets, encrypted marketplace
-storage, multiple notaries, and a transparency log remain to be built.
+Published stamps are a platform assertion, separate from the TLSNotary
+presentation used during admission. A recipient can verify a stamp and the
+standardized trace without receiving the raw provider request, response, or
+TLSNotary evidence.
 
 ## Install the CLI
 
@@ -69,8 +75,36 @@ Point an OpenAI-compatible SDK at `http://127.0.0.1:8787/v1`; keep the API key
 in the SDK as usual. The proxy does not accept a provider URL from the caller.
 Each completed request writes `captures/cap-.../` with `manifest.json`,
 `evidence.tlsn`, `request.disclosed.http`, and `response.http`. Capture
-directories are local-only inputs; a shareable export format is intentionally
-not part of this version.
+directories are private verification inputs; they are not the public format.
+
+## Publish a trace
+
+Publishing converts a private capture to a normalized OpenTelemetry GenAI
+trace, checks that trace against the authenticated source capture, and returns
+the two shareable artifacts:
+
+```bash
+llm-notary publish captures/cap-... \
+  --title "Refusal boundary test" \
+  --license "CC BY 4.0"
+```
+
+```text
+published/
+├── trace.otlp.json  # portable OpenTelemetry GenAI spans
+└── stamp.json       # LLM Notary signature over the exact trace hash
+```
+
+`trace.otlp.json` is the collection record. It can include model inference
+spans, normalized input/output messages, model-emitted tool calls, timing, and
+usage. Tool execution spans supplied by an agent runtime are marked as
+runtime-reported; a provider capture proves the model call, not execution in a
+local tool process.
+
+The source capture is used to verify publication and is not retained as the
+published artifact. `stamp.json` is independent of the TLSNotary proof: it is
+LLM Notary's signed statement that it verified source evidence for the exact
+normalized trace at publication time.
 
 ### DeepSeek
 
@@ -91,7 +125,7 @@ curl http://127.0.0.1:8787/chat/completions \
 The default DeepSeek endpoint is `https://api.deepseek.com` (without a `/v1`
 suffix); the proxy preserves the requested API path.
 
-Verify a trace without contacting LLM Notary:
+Verify a private capture without contacting LLM Notary:
 
 ```bash
 cargo run --bin llm-notary -- verify captures/cap-... --trusted-notary-key <notary-public-key>
@@ -111,6 +145,17 @@ With an installed release, use the public command instead:
 llm-notary proxy start --provider openai --capture-dir captures
 llm-notary verify captures/cap-... --trusted-notary-key <notary-public-key>
 ```
+
+Verify a published trace and platform stamp without a capture:
+
+```bash
+llm-notary verify-public trace.otlp.json stamp.json \
+  --trusted-platform-key <platform-public-key>
+```
+
+The verifier hashes `trace.otlp.json`, checks the platform signature, and
+reports the provider, verification time, and normalizer version named in the
+stamp.
 
 ## Codex CLI
 
@@ -150,9 +195,8 @@ trace verified against the notary public key. The vendored TLSNotary relay has
 a small drain-scheduling fix for multi-frame encrypted requests; upstream
 would otherwise forward only the first mux frame until unrelated I/O occurred.
 
-This remains an HTTP/1.1 prototype. WebSocket relaying, production notary
-authentication and authorization, receipt-key distribution, and marketplace
-storage still need product-grade implementations.
+This remains an HTTP/1.1 prototype. WebSocket relaying, multiple notaries, and
+a public transparency log remain future work.
 
 ## Website sign-in
 
@@ -177,11 +221,12 @@ cargo run --bin llm-notary-api
 
 The API has `GET /api/notary` for CLI endpoint discovery,
 `GET /api/auth/github`, `GET /api/auth/github/callback`, `GET /api/me`,
-`POST /api/auth/logout`, and `GET /api/healthz`. Set
+`POST /api/auth/logout`, and `GET /api/healthz`, plus publication endpoints
+for admitting a standardized trace and serving its OTLP JSON and stamp. Set
 `LLM_NOTARY_NOTARY_HOST` to the public TCP notary hostname or reserved IP;
 this keeps that deployment detail out of released clients and permits endpoint
-rotation. Publish API keys and trace uploads intentionally come next;
-authentication is kept separate from publication authorization.
+rotation. GitHub sign-in authorizes publication; the platform signing key is
+the trust root for published stamps.
 
 ## Important trust statement
 
