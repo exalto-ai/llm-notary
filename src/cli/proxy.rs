@@ -1,4 +1,9 @@
-use std::{net::SocketAddr, path::PathBuf, sync::Arc, time::Instant};
+use std::{
+    net::SocketAddr,
+    path::PathBuf,
+    sync::Arc,
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Result, bail};
 use axum::{
@@ -15,8 +20,8 @@ use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::{
-    chunked_request_body, make_full_trace_bundle, notarized_request, notarized_streaming_request,
-    save_bundle,
+    chunked_request_body, make_capture, notarized_request, notarized_streaming_request,
+    save_capture,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -34,6 +39,14 @@ impl Provider {
             Self::Deepseek => "api.deepseek.com",
         }
     }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Openai => "openai",
+            Self::Anthropic => "anthropic",
+            Self::Deepseek => "deepseek",
+        }
+    }
 }
 
 #[derive(Args, Debug)]
@@ -47,25 +60,25 @@ pub struct ProxyArgs {
     #[arg(long, default_value = "127.0.0.1:7047")]
     notary: SocketAddr,
 
-    /// Where portable, independently-verifiable trace bundles are written.
-    #[arg(long, default_value = "traces")]
-    trace_dir: PathBuf,
+    /// Where private, independently-verifiable local captures are written.
+    #[arg(long, visible_alias = "trace-dir", default_value = "captures")]
+    capture_dir: PathBuf,
 }
 
 #[derive(Clone)]
 struct AppState {
     provider: Provider,
     notary: SocketAddr,
-    trace_dir: PathBuf,
+    capture_dir: PathBuf,
     serial: Arc<Mutex<u64>>,
 }
 
 pub async fn run(args: ProxyArgs) -> Result<()> {
-    std::fs::create_dir_all(&args.trace_dir)?;
+    std::fs::create_dir_all(&args.capture_dir)?;
     let state = AppState {
         provider: args.provider,
         notary: args.notary,
-        trace_dir: args.trace_dir,
+        capture_dir: args.capture_dir,
         serial: Arc::new(Mutex::new(0)),
     };
     let app = Router::new().fallback(any(proxy)).with_state(state);
@@ -131,7 +144,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         );
         let status = upstream.status;
         let headers = upstream.headers.clone();
-        let proof_path = next_trace_path(&state).await;
+        let capture_id = next_capture_id(&state).await?;
         let trace_state = state.clone();
         let (body_sender, body_receiver) = tokio::sync::mpsc::channel(32);
         tokio::spawn(async move {
@@ -157,21 +170,25 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
             drop(body_sender);
             tokio::spawn(async move {
                 match proof.await {
-                    Ok(Ok(proof)) => match make_full_trace_bundle(&proof)
-                        .and_then(|bundle| save_bundle(&proof_path, &bundle))
+                    Ok(Ok(proof)) => match make_capture(
+                        &proof,
+                        capture_id,
+                        trace_state.provider.name().to_owned(),
+                    )
+                    .and_then(|capture| save_capture(&trace_state.capture_dir, &capture))
                     {
-                        Ok(()) => {
-                            tracing::info!(trace = %proof_path.display(), provider = trace_state.provider.host(), elapsed_ms = started.elapsed().as_millis(), "wrote verified streaming trace bundle")
+                        Ok(path) => {
+                            tracing::info!(capture = %path.display(), provider = trace_state.provider.host(), elapsed_ms = started.elapsed().as_millis(), "wrote verified streaming capture")
                         }
                         Err(error) => {
-                            tracing::warn!(%error, trace = %proof_path.display(), "could not save streaming trace bundle")
+                            tracing::warn!(%error, "could not save streaming capture")
                         }
                     },
                     Ok(Err(error)) => {
-                        tracing::warn!(%error, trace = %proof_path.display(), "stream ended without an LLM Notary trace")
+                        tracing::warn!(%error, "stream ended without an LLM Notary capture")
                     }
                     Err(error) => {
-                        tracing::warn!(%error, trace = %proof_path.display(), "stream proof task exited")
+                        tracing::warn!(%error, "stream capture proof task exited")
                     }
                 }
             });
@@ -184,25 +201,32 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     }
 
     let upstream = notarized_request(state.notary, host, outbound).await?;
-    let bundle = make_full_trace_bundle(&upstream.proof)?;
-    let path = next_trace_path(&state).await;
-    save_bundle(&path, &bundle)?;
-    tracing::info!(trace = %path.display(), provider = host, "wrote verified trace bundle");
+    let capture = make_capture(
+        &upstream.proof,
+        next_capture_id(&state).await?,
+        state.provider.name().to_owned(),
+    )?;
+    let path = save_capture(&state.capture_dir, &capture)?;
+    tracing::info!(capture = %path.display(), provider = host, "wrote verified capture");
 
     let mut response = Response::new(Body::from(upstream.body));
     *response.status_mut() = upstream.status;
     copy_response_headers(response.headers_mut(), &upstream.headers);
     response.headers_mut().insert(
-        "x-llm-notary-trace",
+        "x-llm-notary-capture",
         HeaderValue::from_str(&path.display().to_string())?,
     );
     Ok(response)
 }
 
-async fn next_trace_path(state: &AppState) -> PathBuf {
+async fn next_capture_id(state: &AppState) -> Result<String> {
     let mut serial = state.serial.lock().await;
     *serial += 1;
-    state.trace_dir.join(format!("trace-{:08}.json", *serial))
+    let created_at_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| anyhow::anyhow!("system clock is before the Unix epoch"))?
+        .as_millis();
+    Ok(format!("cap-{created_at_unix_ms}-{serial:04}"))
 }
 
 fn wants_stream(headers: &HeaderMap, input: &[u8]) -> bool {
