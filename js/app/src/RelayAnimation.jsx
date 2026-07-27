@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { LoaderCircle, LockKeyhole, UnlockKeyhole } from 'lucide-react';
 
 const providerNames = ['OpenAI', 'Anthropic', 'OpenRouter', 'DeepSeek'];
@@ -127,10 +127,166 @@ function CertificateCard() {
   </section>;
 }
 
+function useMobileCamera() {
+  const viewportRef = useRef(null);
+  const flowRef = useRef(null);
+  const frameRef = useRef(null);
+  const resumeTimerRef = useRef(null);
+  const cameraXRef = useRef(0);
+  const cycleStartRef = useRef(0);
+  const progressRef = useRef(0);
+  const manualDragRef = useRef(null);
+  const manualRef = useRef(false);
+  const inViewRef = useRef(false);
+
+  const duration = 4600;
+
+  const isMobile = () => window.matchMedia('(max-width: 960px)').matches;
+  const prefersReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  const cameraStops = () => {
+    const viewportWidth = viewportRef.current?.getBoundingClientRect().width || window.innerWidth;
+    const center = viewportWidth / 2;
+    return [center - 60, center - 229, center - 400, center - 607];
+  };
+
+  const applyCamera = (position) => {
+    cameraXRef.current = position;
+    if (flowRef.current) flowRef.current.style.transform = `translateX(${position}px) scale(.8)`;
+  };
+
+  const positionForProgress = (progress) => {
+    const [provider, notary, proxy, outputs] = cameraStops();
+    const phase = progress % 1;
+    const between = (from, to, start, end) => from + ((to - from) * ((phase - start) / (end - start)));
+
+    if (phase < .27) return provider;
+    if (phase < .32) return between(provider, notary, .27, .32);
+    if (phase < .48) return notary;
+    if (phase < .54) return between(notary, proxy, .48, .54);
+    if (phase < .67) return proxy;
+    if (phase < .73) return between(proxy, outputs, .67, .73);
+    return outputs;
+  };
+
+  const progressForPosition = (position) => {
+    const [provider, notary, proxy, outputs] = cameraStops();
+    const between = (from, to, start, end) => start + (((position - from) / (to - from)) * (end - start));
+
+    if (position >= provider) return 0;
+    if (position >= notary) return between(provider, notary, .27, .32);
+    if (position >= proxy) return between(notary, proxy, .48, .54);
+    if (position >= outputs) return between(proxy, outputs, .67, .73);
+    return .73;
+  };
+
+  const stopAnimation = () => {
+    window.cancelAnimationFrame(frameRef.current);
+    frameRef.current = null;
+  };
+
+  const tick = (now) => {
+    if (!inViewRef.current || manualRef.current || !isMobile() || prefersReducedMotion()) return;
+    const progress = ((now - cycleStartRef.current) % duration) / duration;
+    progressRef.current = progress;
+    applyCamera(positionForProgress(progress));
+    frameRef.current = window.requestAnimationFrame(tick);
+  };
+
+  const resumeAnimation = () => {
+    if (!inViewRef.current || manualRef.current || !isMobile() || prefersReducedMotion()) return;
+    stopAnimation();
+    const progress = progressForPosition(cameraXRef.current);
+    progressRef.current = progress;
+    cycleStartRef.current = window.performance.now() - (progress * duration);
+    frameRef.current = window.requestAnimationFrame(tick);
+  };
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return undefined;
+
+    const resetCamera = () => {
+      if (!isMobile()) {
+        stopAnimation();
+        if (flowRef.current) flowRef.current.style.transform = '';
+        return;
+      }
+      applyCamera(positionForProgress(progressRef.current));
+      if (inViewRef.current && !manualRef.current) resumeAnimation();
+    };
+
+    resetCamera();
+    window.addEventListener('resize', resetCamera);
+
+    if (!('IntersectionObserver' in window)) {
+      inViewRef.current = true;
+      resumeAnimation();
+      return () => {
+        window.removeEventListener('resize', resetCamera);
+        stopAnimation();
+      };
+    }
+
+    const observer = new IntersectionObserver(([entry]) => {
+      inViewRef.current = entry.isIntersecting;
+      if (entry.isIntersecting) resumeAnimation();
+      else stopAnimation();
+    }, { threshold: 0.35 });
+    observer.observe(viewport);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', resetCamera);
+      stopAnimation();
+    };
+  }, []);
+
+  useEffect(() => () => {
+    window.clearTimeout(resumeTimerRef.current);
+  }, []);
+
+  const scheduleResume = () => {
+    window.clearTimeout(resumeTimerRef.current);
+    resumeTimerRef.current = window.setTimeout(() => {
+      manualRef.current = false;
+      resumeAnimation();
+    }, 1800);
+  };
+
+  const handlePointerDown = (event) => {
+    if (!isMobile()) return;
+    manualRef.current = true;
+    stopAnimation();
+    window.clearTimeout(resumeTimerRef.current);
+    manualDragRef.current = { pointerId: event.pointerId, startX: event.clientX, cameraX: cameraXRef.current };
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+  };
+
+  const handlePointerMove = (event) => {
+    const drag = manualDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId || !isMobile()) return;
+    const [provider,,, outputs] = cameraStops();
+    const next = Math.max(outputs, Math.min(provider, drag.cameraX + event.clientX - drag.startX));
+    applyCamera(next);
+  };
+
+  const handlePointerEnd = (event) => {
+    const drag = manualDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    manualDragRef.current = null;
+    event.currentTarget.releasePointerCapture?.(event.pointerId);
+    scheduleResume();
+  };
+
+  return { flowRef, handlePointerDown, handlePointerMove, handlePointerEnd, viewportRef };
+}
+
 export function RelayAnimation() {
+  const { flowRef, handlePointerDown, handlePointerMove, handlePointerEnd, viewportRef } = useMobileCamera();
+
   return <section className="relay-animation" aria-label="A provider completion travels as encrypted traffic through LLM Notary to a local TLS proxy. The proxy produces plaintext output for your agent and proof for your certificate.">
-    <div className="relay-animation__viewport">
-      <div className="relay-animation__flow">
+    <div ref={viewportRef} className="relay-animation__viewport" onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={handlePointerEnd} onPointerCancel={handlePointerEnd}>
+      <div ref={flowRef} className="relay-animation__flow">
         <ProviderCard />
         <EncryptedTrack className="relay-track--provider" label="Encrypted response travels to LLM Notary" />
         <NotaryCard />
