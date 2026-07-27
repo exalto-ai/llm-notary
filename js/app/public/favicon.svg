@@ -2,10 +2,6 @@
   <style>
     .badge { fill: #101010; }
     .pen { fill: none; stroke: #fff; }
-    @media (prefers-color-scheme: dark) {
-      .badge { fill: #fff; }
-      .pen { stroke: #101010; }
-    }
   </style>
   <circle class="badge" cx="12" cy="12" r="11"/>
   <g class="pen" stroke-width="1.8">

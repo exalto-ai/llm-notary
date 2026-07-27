@@ -1,0 +1,64 @@
+:root {
+  color-scheme: light dark;
+  --body-copy: #4e4d49;
+  --body-copy-soft: #5e5c57;
+  --body-copy-muted: #55534f;
+  --nav-surface: rgba(246, 245, 242, .94);
+  --inverse-surface: #101010;
+  --inverse-text: #fff;
+  --inverse-muted: #d1d1cd;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ink: #f6f5f2;
+    --paper: #171717;
+    --white: #202020;
+    --line: #484848;
+    --muted: #b8b8b8;
+    --green-ink: #b9ff38;
+    --soft: #2c2c2c;
+    --body-copy: #d8d8d8;
+    --body-copy-soft: #c6c6c6;
+    --body-copy-muted: #cacaca;
+    --nav-surface: rgba(23, 23, 23, .94);
+    --inverse-surface: #0e0e0e;
+    --inverse-text: #f6f6f6;
+    --inverse-muted: #c5c5c5;
+  }
+
+  .nav-wrap { background: var(--nav-surface); }
+  .pen-mark { background: #101010; color: var(--green); }
+  .pen-mark--inverse { background: var(--inverse-text); color: #101010; }
+  nav a { color: var(--muted); }
+  .button-dark { background: var(--inverse-surface); color: var(--inverse-text); }
+  .button-dark:hover { background: #303030; }
+  .hero > p,
+  .diagram-foot,
+  .step-list p,
+  .trace-detail > p,
+  .verify > div > p,
+  .docs-lead,
+  .library-hero p { color: var(--body-copy); }
+  .privacy,
+  .receipt,
+  .terminal,
+  .docs-content pre { background: var(--inverse-surface); color: var(--inverse-text); }
+  .privacy p { color: var(--inverse-muted); }
+  .privacy .eyebrow { color: var(--inverse-muted); }
+  .receipt header > b { color: var(--inverse-muted); }
+  .receipt dl div { border-color: #484848; }
+  .receipt dt,
+  .receipt footer { color: #b6b6b6; }
+  .docs-content section p,
+  .library-detail p { color: var(--body-copy-muted); }
+  .tag-list span { color: var(--body-copy-muted); }
+  .library-controls input,
+  .library-controls select { color: var(--ink); }
+  .library-controls select option { background: var(--white); color: var(--ink); }
+  .verifier-modal { box-shadow: 16px 16px 0 var(--inverse-surface); }
+  .icon-button:hover { background: var(--soft); }
+  .drop-zone:hover { background: var(--soft); }
+  .verification-state { color: var(--body-copy-muted); }
+  .verification-state code { color: var(--ink); }
+}
