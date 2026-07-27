@@ -47,6 +47,7 @@ jobs:
         run: |
           openssl rand -hex 32 > "$RUNNER_TEMP/notary-signing-key"
           NOTARY_SIGNING_KEY_FILE="$RUNNER_TEMP/notary-signing-key" \
+            CLOUDFLARE_TUNNEL_TOKEN=ci-placeholder \
             SITE_DOMAIN=example.com \
             docker compose config --quiet
       - name: Build notary image
