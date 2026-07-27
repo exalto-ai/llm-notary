@@ -16,7 +16,7 @@ const records = [
 ];
 
 const installCommand = 'curl -fsSLO https://llmnotary.exalto.ai/install.sh && sh install.sh';
-const brandAssetVersion = '20260727';
+const brandAssetVersion = __BRAND_ASSET_VERSION__;
 
 function PenMark({ inverse = false }) {
   return <span className={`pen-mark${inverse ? ' pen-mark--inverse' : ''}`} aria-hidden="true">{inverse ? <img src={`/logo-light.png?v=${brandAssetVersion}`} alt="" /> : <picture><source media="(prefers-color-scheme: dark)" srcSet={`/logo-light.png?v=${brandAssetVersion}`} /><img src={`/logo-dark.png?v=${brandAssetVersion}`} alt="" /></picture>}</span>;
