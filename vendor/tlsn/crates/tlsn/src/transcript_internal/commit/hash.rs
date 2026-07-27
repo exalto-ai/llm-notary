@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 
+use mpz_common::Context;
 use mpz_core::bitvec::BitVec;
 #[cfg(feature = "hash-blake3")]
 use mpz_hash::blake3::Blake3;
@@ -23,6 +24,23 @@ use tlsn_core::{
 };
 
 use crate::{Role, transcript_internal::TranscriptRefs};
+
+/// The SHA-256 compression circuit consumes 64 bytes. Running one compression
+/// at a time keeps the ZK VM from queuing an entire transcript's worth of
+/// circuits and OT material before it can execute any of them.
+const SHA256_STREAM_BLOCK_BYTES: usize = 64;
+#[cfg(feature = "hash-blake3")]
+const BLAKE3_STREAM_CHUNK_BYTES: usize = 1024;
+
+/// Returns whether the bounded private-chunk proof path implements `alg`.
+pub(crate) fn supports_streaming_hash_alg(alg: HashAlgId) -> bool {
+    match alg {
+        HashAlgId::SHA256 => true,
+        #[cfg(feature = "hash-blake3")]
+        HashAlgId::BLAKE3 => true,
+        _ => false,
+    }
+}
 
 /// Future which will resolve to the committed hash values.
 #[derive(Debug)]
@@ -110,6 +128,162 @@ pub(crate) fn verify_hash(
     Ok(HashCommitFuture { futs })
 }
 
+/// Proves SHA-256 transcript commitments incrementally. This is equivalent to
+/// [`prove_hash`] for SHA-256, but flushes each compression block before
+/// scheduling the next one so the working set is bounded by one block plus the
+/// running hash state.
+pub(crate) async fn prove_hash_streaming<T: Vm<Binary> + Send + Sync>(
+    ctx: &mut Context,
+    vm: &mut T,
+    refs: &TranscriptRefs,
+    idxs: impl IntoIterator<Item = (Direction, RangeSet<usize>, HashAlgId)>,
+) -> Result<Vec<(PlaintextHash, PlaintextHashSecret)>, HashCommitError> {
+    let mut output = Vec::new();
+    for (direction, idx, alg) in idxs {
+        let refs = match direction {
+            Direction::Sent => &refs.sent,
+            Direction::Received => &refs.recv,
+        };
+
+        let blinder: Blinder = rand::random();
+        let blinder_ref = vm.alloc_vec::<U8>(16)?;
+        vm.mark_private(blinder_ref)?;
+        vm.assign(blinder_ref, blinder.as_bytes().to_vec())?;
+        vm.commit(blinder_ref)?;
+        let hash_ref = stream_hash(ctx, vm, refs, &idx, alg, blinder_ref).await?;
+        let mut hash_fut = vm.decode(Vector::<U8>::from(hash_ref))?;
+        vm.execute_all(ctx).await?;
+
+        let hash = hash_fut
+            .try_recv()
+            .map_err(|_| HashCommitError::decode())?
+            .ok_or_else(HashCommitError::decode)?;
+        output.push((
+            PlaintextHash {
+                direction,
+                idx: idx.clone(),
+                hash: TypedHash {
+                    alg,
+                    value: Hash::try_from(hash).map_err(HashCommitError::convert)?,
+                },
+            },
+            PlaintextHashSecret {
+                direction,
+                idx,
+                blinder,
+                alg,
+            },
+        ));
+    }
+
+    Ok(output)
+}
+
+/// Verifies SHA-256 transcript commitments incrementally. See
+/// [`prove_hash_streaming`] for why the execution is block-by-block.
+pub(crate) async fn verify_hash_streaming<T: Vm<Binary> + Send + Sync>(
+    ctx: &mut Context,
+    vm: &mut T,
+    refs: &TranscriptRefs,
+    idxs: impl IntoIterator<Item = (Direction, RangeSet<usize>, HashAlgId)>,
+) -> Result<Vec<PlaintextHash>, HashCommitError> {
+    let mut output = Vec::new();
+    for (direction, idx, alg) in idxs {
+        let refs = match direction {
+            Direction::Sent => &refs.sent,
+            Direction::Received => &refs.recv,
+        };
+
+        let blinder_ref = vm.alloc_vec::<U8>(16)?;
+        vm.mark_blind(blinder_ref)?;
+        vm.commit(blinder_ref)?;
+        let hash_ref = stream_hash(ctx, vm, refs, &idx, alg, blinder_ref).await?;
+        let mut hash_fut = vm.decode(Vector::<U8>::from(hash_ref))?;
+        vm.execute_all(ctx).await?;
+
+        let hash = hash_fut
+            .try_recv()
+            .map_err(|_| HashCommitError::decode())?
+            .ok_or_else(HashCommitError::decode)?;
+        output.push(PlaintextHash {
+            direction,
+            idx,
+            hash: TypedHash {
+                alg,
+                value: Hash::try_from(hash).map_err(HashCommitError::convert)?,
+            },
+        });
+    }
+
+    Ok(output)
+}
+
+async fn stream_hash<T: Vm<Binary> + Send + Sync>(
+    ctx: &mut Context,
+    vm: &mut T,
+    refs: &crate::transcript_internal::ReferenceMap,
+    idx: &RangeSet<usize>,
+    alg: HashAlgId,
+    blinder: Vector<U8>,
+) -> Result<mpz_memory_core::Array<U8, 32>, HashCommitError> {
+    match alg {
+        HashAlgId::SHA256 => stream_sha256(ctx, vm, refs, idx, blinder).await,
+        #[cfg(feature = "hash-blake3")]
+        HashAlgId::BLAKE3 => stream_blake3(ctx, vm, refs, idx, blinder).await,
+        _ => Err(HashCommitError::unsupported_alg(alg)),
+    }
+}
+
+async fn stream_sha256<T: Vm<Binary> + Send + Sync>(
+    ctx: &mut Context,
+    vm: &mut T,
+    refs: &crate::transcript_internal::ReferenceMap,
+    idx: &RangeSet<usize>,
+    blinder: Vector<U8>,
+) -> Result<mpz_memory_core::Array<U8, 32>, HashCommitError> {
+    let mut hasher = Sha256::new_with_init(vm).map_err(HashCommitError::hasher)?;
+    for range in idx.iter() {
+        for chunk in refs.get_chunks(range).expect("plaintext refs are valid") {
+            for start in (0..chunk.len()).step_by(SHA256_STREAM_BLOCK_BYTES) {
+                let end = (start + SHA256_STREAM_BLOCK_BYTES).min(chunk.len());
+                let block = chunk.get(start..end).expect("chunk bounds are valid");
+                hasher.update(&block);
+                hasher.compress(vm).map_err(HashCommitError::hasher)?;
+                vm.execute_all(ctx).await?;
+            }
+        }
+    }
+    hasher.update(&blinder);
+    hasher.finalize(vm).map_err(HashCommitError::hasher)
+}
+
+#[cfg(feature = "hash-blake3")]
+async fn stream_blake3<T: Vm<Binary> + Send + Sync>(
+    ctx: &mut Context,
+    vm: &mut T,
+    refs: &crate::transcript_internal::ReferenceMap,
+    idx: &RangeSet<usize>,
+    blinder: Vector<U8>,
+) -> Result<mpz_memory_core::Array<U8, 32>, HashCommitError> {
+    let mut hasher = Blake3::new(vm).map_err(HashCommitError::hasher)?;
+    for range in idx.iter() {
+        for chunk in refs.get_chunks(range).expect("plaintext refs are valid") {
+            for start in (0..chunk.len()).step_by(BLAKE3_STREAM_CHUNK_BYTES) {
+                let end = (start + BLAKE3_STREAM_CHUNK_BYTES).min(chunk.len());
+                let block = chunk.get(start..end).expect("chunk bounds are valid");
+                hasher.update(vm, &block).map_err(HashCommitError::hasher)?;
+                // `update` schedules a compression once the preceding BLAKE3
+                // chunk is full; execute it before accepting more input.
+                vm.execute_all(ctx).await?;
+            }
+        }
+    }
+    hasher
+        .update(vm, &blinder)
+        .map_err(HashCommitError::hasher)?;
+    hasher.finalize(vm).map_err(HashCommitError::hasher)
+}
+
 #[derive(Clone)]
 enum Hasher {
     Sha256(Sha256),
@@ -161,7 +335,9 @@ fn hash_commit_inner(
                 };
 
                 for range in idx.iter() {
-                    hasher.update(&refs.get(range).expect("plaintext refs are valid"));
+                    for chunk in refs.get_chunks(range).expect("plaintext refs are valid") {
+                        hasher.update(&chunk);
+                    }
                 }
 
                 hasher.update(&blinder);
@@ -183,9 +359,9 @@ fn hash_commit_inner(
                 };
 
                 for range in idx.iter() {
-                    hasher
-                        .update(vm, &refs.get(range).expect("plaintext refs are valid"))
-                        .map_err(HashCommitError::hasher)?;
+                    for chunk in refs.get_chunks(range).expect("plaintext refs are valid") {
+                        hasher.update(vm, &chunk).map_err(HashCommitError::hasher)?;
+                    }
                 }
                 hasher
                     .update(vm, &blinder)
@@ -209,9 +385,9 @@ fn hash_commit_inner(
                 };
 
                 for range in idx.iter() {
-                    hasher
-                        .update(vm, &refs.get(range).expect("plaintext refs are valid"))
-                        .map_err(HashCommitError::hasher)?;
+                    for chunk in refs.get_chunks(range).expect("plaintext refs are valid") {
+                        hasher.update(vm, &chunk).map_err(HashCommitError::hasher)?;
+                    }
                 }
 
                 hasher

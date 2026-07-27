@@ -8,10 +8,10 @@ use tlsn_core::config::tls_commit::{
 use tlsn_deap::Deap;
 
 mod prover;
-pub(crate) use prover::{ProverMpc, ProverMpcDeps, ProverProxyDeps, ProverZk};
+pub(crate) use prover::{ProverMpc, ProverMpcDeps, ProverProxyDeps, ProverZk, new_prover_zk_vm};
 
 mod verifier;
-pub(crate) use verifier::{VerifierMpcDeps, VerifierProxyDeps, VerifierZk};
+pub(crate) use verifier::{VerifierMpcDeps, VerifierProxyDeps, VerifierZk, new_verifier_zk_vm};
 
 #[derive(Debug)]
 pub(crate) enum ProverDeps {

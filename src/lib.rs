@@ -11,7 +11,7 @@ use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -39,7 +39,7 @@ use tlsn::{
         CertBinding, ConnectionInfo, DnsName, HandshakeData, ServerName, TranscriptLength,
     },
     prover::ProverOutput,
-    transcript::{ContentType, TranscriptCommitConfig},
+    transcript::{ContentType, Direction, Transcript, TranscriptCommitConfig},
     verifier::{VerifierCommitStart, VerifierOutput},
     webpki::RootCertStore,
 };
@@ -54,7 +54,25 @@ pub mod cli;
 
 const MAX_FRAME_LEN: usize = 32 << 20;
 const REQUEST_WRITE_CHUNK: usize = 8 << 10;
+/// Above this size, use independent private transcript commitments instead of
+/// the overlapping HTTP-oriented commitment layout. The latter is convenient
+/// for small presentations, while the former bounds proof memory.
+const CHUNKED_PROOF_THRESHOLD_BYTES: usize = 64 << 10;
+/// Keeps the bounded proof path below the 2 GiB notary budget in the measured
+/// Proxy-TLS configuration.
+const CHUNKED_PROOF_BYTES: usize = 1 << 20;
 const CAPTURE_FORMAT: &str = "llm-notary/capture/v1";
+
+/// Returns the Linux cgroup charge when this process runs in a container.
+/// This is intentionally best-effort so local macOS/Windows operation is
+/// unchanged; the notary log records `None` when cgroup v2 is unavailable.
+fn cgroup_memory(file: &str) -> Option<u64> {
+    fs::read_to_string(format!("/sys/fs/cgroup/{file}"))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
 
 /// A request body split into bounded frames, avoiding one unbounded local write
 /// for a large agent request.
@@ -66,6 +84,93 @@ pub fn chunked_request_body(bytes: Bytes) -> HttpRequestBody {
         .map(|chunk| Ok(Frame::data(Bytes::copy_from_slice(chunk))))
         .collect::<Vec<Result<_, std::convert::Infallible>>>();
     StreamBody::new(futures::stream::iter(frames)).boxed()
+}
+
+/// Builds the commitments used by a local capture.
+///
+/// Large interactions keep HTTP metadata in separately revealable pieces and
+/// split only the bodies into non-overlapping bounded chunks. This preserves
+/// the existing Authorization/API-key redaction policy: a proof can reveal a
+/// whole body from its chunks, but never needs to reveal a chunk containing a
+/// secret header value.
+fn capture_transcript_commit(transcript: &Transcript) -> Result<(TranscriptCommitConfig, bool)> {
+    let chunked =
+        transcript.sent().len().max(transcript.received().len()) >= CHUNKED_PROOF_THRESHOLD_BYTES;
+    let mut builder = TranscriptCommitConfig::builder(transcript);
+
+    if chunked {
+        let http = HttpTranscript::parse(transcript)?;
+        if http.requests.len() != 1 || http.responses.len() != 1 {
+            bail!("expected exactly one HTTP request and response in TLS transcript");
+        }
+        commit_chunked_private_http(&mut builder, &http)?;
+    } else {
+        let http = HttpTranscript::parse(transcript)?;
+        if http.requests.len() != 1 || http.responses.len() != 1 {
+            bail!("expected exactly one HTTP request and response in TLS transcript");
+        }
+        DefaultHttpCommitter::default().commit_transcript(&mut builder, &http)?;
+    }
+
+    Ok((builder.build()?, chunked))
+}
+
+/// Uses a non-overlapping commitment layout compatible with
+/// `make_disclosed_presentation`.
+///
+/// The standard HTTP committer deliberately adds overlapping whole-message and
+/// field commitments for flexibility. Chunked private proofs reject that
+/// overlap, so the production large-message path commits exactly the fields we
+/// disclose and replaces each body commitment with bounded pieces.
+fn commit_chunked_private_http(
+    builder: &mut tlsn::transcript::TranscriptCommitConfigBuilder,
+    transcript: &HttpTranscript,
+) -> Result<()> {
+    let request = &transcript.requests[0];
+    builder.commit(request.without_data(), Direction::Sent)?;
+    builder.commit(&request.request.target, Direction::Sent)?;
+    for value in &request.headers {
+        if is_redacted_request_header(&value.name.as_str()) {
+            builder.commit(value.without_value(), Direction::Sent)?;
+        } else {
+            builder.commit(value, Direction::Sent)?;
+        }
+    }
+    if let Some(body) = &request.body {
+        commit_body_chunks(builder, body.indices().iter(), Direction::Sent)?;
+    }
+
+    let response = &transcript.responses[0];
+    builder.commit(response.without_data(), Direction::Received)?;
+    for value in &response.headers {
+        builder.commit(value, Direction::Received)?;
+    }
+    if let Some(body) = &response.body {
+        commit_body_chunks(builder, body.indices().iter(), Direction::Received)?;
+    }
+
+    Ok(())
+}
+
+fn commit_body_chunks(
+    builder: &mut tlsn::transcript::TranscriptCommitConfigBuilder,
+    ranges: impl Iterator<Item = std::ops::Range<usize>>,
+    direction: Direction,
+) -> Result<()> {
+    for range in ranges {
+        for start in (range.start..range.end).step_by(CHUNKED_PROOF_BYTES) {
+            builder.commit(
+                start..(start + CHUNKED_PROOF_BYTES).min(range.end),
+                direction,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn is_redacted_request_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case(header::AUTHORIZATION.as_str())
+        || name.eq_ignore_ascii_case("x-api-key")
 }
 
 /// The portable evidence retained by the trace author. `presentation` is what
@@ -218,7 +323,7 @@ pub async fn notarized_streaming_request(
     let (proof_sender, proof_receiver) = oneshot::channel();
     let server_name = server_name.to_owned();
     tokio::spawn(async move {
-        let result = async {
+        let result: Result<LocalProof> = async {
             let mut body = body;
             while let Some(frame) = body.frame().await {
                 let frame = frame?;
@@ -231,30 +336,34 @@ pub async fn notarized_streaming_request(
 
             let mut prover = prover_task.await??;
             // `HttpTranscript` contains non-Send views into the transcript.
-            // Drop it before the next await so this task stays spawnable.
-            let transcript_commit = {
-                let transcript = HttpTranscript::parse(prover.transcript())?;
-                if transcript.requests.len() != 1 || transcript.responses.len() != 1 {
-                    bail!("expected exactly one HTTP request and response in TLS transcript");
-                }
-
-                let mut commitment_builder = TranscriptCommitConfig::builder(prover.transcript());
-                DefaultHttpCommitter::default()
-                    .commit_transcript(&mut commitment_builder, &transcript)?;
-                commitment_builder.build()?
-            };
+            // The helper drops them before the next await so this task stays
+            // spawnable.
+            let (transcript_commit, chunked_private) =
+                capture_transcript_commit(prover.transcript())?;
 
             let mut request_config_builder = RequestConfig::builder();
             request_config_builder.transcript_commit(transcript_commit.clone());
             let request_config = request_config_builder.build()?;
             let mut disclosure_config_builder = ProveConfig::builder(prover.transcript());
             disclosure_config_builder.transcript_commit(transcript_commit);
+            if chunked_private {
+                disclosure_config_builder.chunked_private_commitments(CHUNKED_PROOF_BYTES)?;
+            }
             let disclosure_config = disclosure_config_builder.build()?;
+            let proof_started = Instant::now();
             let ProverOutput {
                 transcript_commitments,
                 transcript_secrets,
                 ..
             } = prover.prove(&disclosure_config).await?;
+            tracing::info!(
+                chunked_private,
+                transcript_sent_bytes = prover.transcript().sent().len(),
+                transcript_received_bytes = prover.transcript().received().len(),
+                commitment_count = transcript_commitments.len(),
+                proof_elapsed_ms = proof_started.elapsed().as_millis(),
+                "generated private TLS transcript commitments"
+            );
 
             let prover_transcript = prover.transcript().clone();
             let tls_transcript = prover.tls_transcript().clone();
@@ -317,6 +426,9 @@ pub async fn run_notary_session(
     socket: TcpStream,
     signing_key: Arc<SigningKey>,
     allowed_hosts: Arc<Vec<String>>,
+    max_private_chunk_bytes: usize,
+    max_total_private_chunk_bytes: usize,
+    max_private_chunk_commitments: usize,
 ) -> Result<()> {
     let session = Session::new(socket.compat());
     let (driver, mut handle) = session.split();
@@ -324,6 +436,9 @@ pub async fn run_notary_session(
 
     let verifier_config = VerifierConfig::builder()
         .root_store(RootCertStore::mozilla())
+        .max_chunked_private_bytes(max_private_chunk_bytes)
+        .max_total_chunked_private_bytes(max_total_private_chunk_bytes)
+        .max_chunked_private_commitments(max_private_chunk_commitments)
         .build()?;
     let verifier = match handle.new_verifier(verifier_config)?.commit().await? {
         VerifierCommitStart::Mpc(verifier) => {
@@ -350,6 +465,7 @@ pub async fn run_notary_session(
             verifier.accept().await?.run(upstream.compat()).await?
         }
     };
+    let proof_started = Instant::now();
     let (
         VerifierOutput {
             transcript_commitments,
@@ -374,6 +490,15 @@ pub async fn run_notary_session(
             (record.typ == ContentType::ApplicationData).then_some(record.ciphertext.len())
         })
         .sum::<usize>();
+    tracing::info!(
+        transcript_sent_bytes = sent_len,
+        transcript_received_bytes = received_len,
+        commitment_count = transcript_commitments.len(),
+        proof_elapsed_ms = proof_started.elapsed().as_millis(),
+        cgroup_memory_current_bytes = ?cgroup_memory("memory.current"),
+        cgroup_memory_peak_bytes = ?cgroup_memory("memory.peak"),
+        "verified private TLS transcript commitments"
+    );
     let CertBinding::V1_2(binding) = tls_transcript.certificate_binding() else {
         bail!("unsupported TLS certificate binding");
     };
@@ -430,12 +555,7 @@ fn make_disclosed_presentation(proof: &LocalProof) -> Result<DisclosedPresentati
     builder.reveal_sent(request.without_data())?;
     builder.reveal_sent(&request.request.target)?;
     for value in &request.headers {
-        if value
-            .name
-            .as_str()
-            .eq_ignore_ascii_case(header::AUTHORIZATION.as_str())
-            || value.name.as_str().eq_ignore_ascii_case("x-api-key")
-        {
+        if is_redacted_request_header(&value.name.as_str()) {
             builder.reveal_sent(value.without_value())?;
         } else {
             builder.reveal_sent(value)?;
@@ -707,6 +827,7 @@ async fn read_frame<S: futures::AsyncRead + Unpin>(socket: &mut S) -> Result<Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tlsn::rangeset::ops::Set;
 
     fn test_capture() -> Capture {
         let evidence = b"presentation".to_vec();
@@ -769,5 +890,36 @@ mod tests {
         assert!(validate_capture_id("../outside").is_err());
         assert!(validate_capture_id("nested/capture").is_err());
         assert!(validate_capture_id("").is_err());
+    }
+
+    #[test]
+    fn chunked_http_commitments_exclude_redacted_header_values() {
+        let body = vec![b'x'; CHUNKED_PROOF_THRESHOLD_BYTES];
+        let mut sent = b"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer test-secret\r\nContent-Length: 65536\r\n\r\n".to_vec();
+        sent.extend_from_slice(&body);
+        let mut received = b"HTTP/1.1 200 OK\r\nContent-Length: 65536\r\n\r\n".to_vec();
+        received.extend_from_slice(&body);
+        let transcript = Transcript::new(sent, received);
+        let http = HttpTranscript::parse(&transcript).expect("parse HTTP transcript");
+        let authorization = http.requests[0]
+            .headers
+            .iter()
+            .find(|header| header.name.as_str().eq_ignore_ascii_case("authorization"))
+            .expect("Authorization header");
+
+        let (config, chunked) =
+            capture_transcript_commit(&transcript).expect("build chunked commitment config");
+        assert!(chunked);
+        for (direction, ranges, _) in config.to_request().iter_hash() {
+            if *direction == Direction::Sent {
+                assert!(
+                    ranges
+                        .intersection(authorization.value.indices())
+                        .next()
+                        .is_none(),
+                    "a private chunked commitment must not include the Authorization value"
+                );
+            }
+        }
     }
 }

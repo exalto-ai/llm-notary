@@ -3,6 +3,7 @@
 use crate::ghash::ghash;
 
 use cipher::{Cipher, aes::Aes128};
+use mpz_common::Context;
 use mpz_core::bitvec::BitVec;
 use mpz_memory_core::{
     DecodeFutureTyped,
@@ -71,6 +72,30 @@ pub(crate) fn verify_tags(
         records,
         mac_key,
     })
+}
+
+/// Verifies TLS record tags in bounded batches.
+///
+/// AES-GCM tags authenticate independent TLS records, so batching is only an
+/// execution-scheduling choice. It avoids retaining an unbounded queue of J0
+/// AES circuits and decode futures for a large streamed response.
+pub(crate) async fn verify_tags_streaming<T: Vm<Binary> + Send + Sync>(
+    ctx: &mut Context,
+    vm: &mut T,
+    key_iv: (Array<U8, 16>, Array<U8, 4>),
+    mac_key: Array<U8, 16>,
+    tls_version: TlsVersion,
+    records: &[Record],
+) -> Result<(), TagProofError> {
+    const RECORDS_PER_BATCH: usize = 64;
+
+    for records in records.chunks(RECORDS_PER_BATCH) {
+        let proof = verify_tags(vm, key_iv, mac_key, tls_version, records.to_vec())?;
+        vm.execute_all(ctx).await.map_err(TagProofError::vm)?;
+        proof.verify()?;
+    }
+
+    Ok(())
 }
 
 /// Proof of tag verification.

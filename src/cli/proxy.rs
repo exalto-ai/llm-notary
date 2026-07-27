@@ -283,3 +283,41 @@ fn copy_response_headers(target: &mut HeaderMap, source: &HeaderMap) {
         target.append(name, value.clone());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> AppState {
+        AppState {
+            provider: Provider::Openai,
+            notary: "127.0.0.1:7047".parse().unwrap(),
+            capture_dir: PathBuf::from("captures"),
+            serial: Arc::new(Mutex::new(0)),
+        }
+    }
+
+    #[test]
+    fn detects_streaming_from_accept_or_request_body() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            http::header::ACCEPT,
+            HeaderValue::from_static("text/event-stream"),
+        );
+        assert!(wants_stream(&headers, b"{}"));
+        assert!(wants_stream(&HeaderMap::new(), br#"{"stream":true}"#));
+        assert!(!wants_stream(&HeaderMap::new(), br#"{"stream":false}"#));
+    }
+
+    #[tokio::test]
+    async fn rejects_non_post_before_creating_an_upstream_proof_task() {
+        let request = Request::builder()
+            .method(http::Method::GET)
+            .uri("/v1/models")
+            .body(Body::empty())
+            .unwrap();
+
+        let error = proxy_inner(state(), request).await.unwrap_err();
+        assert!(error.to_string().contains("only POST API requests"));
+    }
+}

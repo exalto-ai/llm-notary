@@ -123,6 +123,9 @@ pub(crate) enum Role {
 pub(crate) struct TlsOutput {
     pub(crate) keys: SessionKeys,
     pub(crate) tls_transcript: TlsTranscript,
+    /// Present only on the local Proxy-TLS prover. These values are never
+    /// serialized or made available to the verifier.
+    pub(crate) plain_keys: Option<proxy::PlainSessionKeys>,
 }
 
 /// Protocol variant.
