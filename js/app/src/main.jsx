@@ -23,7 +23,7 @@ function Arrow() { return <div className="flow-arrow" aria-label="Encrypted conn
 function FlowNode({ type, title, note }) { return <div className={`flow-node flow-node--${type}`}><span className="node-mark" aria-hidden="true"/><strong>{title}</strong><small>{note}</small></div>; }
 
 function Header() {
-  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/docs">Docs</a><a href="#/library">Library</a></nav></header>;
+  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/docs">Docs</a><a href="#/library">Library</a><a href="/api/auth/github">Sign in</a></nav></header>;
 }
 
 function Footer() {

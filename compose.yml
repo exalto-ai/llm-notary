@@ -1,4 +1,26 @@
 services:
+  api:
+    image: ${API_IMAGE:-llm-notary-api:local}
+    build:
+      context: .
+      dockerfile: ./api/Dockerfile
+    environment:
+      DATABASE_URL: sqlite:///var/lib/llm-notary/api.db
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:?Set GITHUB_OAUTH_CLIENT_ID to the GitHub OAuth App client ID}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:?Set GITHUB_OAUTH_CLIENT_SECRET to the GitHub OAuth App client secret}
+      LLM_NOTARY_API_LISTEN: 0.0.0.0:8080
+      LLM_NOTARY_PUBLIC_ORIGIN: https://${SITE_DOMAIN:?Set SITE_DOMAIN to the public site hostname}
+    volumes:
+      - api_data:/var/lib/llm-notary
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
   web:
     image: ${WEB_IMAGE:-llm-notary-web:local}
     build:
@@ -41,6 +63,7 @@ services:
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:?Set CLOUDFLARE_TUNNEL_TOKEN to the named Cloudflare Tunnel token}
     depends_on:
+      - api
       - web
     restart: unless-stopped
 
@@ -49,5 +72,6 @@ secrets:
     file: ${NOTARY_SIGNING_KEY_FILE:?Set NOTARY_SIGNING_KEY_FILE to the host signing-key path}
 
 volumes:
+  api_data:
   caddy_data:
   caddy_config:

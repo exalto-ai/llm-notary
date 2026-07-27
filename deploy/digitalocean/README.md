@@ -3,7 +3,9 @@
 One Droplet runs both public services through Docker Compose:
 
 ```text
-internet ── HTTPS ──> web (Caddy + SPA)       ports 80/443
+internet ── HTTPS ──> web (Caddy + SPA + API) ports 80/443
+                         │
+                         └──> api (GitHub OAuth + SQLite)
 local proxies ──────> notary                  port 7047
 ```
 
@@ -33,9 +35,23 @@ Configure these GitHub repository secrets before the first deployment:
 - `DO_SSH_PORT` only when SSH is not on port 22.
 - `SITE_DOMAIN` for the website’s DNS name.
 - `CLOUDFLARE_TUNNEL_TOKEN` for the remotely managed Cloudflare Tunnel.
+- `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` for the LLM
+  Notary GitHub OAuth App. The app's callback URL must be
+  `https://llmnotary.exalto.ai/api/auth/github/callback`.
+
+For this deployment, add those two values as GitHub Actions secrets named
+`LLM_NOTARY_GITHUB_OAUTH_CLIENT_ID` and
+`LLM_NOTARY_GITHUB_OAUTH_CLIENT_SECRET`. They are written only to the
+Droplet's root-owned `deploy.env` at deploy time and are not included in either
+image.
 
 The generated notary signing key intentionally stays on the Droplet. Do not
 add it to a GitHub secret, image, or `.env` file.
+
+The API stores its initial user and session records in the Docker volume
+`api_data`. It is intentionally a single-instance SQLite deployment while the
+product is in beta; move it to managed Postgres before horizontally scaling the
+API or running background publication workers.
 
 ## Deploying with TTL.sh
 
