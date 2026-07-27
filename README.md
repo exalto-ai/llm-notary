@@ -15,7 +15,8 @@ relays encrypted TLS packets and never receives application plaintext.
   allowlisted provider, while the local machine performs the TLS handshake.
   This avoids MPC-TLS's per-byte online cost without giving the notary the API
   key or plaintext trace.
-- OpenAI (`api.openai.com`) and Anthropic (`api.anthropic.com`) host allowlist.
+- OpenAI (`api.openai.com`), Anthropic (`api.anthropic.com`), and DeepSeek
+  (`api.deepseek.com`) host allowlist.
 - An independently verifiable presentation which discloses the complete request
   and response but redacts `Authorization` and `x-api-key` values.
 - The notary, not the local machine, resolves and connects to the allowed
@@ -64,6 +65,25 @@ cargo run --bin llm-notary -- proxy start --provider openai --trace-dir traces
 Point an OpenAI-compatible SDK at `http://127.0.0.1:8787/v1`; keep the API key
 in the SDK as usual. The proxy does not accept a provider URL from the caller.
 Each supported request writes `traces/trace-XXXXXXXX.json`.
+
+### DeepSeek
+
+DeepSeek's OpenAI-compatible Chat Completions API can be traced through the
+same proxy. Start it with `--provider deepseek`, point the client to
+`http://127.0.0.1:8787`, and retain `DEEPSEEK_API_KEY` in the client
+environment:
+
+```bash
+cargo run --bin llm-notary -- proxy start --provider deepseek --trace-dir traces
+
+curl http://127.0.0.1:8787/chat/completions \
+  -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}'
+```
+
+The default DeepSeek endpoint is `https://api.deepseek.com` (without a `/v1`
+suffix); the proxy preserves the requested API path.
 
 Verify a trace without contacting LLM Notary:
 
