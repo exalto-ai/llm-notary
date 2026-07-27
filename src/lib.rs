@@ -1,4 +1,4 @@
-//! Shared TLSNotary plumbing for the Certified proof of concept.
+//! Shared TLSNotary plumbing for the LLM Notary proof of concept.
 //!
 //! The boundary here is deliberate: the local proxy owns request plaintext and
 //! the API key, while the remote notary relays authenticated TLS traffic and
@@ -42,8 +42,12 @@ use tokio::{
 };
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
+pub mod cli;
+
 const MAX_FRAME_LEN: usize = 32 << 20;
 const REQUEST_WRITE_CHUNK: usize = 8 << 10;
+const TRACE_FORMAT: &str = "llm-notary.tlsn.v1";
+const LEGACY_TRACE_FORMAT: &str = "certified.tlsn.v1";
 
 /// A request body split into bounded frames, avoiding one unbounded local write
 /// for a large agent request.
@@ -285,9 +289,7 @@ pub async fn run_notary_session(
     let verifier = match handle.new_verifier(verifier_config)?.commit().await? {
         VerifierCommitStart::Mpc(verifier) => {
             verifier
-                .reject(Some(
-                    "Certified proxy notary accepts Proxy-TLS sessions only",
-                ))
+                .reject(Some("LLM Notary accepts Proxy-TLS sessions only"))
                 .await?;
             bail!("rejected MPC-TLS session")
         }
@@ -413,7 +415,7 @@ pub fn make_full_trace_bundle(proof: &LocalProof) -> Result<TraceBundle> {
         .transcript
         .ok_or_else(|| anyhow!("locally built presentation omitted transcript"))?;
     Ok(TraceBundle {
-        format: "certified.tlsn.v1".to_owned(),
+        format: TRACE_FORMAT.to_owned(),
         server_name: proof.server_name.clone(),
         disclosed_request_sha256: sha256_hex(partial.sent_unsafe()),
         disclosed_response_sha256: sha256_hex(partial.received_unsafe()),
@@ -431,7 +433,7 @@ pub fn verify_trace_bundle(
         presentation::{Presentation, PresentationOutput},
     };
 
-    if bundle.format != "certified.tlsn.v1" {
+    if bundle.format != TRACE_FORMAT && bundle.format != LEGACY_TRACE_FORMAT {
         bail!("unsupported trace bundle format: {}", bundle.format);
     }
     let presentation: Presentation = bincode::deserialize(&bundle.presentation)?;
