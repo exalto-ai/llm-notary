@@ -59,13 +59,10 @@
 @keyframes relay-branch-proof{0%,61%{opacity:0;left:-12px}65%{opacity:1;left:0}81%{left:calc(100% - 20px);opacity:1}85%,100%{left:calc(100% - 12px);opacity:0}}
 @keyframes relay-agent-copy{0%,60%{opacity:0;transform:translateY(5px)}65%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-agent-one{0%,63%{opacity:0;transform:translateY(5px)}68%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-agent-two{0%,66%{opacity:0;transform:translateY(5px)}71%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-agent-three{0%,69%{opacity:0;transform:translateY(5px)}74%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}
 @keyframes relay-certificate-one{0%,68%{opacity:0;transform:translateY(5px)}73%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-certificate-two{0%,71%{opacity:0;transform:translateY(5px)}76%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-certificate-three{0%,74%{opacity:0;transform:translateY(5px)}79%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-certificate-seal{0%,75%{opacity:0;transform:translateY(5px) rotate(-2deg)}80%,96%{opacity:1;transform:translateY(0) rotate(-2deg)}100%{opacity:0}}@keyframes relay-certificate-footer{0%,80%{opacity:0;transform:translateY(5px)}85%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}
-@keyframes relay-mobile-camera{0%,27%{transform:translateX(calc(50vw - 60px)) scale(.8)}32%,48%{transform:translateX(calc(50vw - 229px)) scale(.8)}54%,67%{transform:translateX(calc(50vw - 400px)) scale(.8)}73%,100%{transform:translateX(calc(50vw - 607px)) scale(.8)}}
 @media(max-width:960px){
   .relay-animation{padding:48px 0 36px;overflow:hidden}
-  .relay-animation__viewport{height:330px;overflow-x:auto;overflow-y:hidden;scrollbar-width:none}
-  .relay-animation__viewport::-webkit-scrollbar{display:none}
-  .relay-animation__viewport:active .relay-animation__flow{animation-play-state:paused}
-  .relay-animation__flow{width:881px;min-width:881px;grid-template-columns:150px 64px 145px 64px 155px 58px 245px;grid-template-rows:188px 188px;gap:16px 0;min-height:392px;transform-origin:top left;animation:relay-mobile-camera 4.6s cubic-bezier(.65,0,.35,1) infinite}
+  .relay-animation__viewport{height:330px;overflow:hidden;touch-action:pan-y}
+  .relay-animation__flow{width:881px;min-width:881px;grid-template-columns:150px 64px 145px 64px 155px 58px 245px;grid-template-rows:188px 188px;gap:16px 0;min-height:392px;transform-origin:top left;will-change:transform}
   .relay-node{grid-column:auto;grid-row:1/3;align-self:center;min-height:176px;padding:18px}
   .relay-track{grid-column:auto;grid-row:1/3;align-self:center;width:auto;height:1px;justify-self:stretch}
   .relay-track .relay-packet--lock{left:auto;top:-10px;animation-name:relay-to-notary}
