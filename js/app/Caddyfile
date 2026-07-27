@@ -1,20 +1,28 @@
 {$SITE_DOMAIN:localhost} {
-	handle /api/* {
-		reverse_proxy api:8080
-	}
+	route {
+		handle /api/* {
+			reverse_proxy api:8080
+		}
 
-	root * /usr/share/caddy
-	encode zstd gzip
-	try_files {path} /index.html
-	file_server
+		handle {
+			root * /usr/share/caddy
+			encode zstd gzip
+			try_files {path} /index.html
+			file_server
+		}
+	}
 }
 
 http:// {
-	handle /api/* {
-		reverse_proxy api:8080
-	}
+	route {
+		handle /api/* {
+			reverse_proxy api:8080
+		}
 
-	root * /usr/share/caddy
-	try_files {path} /index.html
-	file_server
+		handle {
+			root * /usr/share/caddy
+			try_files {path} /index.html
+			file_server
+		}
+	}
 }
