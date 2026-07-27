@@ -3,3 +3,6 @@
 .env
 *.key
 *.bundle.json
+js/app/node_modules/
+js/app/dist/
+deploy/digitalocean/deploy.env

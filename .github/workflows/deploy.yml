@@ -1,0 +1,96 @@
+name: Deploy to DigitalOcean
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      quick_tunnel:
+        description: Start a temporary Cloudflare Quick Tunnel for the SPA
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: digitalocean-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      NOTARY_IMAGE: ttl.sh/llm-notary-notary-${{ github.run_id }}-${{ github.run_attempt }}:24h
+      WEB_IMAGE: ttl.sh/llm-notary-web-${{ github.run_id }}-${{ github.run_attempt }}:24h
+      ENABLE_QUICK_TUNNEL: ${{ inputs.quick_tunnel || false }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: Build and publish notary image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.NOTARY_IMAGE }}
+      - name: Build and publish web image
+        uses: docker/build-push-action@v7
+        with:
+          context: ./js/app
+          file: ./js/app/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.WEB_IMAGE }}
+      - name: Upload Compose definition
+        uses: appleboy/scp-action@v1
+        with:
+          host: ${{ secrets.DO_SSH_HOST }}
+          username: ${{ secrets.DO_SSH_USER }}
+          key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
+          port: ${{ secrets.DO_SSH_PORT || 22 }}
+          source: compose.yml
+          target: /opt/llm-notary
+          overwrite: true
+      - name: Pull images and restart services
+        uses: appleboy/ssh-action@v1.2.4
+        env:
+          NOTARY_IMAGE: ${{ env.NOTARY_IMAGE }}
+          WEB_IMAGE: ${{ env.WEB_IMAGE }}
+          SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
+          ENABLE_QUICK_TUNNEL: ${{ env.ENABLE_QUICK_TUNNEL }}
+        with:
+          host: ${{ secrets.DO_SSH_HOST }}
+          username: ${{ secrets.DO_SSH_USER }}
+          key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
+          port: ${{ secrets.DO_SSH_PORT || 22 }}
+          envs: NOTARY_IMAGE,WEB_IMAGE,SITE_DOMAIN,ENABLE_QUICK_TUNNEL
+          script: |
+            set -eu
+            test -n "$SITE_DOMAIN"
+            test -r /opt/llm-notary/notary-signing-key
+            cd /opt/llm-notary
+            cat > deploy.env <<EOF
+            NOTARY_IMAGE=$NOTARY_IMAGE
+            WEB_IMAGE=$WEB_IMAGE
+            NOTARY_SIGNING_KEY_FILE=/opt/llm-notary/notary-signing-key
+            SITE_DOMAIN=$SITE_DOMAIN
+            EOF
+            chmod 600 deploy.env
+            if [ "$ENABLE_QUICK_TUNNEL" = "true" ]; then
+              docker compose --env-file deploy.env --profile tunnel pull
+              docker compose --env-file deploy.env --profile tunnel up -d --remove-orphans
+              docker compose --env-file deploy.env logs --tail=30 tunnel
+            else
+              docker compose --env-file deploy.env pull
+              docker compose --env-file deploy.env up -d --remove-orphans
+            fi
+            docker compose --env-file deploy.env ps
