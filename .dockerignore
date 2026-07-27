@@ -1,10 +1,13 @@
-.git
-.env
-target
-traces
-captures
-*.key
-*.bundle.json
-web
-js/app/node_modules
-js/app/dist
+# The notary image only requires its Rust package and the vendored TLSNotary
+# sources. Keeping the context narrow prevents unrelated web and doc changes
+# from invalidating its cached build layer.
+*
+!Cargo.toml
+!Cargo.lock
+!src/
+!src/**
+!migrations/
+!migrations/**
+!vendor/
+!vendor/tlsn/
+!vendor/tlsn/**
