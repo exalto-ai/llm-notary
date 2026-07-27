@@ -1,0 +1,15 @@
+app = "certified-notary-kevz"
+primary_region = "sjc"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  RUST_LOG = "info"
+
+[[services]]
+  internal_port = 7047
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 7047

@@ -49,6 +49,7 @@ async fn main() -> Result<()> {
     loop {
         let (stream, address) = listener.accept().await?;
         stream.set_nodelay(true)?;
+        tracing::info!(%address, "notary client connected");
         let key = Arc::clone(&key);
         let allowed_hosts = Arc::clone(&allowed_hosts);
         tokio::spawn(async move {
