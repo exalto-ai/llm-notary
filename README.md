@@ -1,6 +1,6 @@
-# Certified
+# LLM Notary
 
-This is a deliberately small Rust proof of concept for independently verifiable
+LLM Notary is an early Rust implementation of independently verifiable
 LLM traces. A local proxy receives an ordinary API request, performs a real
 TLSNotary Proxy-TLS session with a remote notary, and stores a portable
 TLSNotary presentation. The API key remains in the local request; the notary
@@ -22,16 +22,28 @@ relays encrypted TLS packets and never receives application plaintext.
   provider hostname. The local TLS client validates that provider's certificate
   chain with Mozilla roots, so local DNS cannot substitute an endpoint.
 
-Streaming responses include `x-certified-trace` and
-`x-certified-trace-state: pending`. The path becomes a complete certificate only
-after the stream closes successfully. This is fundamental: a TLS transcript
-cannot be attested until it is complete.
+Streaming responses are relayed from the provider without synthetic events.
+Their trace package is written only after the terminal frame, because a TLS
+transcript cannot be attested until it is complete.
 
 It is **not production-ready**. In particular, receipt-key distribution,
 notary authentication, rate limiting, raw WebSockets, encrypted marketplace
 storage, multiple notaries, and a transparency log remain to be built.
 
-## Run locally
+## Install the CLI
+
+Releases include `llm-notary` for macOS and Linux, with a checksum-verified
+installer. The command below is the recommended two-step form so the script is
+available for inspection before it runs:
+
+```bash
+curl -fsSLO https://llmnotary.exalto.ai/install.sh
+sh install.sh
+```
+
+Windows x86_64 releases are available as ZIP archives on GitHub Releases.
+
+## Run locally from source
 
 Generate an ephemeral development signing key:
 
@@ -46,17 +58,17 @@ verify a receipt and is the explicit trust anchor.
 In another terminal start the proxy:
 
 ```bash
-cargo run --bin certified-proxy -- --provider openai --trace-dir traces
+cargo run --bin llm-notary -- proxy start --provider openai --trace-dir traces
 ```
 
 Point an OpenAI-compatible SDK at `http://127.0.0.1:8787/v1`; keep the API key
 in the SDK as usual. The proxy does not accept a provider URL from the caller.
 Each supported request writes `traces/trace-XXXXXXXX.json`.
 
-Verify a trace without contacting Certified:
+Verify a trace without contacting LLM Notary:
 
 ```bash
-cargo run --bin certified-verify -- traces/trace-00000001.json --trusted-notary-key <notary-public-key>
+cargo run --bin llm-notary -- verify traces/trace-00000001.json --trusted-notary-key <notary-public-key>
 ```
 
 The verifier checks the TLSNotary presentation locally and prints the disclosed
@@ -67,6 +79,13 @@ directory and transparency log.
 Pass `--summary` to verify the certificate and hashes without printing the
 disclosed transcript.
 
+With an installed release, use the public command instead:
+
+```bash
+llm-notary proxy start --provider openai --trace-dir traces
+llm-notary verify traces/trace-00000001.json --trusted-notary-key <notary-public-key>
+```
+
 ## Codex CLI
 
 Codex can use the proxy through a custom Responses provider. The custom
@@ -74,10 +93,10 @@ provider setting matters: it disables Codex's optional Responses WebSocket
 prewarm, which this HTTP/1.1 prototype intentionally does not implement.
 
 ```toml
-model_provider = "certified"
+model_provider = "llm-notary"
 
-[model_providers.certified]
-name = "Certified local proxy"
+[model_providers.llm-notary]
+name = "LLM Notary local proxy"
 base_url = "http://127.0.0.1:8787/v1"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"
@@ -90,13 +109,13 @@ environment):
 ```bash
 CODEX_HOME=$(mktemp -d) codex exec --ephemeral --skip-git-repo-check \
   -m gpt-4.1-mini \
-  -c 'model_provider="certified"' \
-  -c 'model_providers.certified.name="Certified local proxy"' \
-  -c 'model_providers.certified.base_url="http://127.0.0.1:8787/v1"' \
-  -c 'model_providers.certified.env_key="OPENAI_API_KEY"' \
-  -c 'model_providers.certified.wire_api="responses"' \
-  -c 'model_providers.certified.supports_websockets=false' \
-  'Reply with exactly: certified'
+  -c 'model_provider="llm-notary"' \
+  -c 'model_providers.llm-notary.name="LLM Notary local proxy"' \
+  -c 'model_providers.llm-notary.base_url="http://127.0.0.1:8787/v1"' \
+  -c 'model_providers.llm-notary.env_key="OPENAI_API_KEY"' \
+  -c 'model_providers.llm-notary.wire_api="responses"' \
+  -c 'model_providers.llm-notary.supports_websockets=false' \
+  'Reply with exactly: llm-notary'
 ```
 
 Validated locally with a streamed 45 KB OpenAI request and with the one-off
