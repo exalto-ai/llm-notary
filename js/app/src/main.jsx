@@ -4,6 +4,7 @@ import './styles.css';
 import './refinements.css';
 import './commons.css';
 import './theme.css';
+import './branding.css';
 
 const records = [
   { id: 'refusal', title: 'Refusal boundary test', api: 'OpenAI · Responses API', provider: 'OpenAI', host: 'api.openai.com', model: 'gpt-4.1', date: 'Jul 24, 2026', sortDate: 20260724, records: '42 turns', hash: 'a47e32…ef90', tags: ['Safety', 'Refusals'], license: 'CC BY 4.0', summary: 'A redacted test of a model refusal boundary. The receipt preserves the provider response and model identifier.' },
@@ -16,7 +17,7 @@ const records = [
 const installCommand = 'curl -fsSLO https://llmnotary.exalto.ai/install.sh && sh install.sh';
 
 function PenMark({ inverse = false }) {
-  return <span className={`pen-mark${inverse ? ' pen-mark--inverse' : ''}`} aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 19l1.7-5.4L15.5 4.8a2.2 2.2 0 0 1 3.1 3.1l-8.8 8.8L5 19Z"/><path d="m13.9 6.4 3.7 3.7M5 19l4.8-2.4"/></svg></span>;
+  return <span className={`pen-mark${inverse ? ' pen-mark--inverse' : ''}`} aria-hidden="true">{inverse ? <img src="/logo-light.png" alt="" /> : <picture><source media="(prefers-color-scheme: dark)" srcSet="/logo-light.png" /><img src="/logo-dark.png" alt="" /></picture>}</span>;
 }
 
 function CloseIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>; }

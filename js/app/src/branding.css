@@ -1,0 +1,12 @@
+.pen-mark,
+.pen-mark--inverse {
+  background: transparent;
+  color: inherit;
+}
+
+.pen-mark picture,
+.pen-mark img {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
