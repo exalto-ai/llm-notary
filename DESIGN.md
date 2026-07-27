@@ -86,6 +86,12 @@ components:
     backgroundColor: "{colors.light-surface-raised}"
     textColor: "{colors.primary}"
     rounded: "{rounded.none}"
+  popover:
+    backgroundColor: "{colors.light-surface-raised}"
+    textColor: "{colors.primary}"
+    border: "1px solid {colors.light-border}"
+    rounded: "{rounded.none}"
+    shadow: none
   status-marker:
     backgroundColor: "{colors.accent}"
     textColor: "{colors.accent-ink}"
@@ -154,6 +160,7 @@ Rectangular containers, buttons, inputs, cards, and rules are square (`rounded.n
 - **Cards and lists:** use raised surfaces, square corners, and 1px borders. Trace rows and library entries should expose evidence context through compact metadata, a verified marker, and clear scanning hierarchy.
 - **Receipts and terminal blocks:** inverse, near-black panels with monospace metadata and restrained lime highlights. They should read as technical evidence, not as decorative code samples.
 - **Forms and dialogs:** retain square input fields, visible borders, and a strong focus ring. Modal backdrops can dim and blur the page, but the dialog remains a paper-like surface.
+- **Popovers and menus:** anchor them to their trigger with a small gap. Use a raised surface, a matching-mode 1px border, and an internal divider for identity or grouping. Do not add a drop shadow, glass effect, page backdrop, or decorative caret; outside click and Escape should dismiss them.
 - **System theme:** new UI must work in both system modes without a manual theme toggle unless product requirements add one. Put reusable mode values in semantic CSS custom properties rather than introducing ad hoc mode-specific literals.
 
 ## Do's and Don'ts
