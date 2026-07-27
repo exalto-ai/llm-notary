@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import './styles.css';
 import './refinements.css';
 import './commons.css';
+import './theme.css';
 
 const records = [
   { id: 'refusal', title: 'Refusal boundary test', api: 'OpenAI · Responses API', provider: 'OpenAI', host: 'api.openai.com', model: 'gpt-4.1', date: 'Jul 24, 2026', sortDate: 20260724, records: '42 turns', hash: 'a47e32…ef90', tags: ['Safety', 'Refusals'], license: 'CC BY 4.0', summary: 'A redacted test of a model refusal boundary. The receipt preserves the provider response and model identifier.' },
