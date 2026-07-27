@@ -2,7 +2,9 @@
 .env
 target
 traces
+captures
 *.key
 *.bundle.json
+web
 js/app/node_modules
 js/app/dist

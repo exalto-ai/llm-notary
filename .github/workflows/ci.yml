@@ -48,9 +48,13 @@ jobs:
           openssl rand -hex 32 > "$RUNNER_TEMP/notary-signing-key"
           NOTARY_SIGNING_KEY_FILE="$RUNNER_TEMP/notary-signing-key" \
             CLOUDFLARE_TUNNEL_TOKEN=ci-placeholder \
+            GITHUB_OAUTH_CLIENT_ID=ci-placeholder \
+            GITHUB_OAUTH_CLIENT_SECRET=ci-placeholder \
             SITE_DOMAIN=example.com \
             docker compose config --quiet
       - name: Build notary image
         run: docker build --tag llm-notary-notary:ci .
       - name: Build web image
         run: docker build --tag llm-notary-web:ci js/app
+      - name: Build API image
+        run: docker build --tag llm-notary-api:ci --file api/Dockerfile .
