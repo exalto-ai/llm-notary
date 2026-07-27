@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 import './refinements.css';
 import './commons.css';
 import './theme.css';
 import './branding.css';
+import './account.css';
 
 const records = [
   { id: 'refusal', title: 'Refusal boundary test', api: 'OpenAI · Responses API', provider: 'OpenAI', host: 'api.openai.com', model: 'gpt-4.1', date: 'Jul 24, 2026', sortDate: 20260724, records: '42 turns', hash: 'a47e32…ef90', tags: ['Safety', 'Refusals'], license: 'CC BY 4.0', summary: 'A redacted test of a model refusal boundary. The receipt preserves the provider response and model identifier.' },
@@ -24,8 +25,23 @@ function CloseIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path 
 function Arrow() { return <div className="flow-arrow" aria-label="Encrypted connection"><span>encrypted</span><svg viewBox="0 0 68 14" preserveAspectRatio="none" aria-hidden="true"><path d="M1 7h61M56 2l6 5-6 5"/></svg></div>; }
 function FlowNode({ type, title, note }) { return <div className={`flow-node flow-node--${type}`}><span className="node-mark" aria-hidden="true"/><strong>{title}</strong><small>{note}</small></div>; }
 
-function Header() {
-  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/docs">Docs</a><a href="#/library">Library</a><a href="/api/auth/github">Sign in</a></nav></header>;
+function AccountMenu({ user, onLogout }) {
+  const [open, setOpen] = useState(false);
+  const menuRef = useRef(null);
+  const initials = user.github_login.slice(0, 2).toUpperCase();
+  useEffect(() => {
+    const close = (event) => {
+      if (event.key === 'Escape' || (event.type === 'mousedown' && !menuRef.current?.contains(event.target))) setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    window.addEventListener('keydown', close);
+    return () => { document.removeEventListener('mousedown', close); window.removeEventListener('keydown', close); };
+  }, []);
+  return <div className="account-menu" ref={menuRef}><button type="button" className="account-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="menu" aria-label={`Account menu for ${user.github_login}`}>{user.avatar_url ? <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" /> : <span>{initials}</span>}</button>{open && <div className="account-popover" role="menu"><div className="account-identity"><b>{user.github_login}</b><span>Signed in with GitHub</span></div><a href="#/dashboard" role="menuitem" onClick={() => setOpen(false)}>Dashboard</a><button type="button" role="menuitem" onClick={() => { setOpen(false); onLogout(); }}>Log out</button></div>}</div>;
+}
+
+function Header({ user, onLogout }) {
+  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/docs">Docs</a><a href="#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} /> : <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
 }
 
 function Footer() {
@@ -68,11 +84,17 @@ function Library({ onVerify }) {
   return <main className="library-shell"><section className="library-hero"><span className="eyebrow">Library</span><h1>Verifiable traces,<br />ready to inspect.</h1><p>Explore shared records by provider, model, and research topic. Every item is designed to carry its own evidence and reuse context.</p></section><section className="library-controls" aria-label="Library filters"><label className="library-search"><span>Search</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Model, provider, topic" /></label><label><span>Provider</span><select value={provider} onChange={(event) => setProvider(event.target.value)}>{providers.map((value) => <option key={value}>{value}</option>)}</select></label><label><span>Model</span><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((value) => <option key={value}>{value}</option>)}</select></label><label><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value)}><option>Newest</option><option>Title</option></select></label></section><section className="library-results"><aside className="tag-filter"><span>Topics</span>{tags.map((value) => <button key={value} className={tag === value ? 'active' : ''} onClick={() => setTag(value)}>{value}</button>)}</aside><div><div className="results-heading"><p><b>{filtered.length}</b> illustrative records</p><span>Library publishing is not enabled yet.</span></div><div className="library-grid">{filtered.map((record) => <button className={`library-card${active.id === record.id ? ' active' : ''}`} key={record.id} onClick={() => setActive(record)}><div><i aria-hidden="true"/><span>{record.provider}</span><time>{record.date}</time></div><h2>{record.title}</h2><p>{record.model} · {record.records}</p><div className="tag-list">{record.tags.map((item) => <span key={item}>{item}</span>)}</div></button>)}</div></div><article className="library-detail"><div><span className="eyebrow">Selected record</span><h2>{active.title}</h2><p>{active.summary}</p></div><dl><div><dt>Provider</dt><dd>{active.host}</dd></div><div><dt>Model</dt><dd>{active.model}</dd></div><div><dt>Package</dt><dd>ln_{active.id}_{active.hash}</dd></div><div><dt>Reuse</dt><dd>{active.license}</dd></div></dl><div className="trace-actions"><button onClick={onVerify}>Inspect receipt</button><a href="#/docs/verify">Verification docs</a></div></article></section></main>;
 }
 
+function Dashboard({ user }) {
+  return <main className="dashboard-shell"><span className="eyebrow">Account</span><h1>Welcome, {user.github_login}.</h1><p>Your LLM Notary account is ready. Trace publishing and API keys will appear here as those services come online.</p><div className="dashboard-card"><span>Signed in with GitHub</span><b>{user.github_login}</b><a href="#/library">Browse the Library</a></div></main>;
+}
+
 function App() {
-  const [route, setRoute] = useState(window.location.hash || '#/'); const [showVerifier, setShowVerifier] = useState(false);
+  const [route, setRoute] = useState(window.location.hash || '#/'); const [showVerifier, setShowVerifier] = useState(false); const [user, setUser] = useState(null);
   useEffect(() => { const update = () => setRoute(window.location.hash || '#/'); window.addEventListener('hashchange', update); return () => window.removeEventListener('hashchange', update); }, []);
+  useEffect(() => { let cancelled = false; fetch('/api/me', { credentials: 'same-origin' }).then((response) => response.ok ? response.json() : null).then((payload) => { if (!cancelled) setUser(payload?.user || null); }).catch(() => { if (!cancelled) setUser(null); }); return () => { cancelled = true; }; }, []);
+  const logout = async () => { const response = await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }); if (response.ok) { setUser(null); if (window.location.hash === '#/dashboard') window.location.hash = '#/'; } };
   const path = route.replace(/^#\/?/, ''); const [section, page] = path.split('/');
-  return <><Header />{section === 'docs' ? <Docs pageKey={page || 'overview'} /> : section === 'library' ? <Library onVerify={() => setShowVerifier(true)} /> : <Landing onVerify={() => setShowVerifier(true)} />}<Footer />{showVerifier && <VerifierDialog onClose={() => setShowVerifier(false)} />}</>;
+  return <><Header user={user} onLogout={logout} />{section === 'docs' ? <Docs pageKey={page || 'overview'} /> : section === 'library' ? <Library onVerify={() => setShowVerifier(true)} /> : section === 'dashboard' && user ? <Dashboard user={user} /> : <Landing onVerify={() => setShowVerifier(true)} />}<Footer />{showVerifier && <VerifierDialog onClose={() => setShowVerifier(false)} />}</>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
