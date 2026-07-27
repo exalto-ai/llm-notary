@@ -72,7 +72,7 @@ jobs:
           username: ${{ secrets.DO_SSH_USER }}
           key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
           port: ${{ secrets.DO_SSH_PORT || 22 }}
-          source: compose.yml
+          source: compose.yml,deploy/gateway.Caddyfile
           target: /opt/llm-notary
           overwrite: true
       - name: Pull images and restart services
@@ -115,4 +115,12 @@ jobs:
             chmod 600 deploy.env
             docker compose --env-file deploy.env pull
             docker compose --env-file deploy.env up -d --remove-orphans
+            for attempt in $(seq 1 20); do
+              if curl --fail --silent --show-error --max-time 2 http://127.0.0.1/api/healthz >/dev/null; then
+                break
+              fi
+              sleep 1
+            done
+            curl --fail --silent --show-error --max-time 2 http://127.0.0.1/api/healthz >/dev/null
+            curl --fail --silent --show-error --max-time 2 http://127.0.0.1/ >/dev/null
             docker compose --env-file deploy.env ps

@@ -1,0 +1,17 @@
+:80 {
+	route {
+		handle /api/* {
+			reverse_proxy api:8080 {
+				lb_try_duration 8s
+				lb_try_interval 250ms
+			}
+		}
+
+		handle {
+			reverse_proxy site:80 {
+				lb_try_duration 8s
+				lb_try_interval 250ms
+			}
+		}
+	}
+}

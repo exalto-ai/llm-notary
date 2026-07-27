@@ -3,9 +3,9 @@
 One Droplet runs both public services through Docker Compose:
 
 ```text
-internet ── HTTPS ──> web (Caddy + SPA + API) ports 80/443
-                         │
-                         └──> api (GitHub OAuth + SQLite)
+internet ── HTTPS ──> Cloudflare Tunnel ──> web (stable Caddy gateway)
+                                                    ├──> site (SPA)
+                                                    └──> api (GitHub OAuth + SQLite)
 local proxies ──────> notary                  port 7047
 ```
 
@@ -27,13 +27,12 @@ key at `/opt/llm-notary/notary-signing-key`.
 
 Configure a DigitalOcean Cloud Firewall:
 
-- TCP `80` and `443` from anywhere for the website.
 - TCP `7047` only from approved beta-tester IPs until the notary protocol has
   authentication and rate limiting.
 - TCP `22` only from deployment/admin IPs.
 
-Point `SITE_DOMAIN` at the Droplet before deploying. Caddy obtains and renews
-the TLS certificate automatically once DNS resolves.
+The named Cloudflare Tunnel carries all website traffic, so the Droplet does
+not need public `80` or `443`. Public TLS terminates at Cloudflare.
 
 Configure these GitHub repository secrets before the first deployment:
 
@@ -62,9 +61,12 @@ API or running background publication workers.
 ## Deploying with TTL.sh
 
 The GitHub Actions deployment workflow pushes unique, public, 24-hour image
-tags to TTL.sh, uploads `compose.yml`, and runs Compose on the Droplet. The
-notary key is never pushed to TTL.sh or GitHub: Compose mounts the key from the
-host as a Docker secret.
+tags to TTL.sh, uploads the Compose and gateway configuration, and runs Compose
+on the Droplet. The tunnel always connects to the stable `web` gateway; the
+replaceable SPA and API containers sit behind it. The gateway retries briefly
+while those services start, avoiding the Cloudflare 502s caused by replacing the
+tunnel's origin directly. The notary key is never pushed to TTL.sh or GitHub:
+Compose mounts the key from the host as a Docker secret.
 
 TTL.sh is appropriate for this shared MVP environment, but it is not a durable
 registry. The Droplet keeps already-pulled images running, but host recovery or
@@ -92,6 +94,8 @@ tunnel, then under **Routes** add a **Published application**:
 - **Service URL:** `http://web:80`
 
 `web` is the Compose service name, so it resolves only inside the Compose
-network, exactly where `cloudflared` runs. Saving the route creates the tunnel
-DNS record automatically when `exalto.ai` is managed by Cloudflare. Public TLS
-terminates at Cloudflare; the tunnel-to-web hop stays private HTTP.
+network, exactly where `cloudflared` runs. It is a stable gateway, so this
+Cloudflare route does not change when the SPA or API is deployed. Saving the
+route creates the tunnel DNS record automatically when `exalto.ai` is managed
+by Cloudflare. Public TLS terminates at Cloudflare; the tunnel-to-web hop stays
+private HTTP.
