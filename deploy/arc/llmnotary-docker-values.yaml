@@ -1,0 +1,31 @@
+# Repository-scoped ephemeral runner for Buildx, Compose, and deployment jobs.
+# ARC's Docker-in-Docker mode supplies a disposable Docker daemon per job.
+# Authentication is supplied separately as the `llmnotary-github-auth` secret.
+githubConfigUrl: "https://github.com/exalto-ai/llmnotary"
+githubConfigSecret: llmnotary-github-auth
+
+runnerScaleSetName: llmnotary-docker
+minRunners: 0
+maxRunners: 1
+
+containerMode:
+  type: dind
+
+template:
+  spec:
+    nodeSelector:
+      hexchess/node-class: cpu-worker
+    terminationGracePeriodSeconds: 30
+    containers:
+      - name: runner
+        image: ghcr.io/actions/actions-runner:latest
+        command: ["/home/runner/run.sh"]
+        resources:
+          requests:
+            cpu: "4"
+            memory: 8Gi
+            ephemeral-storage: 30Gi
+          limits:
+            cpu: "12"
+            memory: 20Gi
+            ephemeral-storage: 80Gi

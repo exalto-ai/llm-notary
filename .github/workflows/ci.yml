@@ -24,7 +24,7 @@ concurrency:
 jobs:
   rust:
     name: Rust
-    runs-on: ubuntu-latest
+    runs-on: llmnotary-ci
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -33,11 +33,13 @@ jobs:
           components: rustfmt
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
+      - name: Install native build tools
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends build-essential
       - run: cargo test --all-targets
 
   app:
     name: SPA
-    runs-on: ubuntu-latest
+    runs-on: llmnotary-ci
     defaults:
       run:
         working-directory: js/app
@@ -53,10 +55,11 @@ jobs:
 
   containers:
     name: Container configuration
-    runs-on: ubuntu-latest
+    runs-on: llmnotary-docker
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-compose-action@v1
       - name: Validate Compose configuration
         run: |
           openssl rand -hex 32 > "$RUNNER_TEMP/notary-signing-key"
