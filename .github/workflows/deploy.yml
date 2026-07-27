@@ -20,6 +20,7 @@ jobs:
     env:
       NOTARY_IMAGE: ttl.sh/llm-notary-notary-${{ github.run_id }}-${{ github.run_attempt }}:24h
       WEB_IMAGE: ttl.sh/llm-notary-web-${{ github.run_id }}-${{ github.run_attempt }}:24h
+      API_IMAGE: ttl.sh/llm-notary-api-${{ github.run_id }}-${{ github.run_attempt }}:24h
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-buildx-action@v4
@@ -43,6 +44,16 @@ jobs:
           provenance: false
           sbom: false
           tags: ${{ env.WEB_IMAGE }}
+      - name: Build and publish API image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./api/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: false
+          sbom: false
+          tags: ${{ env.API_IMAGE }}
       - name: Upload Compose definition
         uses: appleboy/scp-action@v1
         with:
@@ -58,26 +69,34 @@ jobs:
         env:
           NOTARY_IMAGE: ${{ env.NOTARY_IMAGE }}
           WEB_IMAGE: ${{ env.WEB_IMAGE }}
+          API_IMAGE: ${{ env.API_IMAGE }}
           SITE_DOMAIN: ${{ secrets.SITE_DOMAIN }}
           CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
+          GITHUB_OAUTH_CLIENT_ID: ${{ secrets.LLM_NOTARY_GITHUB_OAUTH_CLIENT_ID }}
+          GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.LLM_NOTARY_GITHUB_OAUTH_CLIENT_SECRET }}
         with:
           host: ${{ secrets.DO_SSH_HOST }}
           username: ${{ secrets.DO_SSH_USER }}
           key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
           port: ${{ secrets.DO_SSH_PORT || 22 }}
-          envs: NOTARY_IMAGE,WEB_IMAGE,SITE_DOMAIN,CLOUDFLARE_TUNNEL_TOKEN
+          envs: NOTARY_IMAGE,WEB_IMAGE,API_IMAGE,SITE_DOMAIN,CLOUDFLARE_TUNNEL_TOKEN,GITHUB_OAUTH_CLIENT_ID,GITHUB_OAUTH_CLIENT_SECRET
           script: |
             set -eu
             test -n "$SITE_DOMAIN"
             test -n "$CLOUDFLARE_TUNNEL_TOKEN"
+            test -n "$GITHUB_OAUTH_CLIENT_ID"
+            test -n "$GITHUB_OAUTH_CLIENT_SECRET"
             test -r /opt/llm-notary/notary-signing-key
             cd /opt/llm-notary
             cat > deploy.env <<EOF
             NOTARY_IMAGE=$NOTARY_IMAGE
             WEB_IMAGE=$WEB_IMAGE
+            API_IMAGE=$API_IMAGE
             NOTARY_SIGNING_KEY_FILE=/opt/llm-notary/notary-signing-key
             SITE_DOMAIN=$SITE_DOMAIN
             CLOUDFLARE_TUNNEL_TOKEN=$CLOUDFLARE_TUNNEL_TOKEN
+            GITHUB_OAUTH_CLIENT_ID=$GITHUB_OAUTH_CLIENT_ID
+            GITHUB_OAUTH_CLIENT_SECRET=$GITHUB_OAUTH_CLIENT_SECRET
             EOF
             chmod 600 deploy.env
             docker compose --env-file deploy.env pull

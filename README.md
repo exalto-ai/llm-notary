@@ -152,6 +152,32 @@ This remains an HTTP/1.1 prototype. WebSocket relaying, production notary
 authentication and authorization, receipt-key distribution, and marketplace
 storage still need product-grade implementations.
 
+## Website sign-in
+
+The website supports GitHub OAuth for the account surface. The API only asks
+GitHub to identify the account; it requests no repository, organization, or
+email scopes. Configure a GitHub OAuth App with this production callback URL:
+
+```text
+https://llmnotary.exalto.ai/api/auth/github/callback
+```
+
+Set `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` for the API.
+For source development, `LLM_NOTARY_PUBLIC_ORIGIN` defaults to
+`http://localhost:4173` and the API creates a local SQLite database. GitHub
+OAuth Apps have one callback URL, so use a separate development OAuth App with
+`http://localhost:4173/api/auth/github/callback` and place that app's
+credentials in the local `.env`. Start the API alongside the SPA with:
+
+```bash
+cargo run --bin llm-notary-api
+```
+
+The API has `GET /api/auth/github`, `GET /api/auth/github/callback`,
+`GET /api/me`, `POST /api/auth/logout`, and `GET /api/healthz`. Publish API
+keys and trace uploads intentionally come next; authentication is kept separate
+from publication authorization.
+
 ## Important trust statement
 
 This proof demonstrates the central cryptographic property: a local client
