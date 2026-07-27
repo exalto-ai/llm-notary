@@ -1,4 +1,15 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#11120f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-  <path d="M5 19l1.7-5.4L15.5 4.8a2.2 2.2 0 0 1 3.1 3.1l-8.8 8.8L5 19Z" fill="#c9ff2f"/>
-  <path d="m13.9 6.4 3.7 3.7M5 19l4.8-2.4"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke-linecap="round" stroke-linejoin="round">
+  <style>
+    .badge { fill: #101010; }
+    .pen { fill: none; stroke: #fff; }
+    @media (prefers-color-scheme: dark) {
+      .badge { fill: #fff; }
+      .pen { stroke: #101010; }
+    }
+  </style>
+  <circle class="badge" cx="12" cy="12" r="11"/>
+  <g class="pen" stroke-width="1.8">
+    <path d="M5 19l1.7-5.4L15.5 4.8a2.2 2.2 0 0 1 3.1 3.1l-8.8 8.8L5 19Z"/>
+    <path d="m13.9 6.4 3.7 3.7M5 19l4.8-2.4"/>
+  </g>
 </svg>
