@@ -1,0 +1,12 @@
+{$SITE_DOMAIN:localhost} {
+  root * /usr/share/caddy
+  encode zstd gzip
+  try_files {path} /index.html
+  file_server
+}
+
+http:// {
+  root * /usr/share/caddy
+  try_files {path} /index.html
+  file_server
+}
