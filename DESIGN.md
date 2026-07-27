@@ -143,6 +143,8 @@ Use `display-lg` only for page heroes. Use `headline-lg` for primary section tit
 
 Use a fluid desktop layout with viewport-relative horizontal padding and generous vertical section spacing. Default desktop sections use `section-desktop`; mobile sections use `section-mobile` with 25px side padding. Major sections may use two columns, but collapse to one column at 820px and below. Align content to rules, card edges, and column starts rather than centering every element.
 
+Collections and documentation share a `1320px` maximum content width, 38px desktop side padding, and a 46px top offset below the navigation. Collections are a browse workspace: start with search, filters, and topic chips—do not add a marketing hero or explanatory page headline above those controls. On desktop, pair the result list and persistent inspector in a 1.15 / 0.85 column grid with a 32px gutter. Documentation uses the same outer width and gutter, with a compact sticky navigation column and a constrained reading column; it should feel like a sibling view, not a separate site.
+
 Use the spacing scale consistently: `sm` for icon/text gaps, `md` for ordinary component gaps, `lg`–`xxl` for group separation, and the section tokens for page rhythm. Tables, receipts, and result lists use thin dividers rather than extra card nesting.
 
 ## Elevation & Depth
@@ -157,7 +159,8 @@ Rectangular containers, buttons, inputs, cards, and rules are square (`rounded.n
 
 - **Navigation:** quiet text links, with one outlined destination when a stronger affordance is useful. Keep the pen mark at the left and avoid a crowded top bar.
 - **Buttons and links:** primary actions are solid black with white text in light mode and solid near-black with light text in dark mode. Secondary actions are text-first or outlined. Use simple color and border changes for hover; keep labels concise and direct.
-- **Cards and lists:** use raised surfaces, square corners, and 1px borders. Trace rows and library entries should expose evidence context through compact metadata, a verified marker, and clear scanning hierarchy.
+- **Cards and lists:** use raised surfaces, square corners, and 1px borders. Trace rows and collection entries should expose evidence context through compact metadata, a `Verified` marker, and clear scanning hierarchy. Do not call the collection status “platform-stamped” in UI labels; the stamp is the underlying proof mechanism, while `Verified` is the reader-facing state.
+- **Selection and hover:** collection cards and trace rows are stable documents, not floating controls. Do not translate, scale, or add elevation on hover. Use a persistent active state, a thin rule, or a restrained surface change to show selection; retain visible keyboard focus.
 - **Receipts and terminal blocks:** inverse, near-black panels with monospace metadata and restrained lime highlights. They should read as technical evidence, not as decorative code samples.
 - **Forms and dialogs:** retain square input fields, visible borders, and a strong focus ring. Modal backdrops can dim and blur the page, but the dialog remains a paper-like surface.
 - **Popovers and menus:** anchor them to their trigger with a small gap. Use a raised surface, a matching-mode 1px border, and an internal divider for identity or grouping. Do not add a drop shadow, glass effect, page backdrop, or decorative caret; outside click and Escape should dismiss them.
