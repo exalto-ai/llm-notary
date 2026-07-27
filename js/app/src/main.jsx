@@ -16,9 +16,10 @@ const records = [
 ];
 
 const installCommand = 'curl -fsSLO https://llmnotary.exalto.ai/install.sh && sh install.sh';
+const brandAssetVersion = '20260727';
 
 function PenMark({ inverse = false }) {
-  return <span className={`pen-mark${inverse ? ' pen-mark--inverse' : ''}`} aria-hidden="true">{inverse ? <img src="/logo-light.png" alt="" /> : <picture><source media="(prefers-color-scheme: dark)" srcSet="/logo-light.png" /><img src="/logo-dark.png" alt="" /></picture>}</span>;
+  return <span className={`pen-mark${inverse ? ' pen-mark--inverse' : ''}`} aria-hidden="true">{inverse ? <img src={`/logo-light.png?v=${brandAssetVersion}`} alt="" /> : <picture><source media="(prefers-color-scheme: dark)" srcSet={`/logo-light.png?v=${brandAssetVersion}`} /><img src={`/logo-dark.png?v=${brandAssetVersion}`} alt="" /></picture>}</span>;
 }
 
 function CloseIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>; }
