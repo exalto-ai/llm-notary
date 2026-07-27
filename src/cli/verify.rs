@@ -2,11 +2,12 @@ use anyhow::Result;
 use clap::Args;
 use std::path::PathBuf;
 
-use crate::{load_bundle, verify_trace_bundle};
+use crate::verify_capture;
 
 #[derive(Args, Debug)]
 pub struct VerifyArgs {
-    bundle: PathBuf,
+    /// A capture directory or its manifest.json file.
+    capture: PathBuf,
 
     /// Hex-encoded secp256k1 SEC1 public key from the trusted LLM Notary notary.
     #[arg(long)]
@@ -18,17 +19,17 @@ pub struct VerifyArgs {
 }
 
 pub fn run(args: VerifyArgs) -> Result<()> {
-    let bundle = load_bundle(&args.bundle)?;
     let trusted_notary_key = hex::decode(&args.trusted_notary_key)?;
-    let (request, response) = verify_trace_bundle(&bundle, &trusted_notary_key)?;
-    println!("verified provider: {}", bundle.server_name);
+    let (manifest, request, response) = verify_capture(&args.capture, &trusted_notary_key)?;
+    println!("verified capture: {}", manifest.capture_id);
+    println!("verified provider: {}", manifest.provider.host);
     println!(
         "disclosed request SHA-256: {}",
-        bundle.disclosed_request_sha256
+        manifest.artifacts.request_disclosed_sha256
     );
     println!(
         "disclosed response SHA-256: {}",
-        bundle.disclosed_response_sha256
+        manifest.artifacts.response_sha256
     );
     if args.summary {
         return Ok(());

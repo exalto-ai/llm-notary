@@ -18,12 +18,12 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum CommandName {
-    /// Start the local API proxy and save verifiable trace bundles.
+    /// Start the local API proxy and save verifiable local captures.
     Proxy {
         #[command(subcommand)]
         command: ProxyCommand,
     },
-    /// Verify an exported trace bundle without uploading it.
+    /// Verify a local capture without uploading it.
     Verify(VerifyArgs),
 }
 

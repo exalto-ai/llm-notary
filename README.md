@@ -17,8 +17,9 @@ relays encrypted TLS packets and never receives application plaintext.
   key or plaintext trace.
 - OpenAI (`api.openai.com`), Anthropic (`api.anthropic.com`), and DeepSeek
   (`api.deepseek.com`) host allowlist.
-- An independently verifiable presentation which discloses the complete request
-  and response but redacts `Authorization` and `x-api-key` values.
+- A private local capture directory with an independently verifiable
+  presentation, a selectively disclosed request, and the authenticated provider
+  response. `Authorization` and `x-api-key` values are never saved.
 - The notary, not the local machine, resolves and connects to the allowed
   provider hostname. The local TLS client validates that provider's certificate
   chain with Mozilla roots, so local DNS cannot substitute an endpoint.
@@ -59,12 +60,15 @@ verify a receipt and is the explicit trust anchor.
 In another terminal start the proxy:
 
 ```bash
-cargo run --bin llm-notary -- proxy start --provider openai --trace-dir traces
+cargo run --bin llm-notary -- proxy start --provider openai --capture-dir captures
 ```
 
 Point an OpenAI-compatible SDK at `http://127.0.0.1:8787/v1`; keep the API key
 in the SDK as usual. The proxy does not accept a provider URL from the caller.
-Each supported request writes `traces/trace-XXXXXXXX.json`.
+Each completed request writes `captures/cap-.../` with `manifest.json`,
+`evidence.tlsn`, `request.disclosed.http`, and `response.http`. Capture
+directories are local-only inputs; a shareable export format is intentionally
+not part of this version.
 
 ### DeepSeek
 
@@ -74,7 +78,7 @@ same proxy. Start it with `--provider deepseek`, point the client to
 environment:
 
 ```bash
-cargo run --bin llm-notary -- proxy start --provider deepseek --trace-dir traces
+cargo run --bin llm-notary -- proxy start --provider deepseek --capture-dir captures
 
 curl http://127.0.0.1:8787/chat/completions \
   -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
@@ -88,7 +92,7 @@ suffix); the proxy preserves the requested API path.
 Verify a trace without contacting LLM Notary:
 
 ```bash
-cargo run --bin llm-notary -- verify traces/trace-00000001.json --trusted-notary-key <notary-public-key>
+cargo run --bin llm-notary -- verify captures/cap-... --trusted-notary-key <notary-public-key>
 ```
 
 The verifier checks the TLSNotary presentation locally and prints the disclosed
@@ -102,8 +106,8 @@ disclosed transcript.
 With an installed release, use the public command instead:
 
 ```bash
-llm-notary proxy start --provider openai --trace-dir traces
-llm-notary verify traces/trace-00000001.json --trusted-notary-key <notary-public-key>
+llm-notary proxy start --provider openai --capture-dir captures
+llm-notary verify captures/cap-... --trusted-notary-key <notary-public-key>
 ```
 
 ## Codex CLI
