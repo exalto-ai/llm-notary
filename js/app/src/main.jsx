@@ -283,8 +283,40 @@ function Collections({ onVerify }) {
   return <main className="library-shell"><section className="library-controls" aria-label="Browse collections"><label className="library-search"><span>Search collections</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by model, operation, provider, or topic" /></label><label><span>Provider</span><select value={provider} onChange={(event) => setProvider(event.target.value)}>{providers.map((value) => <option key={value}>{value}</option>)}</select></label><label><span>Model</span><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((value) => <option key={value}>{value}</option>)}</select></label><label><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value)}><option>Newest</option><option>Title</option></select></label></section><nav className="topic-filter" aria-label="Topics"><span>Topics</span>{tags.map((value) => <button key={value} className={tag === value ? 'active' : ''} onClick={() => setTag(value)}>{value}</button>)}</nav><section className="library-results"><div className="collection-workspace"><div className="collection-list"><div className="results-heading"><p><b>{filtered.length}</b> collections</p><span>Verified</span></div><div className="library-grid">{filtered.map((collection) => <CollectionCard collection={collection} active={active.id === collection.id} key={collection.id} onSelect={() => setActive(collection)} />)}</div></div><CollectionInspector collection={active} onVerify={onVerify} /></div></section></main>;
 }
 
+function sessionDate(unixSeconds) {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(unixSeconds * 1000));
+}
+
 function Dashboard({ user }) {
-  return <main className="dashboard-shell"><span className="eyebrow">Account</span><h1>Welcome, {user.github_login}.</h1><p>Your LLM Notary account is ready to publish standardized traces and manage the platform stamps attached to your collections.</p><div className="dashboard-card"><span>Signed in with GitHub</span><b>{user.github_login}</b><a href="#/collections">Browse collections</a></div></main>;
+  const [sessions, setSessions] = useState(null);
+  const [error, setError] = useState(null);
+  const [revoking, setRevoking] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/cli/sessions', { credentials: 'same-origin' })
+      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error((await response.json().catch(() => ({}))).error || 'Could not load CLI sessions.')))
+      .then((payload) => { if (!cancelled) setSessions(payload.sessions); })
+      .catch((reason) => { if (!cancelled) setError(reason.message); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const revoke = async (session) => {
+    if (!window.confirm(`Revoke ${session.device_name}? This CLI will need to sign in again before it can publish.`)) return;
+    setRevoking(session.id);
+    setError(null);
+    try {
+      const response = await fetch(`/api/cli/sessions/${encodeURIComponent(session.id)}`, { method: 'DELETE', credentials: 'same-origin' });
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Could not revoke this CLI session.');
+      setSessions((current) => current?.filter((item) => item.id !== session.id) || []);
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setRevoking(null);
+    }
+  };
+
+  return <main className="dashboard-shell"><span className="eyebrow">Account</span><h1>Welcome, {user.github_login}.</h1><p>Your LLM Notary account is ready to publish standardized traces and manage the platform stamps attached to your collections.</p><div className="dashboard-card"><span>Signed in with GitHub</span><b>{user.github_login}</b><a href="#/collections">Browse collections</a></div><section className="dashboard-sessions" aria-labelledby="cli-sessions-title"><header><div><span className="eyebrow">CLI access</span><h2 id="cli-sessions-title">Authorized devices</h2></div><p>Revoke a device to require a new browser sign-in before it can publish.</p></header>{error && <p className="dashboard-session-error" role="alert">{error}</p>}{sessions === null && !error ? <p className="dashboard-session-empty">Loading authorized devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => revoke(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No active CLI devices are authorized.</p>}</section></main>;
 }
 
 function CliApproval({ route, user }) {

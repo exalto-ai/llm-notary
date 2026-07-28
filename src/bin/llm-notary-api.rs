@@ -90,6 +90,20 @@ struct MeResponse {
     user: PublicUser,
 }
 
+#[derive(Serialize)]
+struct WebCliSession {
+    id: String,
+    device_name: String,
+    created_at: i64,
+    last_used_at: i64,
+    expires_at: i64,
+}
+
+#[derive(Serialize)]
+struct WebCliSessionsResponse {
+    sessions: Vec<WebCliSession>,
+}
+
 #[derive(Deserialize)]
 struct CreateCliAuthorization {
     device_name: String,
@@ -237,6 +251,11 @@ async fn main() -> Result<()> {
         .route("/api/auth/github/callback", get(finish_github_login))
         .route("/api/auth/logout", post(logout))
         .route("/api/me", get(me))
+        .route("/api/cli/sessions", get(list_cli_sessions))
+        .route(
+            "/api/cli/sessions/{session_id}",
+            axum::routing::delete(revoke_web_cli_session),
+        )
         .route("/api/cli/authorizations", post(start_cli_authorization))
         .route(
             "/api/cli/authorizations/{request_id}/approval",
@@ -492,6 +511,59 @@ async fn logout(
         jar.remove(state.expired_cookie(SESSION_COOKIE)),
         StatusCode::NO_CONTENT,
     ))
+}
+
+async fn list_cli_sessions(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> ApiResult<Json<WebCliSessionsResponse>> {
+    let user = authenticated_web_user(&state, &jar).await?;
+    let now = unix_timestamp()?;
+    let sessions = sqlx::query_as::<_, (String, String, i64, i64, i64)>(
+        "SELECT id, device_name, created_at, last_used_at, expires_at
+         FROM cli_sessions
+         WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?
+         ORDER BY last_used_at DESC, created_at DESC",
+    )
+    .bind(user.0)
+    .bind(now)
+    .fetch_all(&state.database)
+    .await
+    .map_err(database_error)?
+    .into_iter()
+    .map(|session| WebCliSession {
+        id: session.0,
+        device_name: session.1,
+        created_at: session.2,
+        last_used_at: session.3,
+        expires_at: session.4,
+    })
+    .collect();
+    Ok(Json(WebCliSessionsResponse { sessions }))
+}
+
+async fn revoke_web_cli_session(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(session_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let user = authenticated_web_user(&state, &jar).await?;
+    let now = unix_timestamp()?;
+    let revoked = sqlx::query(
+        "UPDATE cli_sessions SET revoked_at = ?
+         WHERE id = ? AND user_id = ? AND revoked_at IS NULL AND expires_at > ?",
+    )
+    .bind(now)
+    .bind(session_id)
+    .bind(user.0)
+    .bind(now)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    if revoked.rows_affected() != 1 {
+        return Err(ApiError::not_found("CLI session was not found"));
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn start_cli_authorization(
@@ -1080,5 +1152,96 @@ mod tests {
             Err(_) => panic!("new session refreshes"),
         };
         assert!(!refreshed.0.access_token.is_empty());
+    }
+
+    #[tokio::test]
+    async fn web_users_can_list_and_revoke_only_their_cli_sessions() {
+        let database = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::migrate!("./migrations")
+            .run(&database)
+            .await
+            .expect("migrations");
+        sqlx::query(
+            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
+             VALUES ('user-1', 1, 'one', 1, 1), ('user-2', 2, 'two', 1, 1)",
+        )
+        .execute(&database)
+        .await
+        .expect("users");
+        let now = match unix_timestamp() {
+            Ok(now) => now,
+            Err(_) => panic!("current time"),
+        };
+        let web_token = "web-session";
+        sqlx::query(
+            "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
+             VALUES (?, 'user-1', ?, ?)",
+        )
+        .bind(sha256_hex(web_token.as_bytes()))
+        .bind(now + SESSION_TTL_SECS)
+        .bind(now)
+        .execute(&database)
+        .await
+        .expect("web session");
+        let own = match issue_cli_session(&database, "user-1", "Own CLI", now).await {
+            Ok(tokens) => tokens,
+            Err(_) => panic!("own CLI session"),
+        };
+        let other = match issue_cli_session(&database, "user-2", "Other CLI", now).await {
+            Ok(tokens) => tokens,
+            Err(_) => panic!("other CLI session"),
+        };
+        let own_id: String =
+            sqlx::query_scalar("SELECT id FROM cli_sessions WHERE refresh_token_hash = ?")
+                .bind(sha256_hex(own.refresh_token.as_bytes()))
+                .fetch_one(&database)
+                .await
+                .expect("own CLI ID");
+        let other_id: String =
+            sqlx::query_scalar("SELECT id FROM cli_sessions WHERE refresh_token_hash = ?")
+                .bind(sha256_hex(other.refresh_token.as_bytes()))
+                .fetch_one(&database)
+                .await
+                .expect("other CLI ID");
+        let state = AppState {
+            database,
+            http: reqwest::Client::new(),
+            github_client_id: "client-id".to_owned(),
+            github_client_secret: "secret".to_owned(),
+            callback_url: Url::parse("https://llmnotary.exalto.ai/api/auth/github/callback")
+                .expect("callback URL"),
+            app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
+            secure_cookies: true,
+            notary_host: "notary.example.com".to_owned(),
+            notary_port: 7047,
+        };
+        let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
+
+        let sessions = match list_cli_sessions(State(state.clone()), jar()).await {
+            Ok(sessions) => sessions.0.sessions,
+            Err(_) => panic!("list CLI sessions"),
+        };
+        assert_eq!(sessions.len(), 1);
+        assert_eq!(sessions[0].id, own_id);
+
+        let revoked =
+            revoke_web_cli_session(State(state.clone()), jar(), Path(own_id.clone())).await;
+        assert!(matches!(revoked, Ok(StatusCode::NO_CONTENT)));
+        let sessions = match list_cli_sessions(State(state.clone()), jar()).await {
+            Ok(sessions) => sessions.0.sessions,
+            Err(_) => panic!("list CLI sessions after revoke"),
+        };
+        assert!(sessions.is_empty());
+
+        let cross_account = revoke_web_cli_session(State(state), jar(), Path(other_id)).await;
+        assert!(matches!(
+            cross_account,
+            Err(ApiError {
+                status: StatusCode::NOT_FOUND,
+                ..
+            })
+        ));
     }
 }
