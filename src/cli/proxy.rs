@@ -21,8 +21,8 @@ use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::{
-    chunked_request_body, make_capture, notarized_request, notarized_streaming_request,
-    save_capture,
+    DEFAULT_NOTARY_MAX_FRAME_BYTES, chunked_request_body, make_capture, notarized_request,
+    notarized_streaming_request, save_capture,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -65,6 +65,11 @@ pub struct ProxyArgs {
     /// Where private, independently-verifiable local captures are written.
     #[arg(long, visible_alias = "trace-dir", default_value = "captures")]
     capture_dir: PathBuf,
+
+    /// Largest proof/attestation frame accepted from the paired notary.
+    /// Must match the notary's --max-frame-bytes setting.
+    #[arg(long, default_value_t = DEFAULT_NOTARY_MAX_FRAME_BYTES)]
+    max_frame_bytes: usize,
 }
 
 #[derive(Clone)]
@@ -72,10 +77,17 @@ struct AppState {
     provider: Provider,
     notary: SocketAddr,
     capture_dir: PathBuf,
+    max_frame_bytes: usize,
     serial: Arc<Mutex<u64>>,
 }
 
 pub async fn run(args: ProxyArgs) -> Result<()> {
+    if args.max_frame_bytes == 0 || args.max_frame_bytes > u32::MAX as usize {
+        bail!(
+            "notary frame limit must be between 1 and {} bytes",
+            u32::MAX
+        );
+    }
     std::fs::create_dir_all(&args.capture_dir)?;
     let notary = match args.notary {
         Some(notary) => notary,
@@ -85,6 +97,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         provider: args.provider,
         notary,
         capture_dir: args.capture_dir,
+        max_frame_bytes: args.max_frame_bytes,
         serial: Arc::new(Mutex::new(0)),
     };
     let app = Router::new().fallback(any(proxy)).with_state(state);
@@ -172,7 +185,9 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
 
     if streaming {
         let started = Instant::now();
-        let upstream = notarized_streaming_request(state.notary, host, outbound).await?;
+        let upstream =
+            notarized_streaming_request(state.notary, host, outbound, state.max_frame_bytes)
+                .await?;
         tracing::info!(
             elapsed_ms = started.elapsed().as_millis(),
             "Proxy-TLS received upstream response headers"
@@ -235,7 +250,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         return Ok(response);
     }
 
-    let upstream = notarized_request(state.notary, host, outbound).await?;
+    let upstream = notarized_request(state.notary, host, outbound, state.max_frame_bytes).await?;
     let capture = make_capture(
         &upstream.proof,
         next_capture_id(&state).await?,
@@ -293,6 +308,7 @@ mod tests {
             provider: Provider::Openai,
             notary: "127.0.0.1:7047".parse().unwrap(),
             capture_dir: PathBuf::from("captures"),
+            max_frame_bytes: DEFAULT_NOTARY_MAX_FRAME_BYTES,
             serial: Arc::new(Mutex::new(0)),
         }
     }
