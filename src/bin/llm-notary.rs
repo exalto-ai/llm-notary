@@ -2,6 +2,8 @@ use anyhow::Result;
 use certified::cli::{
     auth::{self, LoginArgs},
     proxy::{self, ProxyArgs},
+    public::{self, VerifyPublicArgs},
+    publish::{self, PublishArgs},
     verify::{self, VerifyArgs},
 };
 use clap::{Parser, Subcommand};
@@ -32,6 +34,10 @@ enum CommandName {
     },
     /// Verify a local capture without uploading it.
     Verify(VerifyArgs),
+    /// Verify a public trace and platform stamp without a private capture.
+    VerifyPublic(VerifyPublicArgs),
+    /// Verify private captures locally and write an unsigned public trace preview.
+    Publish(PublishArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -51,5 +57,7 @@ async fn main() -> Result<()> {
             command: ProxyCommand::Start(args),
         } => proxy::run(args).await,
         CommandName::Verify(args) => verify::run(args),
+        CommandName::VerifyPublic(args) => public::run_verify_public(args),
+        CommandName::Publish(args) => publish::run(args),
     }
 }
