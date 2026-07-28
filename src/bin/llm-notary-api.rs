@@ -3,12 +3,13 @@ use std::{env, net::SocketAddr, str::FromStr, time::Duration};
 use anyhow::{Context, Result, anyhow, bail};
 use axum::{
     Json, Router,
-    extract::{Query, State},
-    http::StatusCode,
+    extract::{Path, Query, State},
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use rand::RngCore;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use sqlx::{
@@ -25,6 +26,9 @@ const SESSION_COOKIE: &str = "llm_notary_session";
 const OAUTH_STATE_COOKIE: &str = "llm_notary_oauth_state";
 const LOGIN_TTL_SECS: i64 = 10 * 60;
 const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60;
+const CLI_AUTHORIZATION_TTL_SECS: i64 = 10 * 60;
+const CLI_ACCESS_TOKEN_TTL_SECS: i64 = 15 * 60;
+const CLI_REFRESH_TOKEN_TTL_SECS: i64 = 90 * 24 * 60 * 60;
 
 #[derive(Clone)]
 struct AppState {
@@ -44,6 +48,11 @@ struct GitHubCallback {
     code: Option<String>,
     state: Option<String>,
     error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GitHubLoginQuery {
+    return_to: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -81,6 +90,61 @@ struct MeResponse {
     user: PublicUser,
 }
 
+#[derive(Deserialize)]
+struct CreateCliAuthorization {
+    device_name: String,
+}
+
+#[derive(Serialize)]
+struct CliAuthorizationStarted {
+    request_id: String,
+    user_code: String,
+    verification_uri_complete: String,
+    expires_in: i64,
+    interval: i64,
+    poll_secret: String,
+}
+
+#[derive(Deserialize)]
+struct ApprovalQuery {
+    approval_secret: String,
+}
+
+#[derive(Serialize)]
+struct ApprovalDetails {
+    user_code: String,
+    device_name: String,
+    expires_at: i64,
+}
+
+#[derive(Serialize)]
+struct ApprovedAuthorization {
+    status: &'static str,
+}
+
+#[derive(Serialize)]
+struct CliTokens {
+    access_token: String,
+    refresh_token: String,
+    expires_in: i64,
+}
+
+#[derive(Deserialize)]
+struct RefreshRequest {
+    refresh_token: String,
+}
+
+#[derive(Serialize)]
+struct CliSessionResponse {
+    device_name: String,
+}
+
+#[derive(Serialize)]
+struct CliMeResponse {
+    user: PublicUser,
+    session: CliSessionResponse,
+}
+
 #[derive(Serialize)]
 struct ErrorResponse {
     error: &'static str,
@@ -103,6 +167,27 @@ impl ApiError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: "authentication required",
+        }
+    }
+
+    fn not_found(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            message,
+        }
+    }
+
+    fn gone(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::GONE,
+            message,
+        }
+    }
+
+    fn pending() -> Self {
+        Self {
+            status: StatusCode::PRECONDITION_REQUIRED,
+            message: "authorization pending",
         }
     }
 
@@ -152,6 +237,18 @@ async fn main() -> Result<()> {
         .route("/api/auth/github/callback", get(finish_github_login))
         .route("/api/auth/logout", post(logout))
         .route("/api/me", get(me))
+        .route("/api/cli/authorizations", post(start_cli_authorization))
+        .route(
+            "/api/cli/authorizations/{request_id}/approval",
+            get(cli_approval_details).post(approve_cli_authorization),
+        )
+        .route(
+            "/api/cli/authorizations/{request_id}/token",
+            post(complete_cli_authorization),
+        )
+        .route("/api/cli/token", post(refresh_cli_tokens))
+        .route("/api/cli/logout", post(logout_cli_session))
+        .route("/api/cli/me", get(cli_me))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "LLM Notary API listening");
@@ -253,6 +350,7 @@ async fn health() -> Json<Health> {
 async fn start_github_login(
     State(state): State<AppState>,
     jar: CookieJar,
+    Query(query): Query<GitHubLoginQuery>,
 ) -> ApiResult<(CookieJar, Redirect)> {
     let state_token = Uuid::new_v4().to_string();
     let now = unix_timestamp()?;
@@ -261,12 +359,18 @@ async fn start_github_login(
         .execute(&state.database)
         .await
         .map_err(database_error)?;
-    sqlx::query("INSERT INTO oauth_login_states (state_hash, expires_at) VALUES (?, ?)")
-        .bind(sha256_hex(state_token.as_bytes()))
-        .bind(now + LOGIN_TTL_SECS)
-        .execute(&state.database)
-        .await
-        .map_err(database_error)?;
+    let return_to = query
+        .return_to
+        .filter(|value| value.starts_with("#/authorize?"));
+    sqlx::query(
+        "INSERT INTO oauth_login_states (state_hash, expires_at, return_to) VALUES (?, ?, ?)",
+    )
+    .bind(sha256_hex(state_token.as_bytes()))
+    .bind(now + LOGIN_TTL_SECS)
+    .bind(return_to)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
     let authorization_url = state
         .authorization_url(&state_token)
         .map_err(ApiError::internal)?;
@@ -300,6 +404,15 @@ async fn finish_github_login(
 
     let now = unix_timestamp()?;
     let state_hash = sha256_hex(cookie_state.as_bytes());
+    let return_to = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT return_to FROM oauth_login_states WHERE state_hash = ? AND expires_at > ?",
+    )
+    .bind(&state_hash)
+    .bind(now)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?
+    .flatten();
     let consumed =
         sqlx::query("DELETE FROM oauth_login_states WHERE state_hash = ? AND expires_at > ?")
             .bind(state_hash)
@@ -331,7 +444,13 @@ async fn finish_github_login(
     Ok((
         jar.remove(state.expired_cookie(OAUTH_STATE_COOKIE))
             .add(state.cookie(SESSION_COOKIE, session_token, SESSION_TTL_SECS)),
-        Redirect::to(state.app_url.as_str()),
+        Redirect::to(
+            return_to
+                .as_deref()
+                .and_then(|value| state.app_url.join(value).ok())
+                .unwrap_or_else(|| state.app_url.clone())
+                .as_str(),
+        ),
     ))
 }
 
@@ -373,6 +492,387 @@ async fn logout(
         jar.remove(state.expired_cookie(SESSION_COOKIE)),
         StatusCode::NO_CONTENT,
     ))
+}
+
+async fn start_cli_authorization(
+    State(state): State<AppState>,
+    Json(request): Json<CreateCliAuthorization>,
+) -> ApiResult<Json<CliAuthorizationStarted>> {
+    let device_name = request.device_name.trim();
+    if device_name.is_empty() || device_name.len() > 120 {
+        return Err(ApiError::bad_request(
+            "device_name must be between 1 and 120 characters",
+        ));
+    }
+    let now = unix_timestamp()?;
+    sqlx::query("DELETE FROM cli_authorization_requests WHERE expires_at <= ?")
+        .bind(now)
+        .execute(&state.database)
+        .await
+        .map_err(database_error)?;
+
+    // The displayed code is intentionally low-entropy. The browser approval
+    // URL and the polling endpoint each also require an independent 256-bit
+    // secret, so a guessed code cannot approve or consume an authorization.
+    for _ in 0..10 {
+        let request_id = Uuid::new_v4().to_string();
+        let user_code = user_code();
+        let poll_secret = random_token();
+        let approval_secret = random_token();
+        let inserted = sqlx::query(
+            "INSERT OR IGNORE INTO cli_authorization_requests
+             (id, user_code, poll_secret_hash, approval_secret_hash, device_name, created_at, expires_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(&request_id)
+        .bind(&user_code)
+        .bind(sha256_hex(poll_secret.as_bytes()))
+        .bind(sha256_hex(approval_secret.as_bytes()))
+        .bind(device_name)
+        .bind(now)
+        .bind(now + CLI_AUTHORIZATION_TTL_SECS)
+        .execute(&state.database)
+        .await
+        .map_err(database_error)?;
+        if inserted.rows_affected() == 1 {
+            let verification_uri_complete = format!(
+                "{}#/authorize?request_id={}&approval_secret={}",
+                state.app_url, request_id, approval_secret
+            );
+            return Ok(Json(CliAuthorizationStarted {
+                request_id,
+                user_code,
+                verification_uri_complete,
+                expires_in: CLI_AUTHORIZATION_TTL_SECS,
+                interval: 3,
+                poll_secret,
+            }));
+        }
+    }
+    Err(ApiError::internal(anyhow!(
+        "could not allocate unique user code"
+    )))
+}
+
+async fn cli_approval_details(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(request_id): Path<String>,
+    Query(query): Query<ApprovalQuery>,
+) -> ApiResult<Json<ApprovalDetails>> {
+    authenticated_web_user(&state, &jar).await?;
+    let request = approval_request(&state, &request_id, &query.approval_secret).await?;
+    Ok(Json(ApprovalDetails {
+        user_code: request.0,
+        device_name: request.1,
+        expires_at: request.2,
+    }))
+}
+
+async fn approve_cli_authorization(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Path(request_id): Path<String>,
+    Query(query): Query<ApprovalQuery>,
+) -> ApiResult<Json<ApprovedAuthorization>> {
+    let user = authenticated_web_user(&state, &jar).await?;
+    let now = unix_timestamp()?;
+    let approved = sqlx::query(
+        "UPDATE cli_authorization_requests
+         SET approved_user_id = ?, approved_at = ?
+         WHERE id = ? AND approval_secret_hash = ? AND expires_at > ?
+           AND approved_user_id IS NULL AND completed_at IS NULL",
+    )
+    .bind(user.0)
+    .bind(now)
+    .bind(request_id)
+    .bind(sha256_hex(query.approval_secret.as_bytes()))
+    .bind(now)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    if approved.rows_affected() != 1 {
+        return Err(ApiError::gone(
+            "authorization is expired, already approved, or already used",
+        ));
+    }
+    Ok(Json(ApprovedAuthorization { status: "approved" }))
+}
+
+async fn complete_cli_authorization(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(request_id): Path<String>,
+) -> ApiResult<Json<CliTokens>> {
+    let poll_secret = headers
+        .get("X-LLM-Notary-Poll-Secret")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(ApiError::unauthorized)?;
+    let now = unix_timestamp()?;
+    let request = sqlx::query_as::<_, (Option<String>, String, i64, Option<i64>)>(
+        "SELECT approved_user_id, device_name, expires_at, completed_at
+         FROM cli_authorization_requests
+         WHERE id = ? AND poll_secret_hash = ?",
+    )
+    .bind(&request_id)
+    .bind(sha256_hex(poll_secret.as_bytes()))
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(ApiError::unauthorized)?;
+    if request.2 <= now || request.3.is_some() {
+        return Err(ApiError::gone("authorization expired or was already used"));
+    }
+    let user_id = request.0.ok_or_else(ApiError::pending)?;
+
+    // Mark consumption first with a compare-and-set. This makes a second poll
+    // fail even if it races the successful poll.
+    let consumed = sqlx::query(
+        "UPDATE cli_authorization_requests SET completed_at = ?
+         WHERE id = ? AND completed_at IS NULL AND expires_at > ? AND approved_user_id IS NOT NULL",
+    )
+    .bind(now)
+    .bind(&request_id)
+    .bind(now)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    if consumed.rows_affected() != 1 {
+        return Err(ApiError::gone("authorization was already used"));
+    }
+    let tokens = issue_cli_session(&state.database, &user_id, &request.1, now).await?;
+    Ok(Json(tokens))
+}
+
+async fn refresh_cli_tokens(
+    State(state): State<AppState>,
+    Json(request): Json<RefreshRequest>,
+) -> ApiResult<Json<CliTokens>> {
+    let now = unix_timestamp()?;
+    let old_hash = sha256_hex(request.refresh_token.as_bytes());
+    let session = sqlx::query_as::<_, (String, String)>(
+        "SELECT id, user_id FROM cli_sessions
+         WHERE refresh_token_hash = ? AND revoked_at IS NULL AND expires_at > ?",
+    )
+    .bind(&old_hash)
+    .bind(now)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?;
+    let Some((session_id, user_id)) = session else {
+        // Reusing a rotated token is a credential-theft signal: revoke the
+        // session that originally held it before rejecting the request.
+        if let Some(session_id) = sqlx::query_scalar::<_, String>(
+            "SELECT session_id FROM cli_used_refresh_tokens WHERE token_hash = ?",
+        )
+        .bind(&old_hash)
+        .fetch_optional(&state.database)
+        .await
+        .map_err(database_error)?
+        {
+            sqlx::query(
+                "UPDATE cli_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+            )
+            .bind(now)
+            .bind(session_id)
+            .execute(&state.database)
+            .await
+            .map_err(database_error)?;
+        }
+        return Err(ApiError::unauthorized());
+    };
+    let refresh_token = random_token();
+    let refreshed = sqlx::query(
+        "UPDATE cli_sessions SET refresh_token_hash = ?, last_used_at = ?
+         WHERE id = ? AND refresh_token_hash = ? AND revoked_at IS NULL AND expires_at > ?",
+    )
+    .bind(sha256_hex(refresh_token.as_bytes()))
+    .bind(now)
+    .bind(&session_id)
+    .bind(&old_hash)
+    .bind(now)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    if refreshed.rows_affected() != 1 {
+        return Err(ApiError::unauthorized());
+    }
+    sqlx::query("INSERT OR IGNORE INTO cli_used_refresh_tokens (token_hash, session_id, used_at) VALUES (?, ?, ?)")
+        .bind(old_hash)
+        .bind(&session_id)
+        .bind(now)
+        .execute(&state.database)
+        .await
+        .map_err(database_error)?;
+    let access_token = issue_access_token(&state.database, &session_id, now).await?;
+    let _ = user_id;
+    Ok(Json(CliTokens {
+        access_token,
+        refresh_token,
+        expires_in: CLI_ACCESS_TOKEN_TTL_SECS,
+    }))
+}
+
+async fn logout_cli_session(
+    State(state): State<AppState>,
+    Json(request): Json<RefreshRequest>,
+) -> ApiResult<StatusCode> {
+    let now = unix_timestamp()?;
+    sqlx::query("UPDATE cli_sessions SET revoked_at = ? WHERE refresh_token_hash = ? AND revoked_at IS NULL")
+        .bind(now)
+        .bind(sha256_hex(request.refresh_token.as_bytes()))
+        .execute(&state.database)
+        .await
+        .map_err(database_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn cli_me(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> ApiResult<Json<CliMeResponse>> {
+    let token = bearer_token(&headers)?;
+    let now = unix_timestamp()?;
+    let session = sqlx::query_as::<_, (String, String, Option<String>, String)>(
+        "SELECT users.id, users.github_login, users.avatar_url, cli_sessions.device_name
+         FROM cli_access_tokens
+         JOIN cli_sessions ON cli_sessions.id = cli_access_tokens.session_id
+         JOIN users ON users.id = cli_sessions.user_id
+         WHERE cli_access_tokens.token_hash = ? AND cli_access_tokens.expires_at > ?
+           AND cli_sessions.revoked_at IS NULL",
+    )
+    .bind(sha256_hex(token.as_bytes()))
+    .bind(now)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(ApiError::unauthorized)?;
+    Ok(Json(CliMeResponse {
+        user: PublicUser {
+            id: session.0,
+            github_login: session.1,
+            avatar_url: session.2,
+        },
+        session: CliSessionResponse {
+            device_name: session.3,
+        },
+    }))
+}
+
+async fn authenticated_web_user(
+    state: &AppState,
+    jar: &CookieJar,
+) -> ApiResult<(String, String, Option<String>)> {
+    let token = session_token(jar)?;
+    let now = unix_timestamp()?;
+    sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT users.id, users.github_login, users.avatar_url
+         FROM sessions JOIN users ON users.id = sessions.user_id
+         WHERE sessions.token_hash = ? AND sessions.expires_at > ?",
+    )
+    .bind(sha256_hex(token.as_bytes()))
+    .bind(now)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(ApiError::unauthorized)
+}
+
+async fn approval_request(
+    state: &AppState,
+    request_id: &str,
+    approval_secret: &str,
+) -> ApiResult<(String, String, i64)> {
+    let now = unix_timestamp()?;
+    let request = sqlx::query_as::<_, (String, String, i64, Option<i64>)>(
+        "SELECT user_code, device_name, expires_at, completed_at
+         FROM cli_authorization_requests
+         WHERE id = ? AND approval_secret_hash = ?",
+    )
+    .bind(request_id)
+    .bind(sha256_hex(approval_secret.as_bytes()))
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| ApiError::not_found("authorization request was not found"))?;
+    if request.2 <= now || request.3.is_some() {
+        return Err(ApiError::gone(
+            "authorization request expired or was already used",
+        ));
+    }
+    Ok((request.0, request.1, request.2))
+}
+
+async fn issue_cli_session(
+    database: &SqlitePool,
+    user_id: &str,
+    device_name: &str,
+    now: i64,
+) -> ApiResult<CliTokens> {
+    let session_id = Uuid::new_v4().to_string();
+    let refresh_token = random_token();
+    sqlx::query(
+        "INSERT INTO cli_sessions
+         (id, user_id, device_name, refresh_token_hash, created_at, last_used_at, expires_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&session_id)
+    .bind(user_id)
+    .bind(device_name)
+    .bind(sha256_hex(refresh_token.as_bytes()))
+    .bind(now)
+    .bind(now + CLI_REFRESH_TOKEN_TTL_SECS)
+    .bind(now)
+    .execute(database)
+    .await
+    .map_err(database_error)?;
+    let access_token = issue_access_token(database, &session_id, now).await?;
+    Ok(CliTokens {
+        access_token,
+        refresh_token,
+        expires_in: CLI_ACCESS_TOKEN_TTL_SECS,
+    })
+}
+
+async fn issue_access_token(
+    database: &SqlitePool,
+    session_id: &str,
+    now: i64,
+) -> ApiResult<String> {
+    let access_token = random_token();
+    sqlx::query("INSERT INTO cli_access_tokens (token_hash, session_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
+        .bind(sha256_hex(access_token.as_bytes()))
+        .bind(session_id)
+        .bind(now + CLI_ACCESS_TOKEN_TTL_SECS)
+        .bind(now)
+        .execute(database)
+        .await
+        .map_err(database_error)?;
+    Ok(access_token)
+}
+
+fn bearer_token(headers: &HeaderMap) -> ApiResult<&str> {
+    headers
+        .get(AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .filter(|token| !token.is_empty())
+        .ok_or_else(ApiError::unauthorized)
+}
+
+fn random_token() -> String {
+    let mut bytes = [0_u8; 32];
+    rand::rng().fill_bytes(&mut bytes);
+    hex::encode(bytes)
+}
+
+fn user_code() -> String {
+    let mut bytes = [0_u8; 4];
+    rand::rng().fill_bytes(&mut bytes);
+    format!(
+        "{:02X}{:02X}-{:02X}{:02X}",
+        bytes[0], bytes[1], bytes[2], bytes[3]
+    )
 }
 
 async fn exchange_github_code(state: &AppState, code: &str) -> ApiResult<GitHubToken> {

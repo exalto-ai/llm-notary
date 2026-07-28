@@ -287,6 +287,34 @@ function Dashboard({ user }) {
   return <main className="dashboard-shell"><span className="eyebrow">Account</span><h1>Welcome, {user.github_login}.</h1><p>Your LLM Notary account is ready to publish standardized traces and manage the platform stamps attached to your collections.</p><div className="dashboard-card"><span>Signed in with GitHub</span><b>{user.github_login}</b><a href="#/collections">Browse collections</a></div></main>;
 }
 
+function CliApproval({ route, user }) {
+  const query = new URLSearchParams(route.split('?')[1] || '');
+  const requestId = query.get('request_id');
+  const approvalSecret = query.get('approval_secret');
+  const [details, setDetails] = useState(null);
+  const [error, setError] = useState(null);
+  const [approved, setApproved] = useState(false);
+  useEffect(() => {
+    if (!requestId || !approvalSecret || !user) return;
+    let cancelled = false;
+    fetch(`/api/cli/authorizations/${encodeURIComponent(requestId)}/approval?approval_secret=${encodeURIComponent(approvalSecret)}`, { credentials: 'same-origin' })
+      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error((await response.json().catch(() => ({}))).error || 'This authorization request is unavailable.')))
+      .then((payload) => { if (!cancelled) setDetails(payload); })
+      .catch((reason) => { if (!cancelled) setError(reason.message); });
+    return () => { cancelled = true; };
+  }, [requestId, approvalSecret, user]);
+  const approve = async () => {
+    setError(null);
+    const response = await fetch(`/api/cli/authorizations/${encodeURIComponent(requestId)}/approval?approval_secret=${encodeURIComponent(approvalSecret)}`, { method: 'POST', credentials: 'same-origin' });
+    if (response.ok) setApproved(true);
+    else setError((await response.json().catch(() => ({}))).error || 'Could not approve this CLI request.');
+  };
+  if (!requestId || !approvalSecret) return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>Invalid authorization link.</h1><p>Return to the CLI and start login again.</p></main>;
+  if (!user) return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>Sign in to approve.</h1><p>This browser must be signed in to the LLM Notary account that should own the CLI publishing session.</p><a className="button button-dark" href={`/api/auth/github?return_to=${encodeURIComponent(window.location.hash)}`}>Sign in with GitHub</a></main>;
+  if (approved) return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>CLI approved.</h1><p>Your terminal will finish signing in shortly. You can close this page.</p></main>;
+  return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>Approve this CLI?</h1>{error ? <p>{error}</p> : details ? <><p>Allow <b>{details.device_name}</b> to publish through LLM Notary as <b>{user.github_login}</b>?</p><div className="dashboard-card"><span>Authorization code</span><b>{details.user_code}</b><button className="button button-dark" onClick={approve}>Approve CLI</button></div></> : <p>Checking this authorization request…</p>}</main>;
+}
+
 function App() {
   const [route, setRoute] = useState(window.location.hash || '#/');
   const [showVerifier, setShowVerifier] = useState(false);
@@ -295,8 +323,9 @@ function App() {
   useEffect(() => { let cancelled = false; fetch('/api/me', { credentials: 'same-origin' }).then((response) => response.ok ? response.json() : null).then((payload) => { if (!cancelled) setUser(payload?.user || null); }).catch(() => { if (!cancelled) setUser(null); }); return () => { cancelled = true; }; }, []);
   const logout = async () => { const response = await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }); if (response.ok) { setUser(null); if (window.location.hash === '#/dashboard') window.location.hash = '#/'; } };
   const path = route.replace(/^#\/?/, '');
-  const [section, page] = path.split('/');
-  return <><Header user={user} onLogout={logout} />{section === 'docs' ? <Docs pageKey={page || 'overview'} /> : (section === 'collections' || section === 'library') ? <Collections onVerify={() => setShowVerifier(true)} /> : section === 'dashboard' && user ? <Dashboard user={user} /> : <Landing onVerify={() => setShowVerifier(true)} />}<Footer />{showVerifier && <VerifierDialog onClose={() => setShowVerifier(false)} />}</>;
+  const routePath = path.split('?')[0];
+  const [section, page] = routePath.split('/');
+  return <><Header user={user} onLogout={logout} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} /> : (section === 'collections' || section === 'library') ? <Collections onVerify={() => setShowVerifier(true)} /> : section === 'dashboard' && user ? <Dashboard user={user} /> : <Landing onVerify={() => setShowVerifier(true)} />}<Footer />{showVerifier && <VerifierDialog onClose={() => setShowVerifier(false)} />}</>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
