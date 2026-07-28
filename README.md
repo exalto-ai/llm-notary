@@ -85,15 +85,19 @@ the two shareable artifacts:
 
 ```bash
 llm-notary publish captures/cap-... \
-  --title "Refusal boundary test" \
-  --license "CC BY 4.0"
+  --out preview/ \
+  --trusted-notary-key <notary-public-key>
 ```
 
 ```text
-published/
+preview/
 ├── trace.otlp.json  # portable OpenTelemetry GenAI spans
-└── stamp.json       # LLM Notary signature over the exact trace hash
 ```
+
+`publish` is a local, unsigned preview. It verifies each private capture before
+normalizing it and makes no API request; a later platform-admission step is the
+only operation that can produce `stamp.json`. Pass several capture directories
+in conversation order to link provider inference turns into one trace.
 
 `trace.otlp.json` is the collection record. It can include model inference
 spans, normalized input/output messages, model-emitted tool calls, timing, and
@@ -156,6 +160,55 @@ llm-notary verify-public trace.otlp.json stamp.json \
 The verifier hashes `trace.otlp.json`, checks the platform signature, and
 reports the provider, verification time, and normalizer version named in the
 stamp.
+
+### Public trace and stamp contract
+
+`trace.otlp.json` is UTF-8 canonical JSON: object keys are sorted by UTF-8
+byte order, arrays retain their order, scalar values use compact JSON encoding,
+and the file ends in exactly one LF. The SHA-256 in `stamp.json` is over those
+exact bytes, including that LF. A verifier rejects valid JSON that is not in
+this byte form, so reformatting a trace changes the artifact and invalidates
+its stamp.
+
+The trace is a minimal OTLP JSON `resourceSpans` payload with one or more
+ordered `gen_ai.inference` client spans. Its resource attributes are
+`llmnotary.format` (`llm-notary/otlp-trace/v1`),
+`llmnotary.normalizer.version` (`llm-notary/normalizer/v1`),
+`otel.semconv.version` (`1.37.0`), and `service.name` (`llm-notary`). The only
+supported span attributes are:
+
+- `gen_ai.provider.name`, `gen_ai.operation.name`, and `gen_ai.request.model`
+  (required strings)
+- `gen_ai.response.model` (optional string)
+- `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens` (optional
+  non-negative integer strings, as required by OTLP JSON)
+- `gen_ai.input.messages` and `gen_ai.output.messages` (optional canonical JSON
+  message arrays encoded as strings in OTLP JSON). Messages retain text and
+  model-emitted tool calls or tool-call results.
+- `gen_ai.response.finish_reasons`, `gen_ai.conversation.id`, and
+  `server.address` (optional provider-inference metadata)
+
+Several verified private captures can be normalized in CLI order as spans in a
+single conversation trace. This deliberately excludes runtime-reported agent
+and tool-execution spans: a model requesting a tool is recorded as a message
+part; no claim is made that a local runtime actually executed it.
+
+`stamp.json` has format `llm-notary/platform-stamp/v1` and includes the issuer,
+SHA-256-derived platform key ID, issue time in Unix milliseconds, trace
+SHA-256, capture format, normalizer version, OpenTelemetry semantic-convention
+version, canonicalization ID, and provider provenance (`name`, `host`, and
+`tlsnotary-presentation/v1`). Its `signature` is a compact, low-S secp256k1
+ECDSA signature over the SHA-256 of the canonical JSON encoding of every stamp
+field except `signature`; the signing payload has the same lexicographic JSON
+rule but no trailing LF. `verify-public` checks every version and provenance
+claim against the trace before it verifies the signature.
+
+The stamp says that the LLM Notary platform admitted this exact normalized
+trace after checking private source evidence. It does **not** include or replace
+the private TLSNotary presentation, and it does not make the public trace a
+direct cryptographic proof of provider behavior. Verifiers trust the platform
+key for that admission assertion; they need neither a source capture nor a
+network connection.
 
 ## Codex CLI
 

@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
-use certified::run_notary_session;
+use certified::{DEFAULT_NOTARY_MAX_FRAME_BYTES, run_notary_session};
 use clap::Parser;
 use k256::ecdsa::SigningKey;
 use tokio::net::TcpListener;
@@ -41,6 +41,11 @@ struct Args {
     /// commitment creates a child proof VM, so this bounds fixed proof work.
     #[arg(long, default_value_t = 128)]
     max_private_chunk_commitments: usize,
+
+    /// Largest serialized proof or attestation frame accepted from a paired
+    /// proxy. This must match the proxy's --max-frame-bytes setting.
+    #[arg(long, default_value_t = DEFAULT_NOTARY_MAX_FRAME_BYTES)]
+    max_frame_bytes: usize,
 }
 
 #[tokio::main]
@@ -52,6 +57,12 @@ async fn main() -> Result<()> {
         || args.max_private_chunk_commitments == 0
     {
         bail!("private chunk limits must be non-zero");
+    }
+    if args.max_frame_bytes == 0 || args.max_frame_bytes > u32::MAX as usize {
+        bail!(
+            "notary frame limit must be between 1 and {} bytes",
+            u32::MAX
+        );
     }
     let key_text = std::fs::read_to_string(&args.signing_key)
         .with_context(|| format!("reading {}", args.signing_key.display()))?;
@@ -80,6 +91,7 @@ async fn main() -> Result<()> {
         let max_private_chunk_bytes = args.max_private_chunk_bytes;
         let max_total_private_chunk_bytes = args.max_total_private_chunk_bytes;
         let max_private_chunk_commitments = args.max_private_chunk_commitments;
+        let max_frame_bytes = args.max_frame_bytes;
         tokio::spawn(async move {
             if let Err(error) = run_notary_session(
                 stream,
@@ -88,6 +100,7 @@ async fn main() -> Result<()> {
                 max_private_chunk_bytes,
                 max_total_private_chunk_bytes,
                 max_private_chunk_commitments,
+                max_frame_bytes,
             )
             .await
             {

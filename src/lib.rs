@@ -51,8 +51,15 @@ use tokio::{
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 pub mod cli;
+pub mod normalize;
+pub mod public;
 
-const MAX_FRAME_LEN: usize = 32 << 20;
+/// Default cap for one serialized post-session proof/attestation frame. This
+/// is deliberately bounded: the receiver allocates this many bytes after a
+/// peer-provided length prefix. Tool-oriented clients can produce a proof
+/// request above the former 32 MiB cap, so deployments may raise this on both
+/// the proxy and notary up to the u32 wire-format maximum.
+pub const DEFAULT_NOTARY_MAX_FRAME_BYTES: usize = 128 << 20;
 const REQUEST_WRITE_CHUNK: usize = 8 << 10;
 /// Above this size, use independent private transcript commitments instead of
 /// the overlapping HTTP-oriented commitment layout. The latter is convenient
@@ -61,7 +68,7 @@ const CHUNKED_PROOF_THRESHOLD_BYTES: usize = 64 << 10;
 /// Keeps the bounded proof path below the 1 GiB notary budget in the measured
 /// Proxy-TLS configuration.
 const CHUNKED_PROOF_BYTES: usize = 128 << 10;
-const CAPTURE_FORMAT: &str = "llm-notary/capture/v1";
+pub const CAPTURE_FORMAT: &str = "llm-notary/capture/v1";
 
 /// Returns the Linux cgroup charge when this process runs in a container.
 /// This is intentionally best-effort so local macOS/Windows operation is
@@ -252,8 +259,10 @@ pub async fn notarized_request(
     notary_addr: SocketAddr,
     server_name: &str,
     request: Request<HttpRequestBody>,
+    max_frame_bytes: usize,
 ) -> Result<NotarizedResponse> {
-    let mut response = notarized_streaming_request(notary_addr, server_name, request).await?;
+    let mut response =
+        notarized_streaming_request(notary_addr, server_name, request, max_frame_bytes).await?;
     let status = response.status;
     let headers = response.headers.clone();
     let mut body = Vec::new();
@@ -281,7 +290,9 @@ pub async fn notarized_streaming_request(
     notary_addr: SocketAddr,
     server_name: &str,
     request: Request<HttpRequestBody>,
+    max_frame_bytes: usize,
 ) -> Result<NotarizedStreamResponse> {
+    validate_notary_frame_limit(max_frame_bytes)?;
     let notary_socket = TcpStream::connect(notary_addr)
         .await
         .with_context(|| format!("connecting to notary at {notary_addr}"))?;
@@ -390,8 +401,14 @@ pub async fn notarized_streaming_request(
 
             handle.close();
             let mut socket = driver_task.await??;
-            write_frame(&mut socket, &bincode::serialize(&attestation_request)?).await?;
-            let attestation: Attestation = bincode::deserialize(&read_frame(&mut socket).await?)?;
+            write_frame(
+                &mut socket,
+                &bincode::serialize(&attestation_request)?,
+                max_frame_bytes,
+            )
+            .await?;
+            let attestation: Attestation =
+                bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
             attestation_request.validate(&attestation, &CryptoProvider::default())?;
 
             Ok(LocalProof {
@@ -429,7 +446,9 @@ pub async fn run_notary_session(
     max_private_chunk_bytes: usize,
     max_total_private_chunk_bytes: usize,
     max_private_chunk_commitments: usize,
+    max_frame_bytes: usize,
 ) -> Result<()> {
+    validate_notary_frame_limit(max_frame_bytes)?;
     let session = Session::new(socket.compat());
     let (driver, mut handle) = session.split();
     let driver_task = tokio::spawn(driver);
@@ -505,7 +524,8 @@ pub async fn run_notary_session(
 
     handle.close();
     let mut socket = driver_task.await??;
-    let request: AttestationRequest = bincode::deserialize(&read_frame(&mut socket).await?)?;
+    let request: AttestationRequest =
+        bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
 
     let signer = Box::new(Secp256k1Signer::new(&signing_key.to_bytes())?);
     let mut provider = CryptoProvider::default();
@@ -528,7 +548,12 @@ pub async fn run_notary_session(
         .server_ephemeral_key(binding.server_ephemeral_key.clone())
         .transcript_commitments(transcript_commitments);
     let attestation = builder.build(&provider)?;
-    write_frame(&mut socket, &bincode::serialize(&attestation)?).await?;
+    write_frame(
+        &mut socket,
+        &bincode::serialize(&attestation)?,
+        max_frame_bytes,
+    )
+    .await?;
     Ok(())
 }
 
@@ -800,9 +825,27 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-async fn write_frame<S: futures::AsyncWrite + Unpin>(socket: &mut S, value: &[u8]) -> Result<()> {
-    if value.len() > MAX_FRAME_LEN {
-        bail!("refusing oversized notary frame");
+fn validate_notary_frame_limit(max_frame_bytes: usize) -> Result<()> {
+    if max_frame_bytes == 0 || max_frame_bytes > u32::MAX as usize {
+        bail!(
+            "notary frame limit must be between 1 and {} bytes",
+            u32::MAX
+        );
+    }
+    Ok(())
+}
+
+async fn write_frame<S: futures::AsyncWrite + Unpin>(
+    socket: &mut S,
+    value: &[u8],
+    max_frame_bytes: usize,
+) -> Result<()> {
+    if value.len() > max_frame_bytes {
+        bail!(
+            "refusing {}-byte notary frame above configured {}-byte limit",
+            value.len(),
+            max_frame_bytes
+        );
     }
     socket
         .write_all(&(value.len() as u32).to_be_bytes())
@@ -812,12 +855,19 @@ async fn write_frame<S: futures::AsyncWrite + Unpin>(socket: &mut S, value: &[u8
     Ok(())
 }
 
-async fn read_frame<S: futures::AsyncRead + Unpin>(socket: &mut S) -> Result<Vec<u8>> {
+async fn read_frame<S: futures::AsyncRead + Unpin>(
+    socket: &mut S,
+    max_frame_bytes: usize,
+) -> Result<Vec<u8>> {
     let mut length = [0u8; 4];
     socket.read_exact(&mut length).await?;
     let length = u32::from_be_bytes(length) as usize;
-    if length > MAX_FRAME_LEN {
-        bail!("refusing oversized notary frame");
+    if length > max_frame_bytes {
+        bail!(
+            "refusing {}-byte notary frame above configured {}-byte limit",
+            length,
+            max_frame_bytes
+        );
     }
     let mut value = vec![0u8; length];
     socket.read_exact(&mut value).await?;
