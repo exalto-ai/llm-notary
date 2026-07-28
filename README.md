@@ -228,6 +228,34 @@ this keeps that deployment detail out of released clients and permits endpoint
 rotation. GitHub sign-in authorizes publication; the platform signing key is
 the trust root for published stamps.
 
+### CLI publishing sign-in
+
+Before submitting a capture for publication, authorize the installed CLI with
+your LLM Notary account:
+
+```bash
+llm-notary login
+```
+
+The command prints a short code and a browser URL. Open that URL in any browser
+already signed in to `llmnotary.exalto.ai`, inspect the requested CLI device
+name and code, and approve it. The CLI polls using a separate high-entropy
+secret; the displayed code alone cannot approve or retrieve credentials.
+
+GitHub is used only by the website to identify the account. The CLI never
+receives, logs, or persists a GitHub token. It stores only an LLM Notary
+rotating refresh credential, in the macOS Keychain when available or otherwise
+in a mode-`0600` configuration file. Check or revoke the local session with:
+
+```bash
+llm-notary whoami
+llm-notary logout
+```
+
+Publish access credentials last 15 minutes. Refresh credentials expire after
+90 days, rotate on every use, and a replayed refresh credential revokes its
+session.
+
 ## Important trust statement
 
 This proof demonstrates the central cryptographic property: a local client

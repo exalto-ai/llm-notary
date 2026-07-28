@@ -35,6 +35,7 @@ hyper = { version = "1.6", features = ["client", "http1", "server"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 k256 = { version = "0.13", features = ["ecdsa"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rand = "0.9"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
