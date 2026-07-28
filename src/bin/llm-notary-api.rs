@@ -821,8 +821,8 @@ async fn issue_cli_session(
     .bind(device_name)
     .bind(sha256_hex(refresh_token.as_bytes()))
     .bind(now)
-    .bind(now + CLI_REFRESH_TOKEN_TTL_SECS)
     .bind(now)
+    .bind(now + CLI_REFRESH_TOKEN_TTL_SECS)
     .execute(database)
     .await
     .map_err(database_error)?;
@@ -1021,5 +1021,64 @@ mod tests {
             key == "redirect_uri" && value == "https://llmnotary.exalto.ai/api/auth/github/callback"
         }));
         assert!(!url.query_pairs().any(|(key, _)| key == "scope"));
+    }
+
+    #[tokio::test]
+    async fn new_cli_session_is_usable_until_its_refresh_expiry() {
+        let database = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::migrate!("./migrations")
+            .run(&database)
+            .await
+            .expect("migrations");
+        sqlx::query(
+            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
+             VALUES ('user-1', 1, 'octo', 1, 1)",
+        )
+        .execute(&database)
+        .await
+        .expect("user");
+
+        let now = match unix_timestamp() {
+            Ok(now) => now,
+            Err(_) => panic!("current time"),
+        };
+        let tokens = match issue_cli_session(&database, "user-1", "Test CLI", now).await {
+            Ok(tokens) => tokens,
+            Err(_) => panic!("CLI session"),
+        };
+        let (created_at, last_used_at, expires_at) = sqlx::query_as::<_, (i64, i64, i64)>(
+            "SELECT created_at, last_used_at, expires_at FROM cli_sessions",
+        )
+        .fetch_one(&database)
+        .await
+        .expect("stored session");
+        assert_eq!((created_at, last_used_at), (now, now));
+        assert_eq!(expires_at, now + CLI_REFRESH_TOKEN_TTL_SECS);
+
+        let refreshed = refresh_cli_tokens(
+            State(AppState {
+                database,
+                http: reqwest::Client::new(),
+                github_client_id: "client-id".to_owned(),
+                github_client_secret: "secret".to_owned(),
+                callback_url: Url::parse("https://llmnotary.exalto.ai/api/auth/github/callback")
+                    .expect("callback URL"),
+                app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
+                secure_cookies: true,
+                notary_host: "notary.example.com".to_owned(),
+                notary_port: 7047,
+            }),
+            Json(RefreshRequest {
+                refresh_token: tokens.refresh_token,
+            }),
+        )
+        .await;
+        let refreshed = match refreshed {
+            Ok(refreshed) => refreshed,
+            Err(_) => panic!("new session refreshes"),
+        };
+        assert!(!refreshed.0.access_token.is_empty());
     }
 }
