@@ -8,8 +8,8 @@ use uuid::Uuid;
 
 use crate::{
     archive::{ARCHIVE_CONTENT_TYPE, ARCHIVE_FORMAT, build_trace_package_archive},
-    bundle::{trace_package_notary_key, verify_trace_package},
-    cli::{auth, notary},
+    bundle::{trace_package_created_at_unix_ms, trace_package_notary_key, verify_trace_package},
+    cli::{auth, notary, proxy::refresh_notary_directory},
     sha256_hex,
 };
 
@@ -72,7 +72,8 @@ pub async fn run(args: PublishArgs) -> Result<()> {
     let (trusted_notary_key, key_id) = match args.trusted_notary_key.as_deref() {
         Some(value) => notary::explicit_key(value)?,
         None => {
-            let (key_id, _) = notary::cached_key(&embedded_key)?;
+            let created_at = trace_package_created_at_unix_ms(&args.package)?;
+            let (key_id, _) = notary::cached_key_at(&embedded_key, created_at)?;
             (embedded_key, key_id)
         }
     };
@@ -82,8 +83,14 @@ pub async fn run(args: PublishArgs) -> Result<()> {
         .context("building deterministic publication archive; nothing was uploaded")?;
     let archive_sha256 = sha256_hex(&archive);
 
-    // Authentication refresh is the first network request. Everything above is
-    // intentionally local so malformed or untrusted packages never create jobs.
+    // Everything above is intentionally local so malformed packages never
+    // cause network traffic. Refresh discovered trust immediately before the
+    // consent boundary so a known revocation is enforced before upload.
+    if args.trusted_notary_key.is_none() {
+        refresh_notary_directory().await?;
+        notary::cached_key_at(&trusted_notary_key, manifest.created_at_unix_ms())
+            .context("the package notary is no longer trusted; nothing was uploaded")?;
+    }
     let authenticated = auth::authenticate().await?;
     let job = submit_archive(
         &authenticated,

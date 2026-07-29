@@ -20,8 +20,11 @@ use time::Duration as CookieDuration;
 use url::Url;
 use uuid::Uuid;
 
+use certified::notary_directory::{
+    DIRECTORY_FORMAT_V2, NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, key_id,
+    parse_directory,
+};
 use certified::sha256_hex;
-use k256::ecdsa::VerifyingKey;
 
 #[path = "../api/intake.rs"]
 mod intake;
@@ -45,7 +48,7 @@ struct AppState {
     callback_url: Url,
     app_url: Url,
     secure_cookies: bool,
-    notary_key: NotaryDirectoryKey,
+    notary_directory: NotaryDirectory,
     publish: publish::PublishService,
 }
 
@@ -76,23 +79,6 @@ struct GitHubUser {
 #[derive(Serialize)]
 struct Health {
     status: &'static str,
-}
-
-#[derive(Serialize)]
-struct NotaryDirectoryEntry {
-    format: &'static str,
-    host: String,
-    port: u16,
-    key_id: String,
-    public_key: String,
-}
-
-#[derive(Clone, Deserialize, Serialize)]
-struct NotaryDirectoryKey {
-    host: String,
-    port: u16,
-    key_id: String,
-    public_key: String,
 }
 
 #[derive(Serialize)]
@@ -326,27 +312,7 @@ impl AppState {
             .context("building GitHub OAuth callback URL")?;
         let database_url =
             env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://llm-notary-api.db".to_owned());
-        let notary_host =
-            env::var("LLM_NOTARY_NOTARY_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
-        if notary_host.is_empty() || notary_host.chars().any(char::is_whitespace) {
-            bail!("LLM_NOTARY_NOTARY_HOST must be a non-empty hostname or IP address");
-        }
-        let notary_port = env::var("LLM_NOTARY_NOTARY_PORT")
-            .unwrap_or_else(|_| "7047".to_owned())
-            .parse::<u16>()
-            .context("LLM_NOTARY_NOTARY_PORT must be a valid TCP port")?;
-        let notary_public_key = env::var("LLM_NOTARY_NOTARY_PUBLIC_KEY")
-            .context("LLM_NOTARY_NOTARY_PUBLIC_KEY is required")?;
-        let public_key = hex::decode(&notary_public_key)
-            .context("LLM_NOTARY_NOTARY_PUBLIC_KEY must be hexadecimal")?;
-        VerifyingKey::from_sec1_bytes(&public_key)
-            .context("LLM_NOTARY_NOTARY_PUBLIC_KEY must be a SEC1 secp256k1 key")?;
-        let notary_key = NotaryDirectoryKey {
-            host: notary_host.clone(),
-            port: notary_port,
-            key_id: format!("sha256:{}", sha256_hex(&public_key)),
-            public_key: hex::encode(public_key),
-        };
+        let notary_directory = notary_directory_from_env()?;
         let publish = publish::PublishService::from_env()?;
         publish.validate().await?;
         let options = SqliteConnectOptions::from_str(&database_url)
@@ -374,7 +340,7 @@ impl AppState {
             callback_url,
             secure_cookies: app_url.scheme() == "https",
             app_url,
-            notary_key,
+            notary_directory,
             publish,
         })
     }
@@ -403,14 +369,8 @@ impl AppState {
     }
 }
 
-async fn notary(State(state): State<AppState>) -> Json<NotaryDirectoryEntry> {
-    Json(NotaryDirectoryEntry {
-        format: "llm-notary/notary-directory/v1",
-        host: state.notary_key.host,
-        port: state.notary_key.port,
-        key_id: state.notary_key.key_id,
-        public_key: state.notary_key.public_key,
-    })
+async fn notary(State(state): State<AppState>) -> Json<NotaryDirectory> {
+    Json(state.notary_directory)
 }
 
 async fn health() -> Json<Health> {
@@ -1109,16 +1069,74 @@ fn required_env(name: &str) -> Result<String> {
     Ok(value)
 }
 
+fn notary_directory_from_env() -> Result<NotaryDirectory> {
+    if let Ok(value) = env::var("LLM_NOTARY_NOTARY_DIRECTORY_JSON") {
+        if !value.trim().is_empty() {
+            let directory = parse_directory(value.as_bytes())
+                .context("LLM_NOTARY_NOTARY_DIRECTORY_JSON is invalid")?;
+            if let Ok(expected) = env::var("LLM_NOTARY_NOTARY_PUBLIC_KEY") {
+                if !directory
+                    .active()?
+                    .public_key
+                    .eq_ignore_ascii_case(expected.trim())
+                {
+                    bail!("the active directory key does not match LLM_NOTARY_NOTARY_PUBLIC_KEY");
+                }
+            }
+            return Ok(directory);
+        }
+    }
+    let host = env::var("LLM_NOTARY_NOTARY_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
+    let port = env::var("LLM_NOTARY_NOTARY_PORT")
+        .unwrap_or_else(|_| "7047".to_owned())
+        .parse::<u16>()
+        .context("LLM_NOTARY_NOTARY_PORT must be a valid TCP port")?;
+    let public_key = hex::decode(
+        env::var("LLM_NOTARY_NOTARY_PUBLIC_KEY")
+            .context("LLM_NOTARY_NOTARY_PUBLIC_KEY is required")?,
+    )
+    .context("LLM_NOTARY_NOTARY_PUBLIC_KEY must be hexadecimal")?;
+    let key_id = key_id(&public_key);
+    let directory = NotaryDirectory {
+        format: DIRECTORY_FORMAT_V2.to_owned(),
+        active_key_id: key_id.clone(),
+        notaries: vec![NotaryDirectoryRecord {
+            host,
+            port,
+            key_id,
+            public_key: hex::encode(public_key),
+            status: NotaryKeyStatus::Active,
+            valid_from_unix_ms: env::var("LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS")
+                .unwrap_or_else(|_| "0".to_owned())
+                .parse()
+                .context("LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS must be a u64")?,
+            valid_until_unix_ms: None,
+        }],
+    };
+    directory.validate()?;
+    Ok(directory)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn directory_key() -> NotaryDirectoryKey {
-        NotaryDirectoryKey {
-            host: "notary.example.com".to_owned(),
-            port: 7047,
-            key_id: "sha256:test".to_owned(),
-            public_key: "02".to_owned(),
+    pub(super) fn directory_key() -> NotaryDirectory {
+        let signing = k256::ecdsa::SigningKey::from_slice(&[7; 32]).unwrap();
+        let public_key = signing.verifying_key().to_sec1_bytes().to_vec();
+        let key_id = key_id(&public_key);
+        NotaryDirectory {
+            format: DIRECTORY_FORMAT_V2.to_owned(),
+            active_key_id: key_id.clone(),
+            notaries: vec![NotaryDirectoryRecord {
+                host: "notary.example.com".to_owned(),
+                port: 7047,
+                key_id,
+                public_key: hex::encode(public_key),
+                status: NotaryKeyStatus::Active,
+                valid_from_unix_ms: 0,
+                valid_until_unix_ms: None,
+            }],
         }
     }
 
@@ -1133,7 +1151,7 @@ mod tests {
                 .expect("callback URL"),
             app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
             secure_cookies: true,
-            notary_key: directory_key(),
+            notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
         };
         let url = state
@@ -1199,7 +1217,7 @@ mod tests {
                     .expect("callback URL"),
                 app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
                 secure_cookies: true,
-                notary_key: directory_key(),
+                notary_directory: directory_key(),
                 publish: publish::PublishService::disabled_for_test(),
             }),
             Json(RefreshRequest {
@@ -1274,7 +1292,7 @@ mod tests {
                 .expect("callback URL"),
             app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
             secure_cookies: true,
-            notary_key: directory_key(),
+            notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
         };
         let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));

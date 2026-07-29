@@ -548,7 +548,6 @@ mod tests {
     use sqlx::SqlitePool;
     use url::Url;
 
-    use super::super::NotaryDirectoryKey;
     use super::super::intake::{MockIntakeStorage, StoredObject};
     use super::*;
 
@@ -600,12 +599,7 @@ mod tests {
                 .expect("callback"),
             app_url: Url::parse("https://llmnotary.exalto.ai").expect("app"),
             secure_cookies: true,
-            notary_key: NotaryDirectoryKey {
-                host: "notary.example.com".to_owned(),
-                port: 7047,
-                key_id: "sha256:test".to_owned(),
-                public_key: "02".to_owned(),
-            },
+            notary_directory: super::super::tests::directory_key(),
             publish: PublishService::mock(storage.clone()),
         };
         (

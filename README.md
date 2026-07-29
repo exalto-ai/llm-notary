@@ -286,7 +286,9 @@ https://llmnotary.exalto.ai/api/auth/github/callback
 Set `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` for the API.
 Also set `LLM_NOTARY_NOTARY_PUBLIC_KEY` to the compressed SEC1 public key for
 the configured notary signing key; the API refuses to advertise an unchecked
-or malformed key.
+or malformed key. Planned rotation can supply a complete v2 directory through
+`LLM_NOTARY_NOTARY_DIRECTORY_JSON`; its active key must match the colocated
+notary key.
 For source development, `LLM_NOTARY_PUBLIC_ORIGIN` defaults to
 `http://localhost:4173` and the API creates a local SQLite database. GitHub
 OAuth Apps have one callback URL, so use a separate development OAuth App with
@@ -302,12 +304,17 @@ The API has `GET /api/notary` for CLI endpoint and public-key discovery,
 `POST /api/auth/logout`, and `GET /api/healthz`, plus authenticated publication
 intake endpoints and publication endpoints for serving admitted traces. Set
 `LLM_NOTARY_NOTARY_HOST` and `LLM_NOTARY_NOTARY_PUBLIC_KEY` to the public TCP
-notary hostname and its compressed SEC1 public key. The directory contains a
-stable key ID. Clients cache the last successful directory record, so offline
-verification only trusts the discovered key rather than a package-supplied
-key. The Compose health check compares the advertised key with the running
-notary key. GitHub sign-in authorizes publication; the platform signing key is
-the trust root for published stamps.
+notary hostname and its compressed SEC1 public key. The v2 directory contains
+stable key IDs, status, validity windows, and endpoints for an active key and
+historical rotation records. Clients cache successful responses, route pending
+bundles to an active or retiring signer, and retain retired keys for
+timestamp-scoped offline verification. `publish` refreshes the directory after
+local verification so current revocations are enforced before upload. The
+Compose health check compares the advertised active key with the running
+notary key. The lifecycle and operator rotation procedure are documented in
+[`docs/notary-key-lifecycle-v2.md`](docs/notary-key-lifecycle-v2.md). GitHub
+sign-in authorizes publication; the platform signing key is the trust root for
+published stamps.
 
 Authenticated CLI publication intake uses:
 
