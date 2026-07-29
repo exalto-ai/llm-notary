@@ -1,5 +1,6 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
+use anyhow::Context;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -7,6 +8,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -24,9 +26,11 @@ const CLEANUP_INTERVAL_SECS: u64 = 10 * 60;
 
 #[derive(Clone)]
 pub struct PublishService {
-    storage: IntakeStorage,
-    max_archive_bytes: i64,
+    pub(super) storage: IntakeStorage,
+    pub(super) max_archive_bytes: i64,
     upload_ttl_secs: i64,
+    pub(super) platform_signing_key: Option<Arc<SigningKey>>,
+    pub(super) stamp_issuer: String,
 }
 
 #[derive(Deserialize)]
@@ -62,24 +66,30 @@ struct PublishJobResponse {
     updated_at: i64,
     upload_expires_at: i64,
     queued_at: Option<i64>,
+    admitted_at: Option<i64>,
+    private_purged_at: Option<i64>,
     failure_code: Option<String>,
     status_url: String,
+    trace_url: Option<String>,
+    stamp_url: Option<String>,
 }
 
 #[derive(FromRow)]
-struct PublishJobRow {
-    id: String,
-    state: String,
-    archive_format: String,
-    declared_size_bytes: i64,
-    declared_sha256: String,
-    upload_object_key: String,
-    intake_object_key: String,
-    upload_expires_at: i64,
-    created_at: i64,
-    updated_at: i64,
-    queued_at: Option<i64>,
-    failure_code: Option<String>,
+pub(super) struct PublishJobRow {
+    pub(super) id: String,
+    pub(super) state: String,
+    pub(super) archive_format: String,
+    pub(super) declared_size_bytes: i64,
+    pub(super) declared_sha256: String,
+    pub(super) upload_object_key: String,
+    pub(super) intake_object_key: String,
+    pub(super) upload_expires_at: i64,
+    pub(super) created_at: i64,
+    pub(super) updated_at: i64,
+    pub(super) queued_at: Option<i64>,
+    pub(super) failure_code: Option<String>,
+    pub(super) admitted_at: Option<i64>,
+    pub(super) private_purged_at: Option<i64>,
 }
 
 impl PublishService {
@@ -94,10 +104,22 @@ impl PublishService {
         if !(60..=24 * 60 * 60).contains(&upload_ttl_secs) {
             anyhow::bail!("LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS must be between 60 and 86400 seconds");
         }
+        let storage = IntakeStorage::from_env()?;
+        let (platform_signing_key, stamp_issuer) = if storage.is_enabled() {
+            (
+                Some(Arc::new(load_platform_signing_key()?)),
+                std::env::var("LLM_NOTARY_STAMP_ISSUER")
+                    .unwrap_or_else(|_| "https://llmnotary.exalto.ai".to_owned()),
+            )
+        } else {
+            (None, String::new())
+        };
         Ok(Self {
-            storage: IntakeStorage::from_env()?,
+            storage,
             max_archive_bytes,
             upload_ttl_secs,
+            platform_signing_key,
+            stamp_issuer,
         })
     }
 
@@ -110,11 +132,15 @@ impl PublishService {
     }
 
     #[cfg(test)]
-    fn mock(storage: super::intake::MockIntakeStorage) -> Self {
+    pub(super) fn mock(storage: super::intake::MockIntakeStorage) -> Self {
         Self {
             storage: IntakeStorage::Mock(storage),
             max_archive_bytes: DEFAULT_MAX_ARCHIVE_BYTES,
             upload_ttl_secs: DEFAULT_UPLOAD_TTL_SECS,
+            platform_signing_key: Some(Arc::new(
+                SigningKey::from_slice(&[11; 32]).expect("test platform key"),
+            )),
+            stamp_issuer: "https://llmnotary.example".to_owned(),
         }
     }
 
@@ -124,8 +150,25 @@ impl PublishService {
             storage: IntakeStorage::Disabled,
             max_archive_bytes: DEFAULT_MAX_ARCHIVE_BYTES,
             upload_ttl_secs: DEFAULT_UPLOAD_TTL_SECS,
+            platform_signing_key: None,
+            stamp_issuer: String::new(),
         }
     }
+}
+
+fn load_platform_signing_key() -> anyhow::Result<SigningKey> {
+    let path = std::env::var("LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE").map_err(|_| {
+        anyhow::anyhow!(
+            "LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE is required when publication intake is enabled"
+        )
+    })?;
+    let text = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading platform signing key {path}"))?;
+    let bytes = hex::decode(text.trim()).context("platform signing key must be hexadecimal")?;
+    if bytes.len() != 32 {
+        anyhow::bail!("platform signing key must contain exactly 32 bytes");
+    }
+    SigningKey::from_slice(&bytes).context("platform signing key is invalid")
 }
 
 pub fn router() -> Router<AppState> {
@@ -517,6 +560,12 @@ fn idempotency_key(headers: &HeaderMap) -> ApiResult<String> {
 }
 
 fn job_response(job: &PublishJobRow) -> PublishJobResponse {
+    let public = (job.state == "admitted").then(|| {
+        (
+            format!("/api/public/traces/{}/trace.otlp.json", job.id),
+            format!("/api/public/traces/{}/stamp.json", job.id),
+        )
+    });
     PublishJobResponse {
         id: job.id.clone(),
         state: job.state.clone(),
@@ -527,8 +576,12 @@ fn job_response(job: &PublishJobRow) -> PublishJobResponse {
         updated_at: job.updated_at,
         upload_expires_at: job.upload_expires_at,
         queued_at: job.queued_at,
+        admitted_at: job.admitted_at,
+        private_purged_at: job.private_purged_at,
         failure_code: job.failure_code.clone(),
         status_url: format!("/api/publish/jobs/{}", job.id),
+        trace_url: public.as_ref().map(|urls| urls.0.clone()),
+        stamp_url: public.map(|urls| urls.1),
     }
 }
 

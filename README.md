@@ -333,6 +333,16 @@ Encrypted `.llmbundle` files are local retry state and are never valid uploads.
 The complete request, response, idempotency, and storage-boundary contract is
 documented in [`docs/publish-intake-v1.md`](docs/publish-intake-v1.md).
 
+Queued uploads are admitted by a database-backed worker in the API process.
+The worker downloads and hashes the actual private object, validates the
+transport archive, verifies the notary evidence and authenticated provider,
+reproduces the exact canonical trace, enforces credential-header redaction,
+and issues the platform stamp. Public trace and stamp files are available
+under `/api/public/traces/{id}` only after the pair is committed atomically;
+the private intake object is then purged. The consent and retention boundary,
+state machine, rejection codes, and public endpoints are documented in
+[`docs/publication-admission-v1.md`](docs/publication-admission-v1.md).
+
 ### CLI publishing sign-in
 
 Before submitting a finalized trace package, authorize the installed CLI with

@@ -217,6 +217,65 @@ impl IntakeStorage {
         }
     }
 
+    pub async fn get_object(&self, object_key: &str, max_bytes: usize) -> Result<Option<Vec<u8>>> {
+        match self {
+            Self::Disabled => bail!("publication intake storage is disabled"),
+            Self::S3(storage) => {
+                let output = match storage
+                    .client
+                    .get_object()
+                    .bucket(&storage.bucket)
+                    .key(object_key)
+                    .send()
+                    .await
+                {
+                    Ok(output) => output,
+                    Err(error)
+                        if error
+                            .raw_response()
+                            .is_some_and(|response| response.status().as_u16() == 404) =>
+                    {
+                        return Ok(None);
+                    }
+                    Err(error) => {
+                        return Err(anyhow!(error).context("downloading Spaces intake object"));
+                    }
+                };
+                if output.content_length().unwrap_or_default() < 0
+                    || output.content_length().unwrap_or_default() as usize > max_bytes
+                {
+                    bail!("Spaces intake object exceeds the admission download limit");
+                }
+                let capacity = output.content_length().unwrap_or_default().max(0) as usize;
+                let mut stream = output.body;
+                let mut body = Vec::with_capacity(capacity);
+                while let Some(chunk) = stream
+                    .try_next()
+                    .await
+                    .context("reading Spaces intake object body")?
+                {
+                    let next_len = body
+                        .len()
+                        .checked_add(chunk.len())
+                        .ok_or_else(|| anyhow!("Spaces intake object size overflow"))?;
+                    if next_len > max_bytes {
+                        bail!("Spaces intake object exceeds the admission download limit");
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                Ok(Some(body))
+            }
+            #[cfg(test)]
+            Self::Mock(storage) => Ok(storage
+                .bodies
+                .lock()
+                .expect("mock lock")
+                .get(object_key)
+                .filter(|body| body.len() <= max_bytes)
+                .cloned()),
+        }
+    }
+
     pub async fn promote_object(&self, source_key: &str, destination_key: &str) -> Result<()> {
         match self {
             Self::Disabled => bail!("publication intake storage is disabled"),
@@ -240,6 +299,10 @@ impl IntakeStorage {
                     .cloned()
                     .ok_or_else(|| anyhow!("mock source object is missing"))?;
                 objects.insert(destination_key.to_owned(), object);
+                let mut bodies = storage.bodies.lock().expect("mock lock");
+                if let Some(body) = bodies.get(source_key).cloned() {
+                    bodies.insert(destination_key.to_owned(), body);
+                }
                 Ok(())
             }
         }
@@ -266,6 +329,7 @@ impl IntakeStorage {
                     .lock()
                     .expect("mock lock")
                     .remove(object_key);
+                storage.bodies.lock().expect("mock lock").remove(object_key);
                 storage
                     .deleted
                     .lock()
@@ -378,6 +442,7 @@ fn validate_identifier(value: &str, label: &str) -> Result<()> {
 pub struct MockIntakeStorage {
     prefix: String,
     pub objects: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, StoredObject>>>,
+    pub bodies: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     pub deleted: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     pub presign_calls: std::sync::Arc<std::sync::Mutex<Vec<(String, i64, String)>>>,
 }
@@ -402,6 +467,13 @@ impl MockIntakeStorage {
                 ]),
             },
         );
+    }
+
+    pub fn object_bytes(&self, key: impl Into<String>, bytes: Vec<u8>) {
+        let key = key.into();
+        let sha256 = certified::sha256_hex(&bytes);
+        self.object(&key, bytes.len() as i64, &sha256);
+        self.bodies.lock().expect("mock lock").insert(key, bytes);
     }
 }
 
