@@ -10,114 +10,7 @@ import './collections.css';
 import './docs.css';
 import './relay-animation.css';
 import { RelayAnimation } from './RelayAnimation';
-
-const collections = [
-  {
-    id: 'refusal',
-    title: 'Refusal boundary test',
-    provider: 'OpenAI',
-    host: 'api.openai.com',
-    model: 'gpt-4.1',
-    date: 'Jul 24, 2026',
-    sortDate: 20260724,
-    spanCount: 42,
-    hash: 'a47e32…ef90',
-    schema: 'GenAI trace / v1',
-    evidence: '1 provider call checked',
-    tags: ['Safety', 'Refusals'],
-    license: 'CC BY 4.0',
-    summary: 'A refusal-boundary evaluation published as a standardized trace. The platform stamp binds the normalized model span to a verified provider capture.',
-    spans: [
-      { depth: 0, kind: 'INTERNAL', name: 'invoke_workflow refusal-boundary', detail: '42 model turns', trust: 'runtime' },
-      { depth: 1, kind: 'CLIENT', name: 'chat gpt-4.1', detail: 'gen_ai.operation.name = chat · 1,842 tokens', trust: 'source', messages: { input: [{ role: 'user', parts: [{ type: 'text', content: 'Respond to the evaluation prompt.' }] }], output: [{ role: 'assistant', parts: [{ type: 'text', content: 'I can’t help with that request.' }], finishReason: 'stop' }] } },
-      { depth: 1, kind: 'INTERNAL', name: 'evaluate refusal classifier', detail: 'evaluation result = pass', trust: 'runtime' },
-    ],
-  },
-  {
-    id: 'tool',
-    title: 'Tool-use evaluation',
-    provider: 'Anthropic',
-    host: 'api.anthropic.com',
-    model: 'claude-sonnet-4',
-    date: 'Jul 23, 2026',
-    sortDate: 20260723,
-    spanCount: 18,
-    hash: 'c18b70…79aa',
-    schema: 'GenAI trace / v1',
-    evidence: '2 provider calls checked',
-    tags: ['Evaluation', 'Tools'],
-    license: 'CC BY 4.0',
-    summary: 'An agent trace with a provider-verified model request, a declared tool call, and a separately marked runtime tool execution.',
-    spans: [
-      { depth: 0, kind: 'INTERNAL', name: 'invoke_agent travel-researcher', detail: '18 spans', trust: 'runtime' },
-      { depth: 1, kind: 'CLIENT', name: 'chat claude-sonnet-4', detail: 'output tool_call = search_routes · call_01H', trust: 'source', messages: { input: [{ role: 'system', parts: [{ type: 'text', content: 'Plan grounded travel routes.' }] }, { role: 'user', parts: [{ type: 'text', content: 'Find a route from Seattle to Portland.' }] }], output: [{ role: 'assistant', parts: [{ type: 'tool_call', id: 'call_01H', name: 'search_routes', arguments: '{"origin":"Seattle","destination":"Portland"}' }] }] } },
-      { depth: 2, kind: 'INTERNAL', name: 'execute_tool search_routes', detail: 'gen_ai.tool.call.id = call_01H · 342 ms', trust: 'runtime', attributes: [['gen_ai.tool.name', 'search_routes'], ['gen_ai.tool.call.id', 'call_01H'], ['gen_ai.tool.call.arguments', '{"origin":"Seattle","destination":"Portland"}'], ['gen_ai.tool.call.result', '{"routes":3}']] },
-      { depth: 1, kind: 'CLIENT', name: 'chat claude-sonnet-4', detail: 'gen_ai.response.finish_reasons = stop', trust: 'source', messages: { input: [{ role: 'assistant', parts: [{ type: 'tool_call', id: 'call_01H', name: 'search_routes', arguments: '{"origin":"Seattle","destination":"Portland"}' }] }, { role: 'tool', parts: [{ type: 'tool_call_response', id: 'call_01H', result: '{"routes":3}' }] }], output: [{ role: 'assistant', parts: [{ type: 'text', content: 'The fastest route is Cascades service 507.' }], finishReason: 'stop' }] } },
-    ],
-  },
-  {
-    id: 'benchmark',
-    title: 'Benchmark run #048',
-    provider: 'OpenAI',
-    host: 'api.openai.com',
-    model: 'gpt-4.1-mini',
-    date: 'Jul 19, 2026',
-    sortDate: 20260719,
-    spanCount: 200,
-    hash: 'f10cd2…05b7',
-    schema: 'GenAI trace / v1',
-    evidence: '200 provider calls checked',
-    tags: ['Research', 'Benchmark'],
-    license: 'CC BY 4.0',
-    summary: 'A portable span collection for one instruction-following benchmark slice, ready to inspect or move into another trace-aware analysis workflow.',
-    spans: [
-      { depth: 0, kind: 'INTERNAL', name: 'invoke_workflow if-benchmark-048', detail: '200 inference spans', trust: 'runtime' },
-      { depth: 1, kind: 'CLIENT', name: 'chat gpt-4.1-mini', detail: 'gen_ai.response.finish_reasons = stop', trust: 'source' },
-      { depth: 1, kind: 'INTERNAL', name: 'evaluate instruction-following', detail: 'score = 0.92', trust: 'runtime' },
-    ],
-  },
-  {
-    id: 'context',
-    title: 'Long-context comparison',
-    provider: 'Anthropic',
-    host: 'api.anthropic.com',
-    model: 'claude-opus-4',
-    date: 'Jul 16, 2026',
-    sortDate: 20260716,
-    spanCount: 24,
-    hash: 'd49186…3c4d',
-    schema: 'GenAI trace / v1',
-    evidence: '24 provider calls checked',
-    tags: ['Research', 'Long context'],
-    license: 'CC BY 4.0',
-    summary: 'A multi-turn comparison with normalized input and output messages, provider/model metadata, timing, and a signed platform verification result.',
-    spans: [
-      { depth: 0, kind: 'INTERNAL', name: 'invoke_workflow long-context-compare', detail: '24 inference spans', trust: 'runtime' },
-      { depth: 1, kind: 'CLIENT', name: 'chat claude-opus-4', detail: 'gen_ai.usage.input_tokens = 24,821', trust: 'source' },
-    ],
-  },
-  {
-    id: 'coding',
-    title: 'Patch review prompts',
-    provider: 'OpenAI',
-    host: 'api.openai.com',
-    model: 'gpt-4.1-mini',
-    date: 'Jul 11, 2026',
-    sortDate: 20260711,
-    spanCount: 86,
-    hash: '0c852e…a14f',
-    schema: 'GenAI trace / v1',
-    evidence: '86 provider calls checked',
-    tags: ['Coding', 'Evaluation'],
-    license: 'CC BY 4.0',
-    summary: 'A published evaluation collection whose model spans are portable and independently separate from the private capture used to admit it.',
-    spans: [
-      { depth: 0, kind: 'INTERNAL', name: 'invoke_agent patch-review', detail: '86 spans', trust: 'runtime' },
-      { depth: 1, kind: 'CLIENT', name: 'chat gpt-4.1-mini', detail: 'gen_ai.operation.name = chat', trust: 'source' },
-      { depth: 1, kind: 'INTERNAL', name: 'evaluate review rubric', detail: 'score = 4 / 5', trust: 'runtime' },
-    ],
-  },
-];
+import { collections } from './collectionData';
 
 const installCommand = 'curl -fsSLO https://llmnotary.exalto.ai/install.sh && sh install.sh';
 const publishCommand = 'llm-notary publish captures/cap-... --title "Refusal boundary test" --license "CC BY 4.0"';
@@ -199,29 +92,200 @@ function Landing({ onVerify }) {
 }
 
 const docPages = {
-  overview: { title: 'LLM Notary documentation', lead: 'Publish provider-origin model behavior as a portable OpenTelemetry trace. LLM Notary verifies the private capture once, then signs the standardized artifact that everyone can inspect.', blocks: [['What is published?', 'Each publication contains trace.otlp.json and stamp.json. The trace uses OpenTelemetry GenAI spans for model calls, messages, tool calls, timing, and usage. The stamp signs the exact trace hash.'], ['What stays private?', 'The source capture, TLSNotary evidence, raw HTTP request, and raw provider response are verification inputs. They are not part of the collection artifact.'], ['What the stamp means', 'The LLM Notary platform verified valid source evidence for this exact normalized trace at publication time. The stamp is independent of the source proof and is signed by the platform key.']] },
-  'how-it-works': { title: 'The publishing trust model', lead: 'Source evidence and published data have different jobs: one proves a provider exchange to LLM Notary; the other is a standardized trace the community can reuse.', blocks: [['1. Capture privately', 'The local proxy records the provider connection and obtains TLSNotary evidence. The notary does not see the API key or application plaintext.'], ['2. Verify on admission', 'When you publish, LLM Notary checks the source capture and confirms that the submitted OTLP trace agrees with the authenticated provider call.'], ['3. Store the standard, not the source', 'The collection keeps normalized OTLP JSON and a signed stamp. Raw source material is not the published format.'], ['4. Verify anywhere', 'A reader checks the trace hash and platform signature locally. They do not need access to a private capture or a TLSNotary implementation.']] },
-  install: { title: 'Install the CLI', lead: 'The installer downloads a checksum-verified release for macOS or Linux. Windows releases are available as ZIP archives.', blocks: [['Recommended install', installCommand], ['Supported packages', 'macOS: Apple silicon and Intel. Linux: x86_64 and ARM64. Windows: x86_64 ZIP release. Each archive contains the llm-notary command.'], ['Choose a version', 'Set LLM_NOTARY_VERSION before running the installer to select a specific release. Set LLM_NOTARY_INSTALL_DIR to install somewhere other than ~/.local/bin.']] },
-  proxy: { title: 'Run the local proxy', lead: 'Start the proxy, point an OpenAI-compatible client to it, and keep your existing provider API key in that client.', blocks: [['Start it', 'llm-notary proxy start --provider openai --capture-dir captures'], ['Connect your client', 'Use http://127.0.0.1:8787/v1 as the base URL. DeepSeek uses http://127.0.0.1:8787 without a /v1 suffix. The proxy writes each completed capture to the configured directory.'], ['Providers', 'Use --provider openai, --provider anthropic, or --provider deepseek. The current notary allowlist only accepts their API hostnames.']] },
-  providers: { title: 'Configure a provider client', lead: 'Load your existing keys, then change only the provider base URL. The API key and request shape stay the same.', blocks: [['Load keys from .env', 'set -a\nsource .env\nset +a'], ['OpenAI', 'Use http://127.0.0.1:8787/v1 as the Responses API base URL.'], ['Anthropic', 'Use http://127.0.0.1:8788 as the Messages API base URL. Continue sending requests to /v1/messages.'], ['DeepSeek', 'Use http://127.0.0.1:8789 as the OpenAI-compatible base URL. Continue sending requests to /chat/completions.']] },
-  harnesses: { title: 'Configure a harness', lead: 'Start the matching local proxy first, then use one of these harness recipes. Each recipe keeps your provider credential in the harness environment.', blocks: [['Codex + OpenAI', 'Add this to ~/.codex/config.toml:\n\nmodel_provider = "llm-notary"\n\n[model_providers.llm-notary]\nname = "LLM Notary local proxy"\nbase_url = "http://127.0.0.1:8787/v1"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"\nsupports_websockets = false'], ['Run Codex', 'codex exec --ephemeral --skip-git-repo-check -m gpt-4.1-mini \'Reply with exactly: hello\''], ['Claude Code + Anthropic', 'ANTHROPIC_BASE_URL=http://127.0.0.1:8788 claude --bare --no-session-persistence --tools \'\' -p --model claude-haiku-4-5-20251001 \'Reply with exactly: hello\''], ['OpenCode + DeepSeek', 'Set the provider base URL to http://127.0.0.1:8789 and retain DEEPSEEK_API_KEY in the OpenCode environment.']] },
-  publish: { title: 'Publish a standardized trace', lead: 'Publishing converts a private capture into an OpenTelemetry GenAI trace, verifies the source once, and returns a portable artifact plus a signed LLM Notary stamp.', blocks: [['Publish a capture', publishCommand], ['What is uploaded', 'The CLI submits the source capture for verification and the normalized trace for admission. Source material is used to check the publication and is not retained as the collection artifact.'], ['What is returned', 'Every publication has trace.otlp.json and stamp.json. The trace carries standard spans; the stamp binds their canonical hash to the platform verification result.']] },
-  verify: { title: 'Verify a published trace', lead: 'Verification runs locally. Check that the LLM Notary stamp signs the exact OTLP JSON trace you downloaded.', blocks: [['Verify a publication', 'llm-notary verify-public trace.otlp.json stamp.json --trusted-platform-key <platform-public-key>'], ['What it checks', 'The verifier hashes the standardized trace, validates the platform signature, and reports the source provider, verification time, and normalizer version carried by the stamp.'], ['Source proof versus platform stamp', 'The source proof is used only when LLM Notary admits a publication. The public stamp is a separate platform assertion that the source proof was verified for this exact trace.']] },
+  overview: {
+    title: 'Capture now. Prove later.',
+    lead: 'LLM Notary lets an agent use OpenAI, Anthropic, or DeepSeek normally while saving a private bundle for each provider call. Finalize only the interactions you want to turn into independently verifiable OpenTelemetry traces.',
+    blocks: [
+      {
+        heading: 'The lifecycle',
+        steps: [
+          { title: 'Run the proxy', body: 'Point your existing agent or SDK at the local LLM Notary endpoint. Requests and streamed responses continue to work normally.' },
+          { title: 'Save a bundle', body: 'When a provider stream ends, the proxy writes an encrypted .llmbundle to your machine. Interactive work does not wait for proof generation.' },
+          { title: 'Finalize later', body: 'Choose any saved bundle and reconnect to a notary. This is the slower step that creates signed TLSNotary evidence and a normalized trace.' },
+          { title: 'Verify offline', body: 'The completed package can be checked with the notary public key, without the original bundle, provider, proxy, or a live notary.' },
+        ],
+      },
+      {
+        heading: 'Two artifact states',
+        cards: [
+          { meta: 'Pending', title: 'Encrypted bundle', body: 'A durable local checkpoint. It can be finalized later, but it is not yet evidence another person can verify.' },
+          { meta: 'Finalized', title: 'Verified trace package', body: 'TLSNotary evidence, authenticated HTTP disclosure, deterministic OTLP, and a manifest binding the files together.' },
+        ],
+      },
+      {
+        heading: 'The claim',
+        note: 'A trusted notary attests that the disclosed bytes came from an authenticated TLS interaction with the named model provider, and the OTLP representation is deterministically bound to those bytes.',
+      },
+    ],
+  },
+  'how-it-works': {
+    title: 'Trust and guarantees',
+    lead: 'LLM Notary makes a narrow provenance claim. Understanding who sees what—and what the proof does not establish—is part of using it correctly.',
+    blocks: [
+      {
+        heading: 'Each participant',
+        cards: [
+          { meta: 'User / client', title: 'Holds the plaintext', body: 'The local proxy sees the request and response. A user cannot change authenticated bytes or invent a provider response and still produce valid finalized evidence.' },
+          { meta: 'Notary', title: 'Witnesses ciphertext', body: 'The notary sees the provider hostname, encrypted traffic, sizes, timing, and protocol metadata. It does not receive the API key, prompt, or response plaintext.' },
+          { meta: 'Provider', title: 'Serves a normal request', body: 'No provider integration is required. Origin follows from the authenticated provider TLS session, not from a special provider signature.' },
+          { meta: 'Verifier', title: 'Checks independently', body: 'A verifier checks the notary signature, provider identity, disclosed transcript, artifact hashes, and deterministic mapping using the trusted notary public key.' },
+        ],
+      },
+      {
+        heading: 'Authenticated versus observed',
+        items: [
+          'A model-emitted tool call is authenticated provider output.',
+          'A tool result in the next request proves that the client sent that value—not that the local tool really ran or returned a truthful result.',
+          'A session ID is authenticated as client-supplied request metadata. It can correlate calls, but it does not prove one genuine agent process created them.',
+          'Each provider call is proved independently. A larger agent run can group those calls without upgrading locally observed activity into provider-authenticated evidence.',
+        ],
+      },
+      {
+        heading: 'What this does not prove',
+        items: [
+          'That a response is correct, safe, complete, or useful.',
+          'That a particular human authored the prompt.',
+          'That every call from a larger session was disclosed.',
+          'That a local tool executed, or that its reported output was accurate.',
+          'That the trusted notary private key has never been compromised.',
+        ],
+      },
+    ],
+  },
+  install: {
+    title: 'Install the CLI',
+    lead: 'The installer downloads a checksum-verified release for macOS or Linux. Windows releases are available as ZIP archives.',
+    blocks: [
+      { heading: 'Recommended install', code: installCommand },
+      { heading: 'Supported packages', body: 'macOS: Apple silicon and Intel. Linux: x86_64 and ARM64. Windows: x86_64 ZIP release. Each archive contains the llm-notary command.' },
+      { heading: 'Initialize bundle encryption', code: 'llm-notary vault init\n# Or choose a passphrase:\nllm-notary vault init --passphrase' },
+      { heading: 'Vault behavior', body: 'By default, LLM Notary stores a random bundle key in the operating-system credential vault. Passphrase mode derives a key locally. An empty passphrase is allowed, but it does not provide meaningful protection if someone obtains both the bundle and vault configuration.' },
+    ],
+  },
+  proxy: {
+    title: 'Run the local proxy',
+    lead: 'Start one provider adapter, point your existing client at it, and keep the provider API key in that client as usual.',
+    blocks: [
+      { heading: 'Start it', code: 'llm-notary proxy start \\\n  --provider openai \\\n  --bundle-dir bundles' },
+      { heading: 'What happens online', body: 'The local proxy handles plaintext while the notary participates in the provider TLS connection without seeing application data. Provider response bytes stream back to your agent as they arrive.' },
+      { heading: 'What happens at end-of-stream', body: 'The proxy seals encrypted deferred state into one .llmbundle. It does not perform the expensive final proof before returning control to your workflow.' },
+      { heading: 'Compatibility probes', body: 'GET and HEAD probes are answered locally. They do not contact the provider or notary and do not create bundles.' },
+    ],
+  },
+  bundles: {
+    title: 'Manage pending bundles',
+    lead: 'Bundles are private, encrypted checkpoints. Keep them for as long as you may want to prove an interaction, then finalize or remove them on your schedule.',
+    blocks: [
+      { heading: 'List bundles', code: 'llm-notary bundles list --bundle-dir bundles' },
+      { heading: 'What a bundle is', body: 'A bundle contains encrypted client-side deferred protocol state plus capture metadata. It lets a later notary worker complete the proof without retaining server-side session storage.' },
+      { heading: 'What a bundle is not', note: 'A pending bundle is not a signature, certificate, or publicly verifiable claim. Do not present the existence of a bundle as proof of a provider response.' },
+      { heading: 'Failure and retry', body: 'If the proxy stops after the bundle is sealed, the bundle remains usable. If finalization is interrupted, retry from the same bundle; the interrupted finalization attempt starts over.' },
+    ],
+  },
+  providers: {
+    title: 'Configure a provider client',
+    lead: 'Load your existing keys, then change only the provider base URL. The notary never receives the credential value.',
+    blocks: [
+      { heading: 'Load keys from .env', code: 'set -a\nsource .env\nset +a' },
+      { heading: 'OpenAI', body: 'Use http://127.0.0.1:8787/v1 as the Responses API base URL.' },
+      { heading: 'Anthropic', body: 'Use http://127.0.0.1:8787 as the Messages API base URL. Continue sending requests to /v1/messages.' },
+      { heading: 'DeepSeek', body: 'Use http://127.0.0.1:8787 as the OpenAI-compatible base URL. Continue sending requests to /chat/completions.' },
+      { heading: 'Provider boundary', body: 'The selected adapter fixes the upstream hostname to an explicit allowlist. The notary—not a caller-supplied URL—resolves and opens the provider connection.' },
+    ],
+  },
+  harnesses: {
+    title: 'Configure an agent',
+    lead: 'Start the matching local proxy first, then use one of these recipes. Your provider credential remains in the agent environment.',
+    blocks: [
+      { heading: 'Codex + OpenAI', code: 'Add this to ~/.codex/config.toml:\n\nmodel_provider = "llm-notary"\n\n[model_providers.llm-notary]\nname = "LLM Notary local proxy"\nbase_url = "http://127.0.0.1:8787/v1"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"\nsupports_websockets = false' },
+      { heading: 'Run Codex', code: 'codex exec --ephemeral --skip-git-repo-check \\\n  -m gpt-4.1-mini \\\n  \'Reply with exactly: hello\'' },
+      { heading: 'Claude Code + Anthropic', code: 'ANTHROPIC_BASE_URL=http://127.0.0.1:8787 \\\nclaude --bare --no-session-persistence \\\n  -p --model claude-haiku-4-5-20251001 \\\n  \'Reply with exactly: hello\'' },
+      { heading: 'OpenCode + DeepSeek', body: 'Set the provider base URL to http://127.0.0.1:8787 and retain DEEPSEEK_API_KEY in the OpenCode environment.' },
+    ],
+  },
+  finalize: {
+    title: 'Finalize a bundle',
+    lead: 'Finalization is the deliberate, computationally expensive step. It turns one pending local bundle into a self-contained verified trace package.',
+    blocks: [
+      { heading: 'Finalize one interaction', code: 'llm-notary finalize bundles/cap-....llmbundle \\\n  --output verified-trace \\\n  --trusted-notary-key <notary-public-key>' },
+      { heading: 'Fresh notary connection', body: 'The original provider stream and proxy no longer need to be running. A new notary worker holding the same notary identity and key can complete finalization without a stored server-side checkpoint.' },
+      { heading: 'Expect this step to take time', body: 'Private proof generation is slower than capture. Deferring it keeps the interactive agent response fast and makes proof work an explicit background or batch operation.' },
+      { heading: 'Interruption behavior', body: 'The pending bundle is not consumed. If finalization fails or the process stops, run the command again; work from the interrupted attempt is not resumed.' },
+    ],
+  },
+  artifacts: {
+    title: 'Inside a trace package',
+    lead: 'A finalized package keeps the raw authenticated evidence and its standardized representation together. The files have different jobs.',
+    blocks: [
+      { heading: 'Package layout', code: 'verified-trace/\n├── evidence.tlsn\n├── manifest.json\n├── request.disclosed.http\n├── response.http\n└── trace.otlp.json' },
+      {
+        heading: 'Artifact responsibilities',
+        definitions: [
+          { term: 'evidence.tlsn', description: 'The cryptographic TLSNotary evidence and notary signature.' },
+          { term: 'request.disclosed.http', description: 'Authenticated request bytes selected for disclosure. Secret API-key header values remain redacted.' },
+          { term: 'response.http', description: 'The authenticated provider response, including streamed events.' },
+          { term: 'trace.otlp.json', description: 'A deterministic OpenTelemetry GenAI mapping of the authenticated request and response, including text, model-emitted tool calls, correlated tool results, model, and usage.' },
+          { term: 'manifest.json', description: 'The versioned source metadata and trace hash. The cryptographic signature lives in evidence.tlsn, not in this JSON file.' },
+        ],
+      },
+      { heading: 'Package versus publication', body: 'The finalized source package uses manifest.json. A later Collection publication can pair the canonical trace.otlp.json with a separate platform-issued stamp.json; that public stamp does not replace the private TLSNotary evidence.' },
+      { heading: 'Complete context is intentional', body: 'The raw verified package can include system context, tool definitions, session metadata, prompts, responses, and tool results. Inspect it before sharing. A future selective publication format can disclose less without weakening what the private source package proves.' },
+    ],
+  },
+  verify: {
+    title: 'Verify a trace package',
+    lead: 'Verification runs offline against the trusted notary public key. It does not need the original encrypted bundle, provider account, proxy, or a live notary.',
+    blocks: [
+      { heading: 'Verify locally', code: 'llm-notary verify-trace verified-trace \\\n  --trusted-notary-key <notary-public-key>' },
+      {
+        heading: 'What verification checks',
+        items: [
+          'The notary signature and expected notary public key.',
+          'The authenticated provider identity and TLS evidence.',
+          'The disclosed HTTP bytes against the cryptographic evidence.',
+          'Every artifact hash named by the package manifest.',
+          'The deterministic, versioned OTLP mapping byte-for-byte.',
+        ],
+      },
+      { heading: 'Tool-use boundary', note: 'Verification proves that the model emitted a tool call and, on a later request, that the client sent a particular tool result. It does not prove the local tool actually executed.' },
+    ],
+  },
 };
 
+const docNavigation = [
+  { label: 'Foundation', pages: [['overview', 'Overview'], ['how-it-works', 'Trust model']] },
+  { label: 'Capture', pages: [['install', 'Install'], ['proxy', 'Proxy'], ['bundles', 'Bundles']] },
+  { label: 'Connect', pages: [['providers', 'Providers'], ['harnesses', 'Agents']] },
+  { label: 'Prove', pages: [['finalize', 'Finalize'], ['artifacts', 'Artifacts'], ['verify', 'Verify']] },
+];
+const docOrder = docNavigation.flatMap((group) => group.pages.map(([key]) => key));
+const docAliases = { publish: 'finalize' };
+const previewDocPages = new Set(['overview', 'install', 'proxy', 'bundles', 'finalize', 'artifacts', 'verify']);
+
+function DocsBlock({ block }) {
+  return <section><h2>{block.heading}</h2>{block.body && <p>{block.body}</p>}{block.code && <pre><code>{block.code}</code></pre>}{block.note && <aside className="docs-note">{block.note}</aside>}{block.items && <ul className="docs-list">{block.items.map((item) => <li key={item}>{item}</li>)}</ul>}{block.steps && <ol className="docs-flow">{block.steps.map((step, index) => <li key={step.title}><span>{String(index + 1).padStart(2, '0')}</span><div><b>{step.title}</b><p>{step.body}</p></div></li>)}</ol>}{block.cards && <div className="docs-card-grid">{block.cards.map((card) => <article key={`${card.meta}-${card.title}`}><span>{card.meta}</span><h3>{card.title}</h3><p>{card.body}</p></article>)}</div>}{block.definitions && <dl className="docs-definitions">{block.definitions.map((item) => <div key={item.term}><dt>{item.term}</dt><dd>{item.description}</dd></div>)}</dl>}</section>;
+}
+
 function Docs({ pageKey }) {
-  const page = docPages[pageKey] || docPages.overview;
-  const isCommand = (text) => text.includes('\n') || text.startsWith('export ') || text.startsWith('curl ') || text.startsWith('llm-notary ') || text.startsWith('ANTHROPIC_BASE_URL=') || text.startsWith('codex ');
-  const next = pageKey === 'verify'
-    ? { href: '#/collections', label: 'Browse collections' }
-    : pageKey === 'publish'
-      ? { href: '#/docs/verify', label: 'Verify a publication' }
-      : { href: '#/docs/publish', label: 'Publish a trace' };
-  return <main className="docs-shell"><aside className="docs-sidebar"><span className="eyebrow">Documentation</span><a className={!pageKey || pageKey === 'overview' ? 'active' : ''} href="#/docs">Overview</a><a className={pageKey === 'how-it-works' ? 'active' : ''} href="#/docs/how-it-works">Trust model</a><span className="docs-group">Capture</span><a className={pageKey === 'install' ? 'active' : ''} href="#/docs/install">Install</a><a className={pageKey === 'proxy' ? 'active' : ''} href="#/docs/proxy">Proxy</a><span className="docs-group">Connect</span><a className={pageKey === 'providers' ? 'active' : ''} href="#/docs/providers">Providers</a><a className={pageKey === 'harnesses' ? 'active' : ''} href="#/docs/harnesses">Harnesses</a><span className="docs-group">Publish</span><a className={pageKey === 'publish' ? 'active' : ''} href="#/docs/publish">Publish</a><a className={pageKey === 'verify' ? 'active' : ''} href="#/docs/verify">Verify</a><a href="#/collections">Collections</a></aside><article className="docs-content"><span className="eyebrow">LLM Notary / Docs</span><h1>{page.title}</h1><p className="docs-lead">{page.lead}</p>{page.blocks.map(([heading, body]) => <section key={heading}><h2>{heading}</h2>{isCommand(body) ? <pre><code>{body}</code></pre> : <p>{body}</p>}</section>)}<div className="docs-next"><span>Next</span><a href={next.href}>{next.label}</a></div></article></main>;
+  const currentKey = docPages[pageKey] ? pageKey : docAliases[pageKey] || 'overview';
+  const page = docPages[currentKey];
+  const currentIndex = docOrder.indexOf(currentKey);
+  const nextKey = docOrder[currentIndex + 1];
+  const next = nextKey
+    ? { href: `#/docs/${nextKey === 'overview' ? '' : nextKey}`, label: docPages[nextKey].title }
+    : { href: '#/collections', label: 'Browse collections' };
+  return <main className="docs-shell"><aside className="docs-sidebar"><span className="eyebrow">Documentation</span>{docNavigation.map((group) => <div className="docs-nav-group" key={group.label}><span className="docs-group">{group.label}</span>{group.pages.map(([key, label]) => <a className={currentKey === key ? 'active' : ''} href={key === 'overview' ? '#/docs' : `#/docs/${key}`} aria-current={currentKey === key ? 'page' : undefined} key={key}>{label}</a>)}</div>)}<div className="docs-nav-group"><span className="docs-group">Explore</span><a href="#/collections">Collections</a></div></aside><article className="docs-content"><span className="eyebrow">LLM Notary / Docs</span><h1>{page.title}</h1><p className="docs-lead">{page.lead}</p>{previewDocPages.has(currentKey) && <aside className="docs-preview"><b>Product preview</b><span>Deferred bundles, finalization, and <code>verify-trace</code> describe the next CLI release.</span></aside>}{page.blocks.map((block) => <DocsBlock block={block} key={block.heading} />)}<div className="docs-next"><span>Next</span><a href={next.href}>{next.label}</a></div></article></main>;
+}
+
+function formatTraceValue(value) {
+  if (typeof value === 'boolean') return String(value);
+  if (typeof value === 'number') return value.toLocaleString('en-US');
+  if (typeof value === 'object') return JSON.stringify(value);
+  return value;
 }
 
 function TraceField({ label, value }) {
-  return <span className="trace-field"><b>{label}</b><code>{value}</code></span>;
+  return <span className="trace-field"><b>{label}</b><code>{formatTraceValue(value)}</code></span>;
 }
 
 function MessagePart({ part }) {
@@ -239,7 +303,22 @@ function MessageGroup({ label, messages }) {
 }
 
 function SpanTree({ spans }) {
-  return <div className="span-tree" aria-label="Published trace spans">{spans.map((span, index) => <div className={`span-row span-row--${span.trust}`} style={{ '--span-depth': span.depth }} key={`${span.name}-${index}`}><div className="span-summary"><span className="span-branch" aria-hidden="true" /><span className="span-kind">{span.kind}</span><strong>{span.name}</strong><small>{span.detail}</small><em>{span.trust === 'source' ? 'Source verified' : 'Runtime reported'}</em></div>{span.messages && <div className="span-evidence"><MessageGroup label="gen_ai.input.messages" messages={span.messages.input} /><MessageGroup label="gen_ai.output.messages" messages={span.messages.output} /></div>}{span.attributes && <div className="span-evidence span-attributes"><span className="message-group-label">span attributes</span>{span.attributes.map(([name, value]) => <TraceField key={name} label={name} value={value} />)}</div>}</div>)}</div>;
+  const [expanded, setExpanded] = useState(() => new Set([0]));
+  useEffect(() => setExpanded(new Set([0])), [spans]);
+  const toggle = (index) => setExpanded((current) => {
+    const next = new Set(current);
+    if (next.has(index)) next.delete(index);
+    else next.add(index);
+    return next;
+  });
+  return <div className="span-tree" aria-label="Published trace spans">{spans.map((span, index) => {
+    const open = expanded.has(index);
+    return <div className="span-row span-row--source" key={`${span.spanId}-${index}`}><button type="button" className="span-summary" aria-expanded={open} onClick={() => toggle(index)}><span className="span-branch" aria-hidden="true" /><span className="span-kind">{span.kind}</span><strong>{span.name}</strong><span className="span-disclosure" aria-hidden="true" /><small>span <code>{span.spanId}</code></small><em>Provider verified</em></button>{open && <>{span.attributes && <div className="span-evidence span-attributes"><span className="message-group-label">attributes</span><div className="trace-fields">{span.attributes.map(([name, value]) => <TraceField key={name} label={name} value={value} />)}</div></div>}{span.messages && <div className="span-evidence span-messages"><MessageGroup label="gen_ai.input.messages" messages={span.messages.input} /><MessageGroup label="gen_ai.output.messages" messages={span.messages.output} /></div>}</>}</div>;
+  })}</div>;
+}
+
+function TraceEnvelope({ trace }) {
+  return <section className="trace-envelope" aria-label="OpenTelemetry trace metadata"><div className="trace-envelope-head"><span>OTLP envelope</span><small>Illustrative preview</small></div><div className="trace-envelope-grid"><TraceField label="trace_id" value={trace.id} /><TraceField label="service.name" value={trace.service} /><TraceField label="llmnotary.format" value={trace.format} /><TraceField label="llmnotary.normalizer.version" value={trace.normalizer} /><TraceField label="otel.semconv.version" value={trace.semconv} /><TraceField label="instrumentation_scope" value={trace.scope} /></div></section>;
 }
 
 function CollectionCard({ collection, active, onSelect }) {
@@ -260,8 +339,9 @@ function CollectionInspector({ collection, onVerify }) {
     <p>{collection.summary}</p>
     <div className="publication-files"><span>trace.otlp.json</span><span>stamp.json</span></div>
     <dl className="inspector-facts"><div><dt>Provider</dt><dd>{collection.host}</dd></div><div><dt>Model</dt><dd>{collection.model}</dd></div><div><dt>Source evidence</dt><dd>{collection.evidence}</dd></div><div><dt>Trace hash</dt><dd>{collection.hash}</dd></div><div><dt>Reuse</dt><dd>{collection.license}</dd></div><div><dt>Published</dt><dd>{collection.date}</dd></div></dl>
-    <section className="span-panel"><div className="span-panel-head"><span>Trace spans</span><small>Recorded operations and attributes</small></div><SpanTree spans={collection.spans} /></section>
-    <div className="trace-actions"><button onClick={onVerify}>Verify platform stamp</button><a href="#/docs/publish">Trace format</a></div>
+    <TraceEnvelope trace={collection.trace} />
+    <section className="span-panel"><div className="span-panel-head"><span>Trace spans</span><small>{collection.spans.length} of {collection.spanCount} spans shown</small></div><div className="trace-legend"><span><i className="source" /> Fields derived from verified provider exchanges</span></div><SpanTree spans={collection.spans} /></section>
+    <div className="trace-actions"><button onClick={onVerify}>Verify platform stamp</button><a href="#/docs/artifacts">Trace format</a></div>
   </article>;
 }
 
