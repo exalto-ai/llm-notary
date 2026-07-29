@@ -23,10 +23,10 @@ pub(crate) use verifier::ProxyVerifier;
 
 const AES_GCM_START_COUNTER: u32 = 2;
 
-/// TLS traffic secrets retained only by the prover for the opt-in ephemeral
-/// chunk proof prototype. They are never serialized, sent to the verifier, or
-/// decoded from the ZK VM.
-#[derive(Clone)]
+/// TLS traffic secrets retained only by the prover for private chunk proofs.
+/// Deferred proof callers may serialize them into a client-held encrypted
+/// checkpoint; they are never sent to the verifier or decoded from the ZK VM.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PlainSessionKeys {
     pub(crate) client_write_key: [u8; 16],
     pub(crate) client_write_iv: [u8; 4],

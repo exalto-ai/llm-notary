@@ -96,6 +96,19 @@ where
         Ok(Verifier::new(ctx, self.handle.clone(), config))
     }
 
+    /// Creates a bare protocol context for a deferred proof.
+    ///
+    /// Both parties must call this method in the same order on a fresh
+    /// [`Session`]. The resulting context is used only for the deferred proof
+    /// exchange; it does not create or retain a TLS connection.
+    pub fn new_context(&self) -> Result<mpz_common::Context> {
+        self.executor.new_context().map_err(|e| {
+            Error::internal()
+                .with_msg("failed to create deferred proof context")
+                .with_source(e)
+        })
+    }
+
     /// Returns `true` if the session is closed.
     pub fn is_closed(&self) -> bool {
         self.conn

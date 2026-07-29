@@ -47,6 +47,49 @@ pub(crate) async fn prove_ephemeral_chunks<T: Vm<Binary> + Send + Sync>(
     config: &ProveConfig,
     chunk_bytes: usize,
 ) -> Result<ProverOutput> {
+    let salt = rand::random();
+    let root_binding = prove_root_binding(ctx, root_vm, keys, salt).await?;
+    let sent_records = tls_transcript
+        .sent()
+        .iter()
+        .filter(|record| record.typ == ContentType::ApplicationData)
+        .collect::<Vec<_>>();
+    let recv_records = tls_transcript
+        .recv()
+        .iter()
+        .filter(|record| record.typ == ContentType::ApplicationData)
+        .collect::<Vec<_>>();
+    prove_ephemeral_chunks_from_binding(
+        ctx,
+        root_binding,
+        plain_keys,
+        transcript,
+        &sent_records,
+        &recv_records,
+        config,
+        chunk_bytes,
+        salt,
+    )
+    .await
+}
+
+/// Proves chunked private commitments using a root binding established during
+/// an earlier TLS commitment session.
+///
+/// This is an internal checkpointing primitive: the caller must obtain
+/// `root_binding` from the original root VM, and must authenticate that value
+/// before using it with a fresh proof channel.
+pub(crate) async fn prove_ephemeral_chunks_from_binding(
+    ctx: &mut Context,
+    root_binding: [u8; 32],
+    plain_keys: &PlainSessionKeys,
+    transcript: &Transcript,
+    sent_records: &[&tlsn_core::transcript::Record],
+    recv_records: &[&tlsn_core::transcript::Record],
+    config: &ProveConfig,
+    chunk_bytes: usize,
+    salt: [u8; 16],
+) -> Result<ProverOutput> {
     if config
         .reveal()
         .is_some_and(|(sent, recv)| !sent.is_empty() || !recv.is_empty())
@@ -87,19 +130,6 @@ pub(crate) async fn prove_ephemeral_chunks<T: Vm<Binary> + Send + Sync>(
         seen.union_mut(idx);
     }
 
-    let salt = rand::random();
-    let root_binding = prove_root_binding(ctx, root_vm, keys, salt).await?;
-
-    let sent_records = tls_transcript
-        .sent()
-        .iter()
-        .filter(|record| record.typ == ContentType::ApplicationData)
-        .collect::<Vec<_>>();
-    let recv_records = tls_transcript
-        .recv()
-        .iter()
-        .filter(|record| record.typ == ContentType::ApplicationData)
-        .collect::<Vec<_>>();
     let mut output = ProverOutput {
         transcript_commitments: Vec::new(),
         transcript_secrets: Vec::new(),

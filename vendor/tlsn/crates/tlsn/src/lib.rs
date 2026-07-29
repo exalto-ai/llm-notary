@@ -70,6 +70,9 @@
 #![deny(clippy::all)]
 #![forbid(unsafe_code)]
 
+/// Checkpoint state for completing a private proof after the live TLS relay
+/// has ended.
+pub mod deferred;
 mod deps;
 mod error;
 pub(crate) mod ghash;

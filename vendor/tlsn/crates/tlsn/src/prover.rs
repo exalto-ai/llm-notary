@@ -4,7 +4,7 @@ mod client;
 mod conn;
 mod control;
 mod future;
-mod prove;
+pub(crate) mod prove;
 pub mod state;
 
 pub use conn::TlsConnection;
@@ -517,6 +517,45 @@ impl Prover<state::Committed> {
     /// Returns the transcript.
     pub fn transcript(&self) -> &Transcript {
         &self.state.transcript
+    }
+
+    /// Reduces a completed Proxy-TLS session to the client-held state needed
+    /// by a fresh deferred proof channel.
+    ///
+    /// The returned state contains the original plaintext transcript and
+    /// traffic keys. Treat it as private data and encrypt it at rest. The
+    /// caller must obtain an authenticated receipt for its root binding and
+    /// encrypted record digest before accepting a later proof.
+    pub async fn into_deferred(
+        mut self,
+        salt: [u8; 16],
+    ) -> Result<crate::deferred::DeferredProverState> {
+        let ctx = self
+            .ctx
+            .as_mut()
+            .ok_or_else(|| Error::internal().with_msg("proving context was dropped"))?;
+        let state::Committed {
+            vm,
+            keys,
+            plain_keys,
+            tls_transcript,
+            transcript,
+            ..
+        } = &mut self.state;
+        let plain_keys = plain_keys.clone().ok_or_else(|| {
+            Error::user().with_msg("deferred private proofs require Proxy-TLS traffic keys")
+        })?;
+        let root_binding =
+            crate::transcript_internal::commit::binding::prove_root_binding(ctx, vm, keys, salt)
+                .await?;
+
+        Ok(crate::deferred::DeferredProverState {
+            root_binding,
+            salt,
+            plain_keys,
+            transcript: transcript.clone(),
+            records: crate::deferred::DeferredRecordTranscript::from_tls_transcript(tls_transcript),
+        })
     }
 
     /// Corrupts the local child-VM traffic key for negative integration tests.
