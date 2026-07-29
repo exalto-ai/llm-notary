@@ -1,12 +1,14 @@
 # Production examples runbook
 
-This directory prepares issue #43 but does not contain verified publications
-yet. `publications.json` must remain empty until the stacked publication PRs
-are reviewed, merged, deployed, and released.
+This directory records the inaugural production run for issue #43.
+`publications.json` may contain only production jobs that reached `admitted`
+and whose downloaded trace/stamp pair passed independent verification.
 
 ## Preconditions
 
-- Use the released `llm-notary` binary built from the deployed commit.
+- Use an optimized `llm-notary` binary built from the deployed commit. Before
+  a public CLI launch, repeat the workflow with the packaged release and clean
+  installer.
 - Sign in through the production site as the project-controlled `exalto-ai`
   account with `llm-notary login`.
 - Supply provider credentials only through their documented environment
