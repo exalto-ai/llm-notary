@@ -21,6 +21,7 @@ use url::Url;
 use uuid::Uuid;
 
 use certified::sha256_hex;
+use k256::ecdsa::VerifyingKey;
 
 const SESSION_COOKIE: &str = "llm_notary_session";
 const OAUTH_STATE_COOKIE: &str = "llm_notary_oauth_state";
@@ -39,8 +40,8 @@ struct AppState {
     callback_url: Url,
     app_url: Url,
     secure_cookies: bool,
-    notary_host: String,
-    notary_port: u16,
+    notary_key: NotaryDirectoryKey,
+    previous_notary_keys: Vec<NotaryDirectoryKey>,
 }
 
 #[derive(Deserialize)]
@@ -74,8 +75,20 @@ struct Health {
 
 #[derive(Serialize)]
 struct NotaryDirectoryEntry {
+    format: &'static str,
+    active: NotaryDirectoryKey,
+    previous: Vec<NotaryDirectoryKey>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct NotaryDirectoryKey {
     host: String,
     port: u16,
+    key_id: String,
+    public_key: String,
+    status: String,
+    valid_from_unix: u64,
+    valid_until_unix: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -301,6 +314,60 @@ impl AppState {
             .unwrap_or_else(|_| "7047".to_owned())
             .parse::<u16>()
             .context("LLM_NOTARY_NOTARY_PORT must be a valid TCP port")?;
+        let notary_public_key = env::var("LLM_NOTARY_NOTARY_PUBLIC_KEY")
+            .context("LLM_NOTARY_NOTARY_PUBLIC_KEY is required")?;
+        let public_key = hex::decode(&notary_public_key)
+            .context("LLM_NOTARY_NOTARY_PUBLIC_KEY must be hexadecimal")?;
+        VerifyingKey::from_sec1_bytes(&public_key)
+            .context("LLM_NOTARY_NOTARY_PUBLIC_KEY must be a SEC1 secp256k1 key")?;
+        let valid_from_unix = env::var("LLM_NOTARY_NOTARY_KEY_VALID_FROM_UNIX")
+            .unwrap_or_else(|_| "0".to_owned())
+            .parse::<u64>()
+            .context("LLM_NOTARY_NOTARY_KEY_VALID_FROM_UNIX must be a Unix timestamp")?;
+        let valid_until_unix = env::var("LLM_NOTARY_NOTARY_KEY_VALID_UNTIL_UNIX")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .context("LLM_NOTARY_NOTARY_KEY_VALID_UNTIL_UNIX must be a Unix timestamp")
+            })
+            .transpose()?;
+        if valid_until_unix.is_some_and(|until| until < valid_from_unix) {
+            bail!("LLM_NOTARY_NOTARY_KEY_VALID_UNTIL_UNIX must not precede the valid-from time");
+        }
+        let notary_key = NotaryDirectoryKey {
+            host: notary_host.clone(),
+            port: notary_port,
+            key_id: format!("sha256:{}", sha256_hex(&public_key)),
+            public_key: hex::encode(public_key),
+            status: "active".to_owned(),
+            valid_from_unix,
+            valid_until_unix,
+        };
+        let previous_notary_keys = env::var("LLM_NOTARY_NOTARY_PREVIOUS_KEYS_JSON")
+            .ok()
+            .filter(|value| !value.is_empty())
+            .map(|value| {
+                serde_json::from_str::<Vec<NotaryDirectoryKey>>(&value)
+                    .context("LLM_NOTARY_NOTARY_PREVIOUS_KEYS_JSON must be a JSON key array")
+            })
+            .transpose()?
+            .unwrap_or_default();
+        for key in &previous_notary_keys {
+            let bytes = hex::decode(&key.public_key)
+                .context("previous notary public key must be hexadecimal")?;
+            VerifyingKey::from_sec1_bytes(&bytes)
+                .context("previous notary public key must be a SEC1 secp256k1 key")?;
+            if key.key_id != format!("sha256:{}", sha256_hex(&bytes))
+                || key.status != "previous"
+                || key.valid_until_unix.is_none()
+            {
+                bail!(
+                    "previous notary keys must have matching IDs, status previous, and an expiry"
+                );
+            }
+        }
         let options = SqliteConnectOptions::from_str(&database_url)
             .context("DATABASE_URL must be a SQLite connection URL")?
             .create_if_missing(true)
@@ -326,8 +393,8 @@ impl AppState {
             callback_url,
             secure_cookies: app_url.scheme() == "https",
             app_url,
-            notary_host,
-            notary_port,
+            notary_key,
+            previous_notary_keys,
         })
     }
 
@@ -357,8 +424,9 @@ impl AppState {
 
 async fn notary(State(state): State<AppState>) -> Json<NotaryDirectoryEntry> {
     Json(NotaryDirectoryEntry {
-        host: state.notary_host,
-        port: state.notary_port,
+        format: "llm-notary/notary-directory/v1",
+        active: state.notary_key,
+        previous: state.previous_notary_keys,
     })
 }
 
@@ -1062,6 +1130,18 @@ fn required_env(name: &str) -> Result<String> {
 mod tests {
     use super::*;
 
+    fn directory_key() -> NotaryDirectoryKey {
+        NotaryDirectoryKey {
+            host: "notary.example.com".to_owned(),
+            port: 7047,
+            key_id: "sha256:test".to_owned(),
+            public_key: "02".to_owned(),
+            status: "active".to_owned(),
+            valid_from_unix: 0,
+            valid_until_unix: None,
+        }
+    }
+
     #[tokio::test]
     async fn authorization_url_uses_the_exact_callback_and_state() {
         let state = AppState {
@@ -1073,8 +1153,8 @@ mod tests {
                 .expect("callback URL"),
             app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
             secure_cookies: true,
-            notary_host: "notary.example.com".to_owned(),
-            notary_port: 7047,
+            notary_key: directory_key(),
+            previous_notary_keys: vec![],
         };
         let url = state
             .authorization_url("state-token")
@@ -1139,8 +1219,8 @@ mod tests {
                     .expect("callback URL"),
                 app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
                 secure_cookies: true,
-                notary_host: "notary.example.com".to_owned(),
-                notary_port: 7047,
+                notary_key: directory_key(),
+                previous_notary_keys: vec![],
             }),
             Json(RefreshRequest {
                 refresh_token: tokens.refresh_token,
@@ -1214,8 +1294,8 @@ mod tests {
                 .expect("callback URL"),
             app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
             secure_cookies: true,
-            notary_host: "notary.example.com".to_owned(),
-            notary_port: 7047,
+            notary_key: directory_key(),
+            previous_notary_keys: vec![],
         };
         let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
 
