@@ -9,6 +9,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY vendor/tlsn ./vendor/tlsn
 COPY src ./src
 COPY migrations ./migrations
+# `llm-notary-api` embeds the reviewed public collection manifest at compile
+# time. Keep task fixtures and run notes out of the production image context.
+COPY examples/production-seed/publications.json ./examples/production-seed/publications.json
 # The API and notary share a dependency graph. Building both here lets BuildKit
 # reuse one compilation for the two final images.
 RUN cargo build --release --no-default-features --features api --bin certified-notary --bin llm-notary-api

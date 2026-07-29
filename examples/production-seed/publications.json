@@ -1,0 +1,7 @@
+{
+  "format": "llm-notary/curated-collection/v1",
+  "slug": "llm-notary-examples",
+  "title": "LLM Notary Examples",
+  "description": "Small, reproducible model and agent tasks published through the same consent-based workflow available to every user.",
+  "publications": []
+}

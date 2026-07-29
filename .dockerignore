@@ -10,6 +10,9 @@
 !tests/**
 !migrations/
 !migrations/**
+!examples/
+!examples/production-seed/
+!examples/production-seed/publications.json
 !vendor/
 !vendor/tlsn/
 !vendor/tlsn/**

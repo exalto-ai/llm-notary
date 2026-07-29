@@ -9,6 +9,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
+use futures::{StreamExt, TryStreamExt, stream};
 use serde::Serialize;
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -26,6 +27,8 @@ use certified::{
 const ADMISSION_INTERVAL_SECS: u64 = 2;
 const CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
 const MAX_JOBS_PER_TICK: usize = 4;
+const MAX_CURATED_PUBLICATIONS: usize = 32;
+const COLLECTION_LOAD_CONCURRENCY: usize = 2;
 
 #[derive(FromRow)]
 struct PublicArtifactRow {
@@ -57,6 +60,55 @@ struct PlatformDirectory {
     public_key: String,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CuratedCollection {
+    format: String,
+    slug: String,
+    title: String,
+    description: String,
+    publications: Vec<CuratedPublication>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CuratedPublication {
+    id: String,
+    title: String,
+    category: String,
+    surface: String,
+    tool_use: bool,
+    tags: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct CollectionResponse {
+    format: &'static str,
+    slug: String,
+    title: String,
+    description: String,
+    consent_label: &'static str,
+    publications: Vec<CollectionPublication>,
+}
+
+#[derive(Serialize)]
+struct CollectionPublication {
+    id: String,
+    title: String,
+    category: String,
+    surface: String,
+    tool_use: bool,
+    tags: Vec<String>,
+    author: String,
+    admitted_at: i64,
+    provider: String,
+    host: String,
+    model: String,
+    span_count: usize,
+    trace_url: String,
+    stamp_url: String,
+}
+
 enum AdmissionFailure {
     Reject(&'static str, anyhow::Error),
     Retry(anyhow::Error),
@@ -79,6 +131,7 @@ struct StoredPublicArtifacts {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/platform", get(platform_directory))
+        .route("/api/public/collections/examples", get(examples_collection))
         .route("/api/public/traces/{trace_id}", get(public_trace_metadata))
         .route(
             "/api/public/traces/{trace_id}/trace.otlp.json",
@@ -88,6 +141,156 @@ pub fn router() -> Router<AppState> {
             "/api/public/traces/{trace_id}/stamp.json",
             get(public_stamp),
         )
+}
+
+async fn examples_collection(State(state): State<AppState>) -> ApiResult<Json<CollectionResponse>> {
+    let collection: CuratedCollection = serde_json::from_str(include_str!(
+        "../../examples/production-seed/publications.json"
+    ))
+    .map_err(|error| ApiError::internal(error.into()))?;
+    if collection.format != "llm-notary/curated-collection/v1"
+        || collection.slug != "llm-notary-examples"
+    {
+        return Err(ApiError::internal(anyhow::anyhow!(
+            "embedded examples collection has an unsupported identity"
+        )));
+    }
+    if collection.publications.len() > MAX_CURATED_PUBLICATIONS {
+        return Err(ApiError::internal(anyhow::anyhow!(
+            "embedded examples collection exceeds {MAX_CURATED_PUBLICATIONS} publications"
+        )));
+    }
+    let mut publications = stream::iter(
+        collection
+            .publications
+            .into_iter()
+            .map(|curated| collection_publication(&state, curated)),
+    )
+    .buffer_unordered(COLLECTION_LOAD_CONCURRENCY)
+    .try_collect::<Vec<_>>()
+    .await?
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    publications.sort_by(|left, right| right.admitted_at.cmp(&left.admitted_at));
+    Ok(Json(CollectionResponse {
+        format: "llm-notary/public-collection/v1",
+        slug: collection.slug,
+        title: collection.title,
+        description: collection.description,
+        consent_label: "Consent-based publication",
+        publications,
+    }))
+}
+
+async fn collection_publication(
+    state: &AppState,
+    curated: CuratedPublication,
+) -> ApiResult<Option<CollectionPublication>> {
+    let Some(artifact) = load_public_artifact_optional(state, &curated.id).await? else {
+        return Ok(None);
+    };
+    let (trace, stamp) = tokio::try_join!(
+        load_public_bytes(
+            state,
+            &artifact.public_trace_object_key,
+            artifact.public_trace_size_bytes,
+            &artifact.public_trace_sha256,
+        ),
+        load_public_bytes(
+            state,
+            &artifact.public_stamp_object_key,
+            artifact.public_stamp_size_bytes,
+            &artifact.public_stamp_sha256,
+        ),
+    )?;
+    let stamp: certified::public::PublicStamp =
+        serde_json::from_slice(&stamp).map_err(|error| ApiError::internal(error.into()))?;
+    let (model, span_count, tool_use) = trace_facts(&trace).map_err(ApiError::internal)?;
+    validate_curated_tool_use(&curated.id, curated.tool_use, tool_use)
+        .map_err(ApiError::internal)?;
+    Ok(Some(CollectionPublication {
+        id: artifact.id.clone(),
+        title: curated.title,
+        category: curated.category,
+        surface: curated.surface,
+        tool_use,
+        tags: curated.tags,
+        author: artifact.github_login,
+        admitted_at: artifact.admitted_at,
+        provider: stamp.provider.name,
+        host: stamp.provider.host,
+        model,
+        span_count,
+        trace_url: format!("/api/public/traces/{}/trace.otlp.json", artifact.id),
+        stamp_url: format!("/api/public/traces/{}/stamp.json", artifact.id),
+    }))
+}
+
+fn validate_curated_tool_use(id: &str, expected: bool, actual: bool) -> Result<()> {
+    if expected != actual {
+        bail!("curated tool-use label for {id} does not match its admitted trace");
+    }
+    Ok(())
+}
+
+fn trace_facts(trace: &[u8]) -> Result<(String, usize, bool)> {
+    let value: serde_json::Value = serde_json::from_slice(trace)?;
+    let spans = value
+        .pointer("/resourceSpans/0/scopeSpans/0/spans")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("public trace has no span array"))?;
+    let first = spans
+        .first()
+        .and_then(|span| span.get("attributes"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("public trace has no span attributes"))?;
+    let model = first
+        .iter()
+        .find(|attribute| {
+            attribute.get("key").and_then(serde_json::Value::as_str) == Some("gen_ai.request.model")
+        })
+        .and_then(|attribute| attribute.pointer("/value/stringValue"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("public trace has no request model"))?;
+    let tool_use = spans.iter().try_fold(false, |found, span| {
+        let attributes = span
+            .get("attributes")
+            .and_then(serde_json::Value::as_array)
+            .ok_or_else(|| anyhow::anyhow!("public trace span has no attributes"))?;
+        attributes
+            .iter()
+            .filter(|attribute| {
+                matches!(
+                    attribute.get("key").and_then(serde_json::Value::as_str),
+                    Some("gen_ai.input.messages" | "gen_ai.output.messages")
+                )
+            })
+            .try_fold(found, |found, attribute| {
+                let messages = attribute
+                    .pointer("/value/stringValue")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("public trace message attribute is not a string")
+                    })?;
+                let messages: serde_json::Value = serde_json::from_str(messages)?;
+                Ok::<_, anyhow::Error>(found || contains_tool_part(&messages))
+            })
+    })?;
+    Ok((model.to_owned(), spans.len(), tool_use))
+}
+
+fn contains_tool_part(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(values) => values.iter().any(contains_tool_part),
+        serde_json::Value::Object(values) => {
+            matches!(
+                values.get("type").and_then(serde_json::Value::as_str),
+                Some("tool_call" | "tool_call_response")
+            ) || values.values().any(contains_tool_part)
+        }
+        _ => false,
+    }
 }
 
 async fn platform_directory(State(state): State<AppState>) -> ApiResult<Json<PlatformDirectory>> {
@@ -589,6 +792,15 @@ async fn recover_stale_claims(state: &AppState) -> Result<()> {
 }
 
 async fn load_public_artifact(state: &AppState, trace_id: &str) -> ApiResult<PublicArtifactRow> {
+    load_public_artifact_optional(state, trace_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("public trace was not found"))
+}
+
+async fn load_public_artifact_optional(
+    state: &AppState,
+    trace_id: &str,
+) -> ApiResult<Option<PublicArtifactRow>> {
     sqlx::query_as(
         "SELECT publish_jobs.id, users.github_login, publish_jobs.admitted_at,
                 publish_jobs.public_trace_object_key,
@@ -606,8 +818,7 @@ async fn load_public_artifact(state: &AppState, trace_id: &str) -> ApiResult<Pub
     .bind(trace_id)
     .fetch_optional(&state.database)
     .await
-    .map_err(database_error)?
-    .ok_or_else(|| ApiError::not_found("public trace was not found"))
+    .map_err(database_error)
 }
 
 async fn public_trace_metadata(
@@ -785,6 +996,60 @@ mod tests {
         queued_job(&state, b"archive", &sha256_hex(b"archive")).await;
         assert!(claim_next_job(&state).await.unwrap().is_some());
         assert!(claim_next_job(&state).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn examples_collection_never_invents_unadmitted_records() {
+        let (state, _) = test_state().await;
+        let response = examples_collection(State(state)).await.unwrap().0;
+        assert_eq!(response.slug, "llm-notary-examples");
+        assert!(response.publications.is_empty());
+    }
+
+    #[test]
+    fn collection_tool_use_comes_from_authenticated_trace_messages() {
+        let trace = serde_json::json!({
+            "resourceSpans": [{
+                "scopeSpans": [{
+                    "spans": [{
+                        "attributes": [
+                            {"key": "gen_ai.request.model", "value": {"stringValue": "model-1"}},
+                            {"key": "gen_ai.input.messages", "value": {"stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"hello\"}]}]"}},
+                            {"key": "gen_ai.output.messages", "value": {"stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"call-1\",\"name\":\"lookup\",\"arguments\":{}}]}]"}}
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        assert_eq!(
+            trace_facts(&serde_json::to_vec(&trace).unwrap()).unwrap(),
+            ("model-1".to_owned(), 1, true)
+        );
+        assert!(validate_curated_tool_use("trace-1", true, true).is_ok());
+        assert!(validate_curated_tool_use("trace-1", false, true).is_err());
+    }
+
+    #[test]
+    fn collection_trace_without_tool_parts_is_not_labeled_as_tool_use() {
+        let trace = serde_json::json!({
+            "resourceSpans": [{
+                "scopeSpans": [{
+                    "spans": [{
+                        "attributes": [
+                            {"key": "gen_ai.request.model", "value": {"stringValue": "model-1"}},
+                            {"key": "gen_ai.input.messages", "value": {"stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"hello\"}]}]"}},
+                            {"key": "gen_ai.output.messages", "value": {"stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"hi\"}]}]"}}
+                        ]
+                    }]
+                }]
+            }]
+        });
+
+        assert_eq!(
+            trace_facts(&serde_json::to_vec(&trace).unwrap()).unwrap(),
+            ("model-1".to_owned(), 1, false)
+        );
     }
 
     #[tokio::test]
