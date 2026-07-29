@@ -192,26 +192,30 @@ impl DeferredRecordTranscript {
         self.recv.iter().map(DeferredRecord::to_record).collect()
     }
 
-    fn sent_len(&self) -> usize {
+    /// Returns the total encrypted application-data bytes sent by the client.
+    pub fn sent_len(&self) -> usize {
         self.sent.iter().map(|record| record.ciphertext.len()).sum()
     }
 
-    fn recv_len(&self) -> usize {
+    /// Returns the total encrypted application-data bytes received from the server.
+    pub fn recv_len(&self) -> usize {
         self.recv.iter().map(|record| record.ciphertext.len()).sum()
     }
 
     fn sent_ciphertext(&self) -> Vec<u8> {
-        self.sent
-            .iter()
-            .flat_map(|record| record.ciphertext.iter().copied())
-            .collect()
+        let mut ciphertext = Vec::with_capacity(self.sent_len());
+        for record in &self.sent {
+            ciphertext.extend_from_slice(&record.ciphertext);
+        }
+        ciphertext
     }
 
     fn recv_ciphertext(&self) -> Vec<u8> {
-        self.recv
-            .iter()
-            .flat_map(|record| record.ciphertext.iter().copied())
-            .collect()
+        let mut ciphertext = Vec::with_capacity(self.recv_len());
+        for record in &self.recv {
+            ciphertext.extend_from_slice(&record.ciphertext);
+        }
+        ciphertext
     }
 }
 

@@ -1,0 +1,16 @@
+[package]
+name = "spartan2-zk-sha256-control"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Isolated changed-assumption experiment. This must never be linked into the
+# production capture/proof path without a separate security decision and audit.
+
+[dependencies]
+bincode = "1.3"
+bellpepper = "0.4"
+bellpepper-core = "0.4"
+ff = "0.13"
+sha2 = "0.10"
+spartan2 = "0.9"

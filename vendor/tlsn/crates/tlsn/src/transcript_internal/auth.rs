@@ -5,7 +5,7 @@ use ctr::{
     Ctr32BE,
     cipher::{KeyIvInit, StreamCipher, StreamCipherSeek},
 };
-use mpz_circuits::{AES128, circuits::xor};
+use mpz_circuits::{AES128_KS, AES128_POST_KS, circuits::xor};
 use mpz_core::bitvec::BitVec;
 use mpz_memory_core::{
     Array, DecodeFutureTyped, MemoryExt, Vector, ViewExt,
@@ -227,6 +227,18 @@ fn alloc_keystream<'a>(
     records: impl IntoIterator<Item = &'a RecordParams>,
 ) -> Result<Vec<Vector<U8>>, PlaintextAuthError> {
     let mut keystream = Vec::new();
+    // Every CTR block uses the same hidden traffic key. Build its authenticated
+    // AES schedule once, then use the equivalent post-schedule circuit for
+    // each counter block. This preserves the AES relation while avoiding a
+    // full key expansion per 16-byte block.
+    let key_schedule: Array<U8, 176> = vm
+        .call(
+            Call::builder(AES128_KS.clone())
+                .arg(key)
+                .build()
+                .expect("call should be valid"),
+        )
+        .map_err(PlaintextAuthError::vm)?;
 
     let mut pos = 0;
     let mut range_iter = ranges.iter();
@@ -263,7 +275,7 @@ fn alloc_keystream<'a>(
             {
                 block
             } else {
-                let block = alloc_block(vm, key, iv, explicit_nonce, block_num)?;
+                let block = alloc_block(vm, key_schedule, iv, explicit_nonce, block_num)?;
                 current_block = Some((block_num, block));
                 block
             };
@@ -306,7 +318,7 @@ fn alloc_explicit_nonce(
 
 fn alloc_block(
     vm: &mut dyn Vm<Binary>,
-    key: Array<U8, 16>,
+    key_schedule: Array<U8, 176>,
     iv: Array<U8, 4>,
     explicit_nonce: Vector<U8>,
     block: usize,
@@ -320,8 +332,8 @@ fn alloc_block(
 
     let block: Array<U8, 16> = vm
         .call(
-            Call::builder(AES128.clone())
-                .arg(key)
+            Call::builder(AES128_POST_KS.clone())
+                .arg(key_schedule)
                 .arg(iv)
                 .arg(explicit_nonce)
                 .arg(ctr)

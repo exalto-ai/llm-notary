@@ -1,9 +1,11 @@
 //! Opt-in split-process resource benchmark for the Proxy-TLS proof path.
 //!
-//! Run this in a client container on the same Docker network as a
-//! `certified-notary` container. Give this client the network alias
-//! `test-server.io`; the client hosts the TLS echo fixture on port 443 while
-//! the separate notary container connects to it.
+//! Run this in a client container on the same Docker network as a **test-only**
+//! notary that trusts `tls_server_fixture`'s CA. Give this client the network
+//! alias `test-server.io`; the client hosts the TLS echo fixture on port 443
+//! while the separate notary container connects to it. The production
+//! `certified-notary` correctly trusts only its configured public roots, so it
+//! must not be weakened to run this fixture.
 //!
 //! Example:
 //! `TLSN_PROFILE_TOKENS=1050000 TLSN_ZK_EPHEMERAL_CHUNK_BYTES=1048576 \
@@ -13,6 +15,7 @@
 use std::{env, time::Instant};
 
 use anyhow::{Context, Result};
+use certified::start_notary_capture_session;
 use http::Request;
 use http_body_util::{BodyExt, Full};
 use hyper::{body::Bytes, client::conn::http1};
@@ -149,9 +152,10 @@ async fn profiles_notary_and_client_in_separate_processes() -> Result<()> {
         Result::<()>::Ok(())
     });
 
-    let socket = tokio::net::TcpStream::connect(&notary_addr)
+    let mut socket = tokio::net::TcpStream::connect(&notary_addr)
         .await
         .with_context(|| format!("connect to notary at {notary_addr}"))?;
+    start_notary_capture_session(&mut socket).await?;
     let mut session = Session::new(socket.compat());
     let prover = session.new_prover(ProverConfig::builder().build()?)?;
     let (driver, _handle) = session.split();

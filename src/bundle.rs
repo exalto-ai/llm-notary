@@ -4,6 +4,7 @@ use std::{
     fs,
     net::SocketAddr,
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use anyhow::{Context, Result, bail};
@@ -59,14 +60,33 @@ pub async fn finalize_bundle(
     notary_addr: SocketAddr,
     max_frame_bytes: usize,
 ) -> Result<PathBuf> {
+    let load_started = Instant::now();
     let bundle = DeferredBundle::load(bundle_path, vault)?;
+    tracing::info!(
+        finalization_phase = "bundle-loading-and-decryption",
+        elapsed_ms = load_started.elapsed().as_millis(),
+        bundle = %bundle_path.display(),
+        "completed deferred finalization phase"
+    );
+    let proof_started = Instant::now();
     let proof =
         finalize_deferred_bundle(notary_addr, &bundle, trusted_notary_key, max_frame_bytes).await?;
+    tracing::info!(
+        finalization_phase = "deferred-proof-finalization",
+        elapsed_ms = proof_started.elapsed().as_millis(),
+        "completed deferred finalization phase"
+    );
+    let presentation_started = Instant::now();
     let capture = make_capture(
         &proof,
         bundle.capture_id().to_owned(),
         bundle.provider_name().to_owned(),
     )?;
+    tracing::info!(
+        finalization_phase = "presentation-generation-and-verification",
+        elapsed_ms = presentation_started.elapsed().as_millis(),
+        "completed deferred finalization phase"
+    );
     write_trace_package(&capture, output_dir, trusted_notary_key)
 }
 
@@ -89,8 +109,15 @@ pub(crate) fn write_trace_package_with_provider(
     trusted_notary_key: &[u8],
     crypto_provider: &CryptoProvider,
 ) -> Result<PathBuf> {
+    let verification_started = Instant::now();
     let (source, request, response) =
         verify_capture_value_with_provider(capture, trusted_notary_key, crypto_provider)?;
+    tracing::info!(
+        finalization_phase = "source-capture-verification",
+        elapsed_ms = verification_started.elapsed().as_millis(),
+        "completed deferred finalization phase"
+    );
+    let normalization_started = Instant::now();
     let inference = verified_inference_from_capture(&source, &request, &response)?;
     let trace = render_public_trace(&[inference])?;
     let manifest = VerifiedTraceManifest {
@@ -100,7 +127,20 @@ pub(crate) fn write_trace_package_with_provider(
         trace_sha256: sha256_hex(&trace),
     };
 
+    tracing::info!(
+        finalization_phase = "provider-normalization",
+        elapsed_ms = normalization_started.elapsed().as_millis(),
+        trace_bytes = trace.len(),
+        "completed deferred finalization phase"
+    );
+    let package_started = Instant::now();
     write_package(output_dir, capture, &trace, &manifest)?;
+    tracing::info!(
+        finalization_phase = "trace-package-writing",
+        elapsed_ms = package_started.elapsed().as_millis(),
+        output = %output_dir.display(),
+        "completed deferred finalization"
+    );
     Ok(output_dir.to_path_buf())
 }
 

@@ -42,9 +42,12 @@ use tlsn::{
         CertBinding, ConnectionInfo, DnsName, HandshakeData, ServerEphemKey, ServerName,
         TranscriptLength,
     },
+    hash::HashAlgId,
     prover::ProverOutput,
     rangeset::set::RangeSet,
-    transcript::{ContentType, Direction, Transcript, TranscriptCommitConfig},
+    transcript::{
+        ContentType, Direction, Transcript, TranscriptCommitConfig, TranscriptCommitmentKind,
+    },
     verifier::VerifierCommitStart,
     webpki::RootCertStore,
 };
@@ -71,6 +74,10 @@ const REQUEST_WRITE_CHUNK: usize = 8 << 10;
 /// Keeps the bounded proof path below the 1 GiB notary budget in the measured
 /// Proxy-TLS configuration.
 const CHUNKED_PROOF_BYTES: usize = 128 << 10;
+/// BLAKE3's 1 KiB streaming chunks are substantially cheaper than SHA-256's
+/// 64-byte compression schedule in the bounded private-proof engine. The
+/// algorithm identifier is carried in the proof and verified by TLSN.
+const PRIVATE_PROOF_HASH_ALG: HashAlgId = HashAlgId::BLAKE3;
 pub const CAPTURE_FORMAT: &str = "llm-notary/capture/v1";
 const DEFERRED_BUNDLE_FORMAT: &str = "llm-notary/deferred-bundle/v1";
 const DEFERRED_RECEIPT_FORMAT: &str = "llm-notary/deferred-receipt/v1";
@@ -116,6 +123,9 @@ fn deferred_transcript_commit(transcript: &Transcript) -> Result<TranscriptCommi
         bail!("expected exactly one HTTP request and response in TLS transcript");
     }
     let mut builder = TranscriptCommitConfig::builder(transcript);
+    builder.default_kind(TranscriptCommitmentKind::Hash {
+        alg: PRIVATE_PROOF_HASH_ALG,
+    });
     commit_chunked_private_http(&mut builder, &http)?;
     Ok(builder.build()?)
 }
@@ -485,6 +495,14 @@ async fn complete_deferred_response<F>(
     let _ = bundle_sender.send(seal.await);
 }
 
+/// Starts a raw Proxy-TLS capture session with an LLM Notary service.
+///
+/// This is needed by low-level clients that construct a TLSN [`Session`]
+/// directly, including the split-process resource profile.
+pub async fn start_notary_capture_session(socket: &mut TcpStream) -> Result<()> {
+    write_notary_prelude(socket, NOTARY_MODE_CAPTURE).await
+}
+
 /// Streams one provider request and returns a client-held deferred bundle at
 /// end-of-stream without running the expensive private proof.
 pub async fn deferred_streaming_request(
@@ -501,7 +519,7 @@ pub async fn deferred_streaming_request(
         .await
         .with_context(|| format!("connecting to notary at {notary_addr}"))?;
     notary_socket.set_nodelay(true)?;
-    write_notary_prelude(&mut notary_socket, NOTARY_MODE_CAPTURE).await?;
+    start_notary_capture_session(&mut notary_socket).await?;
 
     let session = Session::new(notary_socket.compat());
     let (driver, mut handle) = session.split();
@@ -602,10 +620,21 @@ pub async fn finalize_deferred_bundle(
     trusted_notary_key: &[u8],
     max_frame_bytes: usize,
 ) -> Result<LocalProof> {
+    let finalization_started = Instant::now();
     validate_notary_frame_limit(max_frame_bytes)?;
     bundle.receipt.verify(trusted_notary_key)?;
     let state = bundle.checkpoint()?;
+    tracing::info!(
+        finalization_phase = "receipt-validation-and-bundle-reconstruction",
+        elapsed_ms = finalization_started.elapsed().as_millis(),
+        transcript_sent_bytes = state.transcript().sent().len(),
+        transcript_received_bytes = state.transcript().received().len(),
+        "completed deferred finalization phase"
+    );
+
+    let commitment_started = Instant::now();
     let transcript_commit = deferred_transcript_commit(state.transcript())?;
+    let commitment_count = transcript_commit.to_request().iter_hash().count();
     let mut request_config_builder = RequestConfig::builder();
     request_config_builder.transcript_commit(transcript_commit.clone());
     let request_config = request_config_builder.build()?;
@@ -613,7 +642,14 @@ pub async fn finalize_deferred_bundle(
     prove_config_builder.transcript_commit(transcript_commit);
     prove_config_builder.chunked_private_commitments(CHUNKED_PROOF_BYTES)?;
     let prove_config = prove_config_builder.build()?;
+    tracing::info!(
+        finalization_phase = "commitment-construction",
+        elapsed_ms = commitment_started.elapsed().as_millis(),
+        commitment_count,
+        "completed deferred finalization phase"
+    );
 
+    let reconnect_started = Instant::now();
     let mut socket = TcpStream::connect(notary_addr)
         .await
         .with_context(|| format!("connecting to notary at {notary_addr}"))?;
@@ -624,12 +660,21 @@ pub async fn finalize_deferred_bundle(
         records: state.records().clone(),
         prove_request: prove_config.to_request(),
     };
-    write_tokio_frame(&mut socket, &bincode::serialize(&request)?, max_frame_bytes).await?;
+    let request = bincode::serialize(&request)?;
+    let request_bytes = request.len();
+    write_tokio_frame(&mut socket, &request, max_frame_bytes).await?;
+    tracing::info!(
+        finalization_phase = "notary-reconnect-and-request",
+        elapsed_ms = reconnect_started.elapsed().as_millis(),
+        protocol_frame_bytes = request_bytes,
+        "completed deferred finalization phase"
+    );
 
     let session = Session::new(socket.compat());
     let mut prover_context = session.new_context()?;
     let (driver, handle) = session.split();
     let driver_task = tokio::spawn(driver);
+    let proof_started = Instant::now();
     let ProverOutput {
         transcript_commitments,
         transcript_secrets,
@@ -637,7 +682,14 @@ pub async fn finalize_deferred_bundle(
     } = state
         .prove(&mut prover_context, &prove_config, CHUNKED_PROOF_BYTES)
         .await?;
+    tracing::info!(
+        finalization_phase = "private-proof-computation",
+        elapsed_ms = proof_started.elapsed().as_millis(),
+        commitment_count = transcript_commitments.len(),
+        "completed deferred finalization phase"
+    );
 
+    let attestation_started = Instant::now();
     let mut attestation_builder = AttestationRequest::builder(&request_config);
     attestation_builder
         .server_name(ServerName::Dns(
@@ -658,6 +710,12 @@ pub async fn finalize_deferred_bundle(
     let attestation: Attestation =
         bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
     attestation_request.validate(&attestation, &CryptoProvider::default())?;
+    tracing::info!(
+        finalization_phase = "attestation-generation-and-verification",
+        elapsed_ms = attestation_started.elapsed().as_millis(),
+        total_elapsed_ms = finalization_started.elapsed().as_millis(),
+        "completed deferred finalization"
+    );
     Ok(LocalProof {
         server_name: bundle.receipt.server_name.clone(),
         attestation: bincode::serialize(&attestation)?,
@@ -808,6 +866,7 @@ async fn run_deferred_finalize_session(
     max_private_chunk_commitments: usize,
     max_frame_bytes: usize,
 ) -> Result<()> {
+    let finalization_started = Instant::now();
     let request: DeferredFinalizeRequest =
         bincode::deserialize(&read_tokio_frame(&mut socket, max_frame_bytes).await?)?;
     request
@@ -820,13 +879,33 @@ async fn run_deferred_finalize_session(
         max_total_private_chunk_bytes,
         max_private_chunk_commitments,
     )?;
+    tracing::info!(
+        finalization_phase = "finalize-request-validation",
+        role = "notary",
+        elapsed_ms = finalization_started.elapsed().as_millis(),
+        encrypted_sent_bytes = request.records.sent_len(),
+        encrypted_received_bytes = request.records.recv_len(),
+        commitment_count = request
+            .prove_request
+            .transcript_commit()
+            .map_or(0, |commit| commit.iter_hash().count()),
+        "completed deferred finalization phase"
+    );
 
+    let setup_started = Instant::now();
     let session = Session::new(socket.compat());
     let mut verifier_context = session.new_context()?;
     let (driver, handle) = session.split();
     let driver_task = tokio::spawn(driver);
     let verifier =
         tlsn::deferred::DeferredVerifierState::new(request.receipt.root_binding, request.records);
+    tracing::info!(
+        finalization_phase = "private-proof-setup",
+        role = "notary",
+        elapsed_ms = setup_started.elapsed().as_millis(),
+        "completed deferred finalization phase"
+    );
+    let proof_started = Instant::now();
     let output = verifier
         .verify(
             &mut verifier_context,
@@ -837,10 +916,18 @@ async fn run_deferred_finalize_session(
             max_private_chunk_bytes,
         )
         .await?;
+    tracing::info!(
+        finalization_phase = "private-proof-computation",
+        role = "notary",
+        elapsed_ms = proof_started.elapsed().as_millis(),
+        commitment_count = output.transcript_commitments.len(),
+        "completed deferred finalization phase"
+    );
     handle.close();
     let mut socket = driver_task.await??;
     let attestation_request: AttestationRequest =
         bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
+    let attestation_started = Instant::now();
     let attestation = sign_attestation(
         &signing_key,
         attestation_request,
@@ -854,6 +941,13 @@ async fn run_deferred_finalize_session(
         max_frame_bytes,
     )
     .await?;
+    tracing::info!(
+        finalization_phase = "attestation-generation",
+        role = "notary",
+        elapsed_ms = attestation_started.elapsed().as_millis(),
+        total_elapsed_ms = finalization_started.elapsed().as_millis(),
+        "completed deferred finalization"
+    );
     Ok(())
 }
 
@@ -1539,6 +1633,13 @@ mod tests {
             config.to_request().iter_hash().count(),
             2,
             "one bounded commitment should cover each HTTP direction"
+        );
+        assert!(
+            config
+                .to_request()
+                .iter_hash()
+                .all(|(_, _, algorithm)| *algorithm == PRIVATE_PROOF_HASH_ALG),
+            "private proofs must pin their documented hash algorithm"
         );
         for (direction, ranges, _) in config.to_request().iter_hash() {
             let headers = match direction {

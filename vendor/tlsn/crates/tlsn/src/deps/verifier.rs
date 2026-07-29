@@ -60,9 +60,29 @@ pub(crate) fn new_verifier_zk_vm() -> VerifierZk {
                 Block::random(&mut rng),
                 rcot_send,
             );
-            VerifierZk::new(Default::default(), delta, SharedRCOTSender::new(rcot_send))
+            VerifierZk::new(
+                ephemeral_zk_config(),
+                delta,
+                SharedRCOTSender::new(rcot_send),
+            )
         }}
     }
+}
+
+/// See the prover-side profile override. Both peers must use the same value.
+#[cfg(not(tlsn_insecure))]
+fn ephemeral_zk_config() -> mpz_zk::VerifierConfig {
+    let Some(batch_size) = std::env::var("TLSN_ZK_PROFILE_BATCH_GATES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|batch_size| *batch_size > 0)
+    else {
+        return Default::default();
+    };
+    mpz_zk::VerifierConfig::builder()
+        .batch_size(batch_size)
+        .build()
+        .expect("profiled QuickSilver batch size is valid")
 }
 
 /// Protocol dependencies for Mpc.

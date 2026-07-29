@@ -1,0 +1,26 @@
+[package]
+name = "plonky3-zk-control"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Isolated transparent-ZK-STARK feasibility control. It is intentionally not a
+# production dependency and proves only a synthetic private multiplication trace.
+
+[dependencies]
+p3-air = "0.6"
+p3-baby-bear = "0.6"
+p3-batch-stark = { version = "0.6", features = ["parallel"] }
+p3-blake3-air = { version = "0.6", features = ["parallel"] }
+p3-challenger = "0.6"
+p3-commit = "0.6"
+p3-dft = { version = "0.6", features = ["parallel"] }
+p3-field = "0.6"
+p3-fri = "0.6"
+p3-lookup = { version = "0.6", features = ["parallel"] }
+p3-matrix = "0.6"
+p3-merkle-tree = "0.6"
+p3-symmetric = "0.6"
+p3-uni-stark = { version = "0.6", features = ["parallel"] }
+postcard = { version = "1", features = ["alloc"] }
+rand = "0.10"

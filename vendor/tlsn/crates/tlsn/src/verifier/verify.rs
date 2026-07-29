@@ -33,6 +33,17 @@ const STANDARD_PLAINTEXT_AUTH_BATCH_BYTES: usize = usize::MAX;
 /// child VM schedules the same authentication circuit.
 const EPHEMERAL_PLAINTEXT_AUTH_BATCH_BYTES: usize = 2048;
 
+/// Paired local profiling override for the deferred proof scheduler. It has no
+/// effect unless both peers opt in with the same positive value; production
+/// keeps the bounded 2 KiB default.
+fn ephemeral_plaintext_auth_batch_bytes() -> usize {
+    std::env::var("TLSN_ZK_PROFILE_PLAINTEXT_AUTH_BATCH_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(EPHEMERAL_PLAINTEXT_AUTH_BATCH_BYTES)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn verify_ephemeral_chunks<T: Vm<Binary> + Send + Sync>(
     ctx: &mut Context,
@@ -110,9 +121,21 @@ pub(crate) async fn verify_ephemeral_chunks_from_binding(
         seen.union_mut(idx);
     }
     let mut commitments = Vec::new();
-    for (direction, idx, alg) in idxs {
+    let authentication_batch_bytes = ephemeral_plaintext_auth_batch_bytes();
+    let chunk_count = idxs.len();
+    for (chunk_index, (direction, idx, alg)) in idxs.into_iter().enumerate() {
         let chunk_start = Instant::now();
         let chunk_len = idx.len();
+        let authentication_batches = authentication_batch_count(&idx, authentication_batch_bytes);
+        tracing::info!(
+            finalization_phase = "private-proof",
+            role = "verifier",
+            chunk = chunk_index + 1,
+            chunk_count,
+            direction = ?direction,
+            bytes = chunk_len,
+            "starting deferred private-proof chunk"
+        );
         let mut child = new_verifier_zk_vm();
         let (child_keys, child_ivs, binding) = verify_child_binding(ctx, &mut child).await?;
         let binding_ms = chunk_start.elapsed().as_millis();
@@ -145,7 +168,7 @@ pub(crate) async fn verify_ephemeral_chunks_from_binding(
             records,
             &RangeSet::default(),
             &idx,
-            EPHEMERAL_PLAINTEXT_AUTH_BATCH_BYTES,
+            authentication_batch_bytes,
         )
         .await?;
         child
@@ -170,7 +193,22 @@ pub(crate) async fn verify_ephemeral_chunks_from_binding(
             commitments.push(TranscriptCommitment::Hash(commitment));
         }
         let hash_ms = chunk_start.elapsed().as_millis() - binding_ms - authentication_ms;
-        profile_chunk_timing(direction, chunk_len, binding_ms, authentication_ms, hash_ms);
+        profile_chunk_timing(
+            direction,
+            chunk_len,
+            authentication_batches,
+            binding_ms,
+            authentication_ms,
+            hash_ms,
+        );
+        tracing::info!(
+            finalization_phase = "private-proof",
+            role = "verifier",
+            chunk = chunk_index + 1,
+            chunk_count,
+            elapsed_ms = chunk_start.elapsed().as_millis(),
+            "completed deferred private-proof chunk"
+        );
     }
     Ok(VerifierOutput {
         server_name,
@@ -198,15 +236,23 @@ fn profile_memory_checkpoint(phase: &str) {
 fn profile_chunk_timing(
     direction: Direction,
     bytes: usize,
+    authentication_batches: usize,
     binding_ms: u128,
     authentication_ms: u128,
     hash_ms: u128,
 ) {
     if std::env::var("TLSN_ZK_PROFILE_CHUNKS").as_deref() == Ok("1") {
         eprintln!(
-            "tlsn_zk_chunk role=verifier direction={direction:?} bytes={bytes} binding_ms={binding_ms} authentication_ms={authentication_ms} hash_ms={hash_ms}",
+            "tlsn_zk_chunk role=verifier direction={direction:?} bytes={bytes} authentication_batches={authentication_batches} binding_ms={binding_ms} authentication_ms={authentication_ms} hash_ms={hash_ms}",
         );
     }
+}
+
+fn authentication_batch_count(idx: &RangeSet<usize>, batch_bytes: usize) -> usize {
+    idx.iter()
+        .filter(|range| range.start < range.end)
+        .map(|range| (range.end - 1) / batch_bytes - range.start / batch_bytes + 1)
+        .sum()
 }
 
 fn merge_refs(parts: Vec<ReferenceMap>) -> ReferenceMap {

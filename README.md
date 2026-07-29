@@ -265,6 +265,39 @@ bundles. Large agent transcripts remain expensive to finalize—a roughly
 build—so deferred finalization avoids blocking the live chat but does not yet
 solve proof latency.
 
+### Profiling deferred finalization
+
+Finalization logs every client and notary phase at `INFO`, then emits one
+progress update per bounded private-proof chunk. The logs contain only byte
+counts, commitment counts, phase durations, and encrypted-frame sizes; they do
+not include HTTP plaintext or credentials. Use `RUST_LOG=info` when running
+the proxy, finalizer, or notary to retain those measurements.
+
+The deterministic, offline core-proof benchmark accepts payload sizes through
+`TLSN_PROFILE_BYTES`. Run it in release mode and record the printed elapsed
+time, per-proof duration, commitment count, and memory metrics on the target
+hardware:
+
+```bash
+# Small direct interaction, tool interaction, agent trace, and a 2.4 MB
+# combined request/response trace. The echo fixture carries this body in both
+# directions, so the final value is half the desired combined size.
+for bytes in 10240 102400 1048576 1200000; do
+  TLSN_PROFILE_BYTES="$bytes" \
+  TLSN_PROFILE_CHUNKED_BODY_COMMIT=1 \
+  TLSN_ZK_EPHEMERAL_CHUNK_BYTES=131072 \
+  cargo test --release --test proxy_tls_profile \
+    profiles_proxy_tls_http_commitment_and_proof -- --ignored --nocapture
+done
+```
+
+This is an upper-bound-style local protocol profile: it uses an in-memory
+proxy/notary link and a deterministic TLS echo fixture, so it intentionally
+excludes provider latency and real private bundle contents. For deployment
+capacity, run `tests/proxy_tls_split_profile.rs` in separate client and notary
+containers as documented at the top of that test, with the notary's configured
+concurrency limit.
+
 This remains an HTTP/1.1 prototype. WebSocket relaying, multiple notaries, and
 a public transparency log remain future work.
 

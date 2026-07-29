@@ -1,0 +1,16 @@
+[package]
+name = "receipt-bound-reference"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+# Deliberately independent from the production dependency graph. This is the
+# deterministic reference evaluator and mutation oracle for a future custom
+# ZK backend; it does not generate a proof or process a real capture.
+
+[dependencies]
+aes = "0.8"
+blake3 = "1.8"
+ctr = "0.9"
+sha2 = "0.10"
+thiserror = "2"

@@ -57,9 +57,28 @@ pub(crate) fn new_prover_zk_vm() -> ProverZk {
                 Block::random(&mut rng),
                 rcot_recv,
             );
-            ProverZk::new(Default::default(), SharedRCOTReceiver::new(rcot_recv))
+            ProverZk::new(ephemeral_zk_config(), SharedRCOTReceiver::new(rcot_recv))
         }}
     }
+}
+
+/// Overrides the QuickSilver consistency-check batch only for paired local
+/// profiling. The value controls scheduling, not the proof statement; both
+/// peers must use the same setting because it changes protocol message
+/// boundaries. Production keeps MPZ's default when this is unset.
+#[cfg(not(tlsn_insecure))]
+fn ephemeral_zk_config() -> mpz_zk::ProverConfig {
+    let Some(batch_size) = std::env::var("TLSN_ZK_PROFILE_BATCH_GATES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|batch_size| *batch_size > 0)
+    else {
+        return Default::default();
+    };
+    mpz_zk::ProverConfig::builder()
+        .batch_size(batch_size)
+        .build()
+        .expect("profiled QuickSilver batch size is valid")
 }
 
 /// Protocol dependencies for MPC.
