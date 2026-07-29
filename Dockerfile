@@ -9,7 +9,7 @@ COPY src ./src
 COPY migrations ./migrations
 # The API and notary share a dependency graph. Building both here lets BuildKit
 # reuse one compilation for the two final images.
-RUN cargo build --release --no-default-features --bin certified-notary --bin llm-notary-api
+RUN cargo build --release --no-default-features --features api --bin certified-notary --bin llm-notary-api
 
 # Opt-in target for the split-process resource benchmark. It deliberately is
 # not part of the production image: the test client also hosts a local TLS
