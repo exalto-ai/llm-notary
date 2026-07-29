@@ -1,0 +1,827 @@
+use std::{collections::BTreeMap, time::Duration};
+
+use axum::{
+    Json, Router,
+    extract::{Path, State},
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+    routing::{get, post},
+};
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
+use uuid::Uuid;
+
+use super::{
+    ApiError, ApiResult, AppState, bearer_token, database_error,
+    intake::{ARCHIVE_FORMAT, IntakeStorage},
+    unix_timestamp,
+};
+
+const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
+const DEFAULT_MAX_ARCHIVE_BYTES: i64 = 128 * 1024 * 1024;
+const DEFAULT_UPLOAD_TTL_SECS: i64 = 15 * 60;
+const CLEANUP_INTERVAL_SECS: u64 = 10 * 60;
+
+#[derive(Clone)]
+pub struct PublishService {
+    storage: IntakeStorage,
+    max_archive_bytes: i64,
+    upload_ttl_secs: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CreatePublishJob {
+    archive_format: String,
+    size_bytes: i64,
+    sha256: String,
+}
+
+#[derive(Serialize)]
+struct CreatePublishJobResponse {
+    job: PublishJobResponse,
+    upload: Option<UploadInstructions>,
+}
+
+#[derive(Serialize)]
+struct UploadInstructions {
+    method: String,
+    url: String,
+    headers: BTreeMap<String, String>,
+    expires_at: i64,
+}
+
+#[derive(Serialize)]
+struct PublishJobResponse {
+    id: String,
+    state: String,
+    archive_format: String,
+    size_bytes: i64,
+    sha256: String,
+    created_at: i64,
+    updated_at: i64,
+    upload_expires_at: i64,
+    queued_at: Option<i64>,
+    failure_code: Option<String>,
+    status_url: String,
+}
+
+#[derive(FromRow)]
+struct PublishJobRow {
+    id: String,
+    state: String,
+    archive_format: String,
+    declared_size_bytes: i64,
+    declared_sha256: String,
+    upload_object_key: String,
+    intake_object_key: String,
+    upload_expires_at: i64,
+    created_at: i64,
+    updated_at: i64,
+    queued_at: Option<i64>,
+    failure_code: Option<String>,
+}
+
+impl PublishService {
+    pub fn from_env() -> anyhow::Result<Self> {
+        let max_archive_bytes =
+            integer_env("LLM_NOTARY_INTAKE_MAX_BYTES")?.unwrap_or(DEFAULT_MAX_ARCHIVE_BYTES);
+        if max_archive_bytes <= 0 {
+            anyhow::bail!("LLM_NOTARY_INTAKE_MAX_BYTES must be positive");
+        }
+        let upload_ttl_secs =
+            integer_env("LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS")?.unwrap_or(DEFAULT_UPLOAD_TTL_SECS);
+        if !(60..=24 * 60 * 60).contains(&upload_ttl_secs) {
+            anyhow::bail!("LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS must be between 60 and 86400 seconds");
+        }
+        Ok(Self {
+            storage: IntakeStorage::from_env()?,
+            max_archive_bytes,
+            upload_ttl_secs,
+        })
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.storage.is_enabled()
+    }
+
+    pub async fn validate(&self) -> anyhow::Result<()> {
+        self.storage.validate().await
+    }
+
+    #[cfg(test)]
+    fn mock(storage: super::intake::MockIntakeStorage) -> Self {
+        Self {
+            storage: IntakeStorage::Mock(storage),
+            max_archive_bytes: DEFAULT_MAX_ARCHIVE_BYTES,
+            upload_ttl_secs: DEFAULT_UPLOAD_TTL_SECS,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn disabled_for_test() -> Self {
+        Self {
+            storage: IntakeStorage::Disabled,
+            max_archive_bytes: DEFAULT_MAX_ARCHIVE_BYTES,
+            upload_ttl_secs: DEFAULT_UPLOAD_TTL_SECS,
+        }
+    }
+}
+
+pub fn router() -> Router<AppState> {
+    Router::new()
+        .route("/api/publish/jobs", post(create_publish_job))
+        .route("/api/publish/jobs/{job_id}", get(get_publish_job))
+        .route(
+            "/api/publish/jobs/{job_id}/complete",
+            post(complete_publish_job),
+        )
+}
+
+pub fn spawn_cleanup(state: AppState) {
+    if !state.publish.enabled() {
+        tracing::warn!("publication intake is disabled; publish endpoints will return 503");
+        return;
+    }
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(CLEANUP_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            if let Err(error) = cleanup_expired_uploads(&state).await {
+                tracing::error!(
+                    status = %error.status,
+                    error = error.message,
+                    "cleaning up expired publication uploads failed"
+                );
+            }
+        }
+    });
+}
+
+async fn create_publish_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<CreatePublishJob>,
+) -> ApiResult<Response> {
+    require_enabled(&state)?;
+    validate_request(&state.publish, &request)?;
+    let user_id = authenticated_cli_user_id(&state, &headers).await?;
+    let idempotency_key = idempotency_key(&headers)?;
+    let now = unix_timestamp()?;
+    let job_id = Uuid::new_v4().to_string();
+    let upload_nonce = Uuid::new_v4().simple().to_string();
+    let upload_object_key = state
+        .publish
+        .storage
+        .upload_object_key(&user_id, &job_id, &upload_nonce)
+        .map_err(ApiError::internal)?;
+    let intake_object_key = state
+        .publish
+        .storage
+        .intake_object_key(&user_id, &job_id)
+        .map_err(ApiError::internal)?;
+    let upload_expires_at = now + state.publish.upload_ttl_secs;
+    let inserted = sqlx::query(
+        "INSERT OR IGNORE INTO publish_jobs
+         (id, user_id, idempotency_key, state, archive_format, declared_size_bytes,
+          declared_sha256, upload_object_key, intake_object_key, upload_expires_at,
+          created_at, updated_at)
+         VALUES (?, ?, ?, 'uploading', ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&job_id)
+    .bind(&user_id)
+    .bind(&idempotency_key)
+    .bind(&request.archive_format)
+    .bind(request.size_bytes)
+    .bind(&request.sha256)
+    .bind(upload_object_key)
+    .bind(intake_object_key)
+    .bind(upload_expires_at)
+    .bind(now)
+    .bind(now)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+
+    let job = load_job_by_idempotency(&state, &user_id, &idempotency_key).await?;
+    if job.archive_format != request.archive_format
+        || job.declared_size_bytes != request.size_bytes
+        || job.declared_sha256 != request.sha256
+    {
+        return Err(ApiError::conflict(
+            "idempotency key was already used with different archive metadata",
+        ));
+    }
+    if job.state == "uploading" && job.upload_expires_at <= now {
+        expire_upload(&state, &job, now).await?;
+        return Err(ApiError::gone("publication upload expired"));
+    }
+    let upload = if job.state == "uploading" {
+        let presigned = state
+            .publish
+            .storage
+            .presign_upload(
+                &job.upload_object_key,
+                job.declared_size_bytes,
+                &job.declared_sha256,
+                Duration::from_secs((job.upload_expires_at - now) as u64),
+            )
+            .await
+            .map_err(ApiError::internal)?;
+        Some(UploadInstructions {
+            method: presigned.method,
+            url: presigned.url,
+            headers: presigned.headers,
+            expires_at: job.upload_expires_at,
+        })
+    } else {
+        None
+    };
+    let status = if inserted.rows_affected() == 1 {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((
+        status,
+        Json(CreatePublishJobResponse {
+            job: job_response(&job),
+            upload,
+        }),
+    )
+        .into_response())
+}
+
+async fn get_publish_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> ApiResult<Json<PublishJobResponse>> {
+    require_enabled(&state)?;
+    let user_id = authenticated_cli_user_id(&state, &headers).await?;
+    let mut job = load_owned_job(&state, &user_id, &job_id).await?;
+    let now = unix_timestamp()?;
+    if job.state == "uploading" && job.upload_expires_at <= now {
+        expire_upload(&state, &job, now).await?;
+        job = load_owned_job(&state, &user_id, &job_id).await?;
+    }
+    Ok(Json(job_response(&job)))
+}
+
+async fn complete_publish_job(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(job_id): Path<String>,
+) -> ApiResult<Json<PublishJobResponse>> {
+    require_enabled(&state)?;
+    let user_id = authenticated_cli_user_id(&state, &headers).await?;
+    let job = load_owned_job(&state, &user_id, &job_id).await?;
+    if job.state == "queued" {
+        return Ok(Json(job_response(&job)));
+    }
+    if job.state != "uploading" {
+        return Err(ApiError::conflict(
+            "publication job is not accepting an upload",
+        ));
+    }
+    let now = unix_timestamp()?;
+    if job.upload_expires_at <= now {
+        expire_upload(&state, &job, now).await?;
+        return Err(ApiError::gone("publication upload expired"));
+    }
+    let uploaded = state
+        .publish
+        .storage
+        .head_object(&job.upload_object_key)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::conflict("publication upload was not found"))?;
+    if uploaded.size_bytes != job.declared_size_bytes {
+        return Err(ApiError::conflict(
+            "uploaded object size does not match the declared size",
+        ));
+    }
+    if !IntakeStorage::has_expected_metadata(&uploaded, &job.declared_sha256) {
+        return Err(ApiError::conflict(
+            "uploaded object metadata does not match the publish job",
+        ));
+    }
+
+    if let Err(error) = state
+        .publish
+        .storage
+        .promote_object(&job.upload_object_key, &job.intake_object_key)
+        .await
+    {
+        let current = load_owned_job(&state, &user_id, &job.id).await?;
+        if current.state == "queued" {
+            return Ok(Json(job_response(&current)));
+        }
+        return Err(ApiError::internal(error));
+    }
+    let promoted = state
+        .publish
+        .storage
+        .head_object(&job.intake_object_key)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| ApiError::internal(anyhow::anyhow!("promoted intake object is missing")))?;
+    if promoted.size_bytes != job.declared_size_bytes
+        || !IntakeStorage::has_expected_metadata(&promoted, &job.declared_sha256)
+    {
+        state
+            .publish
+            .storage
+            .delete_object(&job.intake_object_key)
+            .await
+            .map_err(ApiError::internal)?;
+        return Err(ApiError::internal(anyhow::anyhow!(
+            "promoted intake object metadata changed"
+        )));
+    }
+
+    let updated = sqlx::query(
+        "UPDATE publish_jobs
+         SET state = 'queued', queued_at = ?, updated_at = ?
+         WHERE id = ? AND user_id = ? AND state = 'uploading'",
+    )
+    .bind(now)
+    .bind(now)
+    .bind(&job.id)
+    .bind(&user_id)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    if updated.rows_affected() != 1 {
+        let current = load_owned_job(&state, &user_id, &job.id).await?;
+        if current.state != "queued" {
+            if let Err(error) = state
+                .publish
+                .storage
+                .delete_object(&job.intake_object_key)
+                .await
+            {
+                tracing::warn!(
+                    job_id = %job.id,
+                    %error,
+                    "deleting unqueued promoted intake object failed"
+                );
+            }
+            return Err(ApiError::conflict(
+                "publication job changed while the upload was completing",
+            ));
+        }
+    }
+    if let Err(error) = state
+        .publish
+        .storage
+        .delete_object(&job.upload_object_key)
+        .await
+    {
+        tracing::warn!(job_id = %job.id, %error, "deleting completed staging upload failed");
+    }
+    let job = load_owned_job(&state, &user_id, &job.id).await?;
+    Ok(Json(job_response(&job)))
+}
+
+async fn authenticated_cli_user_id(state: &AppState, headers: &HeaderMap) -> ApiResult<String> {
+    let token = bearer_token(headers)?;
+    let now = unix_timestamp()?;
+    sqlx::query_scalar(
+        "SELECT cli_sessions.user_id
+         FROM cli_access_tokens
+         JOIN cli_sessions ON cli_sessions.id = cli_access_tokens.session_id
+         WHERE cli_access_tokens.token_hash = ? AND cli_access_tokens.expires_at > ?
+           AND cli_sessions.revoked_at IS NULL AND cli_sessions.expires_at > ?",
+    )
+    .bind(certified::sha256_hex(token.as_bytes()))
+    .bind(now)
+    .bind(now)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(ApiError::unauthorized)
+}
+
+async fn load_job_by_idempotency(
+    state: &AppState,
+    user_id: &str,
+    idempotency_key: &str,
+) -> ApiResult<PublishJobRow> {
+    sqlx::query_as("SELECT * FROM publish_jobs WHERE user_id = ? AND idempotency_key = ?")
+        .bind(user_id)
+        .bind(idempotency_key)
+        .fetch_one(&state.database)
+        .await
+        .map_err(database_error)
+}
+
+async fn load_owned_job(state: &AppState, user_id: &str, job_id: &str) -> ApiResult<PublishJobRow> {
+    sqlx::query_as("SELECT * FROM publish_jobs WHERE id = ? AND user_id = ?")
+        .bind(job_id)
+        .bind(user_id)
+        .fetch_optional(&state.database)
+        .await
+        .map_err(database_error)?
+        .ok_or_else(|| ApiError::not_found("publication job was not found"))
+}
+
+async fn expire_upload(state: &AppState, job: &PublishJobRow, now: i64) -> ApiResult<()> {
+    sqlx::query(
+        "UPDATE publish_jobs SET state = 'expired', updated_at = ?
+         WHERE id = ? AND state = 'uploading'",
+    )
+    .bind(now)
+    .bind(&job.id)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    if let Err(error) = state
+        .publish
+        .storage
+        .delete_object(&job.upload_object_key)
+        .await
+    {
+        tracing::warn!(job_id = %job.id, %error, "deleting expired staging upload failed");
+    }
+    Ok(())
+}
+
+async fn cleanup_expired_uploads(state: &AppState) -> ApiResult<()> {
+    let now = unix_timestamp()?;
+    let jobs = sqlx::query_as::<_, PublishJobRow>(
+        "SELECT * FROM publish_jobs
+         WHERE state = 'uploading' AND upload_expires_at <= ?
+         ORDER BY upload_expires_at
+         LIMIT 100",
+    )
+    .bind(now)
+    .fetch_all(&state.database)
+    .await
+    .map_err(database_error)?;
+    for job in jobs {
+        expire_upload(state, &job, now).await?;
+    }
+    Ok(())
+}
+
+fn require_enabled(state: &AppState) -> ApiResult<()> {
+    if state.publish.enabled() {
+        Ok(())
+    } else {
+        Err(ApiError::service_unavailable(
+            "publication intake is not configured",
+        ))
+    }
+}
+
+fn validate_request(service: &PublishService, request: &CreatePublishJob) -> ApiResult<()> {
+    if request.archive_format != ARCHIVE_FORMAT {
+        return Err(ApiError::bad_request(
+            "archive_format is not supported by this server",
+        ));
+    }
+    if request.size_bytes <= 0 || request.size_bytes > service.max_archive_bytes {
+        return Err(ApiError::bad_request(
+            "size_bytes is outside the accepted range",
+        ));
+    }
+    if request.sha256.len() != 64
+        || !request
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(ApiError::bad_request(
+            "sha256 must be 64 lowercase hexadecimal characters",
+        ));
+    }
+    Ok(())
+}
+
+fn idempotency_key(headers: &HeaderMap) -> ApiResult<String> {
+    let value = headers
+        .get(IDEMPOTENCY_KEY_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| ApiError::bad_request("Idempotency-Key header is required"))?;
+    if !(16..=200).contains(&value.len())
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+    {
+        return Err(ApiError::bad_request(
+            "Idempotency-Key must contain 16 to 200 safe ASCII characters",
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+fn job_response(job: &PublishJobRow) -> PublishJobResponse {
+    PublishJobResponse {
+        id: job.id.clone(),
+        state: job.state.clone(),
+        archive_format: job.archive_format.clone(),
+        size_bytes: job.declared_size_bytes,
+        sha256: job.declared_sha256.clone(),
+        created_at: job.created_at,
+        updated_at: job.updated_at,
+        upload_expires_at: job.upload_expires_at,
+        queued_at: job.queued_at,
+        failure_code: job.failure_code.clone(),
+        status_url: format!("/api/publish/jobs/{}", job.id),
+    }
+}
+
+fn integer_env(name: &str) -> anyhow::Result<Option<i64>> {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            value
+                .parse::<i64>()
+                .map_err(|error| anyhow::anyhow!("{name} must be an integer: {error}"))
+        })
+        .transpose()
+}
+
+#[cfg(test)]
+mod tests {
+    use sqlx::SqlitePool;
+    use url::Url;
+
+    use super::super::NotaryDirectoryKey;
+    use super::super::intake::{MockIntakeStorage, StoredObject};
+    use super::*;
+
+    const SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    async fn test_state() -> (AppState, MockIntakeStorage, HeaderMap, HeaderMap) {
+        let database = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("in-memory database");
+        sqlx::migrate!("./migrations")
+            .run(&database)
+            .await
+            .expect("migrations");
+        sqlx::query(
+            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
+             VALUES ('user-1', 1, 'one', 1, 1), ('user-2', 2, 'two', 1, 1)",
+        )
+        .execute(&database)
+        .await
+        .expect("users");
+        let now = unix_timestamp().expect("time");
+        let tokens_one = super::super::issue_cli_session(&database, "user-1", "One", now)
+            .await
+            .expect("session one");
+        let tokens_two = super::super::issue_cli_session(&database, "user-2", "Two", now)
+            .await
+            .expect("session two");
+        let headers = |token: String| {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                axum::http::header::AUTHORIZATION,
+                format!("Bearer {token}").parse().expect("authorization"),
+            );
+            headers.insert(
+                IDEMPOTENCY_KEY_HEADER,
+                "01234567-89ab-cdef-0123-456789abcdef"
+                    .parse()
+                    .expect("idempotency key"),
+            );
+            headers
+        };
+        let storage = MockIntakeStorage::new();
+        let state = AppState {
+            database,
+            http: reqwest::Client::new(),
+            github_client_id: "client-id".to_owned(),
+            github_client_secret: "secret".to_owned(),
+            callback_url: Url::parse("https://llmnotary.exalto.ai/api/auth/github/callback")
+                .expect("callback"),
+            app_url: Url::parse("https://llmnotary.exalto.ai").expect("app"),
+            secure_cookies: true,
+            notary_key: NotaryDirectoryKey {
+                host: "notary.example.com".to_owned(),
+                port: 7047,
+                key_id: "sha256:test".to_owned(),
+                public_key: "02".to_owned(),
+            },
+            publish: PublishService::mock(storage.clone()),
+        };
+        (
+            state,
+            storage,
+            headers(tokens_one.access_token),
+            headers(tokens_two.access_token),
+        )
+    }
+
+    fn request() -> CreatePublishJob {
+        CreatePublishJob {
+            archive_format: ARCHIVE_FORMAT.to_owned(),
+            size_bytes: 1234,
+            sha256: SHA256.to_owned(),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_is_idempotent_and_scoped_to_the_cli_user() {
+        let (state, _storage, headers_one, mut headers_two) = test_state().await;
+        let first = create_publish_job(State(state.clone()), headers_one.clone(), Json(request()))
+            .await
+            .expect("first create");
+        assert_eq!(first.status(), StatusCode::CREATED);
+        let second = create_publish_job(State(state.clone()), headers_one.clone(), Json(request()))
+            .await
+            .expect("idempotent create");
+        assert_eq!(second.status(), StatusCode::OK);
+        let mut changed = request();
+        changed.size_bytes += 1;
+        let conflict = create_publish_job(State(state.clone()), headers_one, Json(changed)).await;
+        assert!(matches!(
+            conflict,
+            Err(ApiError {
+                status: StatusCode::CONFLICT,
+                ..
+            })
+        ));
+
+        headers_two.insert(
+            IDEMPOTENCY_KEY_HEADER,
+            "fedcba98-7654-3210-fedc-ba9876543210"
+                .parse()
+                .expect("idempotency key"),
+        );
+        let other = create_publish_job(State(state.clone()), headers_two, Json(request()))
+            .await
+            .expect("other user create");
+        assert_eq!(other.status(), StatusCode::CREATED);
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("job count");
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn completion_promotes_then_queues_an_immutable_intake_object() {
+        let (state, storage, headers, _) = test_state().await;
+        create_publish_job(State(state.clone()), headers.clone(), Json(request()))
+            .await
+            .expect("create");
+        let job: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("job");
+        storage.object(&job.upload_object_key, job.declared_size_bytes, SHA256);
+
+        let completed =
+            complete_publish_job(State(state.clone()), headers.clone(), Path(job.id.clone()))
+                .await
+                .expect("complete");
+        assert_eq!(completed.0.state, "queued");
+        assert!(
+            storage
+                .objects
+                .lock()
+                .expect("mock lock")
+                .contains_key(&job.intake_object_key)
+        );
+        assert!(
+            !storage
+                .objects
+                .lock()
+                .expect("mock lock")
+                .contains_key(&job.upload_object_key)
+        );
+
+        let retried = complete_publish_job(State(state), headers, Path(job.id))
+            .await
+            .expect("idempotent complete");
+        assert_eq!(retried.0.state, "queued");
+    }
+
+    #[tokio::test]
+    async fn completion_rejects_missing_or_mismatched_objects_without_queueing() {
+        let (state, storage, headers, _) = test_state().await;
+        create_publish_job(State(state.clone()), headers.clone(), Json(request()))
+            .await
+            .expect("create");
+        let job: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("job");
+        let missing =
+            complete_publish_job(State(state.clone()), headers.clone(), Path(job.id.clone())).await;
+        assert!(matches!(
+            missing,
+            Err(ApiError {
+                status: StatusCode::CONFLICT,
+                ..
+            })
+        ));
+        storage.objects.lock().expect("mock lock").insert(
+            job.upload_object_key.clone(),
+            StoredObject {
+                size_bytes: job.declared_size_bytes + 1,
+                metadata: BTreeMap::new(),
+            },
+        );
+        let mismatched =
+            complete_publish_job(State(state.clone()), headers, Path(job.id.clone())).await;
+        assert!(matches!(
+            mismatched,
+            Err(ApiError {
+                status: StatusCode::CONFLICT,
+                ..
+            })
+        ));
+        let state_value: String = sqlx::query_scalar("SELECT state FROM publish_jobs WHERE id = ?")
+            .bind(job.id)
+            .fetch_one(&state.database)
+            .await
+            .expect("state");
+        assert_eq!(state_value, "uploading");
+    }
+
+    #[tokio::test]
+    async fn users_cannot_read_or_complete_each_others_jobs() {
+        let (state, _storage, headers_one, headers_two) = test_state().await;
+        create_publish_job(State(state.clone()), headers_one, Json(request()))
+            .await
+            .expect("create");
+        let job_id: String = sqlx::query_scalar("SELECT id FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("job ID");
+        let read = get_publish_job(
+            State(state.clone()),
+            headers_two.clone(),
+            Path(job_id.clone()),
+        )
+        .await;
+        let complete = complete_publish_job(State(state), headers_two, Path(job_id)).await;
+        assert!(matches!(
+            read,
+            Err(ApiError {
+                status: StatusCode::NOT_FOUND,
+                ..
+            })
+        ));
+        assert!(matches!(
+            complete,
+            Err(ApiError {
+                status: StatusCode::NOT_FOUND,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn cleanup_expires_jobs_and_removes_staging_objects() {
+        let (state, storage, headers, _) = test_state().await;
+        create_publish_job(State(state.clone()), headers, Json(request()))
+            .await
+            .expect("create");
+        let job: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("job");
+        storage.object(&job.upload_object_key, job.declared_size_bytes, SHA256);
+        sqlx::query("UPDATE publish_jobs SET upload_expires_at = 1")
+            .execute(&state.database)
+            .await
+            .expect("expire job");
+
+        cleanup_expired_uploads(&state).await.expect("cleanup");
+        let state_value: String = sqlx::query_scalar("SELECT state FROM publish_jobs WHERE id = ?")
+            .bind(&job.id)
+            .fetch_one(&state.database)
+            .await
+            .expect("state");
+        assert_eq!(state_value, "expired");
+        assert!(
+            storage
+                .deleted
+                .lock()
+                .expect("mock lock")
+                .contains(&job.upload_object_key)
+        );
+    }
+
+    #[test]
+    fn publish_requests_are_bounded_and_versioned() {
+        let storage = MockIntakeStorage::new();
+        let service = PublishService::mock(storage);
+        assert!(validate_request(&service, &request()).is_ok());
+        let mut unsupported = request();
+        unsupported.archive_format = "future/v2".to_owned();
+        assert!(validate_request(&service, &unsupported).is_err());
+        let mut too_large = request();
+        too_large.size_bytes = DEFAULT_MAX_ARCHIVE_BYTES + 1;
+        assert!(validate_request(&service, &too_large).is_err());
+        let mut uppercase_hash = request();
+        uppercase_hash.sha256 = SHA256.to_uppercase();
+        assert!(validate_request(&service, &uppercase_hash).is_err());
+    }
+}

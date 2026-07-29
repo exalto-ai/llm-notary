@@ -18,9 +18,11 @@ required-features = ["cli"]
 [[bin]]
 name = "llm-notary-api"
 path = "src/bin/llm-notary-api.rs"
+required-features = ["api"]
 
 [features]
 default = ["cli"]
+api = ["dep:aws-sdk-s3"]
 cli = [
     "dep:argon2",
     "dep:chacha20poly1305",
@@ -32,6 +34,11 @@ cli = [
 [dependencies]
 anyhow = "1.0"
 argon2 = { version = "0.5", optional = true }
+aws-sdk-s3 = { version = "1.140", default-features = false, features = [
+    "default-https-client",
+    "rt-tokio",
+    "rustls",
+], optional = true }
 axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 bincode = "1.3"

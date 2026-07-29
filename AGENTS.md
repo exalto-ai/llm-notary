@@ -21,7 +21,7 @@ Run the checks relevant to edited code before handing work off:
 
 ```bash
 cargo fmt --check
-cargo test --all-targets
+cargo test --all-targets --all-features
 npm --prefix js/app run build
 ```
 

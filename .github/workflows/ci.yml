@@ -35,7 +35,7 @@ jobs:
       - run: cargo fmt --check
       - name: Install native build tools
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends build-essential
-      - run: cargo test --all-targets
+      - run: cargo test --all-targets --all-features
 
   app:
     name: SPA
@@ -69,6 +69,11 @@ jobs:
             GITHUB_OAUTH_CLIENT_ID=ci-placeholder \
             GITHUB_OAUTH_CLIENT_SECRET=ci-placeholder \
             LLM_NOTARY_NOTARY_HOST=203.0.113.10 \
+            LLM_NOTARY_S3_ACCESS_KEY_ID=ci-placeholder \
+            LLM_NOTARY_S3_SECRET_ACCESS_KEY=ci-placeholder \
+            LLM_NOTARY_S3_BUCKET=llm-notary-ci \
+            LLM_NOTARY_S3_ENDPOINT=https://sfo3.digitaloceanspaces.com \
+            LLM_NOTARY_S3_REGION=sfo3 \
             SITE_DOMAIN=example.com \
             docker compose config --quiet
       - name: Build notary image
