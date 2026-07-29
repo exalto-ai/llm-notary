@@ -36,6 +36,18 @@ impl VerifiedTraceManifest {
     pub fn capture_id(&self) -> &str {
         &self.source.capture_id
     }
+
+    /// Returns the SEC1 key that signed the package source evidence.
+    pub fn notary_public_key(&self) -> Result<Vec<u8>> {
+        hex::decode(&self.source.notary.public_key)
+            .context("trace package source notary key must be hexadecimal")
+    }
+}
+
+/// Reads enough verified-package metadata to select a previously cached trust
+/// anchor before full offline verification.
+pub fn trace_package_notary_key(path: &Path) -> Result<Vec<u8>> {
+    read_trace_manifest(path)?.notary_public_key()
 }
 
 /// Completes a deferred proof and writes an offline-verifiable trace package.
@@ -156,16 +168,7 @@ pub(crate) fn verify_trace_package_with_provider(
     trusted_notary_key: &[u8],
     crypto_provider: &CryptoProvider,
 ) -> Result<VerifiedTraceManifest> {
-    let manifest: VerifiedTraceManifest = serde_json::from_slice(
-        &fs::read(path.join("manifest.json"))
-            .with_context(|| format!("reading package manifest in {}", path.display()))?,
-    )
-    .context("parsing trace package manifest")?;
-    if manifest.format != TRACE_PACKAGE_FORMAT || manifest.normalizer_version != NORMALIZER_VERSION
-    {
-        bail!("unsupported verified trace package format or normalizer version");
-    }
-
+    let manifest = read_trace_manifest(path)?;
     let capture = Capture {
         manifest: manifest.source.clone(),
         evidence: fs::read(path.join("evidence.tlsn"))?,
@@ -179,6 +182,19 @@ pub(crate) fn verify_trace_package_with_provider(
     let actual = fs::read(path.join("trace.otlp.json"))?;
     if manifest.trace_sha256 != sha256_hex(&actual) || actual != expected {
         bail!("OTLP trace does not match the authenticated source bundle");
+    }
+    Ok(manifest)
+}
+
+fn read_trace_manifest(path: &Path) -> Result<VerifiedTraceManifest> {
+    let manifest: VerifiedTraceManifest = serde_json::from_slice(
+        &fs::read(path.join("manifest.json"))
+            .with_context(|| format!("reading package manifest in {}", path.display()))?,
+    )
+    .context("parsing trace package manifest")?;
+    if manifest.format != TRACE_PACKAGE_FORMAT || manifest.normalizer_version != NORMALIZER_VERSION
+    {
+        bail!("unsupported verified trace package format or normalizer version");
     }
     Ok(manifest)
 }

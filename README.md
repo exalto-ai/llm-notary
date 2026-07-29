@@ -87,14 +87,13 @@ which is useful for isolated development and automation.
 
 ## Finalize a bundle
 
-List the locally encrypted bundles, then finalize one with the notary public
-key printed at notary startup:
+List the locally encrypted bundles, then finalize one. The CLI fetches and
+caches the production directory key automatically:
 
 ```bash
 llm-notary bundles list
 llm-notary finalize bundles/cap-....llmbundle \
-  --output traces/cap-... \
-  --trusted-notary-key <notary-public-key>
+  --output traces/cap-...
 ```
 
 The output directory is a single portable package:
@@ -112,8 +111,7 @@ Verify it offline by rechecking the TLSNotary presentation, every source-file
 hash, the provider adapter, and the exact canonical OTLP bytes:
 
 ```bash
-llm-notary verify-trace traces/cap-... \
-  --trusted-notary-key <notary-public-key>
+llm-notary verify-trace traces/cap-...
 ```
 
 The encrypted bundle is the most sensitive artifact: its deferred TLS

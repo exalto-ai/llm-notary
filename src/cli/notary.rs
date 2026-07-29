@@ -80,6 +80,20 @@ pub fn cached_key(public_key: &[u8]) -> Result<(String, String)> {
     ))
 }
 
+/// Returns the single directory key most recently discovered by this CLI.
+/// Finalization calls this immediately after refreshing the directory.
+pub fn cached_active_key() -> Result<(Vec<u8>, String)> {
+    let store = load_store(&trust_store_path()?)?;
+    if store.format != DIRECTORY_FORMAT {
+        bail!("unsupported local notary trust store format");
+    }
+    let record = store.record.ok_or_else(|| {
+        anyhow!("no local notary directory key is cached; run the proxy once or supply --trusted-notary-key")
+    })?;
+    validate_directory(&record)?;
+    Ok((hex::decode(record.public_key)?, record.key_id))
+}
+
 pub fn explicit_key(value: &str) -> Result<(Vec<u8>, String)> {
     let key = hex::decode(value).context("trusted notary key must be hexadecimal")?;
     VerifyingKey::from_sec1_bytes(&key)
