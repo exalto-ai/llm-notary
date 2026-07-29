@@ -43,6 +43,14 @@ impl VerifiedTraceManifest {
         self.source.created_at_unix_ms
     }
 
+    pub fn provider_name(&self) -> &str {
+        &self.source.provider.name
+    }
+
+    pub fn provider_host(&self) -> &str {
+        &self.source.provider.host
+    }
+
     /// Returns the SEC1 key that signed the package source evidence.
     pub fn notary_public_key(&self) -> Result<Vec<u8>> {
         hex::decode(&self.source.notary.public_key)

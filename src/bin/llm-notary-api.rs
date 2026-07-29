@@ -26,6 +26,8 @@ use certified::notary_directory::{
 };
 use certified::sha256_hex;
 
+#[path = "../api/admission.rs"]
+mod admission;
 #[path = "../api/intake.rs"]
 mod intake;
 #[path = "../api/publish.rs"]
@@ -263,6 +265,7 @@ async fn main() -> Result<()> {
         .parse::<SocketAddr>()
         .context("LLM_NOTARY_API_LISTEN must be a socket address")?;
     publish::spawn_cleanup(state.clone());
+    admission::spawn(state.clone());
     let app = Router::new()
         .route("/api/healthz", get(health))
         .route("/api/notary", get(notary))
@@ -288,6 +291,7 @@ async fn main() -> Result<()> {
         .route("/api/cli/logout", post(logout_cli_session))
         .route("/api/cli/me", get(cli_me))
         .merge(publish::router())
+        .merge(admission::router())
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "LLM Notary API listening");
