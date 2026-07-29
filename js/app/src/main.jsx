@@ -13,7 +13,7 @@ import { RelayAnimation } from './RelayAnimation';
 import { collections } from './collectionData';
 
 const installCommand = 'curl -fsSLO https://llmnotary.exalto.ai/install.sh && sh install.sh';
-const publishCommand = 'llm-notary publish captures/cap-... --title "Refusal boundary test" --license "CC BY 4.0"';
+const publishCommand = 'llm-notary publish verified-trace';
 const brandAssetVersion = __BRAND_ASSET_VERSION__;
 
 function PenMark({ inverse = false }) {
@@ -250,6 +250,19 @@ const docPages = {
       { heading: 'Tool-use boundary', note: 'Verification proves that the model emitted a tool call and, on a later request, that the client sent a particular tool result. It does not prove the local tool actually executed.' },
     ],
   },
+  publish: {
+    title: 'Publish a trace package',
+    lead: 'Publishing is a deliberate upload of one already-finalized package. The CLI verifies it locally before it contacts LLM Notary.',
+    blocks: [
+      { heading: 'Sign in once', code: 'llm-notary login' },
+      { heading: 'Submit one finalized package', code: 'llm-notary publish verified-trace' },
+      { heading: 'Script-friendly output', code: 'llm-notary publish verified-trace --json\n\n{"job_id":"…","state":"queued","status_url":"https://llmnotary.exalto.ai/api/publish/jobs/…"}' },
+      { heading: 'What is uploaded', body: 'The CLI creates a deterministic, versioned archive containing only the five files in the finalized trace package. It rejects extra files, symlinks, malformed manifests, untrusted evidence, and non-canonical trace bytes before creating an upload job.' },
+      { heading: 'What is never uploaded', note: 'Do not publish an encrypted .llmbundle. It contains private retry state and is rejected by the CLI. Finalization remains a separate, local choice.' },
+      { heading: 'Current consent boundary', body: 'The initial admission service may inspect the disclosed request, response, system context, and tool data in a package to verify and reproduce the public trace. Authentication headers and cookie values remain redacted. A future artifact can add a stronger privacy-preserving verifier under a new format version.' },
+      { heading: 'Retry behavior', body: 'An upload or API failure does not change or delete the local package. Run publish again to create a fresh retry-safe job.' },
+    ],
+  },
 };
 
 const docNavigation = [
@@ -257,10 +270,11 @@ const docNavigation = [
   { label: 'Capture', pages: [['install', 'Install'], ['proxy', 'Proxy'], ['bundles', 'Bundles']] },
   { label: 'Connect', pages: [['providers', 'Providers'], ['harnesses', 'Agents']] },
   { label: 'Prove', pages: [['finalize', 'Finalize'], ['artifacts', 'Artifacts'], ['verify', 'Verify']] },
+  { label: 'Share', pages: [['publish', 'Publish']] },
 ];
 const docOrder = docNavigation.flatMap((group) => group.pages.map(([key]) => key));
-const docAliases = { publish: 'finalize' };
-const previewDocPages = new Set(['overview', 'install', 'proxy', 'bundles', 'finalize', 'artifacts', 'verify']);
+const docAliases = {};
+const previewDocPages = new Set(['overview', 'install', 'proxy', 'bundles', 'finalize', 'artifacts', 'verify', 'publish']);
 
 function DocsBlock({ block }) {
   return <section><h2>{block.heading}</h2>{block.body && <p>{block.body}</p>}{block.code && <pre><code>{block.code}</code></pre>}{block.note && <aside className="docs-note">{block.note}</aside>}{block.items && <ul className="docs-list">{block.items.map((item) => <li key={item}>{item}</li>)}</ul>}{block.steps && <ol className="docs-flow">{block.steps.map((step, index) => <li key={step.title}><span>{String(index + 1).padStart(2, '0')}</span><div><b>{step.title}</b><p>{step.body}</p></div></li>)}</ol>}{block.cards && <div className="docs-card-grid">{block.cards.map((card) => <article key={`${card.meta}-${card.title}`}><span>{card.meta}</span><h3>{card.title}</h3><p>{card.body}</p></article>)}</div>}{block.definitions && <dl className="docs-definitions">{block.definitions.map((item) => <div key={item.term}><dt>{item.term}</dt><dd>{item.description}</dd></div>)}</dl>}</section>;

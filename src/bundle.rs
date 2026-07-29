@@ -11,15 +11,15 @@ use serde::{Deserialize, Serialize};
 use tlsn::attestation::CryptoProvider;
 
 use crate::{
-    Capture, CaptureManifest, DeferredBundle, finalize_deferred_bundle, make_capture,
+    Capture, CaptureManifest, DeferredBundle,
+    archive::VERIFIED_TRACE_PACKAGE_FORMAT,
+    finalize_deferred_bundle, make_capture,
     normalize::{render_public_trace, verified_inference_from_capture},
     public::NORMALIZER_VERSION,
     sha256_hex,
     vault::Vault,
     verify_capture_value_with_provider,
 };
-
-const TRACE_PACKAGE_FORMAT: &str = "llm-notary/verified-trace/v1";
 
 /// Metadata binding a normalized trace to the included TLSNotary evidence.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -94,7 +94,7 @@ pub(crate) fn write_trace_package_with_provider(
     let inference = verified_inference_from_capture(&source, &request, &response)?;
     let trace = render_public_trace(&[inference])?;
     let manifest = VerifiedTraceManifest {
-        format: TRACE_PACKAGE_FORMAT.to_owned(),
+        format: VERIFIED_TRACE_PACKAGE_FORMAT.to_owned(),
         normalizer_version: NORMALIZER_VERSION.to_owned(),
         source,
         trace_sha256: sha256_hex(&trace),
@@ -192,7 +192,8 @@ fn read_trace_manifest(path: &Path) -> Result<VerifiedTraceManifest> {
             .with_context(|| format!("reading package manifest in {}", path.display()))?,
     )
     .context("parsing trace package manifest")?;
-    if manifest.format != TRACE_PACKAGE_FORMAT || manifest.normalizer_version != NORMALIZER_VERSION
+    if manifest.format != VERIFIED_TRACE_PACKAGE_FORMAT
+        || manifest.normalizer_version != NORMALIZER_VERSION
     {
         bail!("unsupported verified trace package format or normalizer version");
     }
