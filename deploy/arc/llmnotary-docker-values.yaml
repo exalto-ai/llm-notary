@@ -4,28 +4,91 @@
 githubConfigUrl: "https://github.com/exalto-ai/llmnotary"
 githubConfigSecret: llmnotary-github-auth
 
+controllerServiceAccount:
+  name: arc-gha-rs-controller
+  namespace: arc-system
+
 runnerScaleSetName: llmnotary-docker
 minRunners: 0
-maxRunners: 1
-
-containerMode:
-  type: dind
+maxRunners: 2
 
 template:
   spec:
     nodeSelector:
       hexchess/node-class: cpu-worker
     terminationGracePeriodSeconds: 30
-    containers:
-      - name: runner
+    # This is ARC's documented DinD pod shape, expanded here so BuildKit—not
+    # only the lightweight runner process—has explicit resource boundaries.
+    initContainers:
+      - name: init-dind-externals
         image: ghcr.io/actions/actions-runner:latest
-        command: ["/home/runner/run.sh"]
+        command: ["cp", "-r", "/home/runner/externals/.", "/home/runner/tmpDir/"]
+        volumeMounts:
+          - name: dind-externals
+            mountPath: /home/runner/tmpDir
+      - name: dind
+        image: docker:dind
+        args:
+          - dockerd
+          - --host=unix:///var/run/docker.sock
+          - --group=$(DOCKER_GROUP_GID)
+        env:
+          - name: DOCKER_GROUP_GID
+            value: "123"
+        securityContext:
+          privileged: true
+        restartPolicy: Always
+        startupProbe:
+          exec:
+            command:
+              - docker
+              - info
+          initialDelaySeconds: 0
+          failureThreshold: 24
+          periodSeconds: 5
         resources:
           requests:
-            cpu: "4"
-            memory: 8Gi
-            ephemeral-storage: 30Gi
+            cpu: "3500m"
+            memory: 3584Mi
+            ephemeral-storage: 29Gi
           limits:
             cpu: "12"
             memory: 20Gi
             ephemeral-storage: 80Gi
+        volumeMounts:
+          - name: work
+            mountPath: /home/runner/_work
+          - name: dind-sock
+            mountPath: /var/run
+          - name: dind-externals
+            mountPath: /home/runner/externals
+    containers:
+      - name: runner
+        image: ghcr.io/actions/actions-runner:latest
+        command: ["/home/runner/run.sh"]
+        env:
+          - name: DOCKER_HOST
+            value: unix:///var/run/docker.sock
+          - name: RUNNER_WAIT_FOR_DOCKER_IN_SECONDS
+            value: "120"
+        resources:
+          requests:
+            cpu: "500m"
+            memory: 512Mi
+            ephemeral-storage: 1Gi
+          limits:
+            cpu: "2"
+            memory: 2Gi
+            ephemeral-storage: 5Gi
+        volumeMounts:
+          - name: work
+            mountPath: /home/runner/_work
+          - name: dind-sock
+            mountPath: /var/run
+    volumes:
+      - name: work
+        emptyDir: {}
+      - name: dind-sock
+        emptyDir: {}
+      - name: dind-externals
+        emptyDir: {}
