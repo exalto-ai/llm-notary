@@ -432,7 +432,7 @@ fn validate_trace_shape(value: &Value) -> Result<TraceMetadata> {
             "server.address",
         ];
         ensure!(
-            span_attributes.keys().all(|key| supported.contains(&key)),
+            span_attributes.keys().all(|key| supported.contains(key)),
             "public trace has unsupported inference attributes"
         );
         if let Some(provider) = &provider {

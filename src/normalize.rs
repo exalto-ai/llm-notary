@@ -22,6 +22,7 @@ use crate::{
 pub struct VerifiedInference {
     pub capture_id: String,
     pub captured_at_unix_ms: u64,
+    pub evidence_sha256: String,
     pub provider: String,
     pub server_address: String,
     pub operation: String,
@@ -50,6 +51,10 @@ pub fn verified_inference_from_capture(
             parse_openai_compatible(manifest, request_line, request, &response_body)
         }
         "anthropic" => parse_anthropic(manifest, request, &response_body),
+        #[cfg(test)]
+        "test-server.io" => {
+            parse_openai_compatible(manifest, request_line, request, &response_body)
+        }
         provider => bail!("unsupported captured provider {provider}"),
     }
 }
@@ -188,6 +193,7 @@ fn parse_openai_compatible(
     Ok(VerifiedInference {
         capture_id: manifest.capture_id.clone(),
         captured_at_unix_ms: manifest.created_at_unix_ms,
+        evidence_sha256: manifest.artifacts.evidence_sha256.clone(),
         provider: manifest.provider.name.clone(),
         server_address: manifest.provider.host.clone(),
         operation: operation.to_owned(),
@@ -222,6 +228,7 @@ fn parse_anthropic(
     Ok(VerifiedInference {
         capture_id: manifest.capture_id.clone(),
         captured_at_unix_ms: manifest.created_at_unix_ms,
+        evidence_sha256: manifest.artifacts.evidence_sha256.clone(),
         provider: manifest.provider.name.clone(),
         server_address: manifest.provider.host.clone(),
         operation: "chat".to_owned(),
@@ -336,9 +343,9 @@ fn sse_events(body: &str) -> Result<Vec<Value>> {
     Ok(events)
 }
 
-fn openai_chat_output(
-    response: &Value,
-) -> Result<(Value, Option<String>, Option<u64>, Option<u64>, Vec<String>)> {
+type ProviderOutput = (Value, Option<String>, Option<u64>, Option<u64>, Vec<String>);
+
+fn openai_chat_output(response: &Value) -> Result<ProviderOutput> {
     let choices = response
         .get("choices")
         .and_then(Value::as_array)
@@ -366,9 +373,7 @@ fn openai_chat_output(
     ))
 }
 
-fn openai_responses_output(
-    response: &Value,
-) -> Result<(Value, Option<String>, Option<u64>, Option<u64>, Vec<String>)> {
+fn openai_responses_output(response: &Value) -> Result<ProviderOutput> {
     let output = response
         .get("output")
         .and_then(Value::as_array)
@@ -541,23 +546,20 @@ fn openai_message(value: &Value) -> Result<Value> {
 }
 
 fn openai_responses_input(request: &Value) -> Result<Value> {
-    let input = request
-        .get("input")
-        .ok_or_else(|| anyhow!("Responses request has no input"))?;
-    if let Some(text) = input.as_str() {
-        return Ok(Value::Array(vec![message(
-            "user",
-            vec![text_part(text)],
-            None,
-        )]));
-    }
-    let input = input
-        .as_array()
-        .ok_or_else(|| anyhow!("Responses input must be a string or array"))?;
     let mut messages = Vec::new();
     if let Some(instructions) = request.get("instructions").and_then(Value::as_str) {
         messages.push(message("system", vec![text_part(instructions)], None));
     }
+    let input = request
+        .get("input")
+        .ok_or_else(|| anyhow!("Responses request has no input"))?;
+    if let Some(text) = input.as_str() {
+        messages.push(message("user", vec![text_part(text)], None));
+        return Ok(Value::Array(messages));
+    }
+    let input = input
+        .as_array()
+        .ok_or_else(|| anyhow!("Responses input must be a string or array"))?;
     for item in input {
         match item.get("type").and_then(Value::as_str) {
             Some("message") => messages.push(responses_message(item)?),
@@ -614,6 +616,9 @@ fn content_parts(content: Option<&Value>) -> Result<Vec<Value>> {
     let Some(content) = content else {
         return Ok(Vec::new());
     };
+    if content.is_null() {
+        return Ok(Vec::new());
+    }
     if let Some(text) = content.as_str() {
         return Ok(vec![text_part(text)]);
     }
@@ -630,7 +635,9 @@ fn content_parts(content: Option<&Value>) -> Result<Vec<Value>> {
                     .and_then(Value::as_str)
                     .unwrap_or(""),
             )),
-            Some("tool_use") => parts.extend(anthropic_parts(std::slice::from_ref(value))?),
+            Some("tool_use") | Some("tool_result") => {
+                parts.extend(anthropic_parts(std::slice::from_ref(value))?)
+            }
             _ => {}
         }
     }
@@ -641,7 +648,9 @@ fn tool_call_part(value: &Value) -> Result<Value> {
     let function = value.get("function").unwrap_or(value);
     Ok(json!({
         "type":"tool_call",
-        "id":value.get("id").or_else(|| value.get("call_id")).and_then(Value::as_str).unwrap_or(""),
+        // Responses API results refer to call_id, while Chat Completions
+        // results refer to id. A Responses item may contain both.
+        "id":value.get("call_id").or_else(|| value.get("id")).and_then(Value::as_str).unwrap_or(""),
         "name":function.get("name").and_then(Value::as_str).unwrap_or(""),
         "arguments":parse_json_or_string(function.get("arguments").or_else(|| value.get("arguments")).cloned().unwrap_or(Value::Null))
     }))
@@ -688,6 +697,8 @@ fn trace_id(inferences: &[VerifiedInference]) -> Result<String> {
         .iter()
         .map(|inference| {
             json!({
+                "capture_id": inference.capture_id,
+                "evidence_sha256": inference.evidence_sha256,
                 "provider": inference.provider,
                 "server_address": inference.server_address,
                 "operation": inference.operation,
@@ -808,6 +819,71 @@ mod tests {
     }
 
     #[test]
+    fn responses_tool_results_keep_the_provider_call_id() {
+        let inference = verified_inference_from_capture(
+            &manifest("openai"),
+            &http(
+                r#"{"model":"gpt-4.1","input":[{"type":"function_call","id":"fc_1","call_id":"call_1","name":"weather","arguments":"{\"city\":\"SF\"}"},{"type":"function_call_output","call_id":"call_1","output":"sunny"}]}"#,
+            ),
+            &response(
+                r#"{"model":"gpt-4.1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Sunny"}]}]}"#,
+            ),
+        )
+        .expect("Responses capture");
+        assert_eq!(inference.input_messages[0]["parts"][0]["id"], "call_1");
+        assert_eq!(inference.input_messages[1]["parts"][0]["id"], "call_1");
+    }
+
+    #[test]
+    fn provider_request_edge_cases_preserve_authenticated_context() {
+        let chat = verified_inference_from_capture(
+            &manifest("deepseek"),
+            &http(
+                r#"{"model":"deepseek-chat","messages":[{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"weather","arguments":"{\"city\":\"SF\"}"}}]}]}"#,
+            ),
+            &response(
+                r#"{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_2","type":"function","function":{"name":"weather","arguments":"{\"city\":\"SF\"}"}}]},"finish_reason":"tool_calls"}]}"#,
+            ),
+        )
+        .expect("null Chat Completions content");
+        assert_eq!(chat.input_messages[0]["parts"][0]["id"], "call_1");
+        assert_eq!(chat.output_messages[0]["parts"][0]["id"], "call_2");
+
+        let anthropic = verified_inference_from_capture(
+            &manifest("anthropic"),
+            &http(
+                r#"{"model":"claude-sonnet","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":"sunny"}]}]}"#,
+            ),
+            &response(
+                r#"{"model":"claude-sonnet","content":[{"type":"text","text":"It is sunny."}],"stop_reason":"end_turn"}"#,
+            ),
+        )
+        .expect("Anthropic tool result");
+        assert_eq!(
+            anthropic.input_messages[0]["parts"][0]["type"],
+            "tool_call_response"
+        );
+        assert_eq!(anthropic.input_messages[0]["parts"][0]["id"], "tool_1");
+
+        let responses = verified_inference_from_capture(
+            &manifest("openai"),
+            &http(
+                r#"{"model":"gpt-4.1","instructions":"Follow the policy.","input":"hello"}"#,
+            ),
+            &response(
+                r#"{"model":"gpt-4.1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}]}"#,
+            ),
+        )
+        .expect("Responses string input");
+        assert_eq!(responses.input_messages[0]["role"], "system");
+        assert_eq!(
+            responses.input_messages[0]["parts"][0]["content"],
+            "Follow the policy."
+        );
+        assert_eq!(responses.input_messages[1]["role"], "user");
+    }
+
+    #[test]
     fn multi_turn_trace_is_canonical_and_deterministic() {
         let request =
             http(r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}"#);
@@ -826,6 +902,29 @@ mod tests {
                 .unwrap()
                 .len(),
             2
+        );
+    }
+
+    #[test]
+    fn evidence_identity_prevents_trace_id_collisions() {
+        let request =
+            http(r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}"#);
+        let response = response(
+            r#"{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}"#,
+        );
+        let mut first_manifest = manifest("deepseek");
+        first_manifest.artifacts.evidence_sha256 = "proof-one".to_owned();
+        let mut second_manifest = first_manifest.clone();
+        second_manifest.artifacts.evidence_sha256 = "proof-two".to_owned();
+        let first = verified_inference_from_capture(&first_manifest, &request, &response).unwrap();
+        let second =
+            verified_inference_from_capture(&second_manifest, &request, &response).unwrap();
+        let first: Value = serde_json::from_slice(&render_public_trace(&[first]).unwrap()).unwrap();
+        let second: Value =
+            serde_json::from_slice(&render_public_trace(&[second]).unwrap()).unwrap();
+        assert_ne!(
+            first["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["traceId"],
+            second["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["traceId"]
         );
     }
 

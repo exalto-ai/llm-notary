@@ -1,7 +1,7 @@
 //! Verifier.
 
 pub mod state;
-mod verify;
+pub(crate) mod verify;
 
 pub use tlsn_core::{VerifierOutput, webpki::ServerCertVerifier};
 
@@ -481,6 +481,32 @@ impl Verifier<state::Committed> {
     /// Returns the TLS transcript.
     pub fn tls_transcript(&self) -> &TlsTranscript {
         &self.state.tls_transcript
+    }
+
+    /// Reduces a completed Proxy-TLS session to the verifier state needed to
+    /// issue a deferred-proof receipt.
+    ///
+    /// This state is intentionally short-lived. A stateless verifier can
+    /// authenticate its root binding and record digest in a receipt, discard
+    /// the state, and reconstruct proof state later from the client-supplied
+    /// encrypted records after validating that receipt.
+    pub async fn into_deferred(mut self) -> Result<crate::deferred::DeferredVerifierState> {
+        let ctx = self
+            .ctx
+            .as_mut()
+            .ok_or_else(|| Error::internal().with_msg("verification context was dropped"))?;
+        let state::Committed {
+            vm,
+            keys,
+            tls_transcript,
+        } = &mut self.state;
+        let root_binding =
+            crate::transcript_internal::commit::binding::verify_root_binding(ctx, vm, keys).await?;
+
+        Ok(crate::deferred::DeferredVerifierState {
+            root_binding,
+            records: crate::deferred::DeferredRecordTranscript::from_tls_transcript(tls_transcript),
+        })
     }
 
     /// Begins verification of statements from the prover.

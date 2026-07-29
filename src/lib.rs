@@ -7,11 +7,11 @@
 use std::{
     fs,
     future::IntoFuture,
-    io,
+    io::{self, Write as _},
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::Instant,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -21,7 +21,10 @@ use http_body::Frame;
 use http_body_util::{BodyExt as _, StreamBody, combinators::BoxBody};
 use hyper::{Request, Response, body::Incoming, header};
 use hyper_util::rt::TokioIo;
-use k256::ecdsa::SigningKey;
+use k256::ecdsa::{
+    Signature, SigningKey, VerifyingKey,
+    signature::{Signer as _, Verifier as _},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tlsn::{
@@ -36,49 +39,63 @@ use tlsn::{
         tls_commit::proxy::ProxyTlsConfig, verifier::VerifierConfig,
     },
     connection::{
-        CertBinding, ConnectionInfo, DnsName, HandshakeData, ServerName, TranscriptLength,
+        CertBinding, ConnectionInfo, DnsName, HandshakeData, ServerEphemKey, ServerName,
+        TranscriptLength,
     },
     prover::ProverOutput,
+    rangeset::set::RangeSet,
     transcript::{ContentType, Direction, Transcript, TranscriptCommitConfig},
-    verifier::{VerifierCommitStart, VerifierOutput},
+    verifier::VerifierCommitStart,
     webpki::RootCertStore,
 };
-use tlsn_formats::http::{DefaultHttpCommitter, HttpCommit, HttpTranscript};
+use tlsn_formats::http::HttpTranscript;
 use tokio::{
+    io::{AsyncReadExt as TokioAsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt},
     net::TcpStream,
     sync::{mpsc, oneshot},
 };
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
+#[cfg(feature = "cli")]
+pub mod bundle;
+#[cfg(feature = "cli")]
 pub mod cli;
 pub mod normalize;
 pub mod public;
+#[cfg(feature = "cli")]
+pub mod vault;
 
-/// Default cap for one serialized post-session proof/attestation frame. This
-/// is deliberately bounded: the receiver allocates this many bytes after a
-/// peer-provided length prefix. Tool-oriented clients can produce a proof
-/// request above the former 32 MiB cap, so deployments may raise this on both
-/// the proxy and notary up to the u32 wire-format maximum.
+/// Default cap for one serialized control-protocol frame.
 pub const DEFAULT_NOTARY_MAX_FRAME_BYTES: usize = 128 << 20;
 const REQUEST_WRITE_CHUNK: usize = 8 << 10;
-/// Above this size, use independent private transcript commitments instead of
-/// the overlapping HTTP-oriented commitment layout. The latter is convenient
-/// for small presentations, while the former bounds proof memory.
-const CHUNKED_PROOF_THRESHOLD_BYTES: usize = 64 << 10;
 /// Keeps the bounded proof path below the 1 GiB notary budget in the measured
 /// Proxy-TLS configuration.
 const CHUNKED_PROOF_BYTES: usize = 128 << 10;
 pub const CAPTURE_FORMAT: &str = "llm-notary/capture/v1";
+const DEFERRED_BUNDLE_FORMAT: &str = "llm-notary/deferred-bundle/v1";
+const DEFERRED_RECEIPT_FORMAT: &str = "llm-notary/deferred-receipt/v1";
+const NOTARY_CONTROL_MAGIC: &[u8; 8] = b"LLMN\0\0\0\x01";
+const NOTARY_MODE_CAPTURE: u8 = 2;
+const NOTARY_MODE_FINALIZE: u8 = 3;
 
-/// Returns the Linux cgroup charge when this process runs in a container.
-/// This is intentionally best-effort so local macOS/Windows operation is
-/// unchanged; the notary log records `None` when cgroup v2 is unavailable.
-fn cgroup_memory(file: &str) -> Option<u64> {
-    fs::read_to_string(format!("/sys/fs/cgroup/{file}"))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
+/// A validated notary protocol operation selected by the versioned prelude.
+#[derive(Clone, Copy, Debug)]
+pub enum NotarySessionMode {
+    Capture,
+    Finalize,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DeferredCaptureRequest {
+    root_binding: [u8; 32],
+    record_digest: [u8; 32],
+}
+
+#[derive(Serialize, Deserialize)]
+struct DeferredFinalizeRequest {
+    receipt: DeferredReceipt,
+    records: tlsn::deferred::DeferredRecordTranscript,
+    prove_request: tlsn::config::prove::ProveRequest,
 }
 
 /// A request body split into bounded frames, avoiding one unbounded local write
@@ -93,33 +110,14 @@ pub fn chunked_request_body(bytes: Bytes) -> HttpRequestBody {
     StreamBody::new(futures::stream::iter(frames)).boxed()
 }
 
-/// Builds the commitments used by a local capture.
-///
-/// Large interactions keep HTTP metadata in separately revealable pieces and
-/// split only the bodies into non-overlapping bounded chunks. This preserves
-/// the existing Authorization/API-key redaction policy: a proof can reveal a
-/// whole body from its chunks, but never needs to reveal a chunk containing a
-/// secret header value.
-fn capture_transcript_commit(transcript: &Transcript) -> Result<(TranscriptCommitConfig, bool)> {
-    let chunked =
-        transcript.sent().len().max(transcript.received().len()) >= CHUNKED_PROOF_THRESHOLD_BYTES;
-    let mut builder = TranscriptCommitConfig::builder(transcript);
-
-    if chunked {
-        let http = HttpTranscript::parse(transcript)?;
-        if http.requests.len() != 1 || http.responses.len() != 1 {
-            bail!("expected exactly one HTTP request and response in TLS transcript");
-        }
-        commit_chunked_private_http(&mut builder, &http)?;
-    } else {
-        let http = HttpTranscript::parse(transcript)?;
-        if http.requests.len() != 1 || http.responses.len() != 1 {
-            bail!("expected exactly one HTTP request and response in TLS transcript");
-        }
-        DefaultHttpCommitter::default().commit_transcript(&mut builder, &http)?;
+fn deferred_transcript_commit(transcript: &Transcript) -> Result<TranscriptCommitConfig> {
+    let http = HttpTranscript::parse(transcript)?;
+    if http.requests.len() != 1 || http.responses.len() != 1 {
+        bail!("expected exactly one HTTP request and response in TLS transcript");
     }
-
-    Ok((builder.build()?, chunked))
+    let mut builder = TranscriptCommitConfig::builder(transcript);
+    commit_chunked_private_http(&mut builder, &http)?;
+    Ok(builder.build()?)
 }
 
 /// Uses a non-overlapping commitment layout compatible with
@@ -134,60 +132,291 @@ fn commit_chunked_private_http(
     transcript: &HttpTranscript,
 ) -> Result<()> {
     let request = &transcript.requests[0];
-    builder.commit(request.without_data(), Direction::Sent)?;
-    builder.commit(&request.request.target, Direction::Sent)?;
+    let mut sent = RangeSet::default();
+    sent.union_mut(request.without_data());
+    sent.union_mut(&request.request.target);
     for value in &request.headers {
         if is_redacted_request_header(&value.name.as_str()) {
-            builder.commit(value.without_value(), Direction::Sent)?;
+            sent.union_mut(value.without_value());
         } else {
-            builder.commit(value, Direction::Sent)?;
+            sent.union_mut(value);
         }
     }
     if let Some(body) = &request.body {
-        commit_body_chunks(builder, body.indices().iter(), Direction::Sent)?;
+        sent.union_mut(body);
     }
+    commit_bounded_ranges(builder, sent.iter(), Direction::Sent)?;
 
     let response = &transcript.responses[0];
-    builder.commit(response.without_data(), Direction::Received)?;
+    let mut received = RangeSet::default();
+    received.union_mut(response.without_data());
     for value in &response.headers {
-        builder.commit(value, Direction::Received)?;
+        if is_redacted_response_header(&value.name.as_str()) {
+            received.union_mut(value.without_value());
+        } else {
+            received.union_mut(value);
+        }
     }
     if let Some(body) = &response.body {
-        commit_body_chunks(builder, body.indices().iter(), Direction::Received)?;
+        received.union_mut(body);
     }
+    commit_bounded_ranges(builder, received.iter(), Direction::Received)?;
 
     Ok(())
 }
 
-fn commit_body_chunks(
+/// Packs disjoint HTTP ranges into the fewest bounded commitments. One child
+/// proof VM is created per commitment, so grouping headers and fragmented SSE
+/// body ranges materially reduces finalization latency without disclosing
+/// credential-header values.
+fn commit_bounded_ranges(
     builder: &mut tlsn::transcript::TranscriptCommitConfigBuilder,
     ranges: impl Iterator<Item = std::ops::Range<usize>>,
     direction: Direction,
 ) -> Result<()> {
+    let mut pending = RangeSet::default();
+    let mut pending_bytes = 0usize;
     for range in ranges {
-        for start in (range.start..range.end).step_by(CHUNKED_PROOF_BYTES) {
-            builder.commit(
-                start..(start + CHUNKED_PROOF_BYTES).min(range.end),
-                direction,
-            )?;
+        let mut start = range.start;
+        while start < range.end {
+            let available = CHUNKED_PROOF_BYTES - pending_bytes;
+            let end = (start + available).min(range.end);
+            pending.union_mut(start..end);
+            pending_bytes += end - start;
+            start = end;
+            if pending_bytes == CHUNKED_PROOF_BYTES {
+                builder.commit(&pending, direction)?;
+                pending = RangeSet::default();
+                pending_bytes = 0;
+            }
         }
+    }
+    if pending_bytes != 0 {
+        builder.commit(&pending, direction)?;
     }
     Ok(())
 }
 
 fn is_redacted_request_header(name: &str) -> bool {
     name.eq_ignore_ascii_case(header::AUTHORIZATION.as_str())
+        || name.eq_ignore_ascii_case(header::PROXY_AUTHORIZATION.as_str())
+        || name.eq_ignore_ascii_case(header::COOKIE.as_str())
         || name.eq_ignore_ascii_case("x-api-key")
 }
 
-/// The portable evidence retained by the trace author. `presentation` is what
-/// a buyer/verifier receives; `attestation` and `secrets` are retained locally
-/// until a presentation is made.
+fn is_redacted_response_header(name: &str) -> bool {
+    name.eq_ignore_ascii_case(header::SET_COOKIE.as_str())
+}
+
+/// The proof material retained while constructing a selectively disclosed
+/// provider capture.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LocalProof {
     pub server_name: String,
     pub attestation: Vec<u8>,
     pub secrets: Vec<u8>,
+}
+
+/// A notary-signed, end-of-stream binding for a deferred private proof.
+///
+/// The receipt covers a TLSN root binding and the exact encrypted application
+/// record layout. It is public, but it is not itself a disclosure of the HTTP
+/// request or response.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct DeferredReceipt {
+    format: String,
+    server_name: String,
+    root_binding: [u8; 32],
+    record_digest: [u8; 32],
+    connection_info: ConnectionInfo,
+    server_ephemeral_key: ServerEphemKey,
+    signature: Vec<u8>,
+}
+
+impl DeferredReceipt {
+    /// Returns the provider host the notary authenticated during capture.
+    fn server_name(&self) -> &str {
+        &self.server_name
+    }
+
+    /// Verifies this receipt against the trusted notary public key.
+    fn verify(&self, trusted_notary_key: &[u8]) -> Result<()> {
+        if self.format != DEFERRED_RECEIPT_FORMAT {
+            bail!("unsupported deferred receipt format: {}", self.format);
+        }
+        let key = VerifyingKey::from_sec1_bytes(trusted_notary_key)
+            .context("invalid trusted notary public key")?;
+        let signature =
+            Signature::from_slice(&self.signature).context("invalid deferred receipt signature")?;
+        key.verify(&deferred_receipt_message(self)?, &signature)
+            .context("deferred receipt signature did not verify")
+    }
+
+    /// Ensures the encrypted records supplied for a later proof are the ones
+    /// the notary authenticated when it issued this receipt.
+    fn validate_records(&self, records: &tlsn::deferred::DeferredRecordTranscript) -> Result<()> {
+        if self.record_digest != records.digest() {
+            bail!("deferred receipt does not match encrypted application records");
+        }
+        Ok(())
+    }
+}
+
+fn deferred_receipt_message(receipt: &DeferredReceipt) -> Result<Vec<u8>> {
+    #[derive(Serialize)]
+    struct UnsignedReceipt<'a> {
+        format: &'a str,
+        server_name: &'a str,
+        root_binding: [u8; 32],
+        record_digest: [u8; 32],
+        connection_info: &'a ConnectionInfo,
+        server_ephemeral_key: &'a ServerEphemKey,
+    }
+
+    let payload = bincode::serialize(&UnsignedReceipt {
+        format: &receipt.format,
+        server_name: &receipt.server_name,
+        root_binding: receipt.root_binding,
+        record_digest: receipt.record_digest,
+        connection_info: &receipt.connection_info,
+        server_ephemeral_key: &receipt.server_ephemeral_key,
+    })?;
+    let mut message = b"LLM Notary deferred receipt\0".to_vec();
+    message.extend_from_slice(&payload);
+    Ok(message)
+}
+
+/// Issues a receipt after the notary has validated the live TLS connection.
+///
+/// This is not a client API: callers must first authenticate the provider's
+/// certificate and the root binding from the original Proxy-TLS session.
+fn issue_deferred_receipt(
+    signing_key: &SigningKey,
+    server_name: String,
+    root_binding: [u8; 32],
+    records: &tlsn::deferred::DeferredRecordTranscript,
+    connection_info: ConnectionInfo,
+    server_ephemeral_key: ServerEphemKey,
+) -> Result<DeferredReceipt> {
+    let mut receipt = DeferredReceipt {
+        format: DEFERRED_RECEIPT_FORMAT.to_owned(),
+        server_name,
+        root_binding,
+        record_digest: records.digest(),
+        connection_info,
+        server_ephemeral_key,
+        signature: Vec::new(),
+    };
+    let signature: Signature = signing_key.sign(&deferred_receipt_message(&receipt)?);
+    receipt.signature = signature.to_bytes().to_vec();
+    Ok(receipt)
+}
+
+/// A private, client-held deferred-proof artifact.
+///
+/// The checkpoint contains the complete plaintext transcript and TLS traffic
+/// keys required to produce a proof later. Store it only with user-only file
+/// permissions and encrypt it at rest when the platform provides a keychain
+/// or equivalent facility.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DeferredBundle {
+    format: String,
+    receipt: DeferredReceipt,
+    capture_id: String,
+    provider_name: String,
+    created_at_unix_ms: u64,
+    handshake_data: HandshakeData,
+    checkpoint: Vec<u8>,
+}
+
+impl DeferredBundle {
+    /// Creates a portable client-held bundle after a deferred capture ends.
+    fn new(
+        receipt: DeferredReceipt,
+        capture_id: String,
+        provider_name: String,
+        created_at_unix_ms: u64,
+        handshake_data: HandshakeData,
+        state: &tlsn::deferred::DeferredProverState,
+    ) -> Result<Self> {
+        validate_capture_id(&capture_id)?;
+        validate_provider_name(&provider_name, receipt.server_name())?;
+        receipt.validate_records(state.records())?;
+        Ok(Self {
+            format: DEFERRED_BUNDLE_FORMAT.to_owned(),
+            receipt,
+            capture_id,
+            provider_name,
+            created_at_unix_ms,
+            handshake_data,
+            checkpoint: bincode::serialize(state).context("serializing deferred checkpoint")?,
+        })
+    }
+
+    /// Returns the stable local capture identifier.
+    pub fn capture_id(&self) -> &str {
+        &self.capture_id
+    }
+
+    /// Returns the provider adapter name.
+    pub fn provider_name(&self) -> &str {
+        &self.provider_name
+    }
+
+    /// Returns the bundle creation time in Unix milliseconds.
+    pub fn created_at_unix_ms(&self) -> u64 {
+        self.created_at_unix_ms
+    }
+
+    /// Deserializes the private client checkpoint.
+    fn checkpoint(&self) -> Result<tlsn::deferred::DeferredProverState> {
+        if self.format != DEFERRED_BUNDLE_FORMAT {
+            bail!("unsupported deferred bundle format: {}", self.format);
+        }
+        let state: tlsn::deferred::DeferredProverState =
+            bincode::deserialize(&self.checkpoint).context("decoding deferred checkpoint")?;
+        self.receipt.validate_records(state.records())?;
+        Ok(state)
+    }
+
+    /// Writes this pending bundle encrypted with the local vault.
+    #[cfg(feature = "cli")]
+    pub fn save(&self, path: &Path, vault: &crate::vault::Vault) -> Result<()> {
+        if path.exists() {
+            bail!("refusing to overwrite existing bundle: {}", path.display());
+        }
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let file_name = path
+            .file_name()
+            .ok_or_else(|| anyhow!("bundle path has no file name"))?
+            .to_string_lossy();
+        let staging = parent.join(format!(".{file_name}.{}.partial", std::process::id()));
+        if staging.exists() {
+            bail!("bundle staging file already exists: {}", staging.display());
+        }
+        let bytes = bincode::serialize(self).context("serializing deferred bundle")?;
+        write_private_file(&staging, &vault.encrypt(&bytes)?)?;
+        fs::rename(&staging, path)
+            .with_context(|| format!("finalizing encrypted bundle {}", path.display()))
+    }
+
+    /// Reads and decrypts a pending bundle.
+    #[cfg(feature = "cli")]
+    pub fn load(path: &Path, vault: &crate::vault::Vault) -> Result<Self> {
+        let encrypted = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        let bundle: Self = bincode::deserialize(&vault.decrypt(&encrypted)?)
+            .context("decoding deferred bundle")?;
+        if bundle.format != DEFERRED_BUNDLE_FORMAT {
+            bail!("unsupported deferred bundle format: {}", bundle.format);
+        }
+        validate_capture_id(&bundle.capture_id)?;
+        validate_provider_name(&bundle.provider_name, bundle.receipt.server_name())?;
+        bundle.checkpoint()?;
+        Ok(bundle)
+    }
 }
 
 /// Metadata for a local capture directory. The manifest duplicates only facts
@@ -233,75 +462,50 @@ pub struct Capture {
     pub response: Vec<u8>,
 }
 
-pub struct NotarizedResponse {
-    pub status: http::StatusCode,
-    pub headers: http::HeaderMap,
-    pub body: Vec<u8>,
-    pub proof: LocalProof,
-}
-
-/// An upstream response whose bytes are delivered as they arrive. The proof is
-/// only available after the upstream HTTP message ends, because the TLS
-/// transcript must be complete before it can be committed and attested.
-pub struct NotarizedStreamResponse {
+/// A streaming provider response whose private deferred bundle becomes
+/// available shortly after the provider stream ends.
+pub struct DeferredStreamResponse {
     pub status: http::StatusCode,
     pub headers: http::HeaderMap,
     pub body: mpsc::Receiver<Result<Bytes, io::Error>>,
-    pub proof: oneshot::Receiver<Result<LocalProof>>,
+    pub bundle: oneshot::Receiver<Result<DeferredBundle>>,
 }
 
-/// Sends a single HTTP/1.1 request through a TLSNotary Proxy-TLS session.
-///
-/// `request` must use an `identity` response encoding; otherwise the disclosed
-/// bytes would not be a stable JSON trace. The notary validates the public TLS
-/// chain using its own Mozilla root store.
-pub async fn notarized_request(
-    notary_addr: SocketAddr,
-    server_name: &str,
-    request: Request<HttpRequestBody>,
-    max_frame_bytes: usize,
-) -> Result<NotarizedResponse> {
-    let mut response =
-        notarized_streaming_request(notary_addr, server_name, request, max_frame_bytes).await?;
-    let status = response.status;
-    let headers = response.headers.clone();
-    let mut body = Vec::new();
-    while let Some(chunk) = response.body.recv().await {
-        body.extend_from_slice(&chunk?);
-    }
-    let proof = response
-        .proof
-        .await
-        .context("notarized response proof task exited")??;
-
-    Ok(NotarizedResponse {
-        status,
-        headers,
-        body,
-        proof,
-    })
+async fn complete_deferred_response<F>(
+    body_sender: mpsc::Sender<Result<Bytes, io::Error>>,
+    bundle_sender: oneshot::Sender<Result<DeferredBundle>>,
+    seal: F,
+) where
+    F: std::future::Future<Output = Result<DeferredBundle>>,
+{
+    // EOF belongs to the provider response. Publish it before awaiting the
+    // separate receipt/checkpoint step so a sealing failure cannot
+    // retroactively fail an otherwise successful model call.
+    drop(body_sender);
+    let _ = bundle_sender.send(seal.await);
 }
 
-/// Begins a Proxy-TLS HTTP request and returns response headers as soon as the
-/// provider sends them. The notary relays encrypted TLS packets to the
-/// allowlisted provider; response data is forwarded frame-by-frame and the
-/// attestation resolves through `proof` at end-of-stream.
-pub async fn notarized_streaming_request(
+/// Streams one provider request and returns a client-held deferred bundle at
+/// end-of-stream without running the expensive private proof.
+pub async fn deferred_streaming_request(
     notary_addr: SocketAddr,
     server_name: &str,
+    capture_id: String,
+    provider_name: String,
+    created_at_unix_ms: u64,
     request: Request<HttpRequestBody>,
     max_frame_bytes: usize,
-) -> Result<NotarizedStreamResponse> {
+) -> Result<DeferredStreamResponse> {
     validate_notary_frame_limit(max_frame_bytes)?;
-    let notary_socket = TcpStream::connect(notary_addr)
+    let mut notary_socket = TcpStream::connect(notary_addr)
         .await
         .with_context(|| format!("connecting to notary at {notary_addr}"))?;
     notary_socket.set_nodelay(true)?;
+    write_notary_prelude(&mut notary_socket, NOTARY_MODE_CAPTURE).await?;
 
     let session = Session::new(notary_socket.compat());
     let (driver, mut handle) = session.split();
     let driver_task = tokio::spawn(driver);
-
     let prover = handle
         .new_prover(ProverConfig::builder().build()?)?
         .commit(
@@ -310,7 +514,6 @@ pub async fn notarized_streaming_request(
                 .build()?,
         )
         .await?;
-
     let (tls_connection, prover) = prover.connect(
         TlsClientConfig::builder()
             .server_name(ServerName::Dns(server_name.try_into()?))
@@ -319,128 +522,152 @@ pub async fn notarized_streaming_request(
     )?;
     let tls_connection = TokioIo::new(tls_connection.compat());
     let prover_task = tokio::spawn(prover.into_future());
-
     let (mut sender, connection) =
         hyper::client::conn::http1::handshake::<_, HttpRequestBody>(tls_connection).await?;
     tokio::spawn(async move {
         if let Err(error) = connection.await {
-            tracing::debug!(%error, "upstream HTTP/1 connection ended");
+            tracing::debug!(%error, "deferred upstream HTTP/1 connection ended");
         }
     });
 
     let response: Response<Incoming> = sender.send_request(request).await?;
     let (parts, body) = response.into_parts();
     let (body_sender, body_receiver) = mpsc::channel(16);
-    let (proof_sender, proof_receiver) = oneshot::channel();
+    let (bundle_sender, bundle_receiver) = oneshot::channel();
     let server_name = server_name.to_owned();
     tokio::spawn(async move {
-        let result: Result<LocalProof> = async {
+        let stream_result: Result<()> = async {
             let mut body = body;
             while let Some(frame) = body.frame().await {
                 let frame = frame?;
                 if let Ok(data) = frame.into_data() {
-                    // Keep recording even if the local caller disconnects; the
-                    // saved proof is still useful and avoids a half-trace.
                     let _ = body_sender.send(Ok(data)).await;
                 }
             }
-
-            let mut prover = prover_task.await??;
-            // `HttpTranscript` contains non-Send views into the transcript.
-            // The helper drops them before the next await so this task stays
-            // spawnable.
-            let (transcript_commit, chunked_private) =
-                capture_transcript_commit(prover.transcript())?;
-
-            let mut request_config_builder = RequestConfig::builder();
-            request_config_builder.transcript_commit(transcript_commit.clone());
-            let request_config = request_config_builder.build()?;
-            let mut disclosure_config_builder = ProveConfig::builder(prover.transcript());
-            disclosure_config_builder.transcript_commit(transcript_commit);
-            if chunked_private {
-                disclosure_config_builder.chunked_private_commitments(CHUNKED_PROOF_BYTES)?;
-            }
-            let disclosure_config = disclosure_config_builder.build()?;
-            let proof_started = Instant::now();
-            let ProverOutput {
-                transcript_commitments,
-                transcript_secrets,
-                ..
-            } = prover.prove(&disclosure_config).await?;
-            tracing::info!(
-                chunked_private,
-                transcript_sent_bytes = prover.transcript().sent().len(),
-                transcript_received_bytes = prover.transcript().received().len(),
-                commitment_count = transcript_commitments.len(),
-                proof_elapsed_ms = proof_started.elapsed().as_millis(),
-                "generated private TLS transcript commitments"
-            );
-
-            let prover_transcript = prover.transcript().clone();
-            let tls_transcript = prover.tls_transcript().clone();
-            prover.close().await?;
-
-            let mut attestation_builder = AttestationRequest::builder(&request_config);
-            attestation_builder
-                .server_name(ServerName::Dns(server_name.as_str().try_into()?))
-                .handshake_data(HandshakeData {
-                    certs: tls_transcript
-                        .server_cert_chain()
-                        .ok_or_else(|| anyhow!("missing upstream certificate chain"))?
-                        .to_vec(),
-                    sig: tls_transcript
-                        .server_signature()
-                        .ok_or_else(|| anyhow!("missing upstream certificate signature"))?
-                        .clone(),
-                    binding: tls_transcript.certificate_binding().clone(),
-                })
-                .transcript(prover_transcript)
-                .transcript_commitments(transcript_secrets, transcript_commitments);
-            let (attestation_request, secrets) =
-                attestation_builder.build(&CryptoProvider::default())?;
-
-            handle.close();
-            let mut socket = driver_task.await??;
-            write_frame(
-                &mut socket,
-                &bincode::serialize(&attestation_request)?,
-                max_frame_bytes,
-            )
-            .await?;
-            let attestation: Attestation =
-                bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
-            attestation_request.validate(&attestation, &CryptoProvider::default())?;
-
-            Ok(LocalProof {
-                server_name,
-                attestation: bincode::serialize(&attestation)?,
-                secrets: bincode::serialize(&secrets)?,
-            })
+            Ok(())
         }
         .await;
-
-        if let Err(error) = &result {
+        if let Err(error) = stream_result {
             let _ = body_sender
                 .send(Err(io::Error::other(error.to_string())))
                 .await;
+            drop(body_sender);
+            let _ = bundle_sender.send(Err(error));
+            return;
         }
-        let _ = proof_sender.send(result);
+
+        complete_deferred_response(body_sender, bundle_sender, async {
+            let prover = prover_task.await??;
+            let tls_transcript = prover.tls_transcript().clone();
+            let handshake_data = handshake_data(&tls_transcript)?;
+            let state = prover.into_deferred(rand::random()).await?;
+            let request = DeferredCaptureRequest {
+                root_binding: state.root_binding(),
+                record_digest: state.record_digest(),
+            };
+            handle.close();
+            let mut socket = driver_task.await??;
+            write_frame(&mut socket, &bincode::serialize(&request)?, max_frame_bytes).await?;
+            let receipt: DeferredReceipt =
+                bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
+            if receipt.server_name() != server_name {
+                bail!("notary receipt provider does not match capture provider");
+            }
+            DeferredBundle::new(
+                receipt,
+                capture_id,
+                provider_name,
+                created_at_unix_ms,
+                handshake_data,
+                &state,
+            )
+        })
+        .await;
     });
 
-    Ok(NotarizedStreamResponse {
+    Ok(DeferredStreamResponse {
         status: parts.status,
         headers: parts.headers,
         body: body_receiver,
-        proof: proof_receiver,
+        bundle: bundle_receiver,
     })
 }
 
-/// Serves one remote Proxy-TLS notary session. The notary opens the upstream
-/// TCP connection itself and relays encrypted TLS records, so local DNS cannot
-/// redirect the provider connection. It never receives the API key or HTTP
-/// plaintext.
+/// Completes the expensive private proof for a previously captured bundle and
+/// returns ordinary TLSNotary evidence suitable for deterministic OTLP
+/// normalization.
+pub async fn finalize_deferred_bundle(
+    notary_addr: SocketAddr,
+    bundle: &DeferredBundle,
+    trusted_notary_key: &[u8],
+    max_frame_bytes: usize,
+) -> Result<LocalProof> {
+    validate_notary_frame_limit(max_frame_bytes)?;
+    bundle.receipt.verify(trusted_notary_key)?;
+    let state = bundle.checkpoint()?;
+    let transcript_commit = deferred_transcript_commit(state.transcript())?;
+    let mut request_config_builder = RequestConfig::builder();
+    request_config_builder.transcript_commit(transcript_commit.clone());
+    let request_config = request_config_builder.build()?;
+    let mut prove_config_builder = ProveConfig::builder(state.transcript());
+    prove_config_builder.transcript_commit(transcript_commit);
+    prove_config_builder.chunked_private_commitments(CHUNKED_PROOF_BYTES)?;
+    let prove_config = prove_config_builder.build()?;
+
+    let mut socket = TcpStream::connect(notary_addr)
+        .await
+        .with_context(|| format!("connecting to notary at {notary_addr}"))?;
+    socket.set_nodelay(true)?;
+    write_notary_prelude(&mut socket, NOTARY_MODE_FINALIZE).await?;
+    let request = DeferredFinalizeRequest {
+        receipt: bundle.receipt.clone(),
+        records: state.records().clone(),
+        prove_request: prove_config.to_request(),
+    };
+    write_tokio_frame(&mut socket, &bincode::serialize(&request)?, max_frame_bytes).await?;
+
+    let session = Session::new(socket.compat());
+    let mut prover_context = session.new_context()?;
+    let (driver, handle) = session.split();
+    let driver_task = tokio::spawn(driver);
+    let ProverOutput {
+        transcript_commitments,
+        transcript_secrets,
+        ..
+    } = state
+        .prove(&mut prover_context, &prove_config, CHUNKED_PROOF_BYTES)
+        .await?;
+
+    let mut attestation_builder = AttestationRequest::builder(&request_config);
+    attestation_builder
+        .server_name(ServerName::Dns(
+            bundle.receipt.server_name.as_str().try_into()?,
+        ))
+        .handshake_data(bundle.handshake_data.clone())
+        .transcript(state.transcript().clone())
+        .transcript_commitments(transcript_secrets, transcript_commitments);
+    let (attestation_request, secrets) = attestation_builder.build(&CryptoProvider::default())?;
+    handle.close();
+    let mut socket = driver_task.await??;
+    write_frame(
+        &mut socket,
+        &bincode::serialize(&attestation_request)?,
+        max_frame_bytes,
+    )
+    .await?;
+    let attestation: Attestation =
+        bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
+    attestation_request.validate(&attestation, &CryptoProvider::default())?;
+    Ok(LocalProof {
+        server_name: bundle.receipt.server_name.clone(),
+        attestation: bincode::serialize(&attestation)?,
+        secrets: bincode::serialize(&secrets)?,
+    })
+}
+
+/// Dispatches one versioned notary control connection.
 pub async fn run_notary_session(
-    socket: TcpStream,
+    mut socket: TcpStream,
     signing_key: Arc<SigningKey>,
     allowed_hosts: Arc<Vec<String>>,
     max_private_chunk_bytes: usize,
@@ -449,17 +676,79 @@ pub async fn run_notary_session(
     max_frame_bytes: usize,
 ) -> Result<()> {
     validate_notary_frame_limit(max_frame_bytes)?;
+    let mode = read_notary_session_mode(&mut socket).await?;
+    run_notary_session_after_prelude(
+        socket,
+        mode,
+        signing_key,
+        allowed_hosts,
+        max_private_chunk_bytes,
+        max_total_private_chunk_bytes,
+        max_private_chunk_commitments,
+        max_frame_bytes,
+    )
+    .await
+}
+
+/// Reads and validates the short versioned prelude before expensive protocol
+/// admission. Public servers should apply a short timeout around this call.
+pub async fn read_notary_session_mode(socket: &mut TcpStream) -> Result<NotarySessionMode> {
+    match read_notary_prelude(socket).await? {
+        NOTARY_MODE_CAPTURE => Ok(NotarySessionMode::Capture),
+        NOTARY_MODE_FINALIZE => Ok(NotarySessionMode::Finalize),
+        _ => bail!("unsupported notary control mode"),
+    }
+}
+
+/// Runs a notary session after its prelude has been validated and consumed.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_notary_session_after_prelude(
+    socket: TcpStream,
+    mode: NotarySessionMode,
+    signing_key: Arc<SigningKey>,
+    allowed_hosts: Arc<Vec<String>>,
+    max_private_chunk_bytes: usize,
+    max_total_private_chunk_bytes: usize,
+    max_private_chunk_commitments: usize,
+    max_frame_bytes: usize,
+) -> Result<()> {
+    validate_notary_frame_limit(max_frame_bytes)?;
+    match mode {
+        NotarySessionMode::Capture => {
+            run_deferred_capture_session(socket, signing_key, allowed_hosts, max_frame_bytes).await
+        }
+        NotarySessionMode::Finalize => {
+            run_deferred_finalize_session(
+                socket,
+                signing_key,
+                max_private_chunk_bytes,
+                max_total_private_chunk_bytes,
+                max_private_chunk_commitments,
+                max_frame_bytes,
+            )
+            .await
+        }
+    }
+}
+
+async fn run_deferred_capture_session(
+    socket: TcpStream,
+    signing_key: Arc<SigningKey>,
+    allowed_hosts: Arc<Vec<String>>,
+    max_frame_bytes: usize,
+) -> Result<()> {
     let session = Session::new(socket.compat());
     let (driver, mut handle) = session.split();
     let driver_task = tokio::spawn(driver);
-
-    let verifier_config = VerifierConfig::builder()
-        .root_store(RootCertStore::mozilla())
-        .max_chunked_private_bytes(max_private_chunk_bytes)
-        .max_total_chunked_private_bytes(max_total_private_chunk_bytes)
-        .max_chunked_private_commitments(max_private_chunk_commitments)
-        .build()?;
-    let verifier = match handle.new_verifier(verifier_config)?.commit().await? {
+    let (verifier, server_name) = match handle
+        .new_verifier(
+            VerifierConfig::builder()
+                .root_store(RootCertStore::mozilla())
+                .build()?,
+        )?
+        .commit()
+        .await?
+    {
         VerifierCommitStart::Mpc(verifier) => {
             verifier
                 .reject(Some("LLM Notary accepts Proxy-TLS sessions only"))
@@ -477,77 +766,88 @@ pub async fn run_notary_session(
                     .await?;
                 bail!("rejected disallowed provider hostname: {server_name}");
             }
-            let upstream = TcpStream::connect((server_name.as_str(), 443))
-                .await
-                .with_context(|| format!("notary connecting to {server_name}:443"))?;
+            let upstream = TcpStream::connect((server_name.as_str(), 443)).await?;
             upstream.set_nodelay(true)?;
-            verifier.accept().await?.run(upstream.compat()).await?
+            (
+                verifier.accept().await?.run(upstream.compat()).await?,
+                server_name,
+            )
         }
     };
-    let proof_started = Instant::now();
-    let (
-        VerifierOutput {
-            transcript_commitments,
-            ..
-        },
-        verifier,
-    ) = verifier.verify().await?.accept().await?;
     let tls_transcript = verifier.tls_transcript().clone();
-    verifier.close().await?;
-
-    let sent_len = tls_transcript
-        .sent()
-        .iter()
-        .filter_map(|record| {
-            (record.typ == ContentType::ApplicationData).then_some(record.ciphertext.len())
-        })
-        .sum::<usize>();
-    let received_len = tls_transcript
-        .recv()
-        .iter()
-        .filter_map(|record| {
-            (record.typ == ContentType::ApplicationData).then_some(record.ciphertext.len())
-        })
-        .sum::<usize>();
-    tracing::info!(
-        transcript_sent_bytes = sent_len,
-        transcript_received_bytes = received_len,
-        commitment_count = transcript_commitments.len(),
-        proof_elapsed_ms = proof_started.elapsed().as_millis(),
-        cgroup_memory_current_bytes = ?cgroup_memory("memory.current"),
-        cgroup_memory_peak_bytes = ?cgroup_memory("memory.peak"),
-        "verified private TLS transcript commitments"
-    );
-    let CertBinding::V1_2(binding) = tls_transcript.certificate_binding() else {
-        bail!("unsupported TLS certificate binding");
-    };
+    let (_, connection_info, server_ephemeral_key) =
+        verified_connection_metadata(&tls_transcript, &server_name)?;
+    let deferred = verifier.into_deferred().await?;
 
     handle.close();
     let mut socket = driver_task.await??;
-    let request: AttestationRequest =
+    let request: DeferredCaptureRequest =
         bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
+    if request.root_binding != deferred.root_binding()
+        || request.record_digest != deferred.record_digest()
+    {
+        bail!("client deferred checkpoint does not match notary session state");
+    }
+    let receipt = issue_deferred_receipt(
+        &signing_key,
+        server_name,
+        deferred.root_binding(),
+        deferred.records(),
+        connection_info,
+        server_ephemeral_key,
+    )?;
+    write_frame(&mut socket, &bincode::serialize(&receipt)?, max_frame_bytes).await?;
+    Ok(())
+}
 
-    let signer = Box::new(Secp256k1Signer::new(&signing_key.to_bytes())?);
-    let mut provider = CryptoProvider::default();
-    provider.signer.set_signer(signer);
-    let attestation_config = AttestationConfig::builder()
-        .supported_signature_algs(Vec::from_iter(provider.signer.supported_algs()))
-        .build()?;
-    let mut builder = Attestation::builder(&attestation_config).accept_request(request)?;
-    builder
-        .connection_info(ConnectionInfo {
-            time: tls_transcript.time(),
-            version: tls_transcript.version(),
-            transcript_length: TranscriptLength {
-                sent: sent_len.try_into().context("sent transcript too large")?,
-                received: received_len
-                    .try_into()
-                    .context("received transcript too large")?,
-            },
-        })
-        .server_ephemeral_key(binding.server_ephemeral_key.clone())
-        .transcript_commitments(transcript_commitments);
-    let attestation = builder.build(&provider)?;
+async fn run_deferred_finalize_session(
+    mut socket: TcpStream,
+    signing_key: Arc<SigningKey>,
+    max_private_chunk_bytes: usize,
+    max_total_private_chunk_bytes: usize,
+    max_private_chunk_commitments: usize,
+    max_frame_bytes: usize,
+) -> Result<()> {
+    let request: DeferredFinalizeRequest =
+        bincode::deserialize(&read_tokio_frame(&mut socket, max_frame_bytes).await?)?;
+    request
+        .receipt
+        .verify(signing_key.verifying_key().to_sec1_bytes().as_ref())?;
+    request.receipt.validate_records(&request.records)?;
+    validate_deferred_request_limits(
+        &request.prove_request,
+        max_private_chunk_bytes,
+        max_total_private_chunk_bytes,
+        max_private_chunk_commitments,
+    )?;
+
+    let session = Session::new(socket.compat());
+    let mut verifier_context = session.new_context()?;
+    let (driver, handle) = session.split();
+    let driver_task = tokio::spawn(driver);
+    let verifier =
+        tlsn::deferred::DeferredVerifierState::new(request.receipt.root_binding, request.records);
+    let output = verifier
+        .verify(
+            &mut verifier_context,
+            &request.prove_request,
+            Some(ServerName::Dns(
+                request.receipt.server_name.as_str().try_into()?,
+            )),
+            max_private_chunk_bytes,
+        )
+        .await?;
+    handle.close();
+    let mut socket = driver_task.await??;
+    let attestation_request: AttestationRequest =
+        bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
+    let attestation = sign_attestation(
+        &signing_key,
+        attestation_request,
+        request.receipt.connection_info,
+        request.receipt.server_ephemeral_key,
+        output.transcript_commitments,
+    )?;
     write_frame(
         &mut socket,
         &bincode::serialize(&attestation)?,
@@ -557,16 +857,68 @@ pub async fn run_notary_session(
     Ok(())
 }
 
+fn sign_attestation(
+    signing_key: &SigningKey,
+    request: AttestationRequest,
+    connection_info: ConnectionInfo,
+    server_ephemeral_key: ServerEphemKey,
+    transcript_commitments: Vec<tlsn::transcript::TranscriptCommitment>,
+) -> Result<Attestation> {
+    let signer = Box::new(Secp256k1Signer::new(&signing_key.to_bytes())?);
+    let mut provider = CryptoProvider::default();
+    provider.signer.set_signer(signer);
+    let config = AttestationConfig::builder()
+        .supported_signature_algs(Vec::from_iter(provider.signer.supported_algs()))
+        .build()?;
+    let mut builder = Attestation::builder(&config).accept_request(request)?;
+    builder
+        .connection_info(connection_info)
+        .server_ephemeral_key(server_ephemeral_key)
+        .transcript_commitments(transcript_commitments);
+    Ok(builder.build(&provider)?)
+}
+
+fn validate_deferred_request_limits(
+    request: &tlsn::config::prove::ProveRequest,
+    max_chunk_bytes: usize,
+    max_total_bytes: usize,
+    max_commitments: usize,
+) -> Result<()> {
+    let Some(commitments) = request.transcript_commit() else {
+        bail!("deferred proof requires transcript commitments");
+    };
+    let mut count = 0usize;
+    let mut total = 0usize;
+    for (_, range, _) in commitments.iter_hash() {
+        count += 1;
+        total = total
+            .checked_add(range.len())
+            .ok_or_else(|| anyhow!("deferred proof byte count overflow"))?;
+        if range.len() > max_chunk_bytes || total > max_total_bytes || count > max_commitments {
+            bail!("deferred proof request exceeds notary resource limits");
+        }
+    }
+    if count == 0 {
+        bail!("deferred proof requires hash commitments");
+    }
+    Ok(())
+}
+
 struct DisclosedPresentation {
     presentation: tlsn::attestation::presentation::Presentation,
     request_disclosed: Vec<u8>,
     response: Vec<u8>,
+    connection_time_unix_seconds: u64,
 }
 
 /// Creates a selectively disclosed presentation that reveals the request and
-/// response while redacting every Authorization and x-api-key header value.
-fn make_disclosed_presentation(proof: &LocalProof) -> Result<DisclosedPresentation> {
-    use tlsn::attestation::{Attestation, CryptoProvider, Secrets, presentation::Presentation};
+/// response while redacting configured authentication, cookie, and session
+/// header values.
+fn make_disclosed_presentation_with_provider(
+    proof: &LocalProof,
+    provider: &CryptoProvider,
+) -> Result<DisclosedPresentation> {
+    use tlsn::attestation::{Attestation, Secrets, presentation::Presentation};
 
     let attestation: Attestation = bincode::deserialize(&proof.attestation)?;
     let secrets: Secrets = bincode::deserialize(&proof.secrets)?;
@@ -589,17 +941,28 @@ fn make_disclosed_presentation(proof: &LocalProof) -> Result<DisclosedPresentati
     if let Some(body) = &request.body {
         builder.reveal_sent(body)?;
     }
-    builder.reveal_recv(&transcript.responses[0])?;
+    let response = &transcript.responses[0];
+    builder.reveal_recv(response.without_data())?;
+    for value in &response.headers {
+        if is_redacted_response_header(&value.name.as_str()) {
+            builder.reveal_recv(value.without_value())?;
+        } else {
+            builder.reveal_recv(value)?;
+        }
+    }
+    if let Some(body) = &response.body {
+        builder.reveal_recv(body)?;
+    }
     let transcript_proof = builder.build()?;
 
-    let provider = CryptoProvider::default();
-    let mut presentation_builder = attestation.presentation_builder(&provider);
+    let mut presentation_builder = attestation.presentation_builder(provider);
     presentation_builder
         .identity_proof(secrets.identity_proof())
         .transcript_proof(transcript_proof);
     let presentation: Presentation = presentation_builder.build()?;
 
-    let output = presentation.clone().verify(&provider)?;
+    let output = presentation.clone().verify(provider)?;
+    let connection_time_unix_seconds = output.connection_info.time;
     let partial = output
         .transcript
         .ok_or_else(|| anyhow!("locally built presentation omitted transcript"))?;
@@ -607,6 +970,7 @@ fn make_disclosed_presentation(proof: &LocalProof) -> Result<DisclosedPresentati
         presentation,
         request_disclosed: partial.sent_unsafe().to_vec(),
         response: partial.received_unsafe().to_vec(),
+        connection_time_unix_seconds,
     })
 }
 
@@ -618,15 +982,30 @@ pub fn make_capture(
     capture_id: String,
     provider_name: String,
 ) -> Result<Capture> {
+    make_capture_with_provider(proof, capture_id, provider_name, &CryptoProvider::default())
+}
+
+fn make_capture_with_provider(
+    proof: &LocalProof,
+    capture_id: String,
+    provider_name: String,
+    crypto_provider: &CryptoProvider,
+) -> Result<Capture> {
     validate_capture_id(&capture_id)?;
-    let disclosed = make_disclosed_presentation(proof)?;
+    validate_provider_name(&provider_name, &proof.server_name)?;
+    let presentation_build_started = Instant::now();
+    let disclosed = make_disclosed_presentation_with_provider(proof, crypto_provider)?;
+    tracing::info!(
+        presentation_build_ms = presentation_build_started.elapsed().as_millis(),
+        request_disclosed_bytes = disclosed.request_disclosed.len(),
+        response_bytes = disclosed.response.len(),
+        "built selectively disclosed local presentation"
+    );
     let evidence = bincode::serialize(&disclosed.presentation)?;
-    let created_at_unix_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .context("system clock is before the Unix epoch")?
-        .as_millis()
-        .try_into()
-        .context("capture timestamp does not fit in u64")?;
+    let created_at_unix_ms = disclosed
+        .connection_time_unix_seconds
+        .checked_mul(1000)
+        .context("authenticated TLS connection timestamp does not fit in milliseconds")?;
     let manifest = CaptureManifest {
         format: CAPTURE_FORMAT.to_owned(),
         capture_id,
@@ -724,12 +1103,25 @@ pub fn verify_capture(
     path: &Path,
     trusted_notary_key: &[u8],
 ) -> Result<(CaptureManifest, String, String)> {
-    use tlsn::attestation::{
-        CryptoProvider,
-        presentation::{Presentation, PresentationOutput},
-    };
-
     let capture = load_capture(path)?;
+    verify_capture_value(&capture, trusted_notary_key)
+}
+
+/// Verifies a fully loaded local capture.
+pub fn verify_capture_value(
+    capture: &Capture,
+    trusted_notary_key: &[u8],
+) -> Result<(CaptureManifest, String, String)> {
+    verify_capture_value_with_provider(capture, trusted_notary_key, &CryptoProvider::default())
+}
+
+fn verify_capture_value_with_provider(
+    capture: &Capture,
+    trusted_notary_key: &[u8],
+    crypto_provider: &CryptoProvider,
+) -> Result<(CaptureManifest, String, String)> {
+    use tlsn::attestation::presentation::{Presentation, PresentationOutput};
+
     if capture.manifest.artifacts.evidence_sha256 != sha256_hex(&capture.evidence)
         || capture.manifest.artifacts.request_disclosed_sha256
             != sha256_hex(&capture.request_disclosed)
@@ -748,12 +1140,25 @@ pub fn verify_capture(
     }
     let PresentationOutput {
         server_name,
+        connection_info,
         transcript,
         ..
-    } = presentation.verify(&CryptoProvider::default())?;
+    } = presentation.verify(crypto_provider)?;
     let server_name = server_name.ok_or_else(|| anyhow!("presentation omitted server identity"))?;
     if server_name.to_string() != capture.manifest.provider.host {
         bail!("capture provider host does not match the presentation");
+    }
+    validate_provider_name(
+        &capture.manifest.provider.name,
+        &capture.manifest.provider.host,
+    )?;
+    if capture.manifest.created_at_unix_ms
+        != connection_info
+            .time
+            .checked_mul(1000)
+            .context("authenticated TLS connection timestamp does not fit in milliseconds")?
+    {
+        bail!("capture timestamp does not match the authenticated TLS connection");
     }
     let transcript = transcript.ok_or_else(|| anyhow!("presentation omitted transcript"))?;
     if transcript.sent_unsafe() != capture.request_disclosed
@@ -762,7 +1167,7 @@ pub fn verify_capture(
         bail!("capture HTTP artifacts do not match the authenticated presentation");
     }
     Ok((
-        capture.manifest,
+        capture.manifest.clone(),
         String::from_utf8_lossy(&capture.request_disclosed).into_owned(),
         String::from_utf8_lossy(&capture.response).into_owned(),
     ))
@@ -780,6 +1185,23 @@ fn validate_capture_id(capture_id: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_provider_name(provider_name: &str, host: &str) -> Result<()> {
+    let expected = match host {
+        "api.openai.com" => "openai",
+        "api.anthropic.com" => "anthropic",
+        "api.deepseek.com" => "deepseek",
+        // Non-production test fixtures and explicitly configured future hosts
+        // use their authenticated DNS name as the unambiguous provider label.
+        other => other,
+    };
+    if provider_name != expected {
+        bail!(
+            "provider name {provider_name:?} does not match authenticated host {host:?}; expected {expected:?}"
+        );
+    }
+    Ok(())
+}
+
 fn read_capture_file(directory: &Path, name: &str) -> Result<Vec<u8>> {
     fs::read(directory.join(name)).with_context(|| {
         format!(
@@ -790,8 +1212,20 @@ fn read_capture_file(directory: &Path, name: &str) -> Result<Vec<u8>> {
 }
 
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
-    fs::write(path, bytes)
-        .with_context(|| format!("writing capture artifact {}", path.display()))?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("creating private artifact {}", path.display()))?;
+    file.write_all(bytes)
+        .with_context(|| format!("writing private artifact {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing private artifact {}", path.display()))?;
     restrict_file(path)
 }
 
@@ -825,14 +1259,112 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-fn validate_notary_frame_limit(max_frame_bytes: usize) -> Result<()> {
-    if max_frame_bytes == 0 || max_frame_bytes > u32::MAX as usize {
-        bail!(
-            "notary frame limit must be between 1 and {} bytes",
-            u32::MAX
-        );
-    }
+fn handshake_data(transcript: &tlsn::transcript::TlsTranscript) -> Result<HandshakeData> {
+    Ok(HandshakeData {
+        certs: transcript
+            .server_cert_chain()
+            .ok_or_else(|| anyhow!("missing upstream certificate chain"))?
+            .to_vec(),
+        sig: transcript
+            .server_signature()
+            .ok_or_else(|| anyhow!("missing upstream certificate signature"))?
+            .clone(),
+        binding: transcript.certificate_binding().clone(),
+    })
+}
+
+fn verified_connection_metadata(
+    transcript: &tlsn::transcript::TlsTranscript,
+    server_name: &str,
+) -> Result<(HandshakeData, ConnectionInfo, ServerEphemKey)> {
+    verified_connection_metadata_with_roots(transcript, server_name, &RootCertStore::mozilla())
+}
+
+fn verified_connection_metadata_with_roots(
+    transcript: &tlsn::transcript::TlsTranscript,
+    server_name: &str,
+    roots: &RootCertStore,
+) -> Result<(HandshakeData, ConnectionInfo, ServerEphemKey)> {
+    let handshake = handshake_data(transcript)?;
+    let CertBinding::V1_2(binding) = transcript.certificate_binding() else {
+        bail!("unsupported TLS certificate binding");
+    };
+    let name = ServerName::Dns(server_name.try_into()?);
+    let cert_verifier = tlsn::verifier::ServerCertVerifier::new(roots)?;
+    handshake.verify(
+        &cert_verifier,
+        transcript.time(),
+        &binding.server_ephemeral_key,
+        &name,
+    )?;
+    let sent = transcript
+        .sent()
+        .iter()
+        .filter(|record| record.typ == ContentType::ApplicationData)
+        .map(|record| record.ciphertext.len())
+        .sum::<usize>();
+    let received = transcript
+        .recv()
+        .iter()
+        .filter(|record| record.typ == ContentType::ApplicationData)
+        .map(|record| record.ciphertext.len())
+        .sum::<usize>();
+    Ok((
+        handshake,
+        ConnectionInfo {
+            time: transcript.time(),
+            version: transcript.version(),
+            transcript_length: TranscriptLength {
+                sent: sent.try_into().context("sent transcript too large")?,
+                received: received
+                    .try_into()
+                    .context("received transcript too large")?,
+            },
+        },
+        binding.server_ephemeral_key.clone(),
+    ))
+}
+
+async fn write_notary_prelude(socket: &mut TcpStream, mode: u8) -> Result<()> {
+    socket.write_all(NOTARY_CONTROL_MAGIC).await?;
+    socket.write_all(&[mode]).await?;
+    socket.flush().await?;
     Ok(())
+}
+
+async fn read_notary_prelude(socket: &mut TcpStream) -> Result<u8> {
+    let mut magic = [0u8; NOTARY_CONTROL_MAGIC.len()];
+    socket.read_exact(&mut magic).await?;
+    if &magic != NOTARY_CONTROL_MAGIC {
+        bail!("invalid notary control protocol prelude");
+    }
+    let mut mode = [0u8; 1];
+    socket.read_exact(&mut mode).await?;
+    Ok(mode[0])
+}
+
+async fn write_tokio_frame(
+    socket: &mut TcpStream,
+    value: &[u8],
+    max_frame_bytes: usize,
+) -> Result<()> {
+    validate_frame_length(value.len(), max_frame_bytes)?;
+    socket
+        .write_all(&(value.len() as u32).to_be_bytes())
+        .await?;
+    socket.write_all(value).await?;
+    socket.flush().await?;
+    Ok(())
+}
+
+async fn read_tokio_frame(socket: &mut TcpStream, max_frame_bytes: usize) -> Result<Vec<u8>> {
+    let mut length = [0u8; 4];
+    socket.read_exact(&mut length).await?;
+    let length = u32::from_be_bytes(length) as usize;
+    validate_frame_length(length, max_frame_bytes)?;
+    let mut value = vec![0; length];
+    socket.read_exact(&mut value).await?;
+    Ok(value)
 }
 
 async fn write_frame<S: futures::AsyncWrite + Unpin>(
@@ -840,13 +1372,7 @@ async fn write_frame<S: futures::AsyncWrite + Unpin>(
     value: &[u8],
     max_frame_bytes: usize,
 ) -> Result<()> {
-    if value.len() > max_frame_bytes {
-        bail!(
-            "refusing {}-byte notary frame above configured {}-byte limit",
-            value.len(),
-            max_frame_bytes
-        );
-    }
+    validate_frame_length(value.len(), max_frame_bytes)?;
     socket
         .write_all(&(value.len() as u32).to_be_bytes())
         .await?;
@@ -862,21 +1388,33 @@ async fn read_frame<S: futures::AsyncRead + Unpin>(
     let mut length = [0u8; 4];
     socket.read_exact(&mut length).await?;
     let length = u32::from_be_bytes(length) as usize;
-    if length > max_frame_bytes {
-        bail!(
-            "refusing {}-byte notary frame above configured {}-byte limit",
-            length,
-            max_frame_bytes
-        );
-    }
+    validate_frame_length(length, max_frame_bytes)?;
     let mut value = vec![0u8; length];
     socket.read_exact(&mut value).await?;
     Ok(value)
 }
 
+fn validate_notary_frame_limit(max_frame_bytes: usize) -> Result<()> {
+    if max_frame_bytes == 0 || max_frame_bytes > u32::MAX as usize {
+        bail!(
+            "notary frame limit must be between 1 and {} bytes",
+            u32::MAX
+        );
+    }
+    Ok(())
+}
+
+fn validate_frame_length(length: usize, max_frame_bytes: usize) -> Result<()> {
+    if length > max_frame_bytes {
+        bail!("refusing {length}-byte notary frame above configured {max_frame_bytes}-byte limit");
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
     use tlsn::rangeset::ops::Set;
 
     fn test_capture() -> Capture {
@@ -943,33 +1481,468 @@ mod tests {
     }
 
     #[test]
+    fn provider_labels_must_match_the_authenticated_host() {
+        assert!(validate_provider_name("openai", "api.openai.com").is_ok());
+        assert!(validate_provider_name("anthropic", "api.anthropic.com").is_ok());
+        assert!(validate_provider_name("deepseek", "api.deepseek.com").is_ok());
+        assert!(validate_provider_name("anthropic", "api.openai.com").is_err());
+    }
+
+    #[tokio::test]
+    async fn post_stream_sealing_failure_does_not_fail_the_provider_body() {
+        let (body_sender, mut body_receiver) = mpsc::channel(2);
+        body_sender
+            .send(Ok(Bytes::from_static(b"provider-complete")))
+            .await
+            .unwrap();
+        let (bundle_sender, bundle_receiver) = oneshot::channel();
+        let (release_sender, release_receiver) = oneshot::channel::<()>();
+        tokio::spawn(complete_deferred_response(
+            body_sender,
+            bundle_sender,
+            async move {
+                let _ = release_receiver.await;
+                bail!("receipt failed after provider EOF")
+            },
+        ));
+
+        assert_eq!(
+            body_receiver.recv().await.unwrap().unwrap(),
+            Bytes::from_static(b"provider-complete")
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), body_receiver.recv())
+                .await
+                .unwrap()
+                .is_none(),
+            "provider EOF must not wait for bundle sealing"
+        );
+        release_sender.send(()).unwrap();
+        assert!(bundle_receiver.await.unwrap().is_err());
+    }
+
+    #[test]
     fn chunked_http_commitments_exclude_redacted_header_values() {
-        let body = vec![b'x'; CHUNKED_PROOF_THRESHOLD_BYTES];
-        let mut sent = b"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer test-secret\r\nContent-Length: 65536\r\n\r\n".to_vec();
+        let body = vec![b'x'; 64 << 10];
+        let mut sent = b"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer auth-secret\r\nProxy-Authorization: Basic proxy-secret\r\nCookie: session=cookie-secret\r\nx-api-key: key-secret\r\nContent-Length: 65536\r\n\r\n".to_vec();
         sent.extend_from_slice(&body);
-        let mut received = b"HTTP/1.1 200 OK\r\nContent-Length: 65536\r\n\r\n".to_vec();
+        let mut received =
+            b"HTTP/1.1 200 OK\r\nSet-Cookie: session=response-secret\r\nContent-Length: 65536\r\n\r\n"
+                .to_vec();
         received.extend_from_slice(&body);
         let transcript = Transcript::new(sent, received);
         let http = HttpTranscript::parse(&transcript).expect("parse HTTP transcript");
-        let authorization = http.requests[0]
-            .headers
-            .iter()
-            .find(|header| header.name.as_str().eq_ignore_ascii_case("authorization"))
-            .expect("Authorization header");
 
-        let (config, chunked) =
-            capture_transcript_commit(&transcript).expect("build chunked commitment config");
-        assert!(chunked);
+        let config =
+            deferred_transcript_commit(&transcript).expect("build chunked commitment config");
+        assert_eq!(
+            config.to_request().iter_hash().count(),
+            2,
+            "one bounded commitment should cover each HTTP direction"
+        );
         for (direction, ranges, _) in config.to_request().iter_hash() {
-            if *direction == Direction::Sent {
+            let headers = match direction {
+                Direction::Sent => &http.requests[0].headers,
+                Direction::Received => &http.responses[0].headers,
+            };
+            for header in headers {
+                let redacted = match direction {
+                    Direction::Sent => is_redacted_request_header(&header.name.as_str()),
+                    Direction::Received => is_redacted_response_header(&header.name.as_str()),
+                };
+                if redacted {
+                    assert!(
+                        ranges.intersection(header.value.indices()).next().is_none(),
+                        "a private commitment must not include the {} value",
+                        header.name.as_str()
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn deferred_bundle_survives_a_disconnected_stateless_notary() {
+        use tls_server_fixture::{CA_CERT_DER, SERVER_DOMAIN, bind_test_server_hyper};
+        use tlsn::{
+            Session,
+            config::{
+                prover::ProverConfig, tls::TlsClientConfig, tls_commit::proxy::ProxyTlsConfig,
+                verifier::VerifierConfig,
+            },
+            connection::{DnsName, ServerName},
+            verifier::VerifierCommitStart,
+            webpki::{CertificateDer, RootCertStore},
+        };
+        use tokio_util::compat::TokioAsyncReadCompatExt;
+
+        fn fixture_roots() -> RootCertStore {
+            RootCertStore {
+                roots: vec![CertificateDer(CA_CERT_DER.to_vec())],
+            }
+        }
+
+        let signing_key = SigningKey::from_slice(&[9; 32]).unwrap();
+        let trusted_public_key = signing_key.verifying_key().to_sec1_bytes().to_vec();
+        let (prover_socket, verifier_socket) = tokio::io::duplex(2 << 23);
+        let mut prover_session = Session::new(prover_socket.compat());
+        let mut verifier_session = Session::new(verifier_socket.compat());
+        let prover = prover_session
+            .new_prover(ProverConfig::builder().build().unwrap())
+            .unwrap();
+        let verifier = verifier_session
+            .new_verifier(
+                VerifierConfig::builder()
+                    .root_store(fixture_roots())
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap();
+        let (prover_driver, prover_handle) = prover_session.split();
+        let (verifier_driver, verifier_handle) = verifier_session.split();
+        tokio::spawn(prover_driver);
+        tokio::spawn(verifier_driver);
+
+        let (notary_upstream, fixture_socket) = tokio::io::duplex(2 << 16);
+        let fixture_task = tokio::spawn(bind_test_server_hyper(fixture_socket.compat()));
+        let prover_task = async {
+            let prover = prover
+                .commit(
+                    ProxyTlsConfig::builder()
+                        .server_name(DnsName::try_from(SERVER_DOMAIN).unwrap())
+                        .build()
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let (connection, prover) = prover
+                .connect(
+                    TlsClientConfig::builder()
+                        .server_name(ServerName::Dns(SERVER_DOMAIN.try_into().unwrap()))
+                        .root_store(fixture_roots())
+                        .build()
+                        .unwrap(),
+                )
+                .unwrap();
+            let (mut sender, connection) = hyper::client::conn::http1::handshake::<
+                _,
+                HttpRequestBody,
+            >(TokioIo::new(connection.compat()))
+            .await
+            .unwrap();
+            tokio::spawn(connection);
+            let prover_task = tokio::spawn(prover.into_future());
+            let response = sender
+                .send_request(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/echo")
+                        .header("content-type", "application/json")
+                        .header("authorization", "Bearer fixture-secret")
+                        .header("cookie", "session=fixture-cookie")
+                        .body(chunked_request_body(Bytes::from_static(
+                            br#"{"model":"fixture","messages":[{"role":"user","content":"hello"}],"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}"#,
+                        )))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let response = response.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(
+                response,
+                Bytes::from_static(
+                    br#"{"model":"fixture","messages":[{"role":"user","content":"hello"}],"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}"#
+                )
+            );
+            drop(sender);
+            prover_task
+                .await
+                .unwrap()
+                .unwrap()
+                .into_deferred([7; 16])
+                .await
+                .unwrap()
+        };
+        let verifier_task = async {
+            let verifier = verifier.commit().await.unwrap();
+            let VerifierCommitStart::Proxy(verifier) = verifier else {
+                unreachable!("the test always uses Proxy-TLS");
+            };
+            let verifier = verifier
+                .accept()
+                .await
+                .unwrap()
+                .run(notary_upstream.compat())
+                .await
+                .unwrap();
+            let tls_transcript = verifier.tls_transcript().clone();
+            let (handshake, connection_info, server_ephemeral_key) =
+                verified_connection_metadata_with_roots(
+                    &tls_transcript,
+                    SERVER_DOMAIN,
+                    &fixture_roots(),
+                )
+                .unwrap();
+            let deferred = verifier.into_deferred().await.unwrap();
+            let receipt = issue_deferred_receipt(
+                &signing_key,
+                SERVER_DOMAIN.to_owned(),
+                deferred.root_binding(),
+                // This is the only state the simulated notary uses to issue
+                // its receipt; it is discarded before the later proof.
+                deferred.records(),
+                connection_info,
+                server_ephemeral_key,
+            )
+            .unwrap();
+            (receipt, handshake)
+        };
+        let (state, (receipt, handshake)) = tokio::join!(prover_task, verifier_task);
+        prover_handle.close();
+        verifier_handle.close();
+        fixture_task.await.unwrap().unwrap();
+
+        receipt.verify(&trusted_public_key).unwrap();
+        let wrong_key = SigningKey::from_slice(&[8; 32]).unwrap();
+        assert!(
+            receipt
+                .verify(wrong_key.verifying_key().to_sec1_bytes().as_ref())
+                .is_err()
+        );
+        receipt.validate_records(state.records()).unwrap();
+        let mut forged = receipt.clone();
+        forged.server_name = "attacker.example".to_owned();
+        assert!(forged.verify(&trusted_public_key).is_err());
+
+        // This is the durability boundary: no original TLSN session or
+        // verifier state remains after this point. Only the client-held bundle
+        // is deserialized for a later proof.
+        let bundle = DeferredBundle::new(
+            receipt.clone(),
+            "cap-test".to_owned(),
+            SERVER_DOMAIN.to_owned(),
+            1,
+            handshake,
+            &state,
+        )
+        .unwrap();
+        let bundle = bincode::serialize(&bundle).unwrap();
+        drop(state);
+        let bundle: DeferredBundle = bincode::deserialize(&bundle).unwrap();
+
+        let mut record_tampered = bundle.clone();
+        *record_tampered.checkpoint.last_mut().unwrap() ^= 1;
+        assert!(
+            record_tampered
+                .checkpoint()
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("encrypted application records"),
+            "mutated encrypted records must fail the receipt digest check"
+        );
+
+        // bincode encodes the fixed-size root binding and salt first, followed
+        // by the client-only traffic keys. Changing the first traffic-key byte
+        // leaves the signed record digest intact, reaches the fresh proof, and
+        // must fail its root-binding check.
+        let mut key_tampered = bundle.clone();
+        assert!(key_tampered.checkpoint.len() > 48);
+        key_tampered.checkpoint[48] ^= 1;
+        key_tampered.checkpoint().unwrap();
+        let tampered_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let tampered_notary_addr = tampered_listener.local_addr().unwrap();
+        let tampered_signing_key = signing_key.clone();
+        let tampered_finalizer = tokio::spawn(async move {
+            let (socket, _) = tampered_listener.accept().await.unwrap();
+            run_notary_session(
+                socket,
+                Arc::new(tampered_signing_key),
+                Arc::new(Vec::new()),
+                CHUNKED_PROOF_BYTES,
+                8 << 20,
+                4096,
+                DEFAULT_NOTARY_MAX_FRAME_BYTES,
+            )
+            .await
+        });
+        assert!(
+            finalize_deferred_bundle(
+                tampered_notary_addr,
+                &key_tampered,
+                &trusted_public_key,
+                DEFAULT_NOTARY_MAX_FRAME_BYTES,
+            )
+            .await
+            .is_err(),
+            "mutated client traffic keys must fail the fresh private proof"
+        );
+        assert!(tampered_finalizer.await.unwrap().is_err());
+
+        // A fresh process with the same signing key can finalize the client
+        // checkpoint. It has no stored state from the original TLS session.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let notary_addr = listener.local_addr().unwrap();
+        let finalizer = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            run_notary_session(
+                socket,
+                Arc::new(signing_key),
+                Arc::new(Vec::new()),
+                CHUNKED_PROOF_BYTES,
+                8 << 20,
+                4096,
+                DEFAULT_NOTARY_MAX_FRAME_BYTES,
+            )
+            .await
+            .unwrap();
+        });
+        let proof = finalize_deferred_bundle(
+            notary_addr,
+            &bundle,
+            &trusted_public_key,
+            DEFAULT_NOTARY_MAX_FRAME_BYTES,
+        )
+        .await
+        .unwrap();
+        finalizer.await.unwrap();
+
+        let crypto_provider = CryptoProvider {
+            cert: tlsn::verifier::ServerCertVerifier::new(&fixture_roots()).unwrap(),
+            ..CryptoProvider::default()
+        };
+        let capture = make_capture_with_provider(
+            &proof,
+            "cap-test".to_owned(),
+            SERVER_DOMAIN.to_owned(),
+            &crypto_provider,
+        )
+        .unwrap();
+        let (manifest, request, response) =
+            verify_capture_value_with_provider(&capture, &trusted_public_key, &crypto_provider)
+                .unwrap();
+        assert_eq!(manifest.provider.host, SERVER_DOMAIN);
+        assert!(request.contains(r#""model":"fixture""#));
+        let request_lower = request.to_ascii_lowercase();
+        assert!(request_lower.contains("authorization"));
+        assert!(request_lower.contains("cookie"));
+        assert!(!request.contains("fixture-secret"));
+        assert!(!request.contains("fixture-cookie"));
+        assert!(response.contains(r#""model":"fixture""#));
+
+        #[cfg(feature = "cli")]
+        {
+            let root = std::env::temp_dir().join(format!(
+                "llm-notary-package-test-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            let valid = root.join("valid");
+            crate::bundle::write_trace_package_with_provider(
+                &capture,
+                &valid,
+                &trusted_public_key,
+                &crypto_provider,
+            )
+            .unwrap();
+            crate::bundle::verify_trace_package_with_provider(
+                &valid,
+                &trusted_public_key,
+                &crypto_provider,
+            )
+            .unwrap();
+
+            fn copy_package(source: &Path, destination: &Path) {
+                fs::create_dir_all(destination).unwrap();
+                for name in [
+                    "evidence.tlsn",
+                    "manifest.json",
+                    "request.disclosed.http",
+                    "response.http",
+                    "trace.otlp.json",
+                ] {
+                    fs::copy(source.join(name), destination.join(name)).unwrap();
+                }
+            }
+
+            for name in [
+                "evidence.tlsn",
+                "request.disclosed.http",
+                "response.http",
+                "trace.otlp.json",
+            ] {
+                let tampered = root.join(format!("tampered-{}", name.replace('.', "-")));
+                copy_package(&valid, &tampered);
+                let path = tampered.join(name);
+                let mut bytes = fs::read(&path).unwrap();
+                bytes.push(b' ');
+                fs::write(path, bytes).unwrap();
                 assert!(
-                    ranges
-                        .intersection(authorization.value.indices())
-                        .next()
-                        .is_none(),
-                    "a private chunked commitment must not include the Authorization value"
+                    crate::bundle::verify_trace_package_with_provider(
+                        &tampered,
+                        &trusted_public_key,
+                        &crypto_provider,
+                    )
+                    .is_err(),
+                    "tampered {name} must be rejected"
                 );
             }
+
+            for (label, mutate) in [
+                (
+                    "source",
+                    Box::new(|manifest: &mut serde_json::Value| {
+                        manifest["source"]["capture_id"] = serde_json::json!("cap-forged");
+                    }) as Box<dyn Fn(&mut serde_json::Value)>,
+                ),
+                (
+                    "trace-hash",
+                    Box::new(|manifest: &mut serde_json::Value| {
+                        manifest["trace_sha256"] = serde_json::json!("00");
+                    }),
+                ),
+                (
+                    "normalizer-version",
+                    Box::new(|manifest: &mut serde_json::Value| {
+                        manifest["normalizer_version"] = serde_json::json!("unsupported");
+                    }),
+                ),
+            ] {
+                let tampered = root.join(format!("tampered-{label}"));
+                copy_package(&valid, &tampered);
+                let manifest_path = tampered.join("manifest.json");
+                let mut manifest: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
+                mutate(&mut manifest);
+                fs::write(
+                    &manifest_path,
+                    serde_json::to_vec_pretty(&manifest).unwrap(),
+                )
+                .unwrap();
+                assert!(
+                    crate::bundle::verify_trace_package_with_provider(
+                        &tampered,
+                        &trusted_public_key,
+                        &crypto_provider,
+                    )
+                    .is_err(),
+                    "tampered {label} must be rejected"
+                );
+            }
+
+            assert!(
+                crate::bundle::verify_trace_package_with_provider(
+                    &valid,
+                    wrong_key.verifying_key().to_sec1_bytes().as_ref(),
+                    &crypto_provider,
+                )
+                .is_err(),
+                "a package must reject the wrong trusted notary key"
+            );
+            fs::remove_dir_all(root).unwrap();
         }
     }
 }

@@ -47,6 +47,39 @@ async fn verify_ephemeral_chunks<T: Vm<Binary> + Send + Sync>(
     server_name: Option<ServerName>,
     chunk_bytes: usize,
 ) -> Result<VerifierOutput> {
+    let root_binding = verify_root_binding(ctx, root_vm, keys).await?;
+    verify_ephemeral_chunks_from_binding(
+        ctx,
+        root_binding,
+        transcript,
+        ciphertext_sent,
+        ciphertext_recv,
+        sent_records,
+        recv_records,
+        request,
+        server_name,
+        chunk_bytes,
+    )
+    .await
+}
+
+/// Verifies chunked private commitments using a root binding established
+/// during an earlier TLS commitment session.
+///
+/// The caller must authenticate `root_binding` and the supplied ciphertext to
+/// the original notary receipt before invoking this fresh proof channel.
+pub(crate) async fn verify_ephemeral_chunks_from_binding(
+    ctx: &mut Context,
+    root_binding: [u8; 32],
+    transcript: &PartialTranscript,
+    ciphertext_sent: &[u8],
+    ciphertext_recv: &[u8],
+    sent_records: &[&Record],
+    recv_records: &[&Record],
+    request: &ProveRequest,
+    server_name: Option<ServerName>,
+    chunk_bytes: usize,
+) -> Result<VerifierOutput> {
     if request
         .reveal()
         .is_some_and(|(sent, recv)| !sent.is_empty() || !recv.is_empty())
@@ -76,7 +109,6 @@ async fn verify_ephemeral_chunks<T: Vm<Binary> + Send + Sync>(
         }
         seen.union_mut(idx);
     }
-    let root_binding = verify_root_binding(ctx, root_vm, keys).await?;
     let mut commitments = Vec::new();
     for (direction, idx, alg) in idxs {
         let chunk_start = Instant::now();

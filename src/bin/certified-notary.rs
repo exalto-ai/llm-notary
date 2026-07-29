@@ -1,10 +1,12 @@
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
-use certified::{DEFAULT_NOTARY_MAX_FRAME_BYTES, run_notary_session};
+use certified::{
+    DEFAULT_NOTARY_MAX_FRAME_BYTES, read_notary_session_mode, run_notary_session_after_prelude,
+};
 use clap::Parser;
 use k256::ecdsa::SigningKey;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, sync::Semaphore, time::timeout};
 
 #[derive(Parser, Debug)]
 #[command(about = "LLM Notary TLSNotary service")]
@@ -46,6 +48,22 @@ struct Args {
     /// proxy. This must match the proxy's --max-frame-bytes setting.
     #[arg(long, default_value_t = DEFAULT_NOTARY_MAX_FRAME_BYTES)]
     max_frame_bytes: usize,
+
+    /// Maximum number of simultaneous capture or finalization sessions.
+    #[arg(long, default_value_t = 2)]
+    max_concurrent_sessions: usize,
+
+    /// Maximum number of sockets waiting to send a valid protocol prelude.
+    #[arg(long, default_value_t = 128)]
+    max_pending_connections: usize,
+
+    /// Time allowed for a new socket to send its complete protocol prelude.
+    #[arg(long, default_value_t = 10)]
+    prelude_timeout_secs: u64,
+
+    /// Hard wall-clock limit for one notary protocol session.
+    #[arg(long, default_value_t = 30 * 60)]
+    session_timeout_secs: u64,
 }
 
 #[tokio::main]
@@ -55,8 +73,12 @@ async fn main() -> Result<()> {
     if args.max_private_chunk_bytes == 0
         || args.max_total_private_chunk_bytes == 0
         || args.max_private_chunk_commitments == 0
+        || args.max_concurrent_sessions == 0
+        || args.max_pending_connections == 0
+        || args.prelude_timeout_secs == 0
+        || args.session_timeout_secs == 0
     {
-        bail!("private chunk limits must be non-zero");
+        bail!("notary resource limits must be non-zero");
     }
     if args.max_frame_bytes == 0 || args.max_frame_bytes > u32::MAX as usize {
         bail!(
@@ -79,12 +101,18 @@ async fn main() -> Result<()> {
     );
     let public_key = hex::encode(key.verifying_key().to_sec1_bytes());
     let listener = TcpListener::bind(args.listen).await?;
+    let session_permits = Arc::new(Semaphore::new(args.max_concurrent_sessions));
+    let connection_permits = Arc::new(Semaphore::new(args.max_pending_connections));
     tracing::info!(address = %args.listen, public_key, "LLM Notary service listening");
     println!("LLM Notary public key: {public_key}");
 
     loop {
-        let (stream, address) = listener.accept().await?;
+        let (mut stream, address) = listener.accept().await?;
         stream.set_nodelay(true)?;
+        let Ok(connection_permit) = Arc::clone(&connection_permits).try_acquire_owned() else {
+            tracing::warn!(%address, "notary connection rejected at pending-connection limit");
+            continue;
+        };
         tracing::info!(%address, "notary client connected");
         let key = Arc::clone(&key);
         let allowed_hosts = Arc::clone(&allowed_hosts);
@@ -92,20 +120,46 @@ async fn main() -> Result<()> {
         let max_total_private_chunk_bytes = args.max_total_private_chunk_bytes;
         let max_private_chunk_commitments = args.max_private_chunk_commitments;
         let max_frame_bytes = args.max_frame_bytes;
+        let prelude_timeout = std::time::Duration::from_secs(args.prelude_timeout_secs);
+        let session_timeout = std::time::Duration::from_secs(args.session_timeout_secs);
+        let session_permits = Arc::clone(&session_permits);
         tokio::spawn(async move {
-            if let Err(error) = run_notary_session(
-                stream,
-                key,
-                allowed_hosts,
-                max_private_chunk_bytes,
-                max_total_private_chunk_bytes,
-                max_private_chunk_commitments,
-                max_frame_bytes,
+            let mode = match timeout(prelude_timeout, read_notary_session_mode(&mut stream)).await {
+                Ok(Ok(mode)) => mode,
+                Ok(Err(error)) => {
+                    tracing::warn!(%address, %error, "invalid notary session prelude");
+                    return;
+                }
+                Err(_) => {
+                    tracing::warn!(%address, "notary session prelude timed out");
+                    return;
+                }
+            };
+            drop(connection_permit);
+            let Ok(session_permit) = session_permits.try_acquire_owned() else {
+                tracing::warn!(%address, "notary session rejected at concurrency limit");
+                return;
+            };
+            let result = timeout(
+                session_timeout,
+                run_notary_session_after_prelude(
+                    stream,
+                    mode,
+                    key,
+                    allowed_hosts,
+                    max_private_chunk_bytes,
+                    max_total_private_chunk_bytes,
+                    max_private_chunk_commitments,
+                    max_frame_bytes,
+                ),
             )
-            .await
-            {
-                tracing::warn!(%address, %error, "notary session failed");
+            .await;
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => tracing::warn!(%address, %error, "notary session failed"),
+                Err(_) => tracing::warn!(%address, "notary session timed out"),
             }
+            drop(session_permit);
         });
     }
 }

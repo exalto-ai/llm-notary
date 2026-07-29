@@ -21,8 +21,8 @@ use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 
 use crate::{
-    DEFAULT_NOTARY_MAX_FRAME_BYTES, chunked_request_body, make_capture, notarized_request,
-    notarized_streaming_request, save_capture,
+    DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredBundle, chunked_request_body,
+    deferred_streaming_request, vault::Vault,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -62,11 +62,11 @@ pub struct ProxyArgs {
     #[arg(long)]
     notary: Option<SocketAddr>,
 
-    /// Where private, independently-verifiable local captures are written.
-    #[arg(long, visible_alias = "trace-dir", default_value = "captures")]
-    capture_dir: PathBuf,
+    /// Where private local source bundles are written.
+    #[arg(long, default_value = "bundles")]
+    bundle_dir: PathBuf,
 
-    /// Largest proof/attestation frame accepted from the paired notary.
+    /// Largest control-protocol frame accepted from the paired notary.
     /// Must match the notary's --max-frame-bytes setting.
     #[arg(long, default_value_t = DEFAULT_NOTARY_MAX_FRAME_BYTES)]
     max_frame_bytes: usize,
@@ -76,8 +76,9 @@ pub struct ProxyArgs {
 struct AppState {
     provider: Provider,
     notary: SocketAddr,
-    capture_dir: PathBuf,
+    bundle_dir: PathBuf,
     max_frame_bytes: usize,
+    vault: Arc<Vault>,
     serial: Arc<Mutex<u64>>,
 }
 
@@ -88,16 +89,18 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
             u32::MAX
         );
     }
-    std::fs::create_dir_all(&args.capture_dir)?;
+    std::fs::create_dir_all(&args.bundle_dir)?;
     let notary = match args.notary {
         Some(notary) => notary,
         None => discover_notary().await?,
     };
+    let vault = Vault::open_or_init_interactive().context("opening the local bundle vault (use `llm-notary vault init --passphrase` if this machine has no OS vault)")?;
     let state = AppState {
         provider: args.provider,
         notary,
-        capture_dir: args.capture_dir,
+        bundle_dir: args.bundle_dir,
         max_frame_bytes: args.max_frame_bytes,
+        vault: Arc::new(vault),
         serial: Arc::new(Mutex::new(0)),
     };
     let app = Router::new().fallback(any(proxy)).with_state(state);
@@ -115,7 +118,7 @@ struct NotaryDirectoryEntry {
     port: u16,
 }
 
-async fn discover_notary() -> Result<SocketAddr> {
+pub(crate) async fn discover_notary() -> Result<SocketAddr> {
     let endpoint = reqwest::Client::builder()
         .user_agent("LLM-Notary/0.1")
         .build()?
@@ -154,12 +157,43 @@ async fn proxy(State(state): State<AppState>, request: Request) -> Response {
 
 async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     let (parts, body) = request.into_parts();
+    if parts.method == http::Method::GET || parts.method == http::Method::HEAD {
+        let mut response = if parts.method == http::Method::HEAD {
+            Response::new(Body::empty())
+        } else {
+            Response::new(Body::from(
+                r#"{"service":"llm-notary-proxy","status":"ok"}"#,
+            ))
+        };
+        response.headers_mut().insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        return Ok(response);
+    }
     if parts.method != http::Method::POST {
-        bail!("only POST API requests are supported in the proof of concept");
+        let mut response =
+            Response::new(Body::from(r#"{"error":{"message":"method not allowed"}}"#));
+        *response.status_mut() = StatusCode::METHOD_NOT_ALLOWED;
+        response.headers_mut().insert(
+            http::header::ALLOW,
+            HeaderValue::from_static("GET, HEAD, POST"),
+        );
+        response.headers_mut().insert(
+            http::header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        return Ok(response);
     }
     let input = body.collect().await?.to_bytes();
     let streaming = wants_stream(&parts.headers, &input);
     let host = state.provider.host();
+    tracing::info!(
+        provider = host,
+        request_body_bytes = input.len(),
+        streaming,
+        "received provider request for notarization"
+    );
     let mut outbound = http::Request::builder().method(parts.method).uri(
         parts
             .uri
@@ -183,23 +217,32 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         .header(http::header::CONNECTION, "close")
         .body(chunked_request_body(input))?;
 
+    let (capture_id, created_at_unix_ms) = next_capture_metadata(&state).await?;
+    let started = Instant::now();
+    let upstream = deferred_streaming_request(
+        state.notary,
+        host,
+        capture_id,
+        state.provider.name().to_owned(),
+        created_at_unix_ms,
+        outbound,
+        state.max_frame_bytes,
+    )
+    .await?;
+
     if streaming {
-        let started = Instant::now();
-        let upstream =
-            notarized_streaming_request(state.notary, host, outbound, state.max_frame_bytes)
-                .await?;
         tracing::info!(
             elapsed_ms = started.elapsed().as_millis(),
             "Proxy-TLS received upstream response headers"
         );
         let status = upstream.status;
         let headers = upstream.headers.clone();
-        let capture_id = next_capture_id(&state).await?;
         let trace_state = state.clone();
         let (body_sender, body_receiver) = tokio::sync::mpsc::channel(32);
         tokio::spawn(async move {
             let mut upstream = upstream;
             let mut received_first_chunk = false;
+            let mut client_connected = true;
             while let Some(chunk) = upstream.body.recv().await {
                 if !received_first_chunk {
                     received_first_chunk = true;
@@ -208,40 +251,36 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                         "Proxy-TLS received first upstream response chunk"
                     );
                 }
-                if body_sender.send(chunk).await.is_err() {
-                    break;
+                if client_connected && body_sender.send(chunk).await.is_err() {
+                    // Keep draining the provider stream so a caller
+                    // disconnect does not prevent the bundle from sealing.
+                    client_connected = false;
                 }
             }
             tracing::info!(
                 elapsed_ms = started.elapsed().as_millis(),
-                "Proxy-TLS upstream stream ended; generating proof"
+                "Proxy-TLS upstream stream ended; sealing deferred bundle"
             );
-            let proof = upstream.proof;
+            let bundle = upstream.bundle;
             drop(body_sender);
-            tokio::spawn(async move {
-                match proof.await {
-                    Ok(Ok(proof)) => match make_capture(
-                        &proof,
-                        capture_id,
-                        trace_state.provider.name().to_owned(),
-                    )
-                    .and_then(|capture| save_capture(&trace_state.capture_dir, &capture))
-                    {
+            match bundle.await {
+                Ok(Ok(bundle)) => {
+                    match save_bundle(&trace_state.bundle_dir, &bundle, &trace_state.vault) {
                         Ok(path) => {
-                            tracing::info!(capture = %path.display(), provider = trace_state.provider.host(), elapsed_ms = started.elapsed().as_millis(), "wrote verified streaming capture")
+                            tracing::info!(bundle = %path.display(), provider = trace_state.provider.host(), elapsed_ms = started.elapsed().as_millis(), "wrote deferred streaming bundle")
                         }
                         Err(error) => {
-                            tracing::warn!(%error, "could not save streaming capture")
+                            tracing::warn!(%error, "could not save deferred streaming bundle")
                         }
-                    },
-                    Ok(Err(error)) => {
-                        tracing::warn!(%error, "stream ended without an LLM Notary capture")
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "stream capture proof task exited")
                     }
                 }
-            });
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "stream ended without an LLM Notary deferred bundle")
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "stream deferred capture task exited")
+                }
+            }
         });
 
         let mut response = Response::new(Body::from_stream(ReceiverStream::new(body_receiver)));
@@ -250,33 +289,55 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         return Ok(response);
     }
 
-    let upstream = notarized_request(state.notary, host, outbound, state.max_frame_bytes).await?;
-    let capture = make_capture(
-        &upstream.proof,
-        next_capture_id(&state).await?,
-        state.provider.name().to_owned(),
-    )?;
-    let path = save_capture(&state.capture_dir, &capture)?;
-    tracing::info!(capture = %path.display(), provider = host, "wrote verified capture");
+    let status = upstream.status;
+    let headers = upstream.headers.clone();
+    let mut upstream = upstream;
+    let mut body = Vec::new();
+    while let Some(chunk) = upstream.body.recv().await {
+        body.extend_from_slice(&chunk?);
+    }
+    let bundle = upstream
+        .bundle
+        .await
+        .context("deferred bundle task exited")??;
+    let path = save_bundle(&state.bundle_dir, &bundle, &state.vault)?;
+    tracing::info!(bundle = %path.display(), provider = host, "wrote deferred bundle");
 
-    let mut response = Response::new(Body::from(upstream.body));
-    *response.status_mut() = upstream.status;
-    copy_response_headers(response.headers_mut(), &upstream.headers);
+    let mut response = Response::new(Body::from(body));
+    *response.status_mut() = status;
+    copy_response_headers(response.headers_mut(), &headers);
     response.headers_mut().insert(
-        "x-llm-notary-capture",
+        "x-llm-notary-bundle",
         HeaderValue::from_str(&path.display().to_string())?,
     );
     Ok(response)
 }
 
-async fn next_capture_id(state: &AppState) -> Result<String> {
+fn save_bundle(
+    bundle_dir: &std::path::Path,
+    bundle: &DeferredBundle,
+    vault: &Vault,
+) -> Result<PathBuf> {
+    std::fs::create_dir_all(bundle_dir)?;
+    let path = bundle_dir.join(format!("{}.llmbundle", bundle.capture_id()));
+    bundle.save(&path, vault)?;
+    Ok(path)
+}
+
+async fn next_capture_metadata(state: &AppState) -> Result<(String, u64)> {
     let mut serial = state.serial.lock().await;
     *serial += 1;
     let created_at_unix_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| anyhow::anyhow!("system clock is before the Unix epoch"))?
         .as_millis();
-    Ok(format!("cap-{created_at_unix_ms}-{serial:04}"))
+    let created_at_unix_ms: u64 = created_at_unix_ms
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("capture timestamp does not fit in u64"))?;
+    Ok((
+        format!("cap-{created_at_unix_ms}-{serial:04}"),
+        created_at_unix_ms,
+    ))
 }
 
 fn wants_stream(headers: &HeaderMap, input: &[u8]) -> bool {
@@ -307,8 +368,9 @@ mod tests {
         AppState {
             provider: Provider::Openai,
             notary: "127.0.0.1:7047".parse().unwrap(),
-            capture_dir: PathBuf::from("captures"),
+            bundle_dir: PathBuf::from("bundles"),
             max_frame_bytes: DEFAULT_NOTARY_MAX_FRAME_BYTES,
+            vault: Arc::new(Vault::test_only()),
             serial: Arc::new(Mutex::new(0)),
         }
     }
@@ -326,14 +388,43 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn rejects_non_post_before_creating_an_upstream_proof_task() {
+    async fn answers_get_locally_without_creating_an_upstream_proof_task() {
+        let state = state();
+        let serial = state.serial.clone();
         let request = Request::builder()
             .method(http::Method::GET)
             .uri("/v1/models")
             .body(Body::empty())
             .unwrap();
 
-        let error = proxy_inner(state(), request).await.unwrap_err();
-        assert!(error.to_string().contains("only POST API requests"));
+        let response = proxy_inner(state, request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get("x-llm-notary-bundle").is_none());
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
+            serde_json::json!({"service": "llm-notary-proxy", "status": "ok"})
+        );
+        assert_eq!(*serial.lock().await, 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_unsupported_methods_locally_without_a_bundle() {
+        let state = state();
+        let serial = state.serial.clone();
+        let request = Request::builder()
+            .method(http::Method::PUT)
+            .uri("/v1/messages")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = proxy_inner(state, request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        assert_eq!(
+            response.headers().get(http::header::ALLOW).unwrap(),
+            "GET, HEAD, POST"
+        );
+        assert!(response.headers().get("x-llm-notary-bundle").is_none());
+        assert_eq!(*serial.lock().await, 0);
     }
 }
