@@ -56,6 +56,7 @@ use tokio::{
 };
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
+pub mod archive;
 #[cfg(feature = "cli")]
 pub mod bundle;
 #[cfg(feature = "cli")]

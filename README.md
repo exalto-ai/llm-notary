@@ -328,7 +328,7 @@ documented in [`docs/publish-intake-v1.md`](docs/publish-intake-v1.md).
 
 ### CLI publishing sign-in
 
-Before submitting a capture for publication, authorize the installed CLI with
+Before submitting a finalized trace package, authorize the installed CLI with
 your LLM Notary account:
 
 ```bash
@@ -353,6 +353,29 @@ llm-notary logout
 Publish access credentials last 15 minutes. Refresh credentials expire after
 90 days, rotate on every use, and a replayed refresh credential revokes its
 session.
+
+### Publish a finalized package
+
+`publish` accepts exactly one directory produced by `llm-notary finalize`. It
+first verifies the TLSNotary evidence, trusted notary key, authenticated HTTP
+disclosure, and deterministic OTLP mapping locally. Only after those checks
+pass does it refresh the CLI login and create an upload job:
+
+```bash
+llm-notary publish verified-trace
+```
+
+The command creates a deterministic
+`llmnotary.trace-package-archive/v1` object in memory, uploads it through the
+job-scoped presigned URL, completes the upload, and prints the durable job ID
+and status URL. Use `--json` for a single script-friendly object containing
+`job_id`, `state`, and `status_url`.
+
+Publishing is an explicit consent boundary: the current admission design may
+inspect the disclosed plaintext in the finalized package to reproduce and
+verify the public trace. Provider credentials and cookie values remain
+redacted. The encrypted `.llmbundle` is private retry state and is never a
+valid input to `publish`.
 
 ## Important trust statement
 

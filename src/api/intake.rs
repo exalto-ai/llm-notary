@@ -7,8 +7,7 @@ use aws_sdk_s3::{
     presigning::PresigningConfig,
 };
 
-pub const ARCHIVE_FORMAT: &str = "llmnotary.trace-package-archive/v1";
-pub const ARCHIVE_CONTENT_TYPE: &str = "application/vnd.llmnotary.trace-package+zip";
+pub use certified::archive::{ARCHIVE_CONTENT_TYPE, ARCHIVE_FORMAT};
 
 const SHA256_METADATA: &str = "declared-sha256";
 const FORMAT_METADATA: &str = "archive-format";

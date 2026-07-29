@@ -77,6 +77,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2.5"
 uuid = { version = "1.16", features = ["v4"] }
+zip = { version = "8.4", default-features = false }
 
 # TLSNotary is vendored at a pinned upstream revision. Local patches add the
 # multi-frame Proxy-TLS relay drain fix and the authenticated root-binding

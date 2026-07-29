@@ -1,0 +1,519 @@
+//! Deterministic transport archives for finalized trace packages.
+//!
+//! This module is shared by the publishing CLI and the admission service. It
+//! deliberately accepts only the five files emitted by `finalize`; a transport
+//! archive is not a generic ZIP file.
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    io::{Cursor, Read, Write},
+    path::Path,
+};
+
+use anyhow::{Context, Result, anyhow, bail};
+use serde::{Deserialize, Serialize};
+use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter, write::SimpleFileOptions};
+
+use crate::sha256_hex;
+
+pub const ARCHIVE_FORMAT: &str = "llmnotary.trace-package-archive/v1";
+pub const ARCHIVE_CONTENT_TYPE: &str = "application/vnd.llmnotary.trace-package+zip";
+pub const VERIFIED_TRACE_PACKAGE_FORMAT: &str = "llm-notary/verified-trace/v1";
+pub const ARCHIVE_MANIFEST_PATH: &str = "archive-manifest.json";
+pub const PACKAGE_FILES: [&str; 5] = [
+    "evidence.tlsn",
+    "manifest.json",
+    "request.disclosed.http",
+    "response.http",
+    "trace.otlp.json",
+];
+pub const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 128 * 1024 * 1024;
+const MAX_ARCHIVE_MANIFEST_BYTES: u64 = 64 * 1024;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ArchiveFile {
+    pub path: String,
+    pub size_bytes: u64,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TracePackageArchiveManifest {
+    pub format: String,
+    pub package_format: String,
+    pub package_sha256: String,
+    pub files: Vec<ArchiveFile>,
+}
+
+#[derive(Serialize)]
+struct PackageDigest<'a> {
+    format: &'a str,
+    files: &'a [ArchiveFile],
+}
+
+/// Builds the exact bytes uploaded by `llm-notary publish`.
+pub fn build_trace_package_archive(package: &Path) -> Result<Vec<u8>> {
+    require_plain_directory(package)?;
+    require_exact_package_entries(package)?;
+
+    let mut files = BTreeMap::new();
+    let mut file_manifest = Vec::with_capacity(PACKAGE_FILES.len());
+    let mut total_size = 0u64;
+    for name in PACKAGE_FILES {
+        let path = package.join(name);
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("reading trace package entry {}", path.display()))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            bail!("trace package entry must be a regular file: {name}");
+        }
+        let bytes =
+            fs::read(&path).with_context(|| format!("reading trace package entry {name}"))?;
+        total_size = total_size
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| anyhow!("trace package size overflow"))?;
+        if total_size > MAX_ARCHIVE_UNCOMPRESSED_BYTES {
+            bail!("trace package exceeds the 128 MiB publication limit");
+        }
+        file_manifest.push(ArchiveFile {
+            path: name.to_owned(),
+            size_bytes: bytes.len() as u64,
+            sha256: sha256_hex(&bytes),
+        });
+        files.insert(name, bytes);
+    }
+    require_package_format(
+        files
+            .get("manifest.json")
+            .expect("required package manifest was loaded"),
+    )?;
+
+    let package_sha256 = package_digest(&file_manifest)?;
+    let archive_manifest = TracePackageArchiveManifest {
+        format: ARCHIVE_FORMAT.to_owned(),
+        package_format: VERIFIED_TRACE_PACKAGE_FORMAT.to_owned(),
+        package_sha256,
+        files: file_manifest,
+    };
+    let manifest_bytes =
+        serde_json::to_vec(&archive_manifest).context("encoding archive manifest")?;
+    if manifest_bytes.len() as u64 > MAX_ARCHIVE_MANIFEST_BYTES {
+        bail!("archive manifest is unexpectedly large");
+    }
+
+    let cursor = Cursor::new(Vec::new());
+    let mut writer = ZipWriter::new(cursor);
+    let options = deterministic_options();
+    writer
+        .start_file(ARCHIVE_MANIFEST_PATH, options)
+        .context("starting archive manifest")?;
+    writer
+        .write_all(&manifest_bytes)
+        .context("writing archive manifest")?;
+    for name in PACKAGE_FILES {
+        writer
+            .start_file(name, options)
+            .with_context(|| format!("starting archive entry {name}"))?;
+        writer
+            .write_all(files.get(name).expect("required package file was loaded"))
+            .with_context(|| format!("writing archive entry {name}"))?;
+    }
+    Ok(writer
+        .finish()
+        .context("finalizing trace package archive")?
+        .into_inner())
+}
+
+/// Validates a transport archive without writing any attacker-controlled path.
+pub fn validate_trace_package_archive(bytes: &[u8]) -> Result<TracePackageArchiveManifest> {
+    let (manifest, _) = read_validated_archive(bytes)?;
+    Ok(manifest)
+}
+
+/// Validates and extracts a transport archive for server-side admission.
+///
+/// All entries are held in memory and authenticated against the archive
+/// manifest before the destination directory is created.
+pub fn extract_trace_package_archive(
+    bytes: &[u8],
+    output_dir: &Path,
+) -> Result<TracePackageArchiveManifest> {
+    let (manifest, files) = read_validated_archive(bytes)?;
+    if output_dir.exists() {
+        bail!(
+            "refusing to overwrite extracted trace package: {}",
+            output_dir.display()
+        );
+    }
+    let parent = output_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let package_name = output_dir
+        .file_name()
+        .ok_or_else(|| anyhow!("extraction path has no directory name"))?
+        .to_string_lossy();
+    let staging = parent.join(format!(".{package_name}.{}.partial", std::process::id()));
+    if staging.exists() {
+        bail!("archive extraction staging path already exists");
+    }
+    let result = (|| -> Result<()> {
+        fs::create_dir(&staging).with_context(|| format!("creating {}", staging.display()))?;
+        for name in PACKAGE_FILES {
+            fs::write(
+                staging.join(name),
+                files
+                    .get(name)
+                    .expect("validated archive contains every package file"),
+            )
+            .with_context(|| format!("extracting archive entry {name}"))?;
+        }
+        fs::rename(&staging, output_dir)
+            .with_context(|| format!("finalizing extraction {}", output_dir.display()))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&staging);
+    }
+    result?;
+    Ok(manifest)
+}
+
+fn read_validated_archive(
+    bytes: &[u8],
+) -> Result<(TracePackageArchiveManifest, BTreeMap<String, Vec<u8>>)> {
+    let cursor = Cursor::new(bytes);
+    let mut archive = ZipArchive::new(cursor).context("parsing trace package archive")?;
+    let expected_count = PACKAGE_FILES.len() + 1;
+    if archive.len() != expected_count {
+        bail!("archive must contain exactly {expected_count} entries");
+    }
+
+    let allowed = allowed_archive_entries();
+    let mut seen = BTreeSet::new();
+    let mut entries = BTreeMap::new();
+    let mut total_size = 0u64;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .with_context(|| format!("reading ZIP entry {index}"))?;
+        let name = entry.name().to_owned();
+        let expected_name = if index == 0 {
+            ARCHIVE_MANIFEST_PATH
+        } else {
+            PACKAGE_FILES[index - 1]
+        };
+        if name != expected_name {
+            bail!("archive entry ordering is not canonical");
+        }
+        if entry.enclosed_name().as_deref() != Some(Path::new(&name))
+            || !allowed.contains(name.as_str())
+        {
+            bail!("archive contains an invalid or undeclared path: {name}");
+        }
+        if !seen.insert(name.clone()) {
+            bail!("archive contains a duplicate entry: {name}");
+        }
+        if entry.encrypted() || !entry.is_file() {
+            bail!("archive entry must be an unencrypted regular file: {name}");
+        }
+        if entry.compression() != CompressionMethod::Stored
+            || entry.last_modified() != Some(DateTime::default())
+            || entry.unix_mode().map(|mode| mode & 0o777) != Some(0o644)
+        {
+            bail!("archive entry metadata is not canonical: {name}");
+        }
+        let limit = if name == ARCHIVE_MANIFEST_PATH {
+            MAX_ARCHIVE_MANIFEST_BYTES
+        } else {
+            MAX_ARCHIVE_UNCOMPRESSED_BYTES
+        };
+        if entry.size() > limit {
+            bail!("archive entry exceeds its size limit: {name}");
+        }
+        total_size = total_size
+            .checked_add(entry.size())
+            .ok_or_else(|| anyhow!("archive size overflow"))?;
+        if total_size > MAX_ARCHIVE_UNCOMPRESSED_BYTES + MAX_ARCHIVE_MANIFEST_BYTES {
+            bail!("archive exceeds the total uncompressed size limit");
+        }
+        let mut data = Vec::with_capacity(entry.size() as usize);
+        entry
+            .by_ref()
+            .take(limit + 1)
+            .read_to_end(&mut data)
+            .with_context(|| format!("reading archive entry {name}"))?;
+        if data.len() as u64 != entry.size() {
+            bail!("archive entry size did not match its ZIP metadata: {name}");
+        }
+        entries.insert(name, data);
+    }
+    if seen != allowed.into_iter().map(str::to_owned).collect() {
+        bail!("archive does not contain the exact required entry set");
+    }
+
+    let manifest: TracePackageArchiveManifest = serde_json::from_slice(
+        entries
+            .get(ARCHIVE_MANIFEST_PATH)
+            .expect("validated archive contains its manifest"),
+    )
+    .context("parsing archive manifest")?;
+    if manifest.format != ARCHIVE_FORMAT || manifest.package_format != VERIFIED_TRACE_PACKAGE_FORMAT
+    {
+        bail!("unsupported trace package archive format");
+    }
+    if manifest.files.len() != PACKAGE_FILES.len() {
+        bail!("archive manifest does not declare the exact package file set");
+    }
+    for (declared, expected_name) in manifest.files.iter().zip(PACKAGE_FILES) {
+        if declared.path != expected_name {
+            bail!("archive manifest file ordering or path is invalid");
+        }
+        let data = entries
+            .get(expected_name)
+            .expect("validated archive contains every package file");
+        if declared.size_bytes != data.len() as u64 || declared.sha256 != sha256_hex(data) {
+            bail!("archive file hash or size mismatch: {expected_name}");
+        }
+    }
+    if manifest.package_sha256 != package_digest(&manifest.files)? {
+        bail!("archive package hash mismatch");
+    }
+    require_package_format(
+        entries
+            .get("manifest.json")
+            .expect("validated archive contains package manifest"),
+    )?;
+    entries.remove(ARCHIVE_MANIFEST_PATH);
+    Ok((manifest, entries))
+}
+
+fn require_plain_directory(package: &Path) -> Result<()> {
+    if package
+        .extension()
+        .is_some_and(|extension| extension == "llmbundle")
+    {
+        bail!("encrypted .llmbundle files cannot be published; finalize the bundle first");
+    }
+    let metadata = fs::symlink_metadata(package)
+        .with_context(|| format!("reading trace package {}", package.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        bail!(
+            "publish expects one finalized trace package directory: {}",
+            package.display()
+        );
+    }
+    Ok(())
+}
+
+fn require_exact_package_entries(package: &Path) -> Result<()> {
+    let allowed = PACKAGE_FILES.into_iter().collect::<BTreeSet<_>>();
+    let mut actual = BTreeSet::new();
+    for entry in fs::read_dir(package)
+        .with_context(|| format!("reading trace package {}", package.display()))?
+    {
+        let entry = entry.context("reading trace package directory entry")?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow!("trace package contains a non-UTF-8 file name"))?;
+        if !allowed.contains(name.as_str()) {
+            bail!("trace package contains an undeclared entry: {name}");
+        }
+        actual.insert(name);
+    }
+    if actual != allowed.into_iter().map(str::to_owned).collect() {
+        bail!("trace package does not contain the exact required file set");
+    }
+    Ok(())
+}
+
+fn require_package_format(bytes: &[u8]) -> Result<()> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).context("parsing verified package manifest")?;
+    if value.get("format").and_then(serde_json::Value::as_str)
+        != Some(VERIFIED_TRACE_PACKAGE_FORMAT)
+    {
+        bail!("unsupported verified trace package format");
+    }
+    Ok(())
+}
+
+fn package_digest(files: &[ArchiveFile]) -> Result<String> {
+    let canonical = serde_json::to_vec(&PackageDigest {
+        format: VERIFIED_TRACE_PACKAGE_FORMAT,
+        files,
+    })
+    .context("encoding package digest input")?;
+    Ok(sha256_hex(&canonical))
+}
+
+fn allowed_archive_entries() -> BTreeSet<&'static str> {
+    std::iter::once(ARCHIVE_MANIFEST_PATH)
+        .chain(PACKAGE_FILES)
+        .collect()
+}
+
+fn deterministic_options() -> SimpleFileOptions {
+    SimpleFileOptions::default()
+        .compression_method(CompressionMethod::Stored)
+        .last_modified_time(DateTime::default())
+        .unix_permissions(0o644)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "llm-notary-archive-{name}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fixture_package() -> TestDir {
+        let directory = TestDir::new("package");
+        for name in PACKAGE_FILES {
+            let bytes = if name == "manifest.json" {
+                format!(r#"{{"format":"{VERIFIED_TRACE_PACKAGE_FORMAT}"}}"#).into_bytes()
+            } else {
+                format!("fixture:{name}").into_bytes()
+            };
+            fs::write(directory.0.join(name), bytes).unwrap();
+        }
+        directory
+    }
+
+    fn rewrite_archive(entries: Vec<(String, Vec<u8>, bool)>) -> Vec<u8> {
+        let mut writer = ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, bytes, symlink) in entries {
+            if symlink {
+                writer
+                    .add_symlink(
+                        name,
+                        String::from_utf8(bytes).unwrap(),
+                        deterministic_options(),
+                    )
+                    .unwrap();
+            } else {
+                writer.start_file(name, deterministic_options()).unwrap();
+                writer.write_all(&bytes).unwrap();
+            }
+        }
+        writer.finish().unwrap().into_inner()
+    }
+
+    fn archive_entries(bytes: &[u8]) -> Vec<(String, Vec<u8>, bool)> {
+        let mut archive = ZipArchive::new(Cursor::new(bytes)).unwrap();
+        (0..archive.len())
+            .map(|index| {
+                let mut entry = archive.by_index(index).unwrap();
+                let mut data = Vec::new();
+                entry.read_to_end(&mut data).unwrap();
+                (entry.name().to_owned(), data, false)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn archive_is_reproducible_and_extracts_exact_files() {
+        let package = fixture_package();
+        let first = build_trace_package_archive(&package.0).unwrap();
+        let second = build_trace_package_archive(&package.0).unwrap();
+        assert_eq!(first, second);
+        let manifest = validate_trace_package_archive(&first).unwrap();
+        assert_eq!(manifest.format, ARCHIVE_FORMAT);
+
+        let output_parent = TestDir::new("extract-parent");
+        let output = output_parent.0.join("package");
+        extract_trace_package_archive(&first, &output).unwrap();
+        for name in PACKAGE_FILES {
+            assert_eq!(
+                fs::read(output.join(name)).unwrap(),
+                fs::read(package.0.join(name)).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn package_builder_rejects_undeclared_entries_and_symlinks() {
+        let package = fixture_package();
+        fs::write(package.0.join("extra.txt"), b"no").unwrap();
+        assert!(build_trace_package_archive(&package.0).is_err());
+
+        #[cfg(unix)]
+        {
+            let package = fixture_package();
+            fs::remove_file(package.0.join("trace.otlp.json")).unwrap();
+            std::os::unix::fs::symlink("manifest.json", package.0.join("trace.otlp.json")).unwrap();
+            assert!(build_trace_package_archive(&package.0).is_err());
+        }
+    }
+
+    #[test]
+    fn archive_rejects_traversal_absolute_duplicates_symlinks_and_undeclared_files() {
+        let package = fixture_package();
+        let valid = build_trace_package_archive(&package.0).unwrap();
+
+        for bad_name in ["../trace.otlp.json", "/trace.otlp.json", "extra.txt"] {
+            let mut entries = archive_entries(&valid);
+            entries[5].0 = bad_name.to_owned();
+            assert!(validate_trace_package_archive(&rewrite_archive(entries)).is_err());
+        }
+
+        let mut duplicate = valid.clone();
+        let old = b"response.http";
+        let new = b"manifest.json";
+        let mut replacements = 0;
+        for offset in 0..=duplicate.len() - old.len() {
+            if duplicate[offset..].starts_with(old) {
+                duplicate[offset..offset + old.len()].copy_from_slice(new);
+                replacements += 1;
+            }
+        }
+        assert!(replacements >= 2, "patched local and central ZIP names");
+        assert!(validate_trace_package_archive(&duplicate).is_err());
+
+        let mut symlink = archive_entries(&valid);
+        symlink[5] = (
+            "trace.otlp.json".to_owned(),
+            b"manifest.json".to_vec(),
+            true,
+        );
+        assert!(validate_trace_package_archive(&rewrite_archive(symlink)).is_err());
+    }
+
+    #[test]
+    fn archive_rejects_file_and_package_hash_mismatches() {
+        let package = fixture_package();
+        let valid = build_trace_package_archive(&package.0).unwrap();
+
+        let mut file_mismatch = archive_entries(&valid);
+        file_mismatch[5].1.push(b'!');
+        assert!(validate_trace_package_archive(&rewrite_archive(file_mismatch)).is_err());
+
+        let mut package_mismatch = archive_entries(&valid);
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&package_mismatch[0].1).unwrap();
+        manifest["package_sha256"] = serde_json::Value::String("0".repeat(64));
+        package_mismatch[0].1 = serde_json::to_vec(&manifest).unwrap();
+        assert!(validate_trace_package_archive(&rewrite_archive(package_mismatch)).is_err());
+    }
+}

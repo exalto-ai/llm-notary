@@ -11,6 +11,32 @@ untrusted and opaque, so a malicious client can mislabel arbitrary bytes. The
 later admission verifier must reject anything that is not the declared
 finalized-package archive.
 
+## Deterministic archive layout
+
+The archive uses uncompressed ZIP entries with a fixed DOS timestamp
+(`1980-01-01T00:00:00`), mode `0644`, and this exact order:
+
+```text
+archive-manifest.json
+evidence.tlsn
+manifest.json
+request.disclosed.http
+response.http
+trace.otlp.json
+```
+
+No other entry is permitted. The builder and extractor reject directories,
+symlinks, duplicate names, absolute paths, parent traversal, non-canonical ZIP
+metadata, and undeclared files. The same package always produces the same
+archive bytes.
+
+`archive-manifest.json` declares the archive and verified-package format,
+the byte length and SHA-256 of every finalized-package file, and
+`package_sha256`. The package digest is SHA-256 over compact JSON containing
+the verified-package format plus the ordered file declarations; it is
+independent of ZIP container metadata. The outer archive SHA-256 sent when a
+job is created binds the complete transport object.
+
 ## Create or resume an upload
 
 ```http
