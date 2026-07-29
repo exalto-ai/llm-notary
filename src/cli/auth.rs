@@ -78,6 +78,11 @@ struct FileCredentials {
     refresh_token: String,
 }
 
+pub(crate) struct AuthenticatedApi {
+    pub(crate) origin: String,
+    pub(crate) access_token: String,
+}
+
 pub async fn login(args: LoginArgs) -> Result<()> {
     let api_origin = normalize_origin(&args.api)?;
     let client = reqwest::Client::builder()
@@ -170,13 +175,10 @@ pub async fn logout() -> Result<()> {
 }
 
 pub async fn whoami() -> Result<()> {
-    let mut credentials = load_credentials()?;
-    let (access_token, rotated_refresh_token) = refresh(&credentials).await?;
-    credentials.refresh_token = rotated_refresh_token;
-    save_credentials(&credentials)?;
+    let authenticated = authenticate().await?;
     let response = reqwest::Client::new()
-        .get(format!("{}/api/cli/me", credentials.api_origin))
-        .bearer_auth(access_token)
+        .get(format!("{}/api/cli/me", authenticated.origin))
+        .bearer_auth(authenticated.access_token)
         .send()
         .await
         .context("looking up CLI session")?
@@ -190,6 +192,18 @@ pub async fn whoami() -> Result<()> {
         response.user.github_login, response.session.device_name
     );
     Ok(())
+}
+
+pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
+    let mut credentials =
+        load_credentials().context("CLI authentication required; run `llm-notary login`")?;
+    let (access_token, rotated_refresh_token) = refresh(&credentials).await?;
+    credentials.refresh_token = rotated_refresh_token;
+    save_credentials(&credentials)?;
+    Ok(AuthenticatedApi {
+        origin: credentials.api_origin,
+        access_token,
+    })
 }
 
 async fn refresh(credentials: &FileCredentials) -> Result<(String, String)> {

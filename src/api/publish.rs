@@ -69,6 +69,7 @@ struct PublishJobResponse {
 #[derive(FromRow)]
 struct PublishJobRow {
     id: String,
+    user_id: String,
     state: String,
     archive_format: String,
     declared_size_bytes: i64,
@@ -76,6 +77,7 @@ struct PublishJobRow {
     upload_object_key: String,
     intake_object_key: String,
     upload_expires_at: i64,
+    upload_generation: i64,
     created_at: i64,
     updated_at: i64,
     queued_at: Option<i64>,
@@ -178,7 +180,7 @@ async fn create_publish_job(
     let intake_object_key = state
         .publish
         .storage
-        .intake_object_key(&user_id, &job_id)
+        .intake_object_key(&user_id, &job_id, 0)
         .map_err(ApiError::internal)?;
     let upload_expires_at = now + state.publish.upload_ttl_secs;
     let inserted = sqlx::query(
@@ -203,7 +205,7 @@ async fn create_publish_job(
     .await
     .map_err(database_error)?;
 
-    let job = load_job_by_idempotency(&state, &user_id, &idempotency_key).await?;
+    let mut job = load_job_by_idempotency(&state, &user_id, &idempotency_key).await?;
     if job.archive_format != request.archive_format
         || job.declared_size_bytes != request.size_bytes
         || job.declared_sha256 != request.sha256
@@ -214,7 +216,41 @@ async fn create_publish_job(
     }
     if job.state == "uploading" && job.upload_expires_at <= now {
         expire_upload(&state, &job, now).await?;
-        return Err(ApiError::gone("publication upload expired"));
+        job = load_job_by_idempotency(&state, &user_id, &idempotency_key).await?;
+    }
+    let mut reopened = false;
+    if job.state == "expired" {
+        let retry_nonce = Uuid::new_v4().simple().to_string();
+        let retry_upload_key = state
+            .publish
+            .storage
+            .upload_object_key(&user_id, &job.id, &retry_nonce)
+            .map_err(ApiError::internal)?;
+        let retry_intake_key = state
+            .publish
+            .storage
+            .intake_object_key(&user_id, &job.id, job.upload_generation + 1)
+            .map_err(ApiError::internal)?;
+        let reset = sqlx::query(
+            "UPDATE publish_jobs
+             SET state = 'uploading', upload_object_key = ?, intake_object_key = ?,
+                 upload_expires_at = ?, upload_generation = upload_generation + 1,
+                 updated_at = ?, failure_code = NULL
+             WHERE id = ? AND user_id = ? AND state = 'expired'
+               AND upload_generation = ?",
+        )
+        .bind(retry_upload_key)
+        .bind(retry_intake_key)
+        .bind(upload_expires_at)
+        .bind(now)
+        .bind(&job.id)
+        .bind(&user_id)
+        .bind(job.upload_generation)
+        .execute(&state.database)
+        .await
+        .map_err(database_error)?;
+        reopened = reset.rows_affected() == 1;
+        job = load_job_by_idempotency(&state, &user_id, &idempotency_key).await?;
     }
     let upload = if job.state == "uploading" {
         let presigned = state
@@ -237,7 +273,7 @@ async fn create_publish_job(
     } else {
         None
     };
-    let status = if inserted.rows_affected() == 1 {
+    let status = if inserted.rows_affected() == 1 || reopened {
         StatusCode::CREATED
     } else {
         StatusCode::OK
@@ -314,8 +350,13 @@ async fn complete_publish_job(
         .await
     {
         let current = load_owned_job(&state, &user_id, &job.id).await?;
-        if current.state == "queued" {
+        if current.state == "queued" && current.upload_generation == job.upload_generation {
             return Ok(Json(job_response(&current)));
+        }
+        if current.upload_generation != job.upload_generation || current.state != "uploading" {
+            return Err(ApiError::conflict(
+                "publication upload attempt was superseded while completing",
+            ));
         }
         return Err(ApiError::internal(error));
     }
@@ -340,21 +381,37 @@ async fn complete_publish_job(
         )));
     }
 
+    let job = queue_completed_attempt(&state, &user_id, &job, now).await?;
+    Ok(Json(job_response(&job)))
+}
+
+async fn queue_completed_attempt(
+    state: &AppState,
+    user_id: &str,
+    job: &PublishJobRow,
+    now: i64,
+) -> ApiResult<PublishJobRow> {
     let updated = sqlx::query(
         "UPDATE publish_jobs
          SET state = 'queued', queued_at = ?, updated_at = ?
-         WHERE id = ? AND user_id = ? AND state = 'uploading'",
+         WHERE id = ? AND user_id = ? AND state = 'uploading'
+           AND upload_generation = ? AND upload_object_key = ?
+           AND intake_object_key = ? AND upload_expires_at = ?",
     )
     .bind(now)
     .bind(now)
     .bind(&job.id)
     .bind(&user_id)
+    .bind(job.upload_generation)
+    .bind(&job.upload_object_key)
+    .bind(&job.intake_object_key)
+    .bind(job.upload_expires_at)
     .execute(&state.database)
     .await
     .map_err(database_error)?;
     if updated.rows_affected() != 1 {
-        let current = load_owned_job(&state, &user_id, &job.id).await?;
-        if current.state != "queued" {
+        let current = load_owned_job(state, user_id, &job.id).await?;
+        if current.state != "queued" || current.upload_generation != job.upload_generation {
             if let Err(error) = state
                 .publish
                 .storage
@@ -367,10 +424,23 @@ async fn complete_publish_job(
                     "deleting unqueued promoted intake object failed"
                 );
             }
+            if let Err(error) = state
+                .publish
+                .storage
+                .delete_object(&job.upload_object_key)
+                .await
+            {
+                tracing::warn!(
+                    job_id = %job.id,
+                    %error,
+                    "deleting superseded staging upload failed"
+                );
+            }
             return Err(ApiError::conflict(
                 "publication job changed while the upload was completing",
             ));
         }
+        return Ok(current);
     }
     if let Err(error) = state
         .publish
@@ -380,8 +450,7 @@ async fn complete_publish_job(
     {
         tracing::warn!(job_id = %job.id, %error, "deleting completed staging upload failed");
     }
-    let job = load_owned_job(&state, &user_id, &job.id).await?;
-    Ok(Json(job_response(&job)))
+    load_owned_job(state, user_id, &job.id).await
 }
 
 async fn authenticated_cli_user_id(state: &AppState, headers: &HeaderMap) -> ApiResult<String> {
@@ -426,16 +495,26 @@ async fn load_owned_job(state: &AppState, user_id: &str, job_id: &str) -> ApiRes
         .ok_or_else(|| ApiError::not_found("publication job was not found"))
 }
 
-async fn expire_upload(state: &AppState, job: &PublishJobRow, now: i64) -> ApiResult<()> {
-    sqlx::query(
+async fn expire_upload(state: &AppState, job: &PublishJobRow, now: i64) -> ApiResult<bool> {
+    let updated = sqlx::query(
         "UPDATE publish_jobs SET state = 'expired', updated_at = ?
-         WHERE id = ? AND state = 'uploading'",
+         WHERE id = ? AND user_id = ? AND state = 'uploading'
+           AND upload_generation = ? AND upload_object_key = ? AND upload_expires_at = ?
+           AND upload_expires_at <= ?",
     )
     .bind(now)
     .bind(&job.id)
+    .bind(&job.user_id)
+    .bind(job.upload_generation)
+    .bind(&job.upload_object_key)
+    .bind(job.upload_expires_at)
+    .bind(now)
     .execute(&state.database)
     .await
     .map_err(database_error)?;
+    if updated.rows_affected() == 0 {
+        return Ok(false);
+    }
     if let Err(error) = state
         .publish
         .storage
@@ -444,7 +523,7 @@ async fn expire_upload(state: &AppState, job: &PublishJobRow, now: i64) -> ApiRe
     {
         tracing::warn!(job_id = %job.id, %error, "deleting expired staging upload failed");
     }
-    Ok(())
+    Ok(true)
 }
 
 async fn cleanup_expired_uploads(state: &AppState) -> ApiResult<()> {
@@ -460,7 +539,7 @@ async fn cleanup_expired_uploads(state: &AppState) -> ApiResult<()> {
     .await
     .map_err(database_error)?;
     for job in jobs {
-        expire_upload(state, &job, now).await?;
+        let _ = expire_upload(state, &job, now).await?;
     }
     Ok(())
 }
@@ -806,6 +885,168 @@ mod tests {
                 .lock()
                 .expect("mock lock")
                 .contains(&job.upload_object_key)
+        );
+    }
+
+    #[tokio::test]
+    async fn identical_publish_reopens_an_expired_upload_without_duplicate_jobs() {
+        let (state, storage, headers, _) = test_state().await;
+        create_publish_job(State(state.clone()), headers.clone(), Json(request()))
+            .await
+            .expect("create");
+        let first: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("first job");
+        storage.object(&first.upload_object_key, first.declared_size_bytes, SHA256);
+        sqlx::query("UPDATE publish_jobs SET upload_expires_at = 1")
+            .execute(&state.database)
+            .await
+            .expect("expire upload");
+
+        let response = create_publish_job(State(state.clone()), headers, Json(request()))
+            .await
+            .expect("retry expired upload");
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let retried: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("retried job");
+        assert_eq!(retried.id, first.id);
+        assert_eq!(retried.state, "uploading");
+        assert_ne!(retried.upload_object_key, first.upload_object_key);
+        assert!(retried.upload_expires_at > 1);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM publish_jobs")
+                .fetch_one(&state.database)
+                .await
+                .expect("job count"),
+            1
+        );
+        assert!(
+            storage
+                .deleted
+                .lock()
+                .expect("mock lock")
+                .contains(&first.upload_object_key)
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_expiration_cannot_cancel_a_reopened_upload_generation() {
+        let (state, storage, headers, _) = test_state().await;
+        create_publish_job(State(state.clone()), headers.clone(), Json(request()))
+            .await
+            .expect("create");
+        sqlx::query("UPDATE publish_jobs SET upload_expires_at = 1")
+            .execute(&state.database)
+            .await
+            .expect("expire upload");
+        let stale: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("stale generation");
+        assert!(expire_upload(&state, &stale, 2).await.unwrap());
+
+        create_publish_job(State(state.clone()), headers, Json(request()))
+            .await
+            .expect("reopen");
+        let reopened: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("reopened generation");
+        assert_eq!(reopened.state, "uploading");
+        assert_ne!(reopened.upload_object_key, stale.upload_object_key);
+
+        assert!(!expire_upload(&state, &stale, i64::MAX).await.unwrap());
+        let current: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("current generation");
+        assert_eq!(current.state, "uploading");
+        assert_eq!(current.upload_object_key, reopened.upload_object_key);
+        assert!(
+            !storage
+                .deleted
+                .lock()
+                .expect("mock lock")
+                .contains(&reopened.upload_object_key)
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_completion_cannot_queue_or_overwrite_a_reopened_generation() {
+        let (state, storage, headers, _) = test_state().await;
+        create_publish_job(State(state.clone()), headers.clone(), Json(request()))
+            .await
+            .expect("create");
+        sqlx::query("UPDATE publish_jobs SET upload_expires_at = 1")
+            .execute(&state.database)
+            .await
+            .expect("expire upload");
+        let stale: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("stale generation");
+        assert!(expire_upload(&state, &stale, 2).await.unwrap());
+        create_publish_job(State(state.clone()), headers, Json(request()))
+            .await
+            .expect("reopen");
+        let current: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("current generation");
+        assert_eq!(current.upload_generation, stale.upload_generation + 1);
+        assert_ne!(current.intake_object_key, stale.intake_object_key);
+
+        storage.object(&stale.intake_object_key, stale.declared_size_bytes, SHA256);
+        assert!(
+            queue_completed_attempt(&state, &stale.user_id, &stale, 3)
+                .await
+                .is_err()
+        );
+        let still_current: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("still current");
+        assert_eq!(still_current.state, "uploading");
+        assert_eq!(still_current.upload_generation, current.upload_generation);
+
+        storage.object(
+            &current.intake_object_key,
+            current.declared_size_bytes,
+            SHA256,
+        );
+        let queued = queue_completed_attempt(&state, &current.user_id, &current, 4)
+            .await
+            .expect("queue current generation");
+        assert_eq!(queued.state, "queued");
+
+        storage.object(&stale.intake_object_key, stale.declared_size_bytes, SHA256);
+        assert!(
+            queue_completed_attempt(&state, &stale.user_id, &stale, 5)
+                .await
+                .is_err()
+        );
+        let remains_queued: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("queued generation");
+        assert_eq!(remains_queued.state, "queued");
+        assert_eq!(remains_queued.upload_generation, current.upload_generation);
+        assert!(
+            storage
+                .deleted
+                .lock()
+                .expect("mock lock")
+                .contains(&stale.intake_object_key)
+        );
+        assert!(
+            !storage
+                .deleted
+                .lock()
+                .expect("mock lock")
+                .contains(&current.intake_object_key)
         );
     }
 

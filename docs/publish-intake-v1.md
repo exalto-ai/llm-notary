@@ -11,6 +11,34 @@ untrusted and opaque, so a malicious client can mislabel arbitrary bytes. The
 later admission verifier must reject anything that is not the declared
 finalized-package archive.
 
+## Deterministic archive layout
+
+The archive uses uncompressed ZIP entries with a fixed DOS timestamp
+(`1980-01-01T00:00:00`), mode `0644`, and this exact order:
+
+```text
+archive-manifest.json
+evidence.tlsn
+manifest.json
+request.disclosed.http
+response.http
+trace.otlp.json
+```
+
+No other entry is permitted. The builder and extractor reject directories,
+symlinks, duplicate names, absolute paths, parent traversal, non-canonical ZIP
+metadata, archive comments, prepended or trailing bytes, non-canonical manifest
+encoding, and undeclared files. Validation reconstructs the canonical ZIP and
+requires byte-for-byte equality. The same package always produces the same
+archive bytes.
+
+`archive-manifest.json` declares the archive and verified-package format,
+the byte length and SHA-256 of every finalized-package file, and
+`package_sha256`. The package digest is SHA-256 over compact JSON containing
+the verified-package format plus the ordered file declarations; it is
+independent of ZIP container metadata. The outer archive SHA-256 sent when a
+job is created binds the complete transport object.
+
 ## Create or resume an upload
 
 ```http
@@ -33,6 +61,13 @@ admission downloads and hashes the object.
 A new job returns `201 Created`. Reusing the idempotency key with identical
 metadata returns `200 OK` and the same job. Reusing it with different metadata
 returns `409 Conflict`.
+
+The supported CLI derives the idempotency key from the exact archive SHA-256.
+Repeating `publish` for unchanged package bytes therefore resumes the same job
+after an ambiguous upload, completion, or polling failure instead of creating
+a duplicate publication. If its upload window has expired, the API reopens
+that same job with a new one-use staging key and expiry. An admitted, queued,
+verifying, or rejected job is never reset.
 
 ```json
 {
@@ -65,7 +100,9 @@ returns `409 Conflict`.
 
 The upload URL is a temporary write capability and must not be logged. Send the
 archive bytes directly to that URL with the returned method and every returned
-header. The API never returns Spaces credentials.
+header. Production upload URLs must use public HTTPS endpoints; loopback HTTP
+is accepted only when the configured API origin is also loopback for local
+development. The API never returns Spaces credentials.
 
 If a duplicate create request finds a job that is no longer accepting uploads,
 `upload` is `null`.
@@ -78,9 +115,12 @@ Authorization: Bearer <CLI access token>
 ```
 
 Completion checks the staging object's size and signed metadata, then copies it
-to a key that was never exposed by a presigned URL. Only after that promotion
-does the job enter `queued`; the staging object is deleted. Repeating completion
-for a queued job returns the same queued job.
+to a generation-specific key that was never exposed by a presigned URL. The
+database transition compares that upload generation and its exact object keys,
+so a completion racing an expired/reopened attempt cannot queue or overwrite
+the replacement. Only after that promotion does the job enter `queued`; the
+staging object is deleted. Repeating completion for a queued job returns the
+same queued job.
 
 The metadata check proves that the object was uploaded through the job's signed
 request. It does not prove the bytes match the declared SHA-256. Admission must
@@ -111,7 +151,8 @@ and `failed`; the same response can later expose `verifying`, `admitted`,
 The API stores uploads under two private prefixes:
 
 - `llm-notary/uploads/` contains revocable staging objects;
-- `llm-notary/intake/` contains server-promoted objects ready for admission.
+- `llm-notary/intake/` contains generation-specific server-promoted objects
+  ready for admission.
 
 Application cleanup expires ordinary staging uploads after 15 minutes. Bucket
 lifecycle rules delete staging objects after one day and intake objects after

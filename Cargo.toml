@@ -29,6 +29,7 @@ cli = [
     "dep:directories",
     "dep:keyring",
     "dep:rpassword",
+    "dep:tempfile",
 ]
 
 [dependencies]
@@ -69,6 +70,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 sqlx = { version = "0.8", default-features = false, features = ["macros", "migrate", "runtime-tokio-rustls", "sqlite"] }
+tempfile = { version = "3.20", optional = true }
 time = "0.3"
 tokio = { version = "1.45", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
@@ -77,6 +79,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2.5"
 uuid = { version = "1.16", features = ["v4"] }
+zip = { version = "8.4", default-features = false }
 
 # TLSNotary is vendored at a pinned upstream revision. Local patches add the
 # multi-frame Proxy-TLS relay drain fix and the authenticated root-binding

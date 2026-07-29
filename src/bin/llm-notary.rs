@@ -52,7 +52,7 @@ enum CommandName {
     Verify(VerifyArgs),
     /// Verify a public trace and platform stamp without a private capture.
     VerifyPublic(VerifyPublicArgs),
-    /// Verify private captures locally and write an unsigned public trace preview.
+    /// Upload one finalized, locally verified trace package for publication.
     Publish(PublishArgs),
 }
 
@@ -78,6 +78,6 @@ async fn main() -> Result<()> {
         CommandName::Vault { command } => vault::run(command),
         CommandName::Verify(args) => verify::run(args),
         CommandName::VerifyPublic(args) => public::run_verify_public(args),
-        CommandName::Publish(args) => publish::run(args),
+        CommandName::Publish(args) => publish::run(args).await,
     }
 }
