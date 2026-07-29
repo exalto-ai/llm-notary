@@ -126,13 +126,8 @@ pub(crate) async fn discover_notary() -> Result<SocketAddr> {
         .await
         .context("decoding notary directory from LLM Notary API")?;
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| anyhow::anyhow!("system clock is before the Unix epoch"))?
-        .as_secs();
-    validate_directory(&endpoint, now)?;
+    validate_directory(&endpoint)?;
     pin(endpoint.clone())?;
-    let endpoint = endpoint.active;
     tracing::info!(key_id = %endpoint.key_id, "pinned trusted notary directory key");
 
     tokio::net::lookup_host((endpoint.host.as_str(), endpoint.port))

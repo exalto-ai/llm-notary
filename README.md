@@ -305,16 +305,11 @@ The API has `GET /api/notary` for CLI endpoint and public-key discovery,
 for admitting a standardized trace and serving its OTLP JSON and stamp. Set
 `LLM_NOTARY_NOTARY_HOST` and `LLM_NOTARY_NOTARY_PUBLIC_KEY` to the public TCP
 notary hostname and its compressed SEC1 public key. The directory contains a
-stable key ID, validity interval, and any prior keys still accepted for the
-rotation window. Clients cache the last successful directory record, so offline
-verification only trusts cached keys. The Compose health check compares the
-advertised key with the running notary key. GitHub sign-in authorizes publication; the platform signing key is
+stable key ID. Clients cache the last successful directory record, so offline
+verification only trusts the discovered key rather than a package-supplied
+key. The Compose health check compares the advertised key with the running
+notary key. GitHub sign-in authorizes publication; the platform signing key is
 the trust root for published stamps.
-
-For a key rotation, advertise the new key as active and add the old key to
-`LLM_NOTARY_NOTARY_PREVIOUS_KEYS_JSON` with `status: "previous"` and a finite
-`valid_until_unix`. New proxy sessions use only the active key; cached records
-keep already-finalized captures verifiable until the old key expires.
 
 ### CLI publishing sign-in
 

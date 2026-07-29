@@ -1,7 +1,6 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -15,100 +14,65 @@ pub const DIRECTORY_FORMAT: &str = "llm-notary/notary-directory/v1";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DirectoryRecord {
     pub format: String,
-    pub active: DirectoryKey,
-    #[serde(default)]
-    pub previous: Vec<DirectoryKey>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct DirectoryKey {
     pub host: String,
     pub port: u16,
     pub key_id: String,
     pub public_key: String,
-    pub status: String,
-    pub valid_from_unix: u64,
-    pub valid_until_unix: Option<u64>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
 struct TrustStore {
     format: String,
-    records: Vec<DirectoryRecord>,
+    record: Option<DirectoryRecord>,
 }
 
 pub fn key_id(public_key: &[u8]) -> String {
     format!("sha256:{}", sha256_hex(public_key))
 }
 
-pub fn validate_directory(record: &DirectoryRecord, now: u64) -> Result<()> {
+pub fn validate_directory(record: &DirectoryRecord) -> Result<()> {
     if record.format != DIRECTORY_FORMAT {
         bail!("unsupported notary directory format: {}", record.format);
     }
-    validate_key(&record.active, "active", now)?;
-    if record.active.status != "active" {
-        bail!("directory active key must have status active");
-    }
-    for key in &record.previous {
-        validate_key(key, "previous", now)?;
-        if key.status != "previous" {
-            bail!("directory previous key {} has invalid status", key.key_id);
-        }
-    }
+    validate_key(record)?;
     Ok(())
 }
 
-fn validate_key(key: &DirectoryKey, name: &str, now: u64) -> Result<Vec<u8>> {
+fn validate_key(key: &DirectoryRecord) -> Result<Vec<u8>> {
     if key.host.is_empty() || key.host.chars().any(char::is_whitespace) || key.port == 0 {
-        bail!("directory {name} key has an invalid endpoint");
+        bail!("directory key has an invalid endpoint");
     }
-    let public_key = hex::decode(&key.public_key)
-        .with_context(|| format!("directory {name} key is not hexadecimal"))?;
+    let public_key = hex::decode(&key.public_key).context("directory key is not hexadecimal")?;
     VerifyingKey::from_sec1_bytes(&public_key)
-        .with_context(|| format!("directory {name} key is not a SEC1 secp256k1 key"))?;
+        .context("directory key is not a SEC1 secp256k1 key")?;
     if key.key_id != key_id(&public_key) {
-        bail!("directory {name} key ID does not match its public key");
-    }
-    if now < key.valid_from_unix || key.valid_until_unix.is_some_and(|until| now > until) {
-        bail!(
-            "directory {name} key {} is outside its validity interval",
-            key.key_id
-        );
+        bail!("directory key ID does not match its public key");
     }
     Ok(public_key)
 }
 
 pub fn pin(record: DirectoryRecord) -> Result<()> {
-    let now = now()?;
-    validate_directory(&record, now)?;
+    validate_directory(&record)?;
     let path = trust_store_path()?;
     let mut store = load_store(&path)?;
-    store
-        .records
-        .retain(|old| old.active.key_id != record.active.key_id);
-    store.records.push(record);
     store.format = DIRECTORY_FORMAT.to_owned();
+    store.record = Some(record);
     write_store(&path, &store)
 }
 
 pub fn cached_key(public_key: &[u8]) -> Result<(String, String)> {
-    let now = now()?;
     let requested_id = key_id(public_key);
     let store = load_store(&trust_store_path()?)?;
     if store.format != DIRECTORY_FORMAT {
         bail!("unsupported local notary trust store format");
     }
-    for record in &store.records {
-        if validate_directory(record, now).is_err() {
-            continue;
-        }
-        for key in std::iter::once(&record.active).chain(record.previous.iter()) {
-            if key
-                .public_key
-                .eq_ignore_ascii_case(&hex::encode(public_key))
-            {
-                return Ok((key.key_id.clone(), key.status.clone()));
-            }
+    if let Some(record) = store.record {
+        validate_directory(&record)?;
+        if record
+            .public_key
+            .eq_ignore_ascii_case(&hex::encode(public_key))
+        {
+            return Ok((record.key_id, "directory".to_owned()));
         }
     }
     Err(anyhow!(
@@ -121,13 +85,6 @@ pub fn explicit_key(value: &str) -> Result<(Vec<u8>, String)> {
     VerifyingKey::from_sec1_bytes(&key)
         .context("trusted notary key must be a SEC1 secp256k1 key")?;
     Ok((key.clone(), key_id(&key)))
-}
-
-fn now() -> Result<u64> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| anyhow!("system clock is before the Unix epoch"))?
-        .as_secs())
 }
 
 fn trust_store_path() -> Result<PathBuf> {
@@ -164,41 +121,22 @@ fn write_store(path: &Path, store: &TrustStore) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn key() -> DirectoryKey {
+    fn key() -> DirectoryRecord {
         let signing = k256::ecdsa::SigningKey::from_slice(&[7; 32]).unwrap();
         let public = signing.verifying_key().to_sec1_bytes().to_vec();
-        DirectoryKey {
+        DirectoryRecord {
+            format: DIRECTORY_FORMAT.into(),
             host: "notary.example".into(),
             port: 7047,
             key_id: key_id(&public),
             public_key: hex::encode(public),
-            status: "active".into(),
-            valid_from_unix: 10,
-            valid_until_unix: Some(20),
         }
     }
 
     #[test]
-    fn rejects_expired_and_mismatched_directory_keys() {
-        let active = key();
-        let record = DirectoryRecord {
-            format: DIRECTORY_FORMAT.into(),
-            active: active.clone(),
-            previous: vec![],
-        };
-        assert!(validate_directory(&record, 21).is_err());
-        let mut mismatched = active;
+    fn rejects_mismatched_directory_key_ids() {
+        let mut mismatched = key();
         mismatched.key_id = "sha256:wrong".into();
-        assert!(
-            validate_directory(
-                &DirectoryRecord {
-                    format: DIRECTORY_FORMAT.into(),
-                    active: mismatched,
-                    previous: vec![]
-                },
-                15
-            )
-            .is_err()
-        );
+        assert!(validate_directory(&mismatched).is_err());
     }
 }
