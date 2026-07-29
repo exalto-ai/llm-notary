@@ -5,8 +5,8 @@ use crate::{
         ARCHIVE_CONTENT_TYPE, ARCHIVE_FORMAT, build_trace_package_archive,
         extract_trace_package_archive,
     },
-    bundle::{trace_package_notary_key, verify_trace_package},
-    cli::{auth, notary},
+    bundle::{trace_package_created_at_unix_ms, trace_package_notary_key, verify_trace_package},
+    cli::{auth, notary, proxy::refresh_notary_directory_from},
     sha256_hex,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -82,7 +82,8 @@ pub async fn run(args: PublishArgs) -> Result<()> {
     let (trusted_notary_key, key_id) = match args.trusted_notary_key.as_deref() {
         Some(value) => notary::explicit_key(value)?,
         None => {
-            let (key_id, _) = notary::cached_key(&embedded_key)?;
+            let created_at = trace_package_created_at_unix_ms(&snapshot_path)?;
+            let (key_id, _) = notary::cached_key_at(&embedded_key, created_at)?;
             (embedded_key, key_id)
         }
     };
@@ -91,9 +92,13 @@ pub async fn run(args: PublishArgs) -> Result<()> {
     drop(snapshot);
     let archive_sha256 = sha256_hex(&archive);
 
-    // Authentication refresh is the first network request. Everything above is
-    // intentionally local so malformed or untrusted packages never create jobs.
+    // Everything above is intentionally local so malformed packages never
+    // create a publication job. Authenticate first to recover the configured
+    // API origin, then refresh that origin's directory before any upload.
     let authenticated = auth::authenticate().await?;
+    refresh_notary_directory_from(&authenticated.origin).await?;
+    notary::cached_key_at(&trusted_notary_key, manifest.created_at_unix_ms())
+        .context("the package notary is no longer trusted; nothing was uploaded")?;
     let job = submit_archive(
         &authenticated,
         &archive,

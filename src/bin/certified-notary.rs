@@ -2,7 +2,8 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
 use anyhow::{Context, Result, bail};
 use certified::{
-    DEFAULT_NOTARY_MAX_FRAME_BYTES, read_notary_session_mode, run_notary_session_after_prelude,
+    DEFAULT_NOTARY_MAX_FRAME_BYTES, NotarySessionMode, read_notary_session_mode,
+    run_notary_session_after_prelude,
 };
 use clap::Parser;
 use k256::ecdsa::SigningKey;
@@ -22,6 +23,11 @@ struct Args {
     /// root for receipts, so use an HSM/KMS in a real deployment.
     #[arg(long)]
     signing_key: PathBuf,
+
+    /// Reject new capture sessions while continuing to finalize bundles that
+    /// were captured before a planned key handoff.
+    #[arg(long)]
+    finalize_only: bool,
 
     /// Exact provider hostnames this notary may connect to in Proxy-TLS mode.
     /// Supplying this explicitly is required in production; the development
@@ -131,6 +137,7 @@ async fn main() -> Result<()> {
         let prelude_timeout = std::time::Duration::from_secs(args.prelude_timeout_secs);
         let session_timeout = std::time::Duration::from_secs(args.session_timeout_secs);
         let session_permits = Arc::clone(&session_permits);
+        let finalize_only = args.finalize_only;
         tokio::spawn(async move {
             let mode = match timeout(prelude_timeout, read_notary_session_mode(&mut stream)).await {
                 Ok(Ok(mode)) => mode,
@@ -144,6 +151,10 @@ async fn main() -> Result<()> {
                 }
             };
             drop(connection_permit);
+            if !session_mode_allowed(finalize_only, mode) {
+                tracing::warn!(%address, "capture rejected by finalize-only notary");
+                return;
+            }
             let Ok(session_permit) = session_permits.try_acquire_owned() else {
                 tracing::warn!(%address, "notary session rejected at concurrency limit");
                 return;
@@ -169,5 +180,21 @@ async fn main() -> Result<()> {
             }
             drop(session_permit);
         });
+    }
+}
+
+fn session_mode_allowed(finalize_only: bool, mode: NotarySessionMode) -> bool {
+    !finalize_only || mode == NotarySessionMode::Finalize
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finalize_only_rejects_capture_before_protocol_admission() {
+        assert!(!session_mode_allowed(true, NotarySessionMode::Capture));
+        assert!(session_mode_allowed(true, NotarySessionMode::Finalize));
+        assert!(session_mode_allowed(false, NotarySessionMode::Capture));
     }
 }

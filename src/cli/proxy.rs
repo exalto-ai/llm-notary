@@ -19,10 +19,12 @@ use http_body_util::BodyExt as _;
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::notary::{DirectoryRecord, pin, validate_directory};
+use super::notary::{parse_directory, pin};
 use crate::{
     DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredBundle, chunked_request_body,
-    deferred_streaming_request, vault::Vault,
+    deferred_streaming_request,
+    notary_directory::{NotaryDirectory, NotaryDirectoryRecord},
+    vault::Vault,
 };
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -110,31 +112,67 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     Ok(())
 }
 
-const NOTARY_DIRECTORY_URL: &str = "https://llmnotary.exalto.ai/api/notary";
+const NOTARY_API_ORIGIN: &str = "https://llmnotary.exalto.ai";
 
 pub(crate) async fn discover_notary() -> Result<SocketAddr> {
-    let endpoint = reqwest::Client::builder()
+    let directory = refresh_notary_directory().await?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_millis()
+        .try_into()
+        .context("current time does not fit in u64 milliseconds")?;
+    resolve_notary(directory.active_at(now)?).await
+}
+
+pub(crate) async fn refresh_notary_directory() -> Result<NotaryDirectory> {
+    refresh_notary_directory_from(NOTARY_API_ORIGIN).await
+}
+
+pub(crate) async fn refresh_notary_directory_from(api_origin: &str) -> Result<NotaryDirectory> {
+    let directory_url = notary_directory_url(api_origin)?;
+    let bytes = reqwest::Client::builder()
         .user_agent("LLM-Notary/0.1")
         .build()?
-        .get(NOTARY_DIRECTORY_URL)
+        .get(directory_url.clone())
         .send()
         .await
-        .with_context(|| format!("fetching notary endpoint from {NOTARY_DIRECTORY_URL}"))?
+        .with_context(|| format!("fetching notary endpoint from {directory_url}"))?
         .error_for_status()
-        .with_context(|| format!("fetching notary endpoint from {NOTARY_DIRECTORY_URL}"))?
-        .json::<DirectoryRecord>()
+        .with_context(|| format!("fetching notary endpoint from {directory_url}"))?
+        .bytes()
         .await
-        .context("decoding notary directory from LLM Notary API")?;
+        .context("reading notary directory from LLM Notary API")?;
+    let directory = parse_directory(&bytes)?;
+    pin(directory.clone())?;
+    tracing::info!(
+        key_id = %directory.active_key_id,
+        key_count = directory.notaries.len(),
+        "pinned trusted notary directory"
+    );
+    Ok(directory)
+}
 
-    validate_directory(&endpoint)?;
-    pin(endpoint.clone())?;
-    tracing::info!(key_id = %endpoint.key_id, "pinned trusted notary directory key");
+fn notary_directory_url(api_origin: &str) -> Result<url::Url> {
+    let origin = url::Url::parse(api_origin).context("invalid LLM Notary API origin")?;
+    if !matches!(origin.scheme(), "http" | "https")
+        || origin.host_str().is_none()
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+    {
+        bail!("LLM Notary API origin must be HTTP(S) without a query or fragment");
+    }
+    origin
+        .join("/api/notary")
+        .context("building notary directory URL")
+}
 
-    tokio::net::lookup_host((endpoint.host.as_str(), endpoint.port))
+pub(crate) async fn resolve_notary(record: &NotaryDirectoryRecord) -> Result<SocketAddr> {
+    tokio::net::lookup_host((record.host.as_str(), record.port))
         .await
-        .with_context(|| format!("resolving notary host {}", endpoint.host))?
+        .with_context(|| format!("resolving notary host {}", record.host))?
         .next()
-        .ok_or_else(|| anyhow::anyhow!("notary host {} resolved to no addresses", endpoint.host))
+        .ok_or_else(|| anyhow::anyhow!("notary host {} resolved to no addresses", record.host))
 }
 
 #[axum::debug_handler]
@@ -383,6 +421,17 @@ mod tests {
         assert!(wants_stream(&headers, b"{}"));
         assert!(wants_stream(&HeaderMap::new(), br#"{"stream":true}"#));
         assert!(!wants_stream(&HeaderMap::new(), br#"{"stream":false}"#));
+    }
+
+    #[test]
+    fn directory_discovery_stays_on_the_configured_api_origin() {
+        assert_eq!(
+            notary_directory_url("https://self-hosted.example/base")
+                .unwrap()
+                .as_str(),
+            "https://self-hosted.example/api/notary"
+        );
+        assert!(notary_directory_url("file:///tmp/notary").is_err());
     }
 
     #[tokio::test]

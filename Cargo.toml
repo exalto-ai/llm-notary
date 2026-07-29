@@ -87,6 +87,9 @@ zip = { version = "8.4", default-features = false }
 tlsn = { path = "vendor/tlsn/crates/tlsn", features = ["mozilla-certs"] }
 tlsn-formats = { path = "vendor/tlsn/crates/formats" }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 dhat = "0.3"
 rangeset = "0.4"

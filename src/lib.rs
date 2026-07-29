@@ -62,6 +62,7 @@ pub mod bundle;
 #[cfg(feature = "cli")]
 pub mod cli;
 pub mod normalize;
+pub mod notary_directory;
 pub mod public;
 #[cfg(feature = "cli")]
 pub mod vault;
@@ -80,7 +81,7 @@ const NOTARY_MODE_CAPTURE: u8 = 2;
 const NOTARY_MODE_FINALIZE: u8 = 3;
 
 /// A validated notary protocol operation selected by the versioned prelude.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotarySessionMode {
     Capture,
     Finalize,
@@ -367,6 +368,22 @@ impl DeferredBundle {
     /// Returns the bundle creation time in Unix milliseconds.
     pub fn created_at_unix_ms(&self) -> u64 {
         self.created_at_unix_ms
+    }
+
+    /// Returns the provider connection time authenticated by the notary
+    /// receipt. Trust stores use this—not the local file timestamp—when
+    /// evaluating a rotated key's validity window.
+    pub fn authenticated_connection_time_unix_ms(&self) -> Result<u64> {
+        self.receipt
+            .connection_info
+            .time
+            .checked_mul(1000)
+            .context("authenticated connection timestamp does not fit in milliseconds")
+    }
+
+    /// Checks whether this pending bundle's receipt was issued by a key.
+    pub fn verify_notary_key(&self, public_key: &[u8]) -> Result<()> {
+        self.receipt.verify(public_key)
     }
 
     /// Deserializes the private client checkpoint.

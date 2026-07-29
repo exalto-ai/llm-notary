@@ -1,0 +1,123 @@
+# Notary key lifecycle v2
+
+`GET /api/notary` publishes a versioned directory of notary endpoints and
+secp256k1 verification keys. Clients cache successful responses so existing
+evidence remains verifiable when a deployment changes keys.
+
+## Directory format
+
+```json
+{
+  "format": "llm-notary/notary-directory/v2",
+  "generation": 12,
+  "active_key_id": "sha256:...",
+  "notaries": [
+    {
+      "host": "203.0.113.10",
+      "port": 7047,
+      "key_id": "sha256:...",
+      "public_key": "02...",
+      "status": "active",
+      "valid_from_unix_ms": 0,
+      "valid_until_unix_ms": null,
+      "finalize_until_unix_ms": null
+    }
+  ]
+}
+```
+
+The key ID is `sha256:` followed by the SHA-256 of the compressed SEC1 public
+key. The API rejects malformed keys, duplicate IDs, inverted validity windows,
+and an `active_key_id` that does not select an `active` record. Operators must
+increase `generation` for every changed directory. Clients reject older
+generations, reject conflicting documents at the same generation, and never
+restore a key ID once they have cached it as revoked.
+
+## Status semantics
+
+| Status | New captures | Deferred finalization | Historical verification |
+| --- | --- | --- | --- |
+| `active` | yes | yes | within its validity window |
+| `retiring` | no | yes, during the overlap window | within its validity window |
+| `retired` | no | no | within its validity window |
+| `revoked` | no | no | no after the client refreshes the directory |
+
+The active key is used for new proxy sessions. A deferred bundle contains a
+notary-signed receipt, so `finalize` tries cached active and retiring records
+and selects the endpoint whose key verifies that receipt. This lets a planned
+rotation drain old bundles without making the notary store per-user state.
+
+`valid_until_unix_ms` is the last authenticated provider-connection timestamp
+the key may sign. `finalize_until_unix_ms` is the later wall-clock drain
+deadline for already-created bundles. The authenticated provider-connection
+timestamp in a capture or finalized package selects the historical trust
+window. Local `verify` remains offline and therefore uses the last cached
+directory. `publish` always refreshes the directory and enforces current
+revocation state before sending any bytes, even when an explicit key was used
+for the initial local verification.
+
+Passing both `--trusted-notary-key` and an explicit `--notary` is an operator
+override. It does not use directory lifecycle policy.
+
+## Planned rotation
+
+1. Start the replacement notary and keep the previous instance available.
+2. Publish a higher directory generation that marks the replacement `active`
+   and the previous key `retiring`. Set the old record's
+   `valid_until_unix_ms` to the capture handoff and
+   `finalize_until_unix_ms` to the end of the intended bundle-drain period.
+3. Restart the old instance with `--finalize-only`. New proxy sessions use the
+   replacement; the old process rejects capture mode at the protocol boundary
+   while existing bundles continue to finalize through it.
+4. After the drain period, publish the old key as `retired` and stop its
+   endpoint. Previously finalized evidence remains verifiable within the
+   recorded window.
+
+The API accepts the complete v2 document through
+`LLM_NOTARY_NOTARY_DIRECTORY_JSON`. In the colocated Compose deployment, the
+active record must match `LLM_NOTARY_NOTARY_PUBLIC_KEY`; the notary health
+check independently confirms that this public key matches the mounted private
+key. The existing single-key environment variables still generate a valid v2
+directory, so no coordinated client flag day is required.
+
+Clients also accept the v1 discovery document and migrate a v1 local trust
+record on read. The fallback single-key configuration starts at generation 1;
+set `LLM_NOTARY_NOTARY_DIRECTORY_GENERATION` explicitly if its directory
+metadata changes.
+
+The production workflow reads the optional repository variables
+`LLM_NOTARY_NOTARY_DIRECTORY_JSON`,
+`LLM_NOTARY_NOTARY_DIRECTORY_GENERATION`, and
+`LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS` into `deploy.env`. Store directory JSON
+as one compact line. The active record must still match the signing key mounted
+in the colocated active notary; retiring finalize-only instances are operated
+separately until their drain deadlines.
+
+Before the handoff, back up the old 32-byte private signing-key file to
+encrypted offline storage and verify that the backup reproduces the advertised
+public key. Keep the old key mounted only on the finalize-only drain instance.
+Losing it before `finalize_until_unix_ms` strands every bundle created under
+that key; retaining it after the drain expands the compromise window.
+
+## Emergency revocation
+
+Publish a higher generation with the compromised key marked `revoked` and
+designate a different active key. Do not merely omit it: omission is
+interpreted as a planned retirement so offline historical verification keeps
+working. A client that has observed revocation will not re-enable that key
+after a later or stale directory response.
+
+Revocation intentionally invalidates old evidence after directory refresh. A
+compromised private key can create signatures with arbitrary old-looking
+timestamps, so preserving those signatures as trustworthy would make the
+revocation ineffective. Provider-native signatures or an external
+transparency log would be required to distinguish pre-compromise evidence more
+strongly.
+
+## Deferred privacy-binding follow-up
+
+Issue #36 may replace the current consent-based finalized package with a
+privacy-preserving transcript-to-trace binding. That successor must carry the
+notary key ID and authenticated connection timestamp, use this directory's
+validity and revocation rules, and define migration behavior for already
+published v2 directory records.

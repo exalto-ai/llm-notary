@@ -19,12 +19,14 @@ pub struct VerifyArgs {
 }
 
 pub fn run(args: VerifyArgs) -> Result<()> {
-    let embedded_key = hex::decode(&load_capture(&args.capture)?.manifest.notary.public_key)
+    let loaded = load_capture(&args.capture)?;
+    let embedded_key = hex::decode(&loaded.manifest.notary.public_key)
         .context("capture manifest notary key must be hexadecimal")?;
     let (trusted_notary_key, key_id) = match args.trusted_notary_key {
         Some(value) => notary::explicit_key(&value)?,
         None => {
-            let (key_id, _) = notary::cached_key(&embedded_key)?;
+            let (key_id, _) =
+                notary::cached_key_at(&embedded_key, loaded.manifest.created_at_unix_ms)?;
             (embedded_key, key_id)
         }
     };
