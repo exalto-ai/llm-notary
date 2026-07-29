@@ -2,14 +2,17 @@
 
 use std::{net::SocketAddr, path::PathBuf};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 
 use crate::{
     DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredBundle,
-    bundle::{finalize_bundle, trace_package_notary_key, verify_trace_package},
+    bundle::{
+        finalize_bundle, trace_package_created_at_unix_ms, trace_package_notary_key,
+        verify_trace_package,
+    },
     cli::notary,
-    cli::proxy::discover_notary,
+    cli::proxy::{refresh_notary_directory, resolve_notary},
     vault::Vault,
 };
 
@@ -56,13 +59,31 @@ pub struct ListArgs {
 
 pub async fn finalize(args: FinalizeArgs) -> Result<()> {
     let vault = Vault::open_interactive()?;
-    let notary = match args.notary {
-        Some(notary) => notary,
-        None => discover_notary().await?,
+    let bundle = DeferredBundle::load(&args.bundle, &vault)?;
+    if args.trusted_notary_key.is_none() || args.notary.is_none() {
+        refresh_notary_directory().await?;
+    }
+    let (key, key_id, directory_record) = match args.trusted_notary_key.as_deref() {
+        Some(value) => {
+            let (key, key_id) = notary::explicit_key(value)?;
+            let record = notary::cached_record_for_key(&key).ok();
+            (key, key_id, record)
+        }
+        None => {
+            let (key, record) = notary::cached_record_for_bundle(&bundle)?;
+            let key_id = record.key_id.clone();
+            (key, key_id, Some(record))
+        }
     };
-    let (key, key_id) = match args.trusted_notary_key.as_deref() {
-        Some(value) => notary::explicit_key(value)?,
-        None => notary::cached_active_key()?,
+    let notary = match (args.notary, directory_record) {
+        (Some(notary), _) => notary,
+        (None, Some(record)) if record.accepts_finalization_at(current_unix_ms()?) => {
+            resolve_notary(&record).await?
+        }
+        (None, Some(_)) => bail!("the selected notary key is not accepting finalization"),
+        (None, None) => {
+            bail!("the explicit trusted key has no cached endpoint; also supply --notary")
+        }
     };
     eprintln!(
         "finalizing {}; private proof generation can take several minutes",
@@ -90,7 +111,8 @@ pub fn verify(args: VerifyArgs) -> Result<()> {
     let (key, key_id) = match args.trusted_notary_key.as_deref() {
         Some(value) => notary::explicit_key(value)?,
         None => {
-            let (key_id, _) = notary::cached_key(&embedded_key)?;
+            let created_at = trace_package_created_at_unix_ms(&args.package)?;
+            let (key_id, _) = notary::cached_key_at(&embedded_key, created_at)?;
             (embedded_key, key_id)
         }
     };
@@ -98,6 +120,14 @@ pub fn verify(args: VerifyArgs) -> Result<()> {
     println!("verified trace package: {}", manifest.capture_id());
     println!("trusted notary key: {key_id}");
     Ok(())
+}
+
+fn current_unix_ms() -> Result<u64> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    Ok(SystemTime::now()
+        .duration_since(UNIX_EPOCH)?
+        .as_millis()
+        .try_into()?)
 }
 
 pub fn bundles(command: BundlesCommand) -> Result<()> {

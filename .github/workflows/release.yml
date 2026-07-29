@@ -44,6 +44,9 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }} --bin llm-notary
+      - name: Exercise Windows trust-store replacement
+        if: runner.os == 'Windows'
+        run: cargo test --target ${{ matrix.target }} --lib cli::notary::tests::write_store_atomically_replaces_an_existing_file
       - name: Package archive
         shell: bash
         env:
