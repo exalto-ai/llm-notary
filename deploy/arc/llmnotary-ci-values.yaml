@@ -3,15 +3,28 @@
 githubConfigUrl: "https://github.com/exalto-ai/llmnotary"
 githubConfigSecret: llmnotary-github-auth
 
+controllerServiceAccount:
+  name: arc-gha-rs-controller
+  namespace: arc-system
+
 runnerScaleSetName: llmnotary-ci
 minRunners: 0
-maxRunners: 1
+maxRunners: 2
 
 template:
   spec:
-    # Do not consume the GPU node for normal Rust and SPA builds.
-    nodeSelector:
-      hexchess/node-class: cpu-worker
+    # Prefer the worker, but use the otherwise-idle high-memory control-plane
+    # node when the worker's requested memory is already reserved.
+    affinity:
+      nodeAffinity:
+        preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            preference:
+              matchExpressions:
+                - key: hexchess/node-class
+                  operator: In
+                  values:
+                    - cpu-worker
     terminationGracePeriodSeconds: 30
     containers:
       - name: runner
