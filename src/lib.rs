@@ -57,7 +57,7 @@ use tokio::{
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 pub mod archive;
-#[cfg(feature = "cli")]
+#[cfg(any(feature = "api", feature = "cli"))]
 pub mod bundle;
 #[cfg(feature = "cli")]
 pub mod cli;

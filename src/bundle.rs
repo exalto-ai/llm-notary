@@ -1,25 +1,22 @@
 //! Deferred bundle finalization and offline-verifiable trace packages.
 
-use std::{
-    fs,
-    net::SocketAddr,
-    path::{Path, PathBuf},
-};
+use std::{fs, path::Path};
+#[cfg(feature = "cli")]
+use std::{net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tlsn::attestation::CryptoProvider;
 
 use crate::{
-    Capture, CaptureManifest, DeferredBundle,
+    Capture, CaptureManifest,
     archive::VERIFIED_TRACE_PACKAGE_FORMAT,
-    finalize_deferred_bundle, make_capture,
     normalize::{render_public_trace, verified_inference_from_capture},
     public::NORMALIZER_VERSION,
-    sha256_hex,
-    vault::Vault,
-    verify_capture_value_with_provider,
+    sha256_hex, verify_capture_value_with_provider,
 };
+#[cfg(feature = "cli")]
+use crate::{DeferredBundle, finalize_deferred_bundle, make_capture, vault::Vault};
 
 /// Metadata binding a normalized trace to the included TLSNotary evidence.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -72,6 +69,7 @@ pub fn trace_package_created_at_unix_ms(path: &Path) -> Result<u64> {
 }
 
 /// Completes a deferred proof and writes an offline-verifiable trace package.
+#[cfg(feature = "cli")]
 pub async fn finalize_bundle(
     bundle_path: &Path,
     output_dir: &Path,
@@ -91,6 +89,7 @@ pub async fn finalize_bundle(
     write_trace_package(&capture, output_dir, trusted_notary_key)
 }
 
+#[cfg(feature = "cli")]
 fn write_trace_package(
     capture: &Capture,
     output_dir: &Path,
@@ -104,6 +103,7 @@ fn write_trace_package(
     )
 }
 
+#[cfg(feature = "cli")]
 pub(crate) fn write_trace_package_with_provider(
     capture: &Capture,
     output_dir: &Path,
@@ -125,6 +125,7 @@ pub(crate) fn write_trace_package_with_provider(
     Ok(output_dir.to_path_buf())
 }
 
+#[cfg(feature = "cli")]
 fn write_package(
     output_dir: &Path,
     capture: &Capture,
