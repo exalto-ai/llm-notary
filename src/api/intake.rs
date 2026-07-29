@@ -7,8 +7,7 @@ use aws_sdk_s3::{
     presigning::PresigningConfig,
 };
 
-pub const ARCHIVE_FORMAT: &str = "llmnotary.trace-package-archive/v1";
-pub const ARCHIVE_CONTENT_TYPE: &str = "application/vnd.llmnotary.trace-package+zip";
+pub use certified::archive::{ARCHIVE_CONTENT_TYPE, ARCHIVE_FORMAT};
 
 const SHA256_METADATA: &str = "declared-sha256";
 const FORMAT_METADATA: &str = "archive-format";
@@ -109,11 +108,21 @@ impl IntakeStorage {
         ))
     }
 
-    pub fn intake_object_key(&self, user_id: &str, job_id: &str) -> Result<String> {
+    pub fn intake_object_key(
+        &self,
+        user_id: &str,
+        job_id: &str,
+        upload_generation: i64,
+    ) -> Result<String> {
         validate_identifier(user_id, "user ID")?;
         validate_identifier(job_id, "job ID")?;
+        if upload_generation < 0 {
+            bail!("upload generation must not be negative");
+        }
         let prefix = self.prefix()?;
-        Ok(format!("{prefix}/intake/{user_id}/{job_id}.llmtrace"))
+        Ok(format!(
+            "{prefix}/intake/{user_id}/{job_id}/{upload_generation}.llmtrace"
+        ))
     }
 
     pub async fn presign_upload(
@@ -425,7 +434,7 @@ mod tests {
             .upload_object_key("integration-user", &job_id, &nonce)
             .expect("upload key");
         let intake_key = storage
-            .intake_object_key("integration-user", &job_id)
+            .intake_object_key("integration-user", &job_id, 0)
             .expect("intake key");
         let payload = b"LLM Notary private intake integration check";
         let sha256 = hex::encode(Sha256::digest(payload));
