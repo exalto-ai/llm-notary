@@ -13,7 +13,9 @@ The website and the raw TCP notary are deliberately separate entry points.
 The named Cloudflare Tunnel exposes only the website; the local proxy continues
 to connect directly to the Droplet’s IP on TCP 7047.
 
-The API publishes that TCP endpoint to released clients at `/api/notary`.
+The API publishes that TCP endpoint and matching public signing key to released
+clients at `/api/notary`. The deploy workflow derives the public key from the
+host-only signing key and Compose checks that it matches the running notary.
 The deployment workflow uses `DO_SSH_HOST` as `LLM_NOTARY_NOTARY_HOST`, so the
 Droplet's reserved IP is configured on the server rather than embedded in the
 CLI. If the notary later moves to another machine, set that variable explicitly

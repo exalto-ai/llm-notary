@@ -11,6 +11,10 @@ use tokio::{net::TcpListener, sync::Semaphore, time::timeout};
 #[derive(Parser, Debug)]
 #[command(about = "LLM Notary TLSNotary service")]
 struct Args {
+    /// Print the signing key's SEC1 public key and exit. Used by deployment
+    /// health checks without exposing the private key.
+    #[arg(long)]
+    print_public_key: bool,
     #[arg(long, default_value = "127.0.0.1:7047")]
     listen: SocketAddr,
 
@@ -93,13 +97,17 @@ async fn main() -> Result<()> {
         bail!("signing key must contain exactly 32 bytes");
     }
     let key = Arc::new(SigningKey::from_slice(&bytes).context("invalid secp256k1 key")?);
+    let public_key = hex::encode(key.verifying_key().to_sec1_bytes());
+    if args.print_public_key {
+        println!("{public_key}");
+        return Ok(());
+    }
     let allowed_hosts = Arc::new(
         args.allow_host
             .into_iter()
             .map(|host| host.to_ascii_lowercase())
             .collect::<Vec<_>>(),
     );
-    let public_key = hex::encode(key.verifying_key().to_sec1_bytes());
     let listener = TcpListener::bind(args.listen).await?;
     let session_permits = Arc::new(Semaphore::new(args.max_concurrent_sessions));
     let connection_permits = Arc::new(Semaphore::new(args.max_pending_connections));

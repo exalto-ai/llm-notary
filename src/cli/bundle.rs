@@ -2,12 +2,13 @@
 
 use std::{net::SocketAddr, path::PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::{Args, Subcommand};
 
 use crate::{
     DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredBundle,
-    bundle::{finalize_bundle, verify_trace_package},
+    bundle::{finalize_bundle, trace_package_notary_key, verify_trace_package},
+    cli::notary,
     cli::proxy::discover_notary,
     vault::Vault,
 };
@@ -21,7 +22,7 @@ pub struct FinalizeArgs {
     output: PathBuf,
     /// Hex-encoded notary public key used to verify the source evidence.
     #[arg(long)]
-    trusted_notary_key: String,
+    trusted_notary_key: Option<String>,
     /// Override the notary discovered from LLM Notary's public directory.
     #[arg(long)]
     notary: Option<SocketAddr>,
@@ -37,7 +38,7 @@ pub struct VerifyArgs {
     package: PathBuf,
     /// Hex-encoded notary public key used to verify the source evidence.
     #[arg(long)]
-    trusted_notary_key: String,
+    trusted_notary_key: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -54,11 +55,14 @@ pub struct ListArgs {
 }
 
 pub async fn finalize(args: FinalizeArgs) -> Result<()> {
-    let key = decode_key(&args.trusted_notary_key)?;
     let vault = Vault::open_interactive()?;
     let notary = match args.notary {
         Some(notary) => notary,
         None => discover_notary().await?,
+    };
+    let (key, key_id) = match args.trusted_notary_key.as_deref() {
+        Some(value) => notary::explicit_key(value)?,
+        None => notary::cached_active_key()?,
     };
     eprintln!(
         "finalizing {}; private proof generation can take several minutes",
@@ -77,13 +81,22 @@ pub async fn finalize(args: FinalizeArgs) -> Result<()> {
     )
     .await?;
     println!("wrote verified trace package: {}", path.display());
+    println!("trusted notary key: {key_id}");
     Ok(())
 }
 
 pub fn verify(args: VerifyArgs) -> Result<()> {
-    let key = decode_key(&args.trusted_notary_key)?;
+    let embedded_key = trace_package_notary_key(&args.package)?;
+    let (key, key_id) = match args.trusted_notary_key.as_deref() {
+        Some(value) => notary::explicit_key(value)?,
+        None => {
+            let (key_id, _) = notary::cached_key(&embedded_key)?;
+            (embedded_key, key_id)
+        }
+    };
     let manifest = verify_trace_package(&args.package, &key)?;
     println!("verified trace package: {}", manifest.capture_id());
+    println!("trusted notary key: {key_id}");
     Ok(())
 }
 
@@ -110,8 +123,4 @@ pub fn bundles(command: BundlesCommand) -> Result<()> {
         }
     }
     Ok(())
-}
-
-fn decode_key(value: &str) -> Result<Vec<u8>> {
-    hex::decode(value).context("trusted notary key must be hexadecimal")
 }

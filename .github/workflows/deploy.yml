@@ -100,6 +100,8 @@ jobs:
             test -n "$GITHUB_OAUTH_CLIENT_SECRET"
             test -n "$LLM_NOTARY_NOTARY_HOST"
             test -r /opt/llm-notary/notary-signing-key
+            NOTARY_PUBLIC_KEY="$(docker run --rm --entrypoint certified-notary -v /opt/llm-notary/notary-signing-key:/run/notary.key:ro "$NOTARY_IMAGE" --signing-key /run/notary.key --print-public-key)"
+            test -n "$NOTARY_PUBLIC_KEY"
             cd /opt/llm-notary
             cat > deploy.env <<EOF
             NOTARY_IMAGE=$NOTARY_IMAGE
@@ -108,6 +110,7 @@ jobs:
             NOTARY_SIGNING_KEY_FILE=/opt/llm-notary/notary-signing-key
             SITE_DOMAIN=$SITE_DOMAIN
             LLM_NOTARY_NOTARY_HOST=$LLM_NOTARY_NOTARY_HOST
+            LLM_NOTARY_NOTARY_PUBLIC_KEY=$NOTARY_PUBLIC_KEY
             CLOUDFLARE_TUNNEL_TOKEN=$CLOUDFLARE_TUNNEL_TOKEN
             GITHUB_OAUTH_CLIENT_ID=$GITHUB_OAUTH_CLIENT_ID
             GITHUB_OAUTH_CLIENT_SECRET=$GITHUB_OAUTH_CLIENT_SECRET
@@ -122,5 +125,6 @@ jobs:
               sleep 1
             done
             curl --fail --silent --show-error --max-time 2 http://127.0.0.1/api/healthz >/dev/null
+            test "$(docker compose --env-file deploy.env exec -T notary certified-notary --signing-key /run/secrets/notary_signing_key --print-public-key)" = "$NOTARY_PUBLIC_KEY"
             curl --fail --silent --show-error --max-time 2 http://127.0.0.1/ >/dev/null
             docker compose --env-file deploy.env ps
