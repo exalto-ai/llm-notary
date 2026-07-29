@@ -37,6 +37,12 @@ impl VerifiedTraceManifest {
         &self.source.capture_id
     }
 
+    /// Returns the provider connection time authenticated by the source
+    /// presentation.
+    pub fn created_at_unix_ms(&self) -> u64 {
+        self.source.created_at_unix_ms
+    }
+
     /// Returns the SEC1 key that signed the package source evidence.
     pub fn notary_public_key(&self) -> Result<Vec<u8>> {
         hex::decode(&self.source.notary.public_key)
@@ -48,6 +54,13 @@ impl VerifiedTraceManifest {
 /// anchor before full offline verification.
 pub fn trace_package_notary_key(path: &Path) -> Result<Vec<u8>> {
     read_trace_manifest(path)?.notary_public_key()
+}
+
+/// Reads the authenticated provider-connection timestamp recorded in a
+/// verified-package manifest. Callers must still perform full package
+/// verification before trusting the value.
+pub fn trace_package_created_at_unix_ms(path: &Path) -> Result<u64> {
+    Ok(read_trace_manifest(path)?.created_at_unix_ms())
 }
 
 /// Completes a deferred proof and writes an offline-verifiable trace package.
