@@ -384,10 +384,44 @@ function Collections({ onVerify }) {
     return searchable.includes(query.toLowerCase()) && (provider === 'All' || item.provider === provider) && (model === 'All' || item.model === model) && (tag === 'All' || item.tags.includes(tag));
   }).sort((left, right) => sort === 'Newest' ? right.admitted_at - left.admitted_at : left.title.localeCompare(right.title)), [publications, query, provider, model, tag, sort]);
   useEffect(() => {
-    if (filtered.length && !filtered.some((item) => item.id === activeId)) setActiveId(filtered[0].id);
+    if (!filtered.length) {
+      if (activeId !== null) setActiveId(null);
+      return;
+    }
+    if (!filtered.some((item) => item.id === activeId)) setActiveId(filtered[0].id);
   }, [filtered, activeId]);
-  const active = publications.find((item) => item.id === activeId) || null;
-  return <main className="library-shell"><header className="production-collection-head"><span className="eyebrow">Public collection</span><h1>{collection?.title || 'LLM Notary Examples'}</h1><p>{collection?.description || 'Loading admitted publications…'}</p></header>{loadError ? <section className="collection-empty" role="alert">{loadError}</section> : <><section className="library-controls" aria-label="Browse publications"><label className="library-search"><span>Search publications</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by model, provider, surface, or topic" /></label><label><span>Provider</span><select value={provider} onChange={(event) => setProvider(event.target.value)}>{providers.map((value) => <option key={value}>{value}</option>)}</select></label><label><span>Model</span><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((value) => <option key={value}>{value}</option>)}</select></label><label><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value)}><option>Newest</option><option>Title</option></select></label></section><nav className="topic-filter" aria-label="Topics"><span>Topics</span>{tags.map((value) => <button key={value} className={tag === value ? 'active' : ''} onClick={() => setTag(value)}>{value}</button>)}</nav>{publications.length === 0 ? <section className="collection-empty"><b>Production examples are being prepared.</b><p>This page lists only admitted publications. No illustrative record is labeled verified.</p></section> : <section className="library-results"><div className="collection-workspace"><div className="collection-list"><div className="results-heading"><p><b>{filtered.length}</b> publications</p><span>{collection.consent_label}</span></div><div className="library-grid">{filtered.map((item) => <button className={`model-card${activeId === item.id ? ' active' : ''}`} onClick={() => setActiveId(item.id)} aria-pressed={activeId === item.id} key={item.id}><span className="model-card-top"><span><i aria-hidden="true" /> VERIFIED</span><time>{new Date(item.admitted_at * 1000).toLocaleDateString()}</time></span><span className="model-card-title">{item.title}</span><span className="model-card-model">{item.provider} · {item.model}</span><span className="model-card-summary">{item.category} · {item.surface}{item.tool_use ? ' · tool use' : ''}</span><span className="model-card-facts"><span><b>Coverage</b>{item.span_count} spans</span><span><b>Publisher</b>{item.author}</span><span><b>Disclosure</b>Consent-based</span></span><span className="tag-list">{item.tags.map((value) => <span key={value}>{value}</span>)}</span></button>)}</div></div>{active && <article className="collection-inspector"><header><span className="eyebrow">Selected publication</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h2>{active.title}</h2><p>{active.category} captured through {active.surface}. This record passed server admission and carries the platform stamp linked below.</p><dl className="inspector-facts"><div><dt>Provider</dt><dd>{active.host}</dd></div><div><dt>Model</dt><dd>{active.model}</dd></div><div><dt>Publisher</dt><dd>{active.author}</dd></div><div><dt>Tool use</dt><dd>{active.tool_use ? 'Yes' : 'No'}</dd></div><div><dt>Spans</dt><dd>{active.span_count}</dd></div><div><dt>Published</dt><dd>{new Date(active.admitted_at * 1000).toLocaleString()}</dd></div></dl><div className="trace-actions"><a href={active.trace_url} target="_blank" rel="noreferrer">Download trace</a><a href={active.stamp_url} target="_blank" rel="noreferrer">Download stamp</a><button onClick={onVerify}>Verify files</button></div><p className="consent-label">{collection.consent_label}: the service inspected the finalized disclosed package during admission.</p></article>}</div></section>}</>}</main>;
+  const active = filtered.find((item) => item.id === activeId) || null;
+  return <main className="library-shell">
+    <header className="production-collection-head">
+      <span className="eyebrow">Public collection</span>
+      <h1>{collection?.title || 'LLM Notary Examples'}</h1>
+      <p>{collection?.description || 'Loading admitted publications…'}</p>
+    </header>
+    {loadError ? <section className="collection-empty" role="alert">{loadError}</section>
+      : collection === null ? <section className="collection-empty" role="status"><b>Loading publications…</b><p>Checking the admitted collection and its artifact metadata.</p></section>
+        : <>
+          <section className="library-controls" aria-label="Browse publications">
+            <label className="library-search"><span>Search publications</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by model, provider, surface, or topic" /></label>
+            <label><span>Provider</span><select value={provider} onChange={(event) => setProvider(event.target.value)}>{providers.map((value) => <option key={value}>{value}</option>)}</select></label>
+            <label><span>Model</span><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((value) => <option key={value}>{value}</option>)}</select></label>
+            <label><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value)}><option>Newest</option><option>Title</option></select></label>
+          </section>
+          <nav className="topic-filter" aria-label="Topics"><span>Topics</span>{tags.map((value) => <button key={value} className={tag === value ? 'active' : ''} onClick={() => setTag(value)}>{value}</button>)}</nav>
+          {publications.length === 0
+            ? <section className="collection-empty"><b>Production examples are being prepared.</b><p>This page lists only admitted publications. No illustrative record is labeled verified.</p></section>
+            : filtered.length === 0
+              ? <section className="collection-empty"><b>No publications match these filters.</b><p>Clear a filter or try a broader search.</p></section>
+              : <section className="library-results">
+                <div className="collection-workspace">
+                  <div className="collection-list">
+                    <div className="results-heading"><p><b>{filtered.length}</b> publications</p><span>{collection.consent_label}</span></div>
+                    <div className="library-grid">{filtered.map((item) => <button className={`model-card${activeId === item.id ? ' active' : ''}`} onClick={() => setActiveId(item.id)} aria-pressed={activeId === item.id} key={item.id}><span className="model-card-top"><span><i aria-hidden="true" /> VERIFIED</span><time>{new Date(item.admitted_at * 1000).toLocaleDateString()}</time></span><span className="model-card-title">{item.title}</span><span className="model-card-model">{item.provider} · {item.model}</span><span className="model-card-summary">{item.category} · {item.surface}{item.tool_use ? ' · tool use' : ''}</span><span className="model-card-facts"><span><b>Coverage</b>{item.span_count} spans</span><span><b>Publisher</b>{item.author}</span><span><b>Disclosure</b>Consent-based</span></span><span className="tag-list">{item.tags.map((value) => <span key={value}>{value}</span>)}</span></button>)}</div>
+                  </div>
+                  {active && <article className="collection-inspector"><header><span className="eyebrow">Selected publication</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h2>{active.title}</h2><p>{active.category} captured through {active.surface}. This record passed server admission and carries the platform stamp linked below.</p><dl className="inspector-facts"><div><dt>Provider</dt><dd>{active.host}</dd></div><div><dt>Model</dt><dd>{active.model}</dd></div><div><dt>Publisher</dt><dd>{active.author}</dd></div><div><dt>Tool use</dt><dd>{active.tool_use ? 'Yes' : 'No'}</dd></div><div><dt>Spans</dt><dd>{active.span_count}</dd></div><div><dt>Published</dt><dd>{new Date(active.admitted_at * 1000).toLocaleString()}</dd></div></dl><div className="trace-actions"><a href={active.trace_url} target="_blank" rel="noreferrer">Download trace</a><a href={active.stamp_url} target="_blank" rel="noreferrer">Download stamp</a><button onClick={onVerify}>Verify files</button></div><p className="consent-label">{collection.consent_label}: the service inspected the finalized disclosed package during admission.</p></article>}
+                </div>
+              </section>}
+        </>}
+  </main>;
 }
 
 function sessionDate(unixSeconds) {
