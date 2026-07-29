@@ -1,13 +1,17 @@
 # GitHub Actions Runner Controller
 
 LLM Notary runs its Linux GitHub Actions jobs on repository-scoped, ephemeral
-ARC runner scale sets in the `kevz-gpu` Kubernetes cluster. The runners execute
-on the CPU worker node (`hexchess/node-class=cpu-worker`), never on the GPU.
+ARC runner scale sets in the `kevz-gpu` Kubernetes cluster.
 
-- `llmnotary-ci` runs Rust and SPA checks without Docker.
+- `llmnotary-ci` runs Rust and SPA checks without Docker. It prefers the CPU
+  worker, but can use the high-memory GPU/control-plane node when the worker's
+  requested memory is already reserved.
 - `llmnotary-docker` runs Compose validation, Buildx image builds, and the
   DigitalOcean deployment workflow. Its Docker-in-Docker sidecar is privileged,
-  so keep it limited to one disposable runner.
+  so it remains restricted to the CPU worker. It can run two jobs when that
+  node has capacity; otherwise Kubernetes leaves the extra runner pending. Its
+  runner and DinD sidecar reserve 4 GiB together. BuildKit itself has a 20 GiB
+  memory limit for transient build and link peaks.
 - The release workflow intentionally remains on GitHub-hosted runners because
   it builds macOS and Windows artifacts.
 
