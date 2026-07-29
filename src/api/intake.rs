@@ -5,12 +5,15 @@ use aws_sdk_s3::{
     Client,
     config::{BehaviorVersion, Credentials, Region},
     presigning::PresigningConfig,
+    primitives::ByteStream,
 };
 
 pub use certified::archive::{ARCHIVE_CONTENT_TYPE, ARCHIVE_FORMAT};
 
 const SHA256_METADATA: &str = "declared-sha256";
 const FORMAT_METADATA: &str = "archive-format";
+const PUBLIC_SHA256_METADATA: &str = "artifact-sha256";
+const PUBLIC_KIND_METADATA: &str = "artifact-kind";
 
 #[derive(Clone)]
 pub enum IntakeStorage {
@@ -125,6 +128,22 @@ impl IntakeStorage {
         ))
     }
 
+    pub fn public_artifact_key(&self, trace_id: &str, kind: &str, sha256: &str) -> Result<String> {
+        validate_identifier(trace_id, "trace ID")?;
+        if !matches!(kind, "trace" | "stamp") {
+            bail!("public artifact kind is unsupported");
+        }
+        if sha256.len() != 64
+            || !sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            bail!("public artifact SHA-256 is invalid");
+        }
+        let prefix = self.prefix()?;
+        Ok(format!("{prefix}/public/{trace_id}/{kind}-{sha256}.json"))
+    }
+
     pub async fn presign_upload(
         &self,
         object_key: &str,
@@ -227,6 +246,65 @@ impl IntakeStorage {
         }
     }
 
+    pub async fn get_object(&self, object_key: &str, max_bytes: usize) -> Result<Option<Vec<u8>>> {
+        match self {
+            Self::Disabled => bail!("publication intake storage is disabled"),
+            Self::S3(storage) => {
+                let output = match storage
+                    .client
+                    .get_object()
+                    .bucket(&storage.bucket)
+                    .key(object_key)
+                    .send()
+                    .await
+                {
+                    Ok(output) => output,
+                    Err(error)
+                        if error
+                            .raw_response()
+                            .is_some_and(|response| response.status().as_u16() == 404) =>
+                    {
+                        return Ok(None);
+                    }
+                    Err(error) => {
+                        return Err(anyhow!(error).context("downloading Spaces intake object"));
+                    }
+                };
+                if output.content_length().unwrap_or_default() < 0
+                    || output.content_length().unwrap_or_default() as usize > max_bytes
+                {
+                    bail!("Spaces intake object exceeds the admission download limit");
+                }
+                let capacity = output.content_length().unwrap_or_default().max(0) as usize;
+                let mut stream = output.body;
+                let mut body = Vec::with_capacity(capacity);
+                while let Some(chunk) = stream
+                    .try_next()
+                    .await
+                    .context("reading Spaces intake object body")?
+                {
+                    let next_len = body
+                        .len()
+                        .checked_add(chunk.len())
+                        .ok_or_else(|| anyhow!("Spaces intake object size overflow"))?;
+                    if next_len > max_bytes {
+                        bail!("Spaces intake object exceeds the admission download limit");
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                Ok(Some(body))
+            }
+            #[cfg(test)]
+            Self::Mock(storage) => Ok(storage
+                .bodies
+                .lock()
+                .expect("mock lock")
+                .get(object_key)
+                .filter(|body| body.len() <= max_bytes)
+                .cloned()),
+        }
+    }
+
     pub async fn promote_object(&self, source_key: &str, destination_key: &str) -> Result<()> {
         match self {
             Self::Disabled => bail!("publication intake storage is disabled"),
@@ -250,6 +328,57 @@ impl IntakeStorage {
                     .cloned()
                     .ok_or_else(|| anyhow!("mock source object is missing"))?;
                 objects.insert(destination_key.to_owned(), object);
+                let mut bodies = storage.bodies.lock().expect("mock lock");
+                if let Some(body) = bodies.get(source_key).cloned() {
+                    bodies.insert(destination_key.to_owned(), body);
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn put_public_artifact(
+        &self,
+        object_key: &str,
+        kind: &str,
+        sha256: &str,
+        bytes: &[u8],
+    ) -> Result<()> {
+        match self {
+            Self::Disabled => bail!("publication storage is disabled"),
+            Self::S3(storage) => {
+                storage
+                    .client
+                    .put_object()
+                    .bucket(&storage.bucket)
+                    .key(object_key)
+                    .content_type("application/json; charset=utf-8")
+                    .cache_control("public, max-age=31536000, immutable")
+                    .metadata(PUBLIC_KIND_METADATA, kind)
+                    .metadata(PUBLIC_SHA256_METADATA, sha256)
+                    .body(ByteStream::from(bytes.to_vec()))
+                    .send()
+                    .await
+                    .context("writing public artifact to Spaces")?;
+                Ok(())
+            }
+            #[cfg(test)]
+            Self::Mock(storage) => {
+                storage.objects.lock().expect("mock lock").insert(
+                    object_key.to_owned(),
+                    StoredObject {
+                        size_bytes: bytes.len() as i64,
+                        metadata: BTreeMap::from([
+                            (PUBLIC_KIND_METADATA.to_owned(), kind.to_owned()),
+                            (PUBLIC_SHA256_METADATA.to_owned(), sha256.to_owned()),
+                        ]),
+                    },
+                );
+                storage
+                    .bodies
+                    .lock()
+                    .expect("mock lock")
+                    .insert(object_key.to_owned(), bytes.to_vec());
                 Ok(())
             }
         }
@@ -276,6 +405,7 @@ impl IntakeStorage {
                     .lock()
                     .expect("mock lock")
                     .remove(object_key);
+                storage.bodies.lock().expect("mock lock").remove(object_key);
                 storage
                     .deleted
                     .lock()
@@ -295,6 +425,23 @@ impl IntakeStorage {
                 .metadata
                 .get(FORMAT_METADATA)
                 .is_some_and(|value| value == ARCHIVE_FORMAT)
+    }
+
+    pub fn has_expected_public_metadata(
+        object: &StoredObject,
+        kind: &str,
+        sha256: &str,
+        size_bytes: i64,
+    ) -> bool {
+        object.size_bytes == size_bytes
+            && object
+                .metadata
+                .get(PUBLIC_KIND_METADATA)
+                .is_some_and(|value| value == kind)
+            && object
+                .metadata
+                .get(PUBLIC_SHA256_METADATA)
+                .is_some_and(|value| value == sha256)
     }
 
     fn prefix(&self) -> Result<&str> {
@@ -388,6 +535,7 @@ fn validate_identifier(value: &str, label: &str) -> Result<()> {
 pub struct MockIntakeStorage {
     prefix: String,
     pub objects: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, StoredObject>>>,
+    pub bodies: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     pub deleted: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     pub presign_calls: std::sync::Arc<std::sync::Mutex<Vec<(String, i64, String)>>>,
 }
@@ -412,6 +560,13 @@ impl MockIntakeStorage {
                 ]),
             },
         );
+    }
+
+    pub fn object_bytes(&self, key: impl Into<String>, bytes: Vec<u8>) {
+        let key = key.into();
+        let sha256 = certified::sha256_hex(&bytes);
+        self.object(&key, bytes.len() as i64, &sha256);
+        self.bodies.lock().expect("mock lock").insert(key, bytes);
     }
 }
 
