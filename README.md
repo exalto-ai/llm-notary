@@ -339,8 +339,10 @@ Queued uploads are admitted by a database-backed worker in the API process.
 The worker downloads and hashes the actual private object, validates the
 transport archive, verifies the notary evidence and authenticated provider,
 reproduces the exact canonical trace, enforces credential-header redaction,
-and issues the platform stamp. Public trace and stamp files are available
-under `/api/public/traces/{id}` only after the pair is committed atomically;
+and issues the platform stamp. Immutable public bodies live under a distinct
+private Spaces `public/` prefix while SQLite retains their object keys, sizes,
+and hashes. Public trace and stamp files are available under
+`/api/public/traces/{id}` only after the pair is committed atomically;
 the private intake object is then purged. The consent and retention boundary,
 state machine, rejection codes, and public endpoints are documented in
 [`docs/publication-admission-v1.md`](docs/publication-admission-v1.md).

@@ -148,11 +148,14 @@ and `failed`; the same response can later expose `verifying`, `admitted`,
 
 ## Storage lifecycle
 
-The API stores uploads under two private prefixes:
+The API uses three prefixes in the same private Space:
 
 - `llm-notary/uploads/` contains revocable staging objects;
 - `llm-notary/intake/` contains generation-specific server-promoted objects
   ready for admission.
+- `llm-notary/public/` contains content-addressed admitted traces and stamps.
+  Public API reads integrity-check these durable objects; no lifecycle expiry
+  applies to this prefix.
 
 Application cleanup expires ordinary staging uploads after 15 minutes. Bucket
 lifecycle rules delete staging objects after one day and intake objects after

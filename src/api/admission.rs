@@ -32,8 +32,12 @@ struct PublicArtifactRow {
     id: String,
     github_login: String,
     admitted_at: i64,
-    public_trace: Vec<u8>,
-    public_stamp: Vec<u8>,
+    public_trace_object_key: String,
+    public_trace_size_bytes: i64,
+    public_trace_sha256: String,
+    public_stamp_object_key: String,
+    public_stamp_size_bytes: i64,
+    public_stamp_sha256: String,
 }
 
 #[derive(Serialize)]
@@ -61,6 +65,15 @@ enum AdmissionFailure {
 struct AdmittedArtifacts {
     trace: Vec<u8>,
     stamp: Vec<u8>,
+}
+
+struct StoredPublicArtifacts {
+    trace_object_key: String,
+    trace_size_bytes: i64,
+    trace_sha256: String,
+    stamp_object_key: String,
+    stamp_size_bytes: i64,
+    stamp_sha256: String,
 }
 
 pub fn router() -> Router<AppState> {
@@ -201,13 +214,7 @@ async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
         .expect("enabled publication service has a platform signing key");
     let issuer = state.publish.stamp_issuer.clone();
     let job_id = job.id.clone();
-    let issued_at = match unix_timestamp() {
-        Ok(value) => value as u64 * 1000,
-        Err(error) => {
-            retry_claim(state, &job, &claim, anyhow::anyhow!(error.message)).await;
-            return;
-        }
-    };
+    let issued_at = job.queued_at.unwrap_or(job.updated_at).max(0) as u64 * 1000;
     let result = tokio::task::spawn_blocking(move || {
         verify_and_stamp(
             &job_id,
@@ -318,30 +325,152 @@ async fn admit_claim(
     actual_sha256: &str,
     artifacts: AdmittedArtifacts,
 ) -> Result<()> {
+    let stored = store_public_artifacts(state, &job.id, &artifacts).await?;
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    let updated = sqlx::query(
+    let update = sqlx::query(
         "UPDATE publish_jobs
          SET state = 'admitted', actual_size_bytes = ?, actual_sha256 = ?,
-             admitted_at = ?, updated_at = ?, public_trace = ?, public_stamp = ?,
+             admitted_at = ?, updated_at = ?,
+             public_trace_object_key = ?, public_trace_size_bytes = ?,
+             public_trace_sha256 = ?, public_stamp_object_key = ?,
+             public_stamp_size_bytes = ?, public_stamp_sha256 = ?,
              verification_claim = NULL
          WHERE id = ? AND state = 'verifying' AND verification_claim = ?
-           AND public_trace IS NULL AND public_stamp IS NULL",
+           AND public_trace_object_key IS NULL AND public_stamp_object_key IS NULL",
     )
     .bind(actual_size)
     .bind(actual_sha256)
     .bind(now)
     .bind(now)
-    .bind(artifacts.trace)
-    .bind(artifacts.stamp)
+    .bind(&stored.trace_object_key)
+    .bind(stored.trace_size_bytes)
+    .bind(&stored.trace_sha256)
+    .bind(&stored.stamp_object_key)
+    .bind(stored.stamp_size_bytes)
+    .bind(&stored.stamp_sha256)
     .bind(&job.id)
     .bind(claim)
     .execute(&state.database)
-    .await?;
-    if updated.rows_affected() != 1 {
-        bail!("publication claim was lost before admission");
+    .await;
+    match update {
+        Ok(result) if result.rows_affected() == 1 => {}
+        Ok(_) => {
+            let current = load_public_artifact(state, &job.id).await.ok();
+            if !current
+                .as_ref()
+                .is_some_and(|current| current.matches(&stored))
+            {
+                delete_public_artifacts(state, &stored).await;
+                bail!("publication claim was lost before admission");
+            }
+        }
+        Err(error) => {
+            // A database error can make commit status ambiguous. Retain the
+            // content-addressed candidates so a successful commit never points
+            // at deleted objects; a later retry overwrites the same bytes.
+            return Err(error.into());
+        }
     }
     purge_private_object(state, job).await;
     Ok(())
+}
+
+async fn store_public_artifacts(
+    state: &AppState,
+    trace_id: &str,
+    artifacts: &AdmittedArtifacts,
+) -> Result<StoredPublicArtifacts> {
+    let trace_sha256 = sha256_hex(&artifacts.trace);
+    let stamp_sha256 = sha256_hex(&artifacts.stamp);
+    let stored = StoredPublicArtifacts {
+        trace_object_key: state.publish.storage.public_artifact_key(
+            trace_id,
+            "trace",
+            &trace_sha256,
+        )?,
+        trace_size_bytes: artifacts.trace.len().try_into()?,
+        trace_sha256,
+        stamp_object_key: state.publish.storage.public_artifact_key(
+            trace_id,
+            "stamp",
+            &stamp_sha256,
+        )?,
+        stamp_size_bytes: artifacts.stamp.len().try_into()?,
+        stamp_sha256,
+    };
+    if let Err(error) = write_public_artifact(
+        state,
+        &stored.trace_object_key,
+        "trace",
+        &stored.trace_sha256,
+        &artifacts.trace,
+    )
+    .await
+    {
+        delete_public_artifacts(state, &stored).await;
+        return Err(error);
+    }
+    if let Err(error) = write_public_artifact(
+        state,
+        &stored.stamp_object_key,
+        "stamp",
+        &stored.stamp_sha256,
+        &artifacts.stamp,
+    )
+    .await
+    {
+        delete_public_artifacts(state, &stored).await;
+        return Err(error);
+    }
+    Ok(stored)
+}
+
+async fn write_public_artifact(
+    state: &AppState,
+    object_key: &str,
+    kind: &str,
+    sha256: &str,
+    bytes: &[u8],
+) -> Result<()> {
+    state
+        .publish
+        .storage
+        .put_public_artifact(object_key, kind, sha256, bytes)
+        .await?;
+    let stored = state
+        .publish
+        .storage
+        .head_object(object_key)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("public artifact disappeared after upload"))?;
+    if !super::intake::IntakeStorage::has_expected_public_metadata(
+        &stored,
+        kind,
+        sha256,
+        bytes.len().try_into()?,
+    ) {
+        bail!("public artifact metadata changed after upload");
+    }
+    Ok(())
+}
+
+async fn delete_public_artifacts(state: &AppState, artifacts: &StoredPublicArtifacts) {
+    for object_key in [&artifacts.trace_object_key, &artifacts.stamp_object_key] {
+        if let Err(error) = state.publish.storage.delete_object(object_key).await {
+            tracing::error!(%object_key, %error, "deleting uncommitted public artifact failed");
+        }
+    }
+}
+
+impl PublicArtifactRow {
+    fn matches(&self, stored: &StoredPublicArtifacts) -> bool {
+        self.public_trace_object_key == stored.trace_object_key
+            && self.public_trace_size_bytes == stored.trace_size_bytes
+            && self.public_trace_sha256 == stored.trace_sha256
+            && self.public_stamp_object_key == stored.stamp_object_key
+            && self.public_stamp_size_bytes == stored.stamp_size_bytes
+            && self.public_stamp_sha256 == stored.stamp_sha256
+    }
 }
 
 async fn reject_claim(
@@ -449,7 +578,8 @@ async fn recover_stale_claims(state: &AppState) -> Result<()> {
          SET state = 'queued', verification_claim = NULL,
              verification_started_at = NULL, updated_at = ?
          WHERE state = 'verifying' AND verification_started_at < ?
-           AND public_trace IS NULL AND public_stamp IS NULL",
+           AND public_trace_object_key IS NULL
+           AND public_stamp_object_key IS NULL",
     )
     .bind(now)
     .bind(cutoff)
@@ -461,12 +591,17 @@ async fn recover_stale_claims(state: &AppState) -> Result<()> {
 async fn load_public_artifact(state: &AppState, trace_id: &str) -> ApiResult<PublicArtifactRow> {
     sqlx::query_as(
         "SELECT publish_jobs.id, users.github_login, publish_jobs.admitted_at,
-                publish_jobs.public_trace, publish_jobs.public_stamp
+                publish_jobs.public_trace_object_key,
+                publish_jobs.public_trace_size_bytes,
+                publish_jobs.public_trace_sha256,
+                publish_jobs.public_stamp_object_key,
+                publish_jobs.public_stamp_size_bytes,
+                publish_jobs.public_stamp_sha256
          FROM publish_jobs
          JOIN users ON users.id = publish_jobs.user_id
          WHERE publish_jobs.id = ? AND publish_jobs.state = 'admitted'
-           AND publish_jobs.public_trace IS NOT NULL
-           AND publish_jobs.public_stamp IS NOT NULL",
+           AND publish_jobs.public_trace_object_key IS NOT NULL
+           AND publish_jobs.public_stamp_object_key IS NOT NULL",
     )
     .bind(trace_id)
     .fetch_optional(&state.database)
@@ -494,10 +629,14 @@ async fn public_trace(
     AxumPath(trace_id): AxumPath<String>,
 ) -> ApiResult<Response> {
     let artifact = load_public_artifact(&state, &trace_id).await?;
-    Ok(public_bytes(
-        artifact.public_trace,
-        "application/json; charset=utf-8",
-    ))
+    let bytes = load_public_bytes(
+        &state,
+        &artifact.public_trace_object_key,
+        artifact.public_trace_size_bytes,
+        &artifact.public_trace_sha256,
+    )
+    .await?;
+    Ok(public_bytes(bytes, "application/json; charset=utf-8"))
 }
 
 async fn public_stamp(
@@ -505,10 +644,40 @@ async fn public_stamp(
     AxumPath(trace_id): AxumPath<String>,
 ) -> ApiResult<Response> {
     let artifact = load_public_artifact(&state, &trace_id).await?;
-    Ok(public_bytes(
-        artifact.public_stamp,
-        "application/json; charset=utf-8",
-    ))
+    let bytes = load_public_bytes(
+        &state,
+        &artifact.public_stamp_object_key,
+        artifact.public_stamp_size_bytes,
+        &artifact.public_stamp_sha256,
+    )
+    .await?;
+    Ok(public_bytes(bytes, "application/json; charset=utf-8"))
+}
+
+async fn load_public_bytes(
+    state: &AppState,
+    object_key: &str,
+    size_bytes: i64,
+    sha256: &str,
+) -> ApiResult<Vec<u8>> {
+    let limit: usize = size_bytes
+        .try_into()
+        .map_err(|_| ApiError::service_unavailable("public artifact metadata is invalid"))?;
+    let bytes = state
+        .publish
+        .storage
+        .get_object(object_key, limit)
+        .await
+        .map_err(ApiError::internal)?
+        .ok_or_else(|| {
+            ApiError::service_unavailable("public artifact is temporarily unavailable")
+        })?;
+    if bytes.len() != limit || sha256_hex(&bytes) != sha256 {
+        return Err(ApiError::service_unavailable(
+            "public artifact failed its integrity check",
+        ));
+    }
+    Ok(bytes)
 }
 
 fn public_bytes(bytes: Vec<u8>, content_type: &'static str) -> Response {
@@ -696,18 +865,53 @@ mod tests {
             .await
             .is_err()
         );
-        let row: (String, Vec<u8>, Vec<u8>) = sqlx::query_as(
-            "SELECT state, public_trace, public_stamp FROM publish_jobs WHERE id = 'job-1'",
+        let row: (String, String, String) = sqlx::query_as(
+            "SELECT state, public_trace_object_key, public_stamp_object_key
+             FROM publish_jobs WHERE id = 'job-1'",
         )
         .fetch_one(&state.database)
         .await
         .unwrap();
         assert_eq!(row.0, "admitted");
-        assert_eq!(row.1, b"{\"trace\":1}\n");
-        assert_eq!(row.2, b"{\"stamp\":1}\n");
+        assert_eq!(
+            storage.bodies.lock().unwrap().get(&row.1).unwrap(),
+            b"{\"trace\":1}\n"
+        );
+        assert_eq!(
+            storage.bodies.lock().unwrap().get(&row.2).unwrap(),
+            b"{\"stamp\":1}\n"
+        );
         let public = load_public_artifact(&state, "job-1").await.unwrap();
         assert_eq!(public.github_login, "publisher");
-        assert_eq!(public.public_trace, row.1);
+        assert_eq!(public.public_trace_object_key, row.1);
+        assert_eq!(
+            load_public_bytes(
+                &state,
+                &public.public_trace_object_key,
+                public.public_trace_size_bytes,
+                &public.public_trace_sha256,
+            )
+            .await
+            .unwrap(),
+            b"{\"trace\":1}\n"
+        );
+        assert_eq!(storage.bodies.lock().unwrap().len(), 2);
+        storage
+            .bodies
+            .lock()
+            .unwrap()
+            .insert(row.1.clone(), b"tampered\n".to_vec());
+        assert!(
+            load_public_bytes(
+                &state,
+                &public.public_trace_object_key,
+                public.public_trace_size_bytes,
+                &public.public_trace_sha256,
+            )
+            .await
+            .is_err()
+        );
+        assert!(load_public_artifact(&state, "job-1").await.is_ok());
         let directory = platform_directory(State(state)).await.unwrap().0;
         assert_eq!(directory.format, "llm-notary/platform-directory/v1");
         assert!(directory.key_id.starts_with("sha256:"));

@@ -32,13 +32,22 @@ SQLite atomically moves one queued job to `verifying` with a unique claim.
 Stale claims without public artifacts return to `queued`. Cryptographic and
 normalization work runs on a blocking worker thread, outside Axum request
 handlers. The final database update requires the same claim and empty artifact
-columns, so a retry cannot replace or duplicate an admitted pair.
+columns, so a retry cannot replace or duplicate an admitted pair. The fixed
+15-minute claim timeout assumes the current single in-process worker; add lease
+renewal before sharing the queue across independent worker processes.
 
-For this single-node MVP, the two public JSON artifacts are stored as SQLite
-BLOBs in the same atomic update as the admitted state. DigitalOcean Spaces is
-used only for private intake. A public object store or CDN can replace the BLOB
-storage when artifact size or traffic justifies the additional consistency and
-access-control surface.
+The worker writes the two public JSON artifacts to content-addressed keys under
+the private Space's distinct `llm-notary/public/` prefix and verifies their
+size, kind, and SHA-256 metadata. SQLite stores only the immutable object keys,
+sizes, hashes, and admission state. The database transition is the publication
+boundary: unreferenced candidates are not reachable from public APIs, while a
+committed row is sufficient to retrieve and integrity-check both objects.
+
+The bucket remains private. Public downloads pass through the API and can be
+cached by Cloudflare using immutable response headers. This keeps the private
+intake access boundary intact and removes the single-droplet SQLite volume
+from artifact durability. A separate public Space or CDN origin can replace
+this prefix later without changing the trace/stamp contract.
 
 ## Admission checks
 
@@ -53,8 +62,10 @@ The worker:
    disclosed HTTP bytes, and exact deterministic OTLP reproduction;
 6. rejects visible `Authorization`, `Proxy-Authorization`, `Cookie`,
    `x-api-key`, or `Set-Cookie` values;
-7. signs the exact canonical trace with the separate platform key; and
-8. atomically records the public pair before deleting the private object.
+7. signs the exact canonical trace with the separate platform key;
+8. stores and verifies the public pair in Spaces; and
+9. atomically records its immutable keys and hashes before deleting the
+   private object.
 
 Stable client-visible rejection codes currently include
 `object_missing`, `object_size_mismatch`, `object_sha256_mismatch`,
