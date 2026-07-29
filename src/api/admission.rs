@@ -57,6 +57,55 @@ struct PlatformDirectory {
     public_key: String,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CuratedCollection {
+    format: String,
+    slug: String,
+    title: String,
+    description: String,
+    publications: Vec<CuratedPublication>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CuratedPublication {
+    id: String,
+    title: String,
+    category: String,
+    surface: String,
+    tool_use: bool,
+    tags: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct CollectionResponse {
+    format: &'static str,
+    slug: String,
+    title: String,
+    description: String,
+    consent_label: &'static str,
+    publications: Vec<CollectionPublication>,
+}
+
+#[derive(Serialize)]
+struct CollectionPublication {
+    id: String,
+    title: String,
+    category: String,
+    surface: String,
+    tool_use: bool,
+    tags: Vec<String>,
+    author: String,
+    admitted_at: i64,
+    provider: String,
+    host: String,
+    model: String,
+    span_count: usize,
+    trace_url: String,
+    stamp_url: String,
+}
+
 enum AdmissionFailure {
     Reject(&'static str, anyhow::Error),
     Retry(anyhow::Error),
@@ -79,6 +128,7 @@ struct StoredPublicArtifacts {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/platform", get(platform_directory))
+        .route("/api/public/collections/examples", get(examples_collection))
         .route("/api/public/traces/{trace_id}", get(public_trace_metadata))
         .route(
             "/api/public/traces/{trace_id}/trace.otlp.json",
@@ -88,6 +138,77 @@ pub fn router() -> Router<AppState> {
             "/api/public/traces/{trace_id}/stamp.json",
             get(public_stamp),
         )
+}
+
+async fn examples_collection(State(state): State<AppState>) -> ApiResult<Json<CollectionResponse>> {
+    let collection: CuratedCollection = serde_json::from_str(include_str!(
+        "../../examples/production-seed/publications.json"
+    ))
+    .map_err(|error| ApiError::internal(error.into()))?;
+    if collection.format != "llm-notary/curated-collection/v1"
+        || collection.slug != "llm-notary-examples"
+    {
+        return Err(ApiError::internal(anyhow::anyhow!(
+            "embedded examples collection has an unsupported identity"
+        )));
+    }
+    let mut publications = Vec::with_capacity(collection.publications.len());
+    for curated in collection.publications {
+        let Some(artifact) = load_public_artifact_optional(&state, &curated.id).await? else {
+            continue;
+        };
+        let stamp: certified::public::PublicStamp = serde_json::from_slice(&artifact.public_stamp)
+            .map_err(|error| ApiError::internal(error.into()))?;
+        let (model, span_count) =
+            trace_model_and_span_count(&artifact.public_trace).map_err(ApiError::internal)?;
+        publications.push(CollectionPublication {
+            id: artifact.id.clone(),
+            title: curated.title,
+            category: curated.category,
+            surface: curated.surface,
+            tool_use: curated.tool_use,
+            tags: curated.tags,
+            author: artifact.github_login,
+            admitted_at: artifact.admitted_at,
+            provider: stamp.provider.name,
+            host: stamp.provider.host,
+            model,
+            span_count,
+            trace_url: format!("/api/public/traces/{}/trace.otlp.json", artifact.id),
+            stamp_url: format!("/api/public/traces/{}/stamp.json", artifact.id),
+        });
+    }
+    publications.sort_by(|left, right| right.admitted_at.cmp(&left.admitted_at));
+    Ok(Json(CollectionResponse {
+        format: "llm-notary/public-collection/v1",
+        slug: collection.slug,
+        title: collection.title,
+        description: collection.description,
+        consent_label: "Consent-based publication",
+        publications,
+    }))
+}
+
+fn trace_model_and_span_count(trace: &[u8]) -> Result<(String, usize)> {
+    let value: serde_json::Value = serde_json::from_slice(trace)?;
+    let spans = value
+        .pointer("/resourceSpans/0/scopeSpans/0/spans")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("public trace has no span array"))?;
+    let first = spans
+        .first()
+        .and_then(|span| span.get("attributes"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("public trace has no span attributes"))?;
+    let model = first
+        .iter()
+        .find(|attribute| {
+            attribute.get("key").and_then(serde_json::Value::as_str) == Some("gen_ai.request.model")
+        })
+        .and_then(|attribute| attribute.pointer("/value/stringValue"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("public trace has no request model"))?;
+    Ok((model.to_owned(), spans.len()))
 }
 
 async fn platform_directory(State(state): State<AppState>) -> ApiResult<Json<PlatformDirectory>> {
@@ -589,6 +710,15 @@ async fn recover_stale_claims(state: &AppState) -> Result<()> {
 }
 
 async fn load_public_artifact(state: &AppState, trace_id: &str) -> ApiResult<PublicArtifactRow> {
+    load_public_artifact_optional(state, trace_id)
+        .await?
+        .ok_or_else(|| ApiError::not_found("public trace was not found"))
+}
+
+async fn load_public_artifact_optional(
+    state: &AppState,
+    trace_id: &str,
+) -> ApiResult<Option<PublicArtifactRow>> {
     sqlx::query_as(
         "SELECT publish_jobs.id, users.github_login, publish_jobs.admitted_at,
                 publish_jobs.public_trace_object_key,
@@ -606,8 +736,7 @@ async fn load_public_artifact(state: &AppState, trace_id: &str) -> ApiResult<Pub
     .bind(trace_id)
     .fetch_optional(&state.database)
     .await
-    .map_err(database_error)?
-    .ok_or_else(|| ApiError::not_found("public trace was not found"))
+    .map_err(database_error)
 }
 
 async fn public_trace_metadata(
@@ -785,6 +914,14 @@ mod tests {
         queued_job(&state, b"archive", &sha256_hex(b"archive")).await;
         assert!(claim_next_job(&state).await.unwrap().is_some());
         assert!(claim_next_job(&state).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn examples_collection_never_invents_unadmitted_records() {
+        let (state, _) = test_state().await;
+        let response = examples_collection(State(state)).await.unwrap().0;
+        assert_eq!(response.slug, "llm-notary-examples");
+        assert!(response.publications.is_empty());
     }
 
     #[tokio::test]
