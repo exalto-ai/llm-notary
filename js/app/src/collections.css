@@ -4,6 +4,64 @@
   padding-top: 38px;
 }
 
+.production-collection-head {
+  max-width: 760px;
+  margin: 24px 0 42px;
+}
+
+.production-collection-head h1 {
+  margin: 12px 0;
+  font-size: clamp(42px, 7vw, 74px);
+  letter-spacing: -.07em;
+  line-height: .94;
+}
+
+.production-collection-head p,
+.collection-empty p {
+  color: var(--body-copy-soft);
+  line-height: 1.6;
+}
+
+.collection-empty,
+.collection-pending {
+  display: grid;
+  gap: 8px;
+  margin: 24px 0;
+  padding: 24px;
+  border: 1px solid var(--line);
+  background: var(--white);
+}
+
+.collection-empty b,
+.collection-pending b {
+  font-size: 18px;
+}
+
+.collection-empty span,
+.collection-pending span,
+.consent-label {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.collection-inspector .trace-actions a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.consent-label {
+  margin: 20px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+  line-height: 1.5;
+}
+
 .library-controls {
   margin: 0 0 14px;
   padding: 0 0 18px;
