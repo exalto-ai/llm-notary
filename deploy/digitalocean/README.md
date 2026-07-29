@@ -45,6 +45,16 @@ Configure these GitHub repository secrets before the first deployment:
 - `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` for the LLM
   Notary GitHub OAuth App. The app's callback URL must be
   `https://llmnotary.exalto.ai/api/auth/github/callback`.
+- `LLM_NOTARY_SPACES_ACCESS_KEY_ID` and
+  `LLM_NOTARY_SPACES_SECRET_ACCESS_KEY` for a key restricted to read/write
+  access on the private intake Space.
+
+Configure these repository variables alongside the secrets:
+
+- `LLM_NOTARY_SPACES_BUCKET` is the private Standard Storage bucket name.
+- `LLM_NOTARY_SPACES_ENDPOINT` is the regional origin endpoint, such as
+  `https://sfo3.digitaloceanspaces.com`.
+- `LLM_NOTARY_SPACES_REGION` is the matching region, such as `sfo3`.
 
 For this deployment, add those two values as GitHub Actions secrets named
 `LLM_NOTARY_GITHUB_OAUTH_CLIENT_ID` and
@@ -59,6 +69,27 @@ The API stores its initial user and session records in the Docker volume
 `api_data`. It is intentionally a single-instance SQLite deployment while the
 product is in beta; move it to managed Postgres before horizontally scaling the
 API or running background publication workers.
+
+## Private publication intake
+
+The API creates a short-lived presigned PUT for a staging object under
+`llm-notary/uploads/`. After the authenticated client completes the job, the
+API copies the object to a server-only key under `llm-notary/intake/`, verifies
+the copied object's size and signed metadata, queues the job, and removes the
+staging object. The admission worker added later consumes only the server-only
+key and computes the actual SHA-256 before trusting the package.
+
+The Space must remain private and must not have a CDN. Use a bucket-scoped
+`readwrite` Spaces key in production. Configure lifecycle rules as a recovery
+backstop:
+
+- expire `llm-notary/uploads/` after one day;
+- expire `llm-notary/intake/` after seven days.
+
+Application cleanup removes ordinary expired staging uploads after 15 minutes.
+The lifecycle rules cover process downtime and orphaned objects; the later
+admission worker is still responsible for prompt deletion after admission or
+rejection.
 
 ## Deploying with TTL.sh
 

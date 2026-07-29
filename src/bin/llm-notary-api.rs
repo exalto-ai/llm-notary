@@ -23,6 +23,11 @@ use uuid::Uuid;
 use certified::sha256_hex;
 use k256::ecdsa::VerifyingKey;
 
+#[path = "../api/intake.rs"]
+mod intake;
+#[path = "../api/publish.rs"]
+mod publish;
+
 const SESSION_COOKIE: &str = "llm_notary_session";
 const OAUTH_STATE_COOKIE: &str = "llm_notary_oauth_state";
 const LOGIN_TTL_SECS: i64 = 10 * 60;
@@ -41,6 +46,7 @@ struct AppState {
     app_url: Url,
     secure_cookies: bool,
     notary_key: NotaryDirectoryKey,
+    publish: publish::PublishService,
 }
 
 #[derive(Deserialize)]
@@ -175,6 +181,7 @@ struct ErrorResponse {
     error: &'static str,
 }
 
+#[derive(Debug)]
 struct ApiError {
     status: StatusCode,
     message: &'static str,
@@ -205,6 +212,20 @@ impl ApiError {
     fn gone(message: &'static str) -> Self {
         Self {
             status: StatusCode::GONE,
+            message,
+        }
+    }
+
+    fn conflict(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            message,
+        }
+    }
+
+    fn service_unavailable(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
             message,
         }
     }
@@ -255,6 +276,7 @@ async fn main() -> Result<()> {
         .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
         .parse::<SocketAddr>()
         .context("LLM_NOTARY_API_LISTEN must be a socket address")?;
+    publish::spawn_cleanup(state.clone());
     let app = Router::new()
         .route("/api/healthz", get(health))
         .route("/api/notary", get(notary))
@@ -279,6 +301,7 @@ async fn main() -> Result<()> {
         .route("/api/cli/token", post(refresh_cli_tokens))
         .route("/api/cli/logout", post(logout_cli_session))
         .route("/api/cli/me", get(cli_me))
+        .merge(publish::router())
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "LLM Notary API listening");
@@ -324,6 +347,8 @@ impl AppState {
             key_id: format!("sha256:{}", sha256_hex(&public_key)),
             public_key: hex::encode(public_key),
         };
+        let publish = publish::PublishService::from_env()?;
+        publish.validate().await?;
         let options = SqliteConnectOptions::from_str(&database_url)
             .context("DATABASE_URL must be a SQLite connection URL")?
             .create_if_missing(true)
@@ -350,6 +375,7 @@ impl AppState {
             secure_cookies: app_url.scheme() == "https",
             app_url,
             notary_key,
+            publish,
         })
     }
 
@@ -1108,6 +1134,7 @@ mod tests {
             app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
             secure_cookies: true,
             notary_key: directory_key(),
+            publish: publish::PublishService::disabled_for_test(),
         };
         let url = state
             .authorization_url("state-token")
@@ -1173,6 +1200,7 @@ mod tests {
                 app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
                 secure_cookies: true,
                 notary_key: directory_key(),
+                publish: publish::PublishService::disabled_for_test(),
             }),
             Json(RefreshRequest {
                 refresh_token: tokens.refresh_token,
@@ -1247,6 +1275,7 @@ mod tests {
             app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
             secure_cookies: true,
             notary_key: directory_key(),
+            publish: publish::PublishService::disabled_for_test(),
         };
         let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
 

@@ -299,8 +299,8 @@ cargo run --bin llm-notary-api
 
 The API has `GET /api/notary` for CLI endpoint and public-key discovery,
 `GET /api/auth/github`, `GET /api/auth/github/callback`, `GET /api/me`,
-`POST /api/auth/logout`, and `GET /api/healthz`, plus publication endpoints
-for admitting a standardized trace and serving its OTLP JSON and stamp. Set
+`POST /api/auth/logout`, and `GET /api/healthz`, plus authenticated publication
+intake endpoints and publication endpoints for serving admitted traces. Set
 `LLM_NOTARY_NOTARY_HOST` and `LLM_NOTARY_NOTARY_PUBLIC_KEY` to the public TCP
 notary hostname and its compressed SEC1 public key. The directory contains a
 stable key ID. Clients cache the last successful directory record, so offline
@@ -308,6 +308,23 @@ verification only trusts the discovered key rather than a package-supplied
 key. The Compose health check compares the advertised key with the running
 notary key. GitHub sign-in authorizes publication; the platform signing key is
 the trust root for published stamps.
+
+Authenticated CLI publication intake uses:
+
+- `POST /api/publish/jobs` with an `Idempotency-Key` header to create one
+  short-lived finalized-package upload;
+- `POST /api/publish/jobs/{id}/complete` to freeze the uploaded object under a
+  server-only key and queue it;
+- `GET /api/publish/jobs/{id}` to poll status.
+
+The create body declares `archive_format`, `size_bytes`, and `sha256`. The
+current format identifier is `llmnotary.trace-package-archive/v1`, with media
+type `application/vnd.llmnotary.trace-package+zip`. The API checks object size
+and signed upload metadata before queueing, but the declared hash remains
+untrusted until the admission worker downloads and hashes the actual bytes.
+Encrypted `.llmbundle` files are local retry state and are never valid uploads.
+The complete request, response, idempotency, and storage-boundary contract is
+documented in [`docs/publish-intake-v1.md`](docs/publish-intake-v1.md).
 
 ### CLI publishing sign-in
 
