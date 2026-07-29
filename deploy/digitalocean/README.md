@@ -76,20 +76,24 @@ The API creates a short-lived presigned PUT for a staging object under
 `llm-notary/uploads/`. After the authenticated client completes the job, the
 API copies the object to a server-only key under `llm-notary/intake/`, verifies
 the copied object's size and signed metadata, queues the job, and removes the
-staging object. The admission worker added later consumes only the server-only
-key and computes the actual SHA-256 before trusting the package.
+staging object. The admission worker consumes only the server-only key and
+computes the actual SHA-256 before trusting the package. Admitted
+`trace.otlp.json` and `stamp.json` bodies are written to content-addressed keys
+under `llm-notary/public/`; SQLite stores their keys and hashes, not their
+bytes.
 
-The Space must remain private and must not have a CDN. Use a bucket-scoped
-`readwrite` Spaces key in production. Configure lifecycle rules as a recovery
-backstop:
+The Space remains private; public artifact downloads pass through the API and
+Cloudflare. Use a bucket-scoped `readwrite` Spaces key in production. Configure
+lifecycle rules as a recovery backstop:
 
 - expire `llm-notary/uploads/` after one day;
 - expire `llm-notary/intake/` after seven days.
 
 Application cleanup removes ordinary expired staging uploads after 15 minutes.
-The lifecycle rules cover process downtime and orphaned objects; the later
-admission worker is still responsible for prompt deletion after admission or
-rejection.
+The lifecycle rules cover process downtime and orphaned objects; admission is
+still responsible for prompt private-object deletion. Do not apply an expiry
+rule to `llm-notary/public/`; it is the durable corpus. Maintain an independent
+backup before treating admitted traces as permanent.
 
 ## Deploying with TTL.sh
 

@@ -57,7 +57,7 @@ use tokio::{
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 pub mod archive;
-#[cfg(feature = "cli")]
+#[cfg(any(feature = "api", feature = "cli"))]
 pub mod bundle;
 #[cfg(feature = "cli")]
 pub mod cli;
@@ -208,6 +208,46 @@ fn is_redacted_request_header(name: &str) -> bool {
 
 fn is_redacted_response_header(name: &str) -> bool {
     name.eq_ignore_ascii_case(header::SET_COOKIE.as_str())
+}
+
+/// Enforces the finalized-package disclosure contract after the TLSNotary
+/// presentation has authenticated these bytes.
+pub fn validate_disclosed_http_redactions(request: &[u8], response: &[u8]) -> Result<()> {
+    validate_redacted_headers(
+        request,
+        &[
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "x-api-key",
+        ],
+        "request",
+    )?;
+    validate_redacted_headers(response, &["set-cookie"], "response")
+}
+
+fn validate_redacted_headers(bytes: &[u8], sensitive: &[&str], label: &str) -> Result<()> {
+    let header_end = bytes
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| anyhow!("{label} does not contain a complete HTTP header block"))?;
+    for line in bytes[..header_end].split(|byte| *byte == b'\n').skip(1) {
+        let line = line.strip_suffix(b"\r").unwrap_or(line);
+        let Some(colon) = line.iter().position(|byte| *byte == b':') else {
+            bail!("{label} contains a malformed HTTP header");
+        };
+        let name = &line[..colon];
+        if sensitive
+            .iter()
+            .any(|expected| name.eq_ignore_ascii_case(expected.as_bytes()))
+            && line[colon + 1..]
+                .iter()
+                .any(|byte| !byte.is_ascii_whitespace() && *byte != 0)
+        {
+            bail!("{label} discloses a credential or cookie header value");
+        }
+    }
+    Ok(())
 }
 
 /// The proof material retained while constructing a selectively disclosed
@@ -1461,6 +1501,32 @@ mod tests {
             request_disclosed,
             response,
         }
+    }
+
+    #[test]
+    fn disclosed_http_rejects_visible_credentials_and_cookies() {
+        let response = b"HTTP/1.1 200 OK\r\nset-cookie:\0\0\0\r\n\r\n{}";
+        assert!(
+            validate_disclosed_http_redactions(
+                b"POST /v1 HTTP/1.1\r\nauthorization:\0\0\0\r\ncookie: \0\r\n\r\n{}",
+                response,
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_disclosed_http_redactions(
+                b"POST /v1 HTTP/1.1\r\nAuthorization: Bearer secret\r\n\r\n{}",
+                response,
+            )
+            .is_err()
+        );
+        assert!(
+            validate_disclosed_http_redactions(
+                b"POST /v1 HTTP/1.1\r\n\r\n{}",
+                b"HTTP/1.1 200 OK\r\nSet-Cookie: session=secret\r\n\r\n{}",
+            )
+            .is_err()
+        );
     }
 
     #[test]
