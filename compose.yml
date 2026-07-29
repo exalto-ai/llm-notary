@@ -13,6 +13,7 @@ services:
       LLM_NOTARY_PUBLIC_ORIGIN: https://${SITE_DOMAIN:?Set SITE_DOMAIN to the public site hostname}
       LLM_NOTARY_NOTARY_HOST: ${LLM_NOTARY_NOTARY_HOST:?Set LLM_NOTARY_NOTARY_HOST to the public notary hostname or IP}
       LLM_NOTARY_NOTARY_PORT: ${NOTARY_PORT:-7047}
+      LLM_NOTARY_NOTARY_PUBLIC_KEY: ${LLM_NOTARY_NOTARY_PUBLIC_KEY:?Set LLM_NOTARY_NOTARY_PUBLIC_KEY to the notary SEC1 public key}
     volumes:
       - api_data:/var/lib/llm-notary
     read_only: true
@@ -53,6 +54,7 @@ services:
       target: notary
     environment:
       NOTARY_SIGNING_KEY_FILE: /run/secrets/notary_signing_key
+      LLM_NOTARY_NOTARY_PUBLIC_KEY: ${LLM_NOTARY_NOTARY_PUBLIC_KEY:?Set LLM_NOTARY_NOTARY_PUBLIC_KEY to the notary SEC1 public key}
     ports:
       - "${NOTARY_PORT:-7047}:7047"
     mem_limit: 1g
@@ -67,6 +69,11 @@ services:
     cap_drop:
       - ALL
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "test \"$(certified-notary --signing-key /run/secrets/notary_signing_key --print-public-key)\" = \"$${LLM_NOTARY_NOTARY_PUBLIC_KEY}\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
   tunnel:
     image: cloudflare/cloudflared:2026.7.3

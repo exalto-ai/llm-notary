@@ -64,6 +64,7 @@ jobs:
         run: |
           openssl rand -hex 32 > "$RUNNER_TEMP/notary-signing-key"
           NOTARY_SIGNING_KEY_FILE="$RUNNER_TEMP/notary-signing-key" \
+            LLM_NOTARY_NOTARY_PUBLIC_KEY=0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 \
             CLOUDFLARE_TUNNEL_TOKEN=ci-placeholder \
             GITHUB_OAUTH_CLIENT_ID=ci-placeholder \
             GITHUB_OAUTH_CLIENT_SECRET=ci-placeholder \

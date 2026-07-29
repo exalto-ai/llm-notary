@@ -58,8 +58,9 @@ openssl rand -hex 32 > notary.dev.key
 cargo run --bin certified-notary -- --signing-key notary.dev.key
 ```
 
-The notary prints its public key at startup. Save that value; it is required to
-verify a receipt and is the explicit trust anchor.
+The notary prints its public key at startup. Retain that value for local or
+private deployments, where it is supplied with `--trusted-notary-key` as the
+explicit trust anchor. Production clients discover and pin the public key.
 
 In another terminal start the proxy. By default the released CLI discovers the
 current public notary endpoint from `https://llmnotary.exalto.ai/api/notary`.
@@ -86,14 +87,13 @@ which is useful for isolated development and automation.
 
 ## Finalize a bundle
 
-List the locally encrypted bundles, then finalize one with the notary public
-key printed at notary startup:
+List the locally encrypted bundles, then finalize one. The CLI fetches and
+caches the production directory key automatically:
 
 ```bash
 llm-notary bundles list
 llm-notary finalize bundles/cap-....llmbundle \
-  --output traces/cap-... \
-  --trusted-notary-key <notary-public-key>
+  --output traces/cap-...
 ```
 
 The output directory is a single portable package:
@@ -111,8 +111,7 @@ Verify it offline by rechecking the TLSNotary presentation, every source-file
 hash, the provider adapter, and the exact canonical OTLP bytes:
 
 ```bash
-llm-notary verify-trace traces/cap-... \
-  --trusted-notary-key <notary-public-key>
+llm-notary verify-trace traces/cap-...
 ```
 
 The encrypted bundle is the most sensitive artifact: its deferred TLS
@@ -148,13 +147,14 @@ suffix); the proxy preserves the requested API path.
 The older private-capture verifier remains available for capture directories:
 
 ```bash
-cargo run --bin llm-notary -- verify captures/cap-... --trusted-notary-key <notary-public-key>
+cargo run --bin llm-notary -- verify captures/cap-...
 ```
 
 The verifier checks the TLSNotary presentation locally and prints the disclosed
-request and response only after checking the expected notary public key. A
-production version should distribute that key through a signed public-key
-directory and transparency log.
+request and response only after checking a locally pinned directory key. The
+HTTPS LLM Notary directory is the initial online trust bootstrap; a package
+cannot add its own trusted key. Use `--trusted-notary-key` to explicitly
+override that bootstrap for private notaries or independent verification.
 
 Pass `--summary` to verify the certificate and hashes without printing the
 disclosed transcript.
@@ -284,6 +284,9 @@ https://llmnotary.exalto.ai/api/auth/github/callback
 ```
 
 Set `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` for the API.
+Also set `LLM_NOTARY_NOTARY_PUBLIC_KEY` to the compressed SEC1 public key for
+the configured notary signing key; the API refuses to advertise an unchecked
+or malformed key.
 For source development, `LLM_NOTARY_PUBLIC_ORIGIN` defaults to
 `http://localhost:4173` and the API creates a local SQLite database. GitHub
 OAuth Apps have one callback URL, so use a separate development OAuth App with
@@ -294,13 +297,16 @@ credentials in the local `.env`. Start the API alongside the SPA with:
 cargo run --bin llm-notary-api
 ```
 
-The API has `GET /api/notary` for CLI endpoint discovery,
+The API has `GET /api/notary` for CLI endpoint and public-key discovery,
 `GET /api/auth/github`, `GET /api/auth/github/callback`, `GET /api/me`,
 `POST /api/auth/logout`, and `GET /api/healthz`, plus publication endpoints
 for admitting a standardized trace and serving its OTLP JSON and stamp. Set
-`LLM_NOTARY_NOTARY_HOST` to the public TCP notary hostname or reserved IP;
-this keeps that deployment detail out of released clients and permits endpoint
-rotation. GitHub sign-in authorizes publication; the platform signing key is
+`LLM_NOTARY_NOTARY_HOST` and `LLM_NOTARY_NOTARY_PUBLIC_KEY` to the public TCP
+notary hostname and its compressed SEC1 public key. The directory contains a
+stable key ID. Clients cache the last successful directory record, so offline
+verification only trusts the discovered key rather than a package-supplied
+key. The Compose health check compares the advertised key with the running
+notary key. GitHub sign-in authorizes publication; the platform signing key is
 the trust root for published stamps.
 
 ### CLI publishing sign-in

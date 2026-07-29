@@ -16,10 +16,10 @@ use axum::{
 };
 use clap::{Args, ValueEnum};
 use http_body_util::BodyExt as _;
-use serde::Deserialize;
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 
+use super::notary::{DirectoryRecord, pin, validate_directory};
 use crate::{
     DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredBundle, chunked_request_body,
     deferred_streaming_request, vault::Vault,
@@ -112,12 +112,6 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
 
 const NOTARY_DIRECTORY_URL: &str = "https://llmnotary.exalto.ai/api/notary";
 
-#[derive(Deserialize)]
-struct NotaryDirectoryEntry {
-    host: String,
-    port: u16,
-}
-
 pub(crate) async fn discover_notary() -> Result<SocketAddr> {
     let endpoint = reqwest::Client::builder()
         .user_agent("LLM-Notary/0.1")
@@ -128,9 +122,13 @@ pub(crate) async fn discover_notary() -> Result<SocketAddr> {
         .with_context(|| format!("fetching notary endpoint from {NOTARY_DIRECTORY_URL}"))?
         .error_for_status()
         .with_context(|| format!("fetching notary endpoint from {NOTARY_DIRECTORY_URL}"))?
-        .json::<NotaryDirectoryEntry>()
+        .json::<DirectoryRecord>()
         .await
-        .context("decoding notary endpoint from LLM Notary API")?;
+        .context("decoding notary directory from LLM Notary API")?;
+
+    validate_directory(&endpoint)?;
+    pin(endpoint.clone())?;
+    tracing::info!(key_id = %endpoint.key_id, "pinned trusted notary directory key");
 
     tokio::net::lookup_host((endpoint.host.as_str(), endpoint.port))
         .await

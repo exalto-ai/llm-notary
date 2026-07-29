@@ -21,6 +21,7 @@ use url::Url;
 use uuid::Uuid;
 
 use certified::sha256_hex;
+use k256::ecdsa::VerifyingKey;
 
 const SESSION_COOKIE: &str = "llm_notary_session";
 const OAUTH_STATE_COOKIE: &str = "llm_notary_oauth_state";
@@ -39,8 +40,7 @@ struct AppState {
     callback_url: Url,
     app_url: Url,
     secure_cookies: bool,
-    notary_host: String,
-    notary_port: u16,
+    notary_key: NotaryDirectoryKey,
 }
 
 #[derive(Deserialize)]
@@ -74,8 +74,19 @@ struct Health {
 
 #[derive(Serialize)]
 struct NotaryDirectoryEntry {
+    format: &'static str,
     host: String,
     port: u16,
+    key_id: String,
+    public_key: String,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+struct NotaryDirectoryKey {
+    host: String,
+    port: u16,
+    key_id: String,
+    public_key: String,
 }
 
 #[derive(Serialize)]
@@ -301,6 +312,18 @@ impl AppState {
             .unwrap_or_else(|_| "7047".to_owned())
             .parse::<u16>()
             .context("LLM_NOTARY_NOTARY_PORT must be a valid TCP port")?;
+        let notary_public_key = env::var("LLM_NOTARY_NOTARY_PUBLIC_KEY")
+            .context("LLM_NOTARY_NOTARY_PUBLIC_KEY is required")?;
+        let public_key = hex::decode(&notary_public_key)
+            .context("LLM_NOTARY_NOTARY_PUBLIC_KEY must be hexadecimal")?;
+        VerifyingKey::from_sec1_bytes(&public_key)
+            .context("LLM_NOTARY_NOTARY_PUBLIC_KEY must be a SEC1 secp256k1 key")?;
+        let notary_key = NotaryDirectoryKey {
+            host: notary_host.clone(),
+            port: notary_port,
+            key_id: format!("sha256:{}", sha256_hex(&public_key)),
+            public_key: hex::encode(public_key),
+        };
         let options = SqliteConnectOptions::from_str(&database_url)
             .context("DATABASE_URL must be a SQLite connection URL")?
             .create_if_missing(true)
@@ -326,8 +349,7 @@ impl AppState {
             callback_url,
             secure_cookies: app_url.scheme() == "https",
             app_url,
-            notary_host,
-            notary_port,
+            notary_key,
         })
     }
 
@@ -357,8 +379,11 @@ impl AppState {
 
 async fn notary(State(state): State<AppState>) -> Json<NotaryDirectoryEntry> {
     Json(NotaryDirectoryEntry {
-        host: state.notary_host,
-        port: state.notary_port,
+        format: "llm-notary/notary-directory/v1",
+        host: state.notary_key.host,
+        port: state.notary_key.port,
+        key_id: state.notary_key.key_id,
+        public_key: state.notary_key.public_key,
     })
 }
 
@@ -1062,6 +1087,15 @@ fn required_env(name: &str) -> Result<String> {
 mod tests {
     use super::*;
 
+    fn directory_key() -> NotaryDirectoryKey {
+        NotaryDirectoryKey {
+            host: "notary.example.com".to_owned(),
+            port: 7047,
+            key_id: "sha256:test".to_owned(),
+            public_key: "02".to_owned(),
+        }
+    }
+
     #[tokio::test]
     async fn authorization_url_uses_the_exact_callback_and_state() {
         let state = AppState {
@@ -1073,8 +1107,7 @@ mod tests {
                 .expect("callback URL"),
             app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
             secure_cookies: true,
-            notary_host: "notary.example.com".to_owned(),
-            notary_port: 7047,
+            notary_key: directory_key(),
         };
         let url = state
             .authorization_url("state-token")
@@ -1139,8 +1172,7 @@ mod tests {
                     .expect("callback URL"),
                 app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
                 secure_cookies: true,
-                notary_host: "notary.example.com".to_owned(),
-                notary_port: 7047,
+                notary_key: directory_key(),
             }),
             Json(RefreshRequest {
                 refresh_token: tokens.refresh_token,
@@ -1214,8 +1246,7 @@ mod tests {
                 .expect("callback URL"),
             app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
             secure_cookies: true,
-            notary_host: "notary.example.com".to_owned(),
-            notary_port: 7047,
+            notary_key: directory_key(),
         };
         let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
 
