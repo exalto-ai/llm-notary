@@ -1248,6 +1248,7 @@ fn validate_provider_name(provider_name: &str, host: &str) -> Result<()> {
         "api.openai.com" => "openai",
         "api.anthropic.com" => "anthropic",
         "api.deepseek.com" => "deepseek",
+        "openrouter.ai" => "openrouter",
         // Non-production test fixtures and explicitly configured future hosts
         // use their authenticated DNS name as the unambiguous provider label.
         other => other,
@@ -1569,7 +1570,9 @@ mod tests {
         assert!(validate_provider_name("openai", "api.openai.com").is_ok());
         assert!(validate_provider_name("anthropic", "api.anthropic.com").is_ok());
         assert!(validate_provider_name("deepseek", "api.deepseek.com").is_ok());
+        assert!(validate_provider_name("openrouter", "openrouter.ai").is_ok());
         assert!(validate_provider_name("anthropic", "api.openai.com").is_err());
+        assert!(validate_provider_name("openai", "openrouter.ai").is_err());
     }
 
     #[tokio::test]
@@ -1608,7 +1611,7 @@ mod tests {
     #[test]
     fn chunked_http_commitments_exclude_redacted_header_values() {
         let body = vec![b'x'; 64 << 10];
-        let mut sent = b"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer auth-secret\r\nProxy-Authorization: Basic proxy-secret\r\nCookie: session=cookie-secret\r\nx-api-key: key-secret\r\nContent-Length: 65536\r\n\r\n".to_vec();
+        let mut sent = b"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer auth-secret\r\nProxy-Authorization: Basic proxy-secret\r\nCookie: session=cookie-secret\r\nx-api-key: key-secret\r\nHTTP-Referer: https://example.test\r\nX-Title: LLM Notary test\r\nContent-Length: 65536\r\n\r\n".to_vec();
         sent.extend_from_slice(&body);
         let mut received =
             b"HTTP/1.1 200 OK\r\nSet-Cookie: session=response-secret\r\nContent-Length: 65536\r\n\r\n"
@@ -1638,6 +1641,14 @@ mod tests {
                     assert!(
                         ranges.intersection(header.value.indices()).next().is_none(),
                         "a private commitment must not include the {} value",
+                        header.name.as_str()
+                    );
+                } else if header.name.as_str().eq_ignore_ascii_case("http-referer")
+                    || header.name.as_str().eq_ignore_ascii_case("x-title")
+                {
+                    assert!(
+                        ranges.intersection(header.value.indices()).next().is_some(),
+                        "safe OpenRouter attribution header {} must remain disclosed",
                         header.name.as_str()
                     );
                 }

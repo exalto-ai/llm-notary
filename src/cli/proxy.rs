@@ -32,6 +32,7 @@ enum Provider {
     Openai,
     Anthropic,
     Deepseek,
+    Openrouter,
 }
 
 impl Provider {
@@ -40,6 +41,7 @@ impl Provider {
             Self::Openai => "api.openai.com",
             Self::Anthropic => "api.anthropic.com",
             Self::Deepseek => "api.deepseek.com",
+            Self::Openrouter => "openrouter.ai",
         }
     }
 
@@ -48,6 +50,7 @@ impl Provider {
             Self::Openai => "openai",
             Self::Anthropic => "anthropic",
             Self::Deepseek => "deepseek",
+            Self::Openrouter => "openrouter",
         }
     }
 }
@@ -421,6 +424,12 @@ mod tests {
         assert!(wants_stream(&headers, b"{}"));
         assert!(wants_stream(&HeaderMap::new(), br#"{"stream":true}"#));
         assert!(!wants_stream(&HeaderMap::new(), br#"{"stream":false}"#));
+    }
+
+    #[test]
+    fn provider_adapters_pin_their_authenticated_hosts() {
+        assert_eq!(Provider::Openrouter.host(), "openrouter.ai");
+        assert_eq!(Provider::Openrouter.name(), "openrouter");
     }
 
     #[test]

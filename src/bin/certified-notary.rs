@@ -36,6 +36,7 @@ struct Args {
         "api.openai.com".to_owned(),
         "api.anthropic.com".to_owned(),
         "api.deepseek.com".to_owned(),
+        "openrouter.ai".to_owned(),
     ])]
     allow_host: Vec<String>,
 
