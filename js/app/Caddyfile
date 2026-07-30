@@ -9,6 +9,9 @@ http:// {
 		@favicon path /favicon.ico
 		header @favicon Cache-Control "public, max-age=0, must-revalidate"
 
+		@legacy_docs path_regexp legacy_docs ^/docs/?(.*)$
+		redir @legacy_docs /#/docs/{re.legacy_docs.1} 308
+
 		handle {
 			root * /usr/share/caddy
 			encode zstd gzip
