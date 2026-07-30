@@ -40,11 +40,14 @@ Configure these GitHub repository secrets before the first deployment:
 
 - `DO_SSH_HOST`, `DO_SSH_USER`, and `DO_SSH_PRIVATE_KEY` for the Droplet.
 - `DO_SSH_PORT` only when SSH is not on port 22.
-- `SITE_DOMAIN` for the website’s DNS name.
+- `LLM_NOTARY_PUBLIC_ORIGIN` for the canonical HTTPS origin, such as
+  `https://llmnotary.example.com`. This same value is compiled into the SPA,
+  supplied to the API, used for OAuth callbacks and stamps, and should match
+  the CLI release variable of the same name.
 - `CLOUDFLARE_TUNNEL_TOKEN` for the remotely managed Cloudflare Tunnel.
 - `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` for the LLM
   Notary GitHub OAuth App. The app's callback URL must be
-  `https://llmnotary.exalto.ai/api/auth/github/callback`.
+  `$LLM_NOTARY_PUBLIC_ORIGIN/api/auth/github/callback`.
 - `LLM_NOTARY_SPACES_ACCESS_KEY_ID` and
   `LLM_NOTARY_SPACES_SECRET_ACCESS_KEY` for a key restricted to read/write
   access on the private intake Space.
@@ -126,7 +129,7 @@ docker compose --env-file deploy/digitalocean/deploy.env up -d
 In the Cloudflare dashboard, open **Networking → Tunnels**, select this named
 tunnel, then under **Routes** add a **Published application**:
 
-- **Hostname:** `llmnotary.exalto.ai`
+- **Hostname:** the hostname in `LLM_NOTARY_PUBLIC_ORIGIN`
 - **Service type:** HTTP
 - **Service URL:** `http://web:80`
 

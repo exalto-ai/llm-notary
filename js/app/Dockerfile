@@ -4,6 +4,8 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+ARG LLM_NOTARY_PUBLIC_ORIGIN=https://llmnotary.exalto.ai
+ENV VITE_PUBLIC_ORIGIN=$LLM_NOTARY_PUBLIC_ORIGIN
 RUN npm run build
 
 FROM caddy:2.10-alpine

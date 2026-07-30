@@ -13,16 +13,15 @@ use clap::Args;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use super::storage;
+use super::{DEFAULT_PUBLIC_ORIGIN, storage};
 
-const DEFAULT_API_ORIGIN: &str = "https://llmnotary.exalto.ai";
 const KEYCHAIN_SERVICE: &str = "llm-notary";
 const KEYCHAIN_ACCOUNT: &str = "publish-refresh-token";
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
     /// LLM Notary website origin. Intended for local development and self-hosting.
-    #[arg(long, default_value = DEFAULT_API_ORIGIN)]
+    #[arg(long, default_value = DEFAULT_PUBLIC_ORIGIN)]
     api: String,
     /// A recognizable name for this CLI session.
     #[arg(long, default_value = "LLM Notary CLI")]

@@ -4,17 +4,17 @@
 
 ## Documentation
 
-- [Overview](https://llmnotary.exalto.ai/docs): Capture now, prove later. Understand the lifecycle and two artifact states.
-- [Trust and guarantees](https://llmnotary.exalto.ai/docs/how-it-works): The provenance claim, participants, authenticated versus observed data, and limits.
-- [Install](https://llmnotary.exalto.ai/docs/install): Install the CLI and initialize local bundle encryption.
-- [Run the proxy](https://llmnotary.exalto.ai/docs/proxy): Start a provider-specific local proxy while keeping plaintext and credentials local.
-- [Bundles](https://llmnotary.exalto.ai/docs/bundles): List, keep, retry, and understand encrypted `.llmbundle` checkpoints.
-- [Providers](https://llmnotary.exalto.ai/docs/providers): Configure OpenAI, Anthropic, and DeepSeek clients against the local proxy.
-- [Agents](https://llmnotary.exalto.ai/docs/harnesses): Recipes for Codex, Claude Code, and OpenCode.
-- [Finalize](https://llmnotary.exalto.ai/docs/finalize): Turn one pending bundle into a verified trace package.
-- [Artifacts](https://llmnotary.exalto.ai/docs/artifacts): Evidence, disclosed HTTP, normalized OTLP, and manifest responsibilities.
-- [Verify](https://llmnotary.exalto.ai/docs/verify): Offline verification with the trusted notary public key.
-- [Publish](https://llmnotary.exalto.ai/docs/publish): Deliberately submit an already-finalized trace package.
+- [Overview](%PUBLIC_ORIGIN%/docs): Capture now, prove later. Understand the lifecycle and two artifact states.
+- [Trust and guarantees](%PUBLIC_ORIGIN%/docs/how-it-works): The provenance claim, participants, authenticated versus observed data, and limits.
+- [Install](%PUBLIC_ORIGIN%/docs/install): Install the CLI and initialize local bundle encryption.
+- [Run the proxy](%PUBLIC_ORIGIN%/docs/proxy): Start a provider-specific local proxy while keeping plaintext and credentials local.
+- [Bundles](%PUBLIC_ORIGIN%/docs/bundles): List, keep, retry, and understand encrypted `.llmbundle` checkpoints.
+- [Providers](%PUBLIC_ORIGIN%/docs/providers): Configure OpenAI, Anthropic, and DeepSeek clients against the local proxy.
+- [Agents](%PUBLIC_ORIGIN%/docs/harnesses): Recipes for Codex, Claude Code, and OpenCode.
+- [Finalize](%PUBLIC_ORIGIN%/docs/finalize): Turn one pending bundle into a verified trace package.
+- [Artifacts](%PUBLIC_ORIGIN%/docs/artifacts): Evidence, disclosed HTTP, normalized OTLP, and manifest responsibilities.
+- [Verify](%PUBLIC_ORIGIN%/docs/verify): Offline verification with the trusted notary public key.
+- [Publish](%PUBLIC_ORIGIN%/docs/publish): Deliberately submit an already-finalized trace package.
 
 ## Core trust boundary
 
@@ -23,7 +23,7 @@ The local proxy handles plaintext and provider credentials. The remote notary pa
 ## Commands
 
 ```sh
-curl -fsSLO https://llmnotary.exalto.ai/install.sh && sh install.sh
+curl -fsSLO %PUBLIC_ORIGIN%/install.sh && sh install.sh
 llm-notary vault init
 llm-notary proxy start --provider openai --bundle-dir bundles
 llm-notary bundles list --bundle-dir bundles

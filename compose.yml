@@ -10,7 +10,7 @@ services:
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:?Set GITHUB_OAUTH_CLIENT_ID to the GitHub OAuth App client ID}
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:?Set GITHUB_OAUTH_CLIENT_SECRET to the GitHub OAuth App client secret}
       LLM_NOTARY_API_LISTEN: 0.0.0.0:8080
-      LLM_NOTARY_PUBLIC_ORIGIN: https://${SITE_DOMAIN:?Set SITE_DOMAIN to the public site hostname}
+      LLM_NOTARY_PUBLIC_ORIGIN: ${LLM_NOTARY_PUBLIC_ORIGIN:?Set LLM_NOTARY_PUBLIC_ORIGIN to the public site origin}
       LLM_NOTARY_NOTARY_HOST: ${LLM_NOTARY_NOTARY_HOST:?Set LLM_NOTARY_NOTARY_HOST to the public notary hostname or IP}
       LLM_NOTARY_NOTARY_PORT: ${NOTARY_PORT:-7047}
       LLM_NOTARY_NOTARY_PUBLIC_KEY: ${LLM_NOTARY_NOTARY_PUBLIC_KEY:?Set LLM_NOTARY_NOTARY_PUBLIC_KEY to the notary SEC1 public key}
@@ -27,7 +27,6 @@ services:
       LLM_NOTARY_INTAKE_MAX_BYTES: ${LLM_NOTARY_INTAKE_MAX_BYTES:-134217728}
       LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS: ${LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS:-900}
       LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE: /run/secrets/platform_signing_key
-      LLM_NOTARY_STAMP_ISSUER: https://${SITE_DOMAIN}
     volumes:
       - api_data:/var/lib/llm-notary
     read_only: true
@@ -47,8 +46,8 @@ services:
     build:
       context: ./js/app
       dockerfile: Dockerfile
-    environment:
-      SITE_DOMAIN: ${SITE_DOMAIN:-localhost}
+      args:
+        LLM_NOTARY_PUBLIC_ORIGIN: ${LLM_NOTARY_PUBLIC_ORIGIN:?Set LLM_NOTARY_PUBLIC_ORIGIN to the public site origin}
     restart: unless-stopped
 
   web:

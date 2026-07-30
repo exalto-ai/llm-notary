@@ -2,4 +2,4 @@ User-agent: *
 Allow: /
 
 # Machine-readable documentation index
-# https://llmnotary.exalto.ai/llms.txt
+# /llms.txt
