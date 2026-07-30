@@ -56,7 +56,8 @@ installer. The command below is the recommended two-step form so the script is
 available for inspection before it runs:
 
 ```bash
-curl -fsSLO https://llmnotary.exalto.ai/install.sh
+export LLM_NOTARY_PUBLIC_ORIGIN=https://your-notary.example
+curl -fsSLO "$LLM_NOTARY_PUBLIC_ORIGIN/install.sh"
 sh install.sh
 ```
 
@@ -76,7 +77,7 @@ private deployments, where it is supplied with `--trusted-notary-key` as the
 explicit trust anchor. Production clients discover and pin the public key.
 
 In another terminal start the proxy. By default the released CLI discovers the
-current public notary endpoint from `https://llmnotary.exalto.ai/api/notary`.
+current public notary endpoint from `$LLM_NOTARY_PUBLIC_ORIGIN/api/notary`.
 For a local notary, pass its address explicitly:
 
 ```bash
@@ -341,7 +342,7 @@ GitHub to identify the account; it requests no repository, organization, or
 email scopes. Configure a GitHub OAuth App with this production callback URL:
 
 ```text
-https://llmnotary.exalto.ai/api/auth/github/callback
+$LLM_NOTARY_PUBLIC_ORIGIN/api/auth/github/callback
 ```
 
 Set `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` for the API.
@@ -418,7 +419,7 @@ llm-notary login
 ```
 
 The command prints a short code and a browser URL. Open that URL in any browser
-already signed in to `llmnotary.exalto.ai`, inspect the requested CLI device
+already signed in to your configured public LLM Notary site, inspect the requested CLI device
 name and code, and approve it. The CLI polls using a separate high-entropy
 secret; the displayed code alone cannot approve or retrieve credentials.
 

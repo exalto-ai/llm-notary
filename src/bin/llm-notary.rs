@@ -24,7 +24,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum CommandName {
-    /// Sign in to llmnotary.exalto.ai to authorize publishing.
+    /// Sign in to the configured LLM Notary site to authorize publishing.
     Login(LoginArgs),
     /// Revoke this CLI session and remove its local credentials.
     Logout,

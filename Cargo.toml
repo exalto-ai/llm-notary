@@ -3,6 +3,7 @@ name = "certified"
 version = "0.1.0"
 edition = "2024"
 autobins = false
+build = "build.rs"
 license = "MIT OR Apache-2.0"
 description = "Local, privacy-preserving TLS-notarized LLM traces"
 

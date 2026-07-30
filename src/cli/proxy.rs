@@ -19,7 +19,10 @@ use http_body_util::BodyExt as _;
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 
-use super::notary::{parse_directory, pin};
+use super::{
+    DEFAULT_PUBLIC_ORIGIN,
+    notary::{parse_directory, pin},
+};
 use crate::{
     DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredBundle, chunked_request_body,
     deferred_streaming_request,
@@ -115,8 +118,6 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     Ok(())
 }
 
-const NOTARY_API_ORIGIN: &str = "https://llmnotary.exalto.ai";
-
 pub(crate) async fn discover_notary() -> Result<SocketAddr> {
     let directory = refresh_notary_directory().await?;
     let now = SystemTime::now()
@@ -129,7 +130,7 @@ pub(crate) async fn discover_notary() -> Result<SocketAddr> {
 }
 
 pub(crate) async fn refresh_notary_directory() -> Result<NotaryDirectory> {
-    refresh_notary_directory_from(NOTARY_API_ORIGIN).await
+    refresh_notary_directory_from(DEFAULT_PUBLIC_ORIGIN).await
 }
 
 pub(crate) async fn refresh_notary_directory_from(api_origin: &str) -> Result<NotaryDirectory> {

@@ -5,7 +5,7 @@ FROM rust:1.95-slim-bookworm AS builder
 WORKDIR /app
 # Keep the Rust build cache independent of the SPA, deployment files, and docs.
 # This image needs only the Rust package and its vendored TLSNotary dependency.
-COPY Cargo.toml Cargo.lock ./
+COPY Cargo.toml Cargo.lock build.rs ./
 COPY vendor/tlsn ./vendor/tlsn
 COPY src ./src
 COPY migrations ./migrations

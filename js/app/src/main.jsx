@@ -17,7 +17,8 @@ import './relay-animation.css';
 import './landing.css';
 import { RelayAnimation } from './RelayAnimation';
 
-const installCommand = 'curl -fsSLO https://llmnotary.exalto.ai/install.sh && sh install.sh';
+const publicOrigin = __PUBLIC_ORIGIN__;
+const installCommand = `curl -fsSLO ${publicOrigin}/install.sh && sh install.sh`;
 const publishCommand = 'llm-notary publish verified-trace';
 const brandAssetVersion = __BRAND_ASSET_VERSION__;
 
@@ -350,7 +351,7 @@ const docPages = {
     blocks: [
       { heading: 'Sign in once', code: 'llm-notary login' },
       { heading: 'Submit one finalized package', code: 'llm-notary publish verified-trace' },
-      { heading: 'Script-friendly output', code: 'llm-notary publish verified-trace --json\n\n{"job_id":"…","state":"queued","status_url":"https://llmnotary.exalto.ai/api/publish/jobs/…"}' },
+      { heading: 'Script-friendly output', code: `llm-notary publish verified-trace --json\n\n{"job_id":"…","state":"queued","status_url":"${publicOrigin}/api/publish/jobs/…"}` },
       {
         heading: 'The upload boundary',
         columns: [
