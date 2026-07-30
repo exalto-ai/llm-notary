@@ -1,4 +1,4 @@
-/* Documentation is a native sibling of Collections: one reading surface, not a separate product. */
+/* Documentation is a native sibling of Traces: one reading surface, not a separate product. */
 .docs-shell {
   --docs-top-offset: 32px;
   display: grid;
@@ -72,6 +72,8 @@
 
 .docs-sidebar a:hover { background: var(--soft); color: var(--ink); }
 .docs-sidebar a.active { background: var(--inverse-surface); color: var(--green); font-weight: 700; }
+
+.docs-mobile-toolbar { display: none; }
 
 .docs-content { max-width: 760px; padding-top: 0; }
 
@@ -209,13 +211,59 @@
 .docs-flow li p, .docs-card-grid article p { margin: 0; }
 
 .docs-card-grid { display: grid; max-width: 760px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 20px; border-top: 1px solid var(--ink); border-left: 1px solid var(--line); }
-.docs-card-grid article { min-height: 178px; padding: 20px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--white); }
-.docs-card-grid h3 { margin: 32px 0 9px; font-size: 18px; letter-spacing: -.04em; }
+.docs-card-grid article { min-height: 150px; padding: 20px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--white); }
+.docs-card-grid h3 { margin: 25px 0 9px; font-size: 18px; letter-spacing: -.04em; }
 
 .docs-definitions { max-width: 760px; margin: 20px 0 0; border-top: 1px solid var(--ink); }
 .docs-definitions > div { display: grid; grid-template-columns: minmax(160px, .35fr) minmax(0, 1fr); gap: 24px; padding: 15px 0; border-bottom: 1px solid var(--line); }
 .docs-definitions dt { font: 500 11px/1.55 'DM Mono', monospace; overflow-wrap: anywhere; }
 .docs-definitions dd { margin: 0; color: var(--body-copy-muted); font-size: 14px; line-height: 1.65; }
+
+.docs-boundary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 20px;
+  border-top: 1px solid var(--ink);
+  border-left: 1px solid var(--line);
+}
+
+.docs-boundary-grid article {
+  padding: 20px;
+  border-right: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+  background: var(--white);
+}
+
+.docs-boundary-grid h3 {
+  margin: 0 0 14px;
+  font-size: 17px;
+  letter-spacing: -.04em;
+}
+
+.docs-boundary-grid ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.docs-boundary-grid li {
+  position: relative;
+  padding: 9px 0 9px 17px;
+  border-top: 1px solid var(--line);
+  color: var(--body-copy-muted);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.docs-boundary-grid li::before {
+  position: absolute;
+  top: 15px;
+  left: 1px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--muted);
+  content: '';
+}
 
 .docs-page-nav { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--ink); }
 .docs-page-nav > * { min-width: 0; }
@@ -252,14 +300,78 @@
 }
 
 @media (max-width: 820px) {
-  .docs-shell { grid-template-columns: 1fr; gap: 32px; padding: 32px 25px 70px; }
-  .docs-sidebar { position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 14px; padding: 14px 0 22px; border-right: 0; border-bottom: 1px solid var(--line); }
-  .docs-nav-group { align-self: start; }
+  .docs-mobile-toolbar {
+    position: sticky;
+    top: 76px;
+    z-index: 9;
+    display: block;
+    padding: 11px 25px 12px;
+    border-bottom: 1px solid var(--line);
+    background: var(--nav-surface);
+  }
+
+  .docs-mobile-toolbar .docs-search-trigger {
+    width: 100%;
+    margin-bottom: 8px;
+    background: var(--paper);
+  }
+
+  .docs-mobile-toolbar-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .docs-mobile-toolbar-row > button {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 9px 10px;
+    border: 1px solid var(--line);
+    background: var(--white);
+    color: var(--ink);
+    text-align: left;
+  }
+
+  .docs-mobile-toolbar-row > button:hover,
+  .docs-mobile-toolbar-row > button.active { border-color: var(--ink); }
+  .docs-mobile-toolbar-row > button span { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+  .docs-mobile-toolbar-row > button small { display: block; margin-bottom: 3px; color: var(--muted); font: 500 8px/1 'DM Mono', monospace; letter-spacing: .06em; text-transform: uppercase; }
+  .docs-mobile-toolbar-row > button svg { flex: none; width: 15px; height: 15px; transition: transform 150ms ease; }
+  .docs-mobile-toolbar-row > button.active svg { transform: rotate(180deg); }
+
+  .docs-mobile-panel {
+    position: absolute;
+    top: 100%;
+    right: 0;
+    left: 0;
+    max-height: min(480px, calc(100dvh - 188px));
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-bottom: 1px solid var(--ink);
+    background: var(--paper);
+    padding: 10px 25px 18px;
+  }
+
+  .docs-mobile-nav-group,
+  .docs-mobile-toc { display: grid; }
+  .docs-mobile-nav-group + .docs-mobile-nav-group { margin-top: 12px; }
+  .docs-mobile-nav-group > span,
+  .docs-mobile-toc > span { padding: 8px 9px 5px; color: var(--muted); font: 500 9px/1.4 'DM Mono', monospace; letter-spacing: .07em; text-transform: uppercase; }
+  .docs-mobile-panel a { padding: 10px 9px; border-bottom: 1px solid var(--line); color: var(--body-copy); font-size: 13px; }
+  .docs-mobile-panel a:hover { background: var(--soft); color: var(--ink); }
+  .docs-mobile-panel a.active { border-left: 2px solid var(--green); background: var(--inverse-surface); color: var(--green); font-weight: 700; }
+
+  .docs-shell { grid-template-columns: 1fr; gap: 0; padding: 36px 25px 70px; }
+  .docs-sidebar { display: none; }
   .docs-content h1 { font-size: clamp(42px, 12vw, 54px); }
   .docs-lead { font-size: 16px; }
   .docs-document-meta > span:last-child { display: none; }
   .docs-card-grid { grid-template-columns: 1fr; }
   .docs-card-grid article { min-height: 0; }
+  .docs-boundary-grid { grid-template-columns: 1fr; }
   .docs-definitions > div { grid-template-columns: 1fr; gap: 6px; }
   .docs-anchor { opacity: 1; }
   .docs-page-nav { gap: 10px; }
