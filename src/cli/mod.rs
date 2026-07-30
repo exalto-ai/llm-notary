@@ -5,5 +5,6 @@ pub mod notary;
 pub mod proxy;
 pub mod public;
 pub mod publish;
+mod storage;
 pub mod vault;
 pub mod verify;
