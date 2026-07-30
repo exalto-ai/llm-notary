@@ -9,12 +9,21 @@ fi
 scan_root=$1
 test -d "$scan_root"
 
-patterns='(authorization|proxy-authorization):[[:space:]]*(bearer|basic)[[:space:]]+[^[:space:]]|x-api-key:[[:space:]]*[^[:space:][:cntrl:]]|cookie:[[:space:]]*[^[:space:][:cntrl:]]|set-cookie:[[:space:]]*[^[:space:][:cntrl:]]|sk-[A-Za-z0-9_-]{16,}|/Users/[^/[:space:]]+|/home/[^/[:space:]]+|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
+case_insensitive_patterns='(authorization|proxy-authorization):[[:space:]]*(bearer|basic)[[:space:]]+[^[:space:]]|x-api-key:[[:space:]]*[^[:space:][:cntrl:]]|cookie:[[:space:]]*[^[:space:][:cntrl:]]|set-cookie:[[:space:]]*[^[:space:][:cntrl:]]|/Users/[^/[:space:]]+|/home/[^/[:space:]]+|BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY'
+case_sensitive_patterns='sk-[A-Za-z0-9_-]{16,}'
 
 find "$scan_root" -type f \
   ! -name 'evidence.tlsn' \
   ! -name '*.llmbundle' \
-  -exec grep -aEin "$patterns" {} + && {
+  -exec grep -aEin "$case_insensitive_patterns" {} + && {
+    echo "potential disclosure found; review every match before publication" >&2
+    exit 1
+  }
+
+find "$scan_root" -type f \
+  ! -name 'evidence.tlsn' \
+  ! -name '*.llmbundle' \
+  -exec grep -aEn "$case_sensitive_patterns" {} + && {
     echo "potential disclosure found; review every match before publication" >&2
     exit 1
   }
