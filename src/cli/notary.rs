@@ -1,8 +1,7 @@
 use std::{
     collections::BTreeMap,
-    env, fs,
+    fs,
     fs::OpenOptions,
-    io::Write,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -18,6 +17,8 @@ use crate::{
         NotaryDirectoryRecord, NotaryKeyStatus, key_id,
     },
 };
+
+use super::storage;
 
 pub use crate::notary_directory::parse_directory;
 
@@ -228,16 +229,7 @@ fn validate_trust_store(store: &TrustStore) -> Result<()> {
 }
 
 fn trust_store_path() -> Result<PathBuf> {
-    let base = if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
-        PathBuf::from(path)
-    } else if let Some(path) = env::var_os("APPDATA") {
-        PathBuf::from(path)
-    } else if let Some(path) = env::var_os("HOME") {
-        PathBuf::from(path).join(".config")
-    } else {
-        bail!("could not determine a configuration directory")
-    };
-    Ok(base.join("llm-notary").join("notary-trust.json"))
+    storage::config_file("notary-trust.json")
 }
 
 fn load_store(path: &Path) -> Result<TrustStore> {
@@ -271,70 +263,7 @@ fn load_store(path: &Path) -> Result<TrustStore> {
 }
 
 fn write_store(path: &Path, store: &TrustStore) -> Result<()> {
-    let parent = path.parent().expect("trust store has a parent");
-    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    let partial = parent.join(format!(
-        ".notary-trust.{}.{}.partial",
-        std::process::id(),
-        uuid::Uuid::new_v4().simple()
-    ));
-    let result = (|| -> Result<()> {
-        let mut output = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&partial)
-            .with_context(|| format!("create {}", partial.display()))?;
-        output
-            .write_all(&serde_json::to_vec_pretty(store)?)
-            .with_context(|| format!("write {}", partial.display()))?;
-        output
-            .sync_all()
-            .with_context(|| format!("sync {}", partial.display()))?;
-        replace_file(&partial, path)
-            .with_context(|| format!("atomically replace {}", path.display()))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&partial);
-    }
-    result
-}
-
-#[cfg(not(windows))]
-fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    fs::rename(source, destination)
-}
-
-#[cfg(windows)]
-fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH, MoveFileExW,
-    };
-
-    let source = source
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    let destination = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-    // SAFETY: both pointers reference NUL-terminated UTF-16 buffers that stay
-    // alive for the duration of the call.
-    let replaced = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if replaced == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    storage::write_private_file_atomically(path, &serde_json::to_vec_pretty(store)?)
 }
 
 fn unix_time_ms() -> Result<u64> {

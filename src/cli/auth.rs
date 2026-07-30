@@ -1,4 +1,9 @@
-use std::{env, fs, path::PathBuf, process::Command, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    time::Duration,
+};
 
 #[cfg(target_os = "linux")]
 use std::{io::Write, process::Stdio};
@@ -7,6 +12,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+
+use super::storage;
 
 const DEFAULT_API_ORIGIN: &str = "https://llmnotary.exalto.ai";
 const KEYCHAIN_SERVICE: &str = "llm-notary";
@@ -237,16 +244,7 @@ fn normalize_origin(value: &str) -> Result<String> {
 }
 
 fn credentials_path() -> Result<PathBuf> {
-    let base = if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
-        PathBuf::from(path)
-    } else if let Some(path) = env::var_os("APPDATA") {
-        PathBuf::from(path)
-    } else if let Some(path) = env::var_os("HOME") {
-        PathBuf::from(path).join(".config")
-    } else {
-        bail!("could not determine a configuration directory")
-    };
-    Ok(base.join("llm-notary").join("credentials.json"))
+    storage::config_file("credentials.json")
 }
 
 fn save_credentials(credentials: &FileCredentials) -> Result<()> {
@@ -283,32 +281,14 @@ fn delete_credentials() -> Result<()> {
 
 fn write_file_credentials(credentials: &FileCredentials) -> Result<()> {
     let path = credentials_path()?;
-    let parent = path.parent().expect("credentials path has parent");
-    fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
-        fs::DirBuilder::new()
-            .mode(0o700)
-            .recursive(true)
-            .create(parent)?;
-        let file = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&path)?;
-        serde_json::to_writer(file, credentials).context("write CLI credentials")?;
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o600))
-            .with_context(|| format!("restrict {}", path.display()))?;
-    }
-    #[cfg(not(unix))]
-    fs::write(
-        &path,
-        serde_json::to_vec(credentials).context("encode CLI credentials")?,
+    write_file_credentials_at(&path, credentials)
+}
+
+fn write_file_credentials_at(path: &Path, credentials: &FileCredentials) -> Result<()> {
+    storage::write_private_file_atomically(
+        path,
+        &serde_json::to_vec(credentials).context("encode CLI credentials")?,
     )
-    .with_context(|| format!("write {}", path.display()))?;
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -470,5 +450,71 @@ mod tests {
         );
         assert!(normalize_origin("https://example.com/path?x=1").is_err());
         assert!(normalize_origin("file:///tmp/auth").is_err());
+    }
+
+    #[test]
+    fn credential_updates_are_atomic_and_private() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config").join("credentials.json");
+        let first = FileCredentials {
+            api_origin: "https://first.example".to_owned(),
+            refresh_token: "first-token".to_owned(),
+        };
+        let second = FileCredentials {
+            api_origin: "https://second.example".to_owned(),
+            refresh_token: "second-token".to_owned(),
+        };
+
+        write_file_credentials_at(&path, &first).unwrap();
+        write_file_credentials_at(&path, &second).unwrap();
+        let stored: FileCredentials = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(stored.api_origin, second.api_origin);
+        assert_eq!(stored.refresh_token, second.refresh_token);
+        assert!(fs::read_dir(path.parent().unwrap()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".partial")
+        }));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            assert_eq!(
+                fs::metadata(path.parent().unwrap())
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o700
+            );
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn failed_credential_replacement_cleans_up_staging_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config").join("credentials.json");
+        fs::create_dir_all(&path).unwrap();
+        let credentials = FileCredentials {
+            api_origin: "https://example.com".to_owned(),
+            refresh_token: "token".to_owned(),
+        };
+
+        assert!(write_file_credentials_at(&path, &credentials).is_err());
+        assert!(fs::read_dir(path.parent().unwrap()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .contains(".partial")
+        }));
+        assert!(path.is_dir());
     }
 }
