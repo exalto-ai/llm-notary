@@ -176,6 +176,24 @@ The verifier hashes `trace.otlp.json`, checks the platform signature, and
 reports the provider, verification time, and normalizer version named in the
 stamp.
 
+Download a public Library publication, verify it before it is made visible in
+the output directory, and keep the two public artifacts together:
+
+```bash
+llm-notary download 3d3d727f-e0b1-432e-be3c-0b2e3ead35d1 --verify
+```
+
+By default this creates `./3d3d727f-e0b1-432e-be3c-0b2e3ead35d1/` containing
+`trace.otlp.json` and `stamp.json`. Use `--output path/to/directory` to choose
+another directory, or `--overwrite` only when replacing an existing completed
+download is intended. The command resolves public artifact links through the
+API, rejects redirects and non-JSON responses, and leaves no completed output
+directory if transfer or verification fails. With `--verify`, it obtains the
+platform directory from the configured API origin and checks the canonical
+trace bytes, trace hash, public-stamp contract versions, platform key ID,
+stamp issuer, and ECDSA signature before reporting success. Use `--api` for a
+local loopback or HTTPS self-hosted API origin.
+
 ### Public trace and stamp contract
 
 `trace.otlp.json` is UTF-8 canonical JSON: object keys are sorted by UTF-8

@@ -2,6 +2,7 @@ use anyhow::Result;
 use certified::cli::{
     auth::{self, LoginArgs},
     bundle::{self, BundlesCommand, FinalizeArgs, VerifyArgs as VerifyTraceArgs},
+    download::{self, DownloadArgs},
     proxy::{self, ProxyArgs},
     public::{self, VerifyPublicArgs},
     publish::{self, PublishArgs},
@@ -52,6 +53,8 @@ enum CommandName {
     Verify(VerifyArgs),
     /// Verify a public trace and platform stamp without a private capture.
     VerifyPublic(VerifyPublicArgs),
+    /// Download a public trace and platform stamp from the LLM Notary Library.
+    Download(DownloadArgs),
     /// Upload one finalized, locally verified trace package for publication.
     Publish(PublishArgs),
 }
@@ -78,6 +81,7 @@ async fn main() -> Result<()> {
         CommandName::Vault { command } => vault::run(command),
         CommandName::Verify(args) => verify::run(args),
         CommandName::VerifyPublic(args) => public::run_verify_public(args),
+        CommandName::Download(args) => download::run(args).await,
         CommandName::Publish(args) => publish::run(args).await,
     }
 }
