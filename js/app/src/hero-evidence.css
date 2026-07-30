@@ -1,6 +1,6 @@
 .hero {
-  min-height: 760px;
-  padding: 145px 9vw 70px;
+  min-height: 860px;
+  padding: 220px 9vw 80px;
   overflow: hidden;
   background: var(--paper);
 }
@@ -39,31 +39,28 @@
 .signal-trace {
   stroke-dasharray: 164 76;
   stroke-dashoffset: 0;
+  animation: signal-drift 13s linear infinite;
 }
 
-.signal-trace--one { animation: signal-drift 28s linear infinite; }
-.signal-trace--two { animation: signal-drift 34s linear infinite reverse; }
-.signal-trace--three { animation: signal-drift 31s linear infinite 8s; }
-.signal-trace--four { animation: signal-drift 37s linear infinite 4s reverse; }
+.signal-trace--1 { animation-duration: 11s; }
+.signal-trace--2 { animation-duration: 15s; animation-direction: reverse; }
+.signal-trace--3 { animation-duration: 12s; animation-delay: -4s; }
+.signal-trace--4 { animation-duration: 17s; animation-direction: reverse; }
+.signal-trace--5 { animation-duration: 10s; animation-delay: -7s; }
+.signal-trace--6 { animation-duration: 14s; animation-direction: reverse; animation-delay: -3s; }
 
 .signal-marks { fill: var(--green); stroke: var(--green-ink); stroke-width: 1; }
-.signal-mark--one { animation: signal-mark-one 6s linear infinite; }
-.signal-mark--two { animation: signal-mark-two 7.5s linear infinite 1.5s; }
-.signal-mark--three { animation: signal-mark-three 5.5s linear infinite 3s; }
 
 @keyframes signal-drift { to { stroke-dashoffset: -240; } }
-@keyframes signal-mark-one { 0% { transform: translate(0, 0); opacity: 0; } 10%, 84% { opacity: .8; } 100% { transform: translate(0, -120px); opacity: 0; } }
-@keyframes signal-mark-two { 0% { transform: translate(0, 0); opacity: 0; } 10%, 84% { opacity: .72; } 100% { transform: translate(117px, 0); opacity: 0; } }
-@keyframes signal-mark-three { 0% { transform: translate(0, 0); opacity: 0; } 10%, 84% { opacity: .66; } 100% { transform: translate(0, -126px); opacity: 0; } }
 
 @media (prefers-reduced-motion: reduce) {
   .signal-trace,
   .signal-mark { animation: none; }
-  .signal-marks { opacity: .38; }
+  .signal-marks { display: none; }
 }
 
 @media (max-width: 820px) {
-  .hero { min-height: 650px; padding: 105px 25px 40px; }
+  .hero { min-height: 700px; padding: 145px 25px 50px; }
   .hero-signal-field { opacity: .22; }
   .hero-signal-field svg { width: 142%; transform: translateX(-18%); }
 }
