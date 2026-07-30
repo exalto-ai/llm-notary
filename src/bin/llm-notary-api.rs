@@ -1074,21 +1074,20 @@ fn required_env(name: &str) -> Result<String> {
 }
 
 fn notary_directory_from_env() -> Result<NotaryDirectory> {
-    if let Ok(value) = env::var("LLM_NOTARY_NOTARY_DIRECTORY_JSON") {
-        if !value.trim().is_empty() {
-            let directory = parse_directory(value.as_bytes())
-                .context("LLM_NOTARY_NOTARY_DIRECTORY_JSON is invalid")?;
-            if let Ok(expected) = env::var("LLM_NOTARY_NOTARY_PUBLIC_KEY") {
-                if !directory
-                    .active()?
-                    .public_key
-                    .eq_ignore_ascii_case(expected.trim())
-                {
-                    bail!("the active directory key does not match LLM_NOTARY_NOTARY_PUBLIC_KEY");
-                }
-            }
-            return Ok(directory);
+    if let Ok(value) = env::var("LLM_NOTARY_NOTARY_DIRECTORY_JSON")
+        && !value.trim().is_empty()
+    {
+        let directory = parse_directory(value.as_bytes())
+            .context("LLM_NOTARY_NOTARY_DIRECTORY_JSON is invalid")?;
+        if let Ok(expected) = env::var("LLM_NOTARY_NOTARY_PUBLIC_KEY")
+            && !directory
+                .active()?
+                .public_key
+                .eq_ignore_ascii_case(expected.trim())
+        {
+            bail!("the active directory key does not match LLM_NOTARY_NOTARY_PUBLIC_KEY");
         }
+        return Ok(directory);
     }
     let host = env::var("LLM_NOTARY_NOTARY_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
     let port = env::var("LLM_NOTARY_NOTARY_PORT")
