@@ -3,5 +3,142 @@
   "slug": "llm-notary-examples",
   "title": "LLM Notary Examples",
   "description": "Small, reproducible model and agent tasks published through the same consent-based workflow available to every user.",
-  "publications": []
+  "publications": [
+    {
+      "id": "4a20ff1e-13fa-47a1-a820-7258fe73cc68",
+      "title": "OpenAI incident extraction",
+      "category": "extraction",
+      "surface": "direct-api",
+      "tool_use": false,
+      "tags": ["structured-output", "streaming"]
+    },
+    {
+      "id": "b3d3987b-5b5a-43cf-9a0f-41f190ab6a37",
+      "title": "OpenAI weather tool request",
+      "category": "tool-use",
+      "surface": "direct-api",
+      "tool_use": true,
+      "tags": ["tool-call", "streaming"]
+    },
+    {
+      "id": "eb34018a-df0d-47a9-88ae-7aa380963d60",
+      "title": "OpenAI weather tool result",
+      "category": "tool-use",
+      "surface": "direct-api",
+      "tool_use": true,
+      "tags": ["tool-result", "streaming"]
+    },
+    {
+      "id": "da0e09c1-7fb8-4009-85f1-6af789b2eaca",
+      "title": "Anthropic safety summary",
+      "category": "safety-evaluation",
+      "surface": "direct-api",
+      "tool_use": false,
+      "tags": ["summarization", "streaming"]
+    },
+    {
+      "id": "bbd25886-c967-4f23-bea3-9a98faf81da9",
+      "title": "Anthropic catalog tool request",
+      "category": "tool-use",
+      "surface": "direct-api",
+      "tool_use": true,
+      "tags": ["tool-call", "streaming"]
+    },
+    {
+      "id": "31b59b77-35de-4738-80e9-e0fdedab07a2",
+      "title": "Anthropic catalog tool result",
+      "category": "tool-use",
+      "surface": "direct-api",
+      "tool_use": true,
+      "tags": ["tool-result", "streaming"]
+    },
+    {
+      "id": "657b3834-59ac-48f0-bd1e-31f31c57ac26",
+      "title": "DeepSeek support classification",
+      "category": "classification",
+      "surface": "direct-api",
+      "tool_use": false,
+      "tags": ["structured-output", "streaming"]
+    },
+    {
+      "id": "795b6090-6722-40b5-b855-4eee0c38c0c4",
+      "title": "DeepSeek inventory tool request",
+      "category": "tool-use",
+      "surface": "direct-api",
+      "tool_use": true,
+      "tags": ["tool-call", "streaming"]
+    },
+    {
+      "id": "52c538f5-2d75-4f7c-821c-e9b3cc3a23e5",
+      "title": "DeepSeek inventory tool result",
+      "category": "tool-use",
+      "surface": "direct-api",
+      "tool_use": true,
+      "tags": ["tool-result", "streaming"]
+    },
+    {
+      "id": "1256bea5-8b49-4e9c-8569-00e453a299ac",
+      "title": "Codex subtraction task request",
+      "category": "coding",
+      "surface": "codex",
+      "tool_use": true,
+      "tags": ["agent", "tool-call"]
+    },
+    {
+      "id": "3b53e254-ea10-4693-bb13-3cb2097d524a",
+      "title": "Codex subtraction task result",
+      "category": "coding",
+      "surface": "codex",
+      "tool_use": true,
+      "tags": ["agent", "tool-result", "tests"]
+    },
+    {
+      "id": "3d3d727f-e0b1-432e-be3c-0b2e3ead35d1",
+      "title": "Codex classification task request",
+      "category": "classification",
+      "surface": "codex",
+      "tool_use": true,
+      "tags": ["agent", "tool-call"]
+    },
+    {
+      "id": "9baf1a88-c3fe-45fa-ac6b-a0f1c3a8404e",
+      "title": "Codex classification task result",
+      "category": "classification",
+      "surface": "codex",
+      "tool_use": true,
+      "tags": ["agent", "tool-result", "structured-output"]
+    },
+    {
+      "id": "e492ddf8-23ee-47cb-a140-1ba2800eddfb",
+      "title": "Claude Code parser task request",
+      "category": "coding",
+      "surface": "claude-code",
+      "tool_use": true,
+      "tags": ["agent", "tool-call"]
+    },
+    {
+      "id": "007c038e-ef73-46fa-b5f3-ccd1e893372d",
+      "title": "Claude Code parser task result",
+      "category": "coding",
+      "surface": "claude-code",
+      "tool_use": true,
+      "tags": ["agent", "tool-result", "tests"]
+    },
+    {
+      "id": "641c3bf9-fbf0-461d-8ccd-1b5a0d0ca826",
+      "title": "Claude Code evaluation request",
+      "category": "evaluation",
+      "surface": "claude-code",
+      "tool_use": true,
+      "tags": ["agent", "tool-call"]
+    },
+    {
+      "id": "30ddb59a-f334-4e12-8cd9-d7b01316e5dd",
+      "title": "Claude Code evaluation result",
+      "category": "evaluation",
+      "surface": "claude-code",
+      "tool_use": true,
+      "tags": ["agent", "tool-result", "structured-output"]
+    }
+  ]
 }
