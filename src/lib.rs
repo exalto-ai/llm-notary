@@ -19,7 +19,7 @@ use bytes::Bytes;
 use futures::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use http_body::Frame;
 use http_body_util::{BodyExt as _, StreamBody, combinators::BoxBody};
-use hyper::{Request, Response, body::Incoming, header};
+use hyper::{Request, Response, body::Incoming};
 use hyper_util::rt::TokioIo;
 use k256::ecdsa::{
     Signature, SigningKey, VerifyingKey,
@@ -73,6 +73,13 @@ const REQUEST_WRITE_CHUNK: usize = 8 << 10;
 /// Keeps the bounded proof path below the 1 GiB notary budget in the measured
 /// Proxy-TLS configuration.
 const CHUNKED_PROOF_BYTES: usize = 128 << 10;
+const REDACTED_REQUEST_HEADERS: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "x-api-key",
+];
+const REDACTED_RESPONSE_HEADERS: &[&str] = &["set-cookie"];
 pub const CAPTURE_FORMAT: &str = "llm-notary/capture/v1";
 const DEFERRED_BUNDLE_FORMAT: &str = "llm-notary/deferred-bundle/v1";
 const DEFERRED_RECEIPT_FORMAT: &str = "llm-notary/deferred-receipt/v1";
@@ -116,9 +123,6 @@ pub fn chunked_request_body(bytes: Bytes) -> HttpRequestBody {
 
 fn deferred_transcript_commit(transcript: &Transcript) -> Result<TranscriptCommitConfig> {
     let http = HttpTranscript::parse(transcript)?;
-    if http.requests.len() != 1 || http.responses.len() != 1 {
-        bail!("expected exactly one HTTP request and response in TLS transcript");
-    }
     let mut builder = TranscriptCommitConfig::builder(transcript);
     commit_chunked_private_http(&mut builder, &http)?;
     Ok(builder.build()?)
@@ -135,6 +139,23 @@ fn commit_chunked_private_http(
     builder: &mut tlsn::transcript::TranscriptCommitConfigBuilder,
     transcript: &HttpTranscript,
 ) -> Result<()> {
+    let ranges = disclosed_http_ranges(transcript, "in TLS transcript")?;
+    commit_bounded_ranges(builder, ranges.sent.iter(), Direction::Sent)?;
+    commit_bounded_ranges(builder, ranges.received.iter(), Direction::Received)
+}
+
+struct DisclosedHttpRanges {
+    sent: RangeSet<usize>,
+    received: RangeSet<usize>,
+}
+
+fn disclosed_http_ranges(
+    transcript: &HttpTranscript,
+    context: &'static str,
+) -> Result<DisclosedHttpRanges> {
+    if transcript.requests.len() != 1 || transcript.responses.len() != 1 {
+        bail!("expected exactly one HTTP request and response {context}");
+    }
     let request = &transcript.requests[0];
     let mut sent = RangeSet::default();
     sent.union_mut(request.without_data());
@@ -149,7 +170,6 @@ fn commit_chunked_private_http(
     if let Some(body) = &request.body {
         sent.union_mut(body);
     }
-    commit_bounded_ranges(builder, sent.iter(), Direction::Sent)?;
 
     let response = &transcript.responses[0];
     let mut received = RangeSet::default();
@@ -164,9 +184,7 @@ fn commit_chunked_private_http(
     if let Some(body) = &response.body {
         received.union_mut(body);
     }
-    commit_bounded_ranges(builder, received.iter(), Direction::Received)?;
-
-    Ok(())
+    Ok(DisclosedHttpRanges { sent, received })
 }
 
 /// Packs disjoint HTTP ranges into the fewest bounded commitments. One child
@@ -202,30 +220,22 @@ fn commit_bounded_ranges(
 }
 
 fn is_redacted_request_header(name: &str) -> bool {
-    name.eq_ignore_ascii_case(header::AUTHORIZATION.as_str())
-        || name.eq_ignore_ascii_case(header::PROXY_AUTHORIZATION.as_str())
-        || name.eq_ignore_ascii_case(header::COOKIE.as_str())
-        || name.eq_ignore_ascii_case("x-api-key")
+    REDACTED_REQUEST_HEADERS
+        .iter()
+        .any(|redacted| name.eq_ignore_ascii_case(redacted))
 }
 
 fn is_redacted_response_header(name: &str) -> bool {
-    name.eq_ignore_ascii_case(header::SET_COOKIE.as_str())
+    REDACTED_RESPONSE_HEADERS
+        .iter()
+        .any(|redacted| name.eq_ignore_ascii_case(redacted))
 }
 
 /// Enforces the finalized-package disclosure contract after the TLSNotary
 /// presentation has authenticated these bytes.
 pub fn validate_disclosed_http_redactions(request: &[u8], response: &[u8]) -> Result<()> {
-    validate_redacted_headers(
-        request,
-        &[
-            "authorization",
-            "proxy-authorization",
-            "cookie",
-            "x-api-key",
-        ],
-        "request",
-    )?;
-    validate_redacted_headers(response, &["set-cookie"], "response")
+    validate_redacted_headers(request, REDACTED_REQUEST_HEADERS, "request")?;
+    validate_redacted_headers(response, REDACTED_RESPONSE_HEADERS, "response")
 }
 
 fn validate_redacted_headers(bytes: &[u8], sensitive: &[&str], label: &str) -> Result<()> {
@@ -1031,36 +1041,11 @@ fn make_disclosed_presentation_with_provider(
     let attestation: Attestation = bincode::deserialize(&proof.attestation)?;
     let secrets: Secrets = bincode::deserialize(&proof.secrets)?;
     let transcript = HttpTranscript::parse(secrets.transcript())?;
-    if transcript.requests.len() != 1 || transcript.responses.len() != 1 {
-        bail!("expected exactly one HTTP request and response in proof");
-    }
+    let ranges = disclosed_http_ranges(&transcript, "in proof")?;
 
     let mut builder = secrets.transcript_proof_builder();
-    let request = &transcript.requests[0];
-    builder.reveal_sent(request.without_data())?;
-    builder.reveal_sent(&request.request.target)?;
-    for value in &request.headers {
-        if is_redacted_request_header(&value.name.as_str()) {
-            builder.reveal_sent(value.without_value())?;
-        } else {
-            builder.reveal_sent(value)?;
-        }
-    }
-    if let Some(body) = &request.body {
-        builder.reveal_sent(body)?;
-    }
-    let response = &transcript.responses[0];
-    builder.reveal_recv(response.without_data())?;
-    for value in &response.headers {
-        if is_redacted_response_header(&value.name.as_str()) {
-            builder.reveal_recv(value.without_value())?;
-        } else {
-            builder.reveal_recv(value)?;
-        }
-    }
-    if let Some(body) = &response.body {
-        builder.reveal_recv(body)?;
-    }
+    builder.reveal_sent(ranges.sent.iter())?;
+    builder.reveal_recv(ranges.received.iter())?;
     let transcript_proof = builder.build()?;
 
     let mut presentation_builder = attestation.presentation_builder(provider);
@@ -1634,6 +1619,42 @@ mod tests {
     }
 
     #[test]
+    fn disclosure_header_policy_covers_every_sensitive_header() {
+        let empty_response = b"HTTP/1.1 200 OK\r\n\r\n{}";
+        for name in REDACTED_REQUEST_HEADERS {
+            assert!(is_redacted_request_header(&name.to_ascii_uppercase()));
+            let visible = format!("POST /v1 HTTP/1.1\r\n{name}: private-value\r\n\r\n{{}}");
+            assert!(
+                validate_disclosed_http_redactions(visible.as_bytes(), empty_response).is_err(),
+                "{name} must be rejected when its value is visible"
+            );
+            let redacted = format!("POST /v1 HTTP/1.1\r\n{name}: \0\0\0\r\n\r\n{{}}");
+            assert!(
+                validate_disclosed_http_redactions(redacted.as_bytes(), empty_response).is_ok(),
+                "{name} must remain valid when its value is redacted"
+            );
+        }
+
+        let empty_request = b"POST /v1 HTTP/1.1\r\n\r\n{}";
+        for name in REDACTED_RESPONSE_HEADERS {
+            assert!(is_redacted_response_header(&name.to_ascii_uppercase()));
+            let visible = format!("HTTP/1.1 200 OK\r\n{name}: private-value\r\n\r\n{{}}");
+            assert!(
+                validate_disclosed_http_redactions(empty_request, visible.as_bytes()).is_err(),
+                "{name} must be rejected when its value is visible"
+            );
+            let redacted = format!("HTTP/1.1 200 OK\r\n{name}: \0\0\0\r\n\r\n{{}}");
+            assert!(
+                validate_disclosed_http_redactions(empty_request, redacted.as_bytes()).is_ok(),
+                "{name} must remain valid when its value is redacted"
+            );
+        }
+
+        assert!(!is_redacted_request_header("http-referer"));
+        assert!(!is_redacted_response_header("content-type"));
+    }
+
+    #[test]
     fn capture_directory_round_trips_with_named_artifacts() {
         let root = std::env::temp_dir().join(format!(
             "llm-notary-capture-test-{}-{}",
@@ -1725,12 +1746,25 @@ mod tests {
 
         let config =
             deferred_transcript_commit(&transcript).expect("build chunked commitment config");
+        let disclosure =
+            disclosed_http_ranges(&http, "in test").expect("derive disclosed HTTP ranges");
+        let request = config.to_request();
+        let mut committed_sent = RangeSet::default();
+        let mut committed_received = RangeSet::default();
+        for (direction, ranges, _) in request.iter_hash() {
+            match direction {
+                Direction::Sent => committed_sent.union_mut(ranges),
+                Direction::Received => committed_received.union_mut(ranges),
+            }
+        }
+        assert_eq!(committed_sent, disclosure.sent);
+        assert_eq!(committed_received, disclosure.received);
         assert_eq!(
-            config.to_request().iter_hash().count(),
+            request.iter_hash().count(),
             2,
             "one bounded commitment should cover each HTTP direction"
         );
-        for (direction, ranges, _) in config.to_request().iter_hash() {
+        for (direction, ranges, _) in request.iter_hash() {
             let headers = match direction {
                 Direction::Sent => &http.requests[0].headers,
                 Direction::Received => &http.responses[0].headers,
