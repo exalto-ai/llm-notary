@@ -27,6 +27,32 @@ npm --prefix js/app run build
 
 For Compose or deployment changes, also validate `docker compose config --quiet` with placeholder required variables. Do not put real keys, tunnel tokens, signing keys, captures, or `.env` files in Git.
 
+## Stacked pull requests
+
+Use `gh stack` for two or more dependent PRs; use a normal PR for an independent change. Keep stacks linear, ordered from foundational changes at the bottom to dependent changes at the top. Use separate stacks for parallel work.
+
+Before the first stack, install the extension with `gh extension install github/gh-stack` if `gh stack` is unavailable, then configure non-interactive operation:
+
+```bash
+git config rerere.enabled true
+git config remote.pushDefault origin
+```
+
+Use `codex/` branch names and standard `git add`/`git commit` so every layer is deliberate:
+
+```bash
+gh stack init codex/<bottom-branch>
+gh stack add codex/<next-branch>
+gh stack submit --auto          # creates draft PRs
+gh stack submit --auto --open   # marks the stack ready for review
+gh stack view --json
+```
+
+- All agent commands must be non-interactive: give `init`, `add`, and `checkout` a branch or PR argument; use `submit --auto`, `view --json`, and `merge --yes`.
+- Put fixes on the layer where they belong. After changing a lower layer, run `gh stack rebase --upstack`, then `gh stack push`; use `gh stack sync` after trunk or remote stack changes.
+- After approval and green checks, merge with `gh stack merge --yes --squash`, not `gh pr merge`. Then run `gh stack sync --prune`.
+- On a rebase conflict, resolve and stage the files, then run `gh stack rebase --continue`; use `gh stack rebase --abort` if the stack cannot be resolved safely.
+
 ## Working conventions
 
 - Keep ordinary tests deterministic and offline. Real-provider and large proof profiles are explicit opt-in checks.
