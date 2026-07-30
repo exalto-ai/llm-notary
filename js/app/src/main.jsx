@@ -1,5 +1,7 @@
-import { Children, cloneElement, useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { ChevronDown, Moon, Sun } from 'lucide-react';
+import ReactMarkdown from 'react-markdown';
 import './styles.css';
 import './hero-evidence.css';
 import './trust-grid.css';
@@ -12,6 +14,7 @@ import './collections.css';
 import './docs.css';
 import './legal.css';
 import './relay-animation.css';
+import './landing.css';
 import { RelayAnimation } from './RelayAnimation';
 
 const installCommand = 'curl -fsSLO https://llmnotary.exalto.ai/install.sh && sh install.sh';
@@ -51,8 +54,6 @@ function HeroSignalField() {
 function CloseIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>; }
 function LinkIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 13.4a4 4 0 0 0 5.7.1l2-2a4 4 0 0 0-5.7-5.7l-1.1 1.1M13.4 10.6a4 4 0 0 0-5.7-.1l-2 2a4 4 0 0 0 5.7 5.7l1.1-1.1" /></svg>; }
 function CheckIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4.2 4.2L19 6.5" /></svg>; }
-function Arrow() { return <div className="flow-arrow" aria-label="Encrypted connection"><span>encrypted</span><svg viewBox="0 0 68 14" preserveAspectRatio="none" aria-hidden="true"><path d="M1 7h61M56 2l6 5-6 5" /></svg></div>; }
-function FlowNode({ type, title, note }) { return <div className={`flow-node flow-node--${type}`}><span className="node-mark" aria-hidden="true" /><strong>{title}</strong><small>{note}</small></div>; }
 
 function AccountMenu({ user, onLogout, theme, onThemeChange }) {
   const [open, setOpen] = useState(false);
@@ -66,11 +67,12 @@ function AccountMenu({ user, onLogout, theme, onThemeChange }) {
     window.addEventListener('keydown', close);
     return () => { document.removeEventListener('mousedown', close); window.removeEventListener('keydown', close); };
   }, []);
-  return <div className="account-menu" ref={menuRef}><button type="button" className="account-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="menu" aria-label={`Account menu for ${user.github_login}`}>{user.avatar_url ? <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" /> : <span>{initials}</span>}</button>{open && <div className="account-popover" role="menu"><div className="account-identity"><b>{user.github_login}</b><span>Signed in with GitHub</span></div><a href="#/dashboard" role="menuitem" onClick={() => setOpen(false)}>Dashboard</a><div className="theme-setting" role="group" aria-label="Theme"><span>Theme</span><button type="button" className="theme-toggle" role="switch" aria-checked={theme === 'dark'} onClick={() => onThemeChange(theme === 'dark' ? 'light' : 'dark')}><span aria-hidden="true" /><b>{theme === 'dark' ? 'Dark' : 'Light'}</b></button></div><button type="button" role="menuitem" onClick={() => { setOpen(false); onLogout(); }}>Log out</button></div>}</div>;
+  const nextTheme = theme === 'dark' ? 'light' : 'dark';
+  return <div className="account-menu" ref={menuRef}><button type="button" className="account-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="menu" aria-label={`Account menu for ${user.github_login}`}>{user.avatar_url ? <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" /> : <span>{initials}</span>}</button>{open && <div className="account-popover" role="menu"><div className="account-identity"><div><b>{user.github_login}</b><span>Signed in with GitHub</span></div><button type="button" className="account-theme" role="menuitemcheckbox" aria-checked={theme === 'dark'} aria-label={`Use ${nextTheme} theme`} title={`Use ${nextTheme} theme`} onClick={() => onThemeChange(nextTheme)}>{theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</button></div><div className="account-actions"><a href="#/dashboard" role="menuitem" onClick={() => setOpen(false)}>Dashboard</a><button type="button" role="menuitem" onClick={() => { setOpen(false); onLogout(); }}>Log out</button></div></div>}</div>;
 }
 
 function Header({ user, onLogout, theme, onThemeChange }) {
-  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/docs">Docs</a><a href="#/collections">Collections</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
+  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/docs">Docs</a><a href="#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
 }
 
 function Footer() {
@@ -111,10 +113,6 @@ function LegalPage({ pageKey }) {
   return <main className="legal-shell"><span className="eyebrow">{page.eyebrow}</span><h1>{page.title}</h1><p className="legal-intro">{page.intro}</p><p className="legal-updated">Last updated: July 2026</p><div className="legal-sections">{page.sections.map(([heading, copy]) => <section key={heading}><h2>{heading}</h2><p>{copy}</p></section>)}</div></main>;
 }
 
-function Diagram() {
-  return <div className="diagram-card"><div className="diagram-label">Private verification path</div><div className="flow" aria-label="Your machine connects through LLM Notary to the AI provider"><FlowNode type="local" title="Your machine" note="Local capture" /><Arrow /><FlowNode type="notary" title="LLM Notary" note="TLS witness" /><Arrow /><FlowNode type="provider" title="AI provider" note="OpenAI · Anthropic · DeepSeek" /></div><div className="diagram-foot">The provider exchange is used once to verify publication. Collections store the normalized OpenTelemetry trace and the platform stamp—not the raw capture.</div></div>;
-}
-
 function TrustColumns() {
   const boundaries = [
     ['01', 'Client', 'Holds the plaintext', 'The local proxy sees the request and response. A user cannot change authenticated bytes or invent a provider response and still produce valid finalized evidence.'],
@@ -131,36 +129,43 @@ function PublishingArchitecture() {
 function CollectionPreview() {
   const [collection, setCollection] = useState(null);
   const [loadError, setLoadError] = useState(false);
+  const [activeId, setActiveId] = useState(null);
+  const [tracePreview, setTracePreview] = useState(null);
   useEffect(() => {
     let cancelled = false;
     fetch('/api/public/collections/examples')
       .then((response) => response.ok ? response.json() : Promise.reject(new Error('Could not load verified examples.')))
-      .then((payload) => { if (!cancelled) setCollection(payload); })
+      .then((payload) => {
+        if (!cancelled) {
+          setCollection(payload);
+          setActiveId(payload.publications[0]?.id || null);
+        }
+      })
       .catch(() => { if (!cancelled) setLoadError(true); });
     return () => { cancelled = true; };
   }, []);
   const publications = collection?.publications || [];
-  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Collections</span><h2>{collection?.title || 'Verified examples'}</h2></div><p>{collection?.description || 'Browse consent-based, independently verifiable LLM traces.'}</p></div>{collection === null && !loadError ? <div className="collection-pending" role="status"><b>Loading verified examples…</b><span>Retrieving admitted publications.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>Examples are temporarily unavailable.</b><span>Open Collections to try again.</span></div> : publications.length ? <div className="preview-records">{publications.slice(0, 3).map((publication) => <article key={publication.id}><i aria-hidden="true" /><div><h3>{publication.title}</h3><p>{publication.provider} · {publication.model}</p></div><span>{publication.category}</span></article>)}</div> : <div className="collection-pending"><b>No verified examples yet.</b><span>New consent-based publications will appear here as they are admitted.</span></div>}<a className="button button-dark" href="#/collections">Open collections</a></section>;
-}
-
-function MotionStudy({ number, title, description, children }) {
-  return <article className="motion-study"><header><span>{number}</span><div><h3>{title}</h3><p>{description}</p></div></header>{children}</article>;
-}
-
-function MotionStudiesBase() {
-  return <section className="motion-studies" aria-labelledby="motion-studies-title"><div className="motion-studies-head"><div><span className="eyebrow">Motion studies / prototype</span><h2 id="motion-studies-title">Three ways to show one trusted completion.</h2></div><p>Each loop tells the same true story: your local proxy holds plaintext, while LLM Notary witnesses encrypted traffic and issues evidence after the call completes.</p></div><div className="motion-study-grid"><MotionStudy number="01" title="The encrypted relay" description="A direct, systems-level account of the connection."><div className="relay-stage motion-stage" aria-label="An encrypted request and response move between your machine and an AI provider through LLM Notary"><div className="study-node study-node--local"><b>YOUR MACHINE</b><span className="study-lines"><i /><i /><i /></span><small>plaintext here</small></div><div className="study-track"><span className="study-packet study-packet--request">8F3</span><span className="study-packet study-packet--response">2A9</span><em>encrypted TLS</em></div><div className="study-node study-node--notary"><b>LLM NOTARY</b><strong>01 10</strong><small>ciphertext only</small></div><div className="study-track study-track--short"><span className="study-packet study-packet--request">8F3</span><span className="study-packet study-packet--response">2A9</span></div><div className="study-node study-node--provider"><b>AI PROVIDER</b><span className="study-spark">✦</span><small>response</small></div><div className="notary-branch" aria-hidden="true"><i /></div><div className="certificate-ledger"><header><i /> YOUR CERTIFICATE</header><p><span>01</span> 9c7f… encrypted record</p><p><span>02</span> a214… encrypted record</p><footer>SEALS ON FINAL EVENT</footer></div></div><footer><i /> The notary sees ciphertext; your certificate seals after streaming ends</footer></MotionStudy><MotionStudy number="02" title="The receipt assembles" description="Evidence is the hero, created after the stream ends."><div className="receipt-stage motion-stage" aria-label="A streamed completion finishes and its receipt is assembled"><div className="completion-stream"><span>drafting response</span><i /><i /><i /><i /><b>terminal event</b></div><div className="assembly-path" aria-hidden="true"><span /><i /></div><div className="mini-receipt"><header><i /> TRACE PACKAGE</header><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Evidence</dt><dd>verified</dd></div></dl><footer>LLM NOTARY / v0.1</footer></div></div><footer><i /> A receipt appears only when the call is complete</footer></MotionStudy><MotionStudy number="03" title="The privacy boundary" description="Plaintext and proof are kept visually, and conceptually, separate."><div className="boundary-stage motion-stage" aria-label="Private local prompt is distinct from encrypted traffic and shareable proof"><div className="private-panel"><b>LOCAL ONLY</b><span>Summarize the confidential findings from…</span><i>PRIVATE</i></div><div className="boundary-wall"><span>NOTARY</span><b>ENCRYPTED<br />RECORDS</b></div><div className="proof-panel"><b>SHAREABLE PROOF</b><span><i /> Provider connection verified</span><small>Choose what to disclose</small></div></div><footer><i /> Prompts and responses never appear in the witness lane</footer></MotionStudy></div></section>;
-}
-
-function FeaturedRelayStudy() {
-  return <article className="featured-relay"><header><span>01</span><div><h3>The encrypted relay</h3><p>Your machine is the plaintext boundary. LLM Notary sees ciphertext only, while encrypted transcript records accumulate into your certificate.</p></div></header><div className="featured-relay-stage" aria-label="Your machine contains a certificate, local TLS proxy, and agent. LLM Notary sees encrypted traffic only."><section className="machine-boundary"><header><b>YOUR MACHINE</b><span>plaintext boundary</span></header><div className="machine-module certificate-module"><b>YOUR CERTIFICATE</b><p><span>01</span> 9c7f… encrypted record</p><p><span>02</span> a214… encrypted record</p><small>seals on final event</small></div><div className="machine-module proxy-module"><b>LOCAL TLS PROXY</b><span><i>8F3</i><em>decrypts here</em><i>2A9</i></span><small>encrypted in / plaintext out</small></div><div className="machine-module agent-module"><b>YOUR AGENT</b><span><i /><i /><i /></span><small>reads the plaintext response</small></div></section><div className="notary-column"><div className="notary-box"><b>LLM NOTARY</b><strong>01 10<br />10 01</strong><small>ciphertext only</small></div><div className="certificate-lane"><i>9C7F</i><span>encrypted record</span></div></div><section className="provider-box"><b>AI PROVIDER</b><strong>✦</strong><small>streaming response</small><div className="provider-packet">2A9</div></section><div className="relay-wire relay-wire--main" aria-hidden="true" /><div className="relay-wire relay-wire--certificate" aria-hidden="true" /></div><footer><i /> Readable prompts and responses exist only inside your machine; the notary witnesses encrypted records and your certificate seals after the final stream event.</footer></article>;
+  const visible = publications.slice(0, 5);
+  const active = visible.find((publication) => publication.id === activeId) || visible[0];
+  useEffect(() => {
+    if (!active) {
+      setTracePreview(null);
+      return;
+    }
+    let cancelled = false;
+    setTracePreview(null);
+    fetch(active.trace_url)
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Could not load trace.')))
+      .then((trace) => { if (!cancelled) setTracePreview(parsePublishedTrace(trace)); })
+      .catch(() => { if (!cancelled) setTracePreview([]); });
+    return () => { cancelled = true; };
+  }, [active]);
+  const snippets = traceSnippets(tracePreview || []);
+  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Library</span><h2>Featured.</h2></div></div>{collection === null && !loadError ? <div className="collection-pending" role="status"><b>Loading verified traces…</b><span>Retrieving admitted publications.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library is temporarily unavailable.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-workspace"><div className="preview-records" aria-label="Featured traces">{visible.map((publication) => <button type="button" className={publication.id === active?.id ? 'active' : ''} onClick={() => setActiveId(publication.id)} aria-pressed={publication.id === active?.id} key={publication.id}><i aria-hidden="true" /><span><b>{publication.title}</b><small>{publication.provider} · {publication.model}</small></span><em>{publication.category}</em></button>)}</div>{active && <article className="preview-inspector"><header><span className="eyebrow">Selected trace</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h3>{active.title}</h3><p>{active.provider} · {active.model}</p><div className="preview-contents">{snippets.length ? snippets.map((snippet) => <span key={snippet.label}><b>{snippet.label}</b><small>{snippet.text}</small></span>) : <span><b>Trace contents</b><small>Loading preview…</small></span>}</div><div className="preview-command"><span>Download + verify</span><code>llm-notary download {active.id} --verify</code></div></article>}</div> : <div className="collection-pending"><b>No verified traces yet.</b><span>New publications will appear here as they are admitted.</span></div>}<a className="button button-dark" href="#/library">Open Library</a></section>;
 }
 
 function MotionStudies() {
   return <RelayAnimation />;
-}
-
-function FeaturedRelayStudyV2() {
-  return <article className="relay-v2"><header><span>01</span><div><h3>One completion, two local outcomes.</h3><p>The provider’s encrypted stream travels through the notary to your local TLS proxy. There, it becomes useful model output for your agent and a verifiable certificate for you.</p></div></header><div className="relay-v2-stage" aria-label="AI provider sends encrypted response through LLM Notary to local TLS proxy, which provides plaintext to agent and proof to certificate."><section className="v2-provider"><b>AI PROVIDER</b><strong>OpenAI</strong><small>streaming completion</small><span className="v2-provider-lines"><i /><i /><i /></span></section><div className="v2-link v2-link--provider"><span>2A9</span><small>encrypted response</small></div><section className="v2-notary"><b>LLM NOTARY</b><strong>8F 3C<br />A2 19</strong><small>ciphertext only</small><i>cannot read</i></section><div className="v2-link v2-link--notary"><span>2A9</span></div><section className="v2-proxy"><b>LOCAL TLS PROXY</b><strong><i>2A9</i><span>decrypts<br />locally</span></strong><small>your machine</small></section><div className="v2-fan v2-fan--agent"><span>plaintext</span></div><div className="v2-fan v2-fan--certificate"><span>proof</span></div><section className="v2-agent"><header><b>YOUR AGENT</b><span>plaintext output</span></header><p>I found three concrete changes to improve reliability:</p><ul><li>Retry the failed request</li><li>Record the provider model</li><li>Verify before sharing</li></ul></section><section className="v2-certificate"><header><b>YOUR CERTIFICATE</b><span className="v2-seal">CERTIFIED</span></header><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Model</dt><dd>gpt-4.1</dd></div><div><dt>Stream</dt><dd>complete</dd></div></dl><footer><i /> notary evidence attached</footer></section></div><footer><i /> The notary never receives plaintext. The local proxy fans the completion into useful output and independently verifiable evidence.</footer></article>;
 }
 
 function VerifierDialog({ onClose }) {
@@ -169,52 +174,66 @@ function VerifierDialog({ onClose }) {
   return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="verifier-modal" role="dialog" aria-modal="true" aria-labelledby="verifier-title" onMouseDown={(event) => event.stopPropagation()}><button className="icon-button" onClick={onClose} aria-label="Close verifier"><CloseIcon /></button><span className="eyebrow">Stamp verifier</span><h2 id="verifier-title">Inspect a publication</h2><p>Choose an OTLP trace or its accompanying LLM Notary stamp. The verifier checks that the stamp signs this exact standardized trace.</p><label className="drop-zone"><input type="file" accept=".json" onChange={(event) => setFileName(event.target.files?.[0]?.name || '')} /><strong>{fileName || 'Choose a trace or stamp'}</strong><small>{fileName ? 'Selected locally' : 'trace.otlp.json or stamp.json'}</small></label><div className="verification-state"><i /> Use <code>llm-notary verify-public</code> for a cryptographic check</div></section></div>;
 }
 
-function LandingBase({ onVerify }) {
-// Current landing content.
-  return <main id="top"><section className="hero"><h1>Verifiable intelligence</h1><p>Privacy-preserving LLM traces for open research and independent verification.</p><div className="hero-actions"><a className="button button-dark" href="#/docs/publish">Publish a trace</a><a className="button button-plain" href="#/collections">Browse collections</a></div><div className="hero-metadata"><span>For research, evaluation, and safety work</span></div></section><section className="section architecture" id="how-it-works"><div className="section-head"><span className="eyebrow">How publishing works</span><h2>Verify the source.<br />Keep the standard.</h2></div><div className="architecture-grid"><Diagram /><div className="step-list"><article><span>01</span><div><h3>Capture privately</h3><p>Your local proxy records a provider call and its TLSNotary evidence. API keys and private capture data remain under your control.</p></div></article><article><span>02</span><div><h3>Publish standardized spans</h3><p>The platform checks the capture, then admits a normalized OTLP trace: messages, model spans, tool calls, timing, and usage.</p></div></article><article><span>03</span><div><h3>Verify the platform stamp</h3><p>Readers compare the trace hash with a compact signed stamp. They do not need your raw request, response, or TLS evidence.</p></div></article></div></div><div className="section-link"><a href="#/docs/how-it-works">Read the publishing trust model</a></div></section><section className="privacy"><div><span className="eyebrow">Private by design</span><h2>Proof is not the product.</h2></div><p>The private capture proves the trace is real at publication time. The shared artifact is clean OTLP JSON plus a platform signature, built for reuse rather than archival of raw provider traffic.</p></section><section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Collections</span><h2>Traces with a shared language.</h2></div><p>The collection is production-backed: a record appears only after its uploaded source package is admitted and stamped.</p></div><div className="collection-pending"><b>LLM Notary Examples</b><span>Verified examples will appear here after the inaugural production run.</span></div><a className="button button-dark" href="#/collections">Open collections</a></section><section className="section verify" id="verify"><div><span className="eyebrow">Independent verification</span><h2>One small stamp.<br />One exact trace.</h2><p>The stamp binds a trace hash to LLM Notary’s verification result. Download the standardized trace, check the platform signature, and use it in your own tooling.</p><div className="verify-points"><span>OTLP JSON</span><span>Signed hash</span><span>No raw capture</span></div><div className="button-row"><a className="button button-dark" href="#/docs/verify">Verify with the CLI</a><button className="button button-plain" onClick={onVerify}>Preview verifier</button></div></div><div className="receipt"><header><PenMark inverse /><b>Publication stamp</b></header><h3>Verified</h3><dl><div><dt>Artifact</dt><dd>trace.otlp.json</dd></div><div><dt>Schema</dt><dd>OTel GenAI / v1</dd></div><div><dt>Source</dt><dd>Provider capture checked</dd></div><div><dt>Signature</dt><dd>LLM Notary platform key</dd></div></dl><footer>LLM NOTARY / STAMP v1</footer></div></section><section className="section install"><div><span className="eyebrow">Get started</span><h2>Capture locally.<br />Publish clearly.</h2></div><div className="terminal"><div><i /><i /><i /></div><pre><code><b>$</b> {installCommand}{'\n\n'}<b>$</b> {publishCommand}{'\n\n'}published  <em>trace.otlp.json + stamp.json</em></code></pre><a href="#/docs/publish">Publishing and format details</a></div></section></main>;
-/* Legacy landing content retained in the historical commit:
-  return <main id="top"><section className="hero"><span className="eyebrow">LLM Notary</span><h1>Share evidence of<br />how models behave.</h1><p>Keep model calls on your machine. Retain a trace package with a receipt that others can independently verify.</p><div className="hero-actions"><a className="button button-dark" href="/docs/install">Install the CLI</a><a className="button button-plain" href="#/library">Browse the Library</a></div><div className="hero-metadata"><span>For research, evaluation, and safety work</span><b /><span>Local capture. Deliberate sharing.</span></div></section><MotionStudies /><section className="section architecture" id="how-it-works"><div className="section-head"><span className="eyebrow">How it works</span><h2>Capture locally. Verify anywhere.</h2></div><div className="architecture-grid"><Diagram /><div className="step-list"><article><span>01</span><div><h3>Run the local proxy</h3><p>Your SDK keeps its normal API shape while the proxy saves a trace package on your machine.</p></div></article><article><span>02</span><div><h3>Keep the evidence</h3><p>The notary signs evidence that the response came from the named provider connection.</p></div></article><article><span>03</span><div><h3>Share a chosen trace</h3><p>Review redactions and reuse terms before adding work to a research or evaluation collection.</p></div></article></div></div><div className="section-link"><a href="/docs/how-it-works">Read how the trust model works</a></div></section><section className="privacy"><div><span className="eyebrow">Privacy by default</span><h2>Evidence without handing over your work.</h2></div><p>Captures stay local until you choose otherwise. The public Library is for intentionally shared, redacted records with clear reuse terms.</p></section><section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Library</span><h2>Trace records with useful context.</h2></div><p>Searchable by provider, model, and topic. The records below are illustrative while the Library service is being built.</p></div><div className="preview-records">{records.slice(0, 3).map((record) => <article key={record.id}><i aria-hidden="true"/><div><h3>{record.title}</h3><p>{record.provider} · {record.model}</p></div><span>{record.tags[0]}</span></article>)}</div><a className="button button-dark" href="#/library">Open Library</a></section><section className="section verify" id="verify"><div><span className="eyebrow">Independent verification</span><h2>Inspect before you use it.</h2><p>Check a trace package and the trusted notary key locally. No account or upload is required for the CLI verifier.</p><div className="verify-points"><span>No account</span><span>No upload</span><span>Open format</span></div><div className="button-row"><a className="button button-dark" href="/docs/verify">Verify with the CLI</a><button className="button button-plain" onClick={onVerify}>Preview browser flow</button></div></div><div className="receipt"><header><PenMark inverse /><b>Trace package</b></header><h3>Receipt</h3><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Model</dt><dd>gpt-4.1</dd></div><div><dt>Evidence</dt><dd>TLSNotary presentation</dd></div><div><dt>Reuse</dt><dd>CC BY 4.0</dd></div></dl><footer>LLM NOTARY / v0.1</footer></div></section><section className="section install"><div><span className="eyebrow">Get started</span><h2>Install once.<br />Keep using your tools.</h2></div><div className="terminal"><div><i /><i /><i /></div><pre><code><b>$</b> {installCommand}{'\n\n'}<b>$</b> llm-notary proxy start --provider openai{'\n\n'}listening  <em>127.0.0.1:8787</em>{'\n'}ready</code></pre><a href="/docs/install">Installation and setup</a></div></section></main>;
-*/
-}
-
 function Landing({ onVerify }) {
-  const landing = LandingBase({ onVerify });
-  const children = Children.toArray(landing.props.children);
-  const hero = children[0];
-  const heroChildren = Children.toArray(hero.props.children).filter((child) => child.props?.className !== 'hero-metadata');
-  const replaceVerifierLabel = (node) => {
-    if (typeof node !== 'object' || node === null || !node.props) return node;
-    if (node.type === 'button' && node.props.children === 'Preview verifier') return cloneElement(node, undefined, 'Online verifier');
-    return cloneElement(node, undefined, Children.map(node.props.children, replaceVerifierLabel));
-  };
-  const remainingSections = children.slice(2).map(replaceVerifierLabel);
-  return cloneElement(landing, undefined, cloneElement(hero, undefined, <HeroSignalField />, ...heroChildren), <MotionStudies key="relay-animation" />, <PublishingArchitecture key="publishing-architecture" />, remainingSections[0], <CollectionPreview key="collection-preview" />, ...remainingSections.slice(2));
+  return <main id="top">
+    <section className="hero">
+      <HeroSignalField />
+      <h1>Verifiable intelligence</h1>
+      <p>Privacy-preserving LLM traces for open research and independent verification.</p>
+      <div className="hero-actions"><a className="button button-dark" href="#/docs/getting-started">Get started</a><a className="button button-plain" href="#/library">Browse Library</a></div>
+    </section>
+    <MotionStudies />
+    <PublishingArchitecture />
+    <section className="section install capture">
+      <div><span className="eyebrow">Local capture</span><h2>Capture locally.</h2><p>Point your existing tools at the local proxy. Provider calls keep streaming normally while encrypted bundles stay on your machine.</p></div>
+      <div className="terminal"><div><i /><i /><i /></div><pre><code><b>$</b> {installCommand}{'\n\n'}<b>$</b> llm-notary proxy start --provider openai{'\n\n'}listening  <em>127.0.0.1:8787</em>{'\n'}saving bundles locally</code></pre><a href="#/docs/getting-started">Installation and setup</a></div>
+    </section>
+    <CollectionPreview />
+    <section className="section verify" id="verify">
+      <div><span className="eyebrow">Independent verification</span><h2>Proof of origin.</h2><p>LLM Notary verifies the provider-authenticated exchange, then signs the exact trace hash. Anyone can check the signature and confirm the published trace has not been altered.</p><div className="verify-points"><span>OTLP JSON</span><span>Signed hash</span><span>Independently verifiable</span></div><div className="button-row"><a className="button button-dark" href="#/docs/trace-packages">Verify with the CLI</a><button className="button button-plain" onClick={onVerify}>Online verifier</button></div></div>
+      <div className="receipt"><header><PenMark inverse /><b>Publication stamp</b></header><h3>Verified</h3><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Artifact</dt><dd>trace.otlp.json</dd></div><div><dt>Trace hash</dt><dd>9b44f8…c21d</dd></div></dl><div className="receipt-contents"><span>Input messages <i>•••</i></span><span>Assistant responses <i>•••</i></span><span>Tool calls + results <i>•••</i></span></div><footer>LLM NOTARY / STAMP v1</footer></div>
+    </section>
+  </main>;
 }
 
 const docPages = {
   overview: {
-    title: 'Capture now. Prove later.',
-    lead: 'LLM Notary lets an agent use OpenAI, Anthropic, or DeepSeek normally while saving a private bundle for each provider call. Finalize only the interactions you want to turn into independently verifiable OpenTelemetry traces.',
+    title: 'How LLM Notary fits.',
+    lead: 'Run your existing model client through a local proxy, keep encrypted evidence on your machine, and turn only the interactions you choose into independently verifiable OpenTelemetry traces.',
     blocks: [
       {
-        heading: 'The lifecycle',
+        heading: 'The workflow',
         steps: [
-          { title: 'Run the proxy', body: 'Point your existing agent or SDK at the local LLM Notary endpoint. Requests and streamed responses continue to work normally.' },
-          { title: 'Save a bundle', body: 'When a provider stream ends, the proxy writes an encrypted .llmbundle to your machine. Interactive work does not wait for proof generation.' },
-          { title: 'Finalize later', body: 'Choose any saved bundle and reconnect to a notary. This is the slower step that creates signed TLSNotary evidence and a normalized trace.' },
-          { title: 'Verify offline', body: 'The completed package can be checked with the notary public key, without the original bundle, provider, proxy, or a live notary.' },
+          { title: 'Capture', body: 'Point an SDK or agent at the local proxy. Requests and streamed responses continue normally while each completed provider call becomes an encrypted local bundle.' },
+          { title: 'Choose', body: 'Bundles wait on your disk. Nothing is published automatically, and interactive model use does not wait for the expensive proof step.' },
+          { title: 'Finalize', body: 'Turn a selected bundle into authenticated TLS evidence and a deterministic OTel GenAI trace. This can happen long after the original model call.' },
+          { title: 'Verify or publish', body: 'Check the package locally, keep it private, or deliberately publish its normalized trace for other people to inspect.' },
         ],
       },
       {
-        heading: 'Two artifact states',
+        heading: 'Three artifacts, three jobs',
         cards: [
-          { meta: 'Pending', title: 'Encrypted bundle', body: 'A durable local checkpoint. It can be finalized later, but it is not yet evidence another person can verify.' },
-          { meta: 'Finalized', title: 'Verified trace package', body: 'TLSNotary evidence, authenticated HTTP disclosure, deterministic OTLP, and a manifest binding the files together.' },
+          { meta: 'Private', title: 'Encrypted bundle', body: 'A sensitive local checkpoint that can be finalized later. It is not yet evidence another person can verify.' },
+          { meta: 'Portable', title: 'Trace package', body: 'TLSNotary evidence, disclosed authenticated HTTP, canonical OTLP, and a manifest binding the files together.' },
+          { meta: 'Public', title: 'Published trace', body: 'The canonical OTLP trace paired with an LLM Notary platform stamp and public metadata.' },
         ],
+      },
+      {
+        heading: 'What is automatic',
+        items: [
+          'The first proxy run creates or opens the local encrypted-bundle vault. On a desktop OS, its random key is stored in the system credential service.',
+          'The CLI discovers the production notary endpoint and public key from the LLM Notary directory, then pins that trust information locally.',
+          'Finalization and verification use the pinned notary identity. Normal hosted use does not require copying a public key into commands.',
+          'Provider credentials remain in your existing SDK or agent environment; LLM Notary does not require a project .env file.',
+        ],
+      },
+      {
+        heading: 'A first successful run',
+        code: `${installCommand}\n\nllm-notary proxy start --provider openai\n# In another terminal, run your OpenAI client against http://127.0.0.1:8787/v1\n\nllm-notary bundles list\nllm-notary finalize bundles/cap-....llmbundle --output verified-trace\nllm-notary verify-trace verified-trace`,
       },
       {
         heading: 'The claim',
-        note: 'A trusted notary attests that the disclosed bytes came from an authenticated TLS interaction with the named model provider, and the OTLP representation is deterministically bound to those bytes.',
+        note: 'A trusted notary attests that disclosed bytes came from an authenticated TLS interaction with the named provider, and LLM Notary deterministically binds the OpenTelemetry representation to those bytes.',
       },
     ],
   },
@@ -250,73 +269,50 @@ const docPages = {
           'That the trusted notary private key has never been compromised.',
         ],
       },
+      {
+        heading: 'How trust is established',
+        body: 'The CLI retrieves the signed production notary directory over HTTPS and caches its key history. Finalized packages identify the notary key that signed their evidence; verification accepts it only if that key was trusted at the package timestamp. Explicit key and endpoint overrides remain available for self-hosted development, but they are not part of the normal product workflow.',
+      },
     ],
   },
-  install: {
-    title: 'Install the CLI',
-    lead: 'The installer downloads a checksum-verified release for macOS or Linux. Windows releases are available as ZIP archives.',
+  'getting-started': {
+    title: 'Install and capture.',
+    lead: 'Install one CLI, start a provider-specific local proxy, and point your existing client at it. You keep using the same API key and request shape.',
     blocks: [
-      { heading: 'Recommended install', code: installCommand },
-      { heading: 'Supported packages', body: 'macOS: Apple silicon and Intel. Linux: x86_64 and ARM64. Windows: x86_64 ZIP release. Each archive contains the llm-notary command.' },
-      { heading: 'Initialize bundle encryption', code: 'llm-notary vault init\n# Or choose a passphrase:\nllm-notary vault init --passphrase' },
-      { heading: 'Vault behavior', body: 'By default, LLM Notary stores a random bundle key in the operating-system credential vault. Passphrase mode derives a key locally. An empty passphrase is allowed, but it does not provide meaningful protection if someone obtains both the bundle and vault configuration.' },
-    ],
-  },
-  proxy: {
-    title: 'Run the local proxy',
-    lead: 'Start one provider adapter, point your existing client at it, and keep the provider API key in that client as usual.',
-    blocks: [
-      { heading: 'Start it', code: 'llm-notary proxy start \\\n  --provider openai \\\n  --bundle-dir bundles' },
+      { heading: 'Install the CLI', code: installCommand },
+      { heading: 'Supported systems', body: 'The installer selects checksum-verified macOS or Linux releases for Apple silicon, Intel, x86_64, and ARM64. Windows x86_64 is available as a ZIP release. Every package contains the same llm-notary command.' },
+      { heading: 'Start the proxy', code: 'llm-notary proxy start \\\n  --provider openai \\\n  --bundle-dir bundles' },
+      { heading: 'Bundle encryption is automatic', body: 'On first use, the proxy creates a random bundle-encryption key and stores it in Keychain on macOS, Credential Manager on Windows, or the desktop secret service on Linux. The OS may ask you to unlock that credential. You do not need to run a separate initialization command.' },
+      { heading: 'Optional passphrase mode', body: 'If you prefer a passphrase instead of the operating-system credential service, choose it before the first proxy run. An empty passphrase is accepted for low-friction local testing, but it provides no meaningful protection if someone obtains both your bundles and vault configuration.', code: 'llm-notary vault init --passphrase' },
       { heading: 'What happens online', body: 'The local proxy handles plaintext while the notary participates in the provider TLS connection without seeing application data. Provider response bytes stream back to your agent as they arrive.' },
       { heading: 'What happens at end-of-stream', body: 'The proxy seals encrypted deferred state into one .llmbundle. It does not perform the expensive final proof before returning control to your workflow.' },
-      { heading: 'Compatibility probes', body: 'GET and HEAD probes are answered locally. They do not contact the provider or notary and do not create bundles.' },
-    ],
-  },
-  bundles: {
-    title: 'Manage pending bundles',
-    lead: 'Bundles are private, encrypted checkpoints. Keep them for as long as you may want to prove an interaction, then finalize or remove them on your schedule.',
-    blocks: [
-      { heading: 'List bundles', code: 'llm-notary bundles list --bundle-dir bundles' },
-      { heading: 'What a bundle is', body: 'A bundle contains encrypted client-side deferred protocol state plus capture metadata. It lets a later notary worker complete the proof without retaining server-side session storage.' },
-      { heading: 'What a bundle is not', note: 'A pending bundle is not a signature, certificate, or publicly verifiable claim. Do not present the existence of a bundle as proof of a provider response.' },
-      { heading: 'Failure and retry', body: 'If the proxy stops after the bundle is sealed, the bundle remains usable. If finalization is interrupted, retry from the same bundle; the interrupted finalization attempt starts over.' },
-    ],
-  },
-  providers: {
-    title: 'Configure a provider client',
-    lead: 'Load your existing keys, then change only the provider base URL. The notary never receives the credential value.',
-    blocks: [
-      { heading: 'Load keys from .env', code: 'set -a\nsource .env\nset +a' },
-      { heading: 'OpenAI', body: 'Use http://127.0.0.1:8787/v1 as the Responses API base URL.' },
-      { heading: 'Anthropic', body: 'Use http://127.0.0.1:8787 as the Messages API base URL. Continue sending requests to /v1/messages.' },
-      { heading: 'DeepSeek', body: 'Use http://127.0.0.1:8787 as the OpenAI-compatible base URL. Continue sending requests to /chat/completions.' },
+      {
+        heading: 'Connect an SDK',
+        definitions: [
+          { term: 'OpenAI', description: 'Start with --provider openai. Set your SDK base URL to http://127.0.0.1:8787/v1 and continue using the Responses API.' },
+          { term: 'Anthropic', description: 'Start with --provider anthropic. Set the SDK base URL to http://127.0.0.1:8787 and continue sending Messages API requests to /v1/messages.' },
+          { term: 'DeepSeek', description: 'Start with --provider deepseek. Set the OpenAI-compatible base URL to http://127.0.0.1:8787 and continue using /chat/completions.' },
+        ],
+      },
+      { heading: 'Where the API key comes from', body: 'Keep configuring credentials exactly as your SDK or agent expects—for example, OPENAI_API_KEY in your shell or secret manager. LLM Notary does not create, load, or require a .env file. A .env file is only one optional way your own application might populate environment variables.' },
       { heading: 'Provider boundary', body: 'The selected adapter fixes the upstream hostname to an explicit allowlist. The notary—not a caller-supplied URL—resolves and opens the provider connection.' },
-    ],
-  },
-  harnesses: {
-    title: 'Configure an agent',
-    lead: 'Start the matching local proxy first, then use one of these recipes. Your provider credential remains in the agent environment.',
-    blocks: [
       { heading: 'Codex + OpenAI', code: 'Add this to ~/.codex/config.toml:\n\nmodel_provider = "llm-notary"\n\n[model_providers.llm-notary]\nname = "LLM Notary local proxy"\nbase_url = "http://127.0.0.1:8787/v1"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"\nsupports_websockets = false' },
       { heading: 'Run Codex', code: 'codex exec --ephemeral --skip-git-repo-check \\\n  -m gpt-4.1-mini \\\n  \'Reply with exactly: hello\'' },
       { heading: 'Claude Code + Anthropic', code: 'ANTHROPIC_BASE_URL=http://127.0.0.1:8787 \\\nclaude --bare --no-session-persistence \\\n  -p --model claude-haiku-4-5-20251001 \\\n  \'Reply with exactly: hello\'' },
       { heading: 'OpenCode + DeepSeek', body: 'Set the provider base URL to http://127.0.0.1:8787 and retain DEEPSEEK_API_KEY in the OpenCode environment.' },
+      { heading: 'List captured bundles', body: 'Each completed provider interaction appears as one encrypted file. Bundles are private checkpoints, not signatures or publicly verifiable evidence.', code: 'llm-notary bundles list --bundle-dir bundles' },
+      { heading: 'Stopping and retrying', body: 'Once the end-of-stream bundle is sealed, stopping the proxy does not invalidate it. Finalization can happen later. If finalization is interrupted, the unchanged bundle can be retried, although the interrupted proof computation starts over.' },
     ],
   },
-  finalize: {
-    title: 'Finalize a bundle',
-    lead: 'Finalization is the deliberate, computationally expensive step. It turns one pending local bundle into a self-contained verified trace package.',
+  'trace-packages': {
+    title: 'Finalize and verify.',
+    lead: 'Turn one encrypted bundle into a portable evidence package, inspect its canonical OpenTelemetry trace, and verify the entire package offline.',
     blocks: [
-      { heading: 'Finalize one interaction', code: 'llm-notary finalize bundles/cap-....llmbundle \\\n  --output verified-trace \\\n  --trusted-notary-key <notary-public-key>' },
+      { heading: 'Finalize one interaction', code: 'llm-notary finalize bundles/cap-....llmbundle \\\n  --output verified-trace' },
+      { heading: 'Notary discovery is automatic', body: 'The CLI refreshes the production notary directory, selects a worker compatible with the bundle, and verifies the resulting evidence against its locally pinned key history. The --notary and --trusted-notary-key flags are overrides for self-hosted development, not normal hosted use.' },
       { heading: 'Fresh notary connection', body: 'The original provider stream and proxy no longer need to be running. A new notary worker holding the same notary identity and key can complete finalization without a stored server-side checkpoint.' },
       { heading: 'Expect this step to take time', body: 'Private proof generation is slower than capture. Deferring it keeps the interactive agent response fast and makes proof work an explicit background or batch operation.' },
       { heading: 'Interruption behavior', body: 'The pending bundle is not consumed. If finalization fails or the process stops, run the command again; work from the interrupted attempt is not resumed.' },
-    ],
-  },
-  artifacts: {
-    title: 'Inside a trace package',
-    lead: 'A finalized package keeps the raw authenticated evidence and its standardized representation together. The files have different jobs.',
-    blocks: [
       { heading: 'Package layout', code: 'verified-trace/\n├── evidence.tlsn\n├── manifest.json\n├── request.disclosed.http\n├── response.http\n└── trace.otlp.json' },
       {
         heading: 'Artifact responsibilities',
@@ -328,15 +324,9 @@ const docPages = {
           { term: 'manifest.json', description: 'The versioned source metadata and trace hash. The cryptographic signature lives in evidence.tlsn, not in this JSON file.' },
         ],
       },
-      { heading: 'Package versus publication', body: 'The finalized source package uses manifest.json. A later Collection publication can pair the canonical trace.otlp.json with a separate platform-issued stamp.json; that public stamp does not replace the private TLSNotary evidence.' },
+      { heading: 'Package versus publication', body: 'The finalized source package uses manifest.json. A later public trace pairs the canonical trace.otlp.json with a platform-issued stamp.json; that public stamp does not replace the private TLSNotary evidence.' },
       { heading: 'Complete context is intentional', body: 'The raw verified package can include system context, tool definitions, session metadata, prompts, responses, and tool results. Inspect it before sharing. A future selective publication format can disclose less without weakening what the private source package proves.' },
-    ],
-  },
-  verify: {
-    title: 'Verify a trace package',
-    lead: 'Verification runs offline against the trusted notary public key. It does not need the original encrypted bundle, provider account, proxy, or a live notary.',
-    blocks: [
-      { heading: 'Verify locally', code: 'llm-notary verify-trace verified-trace \\\n  --trusted-notary-key <notary-public-key>' },
+      { heading: 'Verify locally', code: 'llm-notary verify-trace verified-trace' },
       {
         heading: 'What verification checks',
         items: [
@@ -347,6 +337,7 @@ const docPages = {
           'The deterministic, versioned OTLP mapping byte-for-byte.',
         ],
       },
+      { heading: 'Offline trust', body: 'Verification does not contact the provider, proxy, or a live notary. It uses the notary key history already cached by the CLI. A new machine should run the proxy or another directory-refreshing command once before it verifies a package offline.' },
       { heading: 'Tool-use boundary', note: 'Verification proves that the model emitted a tool call and, on a later request, that the client sent a particular tool result. It does not prove the local tool actually executed.' },
     ],
   },
@@ -357,8 +348,30 @@ const docPages = {
       { heading: 'Sign in once', code: 'llm-notary login' },
       { heading: 'Submit one finalized package', code: 'llm-notary publish verified-trace' },
       { heading: 'Script-friendly output', code: 'llm-notary publish verified-trace --json\n\n{"job_id":"…","state":"queued","status_url":"https://llmnotary.exalto.ai/api/publish/jobs/…"}' },
-      { heading: 'What is uploaded', body: 'The CLI creates a deterministic, versioned archive containing only the five files in the finalized trace package. It rejects extra files, symlinks, malformed manifests, untrusted evidence, and non-canonical trace bytes before creating an upload job.' },
-      { heading: 'What is never uploaded', note: 'Do not publish an encrypted .llmbundle. It contains private retry state and is rejected by the CLI. Finalization remains a separate, local choice.' },
+      {
+        heading: 'The upload boundary',
+        columns: [
+          {
+            title: 'Uploaded',
+            items: [
+              'evidence.tlsn and manifest.json',
+              'request.disclosed.http with secret header values redacted',
+              'response.http with authenticated provider output',
+              'the deterministic trace.otlp.json',
+            ],
+          },
+          {
+            title: 'Never uploaded',
+            items: [
+              'encrypted .llmbundle checkpoints',
+              'API-key or cookie values',
+              'unselected bundles from the same session',
+              'extra files or symlink targets',
+            ],
+          },
+        ],
+      },
+      { heading: 'Local checks before upload', body: 'The CLI creates a deterministic, versioned archive containing exactly the five finalized-package files. It rejects extra files, symlinks, malformed manifests, untrusted evidence, and non-canonical trace bytes before it creates an upload job.' },
       { heading: 'Current consent boundary', body: 'The initial admission service may inspect the disclosed request, response, system context, and tool data in a package to verify and reproduce the public trace. Authentication headers and cookie values remain redacted. A future artifact can add a stronger privacy-preserving verifier under a new format version.' },
       { heading: 'Retry behavior', body: 'An upload or API failure does not change or delete the local package. Run publish again to create a fresh retry-safe job.' },
     ],
@@ -366,14 +379,21 @@ const docPages = {
 };
 
 const docNavigation = [
-  { label: 'Foundation', pages: [['overview', 'Overview'], ['how-it-works', 'Trust model']] },
-  { label: 'Capture', pages: [['install', 'Install'], ['proxy', 'Proxy'], ['bundles', 'Bundles']] },
-  { label: 'Connect', pages: [['providers', 'Providers'], ['harnesses', 'Agents']] },
-  { label: 'Prove', pages: [['finalize', 'Finalize'], ['artifacts', 'Artifacts'], ['verify', 'Verify']] },
+  { label: 'Start', pages: [['overview', 'Overview'], ['getting-started', 'Install and capture']] },
+  { label: 'Understand', pages: [['how-it-works', 'Trust model'], ['trace-packages', 'Trace packages']] },
   { label: 'Share', pages: [['publish', 'Publish']] },
 ];
 const docOrder = docNavigation.flatMap((group) => group.pages.map(([key]) => key));
-const docAliases = {};
+const docAliases = {
+  install: 'getting-started',
+  proxy: 'getting-started',
+  bundles: 'getting-started',
+  providers: 'getting-started',
+  harnesses: 'getting-started',
+  finalize: 'trace-packages',
+  artifacts: 'trace-packages',
+  verify: 'trace-packages',
+};
 
 function docHref(key, section) {
   const route = key === 'overview' ? '#/docs' : `#/docs/${key}`;
@@ -401,7 +421,7 @@ function DocsBlock({ block, pageKey }) {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   };
-  return <section id={slug} className="docs-section"><div className="docs-heading-row"><h2>{block.heading}</h2><button type="button" className="docs-copy-button docs-anchor" onClick={() => copy(headingLink)} aria-label={`${copied ? 'Copied link to' : 'Copy link to'} ${block.heading}`} title={copied ? 'Copied' : 'Copy link'}>{copied ? <CheckIcon /> : <LinkIcon />}</button></div>{block.body && <p>{block.body}</p>}{block.code && <div className="docs-code"><button type="button" className="docs-copy-button" onClick={() => copy(block.code)} aria-label={`Copy code for ${block.heading}`}>{copied ? 'Copied' : 'Copy'}</button><pre><code>{block.code}</code></pre></div>}{block.note && <aside className="docs-note">{block.note}</aside>}{block.items && <ul className="docs-list">{block.items.map((item) => <li key={item}>{item}</li>)}</ul>}{block.steps && <ol className="docs-flow">{block.steps.map((step, index) => <li key={step.title}><span>{String(index + 1).padStart(2, '0')}</span><div><b>{step.title}</b><p>{step.body}</p></div></li>)}</ol>}{block.cards && <div className="docs-card-grid">{block.cards.map((card) => <article key={`${card.meta}-${card.title}`}><span>{card.meta}</span><h3>{card.title}</h3><p>{card.body}</p></article>)}</div>}{block.definitions && <dl className="docs-definitions">{block.definitions.map((item) => <div key={item.term}><dt>{item.term}</dt><dd>{item.description}</dd></div>)}</dl>}</section>;
+  return <section id={slug} className="docs-section"><div className="docs-heading-row"><h2>{block.heading}</h2><button type="button" className="docs-copy-button docs-anchor" onClick={() => copy(headingLink)} aria-label={`${copied ? 'Copied link to' : 'Copy link to'} ${block.heading}`} title={copied ? 'Copied' : 'Copy link'}>{copied ? <CheckIcon /> : <LinkIcon />}</button></div>{block.body && <p>{block.body}</p>}{block.code && <div className="docs-code"><button type="button" className="docs-copy-button" onClick={() => copy(block.code)} aria-label={`Copy code for ${block.heading}`}>{copied ? 'Copied' : 'Copy'}</button><pre><code>{block.code}</code></pre></div>}{block.note && <aside className="docs-note">{block.note}</aside>}{block.items && <ul className="docs-list">{block.items.map((item) => <li key={item}>{item}</li>)}</ul>}{block.steps && <ol className="docs-flow">{block.steps.map((step, index) => <li key={step.title}><span>{String(index + 1).padStart(2, '0')}</span><div><b>{step.title}</b><p>{step.body}</p></div></li>)}</ol>}{block.cards && <div className="docs-card-grid">{block.cards.map((card) => <article key={`${card.meta}-${card.title}`}><span>{card.meta}</span><h3>{card.title}</h3><p>{card.body}</p></article>)}</div>}{block.columns && <div className="docs-boundary-grid">{block.columns.map((column) => <article key={column.title}><h3>{column.title}</h3><ul>{column.items.map((item) => <li key={item}>{item}</li>)}</ul></article>)}</div>}{block.definitions && <dl className="docs-definitions">{block.definitions.map((item) => <div key={item.term}><dt>{item.term}</dt><dd>{item.description}</dd></div>)}</dl>}</section>;
 }
 
 function DocsSearch({ open, onClose }) {
@@ -421,15 +441,42 @@ function DocsSearch({ open, onClose }) {
   return <div className="docs-search-backdrop" role="presentation" onMouseDown={onClose}><section className="docs-search-dialog" role="dialog" aria-modal="true" aria-label="Search documentation" onMouseDown={(event) => event.stopPropagation()}><header><label htmlFor="docs-search-input">Search documentation</label><kbd>ESC</kbd></header><input id="docs-search-input" ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); setSelected((value) => Math.min(value + 1, results.length - 1)); } if (event.key === 'ArrowUp') { event.preventDefault(); setSelected((value) => Math.max(value - 1, 0)); } if (event.key === 'Enter' && results[selected]) choose(results[selected]); if (event.key === 'Escape') onClose(); }} placeholder="Search setup, bundles, providers…" /><div className="docs-search-results" role="listbox">{results.length ? results.map((result, index) => <button type="button" className={index === selected ? 'active' : ''} onMouseEnter={() => setSelected(index)} onClick={() => choose(result)} role="option" aria-selected={index === selected} key={result.key}><span>{result.title}</span><small>{result.lead}</small></button>) : <p>No documentation matches “{query}”.</p>}</div><footer><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span></footer></section></div>;
 }
 
+function DocsMobileToolbar({ currentKey, page, section, onSearch }) {
+  const [panel, setPanel] = useState(null);
+  const toolbarRef = useRef(null);
+  const currentLabel = docNavigation.flatMap((group) => group.pages).find(([key]) => key === currentKey)?.[1] || page.title;
+  useEffect(() => setPanel(null), [currentKey, section]);
+  useEffect(() => {
+    const close = (event) => {
+      if (event.key === 'Escape' || (event.type === 'mousedown' && !toolbarRef.current?.contains(event.target))) setPanel(null);
+    };
+    document.addEventListener('mousedown', close);
+    window.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      window.removeEventListener('keydown', close);
+    };
+  }, []);
+  const toggle = (nextPanel) => setPanel((current) => current === nextPanel ? null : nextPanel);
+  return <nav className="docs-mobile-toolbar" aria-label="Documentation navigation" ref={toolbarRef}>
+    <button type="button" className="docs-search-trigger" onClick={() => { setPanel(null); onSearch(); }}>Search documentation <kbd>⌘ K</kbd></button>
+    <div className="docs-mobile-toolbar-row">
+      <button type="button" className={panel === 'docs' ? 'active' : ''} onClick={() => toggle('docs')} aria-expanded={panel === 'docs'} aria-controls="docs-mobile-panel"><span><small>Docs</small>{currentLabel}</span><ChevronDown aria-hidden="true" /></button>
+      <button type="button" className={panel === 'toc' ? 'active' : ''} onClick={() => toggle('toc')} aria-expanded={panel === 'toc'} aria-controls="docs-mobile-panel"><span><small>Page</small>On this page</span><ChevronDown aria-hidden="true" /></button>
+    </div>
+    {panel && <div className="docs-mobile-panel" id="docs-mobile-panel">
+      {panel === 'docs' ? docNavigation.map((group) => <div className="docs-mobile-nav-group" key={group.label}><span>{group.label}</span>{group.pages.map(([key, label]) => <a className={currentKey === key ? 'active' : ''} href={docHref(key)} aria-current={currentKey === key ? 'page' : undefined} onClick={() => setPanel(null)} key={key}>{label}</a>)}</div>) : <div className="docs-mobile-toc"><span>{page.title}</span>{page.blocks.map((block) => <a className={section === docSlug(block.heading) ? 'active' : ''} href={docHref(currentKey, docSlug(block.heading))} onClick={() => setPanel(null)} key={block.heading}>{block.heading}</a>)}</div>}
+    </div>}
+  </nav>;
+}
+
 function Docs({ pageKey, section }) {
   const currentKey = docPages[pageKey] ? pageKey : docAliases[pageKey] || 'overview';
   const page = docPages[currentKey];
   const currentIndex = docOrder.indexOf(currentKey);
   const previousKey = docOrder[currentIndex - 1];
   const nextKey = docOrder[currentIndex + 1];
-  const next = nextKey
-    ? { href: docHref(nextKey), label: docPages[nextKey].title }
-    : { href: '#/collections', label: 'Browse collections' };
+  const next = nextKey ? { href: docHref(nextKey), label: docPages[nextKey].title } : null;
   const [searchOpen, setSearchOpen] = useState(false);
   useEffect(() => {
     window.requestAnimationFrame(() => {
@@ -447,7 +494,7 @@ function Docs({ pageKey, section }) {
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
   }, [nextKey, previousKey]);
-  return <main className="docs-shell"><aside className="docs-sidebar"><button type="button" className="docs-search-trigger" onClick={() => setSearchOpen(true)}>Search <kbd>⌘ K</kbd></button>{docNavigation.map((group) => <div className="docs-nav-group" key={group.label}><span className="docs-group">{group.label}</span>{group.pages.map(([key, label]) => <a className={currentKey === key ? 'active' : ''} href={docHref(key)} aria-current={currentKey === key ? 'page' : undefined} key={key}>{label}</a>)}</div>)}<div className="docs-nav-group"><span className="docs-group">Explore</span><a href="#/collections">Collections</a></div></aside><article className="docs-content"><h1>{page.title}</h1><p className="docs-lead">{page.lead}</p>{page.blocks.map((block) => <DocsBlock block={block} pageKey={currentKey} key={block.heading} />)}<div className="docs-page-nav">{previousKey ? <a href={docHref(previousKey)}><span>Previous</span>{docPages[previousKey].title}</a> : <span />}{next && <a href={next.href}><span>Next</span>{next.label}</a>}</div></article><aside className="docs-toc" aria-label="On this page"><span>On this page</span>{page.blocks.map((block) => <a className={section === docSlug(block.heading) ? 'active' : ''} href={docHref(currentKey, docSlug(block.heading))} key={block.heading}>{block.heading}</a>)}<p><kbd>⌥</kbd> <kbd>←</kbd><kbd>→</kbd> pages</p></aside><DocsSearch open={searchOpen} onClose={() => setSearchOpen(false)} /></main>;
+  return <><DocsMobileToolbar currentKey={currentKey} page={page} section={section} onSearch={() => setSearchOpen(true)} /><main className="docs-shell"><aside className="docs-sidebar"><button type="button" className="docs-search-trigger" onClick={() => setSearchOpen(true)}>Search <kbd>⌘ K</kbd></button>{docNavigation.map((group) => <div className="docs-nav-group" key={group.label}><span className="docs-group">{group.label}</span>{group.pages.map(([key, label]) => <a className={currentKey === key ? 'active' : ''} href={docHref(key)} aria-current={currentKey === key ? 'page' : undefined} key={key}>{label}</a>)}</div>)}</aside><article className="docs-content"><h1>{page.title}</h1><p className="docs-lead">{page.lead}</p>{page.blocks.map((block) => <DocsBlock block={block} pageKey={currentKey} key={block.heading} />)}<div className="docs-page-nav">{previousKey ? <a href={docHref(previousKey)}><span>Previous</span>{docPages[previousKey].title}</a> : <span />}{next && <a href={next.href}><span>Next</span>{next.label}</a>}</div></article><aside className="docs-toc" aria-label="On this page"><span>On this page</span>{page.blocks.map((block) => <a className={section === docSlug(block.heading) ? 'active' : ''} href={docHref(currentKey, docSlug(block.heading))} key={block.heading}>{block.heading}</a>)}<p><kbd>⌥</kbd> <kbd>←</kbd><kbd>→</kbd> pages</p></aside></main><DocsSearch open={searchOpen} onClose={() => setSearchOpen(false)} /></>;
 }
 
 function formatTraceValue(value) {
@@ -468,7 +515,7 @@ function MessagePart({ part }) {
   if (part.type === 'tool_call_response') {
     return <div className="message-part message-part--tool"><span>tool result</span><div className="trace-fields"><TraceField label="call ID" value={part.id} /><TraceField label="result" value={part.result} /></div></div>;
   }
-  return <div className="message-part"><span>text</span><p>{part.content}</p></div>;
+  return <div className="message-part"><span>text</span><div className="message-markdown"><ReactMarkdown>{String(part.content ?? '')}</ReactMarkdown></div></div>;
 }
 
 function MessageGroup({ label, messages }) {
@@ -490,43 +537,74 @@ function SpanTree({ spans }) {
   })}</div>;
 }
 
-function TraceEnvelope({ trace }) {
-  return <section className="trace-envelope" aria-label="OpenTelemetry trace metadata"><div className="trace-envelope-head"><span>OTLP envelope</span><small>Illustrative preview</small></div><div className="trace-envelope-grid"><TraceField label="trace_id" value={trace.id} /><TraceField label="service.name" value={trace.service} /><TraceField label="llmnotary.format" value={trace.format} /><TraceField label="llmnotary.normalizer.version" value={trace.normalizer} /><TraceField label="otel.semconv.version" value={trace.semconv} /><TraceField label="instrumentation_scope" value={trace.scope} /></div></section>;
+function otlpAttributeValue(value = {}) {
+  if ('stringValue' in value) return value.stringValue;
+  if ('intValue' in value) return value.intValue;
+  if ('doubleValue' in value) return value.doubleValue;
+  if ('boolValue' in value) return value.boolValue;
+  if (value.arrayValue?.values) return value.arrayValue.values.map(otlpAttributeValue);
+  return '';
 }
 
-function CollectionCard({ collection, active, onSelect }) {
-  return <button className={`model-card${active ? ' active' : ''}`} onClick={onSelect} aria-pressed={active}>
-    <span className="model-card-top"><span><i aria-hidden="true" /> VERIFIED</span><time>{collection.date}</time></span>
-    <span className="model-card-title">{collection.title}</span>
-    <span className="model-card-model">{collection.provider} · {collection.model}</span>
-    <span className="model-card-summary">{collection.summary}</span>
-    <span className="model-card-facts"><span><b>Coverage</b>{collection.spanCount} spans</span><span><b>Evidence</b>{collection.evidence}</span><span><b>Schema</b>{collection.schema}</span></span>
-    <span className="tag-list">{collection.tags.map((item) => <span key={item}>{item}</span>)}</span>
-  </button>;
+function parseTraceMessages(value) {
+  if (typeof value !== 'string') return [];
+  try {
+    const messages = JSON.parse(value);
+    return Array.isArray(messages) ? messages : [];
+  } catch {
+    return [];
+  }
 }
 
-function CollectionInspector({ collection, onVerify }) {
-  return <article className="collection-inspector">
-    <header><span className="eyebrow">Selected publication</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header>
-    <h2>{collection.title}</h2>
-    <p>{collection.summary}</p>
-    <div className="publication-files"><span>trace.otlp.json</span><span>stamp.json</span></div>
-    <dl className="inspector-facts"><div><dt>Provider</dt><dd>{collection.host}</dd></div><div><dt>Model</dt><dd>{collection.model}</dd></div><div><dt>Source evidence</dt><dd>{collection.evidence}</dd></div><div><dt>Trace hash</dt><dd>{collection.hash}</dd></div><div><dt>Reuse</dt><dd>{collection.license}</dd></div><div><dt>Published</dt><dd>{collection.date}</dd></div></dl>
-    <TraceEnvelope trace={collection.trace} />
-    <section className="span-panel"><div className="span-panel-head"><span>Trace spans</span><small>{collection.spans.length} of {collection.spanCount} spans shown</small></div><div className="trace-legend"><span><i className="source" /> Fields derived from verified provider exchanges</span></div><SpanTree spans={collection.spans} /></section>
-    <div className="trace-actions"><button onClick={onVerify}>Verify platform stamp</button><a href="#/docs/artifacts">Trace format</a></div>
-  </article>;
+function parsePublishedTrace(trace) {
+  const spans = (trace?.resourceSpans || []).flatMap((resource) => (resource.scopeSpans || []).flatMap((scope) => scope.spans || []));
+  return spans.map((span, index) => {
+    const attributes = (span.attributes || []).map((attribute) => [attribute.key, otlpAttributeValue(attribute.value)]);
+    const attributeMap = Object.fromEntries(attributes);
+    return {
+      kind: `CLIENT · ${String(index + 1).padStart(2, '0')}`,
+      name: span.name || 'gen_ai.inference',
+      spanId: span.spanId,
+      attributes: attributes.filter(([key]) => key !== 'gen_ai.input.messages' && key !== 'gen_ai.output.messages'),
+      messages: {
+        input: parseTraceMessages(attributeMap['gen_ai.input.messages']),
+        output: parseTraceMessages(attributeMap['gen_ai.output.messages']),
+      },
+    };
+  });
 }
 
-function Collections({ onVerify }) {
+function traceSnippets(spans) {
+  const inputMessages = spans.flatMap((span) => span.messages?.input || []);
+  const outputMessages = spans.flatMap((span) => span.messages?.output || []);
+  const parts = [...inputMessages, ...outputMessages].flatMap((message) => message.parts || []);
+  const input = (inputMessages.find((message) => message.role === 'user')?.parts || []).find((part) => part.type === 'text' && part.content)
+    || inputMessages.flatMap((message) => message.parts || []).find((part) => part.type === 'text' && part.content);
+  const output = (outputMessages.find((message) => message.role === 'assistant')?.parts || []).find((part) => part.type === 'text' && part.content)
+    || outputMessages.flatMap((message) => message.parts || []).find((part) => part.type === 'text' && part.content);
+  const tool = parts.find((part) => part.type === 'tool_call' || part.type === 'tool_call_response');
+  const shorten = (value) => {
+    const text = String(value).replace(/\s+/g, ' ').trim();
+    return text.length > 150 ? `${text.slice(0, 147)}…` : text;
+  };
+  return [
+    input && { label: 'Input', text: shorten(input.content) },
+    output && { label: 'Response', text: shorten(output.content) },
+    tool && { label: tool.type === 'tool_call' ? 'Tool call' : 'Tool result', text: tool.type === 'tool_call' ? `${tool.name}(${shorten(JSON.stringify(tool.arguments))})` : shorten(typeof tool.result === 'string' ? tool.result : JSON.stringify(tool.result)) },
+  ].filter(Boolean);
+}
+
+function Collections() {
   const [collection, setCollection] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [query, setQuery] = useState('');
   const [provider, setProvider] = useState('All');
   const [model, setModel] = useState('All');
-  const [tag, setTag] = useState('All');
+  const [tag, setTag] = useState(null);
   const [sort, setSort] = useState('Newest');
   const [activeId, setActiveId] = useState(null);
+  const [tracePreview, setTracePreview] = useState(null);
+  const [traceError, setTraceError] = useState('');
   useEffect(() => {
     let cancelled = false;
     fetch('/api/public/collections/examples')
@@ -538,10 +616,10 @@ function Collections({ onVerify }) {
   const publications = collection?.publications || [];
   const providers = ['All', ...new Set(publications.map((item) => item.provider))];
   const models = ['All', ...new Set(publications.map((item) => item.model))];
-  const tags = ['All', ...new Set(publications.flatMap((item) => item.tags))];
+  const tags = [...new Set(publications.flatMap((item) => item.tags))];
   const filtered = useMemo(() => publications.filter((item) => {
     const searchable = `${item.title} ${item.provider} ${item.model} ${item.surface} ${item.category} ${item.tags.join(' ')}`.toLowerCase();
-    return searchable.includes(query.toLowerCase()) && (provider === 'All' || item.provider === provider) && (model === 'All' || item.model === model) && (tag === 'All' || item.tags.includes(tag));
+    return searchable.includes(query.toLowerCase()) && (provider === 'All' || item.provider === provider) && (model === 'All' || item.model === model) && (!tag || item.tags.includes(tag));
   }).sort((left, right) => sort === 'Newest' ? right.admitted_at - left.admitted_at : left.title.localeCompare(right.title)), [publications, query, provider, model, tag, sort]);
   useEffect(() => {
     if (!filtered.length) {
@@ -551,22 +629,32 @@ function Collections({ onVerify }) {
     if (!filtered.some((item) => item.id === activeId)) setActiveId(filtered[0].id);
   }, [filtered, activeId]);
   const active = filtered.find((item) => item.id === activeId) || null;
+  useEffect(() => {
+    if (!active) {
+      setTracePreview(null);
+      setTraceError('');
+      return;
+    }
+    let cancelled = false;
+    setTracePreview(null);
+    setTraceError('');
+    fetch(active.trace_url)
+      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error('Could not load this trace preview.')))
+      .then((trace) => { if (!cancelled) setTracePreview(parsePublishedTrace(trace)); })
+      .catch((error) => { if (!cancelled) setTraceError(error.message); });
+    return () => { cancelled = true; };
+  }, [active]);
   return <main className="library-shell">
-    <header className="production-collection-head">
-      <span className="eyebrow">Public collection</span>
-      <h1>{collection?.title || 'LLM Notary Examples'}</h1>
-      <p>{collection?.description || 'Loading admitted publications…'}</p>
-    </header>
     {loadError ? <section className="collection-empty" role="alert">{loadError}</section>
-      : collection === null ? <section className="collection-empty" role="status"><b>Loading publications…</b><p>Checking the admitted collection and its artifact metadata.</p></section>
+      : collection === null ? <section className="collection-empty" role="status"><b>Loading traces…</b><p>Checking admitted traces and their artifact metadata.</p></section>
         : <>
-          <section className="library-controls" aria-label="Browse publications">
-            <label className="library-search"><span>Search publications</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by model, provider, surface, or topic" /></label>
+          <section className="library-controls" aria-label="Browse traces">
+            <label className="library-search"><span>Search traces</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by model, provider, surface, or topic" /></label>
             <label><span>Provider</span><select value={provider} onChange={(event) => setProvider(event.target.value)}>{providers.map((value) => <option key={value}>{value}</option>)}</select></label>
             <label><span>Model</span><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((value) => <option key={value}>{value}</option>)}</select></label>
             <label><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value)}><option>Newest</option><option>Title</option></select></label>
           </section>
-          <nav className="topic-filter" aria-label="Topics"><span>Topics</span>{tags.map((value) => <button key={value} className={tag === value ? 'active' : ''} onClick={() => setTag(value)}>{value}</button>)}</nav>
+          <div className="library-browse-meta"><nav className="topic-filter" aria-label="Filter by topic">{tags.map((value) => <button key={value} className={tag === value ? 'active' : ''} aria-pressed={tag === value} onClick={() => setTag((current) => current === value ? null : value)}>{value}</button>)}</nav><span className="library-count">{filtered.length} {filtered.length === 1 ? 'trace' : 'traces'}</span></div>
           {publications.length === 0
             ? <section className="collection-empty"><b>Production examples are being prepared.</b><p>This page lists only admitted publications. No illustrative record is labeled verified.</p></section>
             : filtered.length === 0
@@ -574,10 +662,9 @@ function Collections({ onVerify }) {
               : <section className="library-results">
                 <div className="collection-workspace">
                   <div className="collection-list">
-                    <div className="results-heading"><p><b>{filtered.length}</b> publications</p><span>{collection.consent_label}</span></div>
-                    <div className="library-grid">{filtered.map((item) => <button className={`model-card${activeId === item.id ? ' active' : ''}`} onClick={() => setActiveId(item.id)} aria-pressed={activeId === item.id} key={item.id}><span className="model-card-top"><span><i aria-hidden="true" /> VERIFIED</span><time>{new Date(item.admitted_at * 1000).toLocaleDateString()}</time></span><span className="model-card-title">{item.title}</span><span className="model-card-model">{item.provider} · {item.model}</span><span className="model-card-summary">{item.category} · {item.surface}{item.tool_use ? ' · tool use' : ''}</span><span className="model-card-facts"><span><b>Coverage</b>{item.span_count} spans</span><span><b>Publisher</b>{item.author}</span><span><b>Disclosure</b>Consent-based</span></span><span className="tag-list">{item.tags.map((value) => <span key={value}>{value}</span>)}</span></button>)}</div>
+                    <div className="library-grid">{filtered.map((item) => <button className={`model-card${activeId === item.id ? ' active' : ''}`} onClick={() => setActiveId(item.id)} aria-pressed={activeId === item.id} key={item.id}><span className="model-card-title">{item.title}</span><span className="model-card-model">{item.provider} · {item.model}<time>{new Date(item.admitted_at * 1000).toLocaleDateString()}</time></span><span className="model-card-summary">{item.category} · {item.surface}{item.tool_use ? ' · tool use' : ''}</span><span className="model-card-facts"><span><b>Publisher</b>{item.author}</span></span><span className="tag-list">{item.tags.map((value) => <span key={value}>{value}</span>)}</span></button>)}</div>
                   </div>
-                  {active && <article className="collection-inspector"><header><span className="eyebrow">Selected publication</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h2>{active.title}</h2><p>{active.category} captured through {active.surface}. This record passed server admission and carries the platform stamp linked below.</p><dl className="inspector-facts"><div><dt>Provider</dt><dd>{active.host}</dd></div><div><dt>Model</dt><dd>{active.model}</dd></div><div><dt>Publisher</dt><dd>{active.author}</dd></div><div><dt>Tool use</dt><dd>{active.tool_use ? 'Yes' : 'No'}</dd></div><div><dt>Spans</dt><dd>{active.span_count}</dd></div><div><dt>Published</dt><dd>{new Date(active.admitted_at * 1000).toLocaleString()}</dd></div></dl><div className="trace-actions"><a href={active.trace_url} target="_blank" rel="noreferrer">Download trace</a><a href={active.stamp_url} target="_blank" rel="noreferrer">Download stamp</a><button onClick={onVerify}>Verify files</button></div><p className="consent-label">{collection.consent_label}: the service inspected the finalized disclosed package during admission.</p></article>}
+                  {active && <article className="collection-inspector"><header><span className="eyebrow">Selected trace</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h2>{active.title}</h2><dl className="inspector-facts"><div><dt>Provider</dt><dd>{active.host}</dd></div><div><dt>Model</dt><dd>{active.model}</dd></div><div><dt>Publisher</dt><dd>{active.author}</dd></div><div><dt>Published</dt><dd>{new Date(active.admitted_at * 1000).toLocaleDateString()}</dd></div></dl><div className="trace-download"><span>CLI download</span><code>llm-notary download {active.id} --verify</code><small>Download the trace and stamp, then verify them locally.</small></div><section className="span-panel"><div className="span-panel-head"><span>Trace contents</span><small>{active.span_count} {active.span_count === 1 ? 'span' : 'spans'}</small></div><div className="trace-legend"><span><i className="source" /> Fields derived from verified provider exchanges</span></div>{traceError ? <p className="trace-preview-state">{traceError}</p> : tracePreview === null ? <p className="trace-preview-state">Loading messages…</p> : <SpanTree spans={tracePreview} />}</section></article>}
                 </div>
               </section>}
         </>}
@@ -725,13 +812,18 @@ function App() {
   const [theme, setTheme] = useState(() => window.localStorage.getItem('llm-notary-theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   useEffect(() => { document.documentElement.dataset.theme = theme; document.documentElement.style.colorScheme = theme; window.localStorage.setItem('llm-notary-theme', theme); }, [theme]);
   useEffect(() => { const update = () => setRoute(window.location.hash || '#/'); window.addEventListener('hashchange', update); return () => window.removeEventListener('hashchange', update); }, []);
+  useEffect(() => {
+    const nextSection = route.replace(/^#\/?/, '').split(/[/?]/)[0];
+    if (nextSection !== 'docs') window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+  }, [route]);
   useEffect(() => { let cancelled = false; fetch('/api/me', { credentials: 'same-origin' }).then((response) => response.ok ? response.json() : null).then((payload) => { if (!cancelled) setUser(payload?.user || null); }).catch(() => { if (!cancelled) setUser(null); }); return () => { cancelled = true; }; }, []);
   const logout = async () => { const response = await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }); if (response.ok) { setUser(null); if (window.location.hash === '#/dashboard') window.location.hash = '#/'; } };
   const path = route.replace(/^#\/?/, '');
   const routePath = path.split('?')[0];
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : (section === 'collections' || section === 'library') ? <Collections onVerify={() => setShowVerifier(true)} /> : section === 'dashboard' && user ? <Dashboard user={user} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing onVerify={() => setShowVerifier(true)} />}<Footer />{showVerifier && <VerifierDialog onClose={() => setShowVerifier(false)} />}</>;
+  const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
+  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'dashboard' && user ? <Dashboard user={user} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing onVerify={() => setShowVerifier(true)} />}{!isLibrary && <Footer />}{showVerifier && <VerifierDialog onClose={() => setShowVerifier(false)} />}</>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
