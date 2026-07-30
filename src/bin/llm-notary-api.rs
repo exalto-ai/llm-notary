@@ -317,7 +317,7 @@ impl AppState {
         let database_url =
             env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://llm-notary-api.db".to_owned());
         let notary_directory = notary_directory_from_env()?;
-        let publish = publish::PublishService::from_env()?;
+        let publish = publish::PublishService::from_env(app_url.origin().ascii_serialization())?;
         publish.validate().await?;
         let options = SqliteConnectOptions::from_str(&database_url)
             .context("DATABASE_URL must be a SQLite connection URL")?

@@ -11,6 +11,8 @@ permissions:
 jobs:
   build:
     name: ${{ matrix.asset }}
+    env:
+      LLM_NOTARY_PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://llmnotary.exalto.ai' }}
     strategy:
       fail-fast: false
       matrix:

@@ -101,7 +101,7 @@ pub(super) struct PublishJobRow {
 }
 
 impl PublishService {
-    pub fn from_env() -> anyhow::Result<Self> {
+    pub fn from_env(stamp_issuer: String) -> anyhow::Result<Self> {
         let max_archive_bytes =
             integer_env("LLM_NOTARY_INTAKE_MAX_BYTES")?.unwrap_or(DEFAULT_MAX_ARCHIVE_BYTES);
         if max_archive_bytes <= 0 {
@@ -114,11 +114,7 @@ impl PublishService {
         }
         let storage = IntakeStorage::from_env()?;
         let (platform_signing_key, stamp_issuer) = if storage.is_enabled() {
-            (
-                Some(Arc::new(load_platform_signing_key()?)),
-                std::env::var("LLM_NOTARY_STAMP_ISSUER")
-                    .unwrap_or_else(|_| "https://llmnotary.exalto.ai".to_owned()),
-            )
+            (Some(Arc::new(load_platform_signing_key()?)), stamp_issuer)
         } else {
             (None, String::new())
         };

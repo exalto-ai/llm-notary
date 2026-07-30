@@ -12,12 +12,12 @@ use tokio::io::AsyncWriteExt;
 use url::Url;
 use uuid::Uuid;
 
+use super::DEFAULT_PUBLIC_ORIGIN;
 use crate::public::{
     PLATFORM_STAMP_FORMAT, PublicStamp, platform_key_id, validate_public_trace_bytes,
     verify_public_trace_bytes,
 };
 
-const DEFAULT_API_ORIGIN: &str = "https://llmnotary.exalto.ai";
 const MAX_METADATA_BYTES: usize = 64 * 1024;
 const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 const TRACE_FILE: &str = "trace.otlp.json";
@@ -41,7 +41,7 @@ pub struct DownloadArgs {
     verify: bool,
 
     /// LLM Notary API origin. Intended for local development and self-hosting.
-    #[arg(long, default_value = DEFAULT_API_ORIGIN)]
+    #[arg(long, default_value = DEFAULT_PUBLIC_ORIGIN)]
     api: String,
 }
 

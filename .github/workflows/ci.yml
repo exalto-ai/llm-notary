@@ -77,7 +77,7 @@ jobs:
             LLM_NOTARY_S3_BUCKET=llm-notary-ci \
             LLM_NOTARY_S3_ENDPOINT=https://sfo3.digitaloceanspaces.com \
             LLM_NOTARY_S3_REGION=sfo3 \
-            SITE_DOMAIN=example.com \
+            LLM_NOTARY_PUBLIC_ORIGIN=https://example.com \
             docker compose config --quiet
       - name: Build notary image
         uses: docker/build-push-action@v7
@@ -92,6 +92,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: js/app
+          build-args: |
+            LLM_NOTARY_PUBLIC_ORIGIN=https://example.com
           load: false
           push: false
           cache-from: type=gha,scope=web-image
