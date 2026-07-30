@@ -472,7 +472,7 @@ async fn queue_completed_attempt(
     .bind(now)
     .bind(now)
     .bind(&job.id)
-    .bind(&user_id)
+    .bind(user_id)
     .bind(job.upload_generation)
     .bind(&job.upload_object_key)
     .bind(&job.intake_object_key)

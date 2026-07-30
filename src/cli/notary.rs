@@ -53,6 +53,7 @@ fn pin_at_path(path: &Path, directory: NotaryDirectory) -> Result<()> {
     let lock_path = path.with_extension("json.lock");
     let lock = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(&lock_path)
@@ -61,9 +62,9 @@ fn pin_at_path(path: &Path, directory: NotaryDirectory) -> Result<()> {
         .with_context(|| format!("lock {}", lock_path.display()))?;
     // The read must happen after acquiring the cross-process lock. Otherwise a
     // slower process could overwrite a newer generation or cached revocation.
-    let store = merge_store(load_store(&path)?, directory)?;
+    let store = merge_store(load_store(path)?, directory)?;
     validate_trust_store(&store)?;
-    write_store(&path, &store)
+    write_store(path, &store)
 }
 
 fn merge_store(mut store: TrustStore, directory: NotaryDirectory) -> Result<TrustStore> {
@@ -337,12 +338,12 @@ fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
 }
 
 fn unix_time_ms() -> Result<u64> {
-    Ok(SystemTime::now()
+    SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("system clock is before the Unix epoch")?
         .as_millis()
         .try_into()
-        .context("current time does not fit in u64 milliseconds")?)
+        .context("current time does not fit in u64 milliseconds")
 }
 
 #[cfg(test)]
