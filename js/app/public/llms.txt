@@ -1,0 +1,44 @@
+# LLM Notary
+
+> Capture provider calls locally, retain encrypted bundles, and finalize selected calls into independently verifiable OpenTelemetry traces.
+
+## Documentation
+
+- [Overview](https://llmnotary.exalto.ai/docs): Capture now, prove later. Understand the lifecycle and two artifact states.
+- [Trust and guarantees](https://llmnotary.exalto.ai/docs/how-it-works): The provenance claim, participants, authenticated versus observed data, and limits.
+- [Install](https://llmnotary.exalto.ai/docs/install): Install the CLI and initialize local bundle encryption.
+- [Run the proxy](https://llmnotary.exalto.ai/docs/proxy): Start a provider-specific local proxy while keeping plaintext and credentials local.
+- [Bundles](https://llmnotary.exalto.ai/docs/bundles): List, keep, retry, and understand encrypted `.llmbundle` checkpoints.
+- [Providers](https://llmnotary.exalto.ai/docs/providers): Configure OpenAI, Anthropic, and DeepSeek clients against the local proxy.
+- [Agents](https://llmnotary.exalto.ai/docs/harnesses): Recipes for Codex, Claude Code, and OpenCode.
+- [Finalize](https://llmnotary.exalto.ai/docs/finalize): Turn one pending bundle into a verified trace package.
+- [Artifacts](https://llmnotary.exalto.ai/docs/artifacts): Evidence, disclosed HTTP, normalized OTLP, and manifest responsibilities.
+- [Verify](https://llmnotary.exalto.ai/docs/verify): Offline verification with the trusted notary public key.
+- [Publish](https://llmnotary.exalto.ai/docs/publish): Deliberately submit an already-finalized trace package.
+
+## Core trust boundary
+
+The local proxy handles plaintext and provider credentials. The remote notary participates in the authenticated provider TLS connection without receiving API-key values, prompts, or responses. A pending encrypted bundle is private retry state, not public proof. A finalized trace package is independently verifiable with the trusted notary public key.
+
+## Commands
+
+```sh
+curl -fsSLO https://llmnotary.exalto.ai/install.sh && sh install.sh
+llm-notary vault init
+llm-notary proxy start --provider openai --bundle-dir bundles
+llm-notary bundles list --bundle-dir bundles
+llm-notary finalize bundles/cap-....llmbundle --output verified-trace --trusted-notary-key <notary-public-key>
+llm-notary verify-trace verified-trace --trusted-notary-key <notary-public-key>
+llm-notary publish verified-trace
+```
+
+## Package layout
+
+```text
+verified-trace/
+├── evidence.tlsn
+├── manifest.json
+├── request.disclosed.http
+├── response.http
+└── trace.otlp.json
+```
