@@ -8,13 +8,14 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use axum_extra::extract::cookie::CookieJar;
 use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiResult, AppState, bearer_token, database_error,
+    ApiError, ApiResult, AppState, authenticated_web_user, bearer_token, database_error,
     intake::{ARCHIVE_FORMAT, IntakeStorage},
     unix_timestamp,
 };
@@ -45,6 +46,11 @@ pub struct CreatePublishJob {
 struct CreatePublishJobResponse {
     job: PublishJobResponse,
     upload: Option<UploadInstructions>,
+}
+
+#[derive(Serialize)]
+struct WebPublishJobsResponse {
+    jobs: Vec<PublishJobResponse>,
 }
 
 #[derive(Serialize)]
@@ -177,6 +183,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/publish/jobs", post(create_publish_job))
         .route("/api/publish/jobs/{job_id}", get(get_publish_job))
+        .route("/api/me/publish-jobs", get(list_web_publish_jobs))
         .route(
             "/api/publish/jobs/{job_id}/complete",
             post(complete_publish_job),
@@ -345,6 +352,27 @@ async fn get_publish_job(
         job = load_owned_job(&state, &user_id, &job_id).await?;
     }
     Ok(Json(job_response(&job)))
+}
+
+async fn list_web_publish_jobs(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> ApiResult<Json<WebPublishJobsResponse>> {
+    let user = authenticated_web_user(&state, &jar).await?;
+    let jobs = sqlx::query_as::<_, PublishJobRow>(
+        "SELECT * FROM publish_jobs
+         WHERE user_id = ?
+         ORDER BY created_at DESC, id DESC
+         LIMIT 100",
+    )
+    .bind(user.0)
+    .fetch_all(&state.database)
+    .await
+    .map_err(database_error)?
+    .iter()
+    .map(job_response)
+    .collect();
+    Ok(Json(WebPublishJobsResponse { jobs }))
 }
 
 async fn complete_publish_job(
@@ -677,6 +705,7 @@ fn integer_env(name: &str) -> anyhow::Result<Option<i64>> {
 
 #[cfg(test)]
 mod tests {
+    use axum_extra::extract::cookie::Cookie;
     use sqlx::SqlitePool;
     use url::Url;
 
@@ -787,6 +816,39 @@ mod tests {
             .await
             .expect("job count");
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn web_users_list_only_their_publish_jobs() {
+        let (state, _storage, headers_one, headers_two) = test_state().await;
+        create_publish_job(State(state.clone()), headers_one, Json(request()))
+            .await
+            .expect("own publish job");
+        create_publish_job(State(state.clone()), headers_two, Json(request()))
+            .await
+            .expect("other publish job");
+
+        let now = unix_timestamp().expect("time");
+        let web_token = "web-publish-session";
+        sqlx::query(
+            "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
+             VALUES (?, 'user-1', ?, ?)",
+        )
+        .bind(certified::sha256_hex(web_token.as_bytes()))
+        .bind(now + super::super::SESSION_TTL_SECS)
+        .bind(now)
+        .execute(&state.database)
+        .await
+        .expect("web session");
+        let jar = CookieJar::new().add(Cookie::new(
+            super::super::SESSION_COOKIE,
+            web_token.to_owned(),
+        ));
+
+        let response = list_web_publish_jobs(State(state), jar)
+            .await
+            .expect("publish jobs");
+        assert_eq!(response.0.jobs.len(), 1);
     }
 
     #[tokio::test]
