@@ -105,11 +105,13 @@ struct DeferredFinalizeRequest {
 pub type HttpRequestBody = BoxBody<Bytes, std::convert::Infallible>;
 
 pub fn chunked_request_body(bytes: Bytes) -> HttpRequestBody {
-    let frames = bytes
-        .chunks(REQUEST_WRITE_CHUNK)
-        .map(|chunk| Ok(Frame::data(Bytes::copy_from_slice(chunk))))
-        .collect::<Vec<Result<_, std::convert::Infallible>>>();
-    StreamBody::new(futures::stream::iter(frames)).boxed()
+    let length = bytes.len();
+    let frames =
+        futures::stream::iter((0..length).step_by(REQUEST_WRITE_CHUNK).map(move |start| {
+            let end = start.saturating_add(REQUEST_WRITE_CHUNK).min(length);
+            Ok(Frame::data(bytes.slice(start..end)))
+        }));
+    StreamBody::new(frames).boxed()
 }
 
 fn deferred_transcript_commit(transcript: &Transcript) -> Result<TranscriptCommitConfig> {
@@ -1572,6 +1574,37 @@ mod tests {
         assert!(!capture_debug.contains(&format!("{:?}", capture.evidence)));
         assert!(!capture_debug.contains(&format!("{:?}", capture.request_disclosed)));
         assert!(!capture_debug.contains(&format!("{:?}", capture.response)));
+    }
+
+    #[tokio::test]
+    async fn request_body_frames_preserve_bytes_and_boundaries() {
+        for (length, expected_lengths) in [
+            (0, vec![]),
+            (1, vec![1]),
+            (REQUEST_WRITE_CHUNK, vec![REQUEST_WRITE_CHUNK]),
+            (REQUEST_WRITE_CHUNK + 1, vec![REQUEST_WRITE_CHUNK, 1]),
+            (
+                REQUEST_WRITE_CHUNK * 2,
+                vec![REQUEST_WRITE_CHUNK, REQUEST_WRITE_CHUNK],
+            ),
+        ] {
+            let input = (0..length)
+                .map(|index| (index % 251) as u8)
+                .collect::<Vec<_>>();
+            let mut body = chunked_request_body(Bytes::from(input.clone()));
+            let mut output = Vec::new();
+            let mut actual_lengths = Vec::new();
+            while let Some(frame) = body.frame().await {
+                let frame = frame.unwrap();
+                let data = frame
+                    .into_data()
+                    .unwrap_or_else(|_| panic!("request body emitted a non-data frame"));
+                actual_lengths.push(data.len());
+                output.extend_from_slice(&data);
+            }
+            assert_eq!(actual_lengths, expected_lengths);
+            assert_eq!(output, input);
+        }
     }
 
     #[test]
