@@ -10,6 +10,7 @@ import './branding.css';
 import './account.css';
 import './collections.css';
 import './docs.css';
+import './legal.css';
 import './relay-animation.css';
 import { RelayAnimation } from './RelayAnimation';
 
@@ -22,7 +23,29 @@ function PenMark({ inverse = false }) {
 }
 
 function HeroSignalField() {
-  return <div className="hero-signal-field" aria-hidden="true"><svg viewBox="0 0 1440 760" preserveAspectRatio="xMaxYMid slice"><g className="signal-grid"><path d="M840 150h480M840 280h480M840 410h480M840 540h480M880 110v470M1040 110v470M1200 110v470" /></g><g className="signal-traces"><path className="signal-trace signal-trace--one" d="M840 150h200v130h160v130h120" /><path className="signal-trace signal-trace--two" d="M840 540h200V410h160V280h120" /><path className="signal-trace signal-trace--three" d="M880 150v130h160v130h160v130" /></g><g className="signal-cells"><rect x="1029" y="139" width="22" height="22" /><rect x="1189" y="269" width="22" height="22" /><rect x="1029" y="399" width="22" height="22" /><rect x="1189" y="529" width="22" height="22" /></g><g className="signal-marks"><rect className="signal-mark signal-mark--one" x="1037" y="276" width="7" height="7" /><rect className="signal-mark signal-mark--two" x="1197" y="407" width="6" height="6" /><circle className="signal-mark signal-mark--three" cx="1040" cy="536" r="4" /></g></svg></div>;
+  const xLines = Array.from({ length: 10 }, (_, index) => 80 + index * 160);
+  const yLines = Array.from({ length: 7 }, (_, index) => 90 + index * 120);
+  const routes = [
+    [[80, 210], [400, 210], [400, 330], [720, 330], [720, 570], [1040, 570], [1040, 690], [1360, 690]],
+    [[80, 570], [240, 570], [240, 450], [560, 450], [560, 210], [880, 210], [880, 90], [1360, 90]],
+    [[80, 330], [240, 330], [240, 90], [720, 90], [720, 210], [1200, 210], [1200, 450], [1360, 450]],
+    [[80, 690], [400, 690], [400, 570], [720, 570], [720, 450], [1040, 450], [1040, 330], [1360, 330]],
+    [[80, 90], [240, 90], [240, 210], [400, 210], [400, 450], [880, 450], [880, 570], [1360, 570]],
+    [[80, 450], [560, 450], [560, 690], [880, 690], [880, 330], [1200, 330], [1200, 210], [1360, 210]],
+  ];
+  const pathFor = (points) => points.map(([x, y], index) => {
+    if (!index) return `M${x} ${y}`;
+    const [previousX] = points[index - 1];
+    return previousX === x ? `V${y}` : `H${x}`;
+  }).join(' ');
+  const tracePaths = routes.map(pathFor);
+  const cells = [[2, 1], [4, 2], [7, 4], [1, 5], [5, 0], [8, 3], [3, 4], [6, 5], [0, 2], [9, 1], [4, 5], [7, 0]];
+  const particles = [
+    [0, '3.8s', '-1.1s'], [1, '4.4s', '-2.7s'], [2, '3.3s', '-.5s'], [3, '4.9s', '-3.5s'],
+    [4, '3.6s', '-2.1s'], [5, '4.2s', '-.8s'], [0, '5.1s', '-3.8s'], [1, '3.5s', '-1.7s'],
+    [2, '4.6s', '-3.1s'], [3, '3.9s', '-.2s'], [4, '5.4s', '-4.4s'], [5, '3.2s', '-2.4s'],
+  ];
+  return <div className="hero-signal-field" aria-hidden="true"><svg viewBox="0 0 1440 840" preserveAspectRatio="xMidYMid slice"><g className="signal-grid">{yLines.map((y) => <path key={`h-${y}`} d={`M80 ${y}H1360`} />)}{xLines.map((x) => <path key={`v-${x}`} d={`M${x} 90V810`} />)}</g><g className="signal-traces">{tracePaths.map((path, index) => <path key={path} className={`signal-trace signal-trace--${index + 1}`} d={path} />)}</g><g className="signal-cells">{cells.map(([xIndex, yIndex]) => <rect key={`${xIndex}-${yIndex}`} x={xLines[xIndex] - 11} y={yLines[yIndex] - 11} width="22" height="22" />)}</g><g className="signal-marks">{particles.map(([routeIndex, duration, begin], index) => <circle key={`${routeIndex}-${begin}`} className="signal-mark" r={index % 3 === 0 ? 4 : 3.25}><animateMotion dur={duration} begin={begin} repeatCount="indefinite" path={tracePaths[routeIndex]} /></circle>)}</g></svg></div>;
 }
 
 function CloseIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>; }
@@ -49,7 +72,41 @@ function Header({ user, onLogout, theme, onThemeChange }) {
 }
 
 function Footer() {
-  return <footer className="site-footer"><span>© 2026 LLM Notary</span></footer>;
+  return <footer className="site-footer"><span>© 2026 LLM Notary</span><nav aria-label="Legal"><a href="#/privacy">Privacy</a><a href="#/terms">Terms</a></nav></footer>;
+}
+
+const legalPages = {
+  privacy: {
+    eyebrow: 'Legal · Privacy',
+    title: 'Privacy Policy',
+    intro: 'This policy explains the information handled by the LLM Notary website, publishing service, and local tooling.',
+    sections: [
+      ['Local capture stays local', 'The local proxy handles application plaintext and provider credentials. Within the protocol, the remote notary witnesses encrypted traffic and protocol metadata; it does not receive your API key, prompt, or response plaintext.'],
+      ['Account information', 'If you sign in with GitHub, we use the identity information required to operate your account, including your GitHub login and account identifier. The GitHub authorization flow is limited to identity and does not request repository, organization, or email access.'],
+      ['Published evidence', 'Publishing is an explicit action. A submitted package is checked before admission, and an admitted trace, platform stamp, and related public metadata may be available to anyone. Finalized artifacts redact credential and session values, but disclosed trace content may still contain information you choose to publish. Do not publish content you are not permitted to share.'],
+      ['Service processing', 'The service processes submissions to verify and publish them. Private intake objects are removed after a successful admission flow; public artifacts remain available as part of the collection.'],
+      ['Your choices', 'You choose whether to publish a finalized trace. Keep private capture bundles and credentials under your control, and avoid uploading them to public collections. For privacy questions or requests, contact the LLM Notary operator through the project’s published support channel.'],
+      ['Updates', 'We may revise this policy as the service evolves. The current version will always be available on this page.'],
+    ],
+  },
+  terms: {
+    eyebrow: 'Legal · Terms',
+    title: 'Terms of Service',
+    intro: 'These terms govern your use of the LLM Notary website, local tooling, and publishing service.',
+    sections: [
+      ['Using the service', 'Use LLM Notary lawfully and only with content, credentials, and provider accounts you are authorized to use. Do not interfere with the service, bypass access controls, or submit material that infringes the rights of others.'],
+      ['Your publications', 'You are responsible for every trace or artifact you choose to publish. Publishing is an explicit consent boundary: once a submission is admitted, its public trace, stamp, and related metadata can be accessed and independently verified by others.'],
+      ['What verification means', 'LLM Notary verification concerns the cryptographic and protocol evidence described in the published artifacts. It does not independently establish that an underlying claim, model output, or user interpretation is true, complete, safe, or suitable for a particular purpose.'],
+      ['Availability', 'The service is provided on an “as available” basis and may change, be suspended, or be discontinued. Preserve the local materials you need; do not rely on the service as your only record or backup.'],
+      ['Your responsibilities', 'You are responsible for maintaining the security of your devices, local captures, API credentials, and account. Do not publish confidential, personal, or otherwise protected information unless you have a clear right to do so.'],
+      ['Changes to these terms', 'We may update these terms as the product develops. Continued use after an updated version is posted means you accept the revised terms.'],
+    ],
+  },
+};
+
+function LegalPage({ pageKey }) {
+  const page = legalPages[pageKey];
+  return <main className="legal-shell"><span className="eyebrow">{page.eyebrow}</span><h1>{page.title}</h1><p className="legal-intro">{page.intro}</p><p className="legal-updated">Last updated: July 2026</p><div className="legal-sections">{page.sections.map(([heading, copy]) => <section key={heading}><h2>{heading}</h2><p>{copy}</p></section>)}</div></main>;
 }
 
 function Diagram() {
@@ -612,7 +669,7 @@ function App() {
   const path = route.replace(/^#\/?/, '');
   const routePath = path.split('?')[0];
   const [section, page] = routePath.split('/');
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} /> : (section === 'collections' || section === 'library') ? <Collections onVerify={() => setShowVerifier(true)} /> : section === 'dashboard' && user ? <Dashboard user={user} /> : <Landing onVerify={() => setShowVerifier(true)} />}<Footer />{showVerifier && <VerifierDialog onClose={() => setShowVerifier(false)} />}</>;
+  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} /> : (section === 'collections' || section === 'library') ? <Collections onVerify={() => setShowVerifier(true)} /> : section === 'dashboard' && user ? <Dashboard user={user} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing onVerify={() => setShowVerifier(true)} />}<Footer />{showVerifier && <VerifierDialog onClose={() => setShowVerifier(false)} />}</>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
