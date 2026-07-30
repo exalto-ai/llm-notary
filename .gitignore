@@ -1,7 +1,13 @@
 /target/
+# Local evidence may include prompts, responses, and authentication material.
+/bundles/
+/captures/
 /traces/
+*.llmbundle
 .env
 *.key
+*.pem
+*.sqlite
 *.bundle.json
 llm-notary-api.db
 js/app/node_modules/

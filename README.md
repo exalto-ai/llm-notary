@@ -4,6 +4,15 @@ LLM Notary is available under either the [MIT license](LICENSE-MIT) or the
 [Apache License, Version 2.0](LICENSE-APACHE), at your option. See
 [third-party notices](THIRD-PARTY-NOTICES.md) for distributed dependencies.
 
+For local development, enable the checked-in pre-commit guard once per clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+It rejects sensitive local bundles, capture directories, and obvious private
+keys or access tokens before they are staged.
+
 LLM Notary captures provider-origin model behavior and turns selected calls
 into independently verifiable OpenTelemetry traces. A local proxy receives an
 ordinary API request and performs a real TLSNotary Proxy-TLS session with a
