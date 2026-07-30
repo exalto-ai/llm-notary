@@ -428,36 +428,106 @@ function sessionDate(unixSeconds) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(unixSeconds * 1000));
 }
 
+function fileSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function publishState(state) {
+  if (state === 'admitted') return { label: 'Verified', tone: 'verified' };
+  if (state === 'queued') return { label: 'Queued', tone: 'pending' };
+  if (state === 'verifying') return { label: 'Verifying', tone: 'pending' };
+  if (state === 'uploading') return { label: 'Uploading', tone: 'pending' };
+  if (state === 'rejected') return { label: 'Rejected', tone: 'attention' };
+  if (state === 'expired') return { label: 'Expired', tone: 'attention' };
+  if (state === 'failed') return { label: 'Failed', tone: 'attention' };
+  return { label: state, tone: 'neutral' };
+}
+
 function Dashboard({ user }) {
   const [sessions, setSessions] = useState(null);
-  const [error, setError] = useState(null);
+  const [sessionError, setSessionError] = useState(null);
   const [revoking, setRevoking] = useState(null);
+  const [jobs, setJobs] = useState(null);
+  const [jobError, setJobError] = useState(null);
+  const [publicationById, setPublicationById] = useState({});
 
   useEffect(() => {
     let cancelled = false;
     fetch('/api/cli/sessions', { credentials: 'same-origin' })
       .then(async (response) => response.ok ? response.json() : Promise.reject(new Error((await response.json().catch(() => ({}))).error || 'Could not load CLI sessions.')))
       .then((payload) => { if (!cancelled) setSessions(payload.sessions); })
-      .catch((reason) => { if (!cancelled) setError(reason.message); });
+      .catch((reason) => { if (!cancelled) setSessionError(reason.message); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/me/publish-jobs', { credentials: 'same-origin' })
+      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error((await response.json().catch(() => ({}))).error || 'Could not load your traces.')))
+      .then((payload) => { if (!cancelled) setJobs(payload.jobs); })
+      .catch((reason) => { if (!cancelled) setJobError(reason.message); });
+    fetch('/api/public/collections/examples')
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload) => {
+        if (!cancelled && payload?.publications) {
+          setPublicationById(Object.fromEntries(payload.publications.map((publication) => [publication.id, publication])));
+        }
+      })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, []);
 
   const revoke = async (session) => {
     if (!window.confirm(`Revoke ${session.device_name}? This CLI will need to sign in again before it can publish.`)) return;
     setRevoking(session.id);
-    setError(null);
+    setSessionError(null);
     try {
       const response = await fetch(`/api/cli/sessions/${encodeURIComponent(session.id)}`, { method: 'DELETE', credentials: 'same-origin' });
       if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Could not revoke this CLI session.');
       setSessions((current) => current?.filter((item) => item.id !== session.id) || []);
     } catch (reason) {
-      setError(reason.message);
+      setSessionError(reason.message);
     } finally {
       setRevoking(null);
     }
   };
 
-  return <main className="dashboard-shell"><span className="eyebrow">Account</span><h1>Welcome, {user.github_login}.</h1><p>Your LLM Notary account is ready to publish standardized traces and manage the platform stamps attached to your collections.</p><div className="dashboard-card"><span>Signed in with GitHub</span><b>{user.github_login}</b><a href="#/collections">Browse collections</a></div><section className="dashboard-sessions" aria-labelledby="cli-sessions-title"><header><div><span className="eyebrow">CLI access</span><h2 id="cli-sessions-title">Authorized devices</h2></div><p>Revoke a device to require a new browser sign-in before it can publish.</p></header>{error && <p className="dashboard-session-error" role="alert">{error}</p>}{sessions === null && !error ? <p className="dashboard-session-empty">Loading authorized devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => revoke(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No active CLI devices are authorized.</p>}</section></main>;
+  const verifiedCount = jobs?.filter((job) => job.state === 'admitted').length || 0;
+  const activeCount = jobs?.filter((job) => ['uploading', 'queued', 'verifying'].includes(job.state)).length || 0;
+
+  return <main className="dashboard-shell">
+    <span className="eyebrow">Account</span>
+    <h1>Your traces.</h1>
+    <p>Review publication status and download the public evidence attached to your account.</p>
+    <div className="dashboard-summary">
+      <div><span>GitHub account</span><b>{user.github_login}</b></div>
+      <div><span>Verified</span><b>{jobs === null ? '—' : verifiedCount}</b></div>
+      <div><span>In progress</span><b>{jobs === null ? '—' : activeCount}</b></div>
+    </div>
+    <section className="dashboard-traces" aria-labelledby="published-traces-title">
+      <header><div><span className="eyebrow">Publications</span><h2 id="published-traces-title">Your traces</h2></div><a href="#/docs/publish">Publish from the CLI</a></header>
+      {jobError && <p className="dashboard-session-error" role="alert">{jobError}</p>}
+      {jobs === null && !jobError ? <p className="dashboard-session-empty">Loading your traces…</p> : jobs?.length ? <div className="dashboard-trace-list">{jobs.map((job) => {
+        const publication = publicationById[job.id];
+        const status = publishState(job.state);
+        return <article key={job.id}>
+          <div className="dashboard-trace-copy">
+            <div><span className={`dashboard-trace-state dashboard-trace-state--${status.tone}`}><i aria-hidden="true" />{status.label}</span><time>{sessionDate(job.admitted_at || job.updated_at)}</time></div>
+            <h3>{publication?.title || `Trace ${job.id.slice(0, 8)}`}</h3>
+            <p>{publication ? `${publication.provider} · ${publication.model} · ${publication.surface}` : `${fileSize(job.size_bytes)} · ${job.id}`}</p>
+            {job.failure_code && <p className="dashboard-trace-failure">Reason: {job.failure_code.replaceAll('_', ' ')}</p>}
+          </div>
+          <div className="dashboard-trace-actions">
+            {job.trace_url && <a href={job.trace_url} target="_blank" rel="noreferrer">Trace</a>}
+            {job.stamp_url && <a href={job.stamp_url} target="_blank" rel="noreferrer">Stamp</a>}
+          </div>
+        </article>;
+      })}</div> : <div className="dashboard-empty"><b>No published traces yet.</b><p>Finalize a bundle, then run <code>{publishCommand}</code>.</p><a href="#/docs/publish">Read the publishing guide</a></div>}
+    </section>
+    <section className="dashboard-sessions" aria-labelledby="cli-sessions-title"><header><div><span className="eyebrow">CLI access</span><h2 id="cli-sessions-title">Authorized devices</h2></div><p>Revoke a device to require a new browser sign-in before it can publish.</p></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading authorized devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => revoke(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No active CLI devices are authorized.</p>}</section>
+  </main>;
 }
 
 function CliApproval({ route, user }) {
