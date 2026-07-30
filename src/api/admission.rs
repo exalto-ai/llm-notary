@@ -172,7 +172,7 @@ async fn examples_collection(State(state): State<AppState>) -> ApiResult<Json<Co
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
-    publications.sort_by(|left, right| right.admitted_at.cmp(&left.admitted_at));
+    publications.sort_by_key(|publication| std::cmp::Reverse(publication.admitted_at));
     Ok(Json(CollectionResponse {
         format: "llm-notary/public-collection/v1",
         slug: collection.slug,
@@ -683,9 +683,7 @@ async fn reject_claim(
     code: &'static str,
     actual: Option<(i64, String)>,
 ) {
-    let now = unix_timestamp()
-        .map(|value| value)
-        .unwrap_or(job.updated_at);
+    let now = unix_timestamp().unwrap_or(job.updated_at);
     let (actual_size, actual_sha256) = actual
         .map(|(size, sha256)| (Some(size), Some(sha256)))
         .unwrap_or((None, None));
@@ -712,9 +710,7 @@ async fn reject_claim(
 
 async fn retry_claim(state: &AppState, job: &PublishJobRow, claim: &str, error: anyhow::Error) {
     tracing::error!(job_id = %job.id, %error, "publication admission will retry");
-    let now = unix_timestamp()
-        .map(|value| value)
-        .unwrap_or(job.updated_at);
+    let now = unix_timestamp().unwrap_or(job.updated_at);
     if let Err(update_error) = sqlx::query(
         "UPDATE publish_jobs
          SET state = 'queued', updated_at = ?, verification_claim = NULL,
@@ -739,9 +735,7 @@ async fn purge_private_object(state: &AppState, job: &PublishJobRow) {
         .await
     {
         Ok(()) => {
-            let now = unix_timestamp()
-                .map(|value| value)
-                .unwrap_or(job.updated_at);
+            let now = unix_timestamp().unwrap_or(job.updated_at);
             if let Err(error) = sqlx::query(
                 "UPDATE publish_jobs SET private_purged_at = ?, updated_at = ?
                  WHERE id = ? AND private_purged_at IS NULL",
