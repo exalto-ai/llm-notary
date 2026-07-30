@@ -83,6 +83,17 @@ without exposing internal error strings.
 Authenticated `GET /api/publish/jobs/{id}` also returns `trace_url` and
 `stamp_url` after admission.
 
+## CLI download
+
+`llm-notary download <publication-id>` first resolves the public metadata
+endpoint, then accepts only its same-origin canonical trace and stamp paths.
+It writes both artifacts into a staging directory and renames that directory
+into place only after both downloads are complete. Existing output requires
+`--overwrite`; failed transfer or verification leaves the existing directory
+unchanged. `--verify` fetches the platform directory from the same configured
+API origin and applies the independent public-trace verifier before saving the
+download.
+
 ## Key handling
 
 The platform stamp key is separate from every notary key. Production mounts a
