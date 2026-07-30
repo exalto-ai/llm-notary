@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   deploy:
-    runs-on: llmnotary-docker
+    runs-on: ubuntu-24.04
     environment: production
     env:
       NOTARY_IMAGE: ttl.sh/llm-notary-notary-${{ github.run_id }}-${{ github.run_attempt }}:24h
