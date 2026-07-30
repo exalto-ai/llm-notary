@@ -1,19 +1,19 @@
-# GitHub Actions Runner Controller
+# GitHub Actions Runner Controller fallback
 
-LLM Notary runs its Linux GitHub Actions jobs on repository-scoped, ephemeral
-ARC runner scale sets in the `kevz-gpu` Kubernetes cluster.
+LLM Notary normally runs CI and deployment jobs on GitHub-hosted runners. This
+directory retains the repository-scoped, ephemeral ARC runner scale sets in
+the `kevz-gpu` Kubernetes cluster as an operational fallback if hosted-runner
+capacity or budget becomes unavailable again.
 
-- `llmnotary-ci` runs Rust and SPA checks without Docker. It prefers the CPU
+- `llmnotary-ci` can run Rust and SPA checks without Docker. It prefers the CPU
   worker, but can use the high-memory GPU/control-plane node when the worker's
   requested memory is already reserved.
-- `llmnotary-docker` runs Compose validation, Buildx image builds, and the
+- `llmnotary-docker` can run Compose validation, Buildx image builds, and the
   DigitalOcean deployment workflow. Its Docker-in-Docker sidecar is privileged,
-  so it remains restricted to the CPU worker. It can run two jobs when that
-  node has capacity; otherwise Kubernetes leaves the extra runner pending. Its
-  runner and DinD sidecar reserve 4 GiB together. BuildKit itself has a 20 GiB
-  memory limit for transient build and link peaks.
-- The release workflow intentionally remains on GitHub-hosted runners because
-  it builds macOS and Windows artifacts.
+  so it remains restricted to the CPU worker.
+
+To reactivate ARC, change the applicable workflow `runs-on` values from
+`ubuntu-24.04` back to `llmnotary-ci` or `llmnotary-docker`.
 
 ## Install or update
 
