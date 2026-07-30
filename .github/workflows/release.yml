@@ -62,7 +62,7 @@ jobs:
           suffix=""
           if [[ "$TARGET" == *windows* ]]; then suffix=".exe"; fi
           cp "target/$TARGET/release/llm-notary${suffix}" "$folder/"
-          cp LICENSE* "$folder/" 2>/dev/null || true
+          cp LICENSE* THIRD-PARTY-NOTICES.md "$folder/"
           if [[ "$ARCHIVE" == "zip" ]]; then
             archive="${folder}.zip"
             7z a "$archive" "$folder" >/dev/null
