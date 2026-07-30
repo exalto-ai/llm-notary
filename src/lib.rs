@@ -5,7 +5,7 @@
 //! signs an attestation for the committed transcript.
 
 use std::{
-    fs,
+    fmt, fs,
     future::IntoFuture,
     io::{self, Write as _},
     net::SocketAddr,
@@ -252,11 +252,22 @@ fn validate_redacted_headers(bytes: &[u8], sensitive: &[&str], label: &str) -> R
 
 /// The proof material retained while constructing a selectively disclosed
 /// provider capture.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct LocalProof {
     pub server_name: String,
     pub attestation: Vec<u8>,
     pub secrets: Vec<u8>,
+}
+
+impl fmt::Debug for LocalProof {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("LocalProof")
+            .field("server_name", &self.server_name)
+            .field("attestation", &RedactedBytes(self.attestation.len()))
+            .field("secrets", &RedactedBytes(self.secrets.len()))
+            .finish()
+    }
 }
 
 /// A notary-signed, end-of-stream binding for a deferred private proof.
@@ -360,7 +371,7 @@ fn issue_deferred_receipt(
 /// keys required to produce a proof later. Store it only with user-only file
 /// permissions and encrypt it at rest when the platform provides a keychain
 /// or equivalent facility.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct DeferredBundle {
     format: String,
     receipt: DeferredReceipt,
@@ -369,6 +380,21 @@ pub struct DeferredBundle {
     created_at_unix_ms: u64,
     handshake_data: HandshakeData,
     checkpoint: Vec<u8>,
+}
+
+impl fmt::Debug for DeferredBundle {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DeferredBundle")
+            .field("format", &self.format)
+            .field("receipt", &self.receipt)
+            .field("capture_id", &self.capture_id)
+            .field("provider_name", &self.provider_name)
+            .field("created_at_unix_ms", &self.created_at_unix_ms)
+            .field("handshake_data", &self.handshake_data)
+            .field("checkpoint", &RedactedBytes(self.checkpoint.len()))
+            .finish()
+    }
 }
 
 impl DeferredBundle {
@@ -512,12 +538,34 @@ pub struct CaptureArtifacts {
 /// Private, local-first record of one provider exchange. `request_disclosed`
 /// intentionally contains the authenticated selective disclosure rather than
 /// the original request: API-key values are never persisted.
-#[derive(Debug)]
 pub struct Capture {
     pub manifest: CaptureManifest,
     pub evidence: Vec<u8>,
     pub request_disclosed: Vec<u8>,
     pub response: Vec<u8>,
+}
+
+impl fmt::Debug for Capture {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Capture")
+            .field("manifest", &self.manifest)
+            .field("evidence", &RedactedBytes(self.evidence.len()))
+            .field(
+                "request_disclosed",
+                &RedactedBytes(self.request_disclosed.len()),
+            )
+            .field("response", &RedactedBytes(self.response.len()))
+            .finish()
+    }
+}
+
+struct RedactedBytes(usize);
+
+impl fmt::Debug for RedactedBytes {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "<redacted: {} bytes>", self.0)
+    }
 }
 
 /// A streaming provider response whose private deferred bundle becomes
@@ -1505,6 +1553,28 @@ mod tests {
     }
 
     #[test]
+    fn private_artifact_debug_output_is_redacted() {
+        let proof = LocalProof {
+            server_name: "api.example".to_owned(),
+            attestation: b"public-attestation".to_vec(),
+            secrets: b"proof-secret-sentinel".to_vec(),
+        };
+        let proof_debug = format!("{proof:?}");
+        assert!(proof_debug.contains("api.example"));
+        assert!(proof_debug.contains("<redacted: 18 bytes>"));
+        assert!(proof_debug.contains("<redacted: 21 bytes>"));
+        assert!(!proof_debug.contains(&format!("{:?}", proof.attestation)));
+        assert!(!proof_debug.contains(&format!("{:?}", proof.secrets)));
+
+        let capture = test_capture();
+        let capture_debug = format!("{capture:?}");
+        assert!(capture_debug.contains(&capture.manifest.capture_id));
+        assert!(!capture_debug.contains(&format!("{:?}", capture.evidence)));
+        assert!(!capture_debug.contains(&format!("{:?}", capture.request_disclosed)));
+        assert!(!capture_debug.contains(&format!("{:?}", capture.response)));
+    }
+
+    #[test]
     fn disclosed_http_rejects_visible_credentials_and_cookies() {
         let response = b"HTTP/1.1 200 OK\r\nset-cookie:\0\0\0\r\n\r\n{}";
         assert!(
@@ -1824,6 +1894,10 @@ mod tests {
         let bundle = bincode::serialize(&bundle).unwrap();
         drop(state);
         let bundle: DeferredBundle = bincode::deserialize(&bundle).unwrap();
+        let bundle_debug = format!("{bundle:?}");
+        assert!(bundle_debug.contains("cap-test"));
+        assert!(bundle_debug.contains(&format!("<redacted: {} bytes>", bundle.checkpoint.len())));
+        assert!(!bundle_debug.contains(&format!("{:?}", bundle.checkpoint)));
 
         let mut record_tampered = bundle.clone();
         *record_tampered.checkpoint.last_mut().unwrap() ^= 1;
