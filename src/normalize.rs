@@ -47,7 +47,7 @@ pub fn verified_inference_from_capture(
     let request: Value =
         serde_json::from_str(&request_body).context("parsing provider request JSON")?;
     match manifest.provider.name.as_str() {
-        "openai" | "deepseek" => {
+        "openai" | "deepseek" | "openrouter" => {
             parse_openai_compatible(manifest, request_line, request, &response_body)
         }
         "anthropic" => parse_anthropic(manifest, request, &response_body),
@@ -756,7 +756,10 @@ mod tests {
             created_at_unix_ms: 1_735_689_600_000,
             provider: CaptureProvider {
                 name: provider.to_owned(),
-                host: format!("api.{provider}.com"),
+                host: match provider {
+                    "openrouter" => "openrouter.ai".to_owned(),
+                    _ => format!("api.{provider}.com"),
+                },
             },
             notary: CaptureNotary {
                 public_key: "fixture".to_owned(),
@@ -783,6 +786,7 @@ mod tests {
                 include_str!("../tests/fixtures/normalize/anthropic-messages.json")
             }
             "deepseek-chat" => include_str!("../tests/fixtures/normalize/deepseek-chat.json"),
+            "openrouter-chat" => include_str!("../tests/fixtures/normalize/openrouter-chat.json"),
             _ => panic!("unknown fixture {name}"),
         };
         serde_json::from_str(source).expect("fixture JSON")
@@ -935,6 +939,7 @@ mod tests {
             ("openai-responses", "openai"),
             ("anthropic-messages", "anthropic"),
             ("deepseek-chat", "deepseek"),
+            ("openrouter-chat", "openrouter"),
         ] {
             let fixture = fixture(name);
             let request = http(&serde_json::to_string(&fixture["request"]).expect("request"));
@@ -980,6 +985,41 @@ mod tests {
             .expect("trace UTF-8");
         assert!(!trace.contains("test-secret"));
         assert!(!trace.contains("another-secret"));
+    }
+
+    #[test]
+    fn openrouter_chat_preserves_namespaced_model_and_tool_context() {
+        let fixture = fixture("openrouter-chat");
+        let request = format!(
+            "POST /api/v1/chat/completions HTTP/1.1\r\nAuthorization: Bearer openrouter-secret\r\nHTTP-Referer: https://example.test\r\nX-Title: Example app\r\n\r\n{}",
+            serde_json::to_string(&fixture["request"]).expect("request")
+        );
+        let direct = response(&serde_json::to_string(&fixture["response"]).expect("response"));
+        let streamed = response(fixture["sse"].as_str().expect("SSE"));
+        let direct = verified_inference_from_capture(&manifest("openrouter"), &request, &direct)
+            .expect("OpenRouter JSON capture");
+        let streamed =
+            verified_inference_from_capture(&manifest("openrouter"), &request, &streamed)
+                .expect("OpenRouter SSE capture");
+
+        assert_eq!(direct.provider, "openrouter");
+        assert_eq!(direct.server_address, "openrouter.ai");
+        assert_eq!(direct.request_model, "anthropic/claude-sonnet-4.5");
+        assert_eq!(direct.input_messages, streamed.input_messages);
+        assert_eq!(direct.output_messages, streamed.output_messages);
+        assert_eq!(direct.input_tokens, Some(11));
+        assert_eq!(direct.output_tokens, Some(7));
+        assert_eq!(direct.finish_reasons, vec!["tool_calls".to_owned()]);
+        assert_eq!(
+            direct.input_messages[2]["parts"][0]["type"],
+            "tool_call_response"
+        );
+        assert_eq!(direct.output_messages[0]["parts"][1]["type"], "tool_call");
+
+        let trace =
+            String::from_utf8(render_public_trace(&[direct]).expect("trace")).expect("trace UTF-8");
+        assert!(!trace.contains("openrouter-secret"));
+        assert!(!trace.contains("https://example.test"));
     }
 
     #[test]

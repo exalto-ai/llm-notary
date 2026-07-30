@@ -15,8 +15,8 @@ TLS records.
   allowlisted provider, while the local machine performs the TLS handshake.
   This avoids MPC-TLS's per-byte online cost without giving the notary the API
   key or plaintext trace.
-- OpenAI (`api.openai.com`), Anthropic (`api.anthropic.com`), and DeepSeek
-  (`api.deepseek.com`) host allowlist.
+- OpenAI (`api.openai.com`), Anthropic (`api.anthropic.com`), DeepSeek
+  (`api.deepseek.com`), and OpenRouter (`openrouter.ai`) host allowlist.
 - At the end of each provider response, the proxy encrypts a client-held
   `.llmbundle`. The bundle contains the private transcript checkpoint and a
   notary-signed receipt, but does not perform the expensive private proof.
@@ -143,6 +143,36 @@ curl http://127.0.0.1:8787/chat/completions \
 
 The default DeepSeek endpoint is `https://api.deepseek.com` (without a `/v1`
 suffix); the proxy preserves the requested API path.
+
+### OpenRouter
+
+OpenRouter's OpenAI-compatible Chat Completions API is supported through the
+explicit `openrouter` adapter. Start the proxy, point an OpenAI-compatible SDK
+at `http://127.0.0.1:8787/api/v1`, and retain `OPENROUTER_API_KEY` in the
+client environment:
+
+```bash
+cargo run --bin llm-notary -- proxy start --provider openrouter --bundle-dir bundles
+
+curl http://127.0.0.1:8787/api/v1/chat/completions \
+  -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+  -H 'Content-Type: application/json' \
+  -H 'HTTP-Referer: https://example.test' \
+  -H 'X-Title: LLM Notary example' \
+  -d '{"model":"openai/gpt-4o","stream":true,"messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}'
+```
+
+The verified provider is always **OpenRouter** at `openrouter.ai`. A model slug
+such as `openai/gpt-4o` or `anthropic/claude-sonnet-4.5` is authenticated model
+metadata; it does not prove a direct TLS connection to OpenAI, Anthropic, or
+another upstream model vendor. `Authorization` is redacted from finalized
+captures. Optional `HTTP-Referer` and `X-Title` attribution headers are safe
+metadata and retain their header names and values in the private capture.
+
+To exercise a real streamed request deliberately, run the command above with
+an `OPENROUTER_API_KEY`, wait for the encrypted bundle, then use `finalize` and
+`verify-trace` as described above. This is an opt-in network and billing check;
+the regular test suite uses deterministic fixtures.
 
 The older private-capture verifier remains available for capture directories:
 
