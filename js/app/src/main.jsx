@@ -325,6 +325,7 @@ const docPages = {
         ],
       },
       { heading: 'Package versus publication', body: 'The finalized source package uses manifest.json. A later public trace pairs the canonical trace.otlp.json with a platform-issued stamp.json; that public stamp does not replace the private TLSNotary evidence.' },
+      { heading: 'Download a Library trace', code: 'llm-notary download <publication-id> --verify', body: 'The command resolves the publication through the public API, downloads trace.otlp.json and stamp.json into a new local directory, and verifies canonical bytes, trace hash, contract versions, platform key ID, stamp issuer, and signature before reporting success. Pass --output for another directory; existing output requires --overwrite.' },
       { heading: 'Complete context is intentional', body: 'The raw verified package can include system context, tool definitions, session metadata, prompts, responses, and tool results. Inspect it before sharing. A future selective publication format can disclose less without weakening what the private source package proves.' },
       { heading: 'Verify locally', code: 'llm-notary verify-trace verified-trace' },
       {

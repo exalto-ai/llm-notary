@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod bundle;
+pub mod download;
 pub mod notary;
 pub mod proxy;
 pub mod public;
