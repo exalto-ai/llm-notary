@@ -51,7 +51,6 @@ function HeroSignalField() {
   return <div className="hero-signal-field" aria-hidden="true"><svg viewBox="0 0 1440 840" preserveAspectRatio="xMidYMid slice"><g className="signal-grid">{yLines.map((y) => <path key={`h-${y}`} d={`M-80 ${y}H1520`} />)}{xLines.map((x) => <path key={`v-${x}`} d={`M${x} -30V930`} />)}</g><g className="signal-traces">{tracePaths.map((path, index) => <path key={path} className={`signal-trace signal-trace--${index + 1}`} d={path} />)}</g><g className="signal-cells">{cells.map(([xIndex, yIndex]) => <rect key={`${xIndex}-${yIndex}`} x={xLines[xIndex] - 11} y={yLines[yIndex] - 11} width="22" height="22" />)}</g><g className="signal-marks">{particles.map(([routeIndex, duration, begin], index) => <circle key={`${routeIndex}-${begin}`} className="signal-mark" r={index % 3 === 0 ? 4 : 3.25}><animateMotion dur={duration} begin={begin} repeatCount="indefinite" path={tracePaths[routeIndex]} /></circle>)}</g></svg></div>;
 }
 
-function CloseIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18" /></svg>; }
 function LinkIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 13.4a4 4 0 0 0 5.7.1l2-2a4 4 0 0 0-5.7-5.7l-1.1 1.1M13.4 10.6a4 4 0 0 0-5.7-.1l-2 2a4 4 0 0 0 5.7 5.7l1.1-1.1" /></svg>; }
 function CheckIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4.2 4.2L19 6.5" /></svg>; }
 
@@ -168,13 +167,7 @@ function MotionStudies() {
   return <RelayAnimation />;
 }
 
-function VerifierDialog({ onClose }) {
-  const [fileName, setFileName] = useState('');
-  useEffect(() => { const close = (event) => event.key === 'Escape' && onClose(); window.addEventListener('keydown', close); return () => window.removeEventListener('keydown', close); }, [onClose]);
-  return <div className="modal-backdrop" role="presentation" onMouseDown={onClose}><section className="verifier-modal" role="dialog" aria-modal="true" aria-labelledby="verifier-title" onMouseDown={(event) => event.stopPropagation()}><button className="icon-button" onClick={onClose} aria-label="Close verifier"><CloseIcon /></button><span className="eyebrow">Stamp verifier</span><h2 id="verifier-title">Inspect a publication</h2><p>Choose an OTLP trace or its accompanying LLM Notary stamp. The verifier checks that the stamp signs this exact standardized trace.</p><label className="drop-zone"><input type="file" accept=".json" onChange={(event) => setFileName(event.target.files?.[0]?.name || '')} /><strong>{fileName || 'Choose a trace or stamp'}</strong><small>{fileName ? 'Selected locally' : 'trace.otlp.json or stamp.json'}</small></label><div className="verification-state"><i /> Use <code>llm-notary verify-public</code> for a cryptographic check</div></section></div>;
-}
-
-function Landing({ onVerify }) {
+function Landing() {
   return <main id="top">
     <section className="hero">
       <HeroSignalField />
@@ -190,7 +183,7 @@ function Landing({ onVerify }) {
     </section>
     <CollectionPreview />
     <section className="section verify" id="verify">
-      <div><span className="eyebrow">Independent verification</span><h2>Proof of origin.</h2><p>LLM Notary verifies the provider-authenticated exchange, then signs the exact trace hash. Anyone can check the signature and confirm the published trace has not been altered.</p><div className="verify-points"><span>OTLP JSON</span><span>Signed hash</span><span>Independently verifiable</span></div><div className="button-row"><a className="button button-dark" href="#/docs/trace-packages">Verify with the CLI</a><button className="button button-plain" onClick={onVerify}>Online verifier</button></div></div>
+      <div><span className="eyebrow">Independent verification</span><h2>Proof of origin.</h2><p>LLM Notary verifies the provider-authenticated exchange, then signs the exact trace hash. Anyone can check the signature and confirm the published trace has not been altered.</p><div className="verify-points"><span>OTLP JSON</span><span>Signed hash</span><span>Independently verifiable</span></div><div className="button-row"><a className="button button-dark" href="#/docs/trace-packages">Verify with the CLI</a></div></div>
       <div className="receipt"><header><PenMark inverse /><b>Publication stamp</b></header><h3>Verified</h3><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Artifact</dt><dd>trace.otlp.json</dd></div><div><dt>Trace hash</dt><dd>9b44f8…c21d</dd></div></dl><div className="receipt-contents"><span>Input messages <i>•••</i></span><span>Assistant responses <i>•••</i></span><span>Tool calls + results <i>•••</i></span></div><footer>LLM NOTARY / STAMP v1</footer></div>
     </section>
   </main>;
@@ -810,7 +803,6 @@ function CliApproval({ route, user }) {
 
 function App() {
   const [route, setRoute] = useState(window.location.hash || '#/');
-  const [showVerifier, setShowVerifier] = useState(false);
   const [user, setUser] = useState(null);
   const [theme, setTheme] = useState(() => window.localStorage.getItem('llm-notary-theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   useEffect(() => { document.documentElement.dataset.theme = theme; document.documentElement.style.colorScheme = theme; window.localStorage.setItem('llm-notary-theme', theme); }, [theme]);
@@ -826,7 +818,7 @@ function App() {
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'dashboard' && user ? <Dashboard user={user} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing onVerify={() => setShowVerifier(true)} />}{!isLibrary && <Footer />}{showVerifier && <VerifierDialog onClose={() => setShowVerifier(false)} />}</>;
+  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'dashboard' && user ? <Dashboard user={user} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
