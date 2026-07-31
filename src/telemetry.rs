@@ -1,5 +1,4 @@
 //! Operational telemetry for the local proxy, API, and notary services.
-//! Cache-probe marker for the CI image build validation.
 //!
 //! This module intentionally records metadata only. Never add HTTP headers,
 //! request or response bodies, credentials, presigned URLs, or bundle paths to
