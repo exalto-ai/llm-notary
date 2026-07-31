@@ -385,7 +385,7 @@ $LLM_NOTARY_PUBLIC_ORIGIN/api/auth/github/callback
 Set `GITHUB_OAUTH_CLIENT_ID` and `GITHUB_OAUTH_CLIENT_SECRET` for the API.
 Also set `LLM_NOTARY_NOTARY_PUBLIC_KEY` to the compressed SEC1 public key for
 the configured notary signing key; the API refuses to advertise an unchecked
-or malformed key. Planned rotation can supply a complete v2 directory through
+or malformed key. Planned rotation can supply a complete v3 directory through
 `LLM_NOTARY_NOTARY_DIRECTORY_JSON`; its active key must match the colocated
 notary key.
 For source development, `LLM_NOTARY_PUBLIC_ORIGIN` defaults to
@@ -402,9 +402,10 @@ The API has `GET /api/notary` for CLI endpoint and public-key discovery,
 `GET /api/auth/github`, `GET /api/auth/github/callback`, `GET /api/me`,
 `POST /api/auth/logout`, and `GET /api/healthz`, plus authenticated publication
 intake endpoints and publication endpoints for serving admitted traces. Set
-`LLM_NOTARY_NOTARY_HOST` and `LLM_NOTARY_NOTARY_PUBLIC_KEY` to the public TCP
-notary hostname and its compressed SEC1 public key. The v2 directory contains
-stable key IDs, monotonic generations, separate capture/finalization
+`LLM_NOTARY_NOTARY_HOST`, `LLM_NOTARY_NOTARY_TRANSPORT` (`tcp` or `tls`), and
+`LLM_NOTARY_NOTARY_PUBLIC_KEY` to the public notary endpoint and its compressed
+SEC1 public key. The v3 directory contains stable key IDs, monotonic
+generations, a transport-aware hostname and port, separate capture/finalization
 deadlines, and endpoints for an active key and historical rotation records.
 Clients reject directory rollback, cache revocation monotonically, route
 pending bundles to an active or retiring signer, and retain retired keys for
@@ -416,6 +417,12 @@ notary key. The lifecycle and operator rotation procedure are documented in
 [`docs/notary-key-lifecycle-v2.md`](docs/notary-key-lifecycle-v2.md). GitHub
 sign-in authorizes publication; the platform signing key is the trust root for
 published stamps.
+
+For an explicit endpoint override, use `--notary tls://host:443` for a
+public-CA TLS endpoint or `--notary host:7047` (equivalent to
+`tcp://host:7047`) for direct TCP. TLS validates the advertised hostname before
+the LLMN protocol begins; local development and self-hosted deployments may
+continue to use direct loopback TCP.
 
 ### Operational telemetry
 

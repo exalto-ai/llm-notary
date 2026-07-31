@@ -29,8 +29,8 @@ use url::Url;
 use uuid::Uuid;
 
 use certified::notary_directory::{
-    DIRECTORY_FORMAT_V2, NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, key_id,
-    parse_directory,
+    DIRECTORY_FORMAT_V3, NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, NotaryTransport,
+    key_id, parse_directory,
 };
 use certified::sha256_hex;
 use certified::telemetry;
@@ -1258,6 +1258,10 @@ fn notary_directory_from_env() -> Result<NotaryDirectory> {
         .unwrap_or_else(|_| "7047".to_owned())
         .parse::<u16>()
         .context("LLM_NOTARY_NOTARY_PORT must be a valid TCP port")?;
+    let transport = env::var("LLM_NOTARY_NOTARY_TRANSPORT")
+        .unwrap_or_else(|_| "tcp".to_owned())
+        .parse::<NotaryTransport>()
+        .context("LLM_NOTARY_NOTARY_TRANSPORT must be tcp or tls")?;
     let public_key = hex::decode(
         env::var("LLM_NOTARY_NOTARY_PUBLIC_KEY")
             .context("LLM_NOTARY_NOTARY_PUBLIC_KEY is required")?,
@@ -1265,7 +1269,7 @@ fn notary_directory_from_env() -> Result<NotaryDirectory> {
     .context("LLM_NOTARY_NOTARY_PUBLIC_KEY must be hexadecimal")?;
     let key_id = key_id(&public_key);
     let directory = NotaryDirectory {
-        format: DIRECTORY_FORMAT_V2.to_owned(),
+        format: DIRECTORY_FORMAT_V3.to_owned(),
         generation: env::var("LLM_NOTARY_NOTARY_DIRECTORY_GENERATION")
             .unwrap_or_else(|_| "1".to_owned())
             .parse()
@@ -1274,6 +1278,7 @@ fn notary_directory_from_env() -> Result<NotaryDirectory> {
         notaries: vec![NotaryDirectoryRecord {
             host,
             port,
+            transport,
             key_id,
             public_key: hex::encode(public_key),
             status: NotaryKeyStatus::Active,
@@ -1298,12 +1303,13 @@ mod tests {
         let public_key = signing.verifying_key().to_sec1_bytes().to_vec();
         let key_id = key_id(&public_key);
         NotaryDirectory {
-            format: DIRECTORY_FORMAT_V2.to_owned(),
+            format: DIRECTORY_FORMAT_V3.to_owned(),
             generation: 1,
             active_key_id: key_id.clone(),
             notaries: vec![NotaryDirectoryRecord {
                 host: "notary.example.com".to_owned(),
                 port: 7047,
+                transport: NotaryTransport::Tcp,
                 key_id,
                 public_key: hex::encode(public_key),
                 status: NotaryKeyStatus::Active,

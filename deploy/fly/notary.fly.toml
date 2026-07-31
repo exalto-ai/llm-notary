@@ -11,7 +11,7 @@ kill_timeout = "30s"
   LLM_NOTARY_METRICS_LISTEN = "0.0.0.0:9090"
 
 [metrics]
-  # This listener is internal-only; the public raw TCP service remains 7047.
+  # This listener is internal-only; the public TLS service is exposed on 443.
   port = 9090
   path = "/metrics"
 
@@ -30,8 +30,11 @@ kill_timeout = "30s"
     hard_limit = 128
 
   [[services.ports]]
-    port = 7047
-    handlers = []
+    # Terminate public TLS only; the binary notary protocol remains raw bytes
+    # inside Fly's encrypted backhaul.
+    port = 443
+    handlers = ["tls"]
+    tls_options = { versions = ["TLSv1.2", "TLSv1.3"] }
 
 [[files]]
   guest_path = "/run/secrets/notary_signing_key"
