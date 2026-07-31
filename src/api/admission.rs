@@ -39,11 +39,13 @@ const RECENT_DOWNLOAD_WINDOW_SECS: i64 = 28 * 24 * 60 * 60;
 const METADATA_MODEL: &str = "gpt-5.6-luna";
 const METADATA_PROMPT_VERSION: &str = "library-metadata/v1";
 const DEFAULT_METADATA_WEEKLY_BUDGET_CENTS: i64 = 1_000;
-const DEFAULT_METADATA_INPUT_MICROUSD_PER_TOKEN: i64 = 1;
-const DEFAULT_METADATA_OUTPUT_MICROUSD_PER_TOKEN: i64 = 6;
+const DEFAULT_METADATA_INPUT_NANOUSD_PER_TOKEN: i64 = 200;
+const DEFAULT_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN: i64 = 20;
+const DEFAULT_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN: i64 = 250;
+const DEFAULT_METADATA_OUTPUT_NANOUSD_PER_TOKEN: i64 = 1_200;
 const MAX_METADATA_PROMPT_TOKENS: i64 = 32_000;
 const MAX_METADATA_COMPLETION_TOKENS: i64 = 256;
-const MICROUSD_PER_CENT: i64 = 10_000;
+const NANOUSD_PER_CENT: i64 = 10_000_000;
 const SECS_PER_WEEK: i64 = 7 * 24 * 60 * 60;
 const ALLOWED_TAGS: &[&str] = &[
     "agent",
@@ -135,9 +137,11 @@ struct CollectionPublication {
 pub struct MetadataService {
     api_key: Option<String>,
     model: String,
-    weekly_budget_microusd: i64,
-    input_microusd_per_token: i64,
-    output_microusd_per_token: i64,
+    weekly_budget_nanousd: i64,
+    input_nanousd_per_token: i64,
+    cached_input_nanousd_per_token: i64,
+    cache_write_nanousd_per_token: i64,
+    output_nanousd_per_token: i64,
 }
 
 #[derive(Deserialize)]
@@ -156,7 +160,17 @@ struct ChatCompletionResponse {
 #[derive(Deserialize)]
 struct ChatUsage {
     prompt_tokens: i64,
+    #[serde(default)]
+    prompt_tokens_details: ChatPromptTokenDetails,
     completion_tokens: i64,
+}
+
+#[derive(Default, Deserialize)]
+struct ChatPromptTokenDetails {
+    #[serde(default)]
+    cached_tokens: i64,
+    #[serde(default)]
+    cache_write_tokens: i64,
 }
 
 #[derive(Deserialize)]
@@ -187,14 +201,22 @@ impl MetadataService {
                 .filter(|value| !value.is_empty()),
             model: env::var("LLM_NOTARY_LIBRARY_METADATA_MODEL")
                 .unwrap_or_else(|_| METADATA_MODEL.to_owned()),
-            weekly_budget_microusd: weekly_budget_cents.saturating_mul(MICROUSD_PER_CENT),
-            input_microusd_per_token: positive_env_i64(
-                "LLM_NOTARY_LIBRARY_METADATA_INPUT_MICROUSD_PER_TOKEN",
-                DEFAULT_METADATA_INPUT_MICROUSD_PER_TOKEN,
+            weekly_budget_nanousd: weekly_budget_cents.saturating_mul(NANOUSD_PER_CENT),
+            input_nanousd_per_token: positive_env_i64(
+                "LLM_NOTARY_LIBRARY_METADATA_INPUT_NANOUSD_PER_TOKEN",
+                DEFAULT_METADATA_INPUT_NANOUSD_PER_TOKEN,
             ),
-            output_microusd_per_token: positive_env_i64(
-                "LLM_NOTARY_LIBRARY_METADATA_OUTPUT_MICROUSD_PER_TOKEN",
-                DEFAULT_METADATA_OUTPUT_MICROUSD_PER_TOKEN,
+            cached_input_nanousd_per_token: positive_env_i64(
+                "LLM_NOTARY_LIBRARY_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN",
+                DEFAULT_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN,
+            ),
+            cache_write_nanousd_per_token: positive_env_i64(
+                "LLM_NOTARY_LIBRARY_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN",
+                DEFAULT_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN,
+            ),
+            output_nanousd_per_token: positive_env_i64(
+                "LLM_NOTARY_LIBRARY_METADATA_OUTPUT_NANOUSD_PER_TOKEN",
+                DEFAULT_METADATA_OUTPUT_NANOUSD_PER_TOKEN,
             ),
         }
     }
@@ -211,16 +233,16 @@ impl MetadataService {
         let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
         let period_start = weekly_period_start(now);
         let spent: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(estimated_cost_microusd), 0)
+            "SELECT COALESCE(SUM(estimated_cost_nanousd), 0)
              FROM library_metadata_usage WHERE period_start = ?",
         )
         .bind(period_start)
         .fetch_one(database)
         .await?;
-        if spent.saturating_add(self.max_request_microusd()) > self.weekly_budget_microusd {
+        if spent.saturating_add(self.max_request_nanousd()) > self.weekly_budget_nanousd {
             tracing::warn!(
-                spent_microusd = spent,
-                weekly_budget_microusd = self.weekly_budget_microusd,
+                spent_nanousd = spent,
+                weekly_budget_nanousd = self.weekly_budget_nanousd,
                 "Library metadata weekly budget is exhausted"
             );
             return Ok(None);
@@ -254,7 +276,7 @@ impl MetadataService {
                 }
             },
             "messages": [
-                {"role": "system", "content": "Create concise Library metadata for a published LLM trace. Return a factual title of at most 96 characters plus zero to four tags from the schema. Do not quote, paraphrase, or expose prompt/response content, names, credentials, personal data, or secrets. Describe only the interaction type."},
+                {"role": "system", "content": "Create terse Library metadata for a published LLM trace. Title: 3 to 8 words, sentence case, simple present tense, active voice, and starts with the actor (for example, Agent, Model, or API). Avoid gerunds, noun phrases, and task-specific subject matter; describe the interaction method only. Tags: choose zero to four schema tags directly supported by the trace. Use exactly one origin tag: agent for an agent workflow, direct-api for a direct provider API workflow; never use both, and do not infer direct-api merely because a provider request occurs. Use tool-call when the model requests a tool and tool-result when a tool result is supplied; use both only when both events appear. Do not quote, paraphrase, or expose prompt/response content, names, credentials, personal data, or secrets."},
                 {"role": "user", "content": format!("Public trace excerpt ({}):\n{}", METADATA_PROMPT_VERSION, trace_excerpt)}
             ]
         });
@@ -267,18 +289,21 @@ impl MetadataService {
             .await?
             .error_for_status()?;
         let response: ChatCompletionResponse = response.json().await?;
-        let estimated_cost_microusd = self.estimated_cost_microusd(&response.usage)?;
+        let estimated_cost_nanousd = self.estimated_cost_nanousd(&response.usage)?;
         sqlx::query(
             "INSERT INTO library_metadata_usage
-                 (period_start, model, prompt_tokens, completion_tokens,
-                  estimated_cost_microusd, created_at)
-             VALUES (?, ?, ?, ?, ?, ?)",
+                 (period_start, model, prompt_tokens, cached_prompt_tokens,
+                  cache_write_tokens, completion_tokens,
+                  estimated_cost_nanousd, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(period_start)
         .bind(&self.model)
         .bind(response.usage.prompt_tokens)
+        .bind(response.usage.prompt_tokens_details.cached_tokens)
+        .bind(response.usage.prompt_tokens_details.cache_write_tokens)
         .bind(response.usage.completion_tokens)
-        .bind(estimated_cost_microusd)
+        .bind(estimated_cost_nanousd)
         .bind(now)
         .execute(database)
         .await?;
@@ -293,25 +318,43 @@ impl MetadataService {
         Ok(Some(metadata))
     }
 
-    fn max_request_microusd(&self) -> i64 {
+    fn max_request_nanousd(&self) -> i64 {
         MAX_METADATA_PROMPT_TOKENS
-            .saturating_mul(self.input_microusd_per_token)
+            .saturating_mul(self.input_nanousd_per_token)
             .saturating_add(
-                MAX_METADATA_COMPLETION_TOKENS.saturating_mul(self.output_microusd_per_token),
+                MAX_METADATA_COMPLETION_TOKENS.saturating_mul(self.output_nanousd_per_token),
             )
     }
 
-    fn estimated_cost_microusd(&self, usage: &ChatUsage) -> Result<i64> {
-        if usage.prompt_tokens < 0 || usage.completion_tokens < 0 {
+    fn estimated_cost_nanousd(&self, usage: &ChatUsage) -> Result<i64> {
+        if usage.prompt_tokens < 0
+            || usage.prompt_tokens_details.cached_tokens < 0
+            || usage.prompt_tokens_details.cache_write_tokens < 0
+            || usage.completion_tokens < 0
+            || usage.prompt_tokens_details.cached_tokens
+                + usage.prompt_tokens_details.cache_write_tokens
+                > usage.prompt_tokens
+        {
             bail!("metadata model returned negative token usage");
         }
+        let uncached_input_tokens = usage.prompt_tokens
+            - usage.prompt_tokens_details.cached_tokens
+            - usage.prompt_tokens_details.cache_write_tokens;
         Ok(usage
-            .prompt_tokens
-            .saturating_mul(self.input_microusd_per_token)
+            .prompt_tokens_details
+            .cached_tokens
+            .saturating_mul(self.cached_input_nanousd_per_token)
+            .saturating_add(
+                usage
+                    .prompt_tokens_details
+                    .cache_write_tokens
+                    .saturating_mul(self.cache_write_nanousd_per_token),
+            )
+            .saturating_add(uncached_input_tokens.saturating_mul(self.input_nanousd_per_token))
             .saturating_add(
                 usage
                     .completion_tokens
-                    .saturating_mul(self.output_microusd_per_token),
+                    .saturating_mul(self.output_nanousd_per_token),
             ))
     }
 }
@@ -527,6 +570,11 @@ fn validate_generated_metadata(metadata: &GeneratedMetadata) -> Result<()> {
             .any(|tag| !ALLOWED_TAGS.contains(&tag.as_str()))
     {
         bail!("metadata model returned invalid Library metadata");
+    }
+    if metadata.tags.iter().any(|tag| tag == "agent")
+        && metadata.tags.iter().any(|tag| tag == "direct-api")
+    {
+        bail!("metadata model returned conflicting origin tags");
     }
     let unique = metadata
         .tags
@@ -1494,21 +1542,27 @@ mod tests {
         let service = MetadataService {
             api_key: None,
             model: METADATA_MODEL.to_owned(),
-            weekly_budget_microusd: 10_000_000,
-            input_microusd_per_token: 1,
-            output_microusd_per_token: 6,
+            weekly_budget_nanousd: 10_000_000_000,
+            input_nanousd_per_token: 200,
+            cached_input_nanousd_per_token: 20,
+            cache_write_nanousd_per_token: 250,
+            output_nanousd_per_token: 1_200,
         };
         assert_eq!(
             service
-                .estimated_cost_microusd(&ChatUsage {
+                .estimated_cost_nanousd(&ChatUsage {
                     prompt_tokens: 2_000,
+                    prompt_tokens_details: ChatPromptTokenDetails {
+                        cached_tokens: 1_000,
+                        cache_write_tokens: 100,
+                    },
                     completion_tokens: 100,
                 })
                 .unwrap(),
-            2_600
+            345_000
         );
         assert_eq!(weekly_period_start(SECS_PER_WEEK + 42), SECS_PER_WEEK);
-        assert_eq!(service.max_request_microusd(), 33_536);
+        assert_eq!(service.max_request_nanousd(), 6_707_200);
     }
 
     #[tokio::test]

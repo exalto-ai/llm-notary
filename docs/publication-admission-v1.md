@@ -81,7 +81,8 @@ the worker checks the configured worst-case 32,000 input and 256 output
 tokens against that week's recorded usage; completed requests persist the
 API-reported token usage and a
 cost estimate. The default rates are the current standard `gpt-5.6-luna` rates
-($1/M input, $6/M output); configure both rates whenever the metadata model is
+($0.20/M input, $0.02/M cached input, $0.25/M cache writes, and $1.20/M output);
+configure all rates whenever the metadata model is
 changed. A budget-limited trace keeps a fallback title and is retried later.
 
 Stable client-visible rejection codes currently include
