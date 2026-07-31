@@ -38,6 +38,13 @@ const METADATA_RETRY_SECS: i64 = 60 * 60;
 const RECENT_DOWNLOAD_WINDOW_SECS: i64 = 28 * 24 * 60 * 60;
 const METADATA_MODEL: &str = "gpt-5.6-luna";
 const METADATA_PROMPT_VERSION: &str = "library-metadata/v1";
+const DEFAULT_METADATA_WEEKLY_BUDGET_CENTS: i64 = 1_000;
+const DEFAULT_METADATA_INPUT_MICROUSD_PER_TOKEN: i64 = 1;
+const DEFAULT_METADATA_OUTPUT_MICROUSD_PER_TOKEN: i64 = 6;
+const MAX_METADATA_PROMPT_TOKENS: i64 = 32_000;
+const MAX_METADATA_COMPLETION_TOKENS: i64 = 256;
+const MICROUSD_PER_CENT: i64 = 10_000;
+const SECS_PER_WEEK: i64 = 7 * 24 * 60 * 60;
 const ALLOWED_TAGS: &[&str] = &[
     "agent",
     "classification",
@@ -128,6 +135,9 @@ struct CollectionPublication {
 pub struct MetadataService {
     api_key: Option<String>,
     model: String,
+    weekly_budget_microusd: i64,
+    input_microusd_per_token: i64,
+    output_microusd_per_token: i64,
 }
 
 #[derive(Deserialize)]
@@ -138,19 +148,23 @@ struct GeneratedMetadata {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ChatCompletionResponse {
     choices: Vec<ChatChoice>,
+    usage: ChatUsage,
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+struct ChatUsage {
+    prompt_tokens: i64,
+    completion_tokens: i64,
+}
+
+#[derive(Deserialize)]
 struct ChatChoice {
     message: ChatMessage,
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct ChatMessage {
     content: Option<String>,
 }
@@ -163,30 +177,61 @@ struct ActivityRequest {
 
 impl MetadataService {
     pub fn from_env() -> Self {
+        let weekly_budget_cents = positive_env_i64(
+            "LLM_NOTARY_LIBRARY_METADATA_WEEKLY_BUDGET_CENTS",
+            DEFAULT_METADATA_WEEKLY_BUDGET_CENTS,
+        );
         Self {
             api_key: env::var("OPENAI_API_KEY")
                 .ok()
                 .filter(|value| !value.is_empty()),
             model: env::var("LLM_NOTARY_LIBRARY_METADATA_MODEL")
                 .unwrap_or_else(|_| METADATA_MODEL.to_owned()),
+            weekly_budget_microusd: weekly_budget_cents.saturating_mul(MICROUSD_PER_CENT),
+            input_microusd_per_token: positive_env_i64(
+                "LLM_NOTARY_LIBRARY_METADATA_INPUT_MICROUSD_PER_TOKEN",
+                DEFAULT_METADATA_INPUT_MICROUSD_PER_TOKEN,
+            ),
+            output_microusd_per_token: positive_env_i64(
+                "LLM_NOTARY_LIBRARY_METADATA_OUTPUT_MICROUSD_PER_TOKEN",
+                DEFAULT_METADATA_OUTPUT_MICROUSD_PER_TOKEN,
+            ),
         }
     }
 
     async fn generate(
         &self,
         http: &reqwest::Client,
+        database: &sqlx::SqlitePool,
         trace: &[u8],
     ) -> Result<Option<GeneratedMetadata>> {
         let Some(api_key) = &self.api_key else {
             return Ok(None);
         };
+        let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
+        let period_start = weekly_period_start(now);
+        let spent: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(estimated_cost_microusd), 0)
+             FROM library_metadata_usage WHERE period_start = ?",
+        )
+        .bind(period_start)
+        .fetch_one(database)
+        .await?;
+        if spent.saturating_add(self.max_request_microusd()) > self.weekly_budget_microusd {
+            tracing::warn!(
+                spent_microusd = spent,
+                weekly_budget_microusd = self.weekly_budget_microusd,
+                "Library metadata weekly budget is exhausted"
+            );
+            return Ok(None);
+        }
         let trace_excerpt: String = String::from_utf8_lossy(trace)
             .chars()
             .take(24_000)
             .collect();
         let body = serde_json::json!({
             "model": self.model,
-            "max_completion_tokens": 256,
+            "max_completion_tokens": MAX_METADATA_COMPLETION_TOKENS,
             "store": false,
             "response_format": {
                 "type": "json_schema",
@@ -222,6 +267,21 @@ impl MetadataService {
             .await?
             .error_for_status()?;
         let response: ChatCompletionResponse = response.json().await?;
+        let estimated_cost_microusd = self.estimated_cost_microusd(&response.usage)?;
+        sqlx::query(
+            "INSERT INTO library_metadata_usage
+                 (period_start, model, prompt_tokens, completion_tokens,
+                  estimated_cost_microusd, created_at)
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(period_start)
+        .bind(&self.model)
+        .bind(response.usage.prompt_tokens)
+        .bind(response.usage.completion_tokens)
+        .bind(estimated_cost_microusd)
+        .bind(now)
+        .execute(database)
+        .await?;
         let content = response
             .choices
             .into_iter()
@@ -232,6 +292,40 @@ impl MetadataService {
         validate_generated_metadata(&metadata)?;
         Ok(Some(metadata))
     }
+
+    fn max_request_microusd(&self) -> i64 {
+        MAX_METADATA_PROMPT_TOKENS
+            .saturating_mul(self.input_microusd_per_token)
+            .saturating_add(
+                MAX_METADATA_COMPLETION_TOKENS.saturating_mul(self.output_microusd_per_token),
+            )
+    }
+
+    fn estimated_cost_microusd(&self, usage: &ChatUsage) -> Result<i64> {
+        if usage.prompt_tokens < 0 || usage.completion_tokens < 0 {
+            bail!("metadata model returned negative token usage");
+        }
+        Ok(usage
+            .prompt_tokens
+            .saturating_mul(self.input_microusd_per_token)
+            .saturating_add(
+                usage
+                    .completion_tokens
+                    .saturating_mul(self.output_microusd_per_token),
+            ))
+    }
+}
+
+fn positive_env_i64(name: &str, default: i64) -> i64 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default)
+}
+
+fn weekly_period_start(timestamp: i64) -> i64 {
+    timestamp - timestamp.rem_euclid(SECS_PER_WEEK)
 }
 
 enum AdmissionFailure {
@@ -579,7 +673,11 @@ async fn backfill_library_metadata(state: &AppState) -> Result<()> {
             .ok()
             .map(|(model, _, _)| fallback_title("Verified", &model))
             .unwrap_or_else(|| "Verified LLM trace".to_owned());
-        let generated = match state.library_metadata.generate(&state.http, &trace).await {
+        let generated = match state
+            .library_metadata
+            .generate(&state.http, &state.database, &trace)
+            .await
+        {
             Ok(Some(metadata)) => Some(metadata),
             Ok(None) => None,
             Err(error) => {
@@ -1389,6 +1487,28 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn metadata_costing_uses_configured_token_rates_and_utc_weeks() {
+        let service = MetadataService {
+            api_key: None,
+            model: METADATA_MODEL.to_owned(),
+            weekly_budget_microusd: 10_000_000,
+            input_microusd_per_token: 1,
+            output_microusd_per_token: 6,
+        };
+        assert_eq!(
+            service
+                .estimated_cost_microusd(&ChatUsage {
+                    prompt_tokens: 2_000,
+                    completion_tokens: 100,
+                })
+                .unwrap(),
+            2_600
+        );
+        assert_eq!(weekly_period_start(SECS_PER_WEEK + 42), SECS_PER_WEEK);
+        assert_eq!(service.max_request_microusd(), 33_536);
     }
 
     #[tokio::test]

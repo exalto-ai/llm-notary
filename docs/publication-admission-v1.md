@@ -76,6 +76,14 @@ if it is unavailable, the Library uses a deterministic fallback title and
 retries later. Operators must configure the model only when publication
 consent covers that additional processor.
 
+The default metadata budget is 1,000 cents per UTC week. Before each request,
+the worker checks the configured worst-case 32,000 input and 256 output
+tokens against that week's recorded usage; completed requests persist the
+API-reported token usage and a
+cost estimate. The default rates are the current standard `gpt-5.6-luna` rates
+($1/M input, $6/M output); configure both rates whenever the metadata model is
+changed. A budget-limited trace keeps a fallback title and is retried later.
+
 Stable client-visible rejection codes currently include
 `object_missing`, `object_size_mismatch`, `object_sha256_mismatch`,
 `archive_invalid`, `package_invalid`, `notary_untrusted`, and
