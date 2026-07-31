@@ -1,8 +1,8 @@
 //! Deferred bundle finalization and offline-verifiable trace packages.
 
-use std::{fs, path::Path};
 #[cfg(feature = "cli")]
-use std::{net::SocketAddr, path::PathBuf};
+use std::path::PathBuf;
+use std::{fs, path::Path};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -16,7 +16,10 @@ use crate::{
     sha256_hex, verify_capture_value_with_provider,
 };
 #[cfg(feature = "cli")]
-use crate::{DeferredBundle, finalize_deferred_bundle, make_capture, vault::Vault};
+use crate::{
+    DeferredBundle, finalize_deferred_bundle_to, make_capture, notary_directory::NotaryEndpoint,
+    vault::Vault,
+};
 
 /// Metadata binding a normalized trace to the included TLSNotary evidence.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -75,13 +78,13 @@ pub async fn finalize_bundle(
     output_dir: &Path,
     trusted_notary_key: &[u8],
     vault: &Vault,
-    notary_addr: SocketAddr,
+    notary: &NotaryEndpoint,
     max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
 ) -> Result<PathBuf> {
     let bundle = DeferredBundle::load(bundle_path, vault)?;
-    let proof = finalize_deferred_bundle(
-        notary_addr,
+    let proof = finalize_deferred_bundle_to(
+        notary,
         &bundle,
         trusted_notary_key,
         max_attestable_http_bytes,

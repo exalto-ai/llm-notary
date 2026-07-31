@@ -1,6 +1,6 @@
 //! Commands for local source bundles and verified trace packages.
 
-use std::{net::SocketAddr, path::PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
@@ -13,6 +13,7 @@ use crate::{
     },
     cli::notary,
     cli::proxy::{refresh_notary_directory, resolve_notary},
+    notary_directory::NotaryEndpoint,
     vault::Vault,
 };
 
@@ -26,9 +27,10 @@ pub struct FinalizeArgs {
     /// Hex-encoded notary public key used to verify the source evidence.
     #[arg(long)]
     trusted_notary_key: Option<String>,
-    /// Override the notary discovered from LLM Notary's public directory.
+    /// Override the notary endpoint discovered from LLM Notary's public directory.
+    /// Use tcp:// or tls://; a bare host:port remains raw TCP.
     #[arg(long)]
-    notary: Option<SocketAddr>,
+    notary: Option<NotaryEndpoint>,
     /// Largest control-protocol frame accepted from the paired notary.
     /// Must match the notary's --max-frame-bytes setting.
     #[arg(long, default_value_t = DEFAULT_NOTARY_MAX_FRAME_BYTES)]
@@ -101,7 +103,7 @@ pub async fn finalize(args: FinalizeArgs) -> Result<()> {
         &args.output,
         &key,
         &vault,
-        notary,
+        &notary,
         args.max_attestable_http_bytes,
         args.max_frame_bytes,
     )

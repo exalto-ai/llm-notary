@@ -28,8 +28,8 @@ use super::{
 use crate::{
     DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredBundle,
     DeferredCaptureConfig, attestable_request_header_bytes, chunked_request_body,
-    deferred_streaming_request, notary_admission_error,
-    notary_directory::{NotaryDirectory, NotaryDirectoryRecord},
+    deferred_streaming_request_to, notary_admission_error,
+    notary_directory::{NotaryDirectory, NotaryDirectoryRecord, NotaryEndpoint},
     vault::Vault,
 };
 
@@ -69,9 +69,10 @@ pub struct ProxyArgs {
     #[arg(long, value_enum, default_value_t = Provider::Openai)]
     provider: Provider,
 
-    /// Override the notary address discovered from LLM Notary's public API.
+    /// Override the notary endpoint discovered from LLM Notary's public API.
+    /// Use tcp:// or tls://; a bare host:port remains raw TCP.
     #[arg(long)]
-    notary: Option<SocketAddr>,
+    notary: Option<NotaryEndpoint>,
 
     /// Where private local source bundles are written.
     #[arg(long, default_value = "bundles")]
@@ -91,7 +92,7 @@ pub struct ProxyArgs {
 #[derive(Clone)]
 struct AppState {
     provider: Provider,
-    notary: SocketAddr,
+    notary: NotaryEndpoint,
     bundle_dir: PathBuf,
     max_frame_bytes: usize,
     max_attestable_http_bytes: usize,
@@ -117,7 +118,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     let vault = Vault::open_or_init_interactive().context("opening the local bundle vault (use `llm-notary vault init --passphrase` if this machine has no OS vault)")?;
     let state = AppState {
         provider: args.provider,
-        notary,
+        notary: notary.clone(),
         bundle_dir: args.bundle_dir,
         max_frame_bytes: args.max_frame_bytes,
         max_attestable_http_bytes: args.max_attestable_http_bytes,
@@ -131,7 +132,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn discover_notary() -> Result<SocketAddr> {
+pub(crate) async fn discover_notary() -> Result<NotaryEndpoint> {
     let directory = refresh_notary_directory().await?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -184,12 +185,8 @@ fn notary_directory_url(api_origin: &str) -> Result<url::Url> {
         .context("building notary directory URL")
 }
 
-pub(crate) async fn resolve_notary(record: &NotaryDirectoryRecord) -> Result<SocketAddr> {
-    tokio::net::lookup_host((record.host.as_str(), record.port))
-        .await
-        .with_context(|| format!("resolving notary host {}", record.host))?
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("notary host {} resolved to no addresses", record.host))
+pub(crate) async fn resolve_notary(record: &NotaryDirectoryRecord) -> Result<NotaryEndpoint> {
+    record.endpoint()
 }
 
 #[axum::debug_handler]
@@ -325,8 +322,8 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
 
     let (capture_id, created_at_unix_ms) = next_capture_metadata(&state).await?;
     let started = Instant::now();
-    let upstream = deferred_streaming_request(
-        state.notary,
+    let upstream = deferred_streaming_request_to(
+        &state.notary,
         host,
         DeferredCaptureConfig {
             capture_id,

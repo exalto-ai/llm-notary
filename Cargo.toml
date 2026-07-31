@@ -65,6 +65,7 @@ keyring = { version = "3.6", optional = true, features = [
     "vendored",
 ] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rustls = "0.23"
 rand = "0.9"
 rpassword = { version = "7.4", optional = true }
 serde = { version = "1.0", features = ["derive"] }
@@ -74,12 +75,14 @@ sqlx = { version = "0.8", default-features = false, features = ["macros", "migra
 tempfile = { version = "3.20", optional = true }
 time = "0.3"
 tokio = { version = "1.45", features = ["full"] }
+tokio-rustls = "0.26"
 tokio-util = { version = "0.7", features = ["compat"] }
 tokio-stream = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2.5"
 uuid = { version = "1.16", features = ["v4"] }
+webpki-roots = "1"
 zip = { version = "8.4", default-features = false }
 
 # TLSNotary is vendored at a pinned upstream revision. Local patches add the

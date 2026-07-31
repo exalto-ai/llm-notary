@@ -1,4 +1,4 @@
-# Notary key lifecycle v2
+# Notary key lifecycle (directory v3)
 
 `GET /api/notary` publishes a versioned directory of notary endpoints and
 secp256k1 verification keys. Clients cache successful responses so existing
@@ -8,13 +8,14 @@ evidence remains verifiable when a deployment changes keys.
 
 ```json
 {
-  "format": "llm-notary/notary-directory/v2",
+  "format": "llm-notary/notary-directory/v3",
   "generation": 12,
   "active_key_id": "sha256:...",
   "notaries": [
     {
       "host": "203.0.113.10",
       "port": 7047,
+      "transport": "tcp",
       "key_id": "sha256:...",
       "public_key": "02...",
       "status": "active",
@@ -32,6 +33,12 @@ and an `active_key_id` that does not select an `active` record. Operators must
 increase `generation` for every changed directory. Clients reject older
 generations, reject conflicting documents at the same generation, and never
 restore a key ID once they have cached it as revoked.
+
+`transport` is either `tcp` or `tls`. A `tls` record retains `host` for DNS,
+SNI, and public-CA certificate validation; clients must validate TLS before
+sending the LLMN prelude. The notary receipt key remains the evidence trust
+anchor. v1 and v2 directories are accepted as compatibility inputs and default
+to `tcp`; new API-generated directories use v3.
 
 ## Status semantics
 
@@ -57,7 +64,9 @@ revocation state before sending any bytes, even when an explicit key was used
 for the initial local verification.
 
 Passing both `--trusted-notary-key` and an explicit `--notary` is an operator
-override. It does not use directory lifecycle policy.
+override. It does not use directory lifecycle policy. Explicit endpoints use
+`tls://host:port` or `tcp://host:port`; a bare `host:port` remains TCP for
+compatibility.
 
 ## Planned rotation
 
@@ -73,12 +82,14 @@ override. It does not use directory lifecycle policy.
    endpoint. Previously finalized evidence remains verifiable within the
    recorded window.
 
-The API accepts the complete v2 document through
+The API accepts the complete v3 document through
 `LLM_NOTARY_NOTARY_DIRECTORY_JSON`. In the colocated Compose deployment, the
 active record must match `LLM_NOTARY_NOTARY_PUBLIC_KEY`; the notary health
 check independently confirms that this public key matches the mounted private
-key. The existing single-key environment variables still generate a valid v2
-directory, so no coordinated client flag day is required.
+key. The existing single-key environment variables generate a v3 directory;
+set `LLM_NOTARY_NOTARY_TRANSPORT=tls` only when the advertised endpoint
+terminates public-CA TLS. Existing clients must be upgraded before a TLS v3
+endpoint is published.
 
 Clients also accept the v1 discovery document and migrate a v1 local trust
 record on read. The fallback single-key configuration starts at generation 1;
@@ -120,4 +131,4 @@ Issue #36 may replace the current consent-based finalized package with a
 privacy-preserving transcript-to-trace binding. That successor must carry the
 notary key ID and authenticated connection timestamp, use this directory's
 validity and revocation rules, and define migration behavior for already
-published v2 directory records.
+published directory records.

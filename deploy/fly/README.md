@@ -7,18 +7,20 @@ internet ── HTTPS ──> llm-notary.exalto.ai
                               │
                               └── Flycast HTTP ──> llm-notary-prod-api
 
-local proxies ── raw TCP:7047 ──> llm-notary-prod-notary.fly.dev
+local proxies ── TLS:443 ──> llm-notary-prod-notary.fly.dev
 ```
 
 The API is private behind Flycast so its SQLite database and intake endpoint
-are never directly exposed. The notary is intentionally exposed as raw TCP;
-allocate a dedicated IPv4 address for it because raw TCP cannot use Fly's shared
-IPv4 routing.
+are never directly exposed. Fly Proxy terminates the notary's public TLS
+connection and forwards the unmodified binary protocol to port 7047 through
+Fly's encrypted backhaul. The configuration deliberately uses the `tls` handler
+only—not the HTTP handler. Fly supplies the certificate for the app's
+`.fly.dev` hostname, so no custom DNS is required.
 
 The checked-in configuration targets the `llm-notary-prod` organization. Create
-the three apps and provision a private Flycast address for the API and a public
-dedicated IPv4 address for the raw-TCP notary before the first deployment. The
-API uses a 1 GiB encrypted Fly Volume named `api_data`. Create a private Tigris bucket for
+the three apps and provision a private Flycast address for the API before the
+first deployment. The notary's TLS handler can use Fly's shared IPv4 routing.
+The API uses a 1 GiB encrypted Fly Volume named `api_data`. Create a private Tigris bucket for
 the API; the service accepts the standard `AWS_*` and `BUCKET_NAME` variables
 that `fly storage create` sets, as well as the portable `LLM_NOTARY_S3_*`
 variables used by the DigitalOcean deployment.
@@ -38,9 +40,13 @@ key, the SQLite state, and the notary directory together so published stamps,
 sessions, and historic proofs remain valid.
 
 Clients cache the signed notary directory by its generation. When moving its
-advertised hostname or changing the key set, increase
+advertised hostname, transport, port, or key set, increase
 `LLM_NOTARY_NOTARY_DIRECTORY_GENERATION`; reusing a generation for different
 directory contents is intentionally rejected as a rollback/conflict.
+
+The TLS certificate authenticates the network endpoint but does not replace the
+notary signing key in the directory. A self-hosted notary can advertise either
+`tcp` or `tls`; TLS termination need not be provided by Fly.
 
 Deploy from the repository root:
 

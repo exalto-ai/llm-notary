@@ -1,6 +1,6 @@
 //! Versioned notary discovery and signing-key lifecycle.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fmt, str::FromStr};
 
 use anyhow::{Context, Result, bail};
 use k256::ecdsa::VerifyingKey;
@@ -10,6 +10,126 @@ use crate::sha256_hex;
 
 pub const DIRECTORY_FORMAT_V1: &str = "llm-notary/notary-directory/v1";
 pub const DIRECTORY_FORMAT_V2: &str = "llm-notary/notary-directory/v2";
+pub const DIRECTORY_FORMAT_V3: &str = "llm-notary/notary-directory/v3";
+
+/// The transport used for the public local-proxy-to-notary connection.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NotaryTransport {
+    /// A direct raw TCP connection. This remains suitable for loopback and
+    /// deployments that protect the path outside the client.
+    #[default]
+    Tcp,
+    /// A public-CA-validated TLS connection carrying the raw notary protocol.
+    Tls,
+}
+
+impl NotaryTransport {
+    pub fn scheme(self) -> &'static str {
+        match self {
+            Self::Tcp => "tcp",
+            Self::Tls => "tls",
+        }
+    }
+}
+
+impl FromStr for NotaryTransport {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "tcp" => Ok(Self::Tcp),
+            "tls" => Ok(Self::Tls),
+            _ => bail!("notary transport must be tcp or tls"),
+        }
+    }
+}
+
+/// A hostname-preserving notary endpoint.
+///
+/// TLS endpoints retain `host` for SNI and certificate validation; they must
+/// never be reduced to an IP address before the TLS handshake.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct NotaryEndpoint {
+    pub host: String,
+    pub port: u16,
+    pub transport: NotaryTransport,
+}
+
+impl NotaryEndpoint {
+    pub fn new(host: String, port: u16, transport: NotaryTransport) -> Result<Self> {
+        let endpoint = Self {
+            host,
+            port,
+            transport,
+        };
+        endpoint.validate()?;
+        Ok(endpoint)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.host.is_empty() || self.host.chars().any(char::is_whitespace) || self.port == 0 {
+            bail!("notary endpoint is invalid");
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for NotaryEndpoint {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.host.contains(':') {
+            write!(
+                formatter,
+                "{}://[{}]:{}",
+                self.transport.scheme(),
+                self.host,
+                self.port
+            )
+        } else {
+            write!(
+                formatter,
+                "{}://{}:{}",
+                self.transport.scheme(),
+                self.host,
+                self.port
+            )
+        }
+    }
+}
+
+impl FromStr for NotaryEndpoint {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        let input = if value.contains("://") {
+            value.to_owned()
+        } else {
+            format!("tcp://{value}")
+        };
+        let url = url::Url::parse(&input).context("invalid notary endpoint")?;
+        let transport = match url.scheme() {
+            "tcp" => NotaryTransport::Tcp,
+            "tls" => NotaryTransport::Tls,
+            scheme => bail!("notary endpoint must use tcp:// or tls://, not {scheme}://"),
+        };
+        if !url.username().is_empty()
+            || url.password().is_some()
+            || !matches!(url.path(), "" | "/")
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            bail!("notary endpoint must contain only a scheme, host, and port");
+        }
+        let host = url
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("notary endpoint has no host"))?
+            .to_owned();
+        let port = url
+            .port()
+            .ok_or_else(|| anyhow::anyhow!("notary endpoint has no port"))?;
+        Self::new(host, port, transport)
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -25,6 +145,10 @@ pub enum NotaryKeyStatus {
 pub struct NotaryDirectoryRecord {
     pub host: String,
     pub port: u16,
+    /// How clients connect to this endpoint. Directories before v3 omitted
+    /// this field and are interpreted as raw TCP.
+    #[serde(default)]
+    pub transport: NotaryTransport,
     pub key_id: String,
     pub public_key: String,
     pub status: NotaryKeyStatus,
@@ -57,6 +181,10 @@ pub struct LegacyNotaryDirectory {
 }
 
 impl NotaryDirectoryRecord {
+    pub fn endpoint(&self) -> Result<NotaryEndpoint> {
+        NotaryEndpoint::new(self.host.clone(), self.port, self.transport)
+    }
+
     pub fn public_key_bytes(&self) -> Result<Vec<u8>> {
         let public_key =
             hex::decode(&self.public_key).context("directory key is not hexadecimal")?;
@@ -93,7 +221,10 @@ impl NotaryDirectoryRecord {
 
 impl NotaryDirectory {
     pub fn validate(&self) -> Result<()> {
-        if self.format != DIRECTORY_FORMAT_V2 {
+        if !matches!(
+            self.format.as_str(),
+            DIRECTORY_FORMAT_V2 | DIRECTORY_FORMAT_V3
+        ) {
             bail!("unsupported notary directory format: {}", self.format);
         }
         if self.notaries.is_empty() || self.notaries.len() > 32 {
@@ -145,6 +276,7 @@ impl NotaryDirectory {
             notaries: vec![NotaryDirectoryRecord {
                 host: legacy.host,
                 port: legacy.port,
+                transport: NotaryTransport::Tcp,
                 key_id: legacy.key_id,
                 public_key: legacy.public_key,
                 status: NotaryKeyStatus::Active,
@@ -168,6 +300,12 @@ pub fn parse_directory(bytes: &[u8]) -> Result<NotaryDirectory> {
             directory.validate()?;
             Ok(directory)
         }
+        Some(DIRECTORY_FORMAT_V3) => {
+            let directory: NotaryDirectory =
+                serde_json::from_value(value).context("decoding v3 notary directory")?;
+            directory.validate()?;
+            Ok(directory)
+        }
         Some(DIRECTORY_FORMAT_V1) => NotaryDirectory::from_legacy(
             serde_json::from_value(value).context("decoding v1 notary directory")?,
         ),
@@ -181,9 +319,9 @@ pub fn key_id(public_key: &[u8]) -> String {
 }
 
 fn validate_record(record: &NotaryDirectoryRecord) -> Result<()> {
-    if record.host.is_empty() || record.host.chars().any(char::is_whitespace) || record.port == 0 {
-        bail!("directory key has an invalid endpoint");
-    }
+    record
+        .endpoint()
+        .context("directory key has an invalid endpoint")?;
     if record
         .valid_until_unix_ms
         .is_some_and(|until| until < record.valid_from_unix_ms)
@@ -221,6 +359,7 @@ mod tests {
         NotaryDirectoryRecord {
             host: format!("notary-{seed}.example"),
             port: 7047,
+            transport: NotaryTransport::Tcp,
             key_id: key_id(&public),
             public_key: hex::encode(public),
             status,
@@ -296,5 +435,63 @@ mod tests {
         let migrated = parse_directory(&bytes).unwrap();
         assert_eq!(migrated.format, DIRECTORY_FORMAT_V2);
         assert_eq!(migrated.notaries.len(), 1);
+    }
+
+    #[test]
+    fn v2_directories_default_missing_transport_to_tcp() {
+        let active = record(9, NotaryKeyStatus::Active);
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "format": DIRECTORY_FORMAT_V2,
+            "generation": 2,
+            "active_key_id": active.key_id.clone(),
+            "notaries": [{
+                "host": active.host,
+                "port": active.port,
+                "key_id": active.key_id,
+                "public_key": active.public_key,
+                "status": "active",
+                "valid_from_unix_ms": active.valid_from_unix_ms,
+                "valid_until_unix_ms": null,
+                "finalize_until_unix_ms": null
+            }]
+        }))
+        .unwrap();
+        let directory = parse_directory(&bytes).unwrap();
+        assert_eq!(directory.notaries[0].transport, NotaryTransport::Tcp);
+    }
+
+    #[test]
+    fn v3_directory_preserves_a_tls_endpoint() {
+        let mut active = record(9, NotaryKeyStatus::Active);
+        active.host = "llm-notary-prod-notary.fly.dev".to_owned();
+        active.port = 443;
+        active.transport = NotaryTransport::Tls;
+        let directory = NotaryDirectory {
+            format: DIRECTORY_FORMAT_V3.to_owned(),
+            generation: 3,
+            active_key_id: active.key_id.clone(),
+            notaries: vec![active],
+        };
+        let parsed = parse_directory(&serde_json::to_vec(&directory).unwrap()).unwrap();
+        assert_eq!(
+            parsed.notaries[0].endpoint().unwrap().to_string(),
+            "tls://llm-notary-prod-notary.fly.dev:443"
+        );
+    }
+
+    #[test]
+    fn endpoint_overrides_are_explicit_about_tls_and_compatible_with_tcp() {
+        let tls = "tls://llm-notary-prod-notary.fly.dev:443"
+            .parse::<NotaryEndpoint>()
+            .unwrap();
+        assert_eq!(tls.transport, NotaryTransport::Tls);
+        assert_eq!(tls.host, "llm-notary-prod-notary.fly.dev");
+        let tcp = "127.0.0.1:7047".parse::<NotaryEndpoint>().unwrap();
+        assert_eq!(tcp.transport, NotaryTransport::Tcp);
+        assert!(
+            "https://notary.example:443"
+                .parse::<NotaryEndpoint>()
+                .is_err()
+        );
     }
 }

@@ -1193,6 +1193,7 @@ dependencies = [
  "rangeset",
  "reqwest 0.12.28",
  "rpassword",
+ "rustls 0.23.42",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1204,6 +1205,7 @@ dependencies = [
  "tlsn",
  "tlsn-formats",
  "tokio",
+ "tokio-rustls 0.26.4",
  "tokio-stream",
  "tokio-util",
  "tracing",
@@ -1211,6 +1213,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "webpki-roots 1.0.9",
  "windows-sys 0.61.2",
  "zip",
 ]
@@ -4733,6 +4736,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",

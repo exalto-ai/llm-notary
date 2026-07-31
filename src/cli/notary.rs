@@ -13,8 +13,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     DeferredBundle,
     notary_directory::{
-        DIRECTORY_FORMAT_V1, DIRECTORY_FORMAT_V2, LegacyNotaryDirectory, NotaryDirectory,
-        NotaryDirectoryRecord, NotaryKeyStatus, key_id,
+        DIRECTORY_FORMAT_V1, DIRECTORY_FORMAT_V2, DIRECTORY_FORMAT_V3, LegacyNotaryDirectory,
+        NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, key_id,
     },
 };
 
@@ -116,7 +116,7 @@ fn merge_store(mut store: TrustStore, directory: NotaryDirectory) -> Result<Trus
         }
         records.insert(record.key_id.clone(), record);
     }
-    store.format = DIRECTORY_FORMAT_V2.to_owned();
+    store.format = DIRECTORY_FORMAT_V3.to_owned();
     store.generation = directory.generation;
     store.directory_sha256 = Some(directory_sha256);
     store.active_key_id = Some(directory.active_key_id);
@@ -191,7 +191,7 @@ fn validated_store() -> Result<TrustStore> {
 }
 
 fn validate_trust_store(store: &TrustStore) -> Result<()> {
-    if store.format != DIRECTORY_FORMAT_V2 {
+    if store.format != DIRECTORY_FORMAT_V3 {
         bail!("unsupported local notary trust store format");
     }
     if store.records.is_empty() || store.records.len() > 4096 {
@@ -240,8 +240,14 @@ fn load_store(path: &Path) -> Result<TrustStore> {
     let value: serde_json::Value =
         serde_json::from_slice(&bytes).context("parse local notary trust store")?;
     match value.get("format").and_then(serde_json::Value::as_str) {
+        Some(DIRECTORY_FORMAT_V3) => {
+            serde_json::from_value(value).context("parse v3 local notary trust store")
+        }
         Some(DIRECTORY_FORMAT_V2) => {
-            serde_json::from_value(value).context("parse v2 local notary trust store")
+            let mut store: TrustStore =
+                serde_json::from_value(value).context("parse v2 local notary trust store")?;
+            store.format = DIRECTORY_FORMAT_V3.to_owned();
+            Ok(store)
         }
         Some(DIRECTORY_FORMAT_V1) | Some("") | None => {
             let legacy: LegacyTrustStore =
@@ -251,7 +257,7 @@ fn load_store(path: &Path) -> Result<TrustStore> {
             };
             let directory = NotaryDirectory::from_legacy(record)?;
             Ok(TrustStore {
-                format: DIRECTORY_FORMAT_V2.to_owned(),
+                format: DIRECTORY_FORMAT_V3.to_owned(),
                 generation: 0,
                 directory_sha256: None,
                 active_key_id: Some(directory.active_key_id),
@@ -279,6 +285,8 @@ fn unix_time_ms() -> Result<u64> {
 mod tests {
     use std::sync::{Arc, Barrier};
 
+    use crate::notary_directory::NotaryTransport;
+
     use super::*;
 
     fn record(seed: u8, status: NotaryKeyStatus) -> NotaryDirectoryRecord {
@@ -287,6 +295,7 @@ mod tests {
         NotaryDirectoryRecord {
             host: "notary.example".into(),
             port: 7047,
+            transport: NotaryTransport::Tcp,
             key_id: key_id(&public),
             public_key: hex::encode(public),
             status,
@@ -534,7 +543,7 @@ mod tests {
         .unwrap();
         let migrated = load_store(&path).unwrap();
         let _ = std::fs::remove_file(path);
-        assert_eq!(migrated.format, DIRECTORY_FORMAT_V2);
+        assert_eq!(migrated.format, DIRECTORY_FORMAT_V3);
         assert_eq!(migrated.records.len(), 1);
         assert_eq!(migrated.active_key_id, Some(active.key_id));
     }
