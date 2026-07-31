@@ -37,8 +37,15 @@ restore a key ID once they have cached it as revoked.
 `transport` is either `tcp` or `tls`. A `tls` record retains `host` for DNS,
 SNI, and public-CA certificate validation; clients must validate TLS before
 sending the LLMN prelude. The notary receipt key remains the evidence trust
-anchor. v1 and v2 directories are accepted as compatibility inputs and default
-to `tcp`; new API-generated directories use v3.
+anchor. Every v3 record must state its transport explicitly.
+
+## Compatibility
+
+Directory v1 and v2 are end of life. The project has not published a CLI
+release or tag, so there are no released clients to support; the API and CLI
+accept and write v3 only. A development build with an old `notary-trust.json`
+cache must remove that cache and refresh the directory before use. This avoids
+silently downgrading an endpoint with an explicit TLS requirement to raw TCP.
 
 ## Status semantics
 
@@ -88,13 +95,12 @@ active record must match `LLM_NOTARY_NOTARY_PUBLIC_KEY`; the notary health
 check independently confirms that this public key matches the mounted private
 key. The existing single-key environment variables generate a v3 directory;
 set `LLM_NOTARY_NOTARY_TRANSPORT=tls` only when the advertised endpoint
-terminates public-CA TLS. Existing clients must be upgraded before a TLS v3
-endpoint is published.
+terminates public-CA TLS. Clients require that transport to be explicit and
+validate TLS before sending the LLMN prelude.
 
-Clients also accept the v1 discovery document and migrate a v1 local trust
-record on read. The fallback single-key configuration starts at generation 1;
-set `LLM_NOTARY_NOTARY_DIRECTORY_GENERATION` explicitly if its directory
-metadata changes.
+The fallback single-key configuration starts at generation 1; set
+`LLM_NOTARY_NOTARY_DIRECTORY_GENERATION` explicitly if its directory metadata
+changes.
 
 Configure the optional `LLM_NOTARY_NOTARY_DIRECTORY_JSON`,
 `LLM_NOTARY_NOTARY_DIRECTORY_GENERATION`, and
