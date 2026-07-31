@@ -42,7 +42,7 @@ jobs:
       - name: Verify web to API wake-up
         run: >-
           curl --fail --retry 5 --retry-all-errors --retry-delay 2
-          --max-time 20 https://llm-notary-prod-web.fly.dev/api/healthz
+          --max-time 20 https://llm-notary.exalto.ai/api/healthz
       - name: Verify raw TCP notary admission
         run: |
           python3 - <<'PY'

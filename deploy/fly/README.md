@@ -3,7 +3,7 @@
 The production deployment runs three Fly apps in `sjc`:
 
 ```text
-internet ── HTTPS ──> llm-notary-prod-web.fly.dev
+internet ── HTTPS ──> llm-notary.exalto.ai
                               │
                               └── Flycast HTTP ──> llm-notary-prod-api
 
@@ -29,11 +29,9 @@ Two base64-encoded file secrets are required:
 - `NOTARY_SIGNING_KEY_B64` on the notary.
 
 The API also needs its normal GitHub OAuth credentials, the notary public key,
-and its signing-key directory. The initial endpoint is
-`https://llm-notary-prod-web.fly.dev`; GitHub OAuth cannot complete there while
-the OAuth App's callback remains on the canonical production hostname. Before
-moving users, set both public-origin values to that canonical origin and update
-the OAuth callback only if the hostname changes.
+and its signing-key directory. The production endpoint is
+`https://llm-notary.exalto.ai`; keep the GitHub OAuth App callback at
+`https://llm-notary.exalto.ai/api/auth/github/callback`.
 
 Never create a new platform signing key during a migration. Copy the existing
 key, the SQLite state, and the notary directory together so published stamps,

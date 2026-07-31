@@ -10,7 +10,7 @@ kill_timeout = "30s"
 [env]
   DATABASE_URL = "sqlite:///var/lib/llm-notary/api.db"
   LLM_NOTARY_API_LISTEN = "0.0.0.0:8080"
-  LLM_NOTARY_PUBLIC_ORIGIN = "https://llm-notary-prod-web.fly.dev"
+  LLM_NOTARY_PUBLIC_ORIGIN = "https://llm-notary.exalto.ai"
   LLM_NOTARY_NOTARY_HOST = "llm-notary-prod-notary.fly.dev"
   LLM_NOTARY_NOTARY_PORT = "7047"
   # Keep the existing namespace when moving published state from Spaces.
