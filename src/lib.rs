@@ -17,6 +17,7 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use futures::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use http::{HeaderMap, Method, Uri};
 use http_body::Frame;
 use http_body_util::{BodyExt as _, StreamBody, combinators::BoxBody};
 use hyper::{Request, Response, body::Incoming};
@@ -69,6 +70,12 @@ pub mod vault;
 
 /// Default cap for one serialized control-protocol frame.
 pub const DEFAULT_NOTARY_MAX_FRAME_BYTES: usize = 128 << 20;
+/// Shared HTTP transcript budget for local capture and deferred finalization.
+///
+/// This stays below the notary's 128 × 128 KiB private-proof limit so normal
+/// HTTP headers and transfer framing cannot turn a successfully captured
+/// bundle into a proof the public notary must reject.
+pub const DEFAULT_MAX_ATTESTABLE_HTTP_BYTES: usize = 15 << 20;
 const REQUEST_WRITE_CHUNK: usize = 8 << 10;
 /// Keeps the bounded proof path below the 1 GiB notary budget in the measured
 /// Proxy-TLS configuration.
@@ -83,15 +90,123 @@ const REDACTED_RESPONSE_HEADERS: &[&str] = &["set-cookie"];
 pub const CAPTURE_FORMAT: &str = "llm-notary/capture/v1";
 const DEFERRED_BUNDLE_FORMAT: &str = "llm-notary/deferred-bundle/v1";
 const DEFERRED_RECEIPT_FORMAT: &str = "llm-notary/deferred-receipt/v1";
-const NOTARY_CONTROL_MAGIC: &[u8; 8] = b"LLMN\0\0\0\x01";
+const NOTARY_CONTROL_MAGIC_V1: &[u8; 8] = b"LLMN\0\0\0\x01";
+const NOTARY_CONTROL_MAGIC_V2: &[u8; 8] = b"LLMN\0\0\0\x02";
 const NOTARY_MODE_CAPTURE: u8 = 2;
 const NOTARY_MODE_FINALIZE: u8 = 3;
+const NOTARY_ADMISSION_ACCEPTED: u8 = 1;
+const NOTARY_ADMISSION_REJECTED: u8 = 2;
+const NOTARY_REJECTION_CAPTURE_AT_CAPACITY: u8 = 1;
+const NOTARY_REJECTION_FINALIZE_AT_CAPACITY: u8 = 2;
+const NOTARY_REJECTION_CAPTURE_DISABLED: u8 = 3;
+pub const NOTARY_CAPACITY_RETRY_AFTER_SECS: u64 = 5;
 
 /// A validated notary protocol operation selected by the versioned prelude.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotarySessionMode {
     Capture,
     Finalize,
+}
+
+/// A service-level reason a notary declined a session before the TLSN protocol
+/// began. These are safe to show to a local proxy or CLI user.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotaryAdmissionRejection {
+    CaptureAtCapacity,
+    FinalizeAtCapacity,
+    CaptureDisabled,
+}
+
+impl NotaryAdmissionRejection {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::CaptureAtCapacity => "capture_at_capacity",
+            Self::FinalizeAtCapacity => "finalize_at_capacity",
+            Self::CaptureDisabled => "capture_disabled",
+        }
+    }
+
+    fn from_wire(code: u8) -> Result<Self> {
+        match code {
+            NOTARY_REJECTION_CAPTURE_AT_CAPACITY => Ok(Self::CaptureAtCapacity),
+            NOTARY_REJECTION_FINALIZE_AT_CAPACITY => Ok(Self::FinalizeAtCapacity),
+            NOTARY_REJECTION_CAPTURE_DISABLED => Ok(Self::CaptureDisabled),
+            _ => bail!("unknown notary admission rejection code"),
+        }
+    }
+
+    fn wire_code(self) -> u8 {
+        match self {
+            Self::CaptureAtCapacity => NOTARY_REJECTION_CAPTURE_AT_CAPACITY,
+            Self::FinalizeAtCapacity => NOTARY_REJECTION_FINALIZE_AT_CAPACITY,
+            Self::CaptureDisabled => NOTARY_REJECTION_CAPTURE_DISABLED,
+        }
+    }
+}
+
+/// A typed, retryable error returned by a v2 notary before session work
+/// begins. It deliberately contains no information about other clients or
+/// server capacity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotaryAdmissionError {
+    rejection: NotaryAdmissionRejection,
+    retry_after: std::time::Duration,
+}
+
+impl NotaryAdmissionError {
+    pub fn rejection(self) -> NotaryAdmissionRejection {
+        self.rejection
+    }
+
+    pub fn retry_after(self) -> std::time::Duration {
+        self.retry_after
+    }
+}
+
+impl fmt::Display for NotaryAdmissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let seconds = self.retry_after.as_secs().max(1);
+        match self.rejection {
+            NotaryAdmissionRejection::CaptureAtCapacity => write!(
+                formatter,
+                "notary capture capacity is temporarily full; retry in {seconds} seconds"
+            ),
+            NotaryAdmissionRejection::FinalizeAtCapacity => write!(
+                formatter,
+                "notary finalization capacity is temporarily full; retry in {seconds} seconds"
+            ),
+            NotaryAdmissionRejection::CaptureDisabled => {
+                write!(
+                    formatter,
+                    "notary is temporarily not accepting new captures"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for NotaryAdmissionError {}
+
+/// Finds a typed admission rejection after callers add ordinary `anyhow`
+/// context around the connection operation.
+pub fn notary_admission_error(error: &anyhow::Error) -> Option<&NotaryAdmissionError> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<NotaryAdmissionError>())
+}
+
+/// A parsed notary session prelude. v1 clients do not expect an admission
+/// response; v2 clients do, allowing capacity rejections to be surfaced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotarySessionPrelude {
+    mode: NotarySessionMode,
+    admission_response: bool,
+}
+
+impl NotarySessionPrelude {
+    pub fn mode(self) -> NotarySessionMode {
+        self.mode
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -111,6 +226,100 @@ struct DeferredFinalizeRequest {
 /// for a large agent request.
 pub type HttpRequestBody = BoxBody<Bytes, std::convert::Infallible>;
 
+/// Local metadata and resource limits for one deferred provider capture.
+pub struct DeferredCaptureConfig {
+    pub capture_id: String,
+    pub provider_name: String,
+    pub created_at_unix_ms: u64,
+    pub request_body_bytes: usize,
+    pub max_attestable_http_bytes: usize,
+    pub max_frame_bytes: usize,
+}
+
+/// Tracks the HTTP bytes that will need private commitments in a deferred
+/// proof. One budget covers the request and response of a capture.
+pub struct AttestableHttpBudget {
+    maximum: usize,
+    used: usize,
+}
+
+impl AttestableHttpBudget {
+    pub fn new(maximum: usize) -> Result<Self> {
+        if maximum == 0 {
+            bail!("maximum attestable HTTP bytes must be non-zero");
+        }
+        Ok(Self { maximum, used: 0 })
+    }
+
+    pub fn remaining(&self) -> usize {
+        self.maximum.saturating_sub(self.used)
+    }
+
+    pub fn reserve(&mut self, bytes: usize, phase: &'static str) -> Result<()> {
+        let used = self
+            .used
+            .checked_add(bytes)
+            .ok_or_else(|| anyhow!("attestable HTTP byte count overflow"))?;
+        if used > self.maximum {
+            bail!(
+                "{phase} exceeds the {}-byte maximum attestable HTTP budget",
+                self.maximum
+            );
+        }
+        self.used = used;
+        Ok(())
+    }
+}
+
+/// Returns the conservative on-wire cost of the request line and headers that
+/// the proxy will commit. Header values are counted in full even when a later
+/// disclosure redacts them, so this can only reject early, never undercount.
+pub fn attestable_request_header_bytes(
+    method: &Method,
+    uri: &Uri,
+    headers: &HeaderMap,
+) -> Result<usize> {
+    let target = uri
+        .path_and_query()
+        .map(|value| value.as_str())
+        .unwrap_or("/");
+    let headers = attestable_header_fields_bytes(headers)?;
+    method
+        .as_str()
+        .len()
+        .checked_add(1)
+        .and_then(|bytes| bytes.checked_add(target.len()))
+        .and_then(|bytes| bytes.checked_add(" HTTP/1.1\r\n".len()))
+        .and_then(|bytes| bytes.checked_add(headers))
+        .ok_or_else(|| anyhow!("attestable HTTP header byte count overflow"))
+}
+
+fn attestable_response_header_bytes(
+    status: http::StatusCode,
+    headers: &HeaderMap,
+) -> Result<usize> {
+    let headers = attestable_header_fields_bytes(headers)?;
+    "HTTP/1.1 "
+        .len()
+        .checked_add(status.as_str().len())
+        .and_then(|bytes| bytes.checked_add("\r\n".len()))
+        .and_then(|bytes| bytes.checked_add(headers))
+        .ok_or_else(|| anyhow!("attestable HTTP header byte count overflow"))
+}
+
+fn attestable_header_fields_bytes(headers: &HeaderMap) -> Result<usize> {
+    let mut total = 2usize;
+    for (name, header_value) in headers {
+        total = total
+            .checked_add(name.as_str().len())
+            .and_then(|bytes| bytes.checked_add(2))
+            .and_then(|bytes| bytes.checked_add(header_value.as_bytes().len()))
+            .and_then(|bytes| bytes.checked_add(2))
+            .ok_or_else(|| anyhow!("attestable HTTP header byte count overflow"))?;
+    }
+    Ok(total)
+}
+
 pub fn chunked_request_body(bytes: Bytes) -> HttpRequestBody {
     let length = bytes.len();
     let frames =
@@ -121,11 +330,38 @@ pub fn chunked_request_body(bytes: Bytes) -> HttpRequestBody {
     StreamBody::new(frames).boxed()
 }
 
-fn deferred_transcript_commit(transcript: &Transcript) -> Result<TranscriptCommitConfig> {
+fn deferred_transcript_commit(
+    transcript: &Transcript,
+    max_attestable_http_bytes: usize,
+) -> Result<TranscriptCommitConfig> {
     let http = HttpTranscript::parse(transcript)?;
+    let ranges = disclosed_http_ranges(&http, "in TLS transcript")?;
+    ensure_attestable_ranges(&ranges, max_attestable_http_bytes)?;
     let mut builder = TranscriptCommitConfig::builder(transcript);
-    commit_chunked_private_http(&mut builder, &http)?;
+    commit_bounded_ranges(&mut builder, ranges.sent.iter(), Direction::Sent)?;
+    commit_bounded_ranges(&mut builder, ranges.received.iter(), Direction::Received)?;
     Ok(builder.build()?)
+}
+
+fn ensure_attestable_http_bytes(transcript: &Transcript, maximum: usize) -> Result<()> {
+    let http = HttpTranscript::parse(transcript)?;
+    ensure_attestable_ranges(&disclosed_http_ranges(&http, "in TLS transcript")?, maximum)
+}
+
+fn ensure_attestable_ranges(ranges: &DisclosedHttpRanges, maximum: usize) -> Result<()> {
+    let mut budget = AttestableHttpBudget::new(maximum)?;
+    budget.reserve(
+        ranges.sent.iter().map(|range| range.len()).sum::<usize>(),
+        "provider request",
+    )?;
+    budget.reserve(
+        ranges
+            .received
+            .iter()
+            .map(|range| range.len())
+            .sum::<usize>(),
+        "provider response",
+    )
 }
 
 /// Uses a non-overlapping commitment layout compatible with
@@ -135,15 +371,6 @@ fn deferred_transcript_commit(transcript: &Transcript) -> Result<TranscriptCommi
 /// field commitments for flexibility. Chunked private proofs reject that
 /// overlap, so the production large-message path commits exactly the fields we
 /// disclose and replaces each body commitment with bounded pieces.
-fn commit_chunked_private_http(
-    builder: &mut tlsn::transcript::TranscriptCommitConfigBuilder,
-    transcript: &HttpTranscript,
-) -> Result<()> {
-    let ranges = disclosed_http_ranges(transcript, "in TLS transcript")?;
-    commit_bounded_ranges(builder, ranges.sent.iter(), Direction::Sent)?;
-    commit_bounded_ranges(builder, ranges.received.iter(), Direction::Received)
-}
-
 struct DisclosedHttpRanges {
     sent: RangeSet<usize>,
     received: RangeSet<usize>,
@@ -608,18 +835,22 @@ async fn complete_deferred_response<F>(
 pub async fn deferred_streaming_request(
     notary_addr: SocketAddr,
     server_name: &str,
-    capture_id: String,
-    provider_name: String,
-    created_at_unix_ms: u64,
+    capture: DeferredCaptureConfig,
     request: Request<HttpRequestBody>,
-    max_frame_bytes: usize,
 ) -> Result<DeferredStreamResponse> {
-    validate_notary_frame_limit(max_frame_bytes)?;
+    validate_notary_frame_limit(capture.max_frame_bytes)?;
+    let mut attestable_budget = AttestableHttpBudget::new(capture.max_attestable_http_bytes)?;
+    attestable_budget.reserve(
+        attestable_request_header_bytes(request.method(), request.uri(), request.headers())?,
+        "provider request headers",
+    )?;
+    attestable_budget.reserve(capture.request_body_bytes, "provider request body")?;
     let mut notary_socket = TcpStream::connect(notary_addr)
         .await
         .with_context(|| format!("connecting to notary at {notary_addr}"))?;
     notary_socket.set_nodelay(true)?;
     write_notary_prelude(&mut notary_socket, NOTARY_MODE_CAPTURE).await?;
+    read_notary_admission(&mut notary_socket).await?;
 
     let session = Session::new(notary_socket.compat());
     let (driver, mut handle) = session.split();
@@ -650,6 +881,10 @@ pub async fn deferred_streaming_request(
 
     let response: Response<Incoming> = sender.send_request(request).await?;
     let (parts, body) = response.into_parts();
+    attestable_budget.reserve(
+        attestable_response_header_bytes(parts.status, &parts.headers)?,
+        "provider response headers",
+    )?;
     let (body_sender, body_receiver) = mpsc::channel(16);
     let (bundle_sender, bundle_receiver) = oneshot::channel();
     let server_name = server_name.to_owned();
@@ -659,6 +894,7 @@ pub async fn deferred_streaming_request(
             while let Some(frame) = body.frame().await {
                 let frame = frame?;
                 if let Ok(data) = frame.into_data() {
+                    attestable_budget.reserve(data.len(), "provider response body")?;
                     let _ = body_sender.send(Ok(data)).await;
                 }
             }
@@ -679,23 +915,29 @@ pub async fn deferred_streaming_request(
             let tls_transcript = prover.tls_transcript().clone();
             let handshake_data = handshake_data(&tls_transcript)?;
             let state = prover.into_deferred(rand::random()).await?;
+            ensure_attestable_http_bytes(state.transcript(), capture.max_attestable_http_bytes)?;
             let request = DeferredCaptureRequest {
                 root_binding: state.root_binding(),
                 record_digest: state.record_digest(),
             };
             handle.close();
             let mut socket = driver_task.await??;
-            write_frame(&mut socket, &bincode::serialize(&request)?, max_frame_bytes).await?;
+            write_frame(
+                &mut socket,
+                &bincode::serialize(&request)?,
+                capture.max_frame_bytes,
+            )
+            .await?;
             let receipt: DeferredReceipt =
-                bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
+                bincode::deserialize(&read_frame(&mut socket, capture.max_frame_bytes).await?)?;
             if receipt.server_name() != server_name {
                 bail!("notary receipt provider does not match capture provider");
             }
             DeferredBundle::new(
                 receipt,
-                capture_id,
-                provider_name,
-                created_at_unix_ms,
+                capture.capture_id,
+                capture.provider_name,
+                capture.created_at_unix_ms,
                 handshake_data,
                 &state,
             )
@@ -718,12 +960,15 @@ pub async fn finalize_deferred_bundle(
     notary_addr: SocketAddr,
     bundle: &DeferredBundle,
     trusted_notary_key: &[u8],
+    max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
 ) -> Result<LocalProof> {
     validate_notary_frame_limit(max_frame_bytes)?;
+    AttestableHttpBudget::new(max_attestable_http_bytes)?;
     bundle.receipt.verify(trusted_notary_key)?;
     let state = bundle.checkpoint()?;
-    let transcript_commit = deferred_transcript_commit(state.transcript())?;
+    let transcript_commit =
+        deferred_transcript_commit(state.transcript(), max_attestable_http_bytes)?;
     let mut request_config_builder = RequestConfig::builder();
     request_config_builder.transcript_commit(transcript_commit.clone());
     let request_config = request_config_builder.build()?;
@@ -737,6 +982,7 @@ pub async fn finalize_deferred_bundle(
         .with_context(|| format!("connecting to notary at {notary_addr}"))?;
     socket.set_nodelay(true)?;
     write_notary_prelude(&mut socket, NOTARY_MODE_FINALIZE).await?;
+    read_notary_admission(&mut socket).await?;
     let request = DeferredFinalizeRequest {
         receipt: bundle.receipt.clone(),
         records: state.records().clone(),
@@ -794,10 +1040,11 @@ pub async fn run_notary_session(
     max_frame_bytes: usize,
 ) -> Result<()> {
     validate_notary_frame_limit(max_frame_bytes)?;
-    let mode = read_notary_session_mode(&mut socket).await?;
+    let prelude = read_notary_session_prelude(&mut socket).await?;
+    write_notary_admission(&mut socket, prelude, Ok(())).await?;
     run_notary_session_after_prelude(
         socket,
-        mode,
+        prelude.mode(),
         signing_key,
         allowed_hosts,
         max_private_chunk_bytes,
@@ -811,11 +1058,48 @@ pub async fn run_notary_session(
 /// Reads and validates the short versioned prelude before expensive protocol
 /// admission. Public servers should apply a short timeout around this call.
 pub async fn read_notary_session_mode(socket: &mut TcpStream) -> Result<NotarySessionMode> {
-    match read_notary_prelude(socket).await? {
-        NOTARY_MODE_CAPTURE => Ok(NotarySessionMode::Capture),
-        NOTARY_MODE_FINALIZE => Ok(NotarySessionMode::Finalize),
+    Ok(read_notary_session_prelude(socket).await?.mode())
+}
+
+/// Reads and validates a versioned session prelude. v1 remains accepted for
+/// already-deployed clients, while v2 enables a server admission response.
+pub async fn read_notary_session_prelude(socket: &mut TcpStream) -> Result<NotarySessionPrelude> {
+    let (version, mode) = read_notary_prelude(socket).await?;
+    let mode = match mode {
+        NOTARY_MODE_CAPTURE => NotarySessionMode::Capture,
+        NOTARY_MODE_FINALIZE => NotarySessionMode::Finalize,
         _ => bail!("unsupported notary control mode"),
+    };
+    Ok(NotarySessionPrelude {
+        mode,
+        admission_response: version == 2,
+    })
+}
+
+/// Sends the v2 admission response after the server has applied its cheap
+/// policy and capacity checks. A v1 client receives no bytes so its existing
+/// TLSN session remains wire-compatible.
+pub async fn write_notary_admission(
+    socket: &mut TcpStream,
+    prelude: NotarySessionPrelude,
+    result: Result<(), NotaryAdmissionRejection>,
+) -> Result<()> {
+    if !prelude.admission_response {
+        return Ok(());
     }
+    match result {
+        Ok(()) => socket.write_all(&[NOTARY_ADMISSION_ACCEPTED]).await?,
+        Err(rejection) => {
+            socket
+                .write_all(&[NOTARY_ADMISSION_REJECTED, rejection.wire_code()])
+                .await?;
+            socket
+                .write_all(&(NOTARY_CAPACITY_RETRY_AFTER_SECS as u32).to_be_bytes())
+                .await?;
+        }
+    }
+    socket.flush().await?;
+    Ok(())
 }
 
 /// Runs a notary session after its prelude has been validated and consumed.
@@ -1420,21 +1704,47 @@ fn verified_connection_metadata_with_roots(
 }
 
 async fn write_notary_prelude(socket: &mut TcpStream, mode: u8) -> Result<()> {
-    socket.write_all(NOTARY_CONTROL_MAGIC).await?;
+    socket.write_all(NOTARY_CONTROL_MAGIC_V2).await?;
     socket.write_all(&[mode]).await?;
     socket.flush().await?;
     Ok(())
 }
 
-async fn read_notary_prelude(socket: &mut TcpStream) -> Result<u8> {
-    let mut magic = [0u8; NOTARY_CONTROL_MAGIC.len()];
+async fn read_notary_prelude(socket: &mut TcpStream) -> Result<(u8, u8)> {
+    let mut magic = [0u8; NOTARY_CONTROL_MAGIC_V2.len()];
     socket.read_exact(&mut magic).await?;
-    if &magic != NOTARY_CONTROL_MAGIC {
+    let version = if &magic == NOTARY_CONTROL_MAGIC_V1 {
+        1
+    } else if &magic == NOTARY_CONTROL_MAGIC_V2 {
+        2
+    } else {
         bail!("invalid notary control protocol prelude");
-    }
+    };
     let mut mode = [0u8; 1];
     socket.read_exact(&mut mode).await?;
-    Ok(mode[0])
+    Ok((version, mode[0]))
+}
+
+async fn read_notary_admission(socket: &mut TcpStream) -> Result<()> {
+    let mut status = [0u8; 1];
+    socket.read_exact(&mut status).await?;
+    match status[0] {
+        NOTARY_ADMISSION_ACCEPTED => Ok(()),
+        NOTARY_ADMISSION_REJECTED => {
+            let mut rejection = [0u8; 1];
+            socket.read_exact(&mut rejection).await?;
+            let mut retry_after_secs = [0u8; 4];
+            socket.read_exact(&mut retry_after_secs).await?;
+            Err(NotaryAdmissionError {
+                rejection: NotaryAdmissionRejection::from_wire(rejection[0])?,
+                retry_after: std::time::Duration::from_secs(
+                    u32::from_be_bytes(retry_after_secs) as u64
+                ),
+            }
+            .into())
+        }
+        _ => bail!("invalid notary admission response"),
+    }
 }
 
 async fn write_tokio_frame(
@@ -1510,6 +1820,82 @@ mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
     use tlsn::rangeset::ops::Set;
+    use tokio::net::{TcpListener, TcpStream};
+
+    #[tokio::test]
+    async fn v2_admission_rejection_is_typed_and_retryable() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let prelude = read_notary_session_prelude(&mut socket).await.unwrap();
+            assert_eq!(prelude.mode(), NotarySessionMode::Capture);
+            write_notary_admission(
+                &mut socket,
+                prelude,
+                Err(NotaryAdmissionRejection::CaptureAtCapacity),
+            )
+            .await
+            .unwrap();
+        });
+
+        let mut client = TcpStream::connect(address).await.unwrap();
+        write_notary_prelude(&mut client, NOTARY_MODE_CAPTURE)
+            .await
+            .unwrap();
+        let error = read_notary_admission(&mut client).await.unwrap_err();
+        let admission = error.downcast_ref::<NotaryAdmissionError>().unwrap();
+        assert_eq!(
+            admission.rejection(),
+            NotaryAdmissionRejection::CaptureAtCapacity
+        );
+        assert_eq!(
+            admission.retry_after(),
+            std::time::Duration::from_secs(NOTARY_CAPACITY_RETRY_AFTER_SECS)
+        );
+        server.await.unwrap();
+    }
+
+    #[test]
+    fn attestable_http_budget_is_shared_between_request_and_response() {
+        let mut budget = AttestableHttpBudget::new(10).unwrap();
+        budget.reserve(6, "provider request").unwrap();
+        let error = budget.reserve(5, "provider response").unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "provider response exceeds the 10-byte maximum attestable HTTP budget"
+        );
+    }
+
+    #[tokio::test]
+    async fn v1_prelude_does_not_receive_an_admission_byte() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let prelude = read_notary_session_prelude(&mut socket).await.unwrap();
+            assert_eq!(prelude.mode(), NotarySessionMode::Finalize);
+            write_notary_admission(&mut socket, prelude, Ok(()))
+                .await
+                .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        });
+
+        let mut client = TcpStream::connect(address).await.unwrap();
+        client.write_all(NOTARY_CONTROL_MAGIC_V1).await.unwrap();
+        client.write_all(&[NOTARY_MODE_FINALIZE]).await.unwrap();
+        client.flush().await.unwrap();
+        let mut byte = [0u8; 1];
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(10),
+                client.read_exact(&mut byte),
+            )
+            .await
+            .is_err()
+        );
+        server.await.unwrap();
+    }
 
     fn test_capture() -> Capture {
         let evidence = b"presentation".to_vec();
@@ -1744,8 +2130,15 @@ mod tests {
         let transcript = Transcript::new(sent, received);
         let http = HttpTranscript::parse(&transcript).expect("parse HTTP transcript");
 
-        let config =
-            deferred_transcript_commit(&transcript).expect("build chunked commitment config");
+        let config = deferred_transcript_commit(&transcript, DEFAULT_MAX_ATTESTABLE_HTTP_BYTES)
+            .expect("build chunked commitment config");
+        let budget_error = deferred_transcript_commit(&transcript, 64)
+            .expect_err("commit construction must reject an oversized transcript");
+        assert!(
+            budget_error
+                .to_string()
+                .contains("maximum attestable HTTP budget")
+        );
         let disclosure =
             disclosed_http_ranges(&http, "in test").expect("derive disclosed HTTP ranges");
         let request = config.to_request();
@@ -2007,6 +2400,7 @@ mod tests {
                 tampered_notary_addr,
                 &key_tampered,
                 &trusted_public_key,
+                DEFAULT_MAX_ATTESTABLE_HTTP_BYTES,
                 DEFAULT_NOTARY_MAX_FRAME_BYTES,
             )
             .await
@@ -2037,6 +2431,7 @@ mod tests {
             notary_addr,
             &bundle,
             &trusted_public_key,
+            DEFAULT_MAX_ATTESTABLE_HTTP_BYTES,
             DEFAULT_NOTARY_MAX_FRAME_BYTES,
         )
         .await

@@ -6,7 +6,7 @@ use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
 
 use crate::{
-    DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredBundle,
+    DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredBundle,
     bundle::{
         finalize_bundle, trace_package_created_at_unix_ms, trace_package_notary_key,
         verify_trace_package,
@@ -33,6 +33,10 @@ pub struct FinalizeArgs {
     /// Must match the notary's --max-frame-bytes setting.
     #[arg(long, default_value_t = DEFAULT_NOTARY_MAX_FRAME_BYTES)]
     max_frame_bytes: usize,
+    /// Maximum combined HTTP request and response bytes that may be privately
+    /// committed. This must match the budget used while capturing the bundle.
+    #[arg(long, default_value_t = DEFAULT_MAX_ATTESTABLE_HTTP_BYTES)]
+    max_attestable_http_bytes: usize,
 }
 
 #[derive(Args, Debug)]
@@ -98,9 +102,19 @@ pub async fn finalize(args: FinalizeArgs) -> Result<()> {
         &key,
         &vault,
         notary,
+        args.max_attestable_http_bytes,
         args.max_frame_bytes,
     )
-    .await?;
+    .await
+    .map_err(|error| {
+        let Some(admission) = crate::notary_admission_error(&error) else {
+            return error;
+        };
+        anyhow::anyhow!(
+            "{admission}. The encrypted bundle at {} is unchanged and can be retried.",
+            args.bundle.display()
+        )
+    })?;
     println!("wrote verified trace package: {}", path.display());
     println!("trusted notary key: {key_id}");
     Ok(())
