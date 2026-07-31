@@ -623,7 +623,7 @@ function Collections() {
   const filtered = useMemo(() => publications.filter((item) => {
     const searchable = `${item.title} ${item.provider} ${item.model} ${item.tags.join(' ')}`.toLowerCase();
     return searchable.includes(query.toLowerCase()) && (provider === 'All' || item.provider === provider) && (model === 'All' || item.model === model) && (!tag || item.tags.includes(tag));
-  }).sort((left, right) => sort === 'Newest' ? right.admitted_at - left.admitted_at : sort === 'Popular' ? right.recent_downloads - left.recent_downloads || right.admitted_at - left.admitted_at : left.title.localeCompare(right.title)), [publications, query, provider, model, tag, sort]);
+  }).sort((left, right) => sort === 'Newest' ? right.admitted_at - left.admitted_at : sort === 'Downloads' ? right.recent_downloads - left.recent_downloads || right.admitted_at - left.admitted_at : left.title.localeCompare(right.title)), [publications, query, provider, model, tag, sort]);
   useEffect(() => {
     if (!filtered.length) {
       if (activeId !== null) setActiveId(null);
@@ -655,7 +655,7 @@ function Collections() {
             <label className="library-search"><span>Search traces</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by model, provider, or topic" /></label>
             <label><span>Provider</span><select value={provider} onChange={(event) => setProvider(event.target.value)}>{providers.map((value) => <option key={value}>{value}</option>)}</select></label>
             <label><span>Model</span><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((value) => <option key={value}>{value}</option>)}</select></label>
-            <label><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value)}><option>Newest</option><option>Popular</option><option>Title</option></select></label>
+            <label><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value)}><option>Newest</option><option>Downloads</option><option>Title</option></select></label>
           </section>
           <div className="library-browse-meta"><nav className="topic-filter" aria-label="Filter by topic">{tags.map((value) => <button key={value} className={tag === value ? 'active' : ''} aria-pressed={tag === value} onClick={() => setTag((current) => current === value ? null : value)}>{value}</button>)}</nav><span className="library-count">{filtered.length} {filtered.length === 1 ? 'trace' : 'traces'}</span></div>
           {publications.length === 0
