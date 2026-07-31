@@ -16,7 +16,7 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
-use futures::io::{AsyncReadExt as _, AsyncWriteExt as _};
+use futures::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use http::{HeaderMap, Method, Uri};
 use http_body::Frame;
 use http_body_util::{BodyExt as _, StreamBody, combinators::BoxBody};
@@ -25,6 +25,9 @@ use hyper_util::rt::TokioIo;
 use k256::ecdsa::{
     Signature, SigningKey, VerifyingKey,
     signature::{Signer as _, Verifier as _},
+};
+use rustls::{
+    ClientConfig, RootCertStore as OuterRootCertStore, pki_types::ServerName as TlsServerName,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -55,6 +58,7 @@ use tokio::{
     net::TcpStream,
     sync::{mpsc, oneshot},
 };
+use tokio_rustls::TlsConnector;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 pub mod archive;
@@ -68,6 +72,8 @@ pub mod public;
 pub mod telemetry;
 #[cfg(feature = "cli")]
 pub mod vault;
+
+use crate::notary_directory::{NotaryEndpoint, NotaryTransport};
 
 /// Default cap for one serialized control-protocol frame.
 pub const DEFAULT_NOTARY_MAX_FRAME_BYTES: usize = 128 << 20;
@@ -101,6 +107,12 @@ const NOTARY_REJECTION_CAPTURE_AT_CAPACITY: u8 = 1;
 const NOTARY_REJECTION_FINALIZE_AT_CAPACITY: u8 = 2;
 const NOTARY_REJECTION_CAPTURE_DISABLED: u8 = 3;
 pub const NOTARY_CAPACITY_RETRY_AFTER_SECS: u64 = 5;
+
+trait NotaryStream: AsyncRead + AsyncWrite + Send + Unpin {}
+
+impl<T> NotaryStream for T where T: AsyncRead + AsyncWrite + Send + Unpin {}
+
+type NotaryIo = Box<dyn NotaryStream>;
 
 /// A validated notary protocol operation selected by the versioned prelude.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -839,6 +851,22 @@ pub async fn deferred_streaming_request(
     capture: DeferredCaptureConfig,
     request: Request<HttpRequestBody>,
 ) -> Result<DeferredStreamResponse> {
+    let endpoint = NotaryEndpoint::new(
+        notary_addr.ip().to_string(),
+        notary_addr.port(),
+        NotaryTransport::Tcp,
+    )?;
+    deferred_streaming_request_to(&endpoint, server_name, capture, request).await
+}
+
+/// Streams one provider request through a raw-TCP or public-CA TLS notary
+/// endpoint, retaining the endpoint hostname for TLS SNI validation.
+pub async fn deferred_streaming_request_to(
+    notary: &NotaryEndpoint,
+    server_name: &str,
+    capture: DeferredCaptureConfig,
+    request: Request<HttpRequestBody>,
+) -> Result<DeferredStreamResponse> {
     validate_notary_frame_limit(capture.max_frame_bytes)?;
     let mut attestable_budget = AttestableHttpBudget::new(capture.max_attestable_http_bytes)?;
     attestable_budget.reserve(
@@ -846,14 +874,9 @@ pub async fn deferred_streaming_request(
         "provider request headers",
     )?;
     attestable_budget.reserve(capture.request_body_bytes, "provider request body")?;
-    let mut notary_socket = TcpStream::connect(notary_addr)
-        .await
-        .with_context(|| format!("connecting to notary at {notary_addr}"))?;
-    notary_socket.set_nodelay(true)?;
-    write_notary_prelude(&mut notary_socket, NOTARY_MODE_CAPTURE).await?;
-    read_notary_admission(&mut notary_socket).await?;
+    let notary_socket = connect_notary(notary, NOTARY_MODE_CAPTURE).await?;
 
-    let session = Session::new(notary_socket.compat());
+    let session = Session::new(notary_socket);
     let (driver, mut handle) = session.split();
     let driver_task = tokio::spawn(driver);
     let prover = handle
@@ -964,6 +987,30 @@ pub async fn finalize_deferred_bundle(
     max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
 ) -> Result<LocalProof> {
+    let endpoint = NotaryEndpoint::new(
+        notary_addr.ip().to_string(),
+        notary_addr.port(),
+        NotaryTransport::Tcp,
+    )?;
+    finalize_deferred_bundle_to(
+        &endpoint,
+        bundle,
+        trusted_notary_key,
+        max_attestable_http_bytes,
+        max_frame_bytes,
+    )
+    .await
+}
+
+/// Completes a deferred proof through a raw-TCP or public-CA TLS notary
+/// endpoint.
+pub async fn finalize_deferred_bundle_to(
+    notary: &NotaryEndpoint,
+    bundle: &DeferredBundle,
+    trusted_notary_key: &[u8],
+    max_attestable_http_bytes: usize,
+    max_frame_bytes: usize,
+) -> Result<LocalProof> {
     validate_notary_frame_limit(max_frame_bytes)?;
     AttestableHttpBudget::new(max_attestable_http_bytes)?;
     bundle.receipt.verify(trusted_notary_key)?;
@@ -978,20 +1025,15 @@ pub async fn finalize_deferred_bundle(
     prove_config_builder.chunked_private_commitments(CHUNKED_PROOF_BYTES)?;
     let prove_config = prove_config_builder.build()?;
 
-    let mut socket = TcpStream::connect(notary_addr)
-        .await
-        .with_context(|| format!("connecting to notary at {notary_addr}"))?;
-    socket.set_nodelay(true)?;
-    write_notary_prelude(&mut socket, NOTARY_MODE_FINALIZE).await?;
-    read_notary_admission(&mut socket).await?;
+    let mut socket = connect_notary(notary, NOTARY_MODE_FINALIZE).await?;
     let request = DeferredFinalizeRequest {
         receipt: bundle.receipt.clone(),
         records: state.records().clone(),
         prove_request: prove_config.to_request(),
     };
-    write_tokio_frame(&mut socket, &bincode::serialize(&request)?, max_frame_bytes).await?;
+    write_frame(&mut socket, &bincode::serialize(&request)?, max_frame_bytes).await?;
 
-    let session = Session::new(socket.compat());
+    let session = Session::new(socket);
     let mut prover_context = session.new_context()?;
     let (driver, handle) = session.split();
     let driver_task = tokio::spawn(driver);
@@ -1704,7 +1746,60 @@ fn verified_connection_metadata_with_roots(
     ))
 }
 
-async fn write_notary_prelude(socket: &mut TcpStream, mode: u8) -> Result<()> {
+async fn connect_notary(notary: &NotaryEndpoint, mode: u8) -> Result<NotaryIo> {
+    let socket = TcpStream::connect((notary.host.as_str(), notary.port))
+        .await
+        .with_context(|| format!("connecting to notary at {notary}"))?;
+    socket.set_nodelay(true)?;
+
+    match notary.transport {
+        NotaryTransport::Tcp => {
+            let mut socket = socket;
+            write_notary_prelude(&mut socket, mode).await?;
+            read_notary_admission(&mut socket).await?;
+            Ok(Box::new(socket.compat()))
+        }
+        NotaryTransport::Tls => {
+            let mut socket = connect_notary_tls(&notary.host, socket, default_notary_tls_config())
+                .await
+                .with_context(|| format!("validating TLS for notary at {notary}"))?;
+            write_notary_prelude(&mut socket, mode).await?;
+            read_notary_admission(&mut socket).await?;
+            Ok(Box::new(socket.compat()))
+        }
+    }
+}
+
+fn default_notary_tls_config() -> Arc<ClientConfig> {
+    let roots = OuterRootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    Arc::new(
+        ClientConfig::builder_with_provider(
+            Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+        )
+        .with_safe_default_protocol_versions()
+        .expect("AWS-LC supports Rustls default protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth(),
+    )
+}
+
+async fn connect_notary_tls(
+    host: &str,
+    socket: TcpStream,
+    config: Arc<ClientConfig>,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let server_name = TlsServerName::try_from(host.to_owned())
+        .context("notary TLS endpoint has an invalid server name")?;
+    TlsConnector::from(config)
+        .connect(server_name, socket)
+        .await
+        .context("performing notary TLS handshake")
+}
+
+async fn write_notary_prelude<S: tokio::io::AsyncWrite + Unpin>(
+    socket: &mut S,
+    mode: u8,
+) -> Result<()> {
     socket.write_all(NOTARY_CONTROL_MAGIC_V2).await?;
     socket.write_all(&[mode]).await?;
     socket.flush().await?;
@@ -1726,7 +1821,7 @@ async fn read_notary_prelude(socket: &mut TcpStream) -> Result<(u8, u8)> {
     Ok((version, mode[0]))
 }
 
-async fn read_notary_admission(socket: &mut TcpStream) -> Result<()> {
+async fn read_notary_admission<S: tokio::io::AsyncRead + Unpin>(socket: &mut S) -> Result<()> {
     let mut status = [0u8; 1];
     socket.read_exact(&mut status).await?;
     match status[0] {
@@ -1746,20 +1841,6 @@ async fn read_notary_admission(socket: &mut TcpStream) -> Result<()> {
         }
         _ => bail!("invalid notary admission response"),
     }
-}
-
-async fn write_tokio_frame(
-    socket: &mut TcpStream,
-    value: &[u8],
-    max_frame_bytes: usize,
-) -> Result<()> {
-    validate_frame_length(value.len(), max_frame_bytes)?;
-    socket
-        .write_all(&(value.len() as u32).to_be_bytes())
-        .await?;
-    socket.write_all(value).await?;
-    socket.flush().await?;
-    Ok(())
 }
 
 async fn read_tokio_frame(socket: &mut TcpStream, max_frame_bytes: usize) -> Result<Vec<u8>> {
@@ -1820,6 +1901,7 @@ fn validate_frame_length(length: usize, max_frame_bytes: usize) -> Result<()> {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tls_server_fixture::{CA_CERT_DER, SERVER_CERT_DER, SERVER_DOMAIN, SERVER_KEY_DER};
     use tlsn::rangeset::ops::Set;
     use tokio::net::{TcpListener, TcpStream};
 
@@ -1853,6 +1935,88 @@ mod tests {
         assert_eq!(
             admission.retry_after(),
             std::time::Duration::from_secs(NOTARY_CAPACITY_RETRY_AFTER_SECS)
+        );
+        server.await.unwrap();
+    }
+
+    fn fixture_notary_tls_config() -> Arc<ClientConfig> {
+        let mut roots = OuterRootCertStore::empty();
+        roots
+            .add(rustls::pki_types::CertificateDer::from(
+                CA_CERT_DER.to_vec(),
+            ))
+            .unwrap();
+        Arc::new(
+            ClientConfig::builder_with_provider(Arc::new(
+                rustls::crypto::aws_lc_rs::default_provider(),
+            ))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+        )
+    }
+
+    fn fixture_notary_tls_acceptor() -> tokio_rustls::TlsAcceptor {
+        let key = rustls::pki_types::PrivateKeyDer::Pkcs8(SERVER_KEY_DER.into());
+        let cert = rustls::pki_types::CertificateDer::from(SERVER_CERT_DER);
+        let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+            rustls::crypto::aws_lc_rs::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_no_client_auth()
+        .with_single_cert(vec![cert], key)
+        .unwrap();
+        tokio_rustls::TlsAcceptor::from(Arc::new(config))
+    }
+
+    #[tokio::test]
+    async fn outer_tls_validates_before_the_notary_prelude() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let mut socket = fixture_notary_tls_acceptor().accept(socket).await.unwrap();
+            let mut prelude = [0; NOTARY_CONTROL_MAGIC_V2.len() + 1];
+            socket.read_exact(&mut prelude).await.unwrap();
+            assert_eq!(
+                &prelude[..NOTARY_CONTROL_MAGIC_V2.len()],
+                NOTARY_CONTROL_MAGIC_V2
+            );
+            assert_eq!(prelude[NOTARY_CONTROL_MAGIC_V2.len()], NOTARY_MODE_CAPTURE);
+            socket
+                .write_all(&[NOTARY_ADMISSION_ACCEPTED])
+                .await
+                .unwrap();
+            socket.flush().await.unwrap();
+        });
+
+        let socket = TcpStream::connect(address).await.unwrap();
+        let mut socket = connect_notary_tls(SERVER_DOMAIN, socket, fixture_notary_tls_config())
+            .await
+            .unwrap();
+        write_notary_prelude(&mut socket, NOTARY_MODE_CAPTURE)
+            .await
+            .unwrap();
+        read_notary_admission(&mut socket).await.unwrap();
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn outer_tls_rejects_a_notary_hostname_mismatch() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let _ = fixture_notary_tls_acceptor().accept(socket).await;
+        });
+
+        let socket = TcpStream::connect(address).await.unwrap();
+        assert!(
+            connect_notary_tls("notary.example", socket, fixture_notary_tls_config())
+                .await
+                .is_err()
         );
         server.await.unwrap();
     }

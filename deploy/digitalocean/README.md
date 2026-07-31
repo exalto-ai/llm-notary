@@ -21,6 +21,10 @@ Droplet's reserved IP is configured on the server rather than embedded in the
 CLI. If the notary later moves to another machine, set that variable explicitly
 in `deploy.env` and update the workflow accordingly.
 
+This deployment deliberately advertises `tcp`; it can instead advertise a
+generic `tls` endpoint if an operator places a public-CA TLS terminator in
+front of the notary. That terminator is not required to be Fly Proxy.
+
 ## First-time Droplet setup
 
 Create an Ubuntu Droplet with `cloud-init.yaml`. It installs Docker and the
