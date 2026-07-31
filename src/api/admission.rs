@@ -666,6 +666,45 @@ pub fn spawn(state: AppState) {
     });
 }
 
+/// Returns whether admission, private-artifact purging, or Library metadata
+/// generation still needs the API process to remain alive.
+pub async fn has_pending_work(state: &AppState) -> Result<bool> {
+    let job_work: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM publish_jobs
+             WHERE state IN ('queued', 'verifying')
+                OR (state IN ('admitted', 'rejected') AND private_purged_at IS NULL)
+             LIMIT 1
+         )",
+    )
+    .fetch_one(&state.database)
+    .await?;
+    if job_work != 0 || state.library_metadata.api_key.is_none() {
+        return Ok(job_work != 0);
+    }
+
+    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
+    let metadata_work: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM publish_jobs
+             LEFT JOIN publication_metadata
+               ON publication_metadata.publication_id = publish_jobs.id
+             WHERE publish_jobs.state = 'admitted'
+               AND publish_jobs.public_trace_object_key IS NOT NULL
+               AND publish_jobs.public_stamp_object_key IS NOT NULL
+               AND (publication_metadata.publication_id IS NULL
+                    OR (publication_metadata.title_source = 'fallback'
+                        AND COALESCE(publication_metadata.last_generation_attempt_at, 0) <= ?))
+             LIMIT 1
+         )",
+    )
+    .bind(now - METADATA_RETRY_SECS)
+    .fetch_one(&state.database)
+    .await?;
+    Ok(metadata_work != 0)
+}
+
 async fn update_queue_metrics(state: &AppState) -> Result<()> {
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
     let (count, oldest): (i64, Option<i64>) =

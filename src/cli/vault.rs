@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use clap::{Args, Subcommand};
 
-use crate::vault::Vault;
+use crate::vault::{Vault, passphrase_from_file_env};
 
 #[derive(Subcommand, Debug)]
 pub enum VaultCommand {
@@ -23,13 +23,19 @@ pub struct InitArgs {
 pub fn run(command: VaultCommand) -> Result<()> {
     match command {
         VaultCommand::Init(args) if args.passphrase => {
-            let first = rpassword::prompt_password(
-                "Choose LLM Notary vault passphrase (Enter for none): ",
-            )?;
-            let second = rpassword::prompt_password("Confirm vault passphrase: ")?;
-            if first != second {
-                bail!("passphrases do not match");
-            }
+            let first = match passphrase_from_file_env()? {
+                Some(passphrase) => passphrase,
+                None => {
+                    let first = rpassword::prompt_password(
+                        "Choose LLM Notary vault passphrase (Enter for none): ",
+                    )?;
+                    let second = rpassword::prompt_password("Confirm vault passphrase: ")?;
+                    if first != second {
+                        bail!("passphrases do not match");
+                    }
+                    first
+                }
+            };
             if first.is_empty() {
                 eprintln!("warning: an empty passphrase does not protect bundle confidentiality");
             }
