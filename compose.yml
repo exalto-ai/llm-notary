@@ -27,6 +27,8 @@ services:
       LLM_NOTARY_INTAKE_MAX_BYTES: ${LLM_NOTARY_INTAKE_MAX_BYTES:-134217728}
       LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS: ${LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS:-900}
       LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE: /run/secrets/platform_signing_key
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      LLM_NOTARY_LIBRARY_METADATA_MODEL: ${LLM_NOTARY_LIBRARY_METADATA_MODEL:-gpt-5.6-luna}
     volumes:
       - api_data:/var/lib/llm-notary
     read_only: true

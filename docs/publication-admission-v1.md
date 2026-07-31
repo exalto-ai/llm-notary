@@ -15,7 +15,9 @@ credential values, or cookie values.
 Successful and rejected intake objects are deleted immediately after the
 database transition. A background purge pass retries failed deletions. Public
 endpoints serve only the canonical `trace.otlp.json`, the platform-signed
-`stamp.json`, and intentionally public account metadata.
+`stamp.json`, intentionally public account metadata, and generated Library
+metadata. Library titles and tags are discovery aids, not part of the
+cryptographic claim or platform stamp.
 
 This path does not claim that the service learns only the public trace. Issue
 #36 must introduce a new versioned artifact and verifier for that stronger
@@ -67,6 +69,13 @@ The worker:
 9. atomically records its immutable keys and hashes before deleting the
    private object.
 
+After admission, a best-effort metadata worker can send a bounded excerpt of
+the public normalized trace to the configured metadata model to generate a
+short title and controlled tags. This processing is never an admission check:
+if it is unavailable, the Library uses a deterministic fallback title and
+retries later. Operators must configure the model only when publication
+consent covers that additional processor.
+
 Stable client-visible rejection codes currently include
 `object_missing`, `object_size_mismatch`, `object_sha256_mismatch`,
 `archive_invalid`, `package_invalid`, `notary_untrusted`, and
@@ -79,6 +88,13 @@ without exposing internal error strings.
 - `GET /api/public/traces/{id}` returns public metadata and artifact links.
 - `GET /api/public/traces/{id}/trace.otlp.json` returns the canonical trace.
 - `GET /api/public/traces/{id}/stamp.json` returns its immutable stamp.
+- `POST /api/public/traces/{id}/events/download` records a successful client
+  download using an opaque client nonce. It is used only as a recent-download
+  ranking signal; ordinary artifact requests are not counted.
+
+The activity table is intentionally generic (`event_type`, opaque subject key,
+and timestamp) so additional product events can be introduced without a new
+analytics schema. Only `download` is accepted today.
 
 Authenticated `GET /api/publish/jobs/{id}` also returns `trace_url` and
 `stamp_url` after admission.

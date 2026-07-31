@@ -1,4 +1,5 @@
 use std::{
+    env,
     fs,
     path::PathBuf,
     time::{Duration, Instant},
@@ -11,10 +12,9 @@ use axum::{
     extract::{Path as AxumPath, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
-use futures::{StreamExt, TryStreamExt, stream};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use tracing::Span;
 use uuid::Uuid;
@@ -30,10 +30,26 @@ use certified::{
 };
 
 const ADMISSION_INTERVAL_SECS: u64 = 2;
+const METADATA_INTERVAL_SECS: u64 = 10;
 const CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
 const MAX_JOBS_PER_TICK: usize = 4;
-const MAX_CURATED_PUBLICATIONS: usize = 32;
-const COLLECTION_LOAD_CONCURRENCY: usize = 2;
+const MAX_METADATA_PER_TICK: usize = 4;
+const METADATA_RETRY_SECS: i64 = 60 * 60;
+const RECENT_DOWNLOAD_WINDOW_SECS: i64 = 28 * 24 * 60 * 60;
+const METADATA_MODEL: &str = "gpt-5.6-luna";
+const METADATA_PROMPT_VERSION: &str = "library-metadata/v1";
+const ALLOWED_TAGS: &[&str] = &[
+    "agent",
+    "classification",
+    "coding",
+    "direct-api",
+    "streaming",
+    "structured-output",
+    "summarization",
+    "tests",
+    "tool-call",
+    "tool-result",
+];
 
 #[derive(FromRow)]
 struct PublicArtifactRow {
@@ -65,25 +81,20 @@ struct PlatformDirectory {
     public_key: String,
 }
 
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CuratedCollection {
-    format: String,
-    slug: String,
-    title: String,
-    description: String,
-    publications: Vec<CuratedPublication>,
-}
-
-#[derive(serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CuratedPublication {
+#[derive(FromRow)]
+struct LibraryRow {
     id: String,
-    title: String,
-    category: String,
-    surface: String,
-    tool_use: bool,
-    tags: Vec<String>,
+    github_login: String,
+    admitted_at: i64,
+    public_trace_object_key: String,
+    public_trace_size_bytes: i64,
+    public_trace_sha256: String,
+    public_stamp_object_key: String,
+    public_stamp_size_bytes: i64,
+    public_stamp_sha256: String,
+    title: Option<String>,
+    tags_json: Option<String>,
+    recent_downloads: i64,
 }
 
 #[derive(Serialize)]
@@ -100,8 +111,6 @@ struct CollectionResponse {
 struct CollectionPublication {
     id: String,
     title: String,
-    category: String,
-    surface: String,
     tool_use: bool,
     tags: Vec<String>,
     author: String,
@@ -110,8 +119,119 @@ struct CollectionPublication {
     host: String,
     model: String,
     span_count: usize,
+    recent_downloads: i64,
     trace_url: String,
     stamp_url: String,
+}
+
+#[derive(Clone)]
+pub struct MetadataService {
+    api_key: Option<String>,
+    model: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GeneratedMetadata {
+    title: String,
+    tags: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatCompletionResponse {
+    choices: Vec<ChatChoice>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatChoice {
+    message: ChatMessage,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatMessage {
+    content: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ActivityRequest {
+    subject: String,
+}
+
+impl MetadataService {
+    pub fn from_env() -> Self {
+        Self {
+            api_key: env::var("OPENAI_API_KEY")
+                .ok()
+                .filter(|value| !value.is_empty()),
+            model: env::var("LLM_NOTARY_LIBRARY_METADATA_MODEL")
+                .unwrap_or_else(|_| METADATA_MODEL.to_owned()),
+        }
+    }
+
+    async fn generate(
+        &self,
+        http: &reqwest::Client,
+        trace: &[u8],
+    ) -> Result<Option<GeneratedMetadata>> {
+        let Some(api_key) = &self.api_key else {
+            return Ok(None);
+        };
+        let trace_excerpt: String = String::from_utf8_lossy(trace)
+            .chars()
+            .take(24_000)
+            .collect();
+        let body = serde_json::json!({
+            "model": self.model,
+            "max_completion_tokens": 256,
+            "store": false,
+            "response_format": {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "library_metadata",
+                    "strict": true,
+                    "schema": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["title", "tags"],
+                        "properties": {
+                            "title": {"type": "string", "minLength": 1, "maxLength": 96},
+                            "tags": {
+                                "type": "array",
+                                "maxItems": 4,
+                                "items": {"type": "string", "enum": ALLOWED_TAGS}
+                            }
+                        }
+                    }
+                }
+            },
+            "messages": [
+                {"role": "system", "content": "Create concise Library metadata for a published LLM trace. Return a factual title of at most 96 characters plus zero to four tags from the schema. Do not quote, paraphrase, or expose prompt/response content, names, credentials, personal data, or secrets. Describe only the interaction type."},
+                {"role": "user", "content": format!("Public trace excerpt ({}):\n{}", METADATA_PROMPT_VERSION, trace_excerpt)}
+            ]
+        });
+        let response = http
+            .post("https://api.openai.com/v1/chat/completions")
+            .bearer_auth(api_key)
+            .json(&body)
+            .timeout(Duration::from_secs(20))
+            .send()
+            .await?
+            .error_for_status()?;
+        let response: ChatCompletionResponse = response.json().await?;
+        let content = response
+            .choices
+            .into_iter()
+            .next()
+            .and_then(|choice| choice.message.content)
+            .ok_or_else(|| anyhow::anyhow!("metadata model returned no message content"))?;
+        let metadata: GeneratedMetadata = serde_json::from_str(&content)?;
+        validate_generated_metadata(&metadata)?;
+        Ok(Some(metadata))
+    }
 }
 
 enum AdmissionFailure {
@@ -137,6 +257,10 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/platform", get(platform_directory))
         .route("/api/public/collections/examples", get(examples_collection))
+        .route(
+            "/api/public/traces/{trace_id}/events/download",
+            post(record_download_event),
+        )
         .route("/api/public/traces/{trace_id}", get(public_trace_metadata))
         .route(
             "/api/public/traces/{trace_id}/trace.otlp.json",
@@ -149,40 +273,39 @@ pub fn router() -> Router<AppState> {
 }
 
 async fn examples_collection(State(state): State<AppState>) -> ApiResult<Json<CollectionResponse>> {
-    let collection: CuratedCollection = serde_json::from_str(include_str!(
-        "../../examples/production-seed/publications.json"
-    ))
-    .map_err(|error| ApiError::internal(error.into()))?;
-    if collection.format != "llm-notary/curated-collection/v1"
-        || collection.slug != "llm-notary-examples"
-    {
-        return Err(ApiError::internal(anyhow::anyhow!(
-            "embedded examples collection has an unsupported identity"
-        )));
-    }
-    if collection.publications.len() > MAX_CURATED_PUBLICATIONS {
-        return Err(ApiError::internal(anyhow::anyhow!(
-            "embedded examples collection exceeds {MAX_CURATED_PUBLICATIONS} publications"
-        )));
-    }
-    let mut publications = stream::iter(
-        collection
-            .publications
-            .into_iter()
-            .map(|curated| collection_publication(&state, curated)),
+    let now = unix_timestamp()?;
+    let rows: Vec<LibraryRow> = sqlx::query_as(
+        "SELECT publish_jobs.id, users.github_login, publish_jobs.admitted_at,
+                publish_jobs.public_trace_object_key, publish_jobs.public_trace_size_bytes,
+                publish_jobs.public_trace_sha256, publish_jobs.public_stamp_object_key,
+                publish_jobs.public_stamp_size_bytes, publish_jobs.public_stamp_sha256,
+                publication_metadata.title, publication_metadata.tags_json,
+                COUNT(publication_activity_events.id) AS recent_downloads
+         FROM publish_jobs
+         JOIN users ON users.id = publish_jobs.user_id
+         LEFT JOIN publication_metadata ON publication_metadata.publication_id = publish_jobs.id
+         LEFT JOIN publication_activity_events ON publication_activity_events.publication_id = publish_jobs.id
+             AND publication_activity_events.event_type = 'download'
+             AND publication_activity_events.occurred_at >= ?
+         WHERE publish_jobs.state = 'admitted'
+           AND publish_jobs.public_trace_object_key IS NOT NULL
+           AND publish_jobs.public_stamp_object_key IS NOT NULL
+         GROUP BY publish_jobs.id
+         ORDER BY recent_downloads DESC, publish_jobs.admitted_at DESC, publish_jobs.id DESC",
     )
-    .buffer_unordered(COLLECTION_LOAD_CONCURRENCY)
-    .try_collect::<Vec<_>>()
-    .await?
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-    publications.sort_by_key(|publication| std::cmp::Reverse(publication.admitted_at));
+    .bind(now - RECENT_DOWNLOAD_WINDOW_SECS)
+    .fetch_all(&state.database)
+    .await
+    .map_err(database_error)?;
+    let mut publications = Vec::with_capacity(rows.len());
+    for row in rows {
+        publications.push(collection_publication(&state, row).await?);
+    }
     Ok(Json(CollectionResponse {
         format: "llm-notary/public-collection/v1",
-        slug: collection.slug,
-        title: collection.title,
-        description: collection.description,
+        slug: "llm-notary-library".to_owned(),
+        title: "LLM Notary Library".to_owned(),
+        description: "Admitted, independently verifiable LLM traces.".to_owned(),
         consent_label: "Consent-based publication",
         publications,
     }))
@@ -190,11 +313,8 @@ async fn examples_collection(State(state): State<AppState>) -> ApiResult<Json<Co
 
 async fn collection_publication(
     state: &AppState,
-    curated: CuratedPublication,
-) -> ApiResult<Option<CollectionPublication>> {
-    let Some(artifact) = load_public_artifact_optional(state, &curated.id).await? else {
-        return Ok(None);
-    };
+    artifact: LibraryRow,
+) -> ApiResult<CollectionPublication> {
     let (trace, stamp) = tokio::try_join!(
         load_public_bytes(
             state,
@@ -212,31 +332,30 @@ async fn collection_publication(
     let stamp: certified::public::PublicStamp =
         serde_json::from_slice(&stamp).map_err(|error| ApiError::internal(error.into()))?;
     let (model, span_count, tool_use) = trace_facts(&trace).map_err(ApiError::internal)?;
-    validate_curated_tool_use(&curated.id, curated.tool_use, tool_use)
-        .map_err(ApiError::internal)?;
-    Ok(Some(CollectionPublication {
+    let tags = artifact
+        .tags_json
+        .as_deref()
+        .map(serde_json::from_str)
+        .transpose()
+        .map_err(|error| ApiError::internal(error.into()))?
+        .unwrap_or_default();
+    Ok(CollectionPublication {
         id: artifact.id.clone(),
-        title: curated.title,
-        category: curated.category,
-        surface: curated.surface,
+        title: artifact
+            .title
+            .unwrap_or_else(|| fallback_title(&stamp.provider.name, &model)),
         tool_use,
-        tags: curated.tags,
+        tags,
         author: artifact.github_login,
         admitted_at: artifact.admitted_at,
         provider: stamp.provider.name,
         host: stamp.provider.host,
         model,
         span_count,
+        recent_downloads: artifact.recent_downloads,
         trace_url: format!("/api/public/traces/{}/trace.otlp.json", artifact.id),
         stamp_url: format!("/api/public/traces/{}/stamp.json", artifact.id),
-    }))
-}
-
-fn validate_curated_tool_use(id: &str, expected: bool, actual: bool) -> Result<()> {
-    if expected != actual {
-        bail!("curated tool-use label for {id} does not match its admitted trace");
-    }
-    Ok(())
+    })
 }
 
 fn trace_facts(trace: &[u8]) -> Result<(String, usize, bool)> {
@@ -298,6 +417,59 @@ fn contains_tool_part(value: &serde_json::Value) -> bool {
     }
 }
 
+fn fallback_title(provider: &str, model: &str) -> String {
+    format!("{provider} {model} trace")
+}
+
+fn validate_generated_metadata(metadata: &GeneratedMetadata) -> Result<()> {
+    let title = metadata.title.trim();
+    if title.is_empty()
+        || title.chars().count() > 96
+        || title.chars().any(char::is_control)
+        || metadata.tags.len() > 4
+        || metadata
+            .tags
+            .iter()
+            .any(|tag| !ALLOWED_TAGS.contains(&tag.as_str()))
+    {
+        bail!("metadata model returned invalid Library metadata");
+    }
+    let unique = metadata
+        .tags
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    if unique.len() != metadata.tags.len() {
+        bail!("metadata model returned duplicate Library tags");
+    }
+    Ok(())
+}
+
+async fn record_download_event(
+    State(state): State<AppState>,
+    AxumPath(trace_id): AxumPath<String>,
+    Json(request): Json<ActivityRequest>,
+) -> ApiResult<StatusCode> {
+    let subject = Uuid::parse_str(&request.subject)
+        .ok()
+        .filter(|parsed| parsed.hyphenated().to_string() == request.subject)
+        .ok_or_else(|| ApiError::bad_request("activity subject must be a lowercase UUID"))?;
+    load_public_artifact(&state, &trace_id).await?;
+    let now = unix_timestamp()?;
+    sqlx::query(
+        "INSERT INTO publication_activity_events
+             (publication_id, event_type, subject_key_sha256, occurred_at)
+         VALUES (?, 'download', ?, ?)
+         ON CONFLICT (publication_id, event_type, subject_key_sha256) DO NOTHING",
+    )
+    .bind(trace_id)
+    .bind(sha256_hex(subject.to_string().as_bytes()))
+    .bind(now)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn platform_directory(State(state): State<AppState>) -> ApiResult<Json<PlatformDirectory>> {
     let key =
         state.publish.platform_signing_key.as_ref().ok_or_else(|| {
@@ -315,6 +487,16 @@ pub fn spawn(state: AppState) {
     if !state.publish.enabled() {
         return;
     }
+    let metadata_state = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(METADATA_INTERVAL_SECS));
+        loop {
+            interval.tick().await;
+            if let Err(error) = backfill_library_metadata(&metadata_state).await {
+                tracing::error!(%error, "backfilling Library metadata failed");
+            }
+        }
+    });
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(ADMISSION_INTERVAL_SECS));
         loop {
@@ -355,6 +537,91 @@ async fn update_queue_metrics(state: &AppState) -> Result<()> {
             .map(|queued_at| now.saturating_sub(queued_at) as f64)
             .unwrap_or(0.0),
     );
+    Ok(())
+}
+
+async fn backfill_library_metadata(state: &AppState) -> Result<()> {
+    if state.library_metadata.api_key.is_none() {
+        return Ok(());
+    }
+    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
+    let candidates: Vec<PublicArtifactRow> = sqlx::query_as(
+        "SELECT publish_jobs.id, users.github_login, publish_jobs.admitted_at,
+                publish_jobs.public_trace_object_key, publish_jobs.public_trace_size_bytes,
+                publish_jobs.public_trace_sha256, publish_jobs.public_stamp_object_key,
+                publish_jobs.public_stamp_size_bytes, publish_jobs.public_stamp_sha256
+         FROM publish_jobs
+         JOIN users ON users.id = publish_jobs.user_id
+         LEFT JOIN publication_metadata ON publication_metadata.publication_id = publish_jobs.id
+         WHERE publish_jobs.state = 'admitted'
+           AND publish_jobs.public_trace_object_key IS NOT NULL
+           AND publish_jobs.public_stamp_object_key IS NOT NULL
+           AND (publication_metadata.publication_id IS NULL
+                OR (publication_metadata.title_source = 'fallback'
+                    AND COALESCE(publication_metadata.last_generation_attempt_at, 0) <= ?))
+         ORDER BY publish_jobs.admitted_at ASC
+         LIMIT ?",
+    )
+    .bind(now - METADATA_RETRY_SECS)
+    .bind(MAX_METADATA_PER_TICK as i64)
+    .fetch_all(&state.database)
+    .await?;
+    for artifact in candidates {
+        let trace = load_public_bytes(
+            state,
+            &artifact.public_trace_object_key,
+            artifact.public_trace_size_bytes,
+            &artifact.public_trace_sha256,
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+        let fallback = trace_facts(&trace)
+            .ok()
+            .map(|(model, _, _)| fallback_title("Verified", &model))
+            .unwrap_or_else(|| "Verified LLM trace".to_owned());
+        let generated = match state.library_metadata.generate(&state.http, &trace).await {
+            Ok(Some(metadata)) => Some(metadata),
+            Ok(None) => None,
+            Err(error) => {
+                tracing::warn!(job_id = %artifact.id, %error, "Library metadata generation failed");
+                None
+            }
+        };
+        let (title, tags, source, generator_model, generated_at) = match generated {
+            Some(metadata) => (
+                metadata.title.trim().to_owned(),
+                metadata.tags,
+                "generated",
+                Some(state.library_metadata.model.clone()),
+                Some(now),
+            ),
+            None => (fallback, Vec::new(), "fallback", None, None),
+        };
+        sqlx::query(
+            "INSERT INTO publication_metadata
+                 (publication_id, title, tags_json, title_source, generator_model,
+                  generator_prompt_version, generated_at, last_generation_attempt_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT (publication_id) DO UPDATE SET
+                 title = excluded.title, tags_json = excluded.tags_json,
+                 title_source = excluded.title_source, generator_model = excluded.generator_model,
+                 generator_prompt_version = excluded.generator_prompt_version,
+                 generated_at = excluded.generated_at,
+                 last_generation_attempt_at = excluded.last_generation_attempt_at,
+                 updated_at = excluded.updated_at",
+        )
+        .bind(&artifact.id)
+        .bind(title)
+        .bind(serde_json::to_string(&tags)?)
+        .bind(source)
+        .bind(generator_model)
+        .bind(METADATA_PROMPT_VERSION)
+        .bind(generated_at)
+        .bind(now)
+        .bind(now)
+        .execute(&state.database)
+        .await?;
+    }
     Ok(())
 }
 
@@ -1012,6 +1279,7 @@ mod tests {
                 secure_cookies: true,
                 notary_directory: super::super::tests::directory_key(),
                 publish: PublishService::mock(storage.clone()),
+                library_metadata: MetadataService::from_env(),
             },
             storage,
         )
@@ -1047,10 +1315,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn examples_collection_never_invents_unadmitted_records() {
+    async fn library_lists_all_admitted_records_without_a_source_allowlist() {
         let (state, _) = test_state().await;
         let response = examples_collection(State(state)).await.unwrap().0;
-        assert_eq!(response.slug, "llm-notary-examples");
+        assert_eq!(response.slug, "llm-notary-library");
         assert!(response.publications.is_empty());
     }
 
@@ -1074,8 +1342,6 @@ mod tests {
             trace_facts(&serde_json::to_vec(&trace).unwrap()).unwrap(),
             ("model-1".to_owned(), 1, true)
         );
-        assert!(validate_curated_tool_use("trace-1", true, true).is_ok());
-        assert!(validate_curated_tool_use("trace-1", false, true).is_err());
     }
 
     #[test]
@@ -1097,6 +1363,31 @@ mod tests {
         assert_eq!(
             trace_facts(&serde_json::to_vec(&trace).unwrap()).unwrap(),
             ("model-1".to_owned(), 1, false)
+        );
+    }
+
+    #[test]
+    fn generated_metadata_is_limited_to_the_public_taxonomy() {
+        assert!(
+            validate_generated_metadata(&GeneratedMetadata {
+                title: "Tool-call trace".to_owned(),
+                tags: vec!["tool-call".to_owned(), "agent".to_owned()],
+            })
+            .is_ok()
+        );
+        assert!(
+            validate_generated_metadata(&GeneratedMetadata {
+                title: "Trace".to_owned(),
+                tags: vec!["invented-tag".to_owned()],
+            })
+            .is_err()
+        );
+        assert!(
+            validate_generated_metadata(&GeneratedMetadata {
+                title: "Trace".to_owned(),
+                tags: vec!["agent".to_owned(), "agent".to_owned()],
+            })
+            .is_err()
         );
     }
 

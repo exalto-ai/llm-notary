@@ -758,6 +758,7 @@ mod tests {
             secure_cookies: true,
             notary_directory: super::super::tests::directory_key(),
             publish: PublishService::mock(storage.clone()),
+            library_metadata: super::super::admission::MetadataService::from_env(),
         };
         (
             state,
