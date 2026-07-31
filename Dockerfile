@@ -64,4 +64,4 @@ COPY --from=builder /app/target/release/certified-notary /usr/local/bin/certifie
 RUN certified-notary --help >/dev/null
 
 EXPOSE 7047
-ENTRYPOINT ["/bin/sh", "-ec", "key_file=${NOTARY_SIGNING_KEY_FILE:-/run/secrets/notary_signing_key}; if test -r \"$key_file\"; then cp \"$key_file\" /tmp/notary.key; elif [ -n \"${NOTARY_SIGNING_KEY:-}\" ]; then printf '%s' \"$NOTARY_SIGNING_KEY\" > /tmp/notary.key; else echo 'notary signing key is required' >&2; exit 1; fi; chmod 600 /tmp/notary.key; exec certified-notary --listen 0.0.0.0:7047 --signing-key /tmp/notary.key --allow-host api.openai.com --allow-host api.anthropic.com --allow-host api.deepseek.com --allow-host openrouter.ai \"$@\"", "--"]
+ENTRYPOINT ["/bin/sh", "-ec", "key_file=${NOTARY_SIGNING_KEY_FILE:-/run/secrets/notary_signing_key}; if ! test -r \"$key_file\"; then echo 'notary signing key file is required and must be readable' >&2; exit 1; fi; exec certified-notary --listen 0.0.0.0:7047 --signing-key \"$key_file\" --allow-host api.openai.com --allow-host api.anthropic.com --allow-host api.deepseek.com --allow-host openrouter.ai \"$@\"", "--"]
