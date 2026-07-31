@@ -1,46 +1,31 @@
-//! Opt-in split-process resource benchmark for the Proxy-TLS proof path.
+//! Opt-in, split-container resource benchmark for the production capture and
+//! finalization protocol.
 //!
-//! Run this in a client container on the same Docker network as a
-//! `certified-notary` container. Give this client the network alias
-//! `test-server.io`; the client hosts the TLS echo fixture on port 443 while
-//! the separate notary container connects to it.
+//! Run a memory-limited `certified-notary --profile-sessions` container, then
+//! run this test from a separate client container on the same Docker network.
+//! The test deliberately sends an invalid, synthetic OpenAI credential: the
+//! provider should reject it, but the request and response still exercise the
+//! full Proxy-TLS capture and deferred-finalization paths without using an API
+//! key or creating a billable inference.
 //!
 //! Example:
-//! `TLSN_PROFILE_TOKENS=1050000 TLSN_ZK_EPHEMERAL_CHUNK_BYTES=1048576 \
-//!   TLSN_NOTARY_ADDR=notary:7047 cargo test --release --test proxy_tls_split_profile \
-//!   -- --ignored --nocapture`
+//! `TLSN_PROFILE_TOKENS=32768 TLSN_NOTARY_ADDR=notary:7047 \
+//!   TLSN_NOTARY_PUBLIC_KEY=<compressed-sec1-hex> \
+//!   cargo test --release --test proxy_tls_split_profile -- --ignored --nocapture`
 
 use std::{env, time::Instant};
 
 use anyhow::{Context, Result};
-use http::Request;
-use http_body_util::{BodyExt, Full};
-use hyper::{body::Bytes, client::conn::http1};
-use hyper_util::rt::TokioIo;
-use tiktoken_rs::o200k_base;
-use tls_server_fixture::{CA_CERT_DER, SERVER_DOMAIN, bind_test_server_hyper};
-use tlsn::{
-    Session,
-    config::{
-        prove::ProveConfig, prover::ProverConfig, tls::TlsClientConfig,
-        tls_commit::proxy::ProxyTlsConfig,
-    },
-    connection::{DnsName, ServerName},
-    transcript::{Direction, TranscriptCommitConfig},
-    webpki::{CertificateDer, RootCertStore},
+use certified::{
+    DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredCaptureConfig,
+    chunked_request_body, deferred_streaming_request, finalize_deferred_bundle,
 };
-use tlsn_formats::http::HttpTranscript;
-use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
+use http::Request;
+use hyper::body::Bytes;
+use tiktoken_rs::o200k_base;
 
-const DEFAULT_PROFILE_TOKENS: usize = 1_050_000;
-
-fn cgroup_memory(file: &str) -> Option<u64> {
-    std::fs::read_to_string(format!("/sys/fs/cgroup/{file}"))
-        .ok()?
-        .trim()
-        .parse()
-        .ok()
-}
+const DEFAULT_PROFILE_TOKENS: usize = 32_768;
+const OPENAI_PROFILE_HOST: &str = "api.openai.com";
 
 fn profile_tokens() -> Result<usize> {
     env::var("TLSN_PROFILE_TOKENS")
@@ -49,162 +34,82 @@ fn profile_tokens() -> Result<usize> {
         .context("TLSN_PROFILE_TOKENS must be an unsigned token count")
 }
 
-fn chunk_bytes() -> Result<usize> {
-    let value = env::var("TLSN_ZK_EPHEMERAL_CHUNK_BYTES")
-        .context("TLSN_ZK_EPHEMERAL_CHUNK_BYTES is required")?
-        .parse()
-        .context("TLSN_ZK_EPHEMERAL_CHUNK_BYTES must be an unsigned byte count")?;
-    anyhow::ensure!(value > 0, "TLSN_ZK_EPHEMERAL_CHUNK_BYTES must be non-zero");
-    Ok(value)
-}
-
 fn body(tokens: usize) -> Result<Bytes> {
-    let body = " a".repeat(tokens);
+    let input = " a".repeat(tokens);
     let tokenizer = o200k_base().context("load the o200k_base tokenizer")?;
-    let actual = tokenizer.encode_with_special_tokens(&body).len();
+    let actual = tokenizer.encode_with_special_tokens(&input).len();
     anyhow::ensure!(actual == tokens, "expected {tokens} tokens, got {actual}");
-    Ok(Bytes::from(body))
+    Ok(Bytes::from(format!(
+        r#"{{"model":"gpt-4.1-nano","input":"{input}"}}"#
+    )))
 }
 
-fn fixture_roots() -> RootCertStore {
-    RootCertStore {
-        roots: vec![CertificateDer(CA_CERT_DER.to_vec())],
-    }
-}
-
-fn commit_chunked_private_http(
-    transcript: &HttpTranscript,
-    source: &tlsn::transcript::Transcript,
-    chunk_bytes: usize,
-) -> Result<TranscriptCommitConfig> {
-    anyhow::ensure!(
-        transcript.requests.len() == 1 && transcript.responses.len() == 1,
-        "expected exactly one HTTP request and response"
-    );
-    let mut builder = TranscriptCommitConfig::builder(source);
-    let request = &transcript.requests[0];
-    builder.commit(request.without_data(), Direction::Sent)?;
-    builder.commit(&request.request.target, Direction::Sent)?;
-    for header in &request.headers {
-        if header.name.as_str().eq_ignore_ascii_case("authorization")
-            || header.name.as_str().eq_ignore_ascii_case("x-api-key")
-        {
-            builder.commit(header.without_value(), Direction::Sent)?;
-        } else {
-            builder.commit(header, Direction::Sent)?;
-        }
-    }
-    if let Some(body) = &request.body {
-        commit_body_chunks(
-            &mut builder,
-            body.indices().iter(),
-            Direction::Sent,
-            chunk_bytes,
-        )?;
-    }
-
-    let response = &transcript.responses[0];
-    builder.commit(response.without_data(), Direction::Received)?;
-    for header in &response.headers {
-        builder.commit(header, Direction::Received)?;
-    }
-    if let Some(body) = &response.body {
-        commit_body_chunks(
-            &mut builder,
-            body.indices().iter(),
-            Direction::Received,
-            chunk_bytes,
-        )?;
-    }
-    Ok(builder.build()?)
-}
-
-fn commit_body_chunks(
-    builder: &mut tlsn::transcript::TranscriptCommitConfigBuilder,
-    ranges: impl Iterator<Item = std::ops::Range<usize>>,
-    direction: Direction,
-    chunk_bytes: usize,
-) -> Result<()> {
-    for range in ranges {
-        for start in (range.start..range.end).step_by(chunk_bytes) {
-            builder.commit(start..(start + chunk_bytes).min(range.end), direction)?;
-        }
-    }
-    Ok(())
+fn notary_public_key() -> Result<Vec<u8>> {
+    let key = env::var("TLSN_NOTARY_PUBLIC_KEY")
+        .context("TLSN_NOTARY_PUBLIC_KEY is required for the split profile")?;
+    hex::decode(key).context("TLSN_NOTARY_PUBLIC_KEY must be hexadecimal")
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "resource benchmark; run in separate client and notary containers"]
-async fn profiles_notary_and_client_in_separate_processes() -> Result<()> {
+async fn profiles_capture_and_finalization_in_a_separate_notary_container() -> Result<()> {
     let tokens = profile_tokens()?;
-    let chunk_bytes = chunk_bytes()?;
     let body = body(tokens)?;
-    let notary_addr = env::var("TLSN_NOTARY_ADDR").unwrap_or_else(|_| "notary:7047".to_owned());
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:443")
+    let notary_endpoint = env::var("TLSN_NOTARY_ADDR").unwrap_or_else(|_| "notary:7047".to_owned());
+    let notary_addr = tokio::net::lookup_host(&notary_endpoint)
         .await
-        .context("bind fixture to port 443")?;
-    let fixture_task = tokio::spawn(async move {
-        let (stream, _) = listener.accept().await?;
-        bind_test_server_hyper(stream.compat()).await?;
-        Result::<()>::Ok(())
-    });
+        .with_context(|| format!("resolve TLSN_NOTARY_ADDR {notary_endpoint}"))?
+        .next()
+        .ok_or_else(|| {
+            anyhow::anyhow!("TLSN_NOTARY_ADDR {notary_endpoint} resolved to no addresses")
+        })?;
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/responses")
+        .header("content-type", "application/json")
+        // This is intentionally not a credential. The provider's 401/4xx
+        // response still gives us an authenticated, representative transcript.
+        .header("authorization", "Bearer llm-notary-profile-invalid-key")
+        .body(chunked_request_body(body.clone()))?;
 
-    let socket = tokio::net::TcpStream::connect(&notary_addr)
-        .await
-        .with_context(|| format!("connect to notary at {notary_addr}"))?;
-    let mut session = Session::new(socket.compat());
-    let prover = session.new_prover(ProverConfig::builder().build()?)?;
-    let (driver, _handle) = session.split();
-    tokio::spawn(driver);
+    let capture_started = Instant::now();
+    let mut response = deferred_streaming_request(
+        notary_addr,
+        OPENAI_PROFILE_HOST,
+        DeferredCaptureConfig {
+            capture_id: "profile-capture".to_owned(),
+            provider_name: "openai".to_owned(),
+            created_at_unix_ms: 1,
+            request_body_bytes: body.len(),
+            max_attestable_http_bytes: DEFAULT_MAX_ATTESTABLE_HTTP_BYTES,
+            max_frame_bytes: DEFAULT_NOTARY_MAX_FRAME_BYTES,
+        },
+        request,
+    )
+    .await?;
+    let provider_status = response.status;
+    let mut provider_response_bytes = 0usize;
+    while let Some(chunk) = response.body.recv().await {
+        provider_response_bytes += chunk?.len();
+    }
+    let bundle = response.bundle.await??;
+    let capture_ms = capture_started.elapsed().as_millis();
 
-    let committed = prover
-        .commit(
-            ProxyTlsConfig::builder()
-                .server_name(DnsName::try_from(SERVER_DOMAIN)?)
-                .build()?,
-        )
-        .await?;
-    let (tls_connection, prover) = committed.connect(
-        TlsClientConfig::builder()
-            .server_name(ServerName::Dns(SERVER_DOMAIN.try_into()?))
-            .root_store(fixture_roots())
-            .build()?,
-    )?;
-    let (mut sender, connection) =
-        http1::handshake::<_, Full<Bytes>>(TokioIo::new(tls_connection.compat())).await?;
-    tokio::spawn(connection);
-    let prover_task = tokio::spawn(prover.into_future());
-    let response = sender
-        .send_request(
-            Request::builder()
-                .method("POST")
-                .uri("/echo")
-                .header("authorization", "Bearer profile-secret")
-                .body(Full::new(body.clone()))?,
-        )
-        .await?;
-    assert_eq!(response.into_body().collect().await?.to_bytes(), body);
-    drop(sender);
-
-    let mut prover = prover_task.await??;
-    let transcript = HttpTranscript::parse(prover.transcript())?;
-    let commitments = commit_chunked_private_http(&transcript, prover.transcript(), chunk_bytes)?;
-    let mut prove = ProveConfig::builder(prover.transcript());
-    prove.transcript_commit(commitments);
-    prove.chunked_private_commitments(chunk_bytes)?;
-    let proof_started = Instant::now();
-    let output = prover.prove(&prove.build()?).await?;
-    let proof_ms = proof_started.elapsed().as_millis();
-    prover.close().await?;
-    fixture_task.await??;
+    let finalization_started = Instant::now();
+    let proof = finalize_deferred_bundle(
+        notary_addr,
+        &bundle,
+        &notary_public_key()?,
+        DEFAULT_MAX_ATTESTABLE_HTTP_BYTES,
+        DEFAULT_NOTARY_MAX_FRAME_BYTES,
+    )
+    .await?;
+    let finalization_ms = finalization_started.elapsed().as_millis();
 
     eprintln!(
-        "split_proxy_tls_client tokens={tokens} bytes={} chunk_bytes={chunk_bytes} commitments={} proof_output_bytes={} proof_ms={proof_ms} cgroup_memory_current_bytes={:?} cgroup_memory_peak_bytes={:?}",
+        "split_proxy_tls_profile tokens={tokens} request_bytes={} provider_status={provider_status} provider_response_bytes={provider_response_bytes} proof_bytes={} capture_ms={capture_ms} client_finalize_ms={finalization_ms}",
         body.len(),
-        output.transcript_commitments.len(),
-        bincode::serialized_size(&output)?,
-        cgroup_memory("memory.current"),
-        cgroup_memory("memory.peak"),
+        bincode::serialized_size(&proof)?,
     );
     Ok(())
 }

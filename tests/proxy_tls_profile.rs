@@ -109,6 +109,12 @@ struct ProofProfile {
     expect_policy_rejection: bool,
 }
 
+#[derive(Debug)]
+struct NotaryPhaseTimings {
+    capture_ms: u128,
+    finalize_verify_ms: u128,
+}
+
 async fn run_proxy_tls_http_commitment_and_proof(profile: ProofProfile) -> Result<()> {
     let (body, profile_tokens) = profile_body(profile.bytes, profile.tokens)?;
     let bytes = body.len();
@@ -136,6 +142,7 @@ async fn run_proxy_tls_http_commitment_and_proof(profile: ProofProfile) -> Resul
     let (notary_upstream, fixture_socket) = tokio::io::duplex(16 << 20);
     let fixture_task = tokio::spawn(bind_test_server_hyper(fixture_socket.compat()));
     let verifier_task = tokio::spawn(async move {
+        let capture_started = Instant::now();
         let verifier = verifier.commit().await?;
         let VerifierCommitStart::Proxy(verifier) = verifier else {
             unreachable!("profile benchmark always uses Proxy-TLS");
@@ -145,13 +152,18 @@ async fn run_proxy_tls_http_commitment_and_proof(profile: ProofProfile) -> Resul
             .await?
             .run(notary_upstream.compat())
             .await?;
+        let capture_ms = capture_started.elapsed().as_millis();
+        let finalize_verify_started = Instant::now();
         let (output, verifier) = verifier.verify().await?.accept().await?;
         assert!(
             output.transcript.is_none(),
             "the notary must not receive a private transcript"
         );
         verifier.close().await?;
-        Result::<()>::Ok(())
+        Result::<NotaryPhaseTimings>::Ok(NotaryPhaseTimings {
+            capture_ms,
+            finalize_verify_ms: finalize_verify_started.elapsed().as_millis(),
+        })
     });
 
     let committed = prover
@@ -352,13 +364,13 @@ async fn run_proxy_tls_http_commitment_and_proof(profile: ProofProfile) -> Resul
         );
     }
     prover.close().await?;
-    verifier_task.await??;
+    let notary_timings = verifier_task.await??;
     fixture_task.await??;
     let cgroup_memory_current_bytes = cgroup_memory("memory.current");
     let cgroup_memory_peak_bytes = cgroup_memory("memory.peak");
 
     eprintln!(
-        "proxy_tls_profile bytes={bytes} tokens={profile_tokens:?} reveal_all={} commit_http={} minimal_http_commit={} chunked_body_commit={} sha256_commitments={} transcript_sent={} transcript_received={} commitments={} proof_output_bytes={proof_output_bytes} cgroup_memory_current_bytes={cgroup_memory_current_bytes:?} cgroup_memory_peak_bytes={cgroup_memory_peak_bytes:?} elapsed_ms={} prove_ms={}",
+        "proxy_tls_profile bytes={bytes} tokens={profile_tokens:?} reveal_all={} commit_http={} minimal_http_commit={} chunked_body_commit={} sha256_commitments={} transcript_sent={} transcript_received={} commitments={} proof_output_bytes={proof_output_bytes} cgroup_memory_current_bytes={cgroup_memory_current_bytes:?} cgroup_memory_peak_bytes={cgroup_memory_peak_bytes:?} elapsed_ms={} client_finalize_prove_ms={} notary_capture_ms={} notary_finalize_verify_ms={}",
         profile.reveal_all,
         profile.commit_http,
         profile.minimal_http_commit,
@@ -369,6 +381,8 @@ async fn run_proxy_tls_http_commitment_and_proof(profile: ProofProfile) -> Resul
         output.transcript_commitments.len(),
         started.elapsed().as_millis(),
         prove_started.elapsed().as_millis(),
+        notary_timings.capture_ms,
+        notary_timings.finalize_verify_ms,
     );
     Ok(())
 }
