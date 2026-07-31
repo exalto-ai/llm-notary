@@ -77,7 +77,7 @@ tokio = { version = "1.45", features = ["full"] }
 tokio-util = { version = "0.7", features = ["compat"] }
 tokio-stream = "0.1"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2.5"
 uuid = { version = "1.16", features = ["v4"] }
 zip = { version = "8.4", default-features = false }
@@ -87,6 +87,13 @@ zip = { version = "8.4", default-features = false }
 # checkpoint primitives used by stateless deferred finalization.
 tlsn = { path = "vendor/tlsn/crates/tlsn", features = ["mozilla-certs"] }
 tlsn-formats = { path = "vendor/tlsn/crates/formats" }
+metrics = { version = "0.24.6", default-features = false }
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+opentelemetry = "0.32.0"
+opentelemetry-http = "0.32.0"
+opentelemetry_sdk = "0.32.1"
+tracing-opentelemetry = "0.33.0"
+opentelemetry-otlp = { version = "0.32.0", default-features = false, features = ["trace", "http-proto", "reqwest-client"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }

@@ -1,10 +1,16 @@
-use std::{env, net::SocketAddr, str::FromStr, time::Duration};
+use std::{
+    env,
+    net::SocketAddr,
+    str::FromStr,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    extract::{MatchedPath, Path, Query, Request, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
@@ -17,6 +23,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
 use time::Duration as CookieDuration;
+use tracing::Instrument as _;
 use url::Url;
 use uuid::Uuid;
 
@@ -25,6 +32,10 @@ use certified::notary_directory::{
     parse_directory,
 };
 use certified::sha256_hex;
+use certified::telemetry;
+use opentelemetry::global;
+use opentelemetry_http::HeaderExtractor;
+use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 #[path = "../api/admission.rs"]
 mod admission;
@@ -258,7 +269,7 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
-    tracing_subscriber::fmt::init();
+    let _telemetry = telemetry::init("llm-notary-api")?;
     let state = AppState::from_env().await?;
     let listen = env::var("LLM_NOTARY_API_LISTEN")
         .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
@@ -267,6 +278,7 @@ async fn main() -> Result<()> {
     publish::spawn_cleanup(state.clone());
     admission::spawn(state.clone());
     let app = Router::new()
+        .route("/metrics", get(metrics))
         .route("/api/healthz", get(health))
         .route("/api/notary", get(notary))
         .route("/api/auth/github", get(start_github_login))
@@ -292,11 +304,72 @@ async fn main() -> Result<()> {
         .route("/api/cli/me", get(cli_me))
         .merge(publish::router())
         .merge(admission::router())
-        .with_state(state);
+        .with_state(state)
+        .layer(middleware::from_fn(observe_http_request));
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "LLM Notary API listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn metrics() -> Response {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        telemetry::prometheus_metrics(),
+    )
+        .into_response()
+}
+
+async fn observe_http_request(request: Request, next: Next) -> Response {
+    let method = request.method().as_str().to_owned();
+    let route = request
+        .extensions()
+        .get::<MatchedPath>()
+        .map(MatchedPath::as_str)
+        .unwrap_or("unmatched")
+        .to_owned();
+    let request_id = Uuid::new_v4().to_string();
+    let parent = global::get_text_map_propagator(|propagator| {
+        propagator.extract(&HeaderExtractor(request.headers()))
+    });
+    let span = tracing::info_span!(
+        "http.request",
+        otel.name = "http.request",
+        http.request.method = %method,
+        http.route = %route,
+        request.id = %request_id,
+    );
+    let _ = span.set_parent(parent);
+    async move {
+        let started = Instant::now();
+        let mut response = next.run(request).await;
+        let status = response.status().as_u16().to_string();
+        let elapsed = started.elapsed().as_secs_f64();
+        metrics::counter!(
+            "llm_notary_http_requests_total",
+            "method" => method.clone(),
+            "route" => route.clone(),
+            "status" => status.clone()
+        )
+        .increment(1);
+        metrics::histogram!(
+            "llm_notary_http_request_duration_seconds",
+            "method" => method,
+            "route" => route
+        )
+        .record(elapsed);
+        response.headers_mut().insert(
+            "x-request-id",
+            HeaderValue::from_str(&request_id).expect("UUID is a valid header value"),
+        );
+        tracing::info!(http.response.status_code = %status, duration_ms = (elapsed * 1_000.0) as u64, "HTTP request completed");
+        response
+    }
+    .instrument(span)
+    .await
 }
 
 impl AppState {
