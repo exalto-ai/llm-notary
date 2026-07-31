@@ -9,7 +9,7 @@ use std::{
     future::IntoFuture,
     io::{self, Write as _},
     net::SocketAddr,
-    path::{Path, PathBuf},
+    path::Path,
     sync::Arc,
     time::Instant,
 };
@@ -755,9 +755,9 @@ impl DeferredBundle {
     }
 }
 
-/// Metadata for a local capture directory. The manifest duplicates only facts
-/// that a verifier can derive from the evidence and artifact hashes; it is not
-/// itself an attestation.
+/// Metadata that binds finalized trace evidence to its authenticated source.
+/// The manifest duplicates only facts a verifier can derive from the evidence
+/// and artifact hashes; it is not itself an attestation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CaptureManifest {
     pub format: String,
@@ -787,9 +787,9 @@ pub struct CaptureArtifacts {
     pub response_sha256: String,
 }
 
-/// Private, local-first record of one provider exchange. `request_disclosed`
-/// intentionally contains the authenticated selective disclosure rather than
-/// the original request: API-key values are never persisted.
+/// Source evidence for one finalized trace package. `request_disclosed`
+/// intentionally contains authenticated selective disclosure rather than the
+/// original request, so API-key values are never retained.
 pub struct Capture {
     pub manifest: CaptureManifest,
     pub evidence: Vec<u8>,
@@ -1394,9 +1394,9 @@ fn make_disclosed_presentation_with_provider(
     })
 }
 
-/// Builds a local capture directory payload. The raw provider response is
-/// retained locally; the request stores only the verifiable disclosure, so an
-/// API key cannot be recovered from a capture directory.
+/// Builds source evidence for a finalized trace package. The request stores
+/// only the verifiable disclosure, so an API key cannot be recovered from the
+/// resulting package.
 pub fn make_capture(
     proof: &LocalProof,
     capture_id: String,
@@ -1451,83 +1451,7 @@ fn make_capture_with_provider(
     })
 }
 
-/// Saves a capture atomically into `<capture_root>/<capture_id>/`.
-pub fn save_capture(capture_root: &Path, capture: &Capture) -> Result<PathBuf> {
-    validate_capture_id(&capture.manifest.capture_id)?;
-    fs::create_dir_all(capture_root)
-        .with_context(|| format!("creating capture root {}", capture_root.display()))?;
-    restrict_directory(capture_root)?;
-    let target = capture_root.join(&capture.manifest.capture_id);
-    if target.exists() {
-        bail!("capture directory already exists: {}", target.display());
-    }
-    let staging = capture_root.join(format!(
-        ".{}.{}.partial",
-        capture.manifest.capture_id,
-        std::process::id()
-    ));
-    if staging.exists() {
-        bail!(
-            "capture staging directory already exists: {}",
-            staging.display()
-        );
-    }
-    fs::create_dir(&staging).with_context(|| format!("creating {}", staging.display()))?;
-    restrict_directory(&staging)?;
-    write_private_file(&staging.join("evidence.tlsn"), &capture.evidence)?;
-    write_private_file(
-        &staging.join("request.disclosed.http"),
-        &capture.request_disclosed,
-    )?;
-    write_private_file(&staging.join("response.http"), &capture.response)?;
-    write_private_file(
-        &staging.join("manifest.json"),
-        &serde_json::to_vec_pretty(&capture.manifest)?,
-    )?;
-    fs::rename(&staging, &target)
-        .with_context(|| format!("finalizing capture {}", target.display()))?;
-    Ok(target)
-}
-
-pub fn load_capture(path: &Path) -> Result<Capture> {
-    let directory = if path.is_dir() {
-        path
-    } else if path.file_name().is_some_and(|name| name == "manifest.json") {
-        path.parent()
-            .ok_or_else(|| anyhow!("capture manifest has no parent directory"))?
-    } else {
-        bail!(
-            "expected a capture directory or its manifest.json: {}",
-            path.display()
-        );
-    };
-    let manifest: CaptureManifest = serde_json::from_slice(
-        &fs::read(directory.join("manifest.json"))
-            .with_context(|| format!("reading capture manifest in {}", directory.display()))?,
-    )
-    .context("parsing capture manifest")?;
-    if manifest.format != CAPTURE_FORMAT {
-        bail!("unsupported capture format: {}", manifest.format);
-    }
-    validate_capture_id(&manifest.capture_id)?;
-    Ok(Capture {
-        manifest,
-        evidence: read_capture_file(directory, "evidence.tlsn")?,
-        request_disclosed: read_capture_file(directory, "request.disclosed.http")?,
-        response: read_capture_file(directory, "response.http")?,
-    })
-}
-
-/// Verifies both the presentation and every local capture artifact.
-pub fn verify_capture(
-    path: &Path,
-    trusted_notary_key: &[u8],
-) -> Result<(CaptureManifest, String, String)> {
-    let capture = load_capture(path)?;
-    verify_capture_value(&capture, trusted_notary_key)
-}
-
-/// Verifies a fully loaded local capture.
+/// Verifies in-memory source evidence before it is included in a trace package.
 pub fn verify_capture_value(
     capture: &Capture,
     trusted_notary_key: &[u8],
@@ -1623,15 +1547,6 @@ fn validate_provider_name(provider_name: &str, host: &str) -> Result<()> {
     Ok(())
 }
 
-fn read_capture_file(directory: &Path, name: &str) -> Result<Vec<u8>> {
-    fs::read(directory.join(name)).with_context(|| {
-        format!(
-            "reading capture artifact {}",
-            directory.join(name).display()
-        )
-    })
-}
-
 fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
@@ -1648,19 +1563,6 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<()> {
     file.sync_all()
         .with_context(|| format!("syncing private artifact {}", path.display()))?;
     restrict_file(path)
-}
-
-#[cfg(unix)]
-fn restrict_directory(path: &Path) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .with_context(|| format!("restricting capture directory {}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn restrict_directory(_path: &Path) -> Result<()> {
-    Ok(())
 }
 
 #[cfg(unix)]
@@ -2206,34 +2108,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_directory_round_trips_with_named_artifacts() {
-        let root = std::env::temp_dir().join(format!(
-            "llm-notary-capture-test-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("clock after Unix epoch")
-                .as_nanos()
-        ));
-        let capture = test_capture();
-        let path = save_capture(&root, &capture).expect("save capture");
-        assert_eq!(path, root.join("cap-test-0001"));
-        assert!(path.join("manifest.json").is_file());
-        assert!(path.join("evidence.tlsn").is_file());
-        assert!(path.join("request.disclosed.http").is_file());
-        assert!(path.join("response.http").is_file());
-
-        let loaded = load_capture(&path).expect("load capture");
-        assert_eq!(loaded.manifest.capture_id, "cap-test-0001");
-        assert_eq!(loaded.request_disclosed, capture.request_disclosed);
-        assert_eq!(loaded.response, capture.response);
-        assert!(save_capture(&root, &capture).is_err());
-
-        fs::remove_dir_all(&root).expect("remove test capture directory");
-    }
-
-    #[test]
-    fn capture_ids_cannot_escape_the_capture_root() {
+    fn capture_ids_are_single_path_components() {
         assert!(validate_capture_id("cap-01").is_ok());
         assert!(validate_capture_id("../outside").is_err());
         assert!(validate_capture_id("nested/capture").is_err());

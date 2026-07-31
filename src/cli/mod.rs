@@ -7,7 +7,6 @@ pub mod public;
 pub mod publish;
 mod storage;
 pub mod vault;
-pub mod verify;
 
 /// Public API origin compiled into released clients. Override it at build time
 /// with `LLM_NOTARY_PUBLIC_ORIGIN` when producing a self-hosted distribution.
