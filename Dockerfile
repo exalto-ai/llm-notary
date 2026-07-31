@@ -1,8 +1,16 @@
 # Keep the build and runtime stages on the same Debian release. The floating
 # `slim` tag may move to a newer glibc before the runtime images do.
-FROM rust:1.95-slim-bookworm AS builder
+FROM rust:1.95-slim-bookworm AS chef
 
 WORKDIR /app
+
+# Keep dependency compilation in a layer whose inputs are the Cargo manifests,
+# rather than the application source. A source-only change should therefore
+# rebuild the small application crate instead of all TLSNotary dependencies.
+RUN cargo install cargo-chef --version 0.1.77 --locked
+
+FROM chef AS planner
+
 # Keep the Rust build cache independent of the SPA, deployment files, and docs.
 # This image needs only the Rust package and its vendored TLSNotary dependency.
 COPY Cargo.toml Cargo.lock build.rs ./
@@ -11,6 +19,22 @@ COPY src ./src
 COPY migrations ./migrations
 # `llm-notary-api` embeds the reviewed public collection manifest at compile
 # time. Keep task fixtures and run notes out of the production image context.
+COPY examples/production-seed/publications.json ./examples/production-seed/publications.json
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+
+# Cook the dependency graph before copying application source into this stage.
+# The flags deliberately match the production build below, so BuildKit can
+# reuse the compiled dependencies on normal source-only changes.
+COPY --from=planner /app/recipe.json recipe.json
+COPY --from=planner /app/vendor/tlsn ./vendor/tlsn
+RUN cargo chef cook --release --no-default-features --features api --recipe-path recipe.json
+
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY vendor/tlsn ./vendor/tlsn
+COPY src ./src
+COPY migrations ./migrations
 COPY examples/production-seed/publications.json ./examples/production-seed/publications.json
 # The API and notary share a dependency graph. Building both here lets BuildKit
 # reuse one compilation for the two final images.
