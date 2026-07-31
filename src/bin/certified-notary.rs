@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
@@ -10,6 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use axum::{Router, http::header, response::IntoResponse, routing::get};
 use certified::{
     DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES, NotaryAdmissionRejection,
     NotarySessionMode, read_notary_session_prelude, run_notary_session_after_prelude,
@@ -17,11 +18,13 @@ use certified::{
 };
 use clap::Parser;
 use k256::ecdsa::SigningKey;
+use metrics::{counter, gauge, histogram};
 use tokio::{
     net::TcpListener,
     sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError, watch},
     time::{MissedTickBehavior, timeout},
 };
+use tracing::Instrument as _;
 
 #[derive(Parser, Debug)]
 #[command(about = "LLM Notary TLSNotary service")]
@@ -130,6 +133,13 @@ impl SessionBudgets {
         match mode {
             NotarySessionMode::Capture => Arc::clone(&self.captures).try_acquire_owned(),
             NotarySessionMode::Finalize => Arc::clone(&self.finalizations).try_acquire_owned(),
+        }
+    }
+
+    fn available_permits(&self, mode: NotarySessionMode) -> usize {
+        match mode {
+            NotarySessionMode::Capture => self.captures.available_permits(),
+            NotarySessionMode::Finalize => self.finalizations.available_permits(),
         }
     }
 }
@@ -417,6 +427,32 @@ async fn main() -> Result<()> {
         args.max_concurrent_finalizations,
     );
     let connection_permits = Arc::new(Semaphore::new(args.max_pending_connections));
+    gauge!("llm_notary_notary_active_sessions", "mode" => "capture").set(0.0);
+    gauge!("llm_notary_notary_active_sessions", "mode" => "finalize").set(0.0);
+    gauge!("llm_notary_notary_pending_connections").set(0.0);
+    if let Some(metrics_listen) = env::var("LLM_NOTARY_METRICS_LISTEN")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .map(|value| value.parse::<SocketAddr>())
+        .transpose()
+        .context("LLM_NOTARY_METRICS_LISTEN must be a socket address")?
+    {
+        tokio::spawn(async move {
+            let listener = match TcpListener::bind(metrics_listen).await {
+                Ok(listener) => listener,
+                Err(error) => {
+                    tracing::error!(%error, %metrics_listen, "binding notary metrics listener failed");
+                    return;
+                }
+            };
+            tracing::info!(%metrics_listen, "notary metrics listener active");
+            if let Err(error) =
+                axum::serve(listener, Router::new().route("/metrics", get(metrics))).await
+            {
+                tracing::error!(%error, "notary metrics listener stopped");
+            }
+        });
+    }
     tracing::info!(
         address = %args.listen,
         public_key,
@@ -427,13 +463,16 @@ async fn main() -> Result<()> {
     println!("LLM Notary public key: {public_key}");
 
     loop {
-        let (mut stream, address) = listener.accept().await?;
+        let (mut stream, _address) = listener.accept().await?;
         stream.set_nodelay(true)?;
         let Ok(connection_permit) = Arc::clone(&connection_permits).try_acquire_owned() else {
-            tracing::warn!(%address, "notary connection rejected at pending-connection limit");
+            counter!("llm_notary_notary_sessions_total", "mode" => "unknown", "outcome" => "rejected_pending_limit").increment(1);
+            tracing::warn!("notary connection rejected at pending-connection limit");
             continue;
         };
-        tracing::info!(%address, "notary client connected");
+        gauge!("llm_notary_notary_pending_connections")
+            .set((args.max_pending_connections - connection_permits.available_permits()) as f64);
+        tracing::info!("notary client connected");
         let key = Arc::clone(&key);
         let allowed_hosts = Arc::clone(&allowed_hosts);
         let max_private_chunk_bytes = args.max_private_chunk_bytes;
@@ -442,26 +481,44 @@ async fn main() -> Result<()> {
         let max_frame_bytes = args.max_frame_bytes;
         let prelude_timeout = std::time::Duration::from_secs(args.prelude_timeout_secs);
         let session_timeout = std::time::Duration::from_secs(args.session_timeout_secs);
+        let connection_permits = Arc::clone(&connection_permits);
         let session_budgets = session_budgets.clone();
         let finalize_only = args.finalize_only;
         let profile_sessions = args.profile_sessions;
+        let max_pending_connections = args.max_pending_connections;
+        let max_concurrent_captures = args.max_concurrent_captures;
+        let max_concurrent_finalizations = args.max_concurrent_finalizations;
         tokio::spawn(async move {
-            let prelude =
-                match timeout(prelude_timeout, read_notary_session_prelude(&mut stream)).await {
-                    Ok(Ok(prelude)) => prelude,
-                    Ok(Err(error)) => {
-                        tracing::warn!(%address, %error, "invalid notary session prelude");
-                        return;
-                    }
-                    Err(_) => {
-                        tracing::warn!(%address, "notary session prelude timed out");
-                        return;
-                    }
-                };
+            let prelude = match timeout(prelude_timeout, read_notary_session_prelude(&mut stream))
+                .await
+            {
+                Ok(Ok(prelude)) => prelude,
+                Ok(Err(error)) => {
+                    drop(connection_permit);
+                    gauge!("llm_notary_notary_pending_connections").set(
+                        (max_pending_connections - connection_permits.available_permits()) as f64,
+                    );
+                    counter!("llm_notary_notary_sessions_total", "mode" => "unknown", "outcome" => "invalid_prelude").increment(1);
+                    tracing::warn!(%error, "invalid notary session prelude");
+                    return;
+                }
+                Err(_) => {
+                    drop(connection_permit);
+                    gauge!("llm_notary_notary_pending_connections").set(
+                        (max_pending_connections - connection_permits.available_permits()) as f64,
+                    );
+                    counter!("llm_notary_notary_sessions_total", "mode" => "unknown", "outcome" => "prelude_timed_out").increment(1);
+                    tracing::warn!("notary session prelude timed out");
+                    return;
+                }
+            };
             drop(connection_permit);
+            gauge!("llm_notary_notary_pending_connections")
+                .set((max_pending_connections - connection_permits.available_permits()) as f64);
             let mode = prelude.mode();
             if !session_mode_allowed(finalize_only, mode) {
-                tracing::warn!(%address, "capture rejected by finalize-only notary");
+                counter!("llm_notary_notary_sessions_total", "mode" => session_mode_label(mode), "outcome" => "rejected_finalize_only").increment(1);
+                tracing::warn!("capture rejected by finalize-only notary");
                 if let Err(error) = write_notary_admission(
                     &mut stream,
                     prelude,
@@ -469,13 +526,13 @@ async fn main() -> Result<()> {
                 )
                 .await
                 {
-                    tracing::debug!(%address, %error, "could not send notary admission rejection");
+                    tracing::debug!(%error, "could not send notary admission rejection");
                 }
                 return;
             }
             let Ok(session_permit) = session_budgets.try_acquire(mode) else {
+                counter!("llm_notary_notary_sessions_total", "mode" => session_mode_label(mode), "outcome" => "rejected_concurrency_limit").increment(1);
                 tracing::warn!(
-                    %address,
                     mode = session_mode_name(mode),
                     "notary session rejected at mode concurrency limit"
                 );
@@ -486,14 +543,26 @@ async fn main() -> Result<()> {
                 if let Err(error) =
                     write_notary_admission(&mut stream, prelude, Err(rejection)).await
                 {
-                    tracing::debug!(%address, %error, "could not send notary admission rejection");
+                    tracing::debug!(%error, "could not send notary admission rejection");
                 }
                 return;
             };
             if let Err(error) = write_notary_admission(&mut stream, prelude, Ok(())).await {
-                tracing::debug!(%address, %error, "could not send notary admission acceptance");
+                tracing::debug!(%error, "could not send notary admission acceptance");
                 return;
             }
+            let max_concurrent_sessions = match mode {
+                NotarySessionMode::Capture => max_concurrent_captures,
+                NotarySessionMode::Finalize => max_concurrent_finalizations,
+            };
+            gauge!("llm_notary_notary_active_sessions", "mode" => session_mode_label(mode))
+                .set((max_concurrent_sessions - session_budgets.available_permits(mode)) as f64);
+            let started = Instant::now();
+            let session_span = tracing::info_span!(
+                "notary.session",
+                otel.name = "notary.session",
+                notary.session.mode = session_mode_label(mode),
+            );
             let profile = profile_sessions.then(|| SessionProfile::start(mode));
             let result = timeout(
                 session_timeout,
@@ -508,23 +577,45 @@ async fn main() -> Result<()> {
                     max_frame_bytes,
                 ),
             )
+            .instrument(session_span)
             .await;
             let outcome = match result {
                 Ok(Ok(())) => "completed",
                 Ok(Err(error)) => {
-                    tracing::warn!(%address, %error, "notary session failed");
+                    tracing::warn!(%error, "notary session failed");
                     "failed"
                 }
                 Err(_) => {
-                    tracing::warn!(%address, "notary session timed out");
+                    tracing::warn!("notary session timed out");
                     "timed_out"
                 }
             };
             if let Some(profile) = profile {
                 profile.finish(outcome).await;
             }
+            counter!("llm_notary_notary_sessions_total", "mode" => session_mode_label(mode), "outcome" => outcome).increment(1);
+            histogram!("llm_notary_notary_session_duration_seconds", "mode" => session_mode_label(mode), "outcome" => outcome).record(started.elapsed().as_secs_f64());
             drop(session_permit);
+            gauge!("llm_notary_notary_active_sessions", "mode" => session_mode_label(mode))
+                .set((max_concurrent_sessions - session_budgets.available_permits(mode)) as f64);
         });
+    }
+}
+
+async fn metrics() -> impl IntoResponse {
+    (
+        [(
+            header::CONTENT_TYPE,
+            "text/plain; version=0.0.4; charset=utf-8",
+        )],
+        certified::telemetry::prometheus_metrics(),
+    )
+}
+
+fn session_mode_label(mode: NotarySessionMode) -> &'static str {
+    match mode {
+        NotarySessionMode::Capture => "capture",
+        NotarySessionMode::Finalize => "finalize",
     }
 }
 

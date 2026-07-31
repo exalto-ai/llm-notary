@@ -67,7 +67,7 @@ enum ProxyCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    let _telemetry = certified::telemetry::init("llm-notary-cli")?;
     match Cli::parse().command {
         CommandName::Login(args) => auth::login(args).await,
         CommandName::Logout => auth::logout().await,

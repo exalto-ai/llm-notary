@@ -1,4 +1,8 @@
-use std::{fs, path::PathBuf, time::Duration};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Result, bail};
 use axum::{
@@ -12,6 +16,7 @@ use axum::{
 use futures::{StreamExt, TryStreamExt, stream};
 use serde::Serialize;
 use sqlx::FromRow;
+use tracing::Span;
 use uuid::Uuid;
 
 use super::{
@@ -321,6 +326,9 @@ pub fn spawn(state: AppState) {
             if let Err(error) = purge_admitted_private_objects(&state).await {
                 tracing::error!(%error, "purging admitted private objects failed");
             }
+            if let Err(error) = update_queue_metrics(&state).await {
+                tracing::error!(%error, "updating publication admission metrics failed");
+            }
             for _ in 0..MAX_JOBS_PER_TICK {
                 match claim_next_job(&state).await {
                     Ok(Some((job, claim))) => process_claim(&state, job, claim).await,
@@ -333,6 +341,21 @@ pub fn spawn(state: AppState) {
             }
         }
     });
+}
+
+async fn update_queue_metrics(state: &AppState) -> Result<()> {
+    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
+    let (count, oldest): (i64, Option<i64>) =
+        sqlx::query_as("SELECT COUNT(*), MIN(queued_at) FROM publish_jobs WHERE state = 'queued'")
+            .fetch_one(&state.database)
+            .await?;
+    metrics::gauge!("llm_notary_admission_queue_depth").set(count as f64);
+    metrics::gauge!("llm_notary_admission_oldest_queued_seconds").set(
+        oldest
+            .map(|queued_at| now.saturating_sub(queued_at) as f64)
+            .unwrap_or(0.0),
+    );
+    Ok(())
 }
 
 async fn claim_next_job(state: &AppState) -> Result<Option<(PublishJobRow, String)>> {
@@ -364,7 +387,13 @@ async fn claim_next_job(state: &AppState) -> Result<Option<(PublishJobRow, Strin
     Ok(Some((job, claim)))
 }
 
+#[tracing::instrument(
+    name = "publication.admission",
+    skip_all,
+    fields(publication.job_id = %job.id, archive.size_bytes = tracing::field::Empty)
+)]
 async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
+    let started = Instant::now();
     let archive = match state
         .publish
         .storage
@@ -377,14 +406,18 @@ async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
         Ok(Some(bytes)) => bytes,
         Ok(None) => {
             reject_claim(state, &job, &claim, "object_missing", None).await;
+            finish_admission_metric("rejected", started);
             return;
         }
         Err(error) => {
             retry_claim(state, &job, &claim, error).await;
+            finish_admission_metric("retry", started);
             return;
         }
     };
     let actual_size = archive.len() as i64;
+    Span::current().record("archive.size_bytes", actual_size);
+    metrics::histogram!("llm_notary_admission_archive_bytes").record(actual_size as f64);
     let actual_sha256 = sha256_hex(&archive);
     if actual_size != job.declared_size_bytes {
         reject_claim(
@@ -395,6 +428,7 @@ async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
             Some((actual_size, actual_sha256)),
         )
         .await;
+        finish_admission_metric("rejected", started);
         return;
     }
     if actual_sha256 != job.declared_sha256 {
@@ -406,6 +440,7 @@ async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
             Some((actual_size, actual_sha256)),
         )
         .await;
+        finish_admission_metric("rejected", started);
         return;
     }
 
@@ -418,15 +453,18 @@ async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
     let issuer = state.publish.stamp_issuer.clone();
     let job_id = job.id.clone();
     let issued_at = job.queued_at.unwrap_or(job.updated_at).max(0) as u64 * 1000;
+    let parent = Span::current();
     let result = tokio::task::spawn_blocking(move || {
-        verify_and_stamp(
-            &job_id,
-            &archive,
-            &directory,
-            &signing_key,
-            issuer,
-            issued_at,
-        )
+        parent.in_scope(|| {
+            verify_and_stamp(
+                &job_id,
+                &archive,
+                &directory,
+                &signing_key,
+                issuer,
+                issued_at,
+            )
+        })
     })
     .await;
     match result {
@@ -435,6 +473,9 @@ async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
                 admit_claim(state, &job, &claim, actual_size, &actual_sha256, artifacts).await
             {
                 retry_claim(state, &job, &claim, error).await;
+                finish_admission_metric("retry", started);
+            } else {
+                finish_admission_metric("admitted", started);
             }
         }
         Ok(Err(AdmissionFailure::Reject(code, error))) => {
@@ -447,10 +488,23 @@ async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
                 Some((actual_size, actual_sha256)),
             )
             .await;
+            finish_admission_metric("rejected", started);
         }
-        Ok(Err(AdmissionFailure::Retry(error))) => retry_claim(state, &job, &claim, error).await,
-        Err(error) => retry_claim(state, &job, &claim, anyhow::anyhow!(error)).await,
+        Ok(Err(AdmissionFailure::Retry(error))) => {
+            retry_claim(state, &job, &claim, error).await;
+            finish_admission_metric("retry", started);
+        }
+        Err(error) => {
+            retry_claim(state, &job, &claim, anyhow::anyhow!(error)).await;
+            finish_admission_metric("retry", started);
+        }
     }
+}
+
+fn finish_admission_metric(outcome: &'static str, started: Instant) {
+    metrics::counter!("llm_notary_admission_jobs_total", "outcome" => outcome).increment(1);
+    metrics::histogram!("llm_notary_admission_duration_seconds", "outcome" => outcome)
+        .record(started.elapsed().as_secs_f64());
 }
 
 fn verify_and_stamp(

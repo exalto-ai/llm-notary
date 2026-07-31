@@ -71,6 +71,8 @@ services:
     environment:
       NOTARY_SIGNING_KEY_FILE: /run/secrets/notary_signing_key
       LLM_NOTARY_NOTARY_PUBLIC_KEY: ${LLM_NOTARY_NOTARY_PUBLIC_KEY:?Set LLM_NOTARY_NOTARY_PUBLIC_KEY to the notary SEC1 public key}
+      # Internal-only scrape endpoint. Do not publish it through the gateway.
+      LLM_NOTARY_METRICS_LISTEN: 0.0.0.0:9090
     ports:
       - "${NOTARY_PORT:-7047}:7047"
     mem_limit: 1g

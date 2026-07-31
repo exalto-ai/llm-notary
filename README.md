@@ -411,6 +411,28 @@ notary key. The lifecycle and operator rotation procedure are documented in
 sign-in authorizes publication; the platform signing key is the trust root for
 published stamps.
 
+### Operational telemetry
+
+The server binaries emit structured JSON logs to stderr. They deliberately log
+only operational metadata: never add request or response bodies, HTTP headers,
+credentials, presigned upload URLs, or `.llmbundle` paths to a log, metric, or
+span.
+
+`llm-notary-api` exposes Prometheus text metrics at its internal-only
+`GET /metrics` endpoint. It is intentionally not routed through the public
+Caddy gateway. The notary exposes the same format when
+`LLM_NOTARY_METRICS_LISTEN` is set; Compose binds it on the private Docker
+network at `notary:9090/metrics`. Key metrics cover HTTP latency/status,
+publication queue depth and verification outcomes, and notary sessions,
+timeouts, and capacity rejections.
+
+Set standard OTLP environment variables such as
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS`, and
+`OTEL_SERVICE_NAME` to export operational spans directly to a compatible
+backend. Without an endpoint, tracing remains local JSON logging and metrics
+remain available for Prometheus scraping. These operational spans are separate
+from the cryptographically verifiable `trace.otlp.json` evidence artifacts.
+
 Authenticated CLI publication intake uses:
 
 - `POST /api/publish/jobs` with an `Idempotency-Key` header to create one
