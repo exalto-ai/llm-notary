@@ -49,10 +49,6 @@ pub struct DownloadArgs {
 #[serde(deny_unknown_fields)]
 struct PublicTraceMetadata {
     id: String,
-    #[allow(dead_code)]
-    author: String,
-    #[allow(dead_code)]
-    admitted_at: i64,
     trace_url: String,
     stamp_url: String,
 }
@@ -488,8 +484,6 @@ mod tests {
         async fn metadata(State(fixture): State<Fixture>) -> Json<serde_json::Value> {
             Json(serde_json::json!({
                 "id": ID,
-                "author": "fixture",
-                "admitted_at": 1,
                 "trace_url": format!("{}/api/public/traces/{ID}/trace.otlp.json", fixture.origin),
                 "stamp_url": format!("/api/public/traces/{ID}/stamp.json"),
             }))
@@ -569,7 +563,7 @@ mod tests {
     async fn failed_download_does_not_replace_existing_output() {
         async fn metadata() -> Json<serde_json::Value> {
             Json(serde_json::json!({
-                "id": ID, "author": "fixture", "admitted_at": 1,
+                "id": ID,
                 "trace_url": format!("/api/public/traces/{ID}/trace.otlp.json"),
                 "stamp_url": format!("/api/public/traces/{ID}/stamp.json"),
             }))
