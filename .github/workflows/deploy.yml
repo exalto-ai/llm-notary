@@ -32,7 +32,7 @@ jobs:
       - name: Deploy API
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_DEPLOY_TOKEN }}
-        run: flyctl deploy --remote-only --ha=false --config deploy/fly/api.fly.toml
+        run: flyctl deploy --remote-only --ha=true --config deploy/fly/api.fly.toml
       - name: Deploy web gateway
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_WEB_DEPLOY_TOKEN }}

@@ -17,6 +17,7 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY vendor/tlsn ./vendor/tlsn
 COPY src ./src
 COPY migrations ./migrations
+COPY migrations-postgres ./migrations-postgres
 RUN cargo chef prepare --recipe-path recipe.json
 
 FROM chef AS builder
@@ -32,9 +33,10 @@ COPY Cargo.toml Cargo.lock build.rs ./
 COPY vendor/tlsn ./vendor/tlsn
 COPY src ./src
 COPY migrations ./migrations
+COPY migrations-postgres ./migrations-postgres
 # The API and notary share a dependency graph. Building both here lets BuildKit
 # reuse one compilation for the two final images.
-RUN cargo build --release --no-default-features --features api --bin certified-notary --bin llm-notary-api
+RUN cargo build --release --no-default-features --features api --bin certified-notary --bin llm-notary-api --bin llm-notary-api-migrate
 
 # Opt-in target for the split-process resource benchmark. It deliberately is
 # not part of the production image: the test client also hosts a local TLS
@@ -46,9 +48,10 @@ RUN cargo test --release --no-default-features --test proxy_tls_split_profile --
 FROM debian:bookworm-slim AS api
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libsqlite3-0 \
+    && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/llm-notary-api /usr/local/bin/llm-notary-api
+COPY --from=builder /app/target/release/llm-notary-api-migrate /usr/local/bin/llm-notary-api-migrate
 RUN ldd /usr/local/bin/llm-notary-api >/dev/null
 
 EXPOSE 8080

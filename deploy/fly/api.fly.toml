@@ -8,7 +8,6 @@ kill_timeout = "30s"
   build-target = "api"
 
 [env]
-  DATABASE_URL = "sqlite:///var/lib/llm-notary/api.db"
   LLM_NOTARY_API_LISTEN = "0.0.0.0:8080"
   LLM_NOTARY_PUBLIC_ORIGIN = "https://llm-notary.exalto.ai"
   LLM_NOTARY_NOTARY_HOST = "llm-notary-prod-notary.fly.dev"
@@ -21,7 +20,9 @@ kill_timeout = "30s"
   LLM_NOTARY_S3_PREFIX = "llm-notary"
   LLM_NOTARY_S3_FORCE_PATH_STYLE = "true"
   LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE = "/run/secrets/platform_signing_key"
-  LLM_NOTARY_IDLE_SHUTDOWN_SECS = "45"
+  # Keep the per-Machine pool small. With two replicas this is ten database
+  # connections at steady state; use Neon's pooled connection URL.
+  LLM_NOTARY_DATABASE_MAX_CONNECTIONS = "5"
 
 [metrics]
   # Fly scrapes this private route every 15 seconds; it is not exposed through
@@ -32,19 +33,23 @@ kill_timeout = "30s"
 [http_service]
   internal_port = 8080
   force_https = false
-  # The API tracks admission and cleanup work itself, then exits after an idle
-  # grace period. Flycast wakes the stopped Machine for the next API request.
+  # The API has database-coordinated background workers, so it can run on
+  # multiple Machines without duplicate admission or metadata generation.
   auto_stop_machines = "off"
   auto_start_machines = true
+  min_machines_running = 2
 
   [http_service.concurrency]
     type = "requests"
     soft_limit = 25
     hard_limit = 50
 
-[[mounts]]
-  source = "api_data"
-  destination = "/var/lib/llm-notary"
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    method = "GET"
+    path = "/api/readyz"
+    timeout = "5s"
 
 [[files]]
   guest_path = "/run/secrets/platform_signing_key"
