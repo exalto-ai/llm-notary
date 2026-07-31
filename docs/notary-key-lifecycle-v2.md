@@ -96,13 +96,12 @@ record on read. The fallback single-key configuration starts at generation 1;
 set `LLM_NOTARY_NOTARY_DIRECTORY_GENERATION` explicitly if its directory
 metadata changes.
 
-The production workflow reads the optional repository variables
-`LLM_NOTARY_NOTARY_DIRECTORY_JSON`,
+Configure the optional `LLM_NOTARY_NOTARY_DIRECTORY_JSON`,
 `LLM_NOTARY_NOTARY_DIRECTORY_GENERATION`, and
-`LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS` into `deploy.env`. Store directory JSON
-as one compact line. The active record must still match the signing key mounted
-in the colocated active notary; retiring finalize-only instances are operated
-separately until their drain deadlines.
+`LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS` values in the deployment environment.
+Store directory JSON as one compact line. The active record must still match
+the signing key mounted in the colocated active notary; retiring finalize-only
+instances are operated separately until their drain deadlines.
 
 Before the handoff, back up the old 32-byte private signing-key file to
 encrypted offline storage and verify that the backup reproduces the advertised
