@@ -5,7 +5,6 @@ import ReactMarkdown from 'react-markdown';
 import './styles.css';
 import './hero-evidence.css';
 import './trust-grid.css';
-import './refinements.css';
 import './commons.css';
 import './theme.css';
 import './branding.css';
