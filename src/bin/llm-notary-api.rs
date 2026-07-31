@@ -13,9 +13,6 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use rand::RngCore;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
-#[cfg(test)]
-use sqlx::SqlitePool;
-#[cfg(not(test))]
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -49,19 +46,17 @@ const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 const CLI_AUTHORIZATION_TTL_SECS: i64 = 10 * 60;
 const CLI_ACCESS_TOKEN_TTL_SECS: i64 = 15 * 60;
 const CLI_REFRESH_TOKEN_TTL_SECS: i64 = 90 * 24 * 60 * 60;
-#[cfg(not(test))]
 const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 5;
-#[cfg(not(test))]
 const MAX_DATABASE_CONNECTIONS: u32 = 64;
 
-#[cfg(not(test))]
 type DatabasePool = PgPool;
-#[cfg(test)]
-type DatabasePool = SqlitePool;
 
 #[derive(Clone)]
 struct AppState {
     database: DatabasePool,
+    #[cfg(test)]
+    // Keep the Testcontainers server alive for the lifetime of a test state.
+    _test_database: Option<test_database::TestDatabase>,
     http: reqwest::Client,
     github_client_id: String,
     github_client_secret: String,
@@ -399,7 +394,6 @@ impl AppState {
         let notary_directory = notary_directory_from_env()?;
         let publish = publish::PublishService::from_env(app_url.origin().ascii_serialization())?;
         publish.validate().await?;
-        #[cfg(not(test))]
         let database = {
             let database_url = required_env("DATABASE_URL")?;
             let options = database_url
@@ -411,12 +405,10 @@ impl AppState {
                 .await
                 .context("opening API database")?
         };
-        #[cfg(test)]
-        let database = SqlitePool::connect("sqlite::memory:")
-            .await
-            .context("opening test API database")?;
         Ok(Self {
             database,
+            #[cfg(test)]
+            _test_database: None,
             http: reqwest::Client::builder()
                 .user_agent("LLM-Notary/0.1")
                 .build()
@@ -456,7 +448,6 @@ impl AppState {
     }
 }
 
-#[cfg(not(test))]
 fn database_max_connections() -> Result<u32> {
     let value = match env::var("LLM_NOTARY_DATABASE_MAX_CONNECTIONS") {
         Ok(value) => value,
@@ -1244,6 +1235,67 @@ fn notary_directory_from_env() -> Result<NotaryDirectory> {
 }
 
 #[cfg(test)]
+mod test_database {
+    use std::{ops::Deref, sync::Arc};
+
+    use sqlx::{PgPool, postgres::PgPoolOptions};
+    use testcontainers_modules::{
+        postgres::Postgres,
+        testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner},
+    };
+
+    #[derive(Clone)]
+    pub struct TestDatabase {
+        pub pool: PgPool,
+        _server: Arc<ContainerAsync<Postgres>>,
+    }
+
+    impl Deref for TestDatabase {
+        type Target = PgPool;
+
+        fn deref(&self) -> &Self::Target {
+            &self.pool
+        }
+    }
+
+    /// Creates an isolated PostgreSQL 17 container and applies exactly the
+    /// production migration baseline. The container is removed when the
+    /// associated test state is dropped.
+    pub async fn fresh_database() -> TestDatabase {
+        let server = Arc::new(
+            Postgres::default()
+                .with_tag("17.7-alpine")
+                .start()
+                .await
+                .expect("start PostgreSQL test container"),
+        );
+        let postgres = server.as_ref();
+        let host = postgres.get_host().await.expect("PostgreSQL test host");
+        let port = postgres
+            .get_host_port_ipv4(5432)
+            .await
+            .expect("PostgreSQL test port");
+        let database_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await
+            .expect("connect to isolated PostgreSQL test database");
+        sqlx::migrate!("./migrations-postgres")
+            .run(&pool)
+            .await
+            .expect("apply PostgreSQL test migrations");
+        TestDatabase {
+            pool,
+            _server: server,
+        }
+    }
+}
+
+#[cfg(test)]
+use test_database::fresh_database;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1272,7 +1324,9 @@ mod tests {
     #[tokio::test]
     async fn authorization_url_uses_the_exact_callback_and_state() {
         let state = AppState {
-            database: SqlitePool::connect_lazy("sqlite::memory:").expect("lazy database"),
+            database: PgPool::connect_lazy("postgres://postgres:postgres@localhost/postgres")
+                .expect("lazy database"),
+            _test_database: None,
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
@@ -1306,18 +1360,12 @@ mod tests {
 
     #[tokio::test]
     async fn new_cli_session_is_usable_until_its_refresh_expiry() {
-        let database = SqlitePool::connect("sqlite::memory:")
-            .await
-            .expect("in-memory database");
-        sqlx::migrate!("./migrations")
-            .run(&database)
-            .await
-            .expect("migrations");
+        let database = fresh_database().await;
         sqlx::query(
             "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
              VALUES ('user-1', 1, 'octo', 1, 1)",
         )
-        .execute(&database)
+        .execute(&database.pool)
         .await
         .expect("user");
 
@@ -1332,7 +1380,7 @@ mod tests {
         let (created_at, last_used_at, expires_at) = sqlx::query_as::<_, (i64, i64, i64)>(
             "SELECT created_at, last_used_at, expires_at FROM cli_sessions",
         )
-        .fetch_one(&database)
+        .fetch_one(&database.pool)
         .await
         .expect("stored session");
         assert_eq!((created_at, last_used_at), (now, now));
@@ -1340,7 +1388,8 @@ mod tests {
 
         let refreshed = refresh_cli_tokens(
             State(AppState {
-                database,
+                database: database.pool.clone(),
+                _test_database: Some(database),
                 http: reqwest::Client::new(),
                 github_client_id: "client-id".to_owned(),
                 github_client_secret: "secret".to_owned(),
@@ -1366,18 +1415,12 @@ mod tests {
 
     #[tokio::test]
     async fn web_users_can_list_and_revoke_only_their_cli_sessions() {
-        let database = SqlitePool::connect("sqlite::memory:")
-            .await
-            .expect("in-memory database");
-        sqlx::migrate!("./migrations")
-            .run(&database)
-            .await
-            .expect("migrations");
+        let database = fresh_database().await;
         sqlx::query(
             "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
              VALUES ('user-1', 1, 'one', 1, 1), ('user-2', 2, 'two', 1, 1)",
         )
-        .execute(&database)
+        .execute(&database.pool)
         .await
         .expect("users");
         let now = match unix_timestamp() {
@@ -1392,7 +1435,7 @@ mod tests {
         .bind(sha256_hex(web_token.as_bytes()))
         .bind(now + SESSION_TTL_SECS)
         .bind(now)
-        .execute(&database)
+        .execute(&database.pool)
         .await
         .expect("web session");
         let own = match issue_cli_session(&database, "user-1", "Own CLI", now).await {
@@ -1406,17 +1449,18 @@ mod tests {
         let own_id: String =
             sqlx::query_scalar("SELECT id FROM cli_sessions WHERE refresh_token_hash = $1")
                 .bind(sha256_hex(own.refresh_token.as_bytes()))
-                .fetch_one(&database)
+                .fetch_one(&database.pool)
                 .await
                 .expect("own CLI ID");
         let other_id: String =
             sqlx::query_scalar("SELECT id FROM cli_sessions WHERE refresh_token_hash = $1")
                 .bind(sha256_hex(other.refresh_token.as_bytes()))
-                .fetch_one(&database)
+                .fetch_one(&database.pool)
                 .await
                 .expect("other CLI ID");
         let state = AppState {
-            database,
+            database: database.pool.clone(),
+            _test_database: Some(database),
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),

@@ -22,9 +22,9 @@ the three apps and provision a private Flycast address for the API before the
 first deployment. The notary's TLS handler can use Fly's shared IPv4 routing.
 Create a Neon PostgreSQL database and stage its pooled connection URL as the
 `DATABASE_URL` Fly secret with `fly secrets set --stage` before deploying the
-API; staging avoids restarting the previous API revision. Run the supplied
-migration binary separately before deployment, preferably with Neon's direct
-(non-pooled) URL. Create a private Tigris bucket for
+API; staging avoids restarting the previous API revision. The API deploy runs
+the supplied migrator once as Fly's release command before replacing Machines.
+Create a private Tigris bucket for
 the API; the service accepts the standard `AWS_*` and `BUCKET_NAME` variables
 that `fly storage create` sets, as well as the portable `LLM_NOTARY_S3_*`
 variables used by self-hosted container deployments.
@@ -39,9 +39,9 @@ and its signing-key directory. The production endpoint is
 `https://llm-notary.exalto.ai`; keep the GitHub OAuth App callback at
 `https://llm-notary.exalto.ai/api/auth/github/callback`.
 
-Never create a new platform signing key during a migration. Copy the existing
-API database state and notary directory together so published stamps, sessions,
-and historic proofs remain valid. The staged data migration is documented in
+Never create a new platform signing key during a migration. Preserve the
+existing key and notary directory so published stamps and historic proofs
+remain valid. The clean PostgreSQL cutover is documented in
 [`docs/postgres-neon-migration.md`](../../docs/postgres-neon-migration.md).
 
 Clients cache the signed notary directory by its generation. When moving its

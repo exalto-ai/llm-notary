@@ -34,9 +34,7 @@ const METADATA_INTERVAL_SECS: u64 = 10;
 const CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
 const MAX_JOBS_PER_TICK: usize = 4;
 const MAX_METADATA_PER_TICK: usize = 4;
-#[cfg(not(test))]
 const METADATA_RETRY_SECS: i64 = 60 * 60;
-#[cfg(not(test))]
 const METADATA_CLAIM_TIMEOUT_SECS: i64 = 5 * 60;
 const RECENT_DOWNLOAD_WINDOW_SECS: i64 = 28 * 24 * 60 * 60;
 const METADATA_MODEL: &str = "gpt-5.6-luna";
@@ -430,7 +428,8 @@ async fn examples_collection(State(state): State<AppState>) -> ApiResult<Json<Co
          WHERE publish_jobs.state = 'admitted'
            AND publish_jobs.public_trace_object_key IS NOT NULL
            AND publish_jobs.public_stamp_object_key IS NOT NULL
-         GROUP BY publish_jobs.id
+         GROUP BY publish_jobs.id, users.github_login,
+                  publication_metadata.title, publication_metadata.tags_json
          ORDER BY recent_downloads DESC, publish_jobs.admitted_at DESC, publish_jobs.id DESC",
     )
     .bind(now - RECENT_DOWNLOAD_WINDOW_SECS)
@@ -760,10 +759,8 @@ async fn claim_next_metadata_artifact(
     now: i64,
 ) -> Result<Option<(PublicArtifactRow, String)>> {
     let claim = Uuid::new_v4().to_string();
-    #[cfg(not(test))]
-    {
-        let artifact = sqlx::query_as::<_, PublicArtifactRow>(
-            "WITH candidate AS (
+    let artifact = sqlx::query_as::<_, PublicArtifactRow>(
+        "WITH candidate AS (
                  SELECT jobs.id
                  FROM publish_jobs AS jobs
                  LEFT JOIN publication_metadata AS metadata
@@ -810,29 +807,21 @@ async fn claim_next_metadata_artifact(
              FROM claimed
              JOIN publish_jobs AS jobs ON jobs.id = claimed.publication_id
              JOIN users ON users.id = jobs.user_id",
-        )
-        .bind(now - METADATA_RETRY_SECS)
-        .bind(now - METADATA_CLAIM_TIMEOUT_SECS)
-        .bind(now)
-        .bind(&claim)
-        .fetch_optional(&state.database)
-        .await?;
-        return Ok(artifact.map(|artifact| (artifact, claim)));
-    }
-    #[cfg(test)]
-    {
-        let _ = (state, now, claim);
-        Ok(None)
-    }
+    )
+    .bind(now - METADATA_RETRY_SECS)
+    .bind(now - METADATA_CLAIM_TIMEOUT_SECS)
+    .bind(now)
+    .bind(&claim)
+    .fetch_optional(&state.database)
+    .await?;
+    Ok(artifact.map(|artifact| (artifact, claim)))
 }
 
 async fn claim_next_job(state: &AppState) -> Result<Option<(PublishJobRow, String)>> {
     let claim = Uuid::new_v4().to_string();
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    #[cfg(not(test))]
-    {
-        let job = sqlx::query_as::<_, PublishJobRow>(
-            "WITH next_job AS (
+    let job = sqlx::query_as::<_, PublishJobRow>(
+        "WITH next_job AS (
                  SELECT id FROM publish_jobs
                  WHERE state = 'queued'
                  ORDER BY queued_at, id
@@ -845,41 +834,13 @@ async fn claim_next_job(state: &AppState) -> Result<Option<(PublishJobRow, Strin
              FROM next_job
              WHERE publish_jobs.id = next_job.id
              RETURNING publish_jobs.*",
-        )
-        .bind(&claim)
-        .bind(now)
-        .bind(now)
-        .fetch_optional(&state.database)
-        .await?;
-        return Ok(job.map(|job| (job, claim)));
-    }
-    #[cfg(test)]
-    {
-        let updated = sqlx::query(
-            "UPDATE publish_jobs
-         SET state = 'verifying', verification_claim = $1, verification_started_at = $2,
-             updated_at = $3, failure_code = NULL
-         WHERE id = (
-             SELECT id FROM publish_jobs
-             WHERE state = 'queued'
-             ORDER BY queued_at, id
-             LIMIT 1
-         ) AND state = 'queued'",
-        )
-        .bind(&claim)
-        .bind(now)
-        .bind(now)
-        .execute(&state.database)
-        .await?;
-        if updated.rows_affected() == 0 {
-            return Ok(None);
-        }
-        let job = sqlx::query_as("SELECT * FROM publish_jobs WHERE verification_claim = $1")
-            .bind(&claim)
-            .fetch_one(&state.database)
-            .await?;
-        Ok(Some((job, claim)))
-    }
+    )
+    .bind(&claim)
+    .bind(now)
+    .bind(now)
+    .fetch_optional(&state.database)
+    .await?;
+    Ok(job.map(|job| (job, claim)))
 }
 
 #[tracing::instrument(
@@ -1478,7 +1439,6 @@ impl Drop for AdmissionWorkspace {
 
 #[cfg(test)]
 mod tests {
-    use sqlx::SqlitePool;
     use url::Url;
 
     use super::super::intake::MockIntakeStorage;
@@ -1486,19 +1446,19 @@ mod tests {
     use super::*;
 
     async fn test_state() -> (AppState, MockIntakeStorage) {
-        let database = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::migrate!("./migrations").run(&database).await.unwrap();
+        let database = super::super::fresh_database().await;
         sqlx::query(
             "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
              VALUES ('user-1', 1, 'publisher', 1, 1)",
         )
-        .execute(&database)
+        .execute(&database.pool)
         .await
         .unwrap();
         let storage = MockIntakeStorage::new();
         (
             AppState {
-                database,
+                database: database.pool.clone(),
+                _test_database: Some(database),
                 http: reqwest::Client::new(),
                 github_client_id: "client-id".to_owned(),
                 github_client_secret: "secret".to_owned(),

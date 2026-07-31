@@ -1,102 +1,91 @@
-# PostgreSQL / Neon migration runbook
+# PostgreSQL / Neon cutover runbook
 
-This runbook moves the API's durable state from the legacy SQLite volume to a
-shared PostgreSQL database. It is a maintenance operation: do not run the old
-SQLite-backed API and the PostgreSQL-backed API against the public site at the
-same time.
+The API uses PostgreSQL exclusively. This cutover intentionally starts with an
+empty database; it does not import the retired SQLite volume. Keep the existing
+volume untouched until the new release has been stable, but do not run or
+maintain a SQLite-backed API or data importer.
 
-## Prepare the Neon database
+## Provision and configure Neon
 
-Create a Neon project or production branch in the API's region. Copy both URLs
-from the Neon console, retain `sslmode=require`, and keep them only in the
-deployment secret store:
+Create a Neon project in the API region and obtain its pooled connection URL.
+Store it only in the deployment secret store as `DATABASE_URL`. Retain
+`sslmode=require`; remove Neon's optional `channel_binding=require` parameter,
+which SQLx does not use. The pooled URL is correct for both the API and the
+migrator.
 
-- Set `DATABASE_URL` to the **pooled** URL for normal API replicas.
-- The schema migrator accepts either Neon URL. Prefer the **direct
-  (non-pooled)** URL for this one-off administrative command when it is
-  available, and keep it out of the long-lived API configuration.
+Budget the total of `LLM_NOTARY_DATABASE_MAX_CONNECTIONS` across API replicas,
+plus one transient migration connection, within the Neon plan's limit. The
+production configuration uses two API Machines with a five-connection pool per
+Machine.
 
-SQLx protects migrations with a PostgreSQL advisory lock. Neon’s pooler supports
-this migrator, but the migrator remains separate from API startup so that only
-an explicitly invoked process can change schema. Budget at least the number of
-API replicas times `LLM_NOTARY_DATABASE_MAX_CONNECTIONS`, plus the connection
-used by the migrator.
-
-On Fly, stage the pooled URL without committing it. `--stage` avoids restarting
-the still-SQLite-backed Machine; the secret is applied by the subsequent API
-deployment:
+For Fly, stage the secret before merging. This records it without restarting
+the current API release:
 
 ```bash
 fly secrets set --stage DATABASE_URL='postgresql://…?sslmode=require' \
   -a llm-notary-prod-api
 ```
 
-For Compose, set the same value in the root-owned
-`deploy/digitalocean/deploy.env` file. The checked-in example deliberately uses
-a non-working hostname and credentials. Neon URLs commonly include the
-libpq-specific `channel_binding=require` parameter. SQLx does not implement
-that parameter, so omit it from the stored URL while retaining
-`sslmode=require` to avoid a harmless startup warning.
+For Compose, put the same value in the root-owned
+`deploy/digitalocean/deploy.env` file. Never commit a connection URL, a signing
+key, a capture, or a `.env` file.
 
-## Migrate schema and data
+## Deploy the clean baseline
 
-1. Schedule a maintenance window and stop the API replicas. Preserve the
-   platform signing key, notary directory, and the `api_data` Docker volume
-   (or its SQLite file) before changing anything. The signing key must not
-   change.
-2. Run the included schema migrator once against an empty target database. Use
-   the direct (non-pooled) URL when available; the pooled URL is also supported:
+`migrations-postgres/0001_initial.sql` is the single baseline for this
+unshipped database. Fly runs `llm-notary-api-migrate` as the API release command
+before replacing any API Machines. SQLx takes an advisory migration lock, and
+a migration failure stops the release while the previous Machines continue
+serving traffic.
+
+1. Preserve the platform signing key, notary directory, and existing `api_data`
+   volume as rollback evidence. Do not generate new signing material.
+2. Merge the release. The normal Fly deploy invokes the release command against
+   the staged pooled `DATABASE_URL`; no database secret belongs in GitHub.
+3. Confirm the release command created exactly the baseline migration and that
+   two Machines become healthy:
 
    ```bash
-   DATABASE_URL='postgresql://…?sslmode=require' \
-     cargo run --no-default-features --features api --bin llm-notary-api-migrate
+   fly status -a llm-notary-prod-api
+   curl --fail https://llm-notary.exalto.ai/api/readyz
    ```
 
-   The migrator uses PostgreSQL's advisory migration lock, so concurrent
-   invocations serialize. It is deliberately separate from API startup: normal
-   replicas use the pooled URL and never run migrations.
-3. Copy application rows from the SQLite backup into the already-migrated
-   PostgreSQL schema using a tested data-only importer. Copy every application
-   table except `_sqlx_migrations`; that bookkeeping table contains SQLite
-   migration checksums and must be created by `llm-notary-api-migrate` in the
-   target. Preserve all identifiers, token hashes, object keys, timestamps,
-   and platform metadata exactly. After copying generated identity values,
-   reset the `publication_activity_events` and `library_metadata_usage`
-   sequences to their imported maxima. Do not copy credentials, `.llmbundle`
-   files, or any bucket data: those are outside the database migration.
-4. Before routing traffic, compare row counts for every copied table and sample
-   admitted publications. For each sample, verify that the database object
-   keys, sizes, and SHA-256 values match the private object store. Confirm a
-   website session and a CLI refresh-token rotation still work.
-5. Start one PostgreSQL-backed API replica and wait for `GET /api/readyz` to
-   return 200. Then start the remaining replicas and restore public traffic.
+4. Exercise GitHub sign-in, CLI refresh-token rotation, and one complete
+   publication/admission cycle. Confirm the public object keys, sizes, and
+   SHA-256 values match their private objects.
 
-Keep the SQLite backup read-only until the new deployment has completed a
-normal publication and an admission retry. A rollback means stopping the
-PostgreSQL-backed replicas and restoring the old API with that untouched volume;
-never attempt bidirectional writes.
+The current PostgreSQL schema history may be flattened because no production
+PostgreSQL data is being preserved. After this cutover, never alter
+`0001_initial.sql`: future PostgreSQL schema changes must be new, forward-only
+migration files.
 
-## Scale after cutover
+For source development or a Compose deployment, run the same migrator once
+before starting or scaling API replicas:
+
+```bash
+DATABASE_URL='postgresql://…?sslmode=require' \
+  cargo run --no-default-features --features api --bin llm-notary-api-migrate
+```
+
+## Scale and monitor
 
 Every API replica serves HTTP and runs cleanup, admission, and metadata work.
-Publication and metadata claims are coordinated in PostgreSQL, so replicas do
-not process the same claimed item concurrently. The deployment keeps each
-replica's database pool at five connections by default; adjust replicas before
-raising pool size.
+PostgreSQL coordinates claims with row locking and `SKIP LOCKED`, so replicas
+do not process a claimed job concurrently.
 
-Fly keeps two API Machines running. Add capacity with:
+Fly keeps two API Machines running. Add capacity only after confirming the Neon
+connection budget:
 
 ```bash
 fly scale count 3 -a llm-notary-prod-api
 ```
 
-For a same-host Compose deployment, use:
+For a same-host Compose deployment:
 
 ```bash
 docker compose --env-file deploy/digitalocean/deploy.env up -d --scale api=3
 ```
 
-Watch readiness, API error rate, queued-admission age, and Neon connection
-usage during the change. If database availability drops, `/api/readyz` fails
-and Fly removes the affected Machine from service; do not rely on `/api/healthz`
-for database readiness.
+Watch `/api/readyz`, API error rate, queued-admission age, and Neon connection
+usage. If PostgreSQL becomes unavailable, readiness fails and Fly removes the
+affected Machine from service; `/api/healthz` alone is not a database check.

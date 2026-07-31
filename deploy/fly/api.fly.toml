@@ -7,6 +7,12 @@ kill_timeout = "30s"
   dockerfile = "../../Dockerfile"
   build-target = "api"
 
+[deploy]
+  # Run the SQLx baseline / future migrations once before replacing API
+  # Machines. A failure leaves the existing release serving traffic.
+  release_command = "llm-notary-api-migrate"
+  release_command_timeout = "5m"
+
 [env]
   LLM_NOTARY_API_LISTEN = "0.0.0.0:8080"
   LLM_NOTARY_PUBLIC_ORIGIN = "https://llm-notary.exalto.ai"

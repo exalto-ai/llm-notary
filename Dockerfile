@@ -16,7 +16,6 @@ FROM chef AS planner
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY vendor/tlsn ./vendor/tlsn
 COPY src ./src
-COPY migrations ./migrations
 COPY migrations-postgres ./migrations-postgres
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -32,7 +31,6 @@ RUN cargo chef cook --release --no-default-features --features api --recipe-path
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY vendor/tlsn ./vendor/tlsn
 COPY src ./src
-COPY migrations ./migrations
 COPY migrations-postgres ./migrations-postgres
 # The API and notary share a dependency graph. Building both here lets BuildKit
 # reuse one compilation for the two final images.
@@ -55,7 +53,7 @@ COPY --from=builder /app/target/release/llm-notary-api-migrate /usr/local/bin/ll
 RUN ldd /usr/local/bin/llm-notary-api >/dev/null
 
 EXPOSE 8080
-ENTRYPOINT ["llm-notary-api"]
+CMD ["llm-notary-api"]
 
 FROM debian:bookworm-slim AS notary
 

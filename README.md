@@ -381,6 +381,11 @@ cargo run --no-default-features --features api --bin llm-notary-api-migrate
 cargo run --no-default-features --features api --bin llm-notary-api
 ```
 
+API tests use disposable local PostgreSQL 17.7 containers through
+Testcontainers. They require a running Docker daemon but no database URL,
+database credentials, or external provider account; each test state receives a
+fresh production-schema database.
+
 The API has `GET /api/notary` for CLI endpoint and public-key discovery,
 `GET /api/auth/github`, `GET /api/auth/github/callback`, `GET /api/me`,
 `POST /api/auth/logout`, `GET /api/healthz`, and database-backed

@@ -703,7 +703,6 @@ fn integer_env(name: &str) -> anyhow::Result<Option<i64>> {
 #[cfg(test)]
 mod tests {
     use axum_extra::extract::cookie::Cookie;
-    use sqlx::SqlitePool;
     use url::Url;
 
     use super::super::intake::{MockIntakeStorage, StoredObject};
@@ -712,18 +711,12 @@ mod tests {
     const SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     async fn test_state() -> (AppState, MockIntakeStorage, HeaderMap, HeaderMap) {
-        let database = SqlitePool::connect("sqlite::memory:")
-            .await
-            .expect("in-memory database");
-        sqlx::migrate!("./migrations")
-            .run(&database)
-            .await
-            .expect("migrations");
+        let database = super::super::fresh_database().await;
         sqlx::query(
             "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
              VALUES ('user-1', 1, 'one', 1, 1), ('user-2', 2, 'two', 1, 1)",
         )
-        .execute(&database)
+        .execute(&database.pool)
         .await
         .expect("users");
         let now = unix_timestamp().expect("time");
@@ -749,7 +742,8 @@ mod tests {
         };
         let storage = MockIntakeStorage::new();
         let state = AppState {
-            database,
+            database: database.pool.clone(),
+            _test_database: Some(database),
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
