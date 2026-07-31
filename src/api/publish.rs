@@ -770,9 +770,9 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            callback_url: Url::parse("https://llmnotary.exalto.ai/api/auth/github/callback")
+            callback_url: Url::parse("https://llm-notary.exalto.ai/api/auth/github/callback")
                 .expect("callback"),
-            app_url: Url::parse("https://llmnotary.exalto.ai").expect("app"),
+            app_url: Url::parse("https://llm-notary.exalto.ai").expect("app"),
             secure_cookies: true,
             notary_directory: super::super::tests::directory_key(),
             publish: PublishService::mock(storage.clone()),
