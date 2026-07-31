@@ -141,6 +141,27 @@ pub async fn run(args: DownloadArgs) -> Result<()> {
         println!("trace sha256: {}", verified.trace_sha256);
         println!("platform issuer: {}", verified.stamp.issuer);
     }
+    if let Err(error) = record_download_event(&client, &origin, &publication_id).await {
+        tracing::debug!(%error, "recording Library download activity failed");
+    }
+    Ok(())
+}
+
+async fn record_download_event(client: &Client, origin: &Url, publication_id: &str) -> Result<()> {
+    let url = origin.join(&format!(
+        "api/public/traces/{publication_id}/events/download"
+    ))?;
+    let response = client
+        .post(url)
+        .json(&serde_json::json!({ "subject": Uuid::new_v4().hyphenated().to_string() }))
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        bail!(
+            "Library activity endpoint returned HTTP {}",
+            response.status()
+        );
+    }
     Ok(())
 }
 

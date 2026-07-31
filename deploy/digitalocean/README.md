@@ -51,6 +51,9 @@ Configure these GitHub repository secrets before the first deployment:
 - `LLM_NOTARY_SPACES_ACCESS_KEY_ID` and
   `LLM_NOTARY_SPACES_SECRET_ACCESS_KEY` for a key restricted to read/write
   access on the private intake Space.
+- `LLM_NOTARY_OPENAI_API_KEY` when generated Library titles and tags are
+  enabled. This is passed to the API container as `OPENAI_API_KEY`; omit it to
+  keep deterministic fallback titles only.
 
 Configure these repository variables alongside the secrets:
 

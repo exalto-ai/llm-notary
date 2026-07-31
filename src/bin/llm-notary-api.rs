@@ -63,6 +63,7 @@ struct AppState {
     secure_cookies: bool,
     notary_directory: NotaryDirectory,
     publish: publish::PublishService,
+    library_metadata: admission::MetadataService,
 }
 
 #[derive(Deserialize)]
@@ -419,6 +420,7 @@ impl AppState {
             app_url,
             notary_directory,
             publish,
+            library_metadata: admission::MetadataService::from_env(),
         })
     }
 
@@ -1236,6 +1238,7 @@ mod tests {
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
+            library_metadata: admission::MetadataService::from_env(),
         };
         let url = state
             .authorization_url("state-token")
@@ -1302,6 +1305,7 @@ mod tests {
                 secure_cookies: true,
                 notary_directory: directory_key(),
                 publish: publish::PublishService::disabled_for_test(),
+                library_metadata: admission::MetadataService::from_env(),
             }),
             Json(RefreshRequest {
                 refresh_token: tokens.refresh_token,
@@ -1377,6 +1381,7 @@ mod tests {
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
+            library_metadata: admission::MetadataService::from_env(),
         };
         let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
 

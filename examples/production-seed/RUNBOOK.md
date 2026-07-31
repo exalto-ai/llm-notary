@@ -1,8 +1,10 @@
 # Production examples runbook
 
 This directory records the inaugural production run for issue #43.
-`publications.json` may contain only production jobs that reached `admitted`
-and whose downloaded trace/stamp pair passed independent verification.
+Each production job must reach `admitted` and its downloaded trace/stamp pair
+must pass independent verification. The Library generates its non-evidentiary
+title and tags from the admitted public trace; do not maintain an editorial
+allowlist in source control.
 
 ## Preconditions
 
@@ -56,9 +58,8 @@ and whose downloaded trace/stamp pair passed independent verification.
      --trusted-platform-key PLATFORM_PUBLIC_KEY
    ```
 
-9. Add the admitted publication ID and human curation fields to
-   `publications.json`. The public collection endpoint ignores IDs that are not
-   admitted, so a typo cannot appear as verified.
+9. Confirm the public Library has generated a title and controlled tags for the
+   admitted trace. These are discoverability metadata, not evidence claims.
 10. Repeat the disclosure scan on every downloaded pair and complete the
     manual checklist in `RUN_REPORT.md`.
 
@@ -71,21 +72,10 @@ when both are required to make the workflow intelligible. Do not claim that
 the trace proves a local tool executed—the authenticated facts are the
 model-issued call and the later client-supplied result.
 
-## Publication manifest entry
+## Library metadata
 
-Add an entry only after independent verification:
-
-```json
-{
-  "id": "PUBLICATION_JOB_UUID",
-  "title": "Short factual title",
-  "category": "classification",
-  "surface": "direct-api",
-  "tool_use": false,
-  "tags": ["structured-output", "streaming"]
-}
-```
-
-Provider, model, author, date, span count, stamp, and download links are
-derived from the admitted database artifacts rather than trusted from this
-curation file.
+Provider, model, author, date, span count, tool use, stamp, and download links
+are derived from admitted artifacts. The server uses the configured metadata
+model to create a short factual title and up to four controlled tags. Metadata
+generation never changes admission and falls back to a deterministic title if
+the model is unavailable.
