@@ -1,0 +1,52 @@
+app = "llm-notary-prod-api"
+primary_region = "sjc"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "../../Dockerfile"
+  build-target = "api"
+
+[env]
+  DATABASE_URL = "sqlite:///var/lib/llm-notary/api.db"
+  LLM_NOTARY_API_LISTEN = "0.0.0.0:8080"
+  LLM_NOTARY_PUBLIC_ORIGIN = "https://llm-notary-prod-web.fly.dev"
+  LLM_NOTARY_NOTARY_HOST = "llm-notary-prod-notary.fly.dev"
+  LLM_NOTARY_NOTARY_PORT = "7047"
+  # Keep the existing namespace when moving published state from Spaces.
+  LLM_NOTARY_S3_PREFIX = "llm-notary"
+  LLM_NOTARY_S3_FORCE_PATH_STYLE = "true"
+  LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE = "/run/secrets/platform_signing_key"
+  LLM_NOTARY_IDLE_SHUTDOWN_SECS = "45"
+
+[metrics]
+  # Fly scrapes this private route every 15 seconds; it is not exposed through
+  # the public web gateway.
+  port = 8080
+  path = "/metrics"
+
+[http_service]
+  internal_port = 8080
+  force_https = false
+  # The API tracks admission and cleanup work itself, then exits after an idle
+  # grace period. Flycast wakes the stopped Machine for the next API request.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 25
+    hard_limit = 50
+
+[[mounts]]
+  source = "api_data"
+  destination = "/var/lib/llm-notary"
+
+[[files]]
+  guest_path = "/run/secrets/platform_signing_key"
+  secret_name = "PLATFORM_SIGNING_KEY_B64"
+
+[[vm]]
+  memory = "512mb"
+  cpu_kind = "shared"
+  cpus = 1

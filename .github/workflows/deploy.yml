@@ -1,4 +1,4 @@
-name: Deploy to DigitalOcean
+name: Deploy to Fly.io
 
 on:
   push:
@@ -13,148 +13,56 @@ permissions:
   contents: read
 
 concurrency:
-  group: digitalocean-production
+  group: fly-production
   cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     environment: production
-    env:
-      NOTARY_IMAGE: ttl.sh/llm-notary-notary-${{ github.run_id }}-${{ github.run_attempt }}:24h
-      WEB_IMAGE: ttl.sh/llm-notary-web-${{ github.run_id }}-${{ github.run_attempt }}:24h
-      API_IMAGE: ttl.sh/llm-notary-api-${{ github.run_id }}-${{ github.run_attempt }}:24h
     steps:
       - uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v4
-      - name: Build and publish notary image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Dockerfile
-          target: notary
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          sbom: false
-          tags: ${{ env.NOTARY_IMAGE }}
-          cache-from: type=gha,scope=rust-service-images
-          cache-to: type=gha,mode=max,scope=rust-service-images
-      - name: Build and publish web image
-        uses: docker/build-push-action@v7
-        with:
-          context: ./js/app
-          file: ./js/app/Dockerfile
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          sbom: false
-          tags: ${{ env.WEB_IMAGE }}
-          build-args: |
-            LLM_NOTARY_PUBLIC_ORIGIN=${{ secrets.LLM_NOTARY_PUBLIC_ORIGIN }}
-          cache-from: type=gha,scope=web-image
-          cache-to: type=gha,mode=max,scope=web-image
-      - name: Build and publish API image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: ./Dockerfile
-          target: api
-          platforms: linux/amd64
-          push: true
-          provenance: false
-          sbom: false
-          tags: ${{ env.API_IMAGE }}
-          cache-from: type=gha,scope=rust-service-images
-          cache-to: type=gha,mode=max,scope=rust-service-images
-      - name: Upload Compose definition
-        uses: appleboy/scp-action@v1
-        with:
-          host: ${{ secrets.DO_SSH_HOST }}
-          username: ${{ secrets.DO_SSH_USER }}
-          key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
-          port: ${{ secrets.DO_SSH_PORT || 22 }}
-          source: compose.yml,deploy/gateway.Caddyfile
-          target: /opt/llm-notary
-          overwrite: true
-      - name: Pull images and restart services
-        uses: appleboy/ssh-action@v1.2.4
+      # superfly/flyctl-actions 1.6
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1
+      - name: Deploy notary
         env:
-          NOTARY_IMAGE: ${{ env.NOTARY_IMAGE }}
-          WEB_IMAGE: ${{ env.WEB_IMAGE }}
-          API_IMAGE: ${{ env.API_IMAGE }}
-          LLM_NOTARY_PUBLIC_ORIGIN: ${{ secrets.LLM_NOTARY_PUBLIC_ORIGIN }}
-          CLOUDFLARE_TUNNEL_TOKEN: ${{ secrets.CLOUDFLARE_TUNNEL_TOKEN }}
-          GITHUB_OAUTH_CLIENT_ID: ${{ secrets.LLM_NOTARY_GITHUB_OAUTH_CLIENT_ID }}
-          GITHUB_OAUTH_CLIENT_SECRET: ${{ secrets.LLM_NOTARY_GITHUB_OAUTH_CLIENT_SECRET }}
-          LLM_NOTARY_NOTARY_HOST: ${{ secrets.DO_SSH_HOST }}
-          LLM_NOTARY_NOTARY_DIRECTORY_JSON: ${{ vars.LLM_NOTARY_NOTARY_DIRECTORY_JSON }}
-          LLM_NOTARY_NOTARY_DIRECTORY_GENERATION: ${{ vars.LLM_NOTARY_NOTARY_DIRECTORY_GENERATION }}
-          LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS: ${{ vars.LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS }}
-          LLM_NOTARY_S3_ACCESS_KEY_ID: ${{ secrets.LLM_NOTARY_SPACES_ACCESS_KEY_ID }}
-          LLM_NOTARY_S3_SECRET_ACCESS_KEY: ${{ secrets.LLM_NOTARY_SPACES_SECRET_ACCESS_KEY }}
-          LLM_NOTARY_S3_BUCKET: ${{ vars.LLM_NOTARY_SPACES_BUCKET }}
-          LLM_NOTARY_S3_ENDPOINT: ${{ vars.LLM_NOTARY_SPACES_ENDPOINT }}
-          LLM_NOTARY_S3_REGION: ${{ vars.LLM_NOTARY_SPACES_REGION }}
-          OPENAI_API_KEY: ${{ secrets.LLM_NOTARY_OPENAI_API_KEY }}
-        with:
-          host: ${{ secrets.DO_SSH_HOST }}
-          username: ${{ secrets.DO_SSH_USER }}
-          key: ${{ secrets.DO_SSH_PRIVATE_KEY }}
-          port: ${{ secrets.DO_SSH_PORT || 22 }}
-          envs: NOTARY_IMAGE,WEB_IMAGE,API_IMAGE,LLM_NOTARY_PUBLIC_ORIGIN,CLOUDFLARE_TUNNEL_TOKEN,GITHUB_OAUTH_CLIENT_ID,GITHUB_OAUTH_CLIENT_SECRET,LLM_NOTARY_NOTARY_HOST,LLM_NOTARY_NOTARY_DIRECTORY_JSON,LLM_NOTARY_NOTARY_DIRECTORY_GENERATION,LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS,LLM_NOTARY_S3_ACCESS_KEY_ID,LLM_NOTARY_S3_SECRET_ACCESS_KEY,LLM_NOTARY_S3_BUCKET,LLM_NOTARY_S3_ENDPOINT,LLM_NOTARY_S3_REGION,OPENAI_API_KEY
-          script: |
-            set -eu
-            test -n "$LLM_NOTARY_PUBLIC_ORIGIN"
-            test -n "$CLOUDFLARE_TUNNEL_TOKEN"
-            test -n "$GITHUB_OAUTH_CLIENT_ID"
-            test -n "$GITHUB_OAUTH_CLIENT_SECRET"
-            test -n "$LLM_NOTARY_NOTARY_HOST"
-            test -n "$LLM_NOTARY_S3_ACCESS_KEY_ID"
-            test -n "$LLM_NOTARY_S3_SECRET_ACCESS_KEY"
-            test -n "$LLM_NOTARY_S3_BUCKET"
-            test -n "$LLM_NOTARY_S3_ENDPOINT"
-            test -n "$LLM_NOTARY_S3_REGION"
-            test -r /opt/llm-notary/notary-signing-key
-            if ! test -s /opt/llm-notary/platform-signing-key; then
-              umask 077
-              openssl rand -hex 32 > /opt/llm-notary/platform-signing-key
-            fi
-            NOTARY_PUBLIC_KEY="$(docker run --rm --entrypoint certified-notary -v /opt/llm-notary/notary-signing-key:/run/notary.key:ro "$NOTARY_IMAGE" --signing-key /run/notary.key --print-public-key)"
-            test -n "$NOTARY_PUBLIC_KEY"
-            cd /opt/llm-notary
-            cat > deploy.env <<EOF
-            NOTARY_IMAGE=$NOTARY_IMAGE
-            WEB_IMAGE=$WEB_IMAGE
-            API_IMAGE=$API_IMAGE
-            NOTARY_SIGNING_KEY_FILE=/opt/llm-notary/notary-signing-key
-            PLATFORM_SIGNING_KEY_FILE=/opt/llm-notary/platform-signing-key
-            LLM_NOTARY_PUBLIC_ORIGIN=$LLM_NOTARY_PUBLIC_ORIGIN
-            LLM_NOTARY_NOTARY_HOST=$LLM_NOTARY_NOTARY_HOST
-            LLM_NOTARY_NOTARY_PUBLIC_KEY=$NOTARY_PUBLIC_KEY
-            LLM_NOTARY_NOTARY_DIRECTORY_JSON=$LLM_NOTARY_NOTARY_DIRECTORY_JSON
-            LLM_NOTARY_NOTARY_DIRECTORY_GENERATION=$LLM_NOTARY_NOTARY_DIRECTORY_GENERATION
-            LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS=$LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS
-            CLOUDFLARE_TUNNEL_TOKEN=$CLOUDFLARE_TUNNEL_TOKEN
-            GITHUB_OAUTH_CLIENT_ID=$GITHUB_OAUTH_CLIENT_ID
-            GITHUB_OAUTH_CLIENT_SECRET=$GITHUB_OAUTH_CLIENT_SECRET
-            LLM_NOTARY_S3_ACCESS_KEY_ID=$LLM_NOTARY_S3_ACCESS_KEY_ID
-            LLM_NOTARY_S3_SECRET_ACCESS_KEY=$LLM_NOTARY_S3_SECRET_ACCESS_KEY
-            LLM_NOTARY_S3_BUCKET=$LLM_NOTARY_S3_BUCKET
-            LLM_NOTARY_S3_ENDPOINT=$LLM_NOTARY_S3_ENDPOINT
-            LLM_NOTARY_S3_REGION=$LLM_NOTARY_S3_REGION
-            OPENAI_API_KEY=$OPENAI_API_KEY
-            EOF
-            chmod 600 deploy.env
-            docker compose --env-file deploy.env pull
-            docker compose --env-file deploy.env up -d --remove-orphans
-            for attempt in $(seq 1 20); do
-              if curl --fail --silent --show-error --max-time 2 http://127.0.0.1/api/healthz >/dev/null; then
-                break
-              fi
-              sleep 1
-            done
-            curl --fail --silent --show-error --max-time 2 http://127.0.0.1/api/healthz >/dev/null
-            test "$(docker compose --env-file deploy.env exec -T notary certified-notary --signing-key /run/secrets/notary_signing_key --print-public-key)" = "$NOTARY_PUBLIC_KEY"
-            curl --fail --silent --show-error --max-time 2 http://127.0.0.1/ >/dev/null
-            docker compose --env-file deploy.env ps
+          FLY_API_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
+        run: flyctl deploy --remote-only --ha=false --config deploy/fly/notary.fly.toml
+      - name: Deploy API
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_DEPLOY_TOKEN }}
+        run: flyctl deploy --remote-only --ha=false --config deploy/fly/api.fly.toml
+      - name: Deploy web gateway
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_WEB_DEPLOY_TOKEN }}
+        run: >-
+          flyctl deploy js/app --remote-only --ha=false
+          --config "$GITHUB_WORKSPACE/deploy/fly/web.fly.toml"
+      - name: Verify web to API wake-up
+        run: >-
+          curl --fail --retry 5 --retry-all-errors --retry-delay 2
+          --max-time 20 https://llm-notary-prod-web.fly.dev/api/healthz
+      - name: Verify raw TCP notary admission
+        run: |
+          python3 - <<'PY'
+          import socket
+          import time
+
+          target = ("llm-notary-prod-notary.fly.dev", 7047)
+          prelude = b"LLMN\x00\x00\x00\x02\x02"
+          last_error = None
+          for _ in range(5):
+              try:
+                  with socket.create_connection(target, timeout=15) as connection:
+                      connection.settimeout(15)
+                      connection.sendall(prelude)
+                      if connection.recv(1) != b"\x01":
+                          raise RuntimeError("notary did not admit the control prelude")
+                  break
+              except OSError as error:
+                  last_error = error
+                  time.sleep(3)
+          else:
+              raise last_error or RuntimeError("notary did not become ready")
+          PY

@@ -384,7 +384,7 @@ fn delta(start: Option<u64>, end: Option<u64>) -> Option<u64> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    let _telemetry = certified::telemetry::init("llm-notary-notary")?;
     let args = Args::parse();
     if args.max_private_chunk_bytes == 0
         || args.max_total_private_chunk_bytes == 0

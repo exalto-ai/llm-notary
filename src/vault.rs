@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 const CONFIG_FORMAT: &str = "llm-notary/vault/v1";
 const BUNDLE_MAGIC: &[u8] = b"LLMNB1";
 const SERVICE: &str = "LLM Notary";
+const PASSPHRASE_FILE_ENV: &str = "LLM_NOTARY_VAULT_PASSPHRASE_FILE";
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -49,7 +50,10 @@ impl Vault {
         match config.mode {
             VaultMode::Os => Self::open(None),
             VaultMode::Passphrase => {
-                let passphrase = rpassword::prompt_password("LLM Notary vault passphrase: ")?;
+                let passphrase = match passphrase_from_file_env()? {
+                    Some(passphrase) => passphrase,
+                    None => rpassword::prompt_password("LLM Notary vault passphrase: ")?,
+                };
                 Self::open(Some(&passphrase))
             }
         }
@@ -164,6 +168,50 @@ impl Vault {
     }
 }
 
+/// Reads an automation passphrase from the configured private file, if any.
+///
+/// This is deliberately file-based rather than an environment variable so a
+/// CI runner does not expose the vault key in process listings or command
+/// output.  Interactive commands retain their prompt when it is unset.
+pub(crate) fn passphrase_from_file_env() -> Result<Option<String>> {
+    let Some(path) = env::var_os(PASSPHRASE_FILE_ENV) else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(path);
+    read_passphrase_file(&path).map(Some)
+}
+
+fn read_passphrase_file(path: &Path) -> Result<String> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("reading vault passphrase file {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!(
+            "vault passphrase path {} is not a regular file",
+            path.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            bail!(
+                "vault passphrase file {} must not be readable by group or others",
+                path.display()
+            );
+        }
+    }
+    let value = String::from_utf8(
+        fs::read(path)
+            .with_context(|| format!("reading vault passphrase file {}", path.display()))?,
+    )
+    .context("vault passphrase file is not UTF-8")?;
+    let value = value.trim_end_matches(['\r', '\n']).to_owned();
+    if value.contains('\0') {
+        bail!("vault passphrase file contains a NUL byte");
+    }
+    Ok(value)
+}
+
 fn config_path() -> Result<PathBuf> {
     if let Some(directory) = env::var_os("LLM_NOTARY_CONFIG_DIR") {
         return Ok(PathBuf::from(directory).join("vault.json"));
@@ -248,6 +296,23 @@ impl Vault {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn automation_passphrase_file_must_be_private() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut file = tempfile::NamedTempFile::new().unwrap();
+        file.write_all(b"test passphrase\n").unwrap();
+        fs::set_permissions(file.path(), fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(
+            read_passphrase_file(file.path()).unwrap(),
+            "test passphrase"
+        );
+
+        fs::set_permissions(file.path(), fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(read_passphrase_file(file.path()).is_err());
+    }
 
     #[test]
     fn ciphertext_requires_the_same_vault_key() {
