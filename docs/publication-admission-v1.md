@@ -47,9 +47,9 @@ committed row is sufficient to retrieve and integrity-check both objects.
 
 The bucket remains private. Public downloads pass through the API and can be
 cached by Cloudflare using immutable response headers. This keeps the private
-intake access boundary intact and removes the single-droplet SQLite volume
-from artifact durability. A separate public Space or CDN origin can replace
-this prefix later without changing the trace/stamp contract.
+intake access boundary intact and separates artifact durability from the
+single-instance SQLite volume. A separate public Space or CDN origin can
+replace this prefix later without changing the trace/stamp contract.
 
 ## Admission checks
 
@@ -123,7 +123,6 @@ download.
 
 The platform stamp key is separate from every notary key. Production mounts a
 32-byte hexadecimal key from
-`LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE`. The deploy workflow creates this file
-once on the droplet if it is absent; operators must back it up before relying
-on the resulting public key as a durable trust root. Rotation for platform
-stamp keys is not yet implemented.
+`LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE`. Operators must provision and back up
+this key before relying on the resulting public key as a durable trust root.
+Rotation for platform stamp keys is not yet implemented.

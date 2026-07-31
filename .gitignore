@@ -12,4 +12,3 @@
 llm-notary-api.db
 js/app/node_modules/
 js/app/dist/
-deploy/digitalocean/deploy.env

@@ -9,8 +9,8 @@ capacity or budget becomes unavailable again.
   worker, but can use the high-memory GPU/control-plane node when the worker's
   requested memory is already reserved.
 - `llmnotary-docker` can run Compose validation, Buildx image builds, and the
-  DigitalOcean deployment workflow. Its Docker-in-Docker sidecar is privileged,
-  so it remains restricted to the CPU worker.
+  Fly.io deployment workflow. Its Docker-in-Docker sidecar is privileged, so
+  it remains restricted to the CPU worker.
 
 To reactivate ARC, change the applicable workflow `runs-on` values from
 `ubuntu-24.04` back to `llmnotary-ci` or `llmnotary-docker`.
