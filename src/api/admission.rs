@@ -390,7 +390,7 @@ struct StoredPublicArtifacts {
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/api/platform", get(platform_directory))
-        .route("/api/public/collections/examples", get(examples_collection))
+        .route("/api/public/collections/traces", get(traces_collection))
         .route(
             "/api/public/traces/{trace_id}/events/download",
             post(record_download_event),
@@ -406,7 +406,7 @@ pub fn router() -> Router<AppState> {
         )
 }
 
-async fn examples_collection(State(state): State<AppState>) -> ApiResult<Json<CollectionResponse>> {
+async fn traces_collection(State(state): State<AppState>) -> ApiResult<Json<CollectionResponse>> {
     let now = unix_timestamp()?;
     let rows: Vec<LibraryRow> = sqlx::query_as(
         "SELECT publish_jobs.id, users.github_login, publish_jobs.admitted_at,
@@ -1495,7 +1495,7 @@ mod tests {
     #[tokio::test]
     async fn library_lists_all_admitted_records_without_a_source_allowlist() {
         let (state, _) = test_state().await;
-        let response = examples_collection(State(state)).await.unwrap().0;
+        let response = traces_collection(State(state)).await.unwrap().0;
         assert_eq!(response.slug, "llm-notary-library");
         assert!(response.publications.is_empty());
     }

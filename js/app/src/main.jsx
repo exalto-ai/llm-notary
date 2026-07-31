@@ -133,8 +133,8 @@ function CollectionPreview() {
   const [tracePreview, setTracePreview] = useState(null);
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/public/collections/examples')
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Could not load verified examples.')))
+    fetch('/api/public/collections/traces')
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Could not load verified traces.')))
       .then((payload) => {
         if (!cancelled) {
           setCollection(payload);
@@ -610,7 +610,7 @@ function Collections() {
   const [traceError, setTraceError] = useState('');
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/public/collections/examples')
+    fetch('/api/public/collections/traces')
       .then(async (response) => response.ok ? response.json() : Promise.reject(new Error('Could not load the collection.')))
       .then((payload) => { if (!cancelled) { setCollection(payload); setActiveId(payload.publications[0]?.id || null); } })
       .catch((error) => { if (!cancelled) setLoadError(error.message); });
@@ -718,7 +718,7 @@ function Dashboard({ user }) {
       .then(async (response) => response.ok ? response.json() : Promise.reject(new Error((await response.json().catch(() => ({}))).error || 'Could not load your traces.')))
       .then((payload) => { if (!cancelled) setJobs(payload.jobs); })
       .catch((reason) => { if (!cancelled) setJobError(reason.message); });
-    fetch('/api/public/collections/examples')
+    fetch('/api/public/collections/traces')
       .then((response) => response.ok ? response.json() : null)
       .then((payload) => {
         if (!cancelled && payload?.publications) {
