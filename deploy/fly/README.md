@@ -23,7 +23,7 @@ first deployment. The notary's TLS handler can use Fly's shared IPv4 routing.
 The API uses a 1 GiB encrypted Fly Volume named `api_data`. Create a private Tigris bucket for
 the API; the service accepts the standard `AWS_*` and `BUCKET_NAME` variables
 that `fly storage create` sets, as well as the portable `LLM_NOTARY_S3_*`
-variables used by the DigitalOcean deployment.
+variables used by self-hosted container deployments.
 
 Two base64-encoded file secrets are required:
 

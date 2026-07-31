@@ -6,7 +6,7 @@
 - `src/cli/` implements the `llm-notary` local proxy and verifier; `src/bin/` contains the notary and website API binaries.
 - `vendor/tlsn/` is a pinned, locally patched TLSNotary dependency. Treat it as third-party code; change it only when the protocol requires it and explain the patch.
 - `js/app/` is the Vite/React SPA. Follow [`DESIGN.md`](DESIGN.md) for any UI work.
-- `compose.yml`, `deploy/`, and `.github/workflows/` define the DigitalOcean/Cloudflare deployment.
+- `compose.yml`, `deploy/`, and `.github/workflows/` define the container configuration and Fly.io deployment.
 
 ## Non-negotiable trust boundaries
 
