@@ -30,26 +30,27 @@ uploading -> queued -> verifying -> admitted
                               \-> rejected
 ```
 
-SQLite atomically moves one queued job to `verifying` with a unique claim.
-Stale claims without public artifacts return to `queued`. Cryptographic and
-normalization work runs on a blocking worker thread, outside Axum request
-handlers. The final database update requires the same claim and empty artifact
-columns, so a retry cannot replace or duplicate an admitted pair. The fixed
-15-minute claim timeout assumes the current single in-process worker; add lease
-renewal before sharing the queue across independent worker processes.
+PostgreSQL atomically selects a queued job with `FOR UPDATE SKIP LOCKED` and
+moves it to `verifying` with a unique claim. Every API replica runs the worker,
+but a job can therefore be verified by only one replica at a time. Stale claims
+without public artifacts return to `queued`. Cryptographic and normalization
+work runs on a blocking worker thread, outside Axum request handlers. The final
+database update requires the same claim and empty artifact columns, so a retry
+cannot replace or duplicate an admitted pair. The 15-minute claim timeout is a
+crash-recovery lease; it must exceed the maximum expected verification time.
 
 The worker writes the two public JSON artifacts to content-addressed keys under
 the private Space's distinct `llm-notary/public/` prefix and verifies their
-size, kind, and SHA-256 metadata. SQLite stores only the immutable object keys,
+size, kind, and SHA-256 metadata. PostgreSQL stores only the immutable object keys,
 sizes, hashes, and admission state. The database transition is the publication
 boundary: unreferenced candidates are not reachable from public APIs, while a
 committed row is sufficient to retrieve and integrity-check both objects.
 
 The bucket remains private. Public downloads pass through the API and can be
 cached by Cloudflare using immutable response headers. This keeps the private
-intake access boundary intact and separates artifact durability from the
-single-instance SQLite volume. A separate public Space or CDN origin can
-replace this prefix later without changing the trace/stamp contract.
+intake access boundary intact and removes the single-replica database volume
+from artifact durability. A separate public Space or CDN origin can replace
+this prefix later without changing the trace/stamp contract.
 
 ## Admission checks
 

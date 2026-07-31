@@ -19,7 +19,8 @@ use tracing::Span;
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiResult, AppState, database_error, publish::PublishJobRow, unix_timestamp,
+    ApiError, ApiResult, AppState, DatabasePool, database_error, publish::PublishJobRow,
+    unix_timestamp,
 };
 use certified::{
     archive::extract_trace_package_archive,
@@ -34,6 +35,7 @@ const CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
 const MAX_JOBS_PER_TICK: usize = 4;
 const MAX_METADATA_PER_TICK: usize = 4;
 const METADATA_RETRY_SECS: i64 = 60 * 60;
+const METADATA_CLAIM_TIMEOUT_SECS: i64 = 5 * 60;
 const RECENT_DOWNLOAD_WINDOW_SECS: i64 = 28 * 24 * 60 * 60;
 const METADATA_MODEL: &str = "gpt-5.6-luna";
 const METADATA_PROMPT_VERSION: &str = "library-metadata/v1";
@@ -223,7 +225,7 @@ impl MetadataService {
     async fn generate(
         &self,
         http: &reqwest::Client,
-        database: &sqlx::SqlitePool,
+        database: &DatabasePool,
         trace: &[u8],
     ) -> Result<Option<GeneratedMetadata>> {
         let Some(api_key) = &self.api_key else {
@@ -233,7 +235,7 @@ impl MetadataService {
         let period_start = weekly_period_start(now);
         let spent: i64 = sqlx::query_scalar(
             "SELECT COALESCE(SUM(estimated_cost_nanousd), 0)
-             FROM library_metadata_usage WHERE period_start = ?",
+             FROM library_metadata_usage WHERE period_start = $1",
         )
         .bind(period_start)
         .fetch_one(database)
@@ -294,7 +296,7 @@ impl MetadataService {
                  (period_start, model, prompt_tokens, cached_prompt_tokens,
                   cache_write_tokens, completion_tokens,
                   estimated_cost_nanousd, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(period_start)
         .bind(&self.model)
@@ -422,11 +424,12 @@ async fn examples_collection(State(state): State<AppState>) -> ApiResult<Json<Co
          LEFT JOIN publication_metadata ON publication_metadata.publication_id = publish_jobs.id
          LEFT JOIN publication_activity_events ON publication_activity_events.publication_id = publish_jobs.id
              AND publication_activity_events.event_type = 'download'
-             AND publication_activity_events.occurred_at >= ?
+             AND publication_activity_events.occurred_at >= $1
          WHERE publish_jobs.state = 'admitted'
            AND publish_jobs.public_trace_object_key IS NOT NULL
            AND publish_jobs.public_stamp_object_key IS NOT NULL
-         GROUP BY publish_jobs.id
+         GROUP BY publish_jobs.id, users.github_login,
+                  publication_metadata.title, publication_metadata.tags_json
          ORDER BY recent_downloads DESC, publish_jobs.admitted_at DESC, publish_jobs.id DESC",
     )
     .bind(now - RECENT_DOWNLOAD_WINDOW_SECS)
@@ -599,7 +602,7 @@ async fn record_download_event(
     sqlx::query(
         "INSERT INTO publication_activity_events
              (publication_id, event_type, subject_key_sha256, occurred_at)
-         VALUES (?, 'download', ?, ?)
+         VALUES ($1, 'download', $2, $3)
          ON CONFLICT (publication_id, event_type, subject_key_sha256) DO NOTHING",
     )
     .bind(trace_id)
@@ -666,45 +669,6 @@ pub fn spawn(state: AppState) {
     });
 }
 
-/// Returns whether admission, private-artifact purging, or Library metadata
-/// generation still needs the API process to remain alive.
-pub async fn has_pending_work(state: &AppState) -> Result<bool> {
-    let job_work: i64 = sqlx::query_scalar(
-        "SELECT EXISTS(
-             SELECT 1 FROM publish_jobs
-             WHERE state IN ('queued', 'verifying')
-                OR (state IN ('admitted', 'rejected') AND private_purged_at IS NULL)
-             LIMIT 1
-         )",
-    )
-    .fetch_one(&state.database)
-    .await?;
-    if job_work != 0 || state.library_metadata.api_key.is_none() {
-        return Ok(job_work != 0);
-    }
-
-    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    let metadata_work: i64 = sqlx::query_scalar(
-        "SELECT EXISTS(
-             SELECT 1
-             FROM publish_jobs
-             LEFT JOIN publication_metadata
-               ON publication_metadata.publication_id = publish_jobs.id
-             WHERE publish_jobs.state = 'admitted'
-               AND publish_jobs.public_trace_object_key IS NOT NULL
-               AND publish_jobs.public_stamp_object_key IS NOT NULL
-               AND (publication_metadata.publication_id IS NULL
-                    OR (publication_metadata.title_source = 'fallback'
-                        AND COALESCE(publication_metadata.last_generation_attempt_at, 0) <= ?))
-             LIMIT 1
-         )",
-    )
-    .bind(now - METADATA_RETRY_SECS)
-    .fetch_one(&state.database)
-    .await?;
-    Ok(metadata_work != 0)
-}
-
 async fn update_queue_metrics(state: &AppState) -> Result<()> {
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
     let (count, oldest): (i64, Option<i64>) =
@@ -724,29 +688,11 @@ async fn backfill_library_metadata(state: &AppState) -> Result<()> {
     if state.library_metadata.api_key.is_none() {
         return Ok(());
     }
-    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    let candidates: Vec<PublicArtifactRow> = sqlx::query_as(
-        "SELECT publish_jobs.id, users.github_login, publish_jobs.admitted_at,
-                publish_jobs.public_trace_object_key, publish_jobs.public_trace_size_bytes,
-                publish_jobs.public_trace_sha256, publish_jobs.public_stamp_object_key,
-                publish_jobs.public_stamp_size_bytes, publish_jobs.public_stamp_sha256
-         FROM publish_jobs
-         JOIN users ON users.id = publish_jobs.user_id
-         LEFT JOIN publication_metadata ON publication_metadata.publication_id = publish_jobs.id
-         WHERE publish_jobs.state = 'admitted'
-           AND publish_jobs.public_trace_object_key IS NOT NULL
-           AND publish_jobs.public_stamp_object_key IS NOT NULL
-           AND (publication_metadata.publication_id IS NULL
-                OR (publication_metadata.title_source = 'fallback'
-                    AND COALESCE(publication_metadata.last_generation_attempt_at, 0) <= ?))
-         ORDER BY publish_jobs.admitted_at ASC
-         LIMIT ?",
-    )
-    .bind(now - METADATA_RETRY_SECS)
-    .bind(MAX_METADATA_PER_TICK as i64)
-    .fetch_all(&state.database)
-    .await?;
-    for artifact in candidates {
+    for _ in 0..MAX_METADATA_PER_TICK {
+        let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
+        let Some((artifact, claim)) = claim_next_metadata_artifact(state, now).await? else {
+            break;
+        };
         let trace = load_public_bytes(
             state,
             &artifact.public_trace_object_key,
@@ -781,20 +727,14 @@ async fn backfill_library_metadata(state: &AppState) -> Result<()> {
             ),
             None => (fallback, Vec::new(), "fallback", None, None),
         };
-        sqlx::query(
-            "INSERT INTO publication_metadata
-                 (publication_id, title, tags_json, title_source, generator_model,
-                  generator_prompt_version, generated_at, last_generation_attempt_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT (publication_id) DO UPDATE SET
-                 title = excluded.title, tags_json = excluded.tags_json,
-                 title_source = excluded.title_source, generator_model = excluded.generator_model,
-                 generator_prompt_version = excluded.generator_prompt_version,
-                 generated_at = excluded.generated_at,
-                 last_generation_attempt_at = excluded.last_generation_attempt_at,
-                 updated_at = excluded.updated_at",
+        let updated = sqlx::query(
+            "UPDATE publication_metadata
+             SET title = $1, tags_json = $2, title_source = $3, generator_model = $4,
+                 generator_prompt_version = $5, generated_at = $6,
+                 last_generation_attempt_at = $7, updated_at = $8,
+                 generation_claim = NULL, generation_claimed_at = NULL
+             WHERE publication_id = $9 AND generation_claim = $10",
         )
-        .bind(&artifact.id)
         .bind(title)
         .bind(serde_json::to_string(&tags)?)
         .bind(source)
@@ -803,39 +743,104 @@ async fn backfill_library_metadata(state: &AppState) -> Result<()> {
         .bind(generated_at)
         .bind(now)
         .bind(now)
+        .bind(&artifact.id)
+        .bind(&claim)
         .execute(&state.database)
         .await?;
+        if updated.rows_affected() != 1 {
+            tracing::warn!(job_id = %artifact.id, "Library metadata claim was lost before completion");
+        }
     }
     Ok(())
+}
+
+async fn claim_next_metadata_artifact(
+    state: &AppState,
+    now: i64,
+) -> Result<Option<(PublicArtifactRow, String)>> {
+    let claim = Uuid::new_v4().to_string();
+    let artifact = sqlx::query_as::<_, PublicArtifactRow>(
+        "WITH candidate AS (
+                 SELECT jobs.id
+                 FROM publish_jobs AS jobs
+                 LEFT JOIN publication_metadata AS metadata
+                   ON metadata.publication_id = jobs.id
+                 WHERE jobs.state = 'admitted'
+                   AND jobs.public_trace_object_key IS NOT NULL
+                   AND jobs.public_stamp_object_key IS NOT NULL
+                   AND (
+                        metadata.publication_id IS NULL
+                        OR (
+                            metadata.title_source = 'fallback'
+                            AND COALESCE(metadata.last_generation_attempt_at, 0) <= $1
+                            AND (
+                                metadata.generation_claim IS NULL
+                                OR metadata.generation_claimed_at < $2
+                            )
+                        )
+                   )
+                 ORDER BY jobs.admitted_at ASC
+                 FOR UPDATE OF jobs SKIP LOCKED
+                 LIMIT 1
+             ), claimed AS (
+                 INSERT INTO publication_metadata
+                     (publication_id, title, tags_json, title_source, generator_model,
+                      generator_prompt_version, generated_at, last_generation_attempt_at,
+                      updated_at, generation_claim, generation_claimed_at)
+                 SELECT candidate.id, 'Verified LLM trace', '[]', 'fallback', NULL, NULL,
+                        NULL, $3, $3, $4, $3
+                 FROM candidate
+                 ON CONFLICT (publication_id) DO UPDATE
+                    SET generation_claim = EXCLUDED.generation_claim,
+                        generation_claimed_at = EXCLUDED.generation_claimed_at
+                  WHERE publication_metadata.title_source = 'fallback'
+                    AND (
+                        publication_metadata.generation_claim IS NULL
+                        OR publication_metadata.generation_claimed_at < $2
+                    )
+                 RETURNING publication_id
+             )
+             SELECT jobs.id, users.github_login, jobs.admitted_at,
+                    jobs.public_trace_object_key, jobs.public_trace_size_bytes,
+                    jobs.public_trace_sha256, jobs.public_stamp_object_key,
+                    jobs.public_stamp_size_bytes, jobs.public_stamp_sha256
+             FROM claimed
+             JOIN publish_jobs AS jobs ON jobs.id = claimed.publication_id
+             JOIN users ON users.id = jobs.user_id",
+    )
+    .bind(now - METADATA_RETRY_SECS)
+    .bind(now - METADATA_CLAIM_TIMEOUT_SECS)
+    .bind(now)
+    .bind(&claim)
+    .fetch_optional(&state.database)
+    .await?;
+    Ok(artifact.map(|artifact| (artifact, claim)))
 }
 
 async fn claim_next_job(state: &AppState) -> Result<Option<(PublishJobRow, String)>> {
     let claim = Uuid::new_v4().to_string();
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    let updated = sqlx::query(
-        "UPDATE publish_jobs
-         SET state = 'verifying', verification_claim = ?, verification_started_at = ?,
-             updated_at = ?, failure_code = NULL
-         WHERE id = (
-             SELECT id FROM publish_jobs
-             WHERE state = 'queued'
-             ORDER BY queued_at, id
-             LIMIT 1
-         ) AND state = 'queued'",
+    let job = sqlx::query_as::<_, PublishJobRow>(
+        "WITH next_job AS (
+                 SELECT id FROM publish_jobs
+                 WHERE state = 'queued'
+                 ORDER BY queued_at, id
+                 FOR UPDATE SKIP LOCKED
+                 LIMIT 1
+             )
+             UPDATE publish_jobs
+             SET state = 'verifying', verification_claim = $1, verification_started_at = $2,
+                 updated_at = $3, failure_code = NULL
+             FROM next_job
+             WHERE publish_jobs.id = next_job.id
+             RETURNING publish_jobs.*",
     )
     .bind(&claim)
     .bind(now)
     .bind(now)
-    .execute(&state.database)
+    .fetch_optional(&state.database)
     .await?;
-    if updated.rows_affected() == 0 {
-        return Ok(None);
-    }
-    let job = sqlx::query_as("SELECT * FROM publish_jobs WHERE verification_claim = ?")
-        .bind(&claim)
-        .fetch_one(&state.database)
-        .await?;
-    Ok(Some((job, claim)))
+    Ok(job.map(|job| (job, claim)))
 }
 
 #[tracing::instrument(
@@ -1037,13 +1042,13 @@ async fn admit_claim(
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
     let update = sqlx::query(
         "UPDATE publish_jobs
-         SET state = 'admitted', actual_size_bytes = ?, actual_sha256 = ?,
-             admitted_at = ?, updated_at = ?,
-             public_trace_object_key = ?, public_trace_size_bytes = ?,
-             public_trace_sha256 = ?, public_stamp_object_key = ?,
-             public_stamp_size_bytes = ?, public_stamp_sha256 = ?,
+         SET state = 'admitted', actual_size_bytes = $1, actual_sha256 = $2,
+             admitted_at = $3, updated_at = $4,
+             public_trace_object_key = $5, public_trace_size_bytes = $6,
+             public_trace_sha256 = $7, public_stamp_object_key = $8,
+             public_stamp_size_bytes = $9, public_stamp_sha256 = $10,
              verification_claim = NULL
-         WHERE id = ? AND state = 'verifying' AND verification_claim = ?
+         WHERE id = $11 AND state = 'verifying' AND verification_claim = $12
            AND public_trace_object_key IS NULL AND public_stamp_object_key IS NULL",
     )
     .bind(actual_size)
@@ -1194,9 +1199,9 @@ async fn reject_claim(
         .unwrap_or((None, None));
     match sqlx::query(
         "UPDATE publish_jobs
-         SET state = 'rejected', failure_code = ?, actual_size_bytes = ?,
-             actual_sha256 = ?, updated_at = ?, verification_claim = NULL
-         WHERE id = ? AND state = 'verifying' AND verification_claim = ?",
+         SET state = 'rejected', failure_code = $1, actual_size_bytes = $2,
+             actual_sha256 = $3, updated_at = $4, verification_claim = NULL
+         WHERE id = $5 AND state = 'verifying' AND verification_claim = $6",
     )
     .bind(code)
     .bind(actual_size)
@@ -1218,9 +1223,9 @@ async fn retry_claim(state: &AppState, job: &PublishJobRow, claim: &str, error: 
     let now = unix_timestamp().unwrap_or(job.updated_at);
     if let Err(update_error) = sqlx::query(
         "UPDATE publish_jobs
-         SET state = 'queued', updated_at = ?, verification_claim = NULL,
+         SET state = 'queued', updated_at = $1, verification_claim = NULL,
              verification_started_at = NULL
-         WHERE id = ? AND state = 'verifying' AND verification_claim = ?",
+         WHERE id = $2 AND state = 'verifying' AND verification_claim = $3",
     )
     .bind(now)
     .bind(&job.id)
@@ -1242,8 +1247,8 @@ async fn purge_private_object(state: &AppState, job: &PublishJobRow) {
         Ok(()) => {
             let now = unix_timestamp().unwrap_or(job.updated_at);
             if let Err(error) = sqlx::query(
-                "UPDATE publish_jobs SET private_purged_at = ?, updated_at = ?
-                 WHERE id = ? AND private_purged_at IS NULL",
+                "UPDATE publish_jobs SET private_purged_at = $1, updated_at = $2
+                 WHERE id = $3 AND private_purged_at IS NULL",
             )
             .bind(now)
             .bind(now)
@@ -1278,8 +1283,8 @@ async fn recover_stale_claims(state: &AppState) -> Result<()> {
     sqlx::query(
         "UPDATE publish_jobs
          SET state = 'queued', verification_claim = NULL,
-             verification_started_at = NULL, updated_at = ?
-         WHERE state = 'verifying' AND verification_started_at < ?
+             verification_started_at = NULL, updated_at = $1
+         WHERE state = 'verifying' AND verification_started_at < $2
            AND public_trace_object_key IS NULL
            AND public_stamp_object_key IS NULL",
     )
@@ -1310,7 +1315,7 @@ async fn load_public_artifact_optional(
                 publish_jobs.public_stamp_sha256
          FROM publish_jobs
          JOIN users ON users.id = publish_jobs.user_id
-         WHERE publish_jobs.id = ? AND publish_jobs.state = 'admitted'
+         WHERE publish_jobs.id = $1 AND publish_jobs.state = 'admitted'
            AND publish_jobs.public_trace_object_key IS NOT NULL
            AND publish_jobs.public_stamp_object_key IS NOT NULL",
     )
@@ -1434,7 +1439,6 @@ impl Drop for AdmissionWorkspace {
 
 #[cfg(test)]
 mod tests {
-    use sqlx::SqlitePool;
     use url::Url;
 
     use super::super::intake::MockIntakeStorage;
@@ -1442,19 +1446,19 @@ mod tests {
     use super::*;
 
     async fn test_state() -> (AppState, MockIntakeStorage) {
-        let database = SqlitePool::connect("sqlite::memory:").await.unwrap();
-        sqlx::migrate!("./migrations").run(&database).await.unwrap();
+        let database = super::super::fresh_database().await;
         sqlx::query(
             "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
              VALUES ('user-1', 1, 'publisher', 1, 1)",
         )
-        .execute(&database)
+        .execute(&database.pool)
         .await
         .unwrap();
         let storage = MockIntakeStorage::new();
         (
             AppState {
-                database,
+                database: database.pool.clone(),
+                _test_database: Some(database),
                 http: reqwest::Client::new(),
                 github_client_id: "client-id".to_owned(),
                 github_client_secret: "secret".to_owned(),
@@ -1475,8 +1479,8 @@ mod tests {
              (id, user_id, idempotency_key, state, archive_format,
               declared_size_bytes, declared_sha256, upload_object_key,
               intake_object_key, upload_expires_at, created_at, updated_at, queued_at)
-             VALUES ('job-1', 'user-1', 'idempotency-key-0001', 'queued', ?,
-                     ?, ?, 'upload-key', 'intake-key', 1000, 1, 1, 1)",
+             VALUES ('job-1', 'user-1', 'idempotency-key-0001', 'queued', $1,
+                     $2, $3, 'upload-key', 'intake-key', 1000, 1, 1, 1)",
         )
         .bind(certified::archive::ARCHIVE_FORMAT)
         .bind(bytes.len() as i64)

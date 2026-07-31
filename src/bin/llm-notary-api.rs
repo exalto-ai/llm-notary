@@ -1,10 +1,4 @@
-use std::{
-    env,
-    net::SocketAddr,
-    str::FromStr,
-    sync::atomic::{AtomicUsize, Ordering},
-    time::{Duration, Instant},
-};
+use std::{env, net::SocketAddr, time::Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use axum::{
@@ -20,8 +14,8 @@ use rand::RngCore;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use sqlx::{
-    SqlitePool,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    PgPool,
+    postgres::{PgConnectOptions, PgPoolOptions},
 };
 use time::Duration as CookieDuration;
 use tracing::Instrument as _;
@@ -52,14 +46,17 @@ const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 const CLI_AUTHORIZATION_TTL_SECS: i64 = 10 * 60;
 const CLI_ACCESS_TOKEN_TTL_SECS: i64 = 15 * 60;
 const CLI_REFRESH_TOKEN_TTL_SECS: i64 = 90 * 24 * 60 * 60;
-const DEFAULT_IDLE_SHUTDOWN_SECS: u64 = 45;
-const IDLE_SHUTDOWN_POLL_SECS: u64 = 1;
+const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 5;
+const MAX_DATABASE_CONNECTIONS: u32 = 64;
 
-static ACTIVE_REQUESTS: AtomicUsize = AtomicUsize::new(0);
+type DatabasePool = PgPool;
 
 #[derive(Clone)]
 struct AppState {
-    database: SqlitePool,
+    database: DatabasePool,
+    #[cfg(test)]
+    // Keep the Testcontainers server alive for the lifetime of a test state.
+    _test_database: Option<test_database::TestDatabase>,
     http: reqwest::Client,
     github_client_id: String,
     github_client_secret: String,
@@ -283,12 +280,10 @@ async fn main() -> Result<()> {
         .context("LLM_NOTARY_API_LISTEN must be a socket address")?;
     publish::spawn_cleanup(state.clone());
     admission::spawn(state.clone());
-    let idle_shutdown_secs = idle_shutdown_secs()?;
-    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-    spawn_idle_shutdown(state.clone(), idle_shutdown_secs, shutdown_tx);
     let app = Router::new()
         .route("/metrics", get(metrics))
         .route("/api/healthz", get(health))
+        .route("/api/readyz", get(readiness))
         .route("/api/notary", get(notary))
         .route("/api/auth/github", get(start_github_login))
         .route("/api/auth/github/callback", get(finish_github_login))
@@ -317,73 +312,8 @@ async fn main() -> Result<()> {
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "LLM Notary API listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.changed().await;
-        })
-        .await?;
+    axum::serve(listener, app).await?;
     Ok(())
-}
-
-fn idle_shutdown_secs() -> Result<u64> {
-    let value = match env::var("LLM_NOTARY_IDLE_SHUTDOWN_SECS") {
-        Ok(value) => value,
-        Err(env::VarError::NotPresent) => return Ok(DEFAULT_IDLE_SHUTDOWN_SECS),
-        Err(error) => return Err(error).context("reading LLM_NOTARY_IDLE_SHUTDOWN_SECS"),
-    };
-    let seconds = value
-        .parse::<u64>()
-        .context("LLM_NOTARY_IDLE_SHUTDOWN_SECS must be a positive integer")?;
-    if seconds == 0 {
-        bail!("LLM_NOTARY_IDLE_SHUTDOWN_SECS must be a positive integer");
-    }
-    Ok(seconds)
-}
-
-fn spawn_idle_shutdown(
-    state: AppState,
-    idle_shutdown_secs: u64,
-    shutdown: tokio::sync::watch::Sender<bool>,
-) {
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(Duration::from_secs(IDLE_SHUTDOWN_POLL_SECS));
-        let mut idle_since = None;
-        loop {
-            ticker.tick().await;
-            let admission_work = match admission::has_pending_work(&state).await {
-                Ok(pending) => pending,
-                Err(error) => {
-                    tracing::error!(%error, "checking admission idle-shutdown work state failed");
-                    true
-                }
-            };
-            let cleanup_work = match publish::has_pending_cleanup(&state).await {
-                Ok(pending) => pending,
-                Err(error) => {
-                    tracing::error!(
-                        status = %error.status,
-                        error = error.message,
-                        "checking cleanup idle-shutdown work state failed"
-                    );
-                    true
-                }
-            };
-            let pending_work = admission_work || cleanup_work;
-            if pending_work || ACTIVE_REQUESTS.load(Ordering::Relaxed) != 0 {
-                idle_since = None;
-                continue;
-            }
-            let since = idle_since.get_or_insert_with(Instant::now);
-            if since.elapsed() >= Duration::from_secs(idle_shutdown_secs) {
-                tracing::info!(
-                    idle_shutdown_secs,
-                    "API has no active requests or background work; shutting down"
-                );
-                let _ = shutdown.send(true);
-                return;
-            }
-        }
-    });
 }
 
 async fn metrics() -> Response {
@@ -405,7 +335,6 @@ async fn observe_http_request(request: Request, next: Next) -> Response {
         .map(MatchedPath::as_str)
         .unwrap_or("unmatched")
         .to_owned();
-    let _activity = (route != "/metrics").then(RequestActivity::start);
     let request_id = Uuid::new_v4().to_string();
     let parent = global::get_text_map_propagator(|propagator| {
         propagator.extract(&HeaderExtractor(request.headers()))
@@ -447,21 +376,6 @@ async fn observe_http_request(request: Request, next: Next) -> Response {
     .await
 }
 
-struct RequestActivity;
-
-impl RequestActivity {
-    fn start() -> Self {
-        ACTIVE_REQUESTS.fetch_add(1, Ordering::Relaxed);
-        Self
-    }
-}
-
-impl Drop for RequestActivity {
-    fn drop(&mut self) {
-        ACTIVE_REQUESTS.fetch_sub(1, Ordering::Relaxed);
-    }
-}
-
 impl AppState {
     async fn from_env() -> Result<Self> {
         let github_client_id = required_env("GITHUB_OAUTH_CLIENT_ID")?;
@@ -477,27 +391,24 @@ impl AppState {
         let callback_url = app_url
             .join("/api/auth/github/callback")
             .context("building GitHub OAuth callback URL")?;
-        let database_url =
-            env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite://llm-notary-api.db".to_owned());
         let notary_directory = notary_directory_from_env()?;
         let publish = publish::PublishService::from_env(app_url.origin().ascii_serialization())?;
         publish.validate().await?;
-        let options = SqliteConnectOptions::from_str(&database_url)
-            .context("DATABASE_URL must be a SQLite connection URL")?
-            .create_if_missing(true)
-            .foreign_keys(true)
-            .busy_timeout(Duration::from_secs(5));
-        let database = SqlitePoolOptions::new()
-            .max_connections(5)
-            .connect_with(options)
-            .await
-            .context("opening API database")?;
-        sqlx::migrate!("./migrations")
-            .run(&database)
-            .await
-            .context("migrating API database")?;
+        let database = {
+            let database_url = required_env("DATABASE_URL")?;
+            let options = database_url
+                .parse::<PgConnectOptions>()
+                .context("DATABASE_URL must be a PostgreSQL connection URL")?;
+            PgPoolOptions::new()
+                .max_connections(database_max_connections()?)
+                .connect_with(options)
+                .await
+                .context("opening API database")?
+        };
         Ok(Self {
             database,
+            #[cfg(test)]
+            _test_database: None,
             http: reqwest::Client::builder()
                 .user_agent("LLM-Notary/0.1")
                 .build()
@@ -537,12 +448,37 @@ impl AppState {
     }
 }
 
+fn database_max_connections() -> Result<u32> {
+    let value = match env::var("LLM_NOTARY_DATABASE_MAX_CONNECTIONS") {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => return Ok(DEFAULT_DATABASE_MAX_CONNECTIONS),
+        Err(error) => return Err(error).context("reading LLM_NOTARY_DATABASE_MAX_CONNECTIONS"),
+    };
+    let connections = value
+        .parse::<u32>()
+        .context("LLM_NOTARY_DATABASE_MAX_CONNECTIONS must be an integer")?;
+    if connections == 0 || connections > MAX_DATABASE_CONNECTIONS {
+        bail!(
+            "LLM_NOTARY_DATABASE_MAX_CONNECTIONS must be between 1 and {MAX_DATABASE_CONNECTIONS}"
+        );
+    }
+    Ok(connections)
+}
+
 async fn notary(State(state): State<AppState>) -> Json<NotaryDirectory> {
     Json(state.notary_directory)
 }
 
 async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
+}
+
+async fn readiness(State(state): State<AppState>) -> ApiResult<Json<Health>> {
+    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations")
+        .fetch_one(&state.database)
+        .await
+        .map_err(database_error)?;
+    Ok(Json(Health { status: "ok" }))
 }
 
 async fn start_github_login(
@@ -552,7 +488,7 @@ async fn start_github_login(
 ) -> ApiResult<(CookieJar, Redirect)> {
     let state_token = Uuid::new_v4().to_string();
     let now = unix_timestamp()?;
-    sqlx::query("DELETE FROM oauth_login_states WHERE expires_at <= ?")
+    sqlx::query("DELETE FROM oauth_login_states WHERE expires_at <= $1")
         .bind(now)
         .execute(&state.database)
         .await
@@ -561,7 +497,7 @@ async fn start_github_login(
         .return_to
         .filter(|value| value.starts_with("#/authorize?"));
     sqlx::query(
-        "INSERT INTO oauth_login_states (state_hash, expires_at, return_to) VALUES (?, ?, ?)",
+        "INSERT INTO oauth_login_states (state_hash, expires_at, return_to) VALUES ($1, $2, $3)",
     )
     .bind(sha256_hex(state_token.as_bytes()))
     .bind(now + LOGIN_TTL_SECS)
@@ -603,7 +539,7 @@ async fn finish_github_login(
     let now = unix_timestamp()?;
     let state_hash = sha256_hex(cookie_state.as_bytes());
     let return_to = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT return_to FROM oauth_login_states WHERE state_hash = ? AND expires_at > ?",
+        "SELECT return_to FROM oauth_login_states WHERE state_hash = $1 AND expires_at > $2",
     )
     .bind(&state_hash)
     .bind(now)
@@ -612,7 +548,7 @@ async fn finish_github_login(
     .map_err(database_error)?
     .flatten();
     let consumed =
-        sqlx::query("DELETE FROM oauth_login_states WHERE state_hash = ? AND expires_at > ?")
+        sqlx::query("DELETE FROM oauth_login_states WHERE state_hash = $1 AND expires_at > $2")
             .bind(state_hash)
             .bind(now)
             .execute(&state.database)
@@ -629,7 +565,7 @@ async fn finish_github_login(
     let user_id = upsert_user(&state.database, &github_user, now).await?;
     let session_token = Uuid::new_v4().to_string();
     sqlx::query(
-        "INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?)",
+        "INSERT INTO sessions (token_hash, user_id, expires_at, created_at) VALUES ($1, $2, $3, $4)",
     )
     .bind(sha256_hex(session_token.as_bytes()))
     .bind(user_id)
@@ -658,7 +594,7 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
     let user = sqlx::query_as::<_, (String, String, Option<String>)>(
         "SELECT users.id, users.github_login, users.avatar_url
          FROM sessions JOIN users ON users.id = sessions.user_id
-         WHERE sessions.token_hash = ? AND sessions.expires_at > ?",
+         WHERE sessions.token_hash = $1 AND sessions.expires_at > $2",
     )
     .bind(sha256_hex(session_token.as_bytes()))
     .bind(now)
@@ -680,7 +616,7 @@ async fn logout(
     jar: CookieJar,
 ) -> ApiResult<(CookieJar, StatusCode)> {
     if let Some(cookie) = jar.get(SESSION_COOKIE) {
-        sqlx::query("DELETE FROM sessions WHERE token_hash = ?")
+        sqlx::query("DELETE FROM sessions WHERE token_hash = $1")
             .bind(sha256_hex(cookie.value().as_bytes()))
             .execute(&state.database)
             .await
@@ -701,7 +637,7 @@ async fn list_cli_sessions(
     let sessions = sqlx::query_as::<_, (String, String, i64, i64, i64)>(
         "SELECT id, device_name, created_at, last_used_at, expires_at
          FROM cli_sessions
-         WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?
+         WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > $2
          ORDER BY last_used_at DESC, created_at DESC",
     )
     .bind(user.0)
@@ -729,8 +665,8 @@ async fn revoke_web_cli_session(
     let user = authenticated_web_user(&state, &jar).await?;
     let now = unix_timestamp()?;
     let revoked = sqlx::query(
-        "UPDATE cli_sessions SET revoked_at = ?
-         WHERE id = ? AND user_id = ? AND revoked_at IS NULL AND expires_at > ?",
+        "UPDATE cli_sessions SET revoked_at = $1
+         WHERE id = $2 AND user_id = $3 AND revoked_at IS NULL AND expires_at > $4",
     )
     .bind(now)
     .bind(session_id)
@@ -756,7 +692,7 @@ async fn start_cli_authorization(
         ));
     }
     let now = unix_timestamp()?;
-    sqlx::query("DELETE FROM cli_authorization_requests WHERE expires_at <= ?")
+    sqlx::query("DELETE FROM cli_authorization_requests WHERE expires_at <= $1")
         .bind(now)
         .execute(&state.database)
         .await
@@ -771,9 +707,10 @@ async fn start_cli_authorization(
         let poll_secret = random_token();
         let approval_secret = random_token();
         let inserted = sqlx::query(
-            "INSERT OR IGNORE INTO cli_authorization_requests
+            "INSERT INTO cli_authorization_requests
              (id, user_code, poll_secret_hash, approval_secret_hash, device_name, created_at, expires_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7)
+             ON CONFLICT DO NOTHING",
         )
         .bind(&request_id)
         .bind(&user_code)
@@ -830,8 +767,8 @@ async fn approve_cli_authorization(
     let now = unix_timestamp()?;
     let approved = sqlx::query(
         "UPDATE cli_authorization_requests
-         SET approved_user_id = ?, approved_at = ?
-         WHERE id = ? AND approval_secret_hash = ? AND expires_at > ?
+         SET approved_user_id = $1, approved_at = $2
+         WHERE id = $3 AND approval_secret_hash = $4 AND expires_at > $5
            AND approved_user_id IS NULL AND completed_at IS NULL",
     )
     .bind(user.0)
@@ -863,7 +800,7 @@ async fn complete_cli_authorization(
     let request = sqlx::query_as::<_, (Option<String>, String, i64, Option<i64>)>(
         "SELECT approved_user_id, device_name, expires_at, completed_at
          FROM cli_authorization_requests
-         WHERE id = ? AND poll_secret_hash = ?",
+         WHERE id = $1 AND poll_secret_hash = $2",
     )
     .bind(&request_id)
     .bind(sha256_hex(poll_secret.as_bytes()))
@@ -879,8 +816,8 @@ async fn complete_cli_authorization(
     // Mark consumption first with a compare-and-set. This makes a second poll
     // fail even if it races the successful poll.
     let consumed = sqlx::query(
-        "UPDATE cli_authorization_requests SET completed_at = ?
-         WHERE id = ? AND completed_at IS NULL AND expires_at > ? AND approved_user_id IS NOT NULL",
+        "UPDATE cli_authorization_requests SET completed_at = $1
+         WHERE id = $2 AND completed_at IS NULL AND expires_at > $3 AND approved_user_id IS NOT NULL",
     )
     .bind(now)
     .bind(&request_id)
@@ -903,7 +840,7 @@ async fn refresh_cli_tokens(
     let old_hash = sha256_hex(request.refresh_token.as_bytes());
     let session = sqlx::query_as::<_, (String, String)>(
         "SELECT id, user_id FROM cli_sessions
-         WHERE refresh_token_hash = ? AND revoked_at IS NULL AND expires_at > ?",
+         WHERE refresh_token_hash = $1 AND revoked_at IS NULL AND expires_at > $2",
     )
     .bind(&old_hash)
     .bind(now)
@@ -914,7 +851,7 @@ async fn refresh_cli_tokens(
         // Reusing a rotated token is a credential-theft signal: revoke the
         // session that originally held it before rejecting the request.
         if let Some(session_id) = sqlx::query_scalar::<_, String>(
-            "SELECT session_id FROM cli_used_refresh_tokens WHERE token_hash = ?",
+            "SELECT session_id FROM cli_used_refresh_tokens WHERE token_hash = $1",
         )
         .bind(&old_hash)
         .fetch_optional(&state.database)
@@ -922,7 +859,7 @@ async fn refresh_cli_tokens(
         .map_err(database_error)?
         {
             sqlx::query(
-                "UPDATE cli_sessions SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL",
+                "UPDATE cli_sessions SET revoked_at = $1 WHERE id = $2 AND revoked_at IS NULL",
             )
             .bind(now)
             .bind(session_id)
@@ -934,8 +871,8 @@ async fn refresh_cli_tokens(
     };
     let refresh_token = random_token();
     let refreshed = sqlx::query(
-        "UPDATE cli_sessions SET refresh_token_hash = ?, last_used_at = ?
-         WHERE id = ? AND refresh_token_hash = ? AND revoked_at IS NULL AND expires_at > ?",
+        "UPDATE cli_sessions SET refresh_token_hash = $1, last_used_at = $2
+         WHERE id = $3 AND refresh_token_hash = $4 AND revoked_at IS NULL AND expires_at > $5",
     )
     .bind(sha256_hex(refresh_token.as_bytes()))
     .bind(now)
@@ -948,13 +885,16 @@ async fn refresh_cli_tokens(
     if refreshed.rows_affected() != 1 {
         return Err(ApiError::unauthorized());
     }
-    sqlx::query("INSERT OR IGNORE INTO cli_used_refresh_tokens (token_hash, session_id, used_at) VALUES (?, ?, ?)")
-        .bind(old_hash)
-        .bind(&session_id)
-        .bind(now)
-        .execute(&state.database)
-        .await
-        .map_err(database_error)?;
+    sqlx::query(
+        "INSERT INTO cli_used_refresh_tokens (token_hash, session_id, used_at)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+    )
+    .bind(old_hash)
+    .bind(&session_id)
+    .bind(now)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
     let access_token = issue_access_token(&state.database, &session_id, now).await?;
     let _ = user_id;
     Ok(Json(CliTokens {
@@ -969,7 +909,7 @@ async fn logout_cli_session(
     Json(request): Json<RefreshRequest>,
 ) -> ApiResult<StatusCode> {
     let now = unix_timestamp()?;
-    sqlx::query("UPDATE cli_sessions SET revoked_at = ? WHERE refresh_token_hash = ? AND revoked_at IS NULL")
+    sqlx::query("UPDATE cli_sessions SET revoked_at = $1 WHERE refresh_token_hash = $2 AND revoked_at IS NULL")
         .bind(now)
         .bind(sha256_hex(request.refresh_token.as_bytes()))
         .execute(&state.database)
@@ -989,7 +929,7 @@ async fn cli_me(
          FROM cli_access_tokens
          JOIN cli_sessions ON cli_sessions.id = cli_access_tokens.session_id
          JOIN users ON users.id = cli_sessions.user_id
-         WHERE cli_access_tokens.token_hash = ? AND cli_access_tokens.expires_at > ?
+         WHERE cli_access_tokens.token_hash = $1 AND cli_access_tokens.expires_at > $2
            AND cli_sessions.revoked_at IS NULL",
     )
     .bind(sha256_hex(token.as_bytes()))
@@ -1019,7 +959,7 @@ async fn authenticated_web_user(
     sqlx::query_as::<_, (String, String, Option<String>)>(
         "SELECT users.id, users.github_login, users.avatar_url
          FROM sessions JOIN users ON users.id = sessions.user_id
-         WHERE sessions.token_hash = ? AND sessions.expires_at > ?",
+         WHERE sessions.token_hash = $1 AND sessions.expires_at > $2",
     )
     .bind(sha256_hex(token.as_bytes()))
     .bind(now)
@@ -1038,7 +978,7 @@ async fn approval_request(
     let request = sqlx::query_as::<_, (String, String, i64, Option<i64>)>(
         "SELECT user_code, device_name, expires_at, completed_at
          FROM cli_authorization_requests
-         WHERE id = ? AND approval_secret_hash = ?",
+         WHERE id = $1 AND approval_secret_hash = $2",
     )
     .bind(request_id)
     .bind(sha256_hex(approval_secret.as_bytes()))
@@ -1055,7 +995,7 @@ async fn approval_request(
 }
 
 async fn issue_cli_session(
-    database: &SqlitePool,
+    database: &DatabasePool,
     user_id: &str,
     device_name: &str,
     now: i64,
@@ -1065,7 +1005,7 @@ async fn issue_cli_session(
     sqlx::query(
         "INSERT INTO cli_sessions
          (id, user_id, device_name, refresh_token_hash, created_at, last_used_at, expires_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(&session_id)
     .bind(user_id)
@@ -1086,12 +1026,12 @@ async fn issue_cli_session(
 }
 
 async fn issue_access_token(
-    database: &SqlitePool,
+    database: &DatabasePool,
     session_id: &str,
     now: i64,
 ) -> ApiResult<String> {
     let access_token = random_token();
-    sqlx::query("INSERT INTO cli_access_tokens (token_hash, session_id, expires_at, created_at) VALUES (?, ?, ?, ?)")
+    sqlx::query("INSERT INTO cli_access_tokens (token_hash, session_id, expires_at, created_at) VALUES ($1, $2, $3, $4)")
         .bind(sha256_hex(access_token.as_bytes()))
         .bind(session_id)
         .bind(now + CLI_ACCESS_TOKEN_TTL_SECS)
@@ -1183,14 +1123,14 @@ async fn fetch_github_user(state: &AppState, access_token: &str) -> ApiResult<Gi
 }
 
 async fn upsert_user(
-    database: &SqlitePool,
+    database: &DatabasePool,
     github_user: &GitHubUser,
     now: i64,
 ) -> ApiResult<String> {
     let user_id = Uuid::new_v4().to_string();
     sqlx::query(
         "INSERT INTO users (id, github_id, github_login, avatar_url, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT(github_id) DO UPDATE SET
             github_login = excluded.github_login,
             avatar_url = excluded.avatar_url,
@@ -1205,7 +1145,7 @@ async fn upsert_user(
     .execute(database)
     .await
     .map_err(database_error)?;
-    sqlx::query_scalar("SELECT id FROM users WHERE github_id = ?")
+    sqlx::query_scalar("SELECT id FROM users WHERE github_id = $1")
         .bind(github_user.id)
         .fetch_one(database)
         .await
@@ -1295,6 +1235,67 @@ fn notary_directory_from_env() -> Result<NotaryDirectory> {
 }
 
 #[cfg(test)]
+mod test_database {
+    use std::{ops::Deref, sync::Arc};
+
+    use sqlx::{PgPool, postgres::PgPoolOptions};
+    use testcontainers_modules::{
+        postgres::Postgres,
+        testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner},
+    };
+
+    #[derive(Clone)]
+    pub struct TestDatabase {
+        pub pool: PgPool,
+        _server: Arc<ContainerAsync<Postgres>>,
+    }
+
+    impl Deref for TestDatabase {
+        type Target = PgPool;
+
+        fn deref(&self) -> &Self::Target {
+            &self.pool
+        }
+    }
+
+    /// Creates an isolated PostgreSQL 17 container and applies exactly the
+    /// production migration baseline. The container is removed when the
+    /// associated test state is dropped.
+    pub async fn fresh_database() -> TestDatabase {
+        let server = Arc::new(
+            Postgres::default()
+                .with_tag("17.7-alpine")
+                .start()
+                .await
+                .expect("start PostgreSQL test container"),
+        );
+        let postgres = server.as_ref();
+        let host = postgres.get_host().await.expect("PostgreSQL test host");
+        let port = postgres
+            .get_host_port_ipv4(5432)
+            .await
+            .expect("PostgreSQL test port");
+        let database_url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+        let pool = PgPoolOptions::new()
+            .max_connections(5)
+            .connect(&database_url)
+            .await
+            .expect("connect to isolated PostgreSQL test database");
+        sqlx::migrate!("./migrations-postgres")
+            .run(&pool)
+            .await
+            .expect("apply PostgreSQL test migrations");
+        TestDatabase {
+            pool,
+            _server: server,
+        }
+    }
+}
+
+#[cfg(test)]
+use test_database::fresh_database;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1323,7 +1324,9 @@ mod tests {
     #[tokio::test]
     async fn authorization_url_uses_the_exact_callback_and_state() {
         let state = AppState {
-            database: SqlitePool::connect_lazy("sqlite::memory:").expect("lazy database"),
+            database: PgPool::connect_lazy("postgres://postgres:postgres@localhost/postgres")
+                .expect("lazy database"),
+            _test_database: None,
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
@@ -1357,18 +1360,12 @@ mod tests {
 
     #[tokio::test]
     async fn new_cli_session_is_usable_until_its_refresh_expiry() {
-        let database = SqlitePool::connect("sqlite::memory:")
-            .await
-            .expect("in-memory database");
-        sqlx::migrate!("./migrations")
-            .run(&database)
-            .await
-            .expect("migrations");
+        let database = fresh_database().await;
         sqlx::query(
             "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
              VALUES ('user-1', 1, 'octo', 1, 1)",
         )
-        .execute(&database)
+        .execute(&database.pool)
         .await
         .expect("user");
 
@@ -1383,7 +1380,7 @@ mod tests {
         let (created_at, last_used_at, expires_at) = sqlx::query_as::<_, (i64, i64, i64)>(
             "SELECT created_at, last_used_at, expires_at FROM cli_sessions",
         )
-        .fetch_one(&database)
+        .fetch_one(&database.pool)
         .await
         .expect("stored session");
         assert_eq!((created_at, last_used_at), (now, now));
@@ -1391,7 +1388,8 @@ mod tests {
 
         let refreshed = refresh_cli_tokens(
             State(AppState {
-                database,
+                database: database.pool.clone(),
+                _test_database: Some(database),
                 http: reqwest::Client::new(),
                 github_client_id: "client-id".to_owned(),
                 github_client_secret: "secret".to_owned(),
@@ -1417,18 +1415,12 @@ mod tests {
 
     #[tokio::test]
     async fn web_users_can_list_and_revoke_only_their_cli_sessions() {
-        let database = SqlitePool::connect("sqlite::memory:")
-            .await
-            .expect("in-memory database");
-        sqlx::migrate!("./migrations")
-            .run(&database)
-            .await
-            .expect("migrations");
+        let database = fresh_database().await;
         sqlx::query(
             "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
              VALUES ('user-1', 1, 'one', 1, 1), ('user-2', 2, 'two', 1, 1)",
         )
-        .execute(&database)
+        .execute(&database.pool)
         .await
         .expect("users");
         let now = match unix_timestamp() {
@@ -1438,12 +1430,12 @@ mod tests {
         let web_token = "web-session";
         sqlx::query(
             "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
-             VALUES (?, 'user-1', ?, ?)",
+             VALUES ($1, 'user-1', $2, $3)",
         )
         .bind(sha256_hex(web_token.as_bytes()))
         .bind(now + SESSION_TTL_SECS)
         .bind(now)
-        .execute(&database)
+        .execute(&database.pool)
         .await
         .expect("web session");
         let own = match issue_cli_session(&database, "user-1", "Own CLI", now).await {
@@ -1455,19 +1447,20 @@ mod tests {
             Err(_) => panic!("other CLI session"),
         };
         let own_id: String =
-            sqlx::query_scalar("SELECT id FROM cli_sessions WHERE refresh_token_hash = ?")
+            sqlx::query_scalar("SELECT id FROM cli_sessions WHERE refresh_token_hash = $1")
                 .bind(sha256_hex(own.refresh_token.as_bytes()))
-                .fetch_one(&database)
+                .fetch_one(&database.pool)
                 .await
                 .expect("own CLI ID");
         let other_id: String =
-            sqlx::query_scalar("SELECT id FROM cli_sessions WHERE refresh_token_hash = ?")
+            sqlx::query_scalar("SELECT id FROM cli_sessions WHERE refresh_token_hash = $1")
                 .bind(sha256_hex(other.refresh_token.as_bytes()))
-                .fetch_one(&database)
+                .fetch_one(&database.pool)
                 .await
                 .expect("other CLI ID");
         let state = AppState {
-            database,
+            database: database.pool.clone(),
+            _test_database: Some(database),
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),

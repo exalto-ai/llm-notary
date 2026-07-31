@@ -206,24 +206,6 @@ pub fn spawn_cleanup(state: AppState) {
     });
 }
 
-/// Returns whether expired uploads still require cleanup before the API can
-/// safely enter its application-managed idle shutdown.
-pub async fn has_pending_cleanup(state: &AppState) -> ApiResult<bool> {
-    let now = unix_timestamp()?;
-    let pending: i64 = sqlx::query_scalar(
-        "SELECT EXISTS(
-             SELECT 1 FROM publish_jobs
-             WHERE state = 'uploading' AND upload_expires_at <= ?
-             LIMIT 1
-         )",
-    )
-    .bind(now)
-    .fetch_one(&state.database)
-    .await
-    .map_err(database_error)?;
-    Ok(pending != 0)
-}
-
 async fn create_publish_job(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -248,11 +230,12 @@ async fn create_publish_job(
         .map_err(ApiError::internal)?;
     let upload_expires_at = now + state.publish.upload_ttl_secs;
     let inserted = sqlx::query(
-        "INSERT OR IGNORE INTO publish_jobs
+        "INSERT INTO publish_jobs
          (id, user_id, idempotency_key, state, archive_format, declared_size_bytes,
           declared_sha256, upload_object_key, intake_object_key, upload_expires_at,
           created_at, updated_at)
-         VALUES (?, ?, ?, 'uploading', ?, ?, ?, ?, ?, ?, ?, ?)",
+         VALUES ($1, $2, $3, 'uploading', $4, $5, $6, $7, $8, $9, $10, $11)
+         ON CONFLICT (user_id, idempotency_key) DO NOTHING",
     )
     .bind(&job_id)
     .bind(&user_id)
@@ -297,11 +280,11 @@ async fn create_publish_job(
             .map_err(ApiError::internal)?;
         let reset = sqlx::query(
             "UPDATE publish_jobs
-             SET state = 'uploading', upload_object_key = ?, intake_object_key = ?,
-                 upload_expires_at = ?, upload_generation = upload_generation + 1,
-                 updated_at = ?, failure_code = NULL
-             WHERE id = ? AND user_id = ? AND state = 'expired'
-               AND upload_generation = ?",
+             SET state = 'uploading', upload_object_key = $1, intake_object_key = $2,
+                 upload_expires_at = $3, upload_generation = upload_generation + 1,
+                 updated_at = $4, failure_code = NULL
+             WHERE id = $5 AND user_id = $6 AND state = 'expired'
+               AND upload_generation = $7",
         )
         .bind(retry_upload_key)
         .bind(retry_intake_key)
@@ -375,7 +358,7 @@ async fn list_web_publish_jobs(
     let user = authenticated_web_user(&state, &jar).await?;
     let jobs = sqlx::query_as::<_, PublishJobRow>(
         "SELECT * FROM publish_jobs
-         WHERE user_id = ?
+         WHERE user_id = $1
          ORDER BY created_at DESC, id DESC
          LIMIT 100",
     )
@@ -478,10 +461,10 @@ async fn queue_completed_attempt(
 ) -> ApiResult<PublishJobRow> {
     let updated = sqlx::query(
         "UPDATE publish_jobs
-         SET state = 'queued', queued_at = ?, updated_at = ?
-         WHERE id = ? AND user_id = ? AND state = 'uploading'
-           AND upload_generation = ? AND upload_object_key = ?
-           AND intake_object_key = ? AND upload_expires_at = ?",
+         SET state = 'queued', queued_at = $1, updated_at = $2
+         WHERE id = $3 AND user_id = $4 AND state = 'uploading'
+           AND upload_generation = $5 AND upload_object_key = $6
+           AND intake_object_key = $7 AND upload_expires_at = $8",
     )
     .bind(now)
     .bind(now)
@@ -545,8 +528,8 @@ async fn authenticated_cli_user_id(state: &AppState, headers: &HeaderMap) -> Api
         "SELECT cli_sessions.user_id
          FROM cli_access_tokens
          JOIN cli_sessions ON cli_sessions.id = cli_access_tokens.session_id
-         WHERE cli_access_tokens.token_hash = ? AND cli_access_tokens.expires_at > ?
-           AND cli_sessions.revoked_at IS NULL AND cli_sessions.expires_at > ?",
+         WHERE cli_access_tokens.token_hash = $1 AND cli_access_tokens.expires_at > $2
+           AND cli_sessions.revoked_at IS NULL AND cli_sessions.expires_at > $3",
     )
     .bind(certified::sha256_hex(token.as_bytes()))
     .bind(now)
@@ -562,7 +545,7 @@ async fn load_job_by_idempotency(
     user_id: &str,
     idempotency_key: &str,
 ) -> ApiResult<PublishJobRow> {
-    sqlx::query_as("SELECT * FROM publish_jobs WHERE user_id = ? AND idempotency_key = ?")
+    sqlx::query_as("SELECT * FROM publish_jobs WHERE user_id = $1 AND idempotency_key = $2")
         .bind(user_id)
         .bind(idempotency_key)
         .fetch_one(&state.database)
@@ -571,7 +554,7 @@ async fn load_job_by_idempotency(
 }
 
 async fn load_owned_job(state: &AppState, user_id: &str, job_id: &str) -> ApiResult<PublishJobRow> {
-    sqlx::query_as("SELECT * FROM publish_jobs WHERE id = ? AND user_id = ?")
+    sqlx::query_as("SELECT * FROM publish_jobs WHERE id = $1 AND user_id = $2")
         .bind(job_id)
         .bind(user_id)
         .fetch_optional(&state.database)
@@ -582,10 +565,10 @@ async fn load_owned_job(state: &AppState, user_id: &str, job_id: &str) -> ApiRes
 
 async fn expire_upload(state: &AppState, job: &PublishJobRow, now: i64) -> ApiResult<bool> {
     let updated = sqlx::query(
-        "UPDATE publish_jobs SET state = 'expired', updated_at = ?
-         WHERE id = ? AND user_id = ? AND state = 'uploading'
-           AND upload_generation = ? AND upload_object_key = ? AND upload_expires_at = ?
-           AND upload_expires_at <= ?",
+        "UPDATE publish_jobs SET state = 'expired', updated_at = $1
+         WHERE id = $2 AND user_id = $3 AND state = 'uploading'
+           AND upload_generation = $4 AND upload_object_key = $5 AND upload_expires_at = $6
+           AND upload_expires_at <= $7",
     )
     .bind(now)
     .bind(&job.id)
@@ -615,7 +598,7 @@ async fn cleanup_expired_uploads(state: &AppState) -> ApiResult<()> {
     let now = unix_timestamp()?;
     let jobs = sqlx::query_as::<_, PublishJobRow>(
         "SELECT * FROM publish_jobs
-         WHERE state = 'uploading' AND upload_expires_at <= ?
+         WHERE state = 'uploading' AND upload_expires_at <= $1
          ORDER BY upload_expires_at
          LIMIT 100",
     )
@@ -720,7 +703,6 @@ fn integer_env(name: &str) -> anyhow::Result<Option<i64>> {
 #[cfg(test)]
 mod tests {
     use axum_extra::extract::cookie::Cookie;
-    use sqlx::SqlitePool;
     use url::Url;
 
     use super::super::intake::{MockIntakeStorage, StoredObject};
@@ -729,18 +711,12 @@ mod tests {
     const SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     async fn test_state() -> (AppState, MockIntakeStorage, HeaderMap, HeaderMap) {
-        let database = SqlitePool::connect("sqlite::memory:")
-            .await
-            .expect("in-memory database");
-        sqlx::migrate!("./migrations")
-            .run(&database)
-            .await
-            .expect("migrations");
+        let database = super::super::fresh_database().await;
         sqlx::query(
             "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
              VALUES ('user-1', 1, 'one', 1, 1), ('user-2', 2, 'two', 1, 1)",
         )
-        .execute(&database)
+        .execute(&database.pool)
         .await
         .expect("users");
         let now = unix_timestamp().expect("time");
@@ -766,7 +742,8 @@ mod tests {
         };
         let storage = MockIntakeStorage::new();
         let state = AppState {
-            database,
+            database: database.pool.clone(),
+            _test_database: Some(database),
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
@@ -847,7 +824,7 @@ mod tests {
         let web_token = "web-publish-session";
         sqlx::query(
             "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
-             VALUES (?, 'user-1', ?, ?)",
+             VALUES ($1, 'user-1', $2, $3)",
         )
         .bind(certified::sha256_hex(web_token.as_bytes()))
         .bind(now + super::super::SESSION_TTL_SECS)
@@ -939,11 +916,12 @@ mod tests {
                 ..
             })
         ));
-        let state_value: String = sqlx::query_scalar("SELECT state FROM publish_jobs WHERE id = ?")
-            .bind(job.id)
-            .fetch_one(&state.database)
-            .await
-            .expect("state");
+        let state_value: String =
+            sqlx::query_scalar("SELECT state FROM publish_jobs WHERE id = $1")
+                .bind(job.id)
+                .fetch_one(&state.database)
+                .await
+                .expect("state");
         assert_eq!(state_value, "uploading");
     }
 
@@ -997,11 +975,12 @@ mod tests {
             .expect("expire job");
 
         cleanup_expired_uploads(&state).await.expect("cleanup");
-        let state_value: String = sqlx::query_scalar("SELECT state FROM publish_jobs WHERE id = ?")
-            .bind(&job.id)
-            .fetch_one(&state.database)
-            .await
-            .expect("state");
+        let state_value: String =
+            sqlx::query_scalar("SELECT state FROM publish_jobs WHERE id = $1")
+                .bind(&job.id)
+                .fetch_one(&state.database)
+                .await
+                .expect("state");
         assert_eq!(state_value, "expired");
         assert!(
             storage

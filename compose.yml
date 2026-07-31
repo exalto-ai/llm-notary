@@ -6,7 +6,10 @@ services:
       dockerfile: Dockerfile
       target: api
     environment:
-      DATABASE_URL: sqlite:///var/lib/llm-notary/api.db
+      # Use Neon's pooled URL in shared deployments. It is intentionally
+      # external so every API replica shares one durable source of truth.
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the PostgreSQL connection URL}
+      LLM_NOTARY_DATABASE_MAX_CONNECTIONS: ${LLM_NOTARY_DATABASE_MAX_CONNECTIONS:-5}
       GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:?Set GITHUB_OAUTH_CLIENT_ID to the GitHub OAuth App client ID}
       GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:?Set GITHUB_OAUTH_CLIENT_SECRET to the GitHub OAuth App client secret}
       LLM_NOTARY_API_LISTEN: 0.0.0.0:8080
@@ -35,8 +38,6 @@ services:
       LLM_NOTARY_LIBRARY_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN: ${LLM_NOTARY_LIBRARY_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN:-20}
       LLM_NOTARY_LIBRARY_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN: ${LLM_NOTARY_LIBRARY_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN:-250}
       LLM_NOTARY_LIBRARY_METADATA_OUTPUT_NANOUSD_PER_TOKEN: ${LLM_NOTARY_LIBRARY_METADATA_OUTPUT_NANOUSD_PER_TOKEN:-1200}
-    volumes:
-      - api_data:/var/lib/llm-notary
     read_only: true
     tmpfs:
       - /tmp
@@ -115,6 +116,3 @@ secrets:
     file: ${NOTARY_SIGNING_KEY_FILE:?Set NOTARY_SIGNING_KEY_FILE to the host signing-key path}
   platform_signing_key:
     file: ${PLATFORM_SIGNING_KEY_FILE:?Set PLATFORM_SIGNING_KEY_FILE to the host platform signing-key path}
-
-volumes:
-  api_data:
