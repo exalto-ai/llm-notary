@@ -73,7 +73,8 @@ local `trace.otlp.json` byte-for-byte, and passed the disclosure scanner again.
 - [x] No credential, cookie, token, personal path, email address, or unrelated
       session identifier was disclosed.
 - [x] Provider/model/tool ordering/system context/usage fields were reviewed.
-- [x] `publications.json` contains only admitted production IDs.
+- [x] All production publication IDs reached admission; Library metadata is
+      generated from the admitted traces.
 - [ ] The production collection contains these IDs after this manifest deploy.
 - [x] Every current public trace and stamp download link was checked.
 - [ ] A packaged GitHub release and clean installer verification are complete.
