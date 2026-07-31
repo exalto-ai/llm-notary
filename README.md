@@ -10,8 +10,8 @@ For local development, enable the checked-in pre-commit guard once per clone:
 git config core.hooksPath .githooks
 ```
 
-It rejects sensitive local bundles, capture directories, and obvious private
-keys or access tokens before they are staged.
+It rejects sensitive local artifacts, obvious private keys, and access tokens
+before they are staged.
 
 LLM Notary captures provider-origin model behavior and turns selected calls
 into independently verifiable OpenTelemetry traces. A local proxy receives an
@@ -193,27 +193,6 @@ To exercise a real streamed request deliberately, run the command above with
 an `OPENROUTER_API_KEY`, wait for the encrypted bundle, then use `finalize` and
 `verify-trace` as described above. This is an opt-in network and billing check;
 the regular test suite uses deterministic fixtures.
-
-The older private-capture verifier remains available for capture directories:
-
-```bash
-cargo run --bin llm-notary -- verify captures/cap-...
-```
-
-The verifier checks the TLSNotary presentation locally and prints the disclosed
-request and response only after checking a locally pinned directory key. The
-HTTPS LLM Notary directory is the initial online trust bootstrap; a package
-cannot add its own trusted key. Use `--trusted-notary-key` to explicitly
-override that bootstrap for private notaries or independent verification.
-
-Pass `--summary` to verify the certificate and hashes without printing the
-disclosed transcript.
-
-With an installed release, use the public command instead:
-
-```bash
-llm-notary proxy start --provider openai --bundle-dir bundles
-```
 
 Verify a published trace and platform stamp without a capture:
 

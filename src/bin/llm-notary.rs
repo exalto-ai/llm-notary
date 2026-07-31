@@ -7,7 +7,6 @@ use certified::cli::{
     public::{self, VerifyPublicArgs},
     publish::{self, PublishArgs},
     vault::{self, VaultCommand},
-    verify::{self, VerifyArgs},
 };
 use clap::{Parser, Subcommand};
 
@@ -49,8 +48,6 @@ enum CommandName {
         #[command(subcommand)]
         command: VaultCommand,
     },
-    /// Verify a local capture without uploading it.
-    Verify(VerifyArgs),
     /// Verify a public trace and platform stamp without a private capture.
     VerifyPublic(VerifyPublicArgs),
     /// Download a public trace and platform stamp from the LLM Notary Library.
@@ -79,7 +76,6 @@ async fn main() -> Result<()> {
         CommandName::Bundles { command } => bundle::bundles(command),
         CommandName::VerifyTrace(args) => bundle::verify(args),
         CommandName::Vault { command } => vault::run(command),
-        CommandName::Verify(args) => verify::run(args),
         CommandName::VerifyPublic(args) => public::run_verify_public(args),
         CommandName::Download(args) => download::run(args).await,
         CommandName::Publish(args) => publish::run(args).await,
