@@ -766,7 +766,7 @@ function Dashboard({ user }) {
           <div className="dashboard-trace-copy">
             <div><span className={`dashboard-trace-state dashboard-trace-state--${status.tone}`}><i aria-hidden="true" />{status.label}</span><time>{sessionDate(job.admitted_at || job.updated_at)}</time></div>
             <h3>{publication?.title || `Trace ${job.id.slice(0, 8)}`}</h3>
-            <p>{publication ? `${publication.provider} · ${publication.model} · ${publication.surface}` : `${fileSize(job.size_bytes)} · ${job.id}`}</p>
+            <p>{publication ? `${publication.provider} · ${publication.model}` : `${fileSize(job.size_bytes)} · ${job.id}`}</p>
             {job.failure_code && <p className="dashboard-trace-failure">Reason: {job.failure_code.replaceAll('_', ' ')}</p>}
           </div>
           <div className="dashboard-trace-actions">
@@ -776,7 +776,7 @@ function Dashboard({ user }) {
         </article>;
       })}</div> : <div className="dashboard-empty"><b>No published traces yet.</b><p>Finalize a bundle, then run <code>{publishCommand}</code>.</p><a href="#/docs/publish">Read the publishing guide</a></div>}
     </section>
-    <section className="dashboard-sessions" aria-labelledby="cli-sessions-title"><header><div><span className="eyebrow">CLI access</span><h2 id="cli-sessions-title">Authorized devices</h2></div><p>Revoke a device to require a new browser sign-in before it can publish.</p></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading authorized devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => revoke(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No active CLI devices are authorized.</p>}</section>
+    <section className="dashboard-sessions" aria-labelledby="cli-sessions-title"><header><div><span className="eyebrow">CLI access</span><h2 id="cli-sessions-title">Authorized devices</h2></div><p>Revoke a device to require a new browser sign-in before it can publish.</p></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading authorized devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => revoke(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No active CLI devices are authorized.</p>}</section>
   </main>;
 }
 
@@ -805,7 +805,7 @@ function CliApproval({ route, user }) {
   if (!requestId || !approvalSecret) return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>Invalid authorization link.</h1><p>Return to the CLI and start login again.</p></main>;
   if (!user) return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>Sign in to approve.</h1><p>This browser must be signed in to the LLM Notary account that should own the CLI publishing session.</p><a className="button button-dark" href={`/api/auth/github?return_to=${encodeURIComponent(window.location.hash)}`}>Sign in with GitHub</a></main>;
   if (approved) return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>CLI approved.</h1><p>Your terminal will finish signing in shortly. You can close this page.</p></main>;
-  return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>Approve this CLI?</h1>{error ? <p>{error}</p> : details ? <><p>Allow <b>{details.device_name}</b> to publish through LLM Notary as <b>{user.github_login}</b>?</p><div className="dashboard-card"><span>Authorization code</span><b>{details.user_code}</b><button className="button button-dark" onClick={approve}>Approve CLI</button></div></> : <p>Checking this authorization request…</p>}</main>;
+  return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>Approve this CLI?</h1>{error ? <p>{error}</p> : details ? <><p>Allow <b>{details.device_name}</b> to publish through LLM Notary as <b>{user.github_login}</b>?</p><div className="dashboard-card"><span>Authorization code</span><b>{details.user_code}</b><span>Expires {sessionDate(details.expires_at)}</span><button className="button button-dark" onClick={approve}>Approve CLI</button></div></> : <p>Checking this authorization request…</p>}</main>;
 }
 
 function App() {
