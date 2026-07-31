@@ -21,6 +21,11 @@ name = "llm-notary-api"
 path = "src/bin/llm-notary-api.rs"
 required-features = ["api"]
 
+[[bin]]
+name = "llm-notary-api-migrate"
+path = "src/bin/llm-notary-api-migrate.rs"
+required-features = ["api"]
+
 [features]
 default = ["cli"]
 api = ["dep:aws-sdk-s3"]
@@ -71,7 +76,7 @@ rpassword = { version = "7.4", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
-sqlx = { version = "0.8", default-features = false, features = ["macros", "migrate", "runtime-tokio-rustls", "sqlite"] }
+sqlx = { version = "0.8", default-features = false, features = ["macros", "migrate", "runtime-tokio-rustls", "postgres"] }
 tempfile = { version = "3.20", optional = true }
 time = "0.3"
 tokio = { version = "1.45", features = ["full"] }
@@ -104,6 +109,7 @@ windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
 [dev-dependencies]
 dhat = "0.3"
 rangeset = "0.4"
+testcontainers-modules = { version = "0.15", default-features = false, features = ["postgres"] }
 tiktoken-rs = "0.12"
 tls-server-fixture = { path = "vendor/tlsn/crates/tls-server-fixture" }
 tlsn = { path = "vendor/tlsn/crates/tlsn", features = ["mozilla-certs", "test-utils"] }

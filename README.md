@@ -368,19 +368,29 @@ or malformed key. Planned rotation can supply a complete v3 directory through
 `LLM_NOTARY_NOTARY_DIRECTORY_JSON`; its active key must match the colocated
 notary key.
 For source development, `LLM_NOTARY_PUBLIC_ORIGIN` defaults to
-`http://localhost:4173` and the API creates a local SQLite database. GitHub
-OAuth Apps have one callback URL, so use a separate development OAuth App with
-`http://localhost:4173/api/auth/github/callback` and place that app's
-credentials in the local `.env`. Start the API alongside the SPA with:
+`http://localhost:4173`, but `DATABASE_URL` is required and must point to a
+PostgreSQL database. A Neon development branch is a suitable low-operations
+choice; use its pooled URL and keep `LLM_NOTARY_DATABASE_MAX_CONNECTIONS` at
+or below 5. GitHub OAuth Apps have one callback URL, so use a separate
+development OAuth App with `http://localhost:4173/api/auth/github/callback`
+and place that app's credentials and `DATABASE_URL` in the local `.env`. Start
+the schema migrator once, then start the API alongside the SPA with:
 
 ```bash
-cargo run --bin llm-notary-api
+cargo run --no-default-features --features api --bin llm-notary-api-migrate
+cargo run --no-default-features --features api --bin llm-notary-api
 ```
+
+API tests use disposable local PostgreSQL 17.7 containers through
+Testcontainers. They require a running Docker daemon but no database URL,
+database credentials, or external provider account; each test state receives a
+fresh production-schema database.
 
 The API has `GET /api/notary` for CLI endpoint and public-key discovery,
 `GET /api/auth/github`, `GET /api/auth/github/callback`, `GET /api/me`,
-`POST /api/auth/logout`, and `GET /api/healthz`, plus authenticated publication
-intake endpoints and publication endpoints for serving admitted traces. Set
+`POST /api/auth/logout`, `GET /api/healthz`, and database-backed
+`GET /api/readyz`, plus authenticated publication intake endpoints and
+publication endpoints for serving admitted traces. Set
 `LLM_NOTARY_NOTARY_HOST`, `LLM_NOTARY_NOTARY_TRANSPORT` (`tcp` or `tls`), and
 `LLM_NOTARY_NOTARY_PUBLIC_KEY` to the public notary endpoint and its compressed
 SEC1 public key. The v3 directory contains stable key IDs, monotonic
@@ -442,13 +452,15 @@ Encrypted `.llmbundle` files are local retry state and are never valid uploads.
 The complete request, response, idempotency, and storage-boundary contract is
 documented in [`docs/publish-intake-v1.md`](docs/publish-intake-v1.md).
 
-Queued uploads are admitted by a database-backed worker in the API process.
+Queued uploads are admitted by database-coordinated workers in every API
+replica. PostgreSQL claims a queued job with row locking and `SKIP LOCKED`, so
+only one replica verifies a job; Library metadata has the same lease pattern.
 The worker downloads and hashes the actual private object, validates the
 transport archive, verifies the notary evidence and authenticated provider,
 reproduces the exact canonical trace, enforces credential-header redaction,
 and issues the platform stamp. Immutable public bodies live under a distinct
-private Spaces `public/` prefix while SQLite retains their object keys, sizes,
-and hashes. Public trace and stamp files are available under
+private Spaces `public/` prefix while PostgreSQL retains their object keys,
+sizes, and hashes. Public trace and stamp files are available under
 `/api/public/traces/{id}` only after the pair is committed atomically;
 the private intake object is then purged. The consent and retention boundary,
 state machine, rejection codes, and public endpoints are documented in

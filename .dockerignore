@@ -9,8 +9,8 @@
 !src/**
 !tests/
 !tests/**
-!migrations/
-!migrations/**
+!migrations-postgres/
+!migrations-postgres/**
 !examples/
 !examples/production-seed/
 !vendor/

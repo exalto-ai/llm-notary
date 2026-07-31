@@ -10,7 +10,7 @@ internet ── HTTPS ──> llm-notary.exalto.ai
 local proxies ── TLS:443 ──> llm-notary-prod-notary.fly.dev
 ```
 
-The API is private behind Flycast so its SQLite database and intake endpoint
+The API is private behind Flycast so its PostgreSQL connection and intake endpoint
 are never directly exposed. Fly Proxy terminates the notary's public TLS
 connection and forwards the unmodified binary protocol to port 7047 through
 Fly's encrypted backhaul. The configuration deliberately uses the `tls` handler
@@ -20,7 +20,11 @@ only—not the HTTP handler. Fly supplies the certificate for the app's
 The checked-in configuration targets the `llm-notary-prod` organization. Create
 the three apps and provision a private Flycast address for the API before the
 first deployment. The notary's TLS handler can use Fly's shared IPv4 routing.
-The API uses a 1 GiB encrypted Fly Volume named `api_data`. Create a private Tigris bucket for
+Create a Neon PostgreSQL database and stage its pooled connection URL as the
+`DATABASE_URL` Fly secret with `fly secrets set --stage` before deploying the
+API; staging avoids restarting the previous API revision. The API deploy runs
+the supplied migrator once as Fly's release command before replacing Machines.
+Create a private Tigris bucket for
 the API; the service accepts the standard `AWS_*` and `BUCKET_NAME` variables
 that `fly storage create` sets, as well as the portable `LLM_NOTARY_S3_*`
 variables used by self-hosted container deployments.
@@ -35,9 +39,10 @@ and its signing-key directory. The production endpoint is
 `https://llm-notary.exalto.ai`; keep the GitHub OAuth App callback at
 `https://llm-notary.exalto.ai/api/auth/github/callback`.
 
-Never create a new platform signing key during a migration. Copy the existing
-key, the SQLite state, and the notary directory together so published stamps,
-sessions, and historic proofs remain valid.
+Never create a new platform signing key during a migration. Preserve the
+existing key and notary directory so published stamps and historic proofs
+remain valid. The clean PostgreSQL cutover is documented in
+[`docs/postgres-neon-migration.md`](../../docs/postgres-neon-migration.md).
 
 Clients cache the signed notary directory by its generation. When moving its
 advertised hostname, transport, port, or key set, increase
@@ -57,12 +62,13 @@ fly deploy . -c deploy/fly/notary.fly.toml
 fly deploy js/app -c "$PWD/deploy/fly/web.fly.toml"
 ```
 
-The web and notary apps suspend when idle. The API uses application-managed
-idle shutdown: it keeps running while it has active HTTP requests, queued or
-verifying admissions, pending private-artifact cleanup, expired uploads, or
-Library metadata work. Once those are clear for 45 seconds it exits cleanly;
-Flycast autostarts the existing Machine for the next API request. This avoids
-using Fly Proxy's inbound-connection heuristic to interrupt background work.
+The web and notary apps suspend when idle. The API keeps two Machines running
+and Fly deploys it with high availability enabled. Its readiness check is
+`/api/readyz`, which verifies the shared database connection. Every Machine
+runs the background workers; PostgreSQL claims prevent duplicate admission and
+metadata generation. Add capacity with `fly scale count <n> -a
+llm-notary-prod-api`, keeping the total configured database pool size within
+the Neon connection budget.
 
 ## Metrics
 
