@@ -37,6 +37,11 @@ Never create a new platform signing key during a migration. Copy the existing
 key, the SQLite state, and the notary directory together so published stamps,
 sessions, and historic proofs remain valid.
 
+Clients cache the signed notary directory by its generation. When moving its
+advertised hostname or changing the key set, increase
+`LLM_NOTARY_NOTARY_DIRECTORY_GENERATION`; reusing a generation for different
+directory contents is intentionally rejected as a rollback/conflict.
+
 Deploy from the repository root:
 
 ```bash
