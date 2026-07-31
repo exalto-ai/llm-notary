@@ -43,22 +43,27 @@ jobs:
         run: >-
           curl --fail --retry 5 --retry-all-errors --retry-delay 2
           --max-time 20 https://llm-notary.exalto.ai/api/healthz
-      - name: Verify raw TCP notary admission
+      - name: Verify TLS notary admission
         run: |
           python3 - <<'PY'
           import socket
+          import ssl
           import time
 
-          target = ("llm-notary-prod-notary.fly.dev", 7047)
+          hostname = "llm-notary-prod-notary.fly.dev"
+          target = (hostname, 443)
           prelude = b"LLMN\x00\x00\x00\x02\x02"
           last_error = None
           for _ in range(5):
               try:
                   with socket.create_connection(target, timeout=15) as connection:
-                      connection.settimeout(15)
-                      connection.sendall(prelude)
-                      if connection.recv(1) != b"\x01":
-                          raise RuntimeError("notary did not admit the control prelude")
+                      with ssl.create_default_context().wrap_socket(
+                          connection, server_hostname=hostname
+                      ) as tls_connection:
+                          tls_connection.settimeout(15)
+                          tls_connection.sendall(prelude)
+                          if tls_connection.recv(1) != b"\x01":
+                              raise RuntimeError("notary did not admit the control prelude")
                   break
               except OSError as error:
                   last_error = error
