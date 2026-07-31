@@ -151,11 +151,6 @@ struct ApprovalDetails {
 }
 
 #[derive(Serialize)]
-struct ApprovedAuthorization {
-    status: &'static str,
-}
-
-#[derive(Serialize)]
 struct CliTokens {
     access_token: String,
     refresh_token: String,
@@ -762,7 +757,7 @@ async fn approve_cli_authorization(
     jar: CookieJar,
     Path(request_id): Path<String>,
     Query(query): Query<ApprovalQuery>,
-) -> ApiResult<Json<ApprovedAuthorization>> {
+) -> ApiResult<StatusCode> {
     let user = authenticated_web_user(&state, &jar).await?;
     let now = unix_timestamp()?;
     let approved = sqlx::query(
@@ -784,7 +779,7 @@ async fn approve_cli_authorization(
             "authorization is expired, already approved, or already used",
         ));
     }
-    Ok(Json(ApprovedAuthorization { status: "approved" }))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn complete_cli_authorization(

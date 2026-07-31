@@ -64,8 +64,6 @@ const ALLOWED_TAGS: &[&str] = &[
 #[derive(FromRow)]
 struct PublicArtifactRow {
     id: String,
-    github_login: String,
-    admitted_at: i64,
     public_trace_object_key: String,
     public_trace_size_bytes: i64,
     public_trace_sha256: String,
@@ -77,8 +75,6 @@ struct PublicArtifactRow {
 #[derive(Serialize)]
 struct PublicTraceMetadata {
     id: String,
-    author: String,
-    admitted_at: i64,
     trace_url: String,
     stamp_url: String,
 }
@@ -800,13 +796,11 @@ async fn claim_next_metadata_artifact(
                     )
                  RETURNING publication_id
              )
-             SELECT jobs.id, users.github_login, jobs.admitted_at,
-                    jobs.public_trace_object_key, jobs.public_trace_size_bytes,
+             SELECT jobs.id, jobs.public_trace_object_key, jobs.public_trace_size_bytes,
                     jobs.public_trace_sha256, jobs.public_stamp_object_key,
                     jobs.public_stamp_size_bytes, jobs.public_stamp_sha256
              FROM claimed
-             JOIN publish_jobs AS jobs ON jobs.id = claimed.publication_id
-             JOIN users ON users.id = jobs.user_id",
+             JOIN publish_jobs AS jobs ON jobs.id = claimed.publication_id",
     )
     .bind(now - METADATA_RETRY_SECS)
     .bind(now - METADATA_CLAIM_TIMEOUT_SECS)
@@ -1306,15 +1300,13 @@ async fn load_public_artifact_optional(
     trace_id: &str,
 ) -> ApiResult<Option<PublicArtifactRow>> {
     sqlx::query_as(
-        "SELECT publish_jobs.id, users.github_login, publish_jobs.admitted_at,
-                publish_jobs.public_trace_object_key,
+        "SELECT publish_jobs.id, publish_jobs.public_trace_object_key,
                 publish_jobs.public_trace_size_bytes,
                 publish_jobs.public_trace_sha256,
                 publish_jobs.public_stamp_object_key,
                 publish_jobs.public_stamp_size_bytes,
                 publish_jobs.public_stamp_sha256
          FROM publish_jobs
-         JOIN users ON users.id = publish_jobs.user_id
          WHERE publish_jobs.id = $1 AND publish_jobs.state = 'admitted'
            AND publish_jobs.public_trace_object_key IS NOT NULL
            AND publish_jobs.public_stamp_object_key IS NOT NULL",
@@ -1332,8 +1324,6 @@ async fn public_trace_metadata(
     let artifact = load_public_artifact(&state, &trace_id).await?;
     Ok(Json(PublicTraceMetadata {
         id: artifact.id.clone(),
-        author: artifact.github_login,
-        admitted_at: artifact.admitted_at,
         trace_url: format!("/api/public/traces/{}/trace.otlp.json", artifact.id),
         stamp_url: format!("/api/public/traces/{}/stamp.json", artifact.id),
     }))
@@ -1702,7 +1692,7 @@ mod tests {
             b"{\"stamp\":1}\n"
         );
         let public = load_public_artifact(&state, "job-1").await.unwrap();
-        assert_eq!(public.github_login, "publisher");
+        assert_eq!(public.id, "job-1");
         assert_eq!(public.public_trace_object_key, row.1);
         assert_eq!(
             load_public_bytes(
