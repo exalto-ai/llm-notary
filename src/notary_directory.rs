@@ -8,8 +8,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::sha256_hex;
 
-pub const DIRECTORY_FORMAT_V1: &str = "llm-notary/notary-directory/v1";
-pub const DIRECTORY_FORMAT_V2: &str = "llm-notary/notary-directory/v2";
 pub const DIRECTORY_FORMAT_V3: &str = "llm-notary/notary-directory/v3";
 
 /// The transport used for the public local-proxy-to-notary connection.
@@ -145,9 +143,7 @@ pub enum NotaryKeyStatus {
 pub struct NotaryDirectoryRecord {
     pub host: String,
     pub port: u16,
-    /// How clients connect to this endpoint. Directories before v3 omitted
-    /// this field and are interpreted as raw TCP.
-    #[serde(default)]
+    /// How clients connect to this endpoint.
     pub transport: NotaryTransport,
     pub key_id: String,
     pub public_key: String,
@@ -168,16 +164,6 @@ pub struct NotaryDirectory {
     pub generation: u64,
     pub active_key_id: String,
     pub notaries: Vec<NotaryDirectoryRecord>,
-}
-
-#[derive(Clone, Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LegacyNotaryDirectory {
-    pub format: String,
-    pub host: String,
-    pub port: u16,
-    pub key_id: String,
-    pub public_key: String,
 }
 
 impl NotaryDirectoryRecord {
@@ -221,10 +207,7 @@ impl NotaryDirectoryRecord {
 
 impl NotaryDirectory {
     pub fn validate(&self) -> Result<()> {
-        if !matches!(
-            self.format.as_str(),
-            DIRECTORY_FORMAT_V2 | DIRECTORY_FORMAT_V3
-        ) {
+        if self.format != DIRECTORY_FORMAT_V3 {
             bail!("unsupported notary directory format: {}", self.format);
         }
         if self.notaries.is_empty() || self.notaries.len() > 32 {
@@ -264,54 +247,13 @@ impl NotaryDirectory {
         }
         Ok(active)
     }
-
-    pub fn from_legacy(legacy: LegacyNotaryDirectory) -> Result<Self> {
-        if legacy.format != DIRECTORY_FORMAT_V1 {
-            bail!("unsupported notary directory format: {}", legacy.format);
-        }
-        let directory = Self {
-            format: DIRECTORY_FORMAT_V2.to_owned(),
-            generation: 0,
-            active_key_id: legacy.key_id.clone(),
-            notaries: vec![NotaryDirectoryRecord {
-                host: legacy.host,
-                port: legacy.port,
-                transport: NotaryTransport::Tcp,
-                key_id: legacy.key_id,
-                public_key: legacy.public_key,
-                status: NotaryKeyStatus::Active,
-                valid_from_unix_ms: 0,
-                valid_until_unix_ms: None,
-                finalize_until_unix_ms: None,
-            }],
-        };
-        directory.validate()?;
-        Ok(directory)
-    }
 }
 
 pub fn parse_directory(bytes: &[u8]) -> Result<NotaryDirectory> {
-    let value: serde_json::Value =
-        serde_json::from_slice(bytes).context("decoding notary directory")?;
-    match value.get("format").and_then(serde_json::Value::as_str) {
-        Some(DIRECTORY_FORMAT_V2) => {
-            let directory: NotaryDirectory =
-                serde_json::from_value(value).context("decoding v2 notary directory")?;
-            directory.validate()?;
-            Ok(directory)
-        }
-        Some(DIRECTORY_FORMAT_V3) => {
-            let directory: NotaryDirectory =
-                serde_json::from_value(value).context("decoding v3 notary directory")?;
-            directory.validate()?;
-            Ok(directory)
-        }
-        Some(DIRECTORY_FORMAT_V1) => NotaryDirectory::from_legacy(
-            serde_json::from_value(value).context("decoding v1 notary directory")?,
-        ),
-        Some(format) => bail!("unsupported notary directory format: {format}"),
-        None => bail!("notary directory format is missing"),
-    }
+    let directory: NotaryDirectory =
+        serde_json::from_slice(bytes).context("decoding v3 notary directory")?;
+    directory.validate()?;
+    Ok(directory)
 }
 
 pub fn key_id(public_key: &[u8]) -> String {
@@ -375,7 +317,7 @@ mod tests {
         old.valid_until_unix_ms = Some(199);
         let active = record(8, NotaryKeyStatus::Active);
         let directory = NotaryDirectory {
-            format: DIRECTORY_FORMAT_V2.into(),
+            format: DIRECTORY_FORMAT_V3.into(),
             generation: 2,
             active_key_id: active.key_id.clone(),
             notaries: vec![old.clone(), active],
@@ -395,7 +337,7 @@ mod tests {
         retiring.valid_until_unix_ms = Some(199);
         retiring.finalize_until_unix_ms = Some(299);
         let directory = NotaryDirectory {
-            format: DIRECTORY_FORMAT_V2.into(),
+            format: DIRECTORY_FORMAT_V3.into(),
             generation: 3,
             active_key_id: active.key_id.clone(),
             notaries: vec![retiring.clone(), active],
@@ -411,7 +353,7 @@ mod tests {
     fn rejects_revoked_or_missing_active_selection() {
         let revoked = record(7, NotaryKeyStatus::Revoked);
         let mut directory = NotaryDirectory {
-            format: DIRECTORY_FORMAT_V2.into(),
+            format: DIRECTORY_FORMAT_V3.into(),
             generation: 2,
             active_key_id: revoked.key_id.clone(),
             notaries: vec![revoked],
@@ -422,42 +364,20 @@ mod tests {
     }
 
     #[test]
-    fn migrates_the_single_key_v1_document() {
+    fn rejects_pre_v3_directory_formats() {
         let active = record(9, NotaryKeyStatus::Active);
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "format": DIRECTORY_FORMAT_V1,
-            "host": active.host,
-            "port": active.port,
-            "key_id": active.key_id,
-            "public_key": active.public_key,
-        }))
-        .unwrap();
-        let migrated = parse_directory(&bytes).unwrap();
-        assert_eq!(migrated.format, DIRECTORY_FORMAT_V2);
-        assert_eq!(migrated.notaries.len(), 1);
-    }
-
-    #[test]
-    fn v2_directories_default_missing_transport_to_tcp() {
-        let active = record(9, NotaryKeyStatus::Active);
-        let bytes = serde_json::to_vec(&serde_json::json!({
-            "format": DIRECTORY_FORMAT_V2,
-            "generation": 2,
-            "active_key_id": active.key_id.clone(),
-            "notaries": [{
-                "host": active.host,
-                "port": active.port,
-                "key_id": active.key_id,
-                "public_key": active.public_key,
-                "status": "active",
-                "valid_from_unix_ms": active.valid_from_unix_ms,
-                "valid_until_unix_ms": null,
-                "finalize_until_unix_ms": null
-            }]
-        }))
-        .unwrap();
-        let directory = parse_directory(&bytes).unwrap();
-        assert_eq!(directory.notaries[0].transport, NotaryTransport::Tcp);
+        for format in [
+            "llm-notary/notary-directory/v1",
+            "llm-notary/notary-directory/v2",
+        ] {
+            let directory = NotaryDirectory {
+                format: format.to_owned(),
+                generation: 2,
+                active_key_id: active.key_id.clone(),
+                notaries: vec![active.clone()],
+            };
+            assert!(parse_directory(&serde_json::to_vec(&directory).unwrap()).is_err());
+        }
     }
 
     #[test]

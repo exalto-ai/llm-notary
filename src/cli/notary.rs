@@ -13,8 +13,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     DeferredBundle,
     notary_directory::{
-        DIRECTORY_FORMAT_V1, DIRECTORY_FORMAT_V2, DIRECTORY_FORMAT_V3, LegacyNotaryDirectory,
-        NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, key_id,
+        DIRECTORY_FORMAT_V3, NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, key_id,
     },
 };
 
@@ -32,14 +31,6 @@ struct TrustStore {
     directory_sha256: Option<String>,
     active_key_id: Option<String>,
     records: Vec<NotaryDirectoryRecord>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyTrustStore {
-    #[serde(rename = "format")]
-    _format: String,
-    record: Option<LegacyNotaryDirectory>,
 }
 
 pub fn pin(directory: NotaryDirectory) -> Result<()> {
@@ -243,28 +234,12 @@ fn load_store(path: &Path) -> Result<TrustStore> {
         Some(DIRECTORY_FORMAT_V3) => {
             serde_json::from_value(value).context("parse v3 local notary trust store")
         }
-        Some(DIRECTORY_FORMAT_V2) => {
-            let mut store: TrustStore =
-                serde_json::from_value(value).context("parse v2 local notary trust store")?;
-            store.format = DIRECTORY_FORMAT_V3.to_owned();
-            Ok(store)
-        }
-        Some(DIRECTORY_FORMAT_V1) | Some("") | None => {
-            let legacy: LegacyTrustStore =
-                serde_json::from_value(value).context("parse v1 local notary trust store")?;
-            let Some(record) = legacy.record else {
-                return Ok(TrustStore::default());
-            };
-            let directory = NotaryDirectory::from_legacy(record)?;
-            Ok(TrustStore {
-                format: DIRECTORY_FORMAT_V3.to_owned(),
-                generation: 0,
-                directory_sha256: None,
-                active_key_id: Some(directory.active_key_id),
-                records: directory.notaries,
-            })
-        }
-        Some(format) => bail!("unsupported local notary trust store format: {format}"),
+        Some(format) => bail!(
+            "unsupported local notary trust store format: {format}; remove the cache and refresh the notary directory"
+        ),
+        None => bail!(
+            "local notary trust store format is missing; remove the cache and refresh the notary directory"
+        ),
     }
 }
 
@@ -310,7 +285,7 @@ mod tests {
         let old = record(7, NotaryKeyStatus::Active);
         let new = record(8, NotaryKeyStatus::Active);
         let store = TrustStore {
-            format: DIRECTORY_FORMAT_V2.into(),
+            format: DIRECTORY_FORMAT_V3.into(),
             generation: 1,
             directory_sha256: None,
             active_key_id: Some(old.key_id.clone()),
@@ -319,7 +294,7 @@ mod tests {
         let updated = merge_store(
             store,
             NotaryDirectory {
-                format: DIRECTORY_FORMAT_V2.into(),
+                format: DIRECTORY_FORMAT_V3.into(),
                 generation: 2,
                 active_key_id: new.key_id.clone(),
                 notaries: vec![new],
@@ -341,7 +316,7 @@ mod tests {
         let replaced = merge_store(
             updated,
             NotaryDirectory {
-                format: DIRECTORY_FORMAT_V2.into(),
+                format: DIRECTORY_FORMAT_V3.into(),
                 generation: 3,
                 active_key_id: record(8, NotaryKeyStatus::Active).key_id,
                 notaries: vec![record(8, NotaryKeyStatus::Active), revoked.clone()],
@@ -360,7 +335,7 @@ mod tests {
         let attempted_restore = merge_store(
             replaced,
             NotaryDirectory {
-                format: DIRECTORY_FORMAT_V2.into(),
+                format: DIRECTORY_FORMAT_V3.into(),
                 generation: 4,
                 active_key_id: record(8, NotaryKeyStatus::Active).key_id,
                 notaries: vec![
@@ -388,7 +363,7 @@ mod tests {
         fs::write(&path, b"old directory").unwrap();
         let active = record(8, NotaryKeyStatus::Active);
         let store = TrustStore {
-            format: DIRECTORY_FORMAT_V2.into(),
+            format: DIRECTORY_FORMAT_V3.into(),
             generation: 2,
             directory_sha256: Some("directory-sha".into()),
             active_key_id: Some(active.key_id.clone()),
@@ -408,7 +383,7 @@ mod tests {
         let initial = merge_store(
             TrustStore::default(),
             NotaryDirectory {
-                format: DIRECTORY_FORMAT_V2.into(),
+                format: DIRECTORY_FORMAT_V3.into(),
                 generation: 10,
                 active_key_id: active.key_id.clone(),
                 notaries: vec![active.clone()],
@@ -419,7 +394,7 @@ mod tests {
             merge_store(
                 initial.clone(),
                 NotaryDirectory {
-                    format: DIRECTORY_FORMAT_V2.into(),
+                    format: DIRECTORY_FORMAT_V3.into(),
                     generation: 9,
                     active_key_id: active.key_id.clone(),
                     notaries: vec![active.clone()],
@@ -433,7 +408,7 @@ mod tests {
             merge_store(
                 initial,
                 NotaryDirectory {
-                    format: DIRECTORY_FORMAT_V2.into(),
+                    format: DIRECTORY_FORMAT_V3.into(),
                     generation: 10,
                     active_key_id: conflicting.key_id.clone(),
                     notaries: vec![conflicting],
@@ -449,7 +424,7 @@ mod tests {
         let mut store = merge_store(
             TrustStore::default(),
             NotaryDirectory {
-                format: DIRECTORY_FORMAT_V2.into(),
+                format: DIRECTORY_FORMAT_V3.into(),
                 generation: 1,
                 active_key_id: active.key_id.clone(),
                 notaries: vec![active],
@@ -461,7 +436,7 @@ mod tests {
             store = merge_store(
                 store,
                 NotaryDirectory {
-                    format: DIRECTORY_FORMAT_V2.into(),
+                    format: DIRECTORY_FORMAT_V3.into(),
                     generation,
                     active_key_id: next.key_id.clone(),
                     notaries: vec![next],
@@ -494,7 +469,7 @@ mod tests {
                 pin_at_path(
                     &path,
                     NotaryDirectory {
-                        format: DIRECTORY_FORMAT_V2.into(),
+                        format: DIRECTORY_FORMAT_V3.into(),
                         generation,
                         active_key_id: active.key_id.clone(),
                         notaries: vec![active],
@@ -519,32 +494,23 @@ mod tests {
     }
 
     #[test]
-    fn load_store_migrates_a_v1_cache() {
-        let active = record(9, NotaryKeyStatus::Active);
+    fn load_store_rejects_legacy_cache_formats() {
         let path = std::env::temp_dir().join(format!(
-            "llm-notary-v1-trust-{}-{}.json",
+            "llm-notary-legacy-trust-{}-{}.json",
             std::process::id(),
-            active.key_id.replace(':', "-")
+            uuid::Uuid::new_v4().simple()
         ));
-        std::fs::write(
-            &path,
-            serde_json::to_vec(&serde_json::json!({
-                "format": DIRECTORY_FORMAT_V1,
-                "record": {
-                    "format": DIRECTORY_FORMAT_V1,
-                    "host": active.host,
-                    "port": active.port,
-                    "key_id": active.key_id,
-                    "public_key": active.public_key
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
-        let migrated = load_store(&path).unwrap();
+        for format in [
+            "llm-notary/notary-directory/v1",
+            "llm-notary/notary-directory/v2",
+        ] {
+            std::fs::write(
+                &path,
+                serde_json::to_vec(&serde_json::json!({ "format": format })).unwrap(),
+            )
+            .unwrap();
+            assert!(load_store(&path).is_err());
+        }
         let _ = std::fs::remove_file(path);
-        assert_eq!(migrated.format, DIRECTORY_FORMAT_V3);
-        assert_eq!(migrated.records.len(), 1);
-        assert_eq!(migrated.active_key_id, Some(active.key_id));
     }
 }
