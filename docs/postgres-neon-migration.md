@@ -1,9 +1,8 @@
-# PostgreSQL / Neon cutover runbook
+# PostgreSQL / Neon deployment operations
 
-The API uses PostgreSQL exclusively. This cutover intentionally starts with an
-empty database; it does not import the retired SQLite volume. Keep the existing
-volume untouched until the new release has been stable, but do not run or
-maintain a SQLite-backed API or data importer.
+The API uses PostgreSQL exclusively. This guide covers ongoing PostgreSQL/Neon
+deployment, schema-migration, scaling, and rollback operations. SQLite is no
+longer a supported API backend and no SQLite importer is maintained.
 
 ## Provision and configure Neon
 
@@ -26,24 +25,26 @@ fly secrets set --stage DATABASE_URL='postgresql://…?sslmode=require' \
   -a llm-notary-prod-api
 ```
 
-For Compose, put the same value in the root-owned
-`deploy/digitalocean/deploy.env` file. Never commit a connection URL, a signing
-key, a capture, or a `.env` file.
+For a self-hosted Compose deployment, put the same value in a root-owned
+environment file outside the repository, such as `/etc/llm-notary/compose.env`.
+Pass that exact path with `docker compose --env-file`; never commit a connection
+URL, signing key, capture, or environment file.
 
-## Deploy the clean baseline
+## Deploy schema migrations
 
-`migrations-postgres/0001_initial.sql` is the single baseline for this
-unshipped database. Fly runs `llm-notary-api-migrate` as the API release command
-before replacing any API Machines. SQLx takes an advisory migration lock, and
-a migration failure stops the release while the previous Machines continue
-serving traffic.
+`migrations-postgres/0001_initial.sql` is the PostgreSQL baseline. Do not alter
+it: future PostgreSQL schema changes must be new, forward-only migration files.
+Fly runs `llm-notary-api-migrate` as the API release command before replacing
+any API Machines. Compose runs the same one-shot `migrate` service before it
+starts API replicas. SQLx takes an advisory migration lock; a migration failure
+stops the new API replicas from starting.
 
-1. Preserve the platform signing key, notary directory, and existing `api_data`
-   volume as rollback evidence. Do not generate new signing material.
+1. Preserve the platform signing key and notary directory as rollback evidence.
+   Do not generate new signing material.
 2. Merge the release. The normal Fly deploy invokes the release command against
    the staged pooled `DATABASE_URL`; no database secret belongs in GitHub.
-3. Confirm the release command created exactly the baseline migration and that
-   two Machines become healthy:
+3. Confirm the release command applied pending migrations and that two Machines
+   become healthy:
 
    ```bash
    fly status -a llm-notary-prod-api
@@ -54,13 +55,7 @@ serving traffic.
    publication/admission cycle. Confirm the public object keys, sizes, and
    SHA-256 values match their private objects.
 
-The current PostgreSQL schema history may be flattened because no production
-PostgreSQL data is being preserved. After this cutover, never alter
-`0001_initial.sql`: future PostgreSQL schema changes must be new, forward-only
-migration files.
-
-For source development or a Compose deployment, run the same migrator once
-before starting or scaling API replicas:
+For source development, run the same migrator before starting the API:
 
 ```bash
 DATABASE_URL='postgresql://…?sslmode=require' \
@@ -80,11 +75,17 @@ connection budget:
 fly scale count 3 -a llm-notary-prod-api
 ```
 
-For a same-host Compose deployment:
+For a same-host Compose deployment, the `migrate` service is a required API
+dependency. It applies pending migrations before any API replica starts. Deploy
+with the root-owned environment file outside the repository:
 
 ```bash
-docker compose --env-file deploy/digitalocean/deploy.env up -d --scale api=3
+docker compose --env-file /etc/llm-notary/compose.env up -d --scale api=3
 ```
+
+If a deployment tool updates an image without recreating services, include its
+equivalent of `--force-recreate migrate api` so the one-shot service runs the
+new image before the API is replaced.
 
 Watch `/api/readyz`, API error rate, queued-admission age, and Neon connection
 usage. If PostgreSQL becomes unavailable, readiness fails and Fly removes the

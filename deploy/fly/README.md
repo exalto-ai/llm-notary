@@ -41,7 +41,7 @@ and its signing-key directory. The production endpoint is
 
 Never create a new platform signing key during a migration. Preserve the
 existing key and notary directory so published stamps and historic proofs
-remain valid. The clean PostgreSQL cutover is documented in
+remain valid. Ongoing PostgreSQL/Neon migration operations are documented in
 [`docs/postgres-neon-migration.md`](../../docs/postgres-neon-migration.md).
 
 Clients cache the signed notary directory by its generation. When moving its
