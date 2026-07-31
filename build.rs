@@ -1,6 +1,6 @@
 use std::env;
 
-const DEFAULT_PUBLIC_ORIGIN: &str = "https://llmnotary.exalto.ai";
+const DEFAULT_PUBLIC_ORIGIN: &str = "https://llm-notary.exalto.ai";
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LLM_NOTARY_PUBLIC_ORIGIN");

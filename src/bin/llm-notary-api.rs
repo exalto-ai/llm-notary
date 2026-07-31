@@ -1321,9 +1321,9 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            callback_url: Url::parse("https://llmnotary.exalto.ai/api/auth/github/callback")
+            callback_url: Url::parse("https://llm-notary.exalto.ai/api/auth/github/callback")
                 .expect("callback URL"),
-            app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
+            app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
@@ -1343,7 +1343,8 @@ mod tests {
                 .any(|(key, value)| key == "state" && value == "state-token")
         );
         assert!(url.query_pairs().any(|(key, value)| {
-            key == "redirect_uri" && value == "https://llmnotary.exalto.ai/api/auth/github/callback"
+            key == "redirect_uri"
+                && value == "https://llm-notary.exalto.ai/api/auth/github/callback"
         }));
         assert!(!url.query_pairs().any(|(key, _)| key == "scope"));
     }
@@ -1388,9 +1389,9 @@ mod tests {
                 http: reqwest::Client::new(),
                 github_client_id: "client-id".to_owned(),
                 github_client_secret: "secret".to_owned(),
-                callback_url: Url::parse("https://llmnotary.exalto.ai/api/auth/github/callback")
+                callback_url: Url::parse("https://llm-notary.exalto.ai/api/auth/github/callback")
                     .expect("callback URL"),
-                app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
+                app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
                 secure_cookies: true,
                 notary_directory: directory_key(),
                 publish: publish::PublishService::disabled_for_test(),
@@ -1464,9 +1465,9 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            callback_url: Url::parse("https://llmnotary.exalto.ai/api/auth/github/callback")
+            callback_url: Url::parse("https://llm-notary.exalto.ai/api/auth/github/callback")
                 .expect("callback URL"),
-            app_url: Url::parse("https://llmnotary.exalto.ai").expect("app URL"),
+            app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),

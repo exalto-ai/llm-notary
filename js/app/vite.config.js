@@ -8,7 +8,7 @@ const brandAssetVersion = createHash('sha256')
   .update(readFileSync(new URL('./public/social-preview.png', import.meta.url)))
   .digest('hex')
   .slice(0, 12);
-const publicOriginUrl = new URL(process.env.VITE_PUBLIC_ORIGIN ?? 'https://llmnotary.exalto.ai');
+const publicOriginUrl = new URL(process.env.VITE_PUBLIC_ORIGIN ?? 'https://llm-notary.exalto.ai');
 if (!['http:', 'https:'].includes(publicOriginUrl.protocol)
   || publicOriginUrl.pathname !== '/'
   || publicOriginUrl.search
