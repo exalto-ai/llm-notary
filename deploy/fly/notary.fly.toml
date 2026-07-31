@@ -1,0 +1,43 @@
+app = "llm-notary-prod-notary"
+primary_region = "sjc"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "../../Dockerfile"
+  build-target = "notary"
+
+[env]
+  LLM_NOTARY_METRICS_LISTEN = "0.0.0.0:9090"
+
+[metrics]
+  # This listener is internal-only; the public raw TCP service remains 7047.
+  port = 9090
+  path = "/metrics"
+
+[[services]]
+  internal_port = 7047
+  protocol = "tcp"
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [services.concurrency]
+    type = "connections"
+    # Leave enough connections for the protocol to report its own typed
+    # capacity rejection instead of having Fly reject the TCP socket first.
+    soft_limit = 12
+    hard_limit = 128
+
+  [[services.ports]]
+    port = 7047
+    handlers = []
+
+[[files]]
+  guest_path = "/run/secrets/notary_signing_key"
+  secret_name = "NOTARY_SIGNING_KEY_B64"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

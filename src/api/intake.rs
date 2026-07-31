@@ -45,15 +45,20 @@ pub struct StoredObject {
 
 impl IntakeStorage {
     pub fn from_env() -> Result<Self> {
-        let Some(bucket) = optional_env("LLM_NOTARY_S3_BUCKET") else {
+        // The LLM_NOTARY_* names are the portable production configuration.
+        // The AWS names let a Fly Tigris bucket provisioned with `fly storage
+        // create` work without copying its generated credentials into another
+        // set of secrets.
+        let Some(bucket) = first_env(&["LLM_NOTARY_S3_BUCKET", "BUCKET_NAME"]) else {
             return Ok(Self::Disabled);
         };
         validate_bucket(&bucket)?;
-        let endpoint = required_env("LLM_NOTARY_S3_ENDPOINT")?;
+        let endpoint = required_env(&["LLM_NOTARY_S3_ENDPOINT", "AWS_ENDPOINT_URL_S3"])?;
         validate_endpoint(&endpoint)?;
-        let region = required_env("LLM_NOTARY_S3_REGION")?;
-        let access_key_id = required_env("LLM_NOTARY_S3_ACCESS_KEY_ID")?;
-        let secret_access_key = required_env("LLM_NOTARY_S3_SECRET_ACCESS_KEY")?;
+        let region = required_env(&["LLM_NOTARY_S3_REGION", "AWS_REGION"])?;
+        let access_key_id = required_env(&["LLM_NOTARY_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"])?;
+        let secret_access_key =
+            required_env(&["LLM_NOTARY_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"])?;
         let prefix = env::var("LLM_NOTARY_S3_PREFIX").unwrap_or_else(|_| "llm-notary".to_owned());
         validate_prefix(&prefix)?;
         let force_path_style = optional_bool_env("LLM_NOTARY_S3_FORCE_PATH_STYLE")?.unwrap_or(true);
@@ -461,8 +466,17 @@ fn optional_env(name: &str) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
-fn required_env(name: &str) -> Result<String> {
-    optional_env(name).ok_or_else(|| anyhow!("{name} must be set when Spaces intake is enabled"))
+fn first_env(names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| optional_env(name))
+}
+
+fn required_env(names: &[&str]) -> Result<String> {
+    first_env(names).ok_or_else(|| {
+        anyhow!(
+            "one of {} must be set when S3-compatible intake storage is enabled",
+            names.join(", ")
+        )
+    })
 }
 
 fn optional_bool_env(name: &str) -> Result<Option<bool>> {

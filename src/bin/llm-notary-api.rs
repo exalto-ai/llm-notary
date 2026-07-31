@@ -2,6 +2,7 @@ use std::{
     env,
     net::SocketAddr,
     str::FromStr,
+    sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 
@@ -51,6 +52,10 @@ const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 const CLI_AUTHORIZATION_TTL_SECS: i64 = 10 * 60;
 const CLI_ACCESS_TOKEN_TTL_SECS: i64 = 15 * 60;
 const CLI_REFRESH_TOKEN_TTL_SECS: i64 = 90 * 24 * 60 * 60;
+const DEFAULT_IDLE_SHUTDOWN_SECS: u64 = 45;
+const IDLE_SHUTDOWN_POLL_SECS: u64 = 1;
+
+static ACTIVE_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Clone)]
 struct AppState {
@@ -278,6 +283,9 @@ async fn main() -> Result<()> {
         .context("LLM_NOTARY_API_LISTEN must be a socket address")?;
     publish::spawn_cleanup(state.clone());
     admission::spawn(state.clone());
+    let idle_shutdown_secs = idle_shutdown_secs()?;
+    let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+    spawn_idle_shutdown(state.clone(), idle_shutdown_secs, shutdown_tx);
     let app = Router::new()
         .route("/metrics", get(metrics))
         .route("/api/healthz", get(health))
@@ -305,12 +313,77 @@ async fn main() -> Result<()> {
         .route("/api/cli/me", get(cli_me))
         .merge(publish::router())
         .merge(admission::router())
-        .with_state(state)
-        .layer(middleware::from_fn(observe_http_request));
+        .layer(middleware::from_fn(observe_http_request))
+        .with_state(state);
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "LLM Notary API listening");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.changed().await;
+        })
+        .await?;
     Ok(())
+}
+
+fn idle_shutdown_secs() -> Result<u64> {
+    let value = match env::var("LLM_NOTARY_IDLE_SHUTDOWN_SECS") {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => return Ok(DEFAULT_IDLE_SHUTDOWN_SECS),
+        Err(error) => return Err(error).context("reading LLM_NOTARY_IDLE_SHUTDOWN_SECS"),
+    };
+    let seconds = value
+        .parse::<u64>()
+        .context("LLM_NOTARY_IDLE_SHUTDOWN_SECS must be a positive integer")?;
+    if seconds == 0 {
+        bail!("LLM_NOTARY_IDLE_SHUTDOWN_SECS must be a positive integer");
+    }
+    Ok(seconds)
+}
+
+fn spawn_idle_shutdown(
+    state: AppState,
+    idle_shutdown_secs: u64,
+    shutdown: tokio::sync::watch::Sender<bool>,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(IDLE_SHUTDOWN_POLL_SECS));
+        let mut idle_since = None;
+        loop {
+            ticker.tick().await;
+            let admission_work = match admission::has_pending_work(&state).await {
+                Ok(pending) => pending,
+                Err(error) => {
+                    tracing::error!(%error, "checking admission idle-shutdown work state failed");
+                    true
+                }
+            };
+            let cleanup_work = match publish::has_pending_cleanup(&state).await {
+                Ok(pending) => pending,
+                Err(error) => {
+                    tracing::error!(
+                        status = %error.status,
+                        error = error.message,
+                        "checking cleanup idle-shutdown work state failed"
+                    );
+                    true
+                }
+            };
+            let pending_work = admission_work || cleanup_work;
+            if pending_work || ACTIVE_REQUESTS.load(Ordering::Relaxed) != 0 {
+                idle_since = None;
+                continue;
+            }
+            let since = idle_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= Duration::from_secs(idle_shutdown_secs) {
+                tracing::info!(
+                    idle_shutdown_secs,
+                    "API has no active requests or background work; shutting down"
+                );
+                let _ = shutdown.send(true);
+                return;
+            }
+        }
+    });
 }
 
 async fn metrics() -> Response {
@@ -332,6 +405,7 @@ async fn observe_http_request(request: Request, next: Next) -> Response {
         .map(MatchedPath::as_str)
         .unwrap_or("unmatched")
         .to_owned();
+    let _activity = (route != "/metrics").then(RequestActivity::start);
     let request_id = Uuid::new_v4().to_string();
     let parent = global::get_text_map_propagator(|propagator| {
         propagator.extract(&HeaderExtractor(request.headers()))
@@ -371,6 +445,21 @@ async fn observe_http_request(request: Request, next: Next) -> Response {
     }
     .instrument(span)
     .await
+}
+
+struct RequestActivity;
+
+impl RequestActivity {
+    fn start() -> Self {
+        ACTIVE_REQUESTS.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for RequestActivity {
+    fn drop(&mut self) {
+        ACTIVE_REQUESTS.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl AppState {

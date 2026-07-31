@@ -99,6 +99,12 @@ llm-notary vault init --passphrase
 Set `LLM_NOTARY_CONFIG_DIR` to use a non-default vault configuration directory,
 which is useful for isolated development and automation.
 
+For noninteractive automation, set `LLM_NOTARY_VAULT_PASSPHRASE_FILE` to a
+private (`0600`) UTF-8 file containing the vault passphrase. The CLI reads the
+file for both `vault init --passphrase` and later proxy/finalize operations;
+it never prints the value. Use a CI secret file, not a command-line argument
+or environment variable containing the passphrase itself.
+
 ## Finalize a bundle
 
 List the locally encrypted bundles, then finalize one. The CLI fetches and

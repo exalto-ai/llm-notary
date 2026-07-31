@@ -206,6 +206,24 @@ pub fn spawn_cleanup(state: AppState) {
     });
 }
 
+/// Returns whether expired uploads still require cleanup before the API can
+/// safely enter its application-managed idle shutdown.
+pub async fn has_pending_cleanup(state: &AppState) -> ApiResult<bool> {
+    let now = unix_timestamp()?;
+    let pending: i64 = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM publish_jobs
+             WHERE state = 'uploading' AND upload_expires_at <= ?
+             LIMIT 1
+         )",
+    )
+    .bind(now)
+    .fetch_one(&state.database)
+    .await
+    .map_err(database_error)?;
+    Ok(pending != 0)
+}
+
 async fn create_publish_job(
     State(state): State<AppState>,
     headers: HeaderMap,
