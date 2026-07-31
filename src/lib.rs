@@ -65,6 +65,7 @@ pub mod cli;
 pub mod normalize;
 pub mod notary_directory;
 pub mod public;
+pub mod telemetry;
 #[cfg(feature = "cli")]
 pub mod vault;
 
