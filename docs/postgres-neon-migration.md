@@ -12,22 +12,31 @@ from the Neon console, retain `sslmode=require`, and keep them only in the
 deployment secret store:
 
 - Set `DATABASE_URL` to the **pooled** URL for normal API replicas.
-- Use the **direct (non-pooled)** URL only for the schema migration command.
+- The schema migrator accepts either Neon URL. Prefer the **direct
+  (non-pooled)** URL for this one-off administrative command when it is
+  available, and keep it out of the long-lived API configuration.
 
-The distinction is required because SQLx protects migrations with PostgreSQL
-advisory locks, which a transaction-pooling endpoint cannot support. Use a
-connection budget of at least the number of API replicas times
-`LLM_NOTARY_DATABASE_MAX_CONNECTIONS`, plus one direct migration connection.
+SQLx protects migrations with a PostgreSQL advisory lock. Neon’s pooler supports
+this migrator, but the migrator remains separate from API startup so that only
+an explicitly invoked process can change schema. Budget at least the number of
+API replicas times `LLM_NOTARY_DATABASE_MAX_CONNECTIONS`, plus the connection
+used by the migrator.
 
-Set the URL without committing it:
+On Fly, stage the pooled URL without committing it. `--stage` avoids restarting
+the still-SQLite-backed Machine; the secret is applied by the subsequent API
+deployment:
 
 ```bash
-fly secrets set DATABASE_URL='postgresql://…?sslmode=require' -a llm-notary-prod-api
+fly secrets set --stage DATABASE_URL='postgresql://…?sslmode=require' \
+  -a llm-notary-prod-api
 ```
 
 For Compose, set the same value in the root-owned
 `deploy/digitalocean/deploy.env` file. The checked-in example deliberately uses
-a non-working hostname and credentials.
+a non-working hostname and credentials. Neon URLs commonly include the
+libpq-specific `channel_binding=require` parameter. SQLx does not implement
+that parameter, so omit it from the stored URL while retaining
+`sslmode=require` to avoid a harmless startup warning.
 
 ## Migrate schema and data
 
@@ -35,17 +44,17 @@ a non-working hostname and credentials.
    platform signing key, notary directory, and the `api_data` Docker volume
    (or its SQLite file) before changing anything. The signing key must not
    change.
-2. Run the included schema migrator once against an empty target database,
-   using the direct (non-pooled) URL:
+2. Run the included schema migrator once against an empty target database. Use
+   the direct (non-pooled) URL when available; the pooled URL is also supported:
 
    ```bash
    DATABASE_URL='postgresql://…?sslmode=require' \
      cargo run --no-default-features --features api --bin llm-notary-api-migrate
    ```
 
-   The migrator uses PostgreSQL's advisory migration lock, so concurrent direct
-   invocations are harmless. It is deliberately separate from API startup:
-   normal replicas must use the pooled URL and never run migrations.
+   The migrator uses PostgreSQL's advisory migration lock, so concurrent
+   invocations serialize. It is deliberately separate from API startup: normal
+   replicas use the pooled URL and never run migrations.
 3. Copy application rows from the SQLite backup into the already-migrated
    PostgreSQL schema using a tested data-only importer. Copy every application
    table except `_sqlx_migrations`; that bookkeeping table contains SQLite
