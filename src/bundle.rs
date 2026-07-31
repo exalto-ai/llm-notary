@@ -76,11 +76,18 @@ pub async fn finalize_bundle(
     trusted_notary_key: &[u8],
     vault: &Vault,
     notary_addr: SocketAddr,
+    max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
 ) -> Result<PathBuf> {
     let bundle = DeferredBundle::load(bundle_path, vault)?;
-    let proof =
-        finalize_deferred_bundle(notary_addr, &bundle, trusted_notary_key, max_frame_bytes).await?;
+    let proof = finalize_deferred_bundle(
+        notary_addr,
+        &bundle,
+        trusted_notary_key,
+        max_attestable_http_bytes,
+        max_frame_bytes,
+    )
+    .await?;
     let capture = make_capture(
         &proof,
         bundle.capture_id().to_owned(),

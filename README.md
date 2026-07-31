@@ -330,10 +330,41 @@ solve proof latency.
 This remains an HTTP/1.1 prototype. WebSocket relaying, multiple notaries, and
 a public transparency log remain future work.
 
-The notary bounds expensive work with private-proof byte/commitment limits, a
-global concurrent-session limit, and a wall-clock session timeout. Deferred
-receipts are replayable by design because the service is stateless, so a public
-deployment still needs authenticated per-user quotas before open access.
+The notary bounds expensive work with private-proof byte/commitment limits,
+independent capture and finalization concurrency budgets, and a wall-clock
+session timeout. The default budgets are eight live captures and one deferred
+finalization. This is a safe starting point for the provided 1 GiB container:
+an isolated 32k-token profile peaked near 71 MiB for capture and 233 MiB for
+finalization. Set `--max-concurrent-captures` and
+`--max-concurrent-finalizations` independently for the worker's CPU and memory
+budget; profile the transcript sizes your users actually produce before
+increasing either. Deferred receipts are replayable by design because the
+service is stateless, so a public deployment still needs per-source or per-user
+quotas. When a mode is full, current local clients receive a typed, retryable
+rejection before TLSN setup: the proxy returns HTTP `503` with `Retry-After`
+and `error.code` set to `capture_at_capacity`, while `finalize` says that the
+encrypted bundle is unchanged and can be retried.
+
+The proxy and finalizer also share a 15 MiB `--max-attestable-http-bytes`
+budget across one provider request and response. The proxy accounts for the
+request before opening the authenticated provider connection and accounts for
+the response as it arrives, so it cannot write a deferred bundle that exceeds
+the default notary private-proof limit. Keep this option the same for capture
+and finalization, and keep the public notary's
+`--max-total-private-chunk-bytes` at least as large. Raising it requires
+raising and capacity-testing the notary's private-proof byte and commitment
+limits as well.
+
+For staged capacity measurements, run the notary in a Linux cgroup v2
+container with `--profile-sessions` and no other workload in that cgroup. It
+emits a structured record tagged `mode=capture` or `mode=finalize`, including
+elapsed time, user/system CPU deltas, sampled and kernel-tracked memory peaks,
+cgroup memory limit, and OOM counters. The opt-in `proxy_tls_split_profile`
+test runs the production protocol against a separate notary container and uses
+an intentionally invalid synthetic provider credential, so it never needs an
+API key or creates an inference. The smaller in-process `proxy_tls_profile`
+test remains useful for deterministic timing regressions but is not a
+substitute for isolated notary measurements.
 
 ## Website sign-in
 
