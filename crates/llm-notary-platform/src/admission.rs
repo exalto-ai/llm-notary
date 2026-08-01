@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    fs,
     path::PathBuf,
     time::{Duration, Instant},
 };
@@ -19,7 +19,15 @@ use tracing::Span;
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiResult, AppState, DatabasePool, database_error, publish::PublishJobRow,
+    ApiError, ApiResult, AppState, DatabasePool,
+    config::{
+        DEFAULT_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN,
+        DEFAULT_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN, DEFAULT_METADATA_INPUT_NANOUSD_PER_TOKEN,
+        DEFAULT_METADATA_MODEL, DEFAULT_METADATA_OUTPUT_NANOUSD_PER_TOKEN,
+        DEFAULT_METADATA_WEEKLY_BUDGET_CENTS, MetadataConfig, NANOUSD_PER_CENT,
+    },
+    database_error,
+    publish::PublishJobRow,
     unix_timestamp,
 };
 use llm_notary_core::{
@@ -37,16 +45,10 @@ const MAX_METADATA_PER_TICK: usize = 4;
 const METADATA_RETRY_SECS: i64 = 60 * 60;
 const METADATA_CLAIM_TIMEOUT_SECS: i64 = 5 * 60;
 const RECENT_DOWNLOAD_WINDOW_SECS: i64 = 28 * 24 * 60 * 60;
-const METADATA_MODEL: &str = "gpt-5.6-luna";
+const METADATA_MODEL: &str = DEFAULT_METADATA_MODEL;
 const METADATA_PROMPT_VERSION: &str = "library-metadata/v1";
-const DEFAULT_METADATA_WEEKLY_BUDGET_CENTS: i64 = 1_000;
-const DEFAULT_METADATA_INPUT_NANOUSD_PER_TOKEN: i64 = 200;
-const DEFAULT_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN: i64 = 20;
-const DEFAULT_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN: i64 = 250;
-const DEFAULT_METADATA_OUTPUT_NANOUSD_PER_TOKEN: i64 = 1_200;
 const MAX_METADATA_PROMPT_TOKENS: i64 = 32_000;
 const MAX_METADATA_COMPLETION_TOKENS: i64 = 256;
-const NANOUSD_PER_CENT: i64 = 10_000_000;
 const SECS_PER_WEEK: i64 = 7 * 24 * 60 * 60;
 const ALLOWED_TAGS: &[&str] = &[
     "agent",
@@ -187,34 +189,31 @@ struct ActivityRequest {
 }
 
 impl MetadataService {
-    pub fn from_env() -> Self {
-        let weekly_budget_cents = positive_env_i64(
-            "LLM_NOTARY_LIBRARY_METADATA_WEEKLY_BUDGET_CENTS",
-            DEFAULT_METADATA_WEEKLY_BUDGET_CENTS,
-        );
+    pub fn from_config(config: Option<&MetadataConfig>) -> Self {
+        let Some(config) = config else {
+            return Self::disabled();
+        };
         Self {
-            api_key: env::var("OPENAI_API_KEY")
-                .ok()
-                .filter(|value| !value.is_empty()),
-            model: env::var("LLM_NOTARY_LIBRARY_METADATA_MODEL")
-                .unwrap_or_else(|_| METADATA_MODEL.to_owned()),
-            weekly_budget_nanousd: weekly_budget_cents.saturating_mul(NANOUSD_PER_CENT),
-            input_nanousd_per_token: positive_env_i64(
-                "LLM_NOTARY_LIBRARY_METADATA_INPUT_NANOUSD_PER_TOKEN",
-                DEFAULT_METADATA_INPUT_NANOUSD_PER_TOKEN,
-            ),
-            cached_input_nanousd_per_token: positive_env_i64(
-                "LLM_NOTARY_LIBRARY_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN",
-                DEFAULT_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN,
-            ),
-            cache_write_nanousd_per_token: positive_env_i64(
-                "LLM_NOTARY_LIBRARY_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN",
-                DEFAULT_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN,
-            ),
-            output_nanousd_per_token: positive_env_i64(
-                "LLM_NOTARY_LIBRARY_METADATA_OUTPUT_NANOUSD_PER_TOKEN",
-                DEFAULT_METADATA_OUTPUT_NANOUSD_PER_TOKEN,
-            ),
+            api_key: Some(config.api_key.clone()),
+            model: config.model.clone(),
+            weekly_budget_nanousd: config.weekly_budget_nanousd,
+            input_nanousd_per_token: config.input_nanousd_per_token,
+            cached_input_nanousd_per_token: config.cached_input_nanousd_per_token,
+            cache_write_nanousd_per_token: config.cache_write_nanousd_per_token,
+            output_nanousd_per_token: config.output_nanousd_per_token,
+        }
+    }
+
+    pub(crate) fn disabled() -> Self {
+        Self {
+            api_key: None,
+            model: METADATA_MODEL.to_owned(),
+            weekly_budget_nanousd: DEFAULT_METADATA_WEEKLY_BUDGET_CENTS
+                .saturating_mul(NANOUSD_PER_CENT),
+            input_nanousd_per_token: DEFAULT_METADATA_INPUT_NANOUSD_PER_TOKEN,
+            cached_input_nanousd_per_token: DEFAULT_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN,
+            cache_write_nanousd_per_token: DEFAULT_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN,
+            output_nanousd_per_token: DEFAULT_METADATA_OUTPUT_NANOUSD_PER_TOKEN,
         }
     }
 
@@ -354,14 +353,6 @@ impl MetadataService {
                     .saturating_mul(self.output_nanousd_per_token),
             ))
     }
-}
-
-fn positive_env_i64(name: &str, default: i64) -> i64 {
-    env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<i64>().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(default)
 }
 
 fn weekly_period_start(timestamp: i64) -> i64 {
@@ -1507,7 +1498,7 @@ mod tests {
                 secure_cookies: true,
                 notary_directory: super::super::tests::directory_key(),
                 publish: PublishService::mock(storage.clone()),
-                library_metadata: MetadataService::from_env(),
+                library_metadata: MetadataService::disabled(),
             },
             storage,
         )

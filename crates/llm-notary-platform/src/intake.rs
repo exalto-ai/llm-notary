@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, env, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
 use anyhow::{Context, Result, anyhow, bail};
 use aws_sdk_s3::{
@@ -9,6 +9,8 @@ use aws_sdk_s3::{
 };
 
 pub use llm_notary_core::archive::{ARCHIVE_CONTENT_TYPE, ARCHIVE_FORMAT};
+
+use super::config::StorageConfig;
 
 const SHA256_METADATA: &str = "declared-sha256";
 const FORMAT_METADATA: &str = "archive-format";
@@ -44,43 +46,29 @@ pub struct StoredObject {
 }
 
 impl IntakeStorage {
-    pub fn from_env() -> Result<Self> {
-        // The LLM_NOTARY_* names are the portable production configuration.
-        // The AWS names let a Fly Tigris bucket provisioned with `fly storage
-        // create` work without copying its generated credentials into another
-        // set of secrets.
-        let Some(bucket) = first_env(&["LLM_NOTARY_S3_BUCKET", "BUCKET_NAME"]) else {
+    pub fn from_config(config: &StorageConfig) -> Result<Self> {
+        let Some(storage) = &config.s3 else {
             return Ok(Self::Disabled);
         };
-        validate_bucket(&bucket)?;
-        let endpoint = required_env(&["LLM_NOTARY_S3_ENDPOINT", "AWS_ENDPOINT_URL_S3"])?;
-        validate_endpoint(&endpoint)?;
-        let region = required_env(&["LLM_NOTARY_S3_REGION", "AWS_REGION"])?;
-        let access_key_id = required_env(&["LLM_NOTARY_S3_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"])?;
-        let secret_access_key =
-            required_env(&["LLM_NOTARY_S3_SECRET_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY"])?;
-        let prefix = env::var("LLM_NOTARY_S3_PREFIX").unwrap_or_else(|_| "llm-notary".to_owned());
-        validate_prefix(&prefix)?;
-        let force_path_style = optional_bool_env("LLM_NOTARY_S3_FORCE_PATH_STYLE")?.unwrap_or(true);
 
         let credentials = Credentials::new(
-            access_key_id,
-            secret_access_key,
+            storage.access_key_id.clone(),
+            storage.secret_access_key.clone(),
             None,
             None,
-            "llm-notary-environment",
+            "llm-notary-platform-config",
         );
         let config = aws_sdk_s3::Config::builder()
             .behavior_version(BehaviorVersion::latest())
             .credentials_provider(credentials)
-            .region(Region::new(region))
-            .endpoint_url(endpoint)
-            .force_path_style(force_path_style)
+            .region(Region::new(storage.region.clone()))
+            .endpoint_url(storage.endpoint.as_str())
+            .force_path_style(storage.force_path_style)
             .build();
         Ok(Self::S3(S3IntakeStorage {
             client: Client::from_conf(config),
-            bucket,
-            prefix: prefix.trim_matches('/').to_owned(),
+            bucket: storage.bucket.clone(),
+            prefix: storage.prefix.clone(),
         }))
     }
 
@@ -459,79 +447,6 @@ impl IntakeStorage {
     }
 }
 
-fn optional_env(name: &str) -> Option<String> {
-    env::var(name)
-        .ok()
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-}
-
-fn first_env(names: &[&str]) -> Option<String> {
-    names.iter().find_map(|name| optional_env(name))
-}
-
-fn required_env(names: &[&str]) -> Result<String> {
-    first_env(names).ok_or_else(|| {
-        anyhow!(
-            "one of {} must be set when S3-compatible intake storage is enabled",
-            names.join(", ")
-        )
-    })
-}
-
-fn optional_bool_env(name: &str) -> Result<Option<bool>> {
-    optional_env(name)
-        .map(|value| match value.as_str() {
-            "1" | "true" | "TRUE" => Ok(true),
-            "0" | "false" | "FALSE" => Ok(false),
-            _ => bail!("{name} must be true or false"),
-        })
-        .transpose()
-}
-
-fn validate_endpoint(endpoint: &str) -> Result<()> {
-    let endpoint = url::Url::parse(endpoint).context("LLM_NOTARY_S3_ENDPOINT must be a URL")?;
-    if endpoint.scheme() != "https"
-        && !(endpoint.scheme() == "http"
-            && matches!(endpoint.host_str(), Some("127.0.0.1" | "localhost")))
-    {
-        bail!("LLM_NOTARY_S3_ENDPOINT must use HTTPS except for local test services");
-    }
-    if endpoint.query().is_some() || endpoint.fragment().is_some() {
-        bail!("LLM_NOTARY_S3_ENDPOINT must not contain a query or fragment");
-    }
-    Ok(())
-}
-
-fn validate_bucket(bucket: &str) -> Result<()> {
-    if !(3..=63).contains(&bucket.len())
-        || !bucket
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        || bucket.starts_with('-')
-        || bucket.ends_with('-')
-    {
-        bail!("LLM_NOTARY_S3_BUCKET is not a valid lowercase bucket name");
-    }
-    Ok(())
-}
-
-fn validate_prefix(prefix: &str) -> Result<()> {
-    let trimmed = prefix.trim_matches('/');
-    if trimmed.is_empty()
-        || trimmed.len() > 120
-        || !trimmed
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_'))
-        || trimmed
-            .split('/')
-            .any(|part| part.is_empty() || part == "..")
-    {
-        bail!("LLM_NOTARY_S3_PREFIX must be a safe, non-empty object prefix");
-    }
-    Ok(())
-}
-
 fn validate_identifier(value: &str, label: &str) -> Result<()> {
     if value.is_empty()
         || value.len() > 128
@@ -594,7 +509,9 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires an explicitly configured private S3-compatible test bucket"]
     async fn live_s3_presigned_upload_and_promotion_round_trip() {
-        let storage = IntakeStorage::from_env().expect("S3 intake configuration");
+        let config =
+            super::super::config::StorageConfig::from_env().expect("S3 intake configuration");
+        let storage = IntakeStorage::from_config(&config).expect("S3 intake storage");
         assert!(storage.is_enabled(), "S3 intake must be configured");
         storage.validate().await.expect("S3 bucket access");
         let job_id = Uuid::new_v4().to_string();
