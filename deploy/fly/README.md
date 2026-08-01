@@ -21,10 +21,10 @@ The checked-in configuration targets the `llm-notary-prod` organization. Create
 the three apps and provision a private Flycast address for the API before the
 first deployment. The notary's TLS handler can use Fly's shared IPv4 routing.
 Create a Neon PostgreSQL database and stage its pooled connection URL as the
-`DATABASE_URL` Fly secret with `fly secrets set --stage` before deploying the
-API; staging avoids restarting the previous API revision. The API deploy runs
-the supplied migrator once as Fly's release command before replacing Machines.
-Create a private Tigris bucket for
+`DATABASE_URL` Fly secret and its direct connection URL as the
+`DATABASE_MIGRATIONS_URL` Fly secret before deploying the API; staging avoids
+restarting the previous API revision. The API deploy runs the supplied migrator
+once as Fly's release command before replacing Machines. Create a private Tigris bucket for
 the API; the service accepts the standard `AWS_*` and `BUCKET_NAME` variables
 that `fly storage create` sets, as well as the portable `LLM_NOTARY_S3_*`
 variables used by self-hosted container deployments.

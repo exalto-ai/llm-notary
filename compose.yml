@@ -10,7 +10,7 @@ services:
       target: api
     command: ["llm-notary-api-migrate"]
     environment:
-      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the PostgreSQL connection URL}
+      DATABASE_MIGRATIONS_URL: ${DATABASE_MIGRATIONS_URL:?Set DATABASE_MIGRATIONS_URL to the direct PostgreSQL connection URL used only for migrations}
     read_only: true
     tmpfs:
       - /tmp
