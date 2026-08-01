@@ -3289,6 +3289,7 @@ dependencies = [
  "hyper-util",
  "k256",
  "keyring",
+ "llm-notary-evidence",
  "metrics",
  "metrics-exporter-prometheus",
  "opentelemetry",
@@ -3322,6 +3323,20 @@ dependencies = [
  "uuid",
  "webpki-roots 1.0.9",
  "windows-sys 0.61.2",
+ "zip",
+]
+
+[[package]]
+name = "llm-notary-evidence"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "hex",
+ "k256",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "uuid",
  "zip",
 ]
 

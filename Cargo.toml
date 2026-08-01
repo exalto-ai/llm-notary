@@ -7,6 +7,11 @@ build = "build.rs"
 license = "MIT OR Apache-2.0"
 description = "Local, privacy-preserving TLS-notarized LLM traces"
 
+[workspace]
+members = ["crates/llm-notary-evidence"]
+exclude = ["vendor/tlsn"]
+resolver = "2"
+
 [[bin]]
 name = "llm-notary-server"
 path = "src/bin/llm-notary-server.rs"
@@ -89,6 +94,7 @@ url = "2.5"
 uuid = { version = "1.16", features = ["v4"] }
 webpki-roots = "1"
 zip = { version = "8.4", default-features = false }
+llm-notary-evidence = { path = "crates/llm-notary-evidence" }
 
 # TLSNotary is vendored at a pinned upstream revision. Local patches add the
 # multi-frame Proxy-TLS relay drain fix and the authenticated root-binding
