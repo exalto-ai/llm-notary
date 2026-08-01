@@ -35,8 +35,8 @@ jobs:
       - run: cargo fmt --check
       - name: Install native build tools
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends build-essential
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-targets --all-features
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace --all-targets --all-features
 
   postgres-integration:
     name: PostgreSQL integration
@@ -52,8 +52,8 @@ jobs:
         run: docker info
       - name: Run PostgreSQL-backed API tests
         run: |
-          cargo test --bin llm-notary-api --all-features new_cli_session_is_usable_until_its_refresh_expiry -- --ignored
-          cargo test --bin llm-notary-api --all-features web_users_can_list_and_revoke_only_their_cli_sessions -- --ignored
+          cargo test -p llm-notary-platform new_cli_session_is_usable_until_its_refresh_expiry -- --ignored
+          cargo test -p llm-notary-platform web_users_can_list_and_revoke_only_their_cli_sessions -- --ignored
 
   app:
     name: SPA

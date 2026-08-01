@@ -3269,7 +3269,6 @@ name = "llm-notary"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "aws-sdk-s3",
  "axum",
  "axum-extra",
  "bincode",
@@ -3287,6 +3286,7 @@ dependencies = [
  "k256",
  "llm-notary-client",
  "llm-notary-core",
+  "llm-notary-platform",
   "llm-notary-server",
  "metrics",
  "metrics-exporter-prometheus",
@@ -3392,6 +3392,36 @@ dependencies = [
  "uuid",
  "webpki-roots 1.0.9",
  "zip",
+]
+
+[[package]]
+name = "llm-notary-platform"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "aws-sdk-s3",
+ "axum",
+ "axum-extra",
+ "dotenvy",
+ "hex",
+ "k256",
+ "llm-notary-core",
+ "metrics",
+ "opentelemetry",
+ "opentelemetry-http",
+ "rand 0.9.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "testcontainers-modules",
+ "time",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "url",
+ "uuid",
 ]
 
 [[package]]

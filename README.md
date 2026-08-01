@@ -388,8 +388,8 @@ The PostgreSQL-backed API integration tests use disposable local PostgreSQL
 suite because they require a running Docker daemon. Run them explicitly with:
 
 ```bash
-cargo test --bin llm-notary-api --all-features new_cli_session_is_usable_until_its_refresh_expiry -- --ignored
-cargo test --bin llm-notary-api --all-features web_users_can_list_and_revoke_only_their_cli_sessions -- --ignored
+cargo test -p llm-notary-platform new_cli_session_is_usable_until_its_refresh_expiry -- --ignored
+cargo test -p llm-notary-platform web_users_can_list_and_revoke_only_their_cli_sessions -- --ignored
 ```
 
 They require no database URL, database credentials, or external provider

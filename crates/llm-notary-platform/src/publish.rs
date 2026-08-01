@@ -550,7 +550,7 @@ async fn authenticated_cli_user_id(state: &AppState, headers: &HeaderMap) -> Api
          WHERE cli_access_tokens.token_hash = $1 AND cli_access_tokens.expires_at > $2
            AND cli_sessions.revoked_at IS NULL AND cli_sessions.expires_at > $3",
     )
-    .bind(llm_notary::sha256_hex(token.as_bytes()))
+    .bind(llm_notary_core::sha256_hex(token.as_bytes()))
     .bind(now)
     .bind(now)
     .fetch_optional(&state.database)
@@ -864,7 +864,7 @@ mod tests {
             "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
              VALUES ($1, 'user-1', $2, $3)",
         )
-        .bind(llm_notary::sha256_hex(web_token.as_bytes()))
+        .bind(llm_notary_core::sha256_hex(web_token.as_bytes()))
         .bind(now + super::super::SESSION_TTL_SECS)
         .bind(now)
         .execute(&state.database)
