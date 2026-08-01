@@ -10,7 +10,7 @@ use tlsn::attestation::CryptoProvider;
 
 use crate::{
     Capture, CaptureManifest,
-    archive::VERIFIED_TRACE_PACKAGE_FORMAT,
+    archive::{VERIFIED_TRACE_PACKAGE_FORMAT, create_staging_directory},
     normalize::{render_public_trace, verified_inference_from_capture},
     public::NORMALIZER_VERSION,
     sha256_hex, verify_capture_value_with_provider,
@@ -148,25 +148,9 @@ fn write_package(
             output_dir.display()
         );
     }
-    let parent = output_dir
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    let package_name = output_dir
-        .file_name()
-        .ok_or_else(|| anyhow::anyhow!("trace package path has no directory name"))?
-        .to_string_lossy();
-    let staging = parent.join(format!(".{package_name}.{}.partial", std::process::id()));
-    if staging.exists() {
-        bail!(
-            "trace package staging directory already exists: {}",
-            staging.display()
-        );
-    }
+    let staging = create_staging_directory(output_dir)?;
 
     let result = (|| -> Result<()> {
-        fs::create_dir(&staging).with_context(|| format!("creating {}", staging.display()))?;
         fs::write(staging.join("evidence.tlsn"), &capture.evidence)?;
         fs::write(
             staging.join("request.disclosed.http"),

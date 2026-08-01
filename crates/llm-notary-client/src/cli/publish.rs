@@ -6,7 +6,10 @@ use crate::{
         extract_trace_package_archive,
     },
     bundle::{trace_package_created_at_unix_ms, trace_package_notary_key, verify_trace_package},
-    cli::{api_origin::ApiOrigin, auth, notary, proxy::refresh_notary_directory_from},
+    cli::{
+        api_origin::ApiOrigin, auth, http_client_builder, notary,
+        proxy::refresh_notary_directory_from,
+    },
     sha256_hex,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -133,8 +136,7 @@ async fn submit_archive(
     archive_sha256: &str,
     idempotency_key: &str,
 ) -> Result<PublishJob> {
-    let client = reqwest::Client::builder()
-        .user_agent("llm-notary-cli/0.1")
+    let client = http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("building publication client")?;

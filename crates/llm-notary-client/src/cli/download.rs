@@ -12,7 +12,7 @@ use tokio::io::AsyncWriteExt;
 use url::Url;
 use uuid::Uuid;
 
-use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin};
+use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin, http_client_builder};
 use crate::public::{
     PLATFORM_STAMP_FORMAT, PublicStamp, platform_key_id, validate_public_trace_bytes,
     verify_public_trace_bytes,
@@ -68,8 +68,7 @@ pub async fn run(args: DownloadArgs) -> Result<()> {
     let output = output_path(&publication_id, args.output)?;
     prepare_output(&output, args.overwrite)?;
 
-    let client = Client::builder()
-        .user_agent("llm-notary-cli/0.1")
+    let client = http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("building public download client")?;

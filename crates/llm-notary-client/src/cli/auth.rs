@@ -13,7 +13,7 @@ use clap::Args;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin, storage};
+use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin, http_client_builder, storage};
 
 const KEYCHAIN_SERVICE: &str = "llm-notary";
 const KEYCHAIN_ACCOUNT: &str = "publish-refresh-token";
@@ -91,8 +91,7 @@ pub(crate) struct AuthenticatedApi {
 
 pub async fn login(args: LoginArgs) -> Result<()> {
     let api_origin = ApiOrigin::parse(&args.api)?;
-    let client = reqwest::Client::builder()
-        .user_agent("llm-notary-cli/0.1")
+    let client = http_client_builder()
         .build()
         .context("building API client")?;
     let started = client
@@ -161,7 +160,9 @@ pub async fn login(args: LoginArgs) -> Result<()> {
 
 pub async fn logout() -> Result<()> {
     let credentials = load_credentials()?;
-    let client = reqwest::Client::new();
+    let client = http_client_builder()
+        .build()
+        .context("building API client")?;
     let response = client
         .post(credentials.api_origin.api_url("/api/cli/logout"))
         .json(&RefreshRequest {
@@ -182,7 +183,9 @@ pub async fn logout() -> Result<()> {
 
 pub async fn whoami() -> Result<()> {
     let authenticated = authenticate().await?;
-    let response = reqwest::Client::new()
+    let response = http_client_builder()
+        .build()
+        .context("building API client")?
         .get(authenticated.origin.api_url("/api/cli/me"))
         .bearer_auth(authenticated.access_token)
         .send()
@@ -213,7 +216,9 @@ pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
 }
 
 async fn refresh(credentials: &FileCredentials) -> Result<(String, String)> {
-    let response = reqwest::Client::new()
+    let response = http_client_builder()
+        .build()
+        .context("building API client")?
         .post(credentials.api_origin.api_url("/api/cli/token"))
         .json(&RefreshRequest {
             refresh_token: &credentials.refresh_token,

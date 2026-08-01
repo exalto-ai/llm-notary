@@ -216,7 +216,7 @@ impl SessionProfile {
         let memory_peak_end_bytes = self.cgroup.as_ref().and_then(CgroupV2::memory_peak_bytes);
         let memory_events_end = self.cgroup.as_ref().and_then(CgroupV2::memory_events);
         tracing::info!(
-            mode = session_mode_name(self.mode),
+            mode = session_mode_label(self.mode),
             outcome,
             elapsed_ms = self.started.elapsed().as_millis(),
             cgroup_path = ?self.cgroup.as_ref().map(|cgroup| cgroup.path.display().to_string()),
@@ -235,13 +235,6 @@ impl SessionProfile {
             cgroup_memory_events_oom_kill = ?CgroupMemoryEvents::oom_kill_delta(self.memory_events_start, memory_events_end),
             "notary session resource profile"
         );
-    }
-}
-
-fn session_mode_name(mode: NotarySessionMode) -> &'static str {
-    match mode {
-        NotarySessionMode::Capture => "capture",
-        NotarySessionMode::Finalize => "finalize",
     }
 }
 
@@ -533,7 +526,7 @@ pub async fn run() -> Result<()> {
             let Ok(session_permit) = session_budgets.try_acquire(mode) else {
                 counter!("llm_notary_notary_sessions_total", "mode" => session_mode_label(mode), "outcome" => "rejected_concurrency_limit").increment(1);
                 tracing::warn!(
-                    mode = session_mode_name(mode),
+                    mode = session_mode_label(mode),
                     "notary session rejected at mode concurrency limit"
                 );
                 let rejection = match mode {
