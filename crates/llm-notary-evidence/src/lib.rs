@@ -14,11 +14,5 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
 }
 
-// These two modules are source-linked during the first extraction layer so the
-// existing crate can re-export exactly the same API and tests. The following
-// core-extraction layer moves their sources into this crate; no wire behavior
-// changes across that mechanical relocation.
-#[path = "../../../src/archive.rs"]
 pub mod archive;
-#[path = "../../../src/public.rs"]
 pub mod public;
