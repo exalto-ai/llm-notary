@@ -258,6 +258,7 @@ async fn run_proxy_tls_http_commitment_and_proof(profile: ProofProfile) -> Resul
         }
         builder.build()?
     };
+    let requested_transcript_commitments = transcript_commit.iter_hash().count();
     let mut prove_config = ProveConfig::builder(prover.transcript());
     if profile.commit_http {
         prove_config.transcript_commit(transcript_commit);
@@ -310,14 +311,11 @@ async fn run_proxy_tls_http_commitment_and_proof(profile: ProofProfile) -> Resul
     let output = prove_result?;
     let proof_output_bytes = bincode::serialized_size(&output)?;
     if profile.commit_http {
-        if !profile.chunked_body_commit {
-            assert_eq!(
-                output.transcript_commitments.len(),
-                if profile.minimal_http_commit { 2 } else { 13 },
-            );
-        } else {
-            assert!(!output.transcript_commitments.is_empty());
-        }
+        assert_eq!(
+            output.transcript_commitments.len(),
+            requested_transcript_commitments,
+            "the prover output must include every HTTP commitment requested by the selected profile"
+        );
     }
     let prover_transcript = prover.transcript().clone();
     let transcript_sent = prover_transcript.sent().len();
