@@ -173,7 +173,8 @@ impl Vault {
 /// This is deliberately file-based rather than an environment variable so a
 /// CI runner does not expose the vault key in process listings or command
 /// output.  Interactive commands retain their prompt when it is unset.
-pub(crate) fn passphrase_from_file_env() -> Result<Option<String>> {
+/// Returns an automation passphrase from the configured private file, if any.
+pub fn passphrase_from_file_env() -> Result<Option<String>> {
     let Some(path) = env::var_os(PASSPHRASE_FILE_ENV) else {
         return Ok(None);
     };
@@ -283,9 +284,10 @@ fn derive_passphrase_key(passphrase: &str, salt_hex: &str) -> Result<[u8; 32]> {
     Ok(key)
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-utils"))]
 impl Vault {
-    pub(crate) fn test_only() -> Self {
+    #[doc(hidden)]
+    pub fn test_only() -> Self {
         Self {
             key: [7; 32],
             config_path: PathBuf::from("test-vault"),
