@@ -374,6 +374,44 @@ const docPages = {
   },
 };
 
+const docSubheadings = {
+  'getting-started': new Set([
+    'Supported systems',
+    'Bundle encryption is automatic',
+    'Optional passphrase mode',
+    'What happens online',
+    'What happens at end-of-stream',
+    'OpenRouter + Chat Completions',
+    'Where the API key comes from',
+    'Provider boundary',
+    'Codex + OpenAI',
+    'Run Codex',
+    'Claude Code + Anthropic',
+    'OpenCode + DeepSeek',
+    'Stopping and retrying',
+  ]),
+  'trace-packages': new Set([
+    'Notary discovery is automatic',
+    'Fresh notary connection',
+    'Expect this step to take time',
+    'Interruption behavior',
+    'Artifact responsibilities',
+    'Package versus publication',
+    'Download a Library trace',
+    'Complete context is intentional',
+    'What verification checks',
+    'Offline trust',
+    'Tool-use boundary',
+  ]),
+  publish: new Set([
+    'Submit one finalized package',
+    'Script-friendly output',
+    'Local checks before upload',
+    'Current consent boundary',
+    'Retry behavior',
+  ]),
+};
+
 const docNavigation = [
   { label: 'Start', pages: [['overview', 'Overview'], ['getting-started', 'Install and capture']] },
   { label: 'Understand', pages: [['how-it-works', 'Trust model'], ['trace-packages', 'Trace packages']] },
@@ -400,6 +438,21 @@ function docSlug(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
 }
 
+function docHeadingLevel(pageKey, block) {
+  return docSubheadings[pageKey]?.has(block.heading) ? 3 : 2;
+}
+
+function getDocOutline(pageKey, blocks) {
+  return blocks.reduce((items, block) => {
+    if (docHeadingLevel(pageKey, block) === 3 && items.length) {
+      items.at(-1).children.push(block);
+    } else {
+      items.push({ block, children: [] });
+    }
+    return items;
+  }, []);
+}
+
 function getBlockText(block) {
   return [block.heading, block.body, block.code, block.note, ...(block.items || []), ...(block.steps || []).flatMap((step) => [step.title, step.body]), ...(block.cards || []).flatMap((card) => [card.meta, card.title, card.body]), ...(block.definitions || []).flatMap((item) => [item.term, item.description])].filter(Boolean).join(' ');
 }
@@ -409,6 +462,7 @@ function copyToClipboard(value) {
 }
 
 function DocsBlock({ block, pageKey }) {
+  const Heading = docHeadingLevel(pageKey, block) === 3 ? 'h3' : 'h2';
   const slug = docSlug(block.heading);
   const headingLink = `${window.location.origin}${window.location.pathname}${docHref(pageKey, slug)}`;
   const [copied, setCopied] = useState(false);
@@ -417,7 +471,12 @@ function DocsBlock({ block, pageKey }) {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   };
-  return <section id={slug} className="docs-section"><div className="docs-heading-row"><h2>{block.heading}</h2><button type="button" className="docs-copy-button docs-anchor" onClick={() => copy(headingLink)} aria-label={`${copied ? 'Copied link to' : 'Copy link to'} ${block.heading}`} title={copied ? 'Copied' : 'Copy link'}>{copied ? <CheckIcon /> : <LinkIcon />}</button></div>{block.body && <p>{block.body}</p>}{block.code && <div className="docs-code"><button type="button" className="docs-copy-button" onClick={() => copy(block.code)} aria-label={`Copy code for ${block.heading}`}>{copied ? 'Copied' : 'Copy'}</button><pre><code>{block.code}</code></pre></div>}{block.note && <aside className="docs-note">{block.note}</aside>}{block.items && <ul className="docs-list">{block.items.map((item) => <li key={item}>{item}</li>)}</ul>}{block.steps && <ol className="docs-flow">{block.steps.map((step, index) => <li key={step.title}><span>{String(index + 1).padStart(2, '0')}</span><div><b>{step.title}</b><p>{step.body}</p></div></li>)}</ol>}{block.cards && <div className="docs-card-grid">{block.cards.map((card) => <article key={`${card.meta}-${card.title}`}><span>{card.meta}</span><h3>{card.title}</h3><p>{card.body}</p></article>)}</div>}{block.columns && <div className="docs-boundary-grid">{block.columns.map((column) => <article key={column.title}><h3>{column.title}</h3><ul>{column.items.map((item) => <li key={item}>{item}</li>)}</ul></article>)}</div>}{block.definitions && <dl className="docs-definitions">{block.definitions.map((item) => <div key={item.term}><dt>{item.term}</dt><dd>{item.description}</dd></div>)}</dl>}</section>;
+  return <section id={slug} className={`docs-section docs-section--level-${docHeadingLevel(pageKey, block)}`}><div className="docs-heading-row"><Heading>{block.heading}</Heading><button type="button" className="docs-copy-button docs-anchor" onClick={() => copy(headingLink)} aria-label={`${copied ? 'Copied link to' : 'Copy link to'} ${block.heading}`} title={copied ? 'Copied' : 'Copy link'}>{copied ? <CheckIcon /> : <LinkIcon />}</button></div>{block.body && <p>{block.body}</p>}{block.code && <div className="docs-code"><button type="button" className="docs-copy-button" onClick={() => copy(block.code)} aria-label={`Copy code for ${block.heading}`}>{copied ? 'Copied' : 'Copy'}</button><pre><code>{block.code}</code></pre></div>}{block.note && <aside className="docs-note">{block.note}</aside>}{block.items && <ul className="docs-list">{block.items.map((item) => <li key={item}>{item}</li>)}</ul>}{block.steps && <ol className="docs-flow">{block.steps.map((step, index) => <li key={step.title}><span>{String(index + 1).padStart(2, '0')}</span><div><b>{step.title}</b><p>{step.body}</p></div></li>)}</ol>}{block.cards && <div className="docs-card-grid">{block.cards.map((card) => <article key={`${card.meta}-${card.title}`}><span>{card.meta}</span><h3>{card.title}</h3><p>{card.body}</p></article>)}</div>}{block.columns && <div className="docs-boundary-grid">{block.columns.map((column) => <article key={column.title}><h3>{column.title}</h3><ul>{column.items.map((item) => <li key={item}>{item}</li>)}</ul></article>)}</div>}{block.definitions && <dl className="docs-definitions">{block.definitions.map((item) => <div key={item.term}><dt>{item.term}</dt><dd>{item.description}</dd></div>)}</dl>}</section>;
+}
+
+function DocsOutline({ page, pageKey, section, onNavigate }) {
+  const linkFor = (block) => docHref(pageKey, docSlug(block.heading));
+  return <ol className="docs-toc-list">{getDocOutline(pageKey, page.blocks).map(({ block, children }) => <li key={block.heading}><a className={section === docSlug(block.heading) ? 'active' : ''} href={linkFor(block)} onClick={onNavigate} aria-current={section === docSlug(block.heading) ? 'location' : undefined}>{block.heading}</a>{children.length > 0 && <ol>{children.map((child) => <li key={child.heading}><a className={section === docSlug(child.heading) ? 'active' : ''} href={linkFor(child)} onClick={onNavigate} aria-current={section === docSlug(child.heading) ? 'location' : undefined}>{child.heading}</a></li>)}</ol>}</li>)}</ol>;
 }
 
 function DocsSearch({ open, onClose }) {
@@ -461,7 +520,7 @@ function DocsMobileToolbar({ currentKey, page, section, onSearch }) {
       <button type="button" className={panel === 'toc' ? 'active' : ''} onClick={() => toggle('toc')} aria-expanded={panel === 'toc'} aria-controls="docs-mobile-panel"><span><small>Page</small>On this page</span><ChevronDown aria-hidden="true" /></button>
     </div>
     {panel && <div className="docs-mobile-panel" id="docs-mobile-panel">
-      {panel === 'docs' ? docNavigation.map((group) => <div className="docs-mobile-nav-group" key={group.label}><span>{group.label}</span>{group.pages.map(([key, label]) => <a className={currentKey === key ? 'active' : ''} href={docHref(key)} aria-current={currentKey === key ? 'page' : undefined} onClick={() => setPanel(null)} key={key}>{label}</a>)}</div>) : <div className="docs-mobile-toc"><span>{page.title}</span>{page.blocks.map((block) => <a className={section === docSlug(block.heading) ? 'active' : ''} href={docHref(currentKey, docSlug(block.heading))} onClick={() => setPanel(null)} key={block.heading}>{block.heading}</a>)}</div>}
+      {panel === 'docs' ? docNavigation.map((group) => <div className="docs-mobile-nav-group" key={group.label}><span>{group.label}</span>{group.pages.map(([key, label]) => <a className={currentKey === key ? 'active' : ''} href={docHref(key)} aria-current={currentKey === key ? 'page' : undefined} onClick={() => setPanel(null)} key={key}>{label}</a>)}</div>) : <div className="docs-mobile-toc"><span>{page.title}</span><DocsOutline page={page} pageKey={currentKey} section={section} onNavigate={() => setPanel(null)} /></div>}
     </div>}
   </nav>;
 }
@@ -490,7 +549,7 @@ function Docs({ pageKey, section }) {
     window.addEventListener('keydown', handleShortcut);
     return () => window.removeEventListener('keydown', handleShortcut);
   }, [nextKey, previousKey]);
-  return <><DocsMobileToolbar currentKey={currentKey} page={page} section={section} onSearch={() => setSearchOpen(true)} /><main className="docs-shell"><aside className="docs-sidebar"><button type="button" className="docs-search-trigger" onClick={() => setSearchOpen(true)}>Search <kbd>⌘ K</kbd></button>{docNavigation.map((group) => <div className="docs-nav-group" key={group.label}><span className="docs-group">{group.label}</span>{group.pages.map(([key, label]) => <a className={currentKey === key ? 'active' : ''} href={docHref(key)} aria-current={currentKey === key ? 'page' : undefined} key={key}>{label}</a>)}</div>)}</aside><article className="docs-content"><h1>{page.title}</h1><p className="docs-lead">{page.lead}</p>{page.blocks.map((block) => <DocsBlock block={block} pageKey={currentKey} key={block.heading} />)}<div className="docs-page-nav">{previousKey ? <a href={docHref(previousKey)}><span>Previous</span>{docPages[previousKey].title}</a> : <span />}{next && <a href={next.href}><span>Next</span>{next.label}</a>}</div></article><aside className="docs-toc" aria-label="On this page"><span>On this page</span>{page.blocks.map((block) => <a className={section === docSlug(block.heading) ? 'active' : ''} href={docHref(currentKey, docSlug(block.heading))} key={block.heading}>{block.heading}</a>)}<p><kbd>⌥</kbd> <kbd>←</kbd><kbd>→</kbd> pages</p></aside></main><DocsSearch open={searchOpen} onClose={() => setSearchOpen(false)} /></>;
+  return <><DocsMobileToolbar currentKey={currentKey} page={page} section={section} onSearch={() => setSearchOpen(true)} /><main className="docs-shell"><aside className="docs-sidebar"><button type="button" className="docs-search-trigger" onClick={() => setSearchOpen(true)}>Search <kbd>⌘ K</kbd></button>{docNavigation.map((group) => <div className="docs-nav-group" key={group.label}><span className="docs-group">{group.label}</span>{group.pages.map(([key, label]) => <a className={currentKey === key ? 'active' : ''} href={docHref(key)} aria-current={currentKey === key ? 'page' : undefined} key={key}>{label}</a>)}</div>)}</aside><article className="docs-content"><h1>{page.title}</h1><p className="docs-lead">{page.lead}</p>{page.blocks.map((block) => <DocsBlock block={block} pageKey={currentKey} key={block.heading} />)}<div className="docs-page-nav">{previousKey ? <a href={docHref(previousKey)}><span>Previous</span>{docPages[previousKey].title}</a> : <span />}{next && <a href={next.href}><span>Next</span>{next.label}</a>}</div></article><aside className="docs-toc" aria-label="On this page"><span>On this page</span><DocsOutline page={page} pageKey={currentKey} section={section} /><p><kbd>⌥</kbd> <kbd>←</kbd><kbd>→</kbd> pages</p></aside></main><DocsSearch open={searchOpen} onClose={() => setSearchOpen(false)} /></>;
 }
 
 function formatTraceValue(value) {
