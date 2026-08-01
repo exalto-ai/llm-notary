@@ -428,10 +428,13 @@ mod tests {
     use super::*;
 
     const ID: &str = "3d3d727f-e0b1-432e-be3c-0b2e3ead35d1";
-    const TRACE: &[u8] = include_bytes!("../../tests/fixtures/public-trace/trace.otlp.json");
-    const STAMP: &[u8] = include_bytes!("../../tests/fixtures/public-trace/stamp.json");
-    const TAMPERED_STAMP: &[u8] =
-        include_bytes!("../../tests/fixtures/public-trace/stamp.tampered.json");
+    const TRACE: &[u8] =
+        include_bytes!("../../crates/llm-notary-core/tests/fixtures/public-trace/trace.otlp.json");
+    const STAMP: &[u8] =
+        include_bytes!("../../crates/llm-notary-core/tests/fixtures/public-trace/stamp.json");
+    const TAMPERED_STAMP: &[u8] = include_bytes!(
+        "../../crates/llm-notary-core/tests/fixtures/public-trace/stamp.tampered.json"
+    );
     const PUBLIC_KEY: &str = "02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f";
 
     #[test]
