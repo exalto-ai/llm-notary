@@ -38,6 +38,23 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-targets --all-features
 
+  postgres-integration:
+    name: PostgreSQL integration
+    needs: rust
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
+      - name: Confirm Docker is available
+        run: docker info
+      - name: Run PostgreSQL-backed API tests
+        run: |
+          cargo test --bin llm-notary-api --all-features new_cli_session_is_usable_until_its_refresh_expiry -- --ignored
+          cargo test --bin llm-notary-api --all-features web_users_can_list_and_revoke_only_their_cli_sessions -- --ignored
+
   app:
     name: SPA
     runs-on: ubuntu-24.04
