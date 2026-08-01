@@ -37,7 +37,6 @@ keyring = { version = "3.6", optional = true, features = [
     "crypto-rust",
     "vendored",
 ] }
-llm-notary-evidence = { path = "../llm-notary-evidence" }
 metrics = { version = "0.24.6", default-features = false }
 metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
 opentelemetry = "0.32.0"
@@ -59,9 +58,11 @@ tracing-opentelemetry = "0.33.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 url = "2.5"
 webpki-roots = "1"
+zip = { version = "8.4", default-features = false }
 
 [dev-dependencies]
 rangeset = "0.4"
 tempfile = "3.20"
 tls-server-fixture = { path = "../../vendor/tlsn/crates/tls-server-fixture" }
 tlsn = { path = "../../vendor/tlsn/crates/tlsn", features = ["mozilla-certs", "test-utils"] }
+uuid = { version = "1.16", features = ["v4"] }

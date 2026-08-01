@@ -627,13 +627,12 @@ fn unix_nanos(value: &Value, name: &str) -> Result<u64> {
 mod tests {
     use super::*;
 
-    const FIXTURE_TRACE: &[u8] =
-        include_bytes!("../../../tests/fixtures/public-trace/trace.otlp.json");
-    const FIXTURE_STAMP: &[u8] = include_bytes!("../../../tests/fixtures/public-trace/stamp.json");
+    const FIXTURE_TRACE: &[u8] = include_bytes!("../tests/fixtures/public-trace/trace.otlp.json");
+    const FIXTURE_STAMP: &[u8] = include_bytes!("../tests/fixtures/public-trace/stamp.json");
     const TAMPERED_TRACE: &[u8] =
-        include_bytes!("../../../tests/fixtures/public-trace/trace.tampered.otlp.json");
+        include_bytes!("../tests/fixtures/public-trace/trace.tampered.otlp.json");
     const TAMPERED_STAMP: &[u8] =
-        include_bytes!("../../../tests/fixtures/public-trace/stamp.tampered.json");
+        include_bytes!("../tests/fixtures/public-trace/stamp.tampered.json");
     const PUBLIC_KEY: &str = "02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f";
 
     #[test]

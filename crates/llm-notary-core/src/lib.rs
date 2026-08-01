@@ -25,6 +25,7 @@ use rustls::{
     ClientConfig, RootCertStore as OuterRootCertStore, pki_types::ServerName as TlsServerName,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tlsn::{
     Session,
     attestation::{
@@ -55,10 +56,19 @@ use tokio::{
 use tokio_rustls::TlsConnector;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
-pub use llm_notary_evidence::{CAPTURE_FORMAT, archive, public, sha256_hex};
+/// Versioned source-capture contract referenced by private and public evidence.
+pub const CAPTURE_FORMAT: &str = "llm-notary/capture/v1";
+
+/// Hash bytes using the spelling used by the versioned artifact contracts.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
+
+pub mod archive;
 pub mod bundle;
 pub mod normalize;
 pub mod notary_directory;
+pub mod public;
 pub mod telemetry;
 #[cfg(feature = "cli")]
 pub mod vault;

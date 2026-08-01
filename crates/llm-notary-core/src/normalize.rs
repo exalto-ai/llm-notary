@@ -780,16 +780,16 @@ mod tests {
 
     fn fixture(name: &str) -> Value {
         let source = match name {
-            "openai-chat" => include_str!("../../../tests/fixtures/normalize/openai-chat.json"),
+            "openai-chat" => include_str!("../tests/fixtures/normalize/openai-chat.json"),
             "openai-responses" => {
-                include_str!("../../../tests/fixtures/normalize/openai-responses.json")
+                include_str!("../tests/fixtures/normalize/openai-responses.json")
             }
             "anthropic-messages" => {
-                include_str!("../../../tests/fixtures/normalize/anthropic-messages.json")
+                include_str!("../tests/fixtures/normalize/anthropic-messages.json")
             }
-            "deepseek-chat" => include_str!("../../../tests/fixtures/normalize/deepseek-chat.json"),
+            "deepseek-chat" => include_str!("../tests/fixtures/normalize/deepseek-chat.json"),
             "openrouter-chat" => {
-                include_str!("../../../tests/fixtures/normalize/openrouter-chat.json")
+                include_str!("../tests/fixtures/normalize/openrouter-chat.json")
             }
             _ => panic!("unknown fixture {name}"),
         };

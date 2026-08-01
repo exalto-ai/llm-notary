@@ -3290,7 +3290,6 @@ dependencies = [
  "k256",
  "keyring",
  "llm-notary-core",
- "llm-notary-evidence",
  "metrics",
  "metrics-exporter-prometheus",
  "opentelemetry",
@@ -3346,7 +3345,6 @@ dependencies = [
  "hyper-util",
  "k256",
  "keyring",
- "llm-notary-evidence",
  "metrics",
  "metrics-exporter-prometheus",
  "opentelemetry",
@@ -3370,20 +3368,8 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
- "webpki-roots 1.0.9",
-]
-
-[[package]]
-name = "llm-notary-evidence"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "hex",
- "k256",
- "serde",
- "serde_json",
- "sha2 0.10.9",
  "uuid",
+ "webpki-roots 1.0.9",
  "zip",
 ]
 
