@@ -1,3 +1,0 @@
-The invoice page shows the wrong renewal total.
-Requests time out for two minutes every morning.
-Where is the guide for importing a CSV file?
