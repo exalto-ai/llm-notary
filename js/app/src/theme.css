@@ -54,8 +54,3 @@
 :root[data-theme="dark"] .library-controls input,
 :root[data-theme="dark"] .library-controls select { color: var(--ink); }
 :root[data-theme="dark"] .library-controls select option { background: var(--white); color: var(--ink); }
-:root[data-theme="dark"] .verifier-modal { box-shadow: 16px 16px 0 var(--inverse-surface); }
-:root[data-theme="dark"] .icon-button:hover { background: var(--soft); }
-:root[data-theme="dark"] .drop-zone:hover { background: var(--soft); }
-:root[data-theme="dark"] .verification-state { color: var(--body-copy-muted); }
-:root[data-theme="dark"] .verification-state code { color: var(--ink); }
