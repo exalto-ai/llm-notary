@@ -1,4 +1,9 @@
-use std::{env, net::SocketAddr, time::Instant};
+use std::{
+    env,
+    net::SocketAddr,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, anyhow, bail};
 use axum::{
@@ -48,6 +53,9 @@ const CLI_ACCESS_TOKEN_TTL_SECS: i64 = 15 * 60;
 const CLI_REFRESH_TOKEN_TTL_SECS: i64 = 90 * 24 * 60 * 60;
 const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 5;
 const MAX_DATABASE_CONNECTIONS: u32 = 64;
+const IDLE_SHUTDOWN_POLL_SECS: u64 = 1;
+
+static ACTIVE_REQUESTS: AtomicUsize = AtomicUsize::new(0);
 
 type DatabasePool = PgPool;
 
@@ -275,6 +283,11 @@ async fn main() -> Result<()> {
         .context("LLM_NOTARY_API_LISTEN must be a socket address")?;
     publish::spawn_cleanup(state.clone());
     admission::spawn(state.clone());
+    let shutdown_rx = idle_shutdown_secs()?.map(|idle_shutdown_secs| {
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        spawn_idle_shutdown(state.clone(), idle_shutdown_secs, shutdown_tx);
+        shutdown_rx
+    });
     let app = Router::new()
         .route("/metrics", get(metrics))
         .route("/api/healthz", get(health))
@@ -307,8 +320,81 @@ async fn main() -> Result<()> {
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "LLM Notary API listening");
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(async move {
+            match shutdown_rx {
+                Some(mut shutdown_rx) => {
+                    let _ = shutdown_rx.changed().await;
+                }
+                None => std::future::pending().await,
+            }
+        })
+        .await?;
     Ok(())
+}
+
+fn idle_shutdown_secs() -> Result<Option<u64>> {
+    let value = match env::var("LLM_NOTARY_IDLE_SHUTDOWN_SECS") {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => return Ok(None),
+        Err(error) => return Err(error).context("reading LLM_NOTARY_IDLE_SHUTDOWN_SECS"),
+    };
+    parse_idle_shutdown_secs(&value).map(Some)
+}
+
+fn parse_idle_shutdown_secs(value: &str) -> Result<u64> {
+    let seconds = value
+        .parse::<u64>()
+        .context("LLM_NOTARY_IDLE_SHUTDOWN_SECS must be a positive integer")?;
+    if seconds == 0 {
+        bail!("LLM_NOTARY_IDLE_SHUTDOWN_SECS must be a positive integer");
+    }
+    Ok(seconds)
+}
+
+fn spawn_idle_shutdown(
+    state: AppState,
+    idle_shutdown_secs: u64,
+    shutdown: tokio::sync::watch::Sender<bool>,
+) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(IDLE_SHUTDOWN_POLL_SECS));
+        let mut idle_since = None;
+        loop {
+            ticker.tick().await;
+            let admission_work = match admission::has_pending_work(&state).await {
+                Ok(pending) => pending,
+                Err(error) => {
+                    tracing::error!(%error, "checking admission idle-shutdown work state failed");
+                    true
+                }
+            };
+            let cleanup_work = match publish::has_pending_cleanup(&state).await {
+                Ok(pending) => pending,
+                Err(error) => {
+                    tracing::error!(
+                        status = %error.status,
+                        error = error.message,
+                        "checking cleanup idle-shutdown work state failed"
+                    );
+                    true
+                }
+            };
+            if admission_work || cleanup_work || ACTIVE_REQUESTS.load(Ordering::Relaxed) != 0 {
+                idle_since = None;
+                continue;
+            }
+            let since = idle_since.get_or_insert_with(Instant::now);
+            if since.elapsed() >= Duration::from_secs(idle_shutdown_secs) {
+                tracing::info!(
+                    idle_shutdown_secs,
+                    "API has no active requests or background work; shutting down"
+                );
+                let _ = shutdown.send(true);
+                return;
+            }
+        }
+    });
 }
 
 async fn metrics() -> Response {
@@ -330,6 +416,7 @@ async fn observe_http_request(request: Request, next: Next) -> Response {
         .map(MatchedPath::as_str)
         .unwrap_or("unmatched")
         .to_owned();
+    let _activity = counts_as_request_activity(&route).then(RequestActivity::start);
     let request_id = Uuid::new_v4().to_string();
     let parent = global::get_text_map_propagator(|propagator| {
         propagator.extract(&HeaderExtractor(request.headers()))
@@ -369,6 +456,25 @@ async fn observe_http_request(request: Request, next: Next) -> Response {
     }
     .instrument(span)
     .await
+}
+
+fn counts_as_request_activity(route: &str) -> bool {
+    !matches!(route, "/metrics" | "/api/healthz" | "/api/readyz")
+}
+
+struct RequestActivity;
+
+impl RequestActivity {
+    fn start() -> Self {
+        ACTIVE_REQUESTS.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for RequestActivity {
+    fn drop(&mut self) {
+        ACTIVE_REQUESTS.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl AppState {
@@ -1293,6 +1399,31 @@ use test_database::fresh_database;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn idle_shutdown_seconds_must_be_a_positive_integer() {
+        assert_eq!(parse_idle_shutdown_secs("45").expect("valid duration"), 45);
+        assert!(parse_idle_shutdown_secs("0").is_err());
+        assert!(parse_idle_shutdown_secs("-1").is_err());
+        assert!(parse_idle_shutdown_secs("soon").is_err());
+    }
+
+    #[test]
+    fn observability_probes_do_not_extend_the_idle_window() {
+        assert!(!counts_as_request_activity("/metrics"));
+        assert!(!counts_as_request_activity("/api/healthz"));
+        assert!(!counts_as_request_activity("/api/readyz"));
+        assert!(counts_as_request_activity("/api/notary"));
+    }
+
+    #[test]
+    fn request_activity_is_released_after_the_request_finishes() {
+        let before = ACTIVE_REQUESTS.load(Ordering::Relaxed);
+        let activity = RequestActivity::start();
+        assert_eq!(ACTIVE_REQUESTS.load(Ordering::Relaxed), before + 1);
+        drop(activity);
+        assert_eq!(ACTIVE_REQUESTS.load(Ordering::Relaxed), before);
+    }
 
     pub(super) fn directory_key() -> NotaryDirectory {
         let signing = k256::ecdsa::SigningKey::from_slice(&[7; 32]).unwrap();
