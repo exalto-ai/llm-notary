@@ -12,10 +12,11 @@ RUN cargo install cargo-chef --version 0.1.77 --locked
 FROM chef AS planner
 
 # Keep the Rust build cache independent of the SPA, deployment files, and docs.
-# This image needs only the Rust workspace packages and vendored TLSNotary dependency.
+# This image needs only the Rust workspace packages and vendored TLSNotary dependencies.
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY vendor/tlsn ./vendor/tlsn
+COPY vendor/tlsn-utils ./vendor/tlsn-utils
 COPY migrations-postgres ./migrations-postgres
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -26,11 +27,13 @@ FROM chef AS builder
 # reuse the compiled dependencies on normal source-only changes.
 COPY --from=planner /app/recipe.json recipe.json
 COPY --from=planner /app/vendor/tlsn ./vendor/tlsn
+COPY --from=planner /app/vendor/tlsn-utils ./vendor/tlsn-utils
 RUN cargo chef cook --release --recipe-path recipe.json --package llm-notary-server --package llm-notary-platform
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY vendor/tlsn ./vendor/tlsn
+COPY vendor/tlsn-utils ./vendor/tlsn-utils
 COPY migrations-postgres ./migrations-postgres
 # The API and notary share a dependency graph. Building both here lets BuildKit
 # reuse one compilation for the two final images.
