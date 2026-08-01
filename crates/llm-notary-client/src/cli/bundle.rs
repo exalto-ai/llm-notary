@@ -11,8 +11,10 @@ use crate::{
         finalize_bundle, trace_package_created_at_unix_ms, trace_package_notary_key,
         verify_trace_package,
     },
+    catalog::Catalog,
     cli::notary,
     cli::proxy::{refresh_notary_directory, resolve_notary},
+    config::AgentConfig,
     notary_directory::NotaryEndpoint,
     vault::Vault,
 };
@@ -23,7 +25,11 @@ pub struct FinalizeArgs {
     bundle: PathBuf,
     /// Destination directory for the verified trace package.
     #[arg(long)]
-    output: PathBuf,
+    output: Option<PathBuf>,
+    /// Agent configuration file. When present, the default output location is
+    /// `storage.finalized_dir/<capture-id>` and the package is cataloged.
+    #[arg(long)]
+    config: Option<PathBuf>,
     /// Hex-encoded notary public key used to verify the source evidence.
     #[arg(long)]
     trusted_notary_key: Option<String>,
@@ -66,6 +72,12 @@ pub struct ListArgs {
 pub async fn finalize(args: FinalizeArgs) -> Result<()> {
     let vault = Vault::open_interactive()?;
     let bundle = DeferredBundle::load(&args.bundle, &vault)?;
+    let agent_config = args.config.as_deref().map(AgentConfig::load).transpose()?;
+    let output = match (args.output, agent_config.as_ref()) {
+        (Some(output), _) => output,
+        (None, Some(config)) => config.storage.finalized_dir.join(bundle.capture_id()),
+        (None, None) => bail!("supply --output or --config to select a trace-package destination"),
+    };
     if args.trusted_notary_key.is_none() || args.notary.is_none() {
         refresh_notary_directory().await?;
     }
@@ -100,7 +112,7 @@ pub async fn finalize(args: FinalizeArgs) -> Result<()> {
     );
     let path = finalize_bundle(
         &args.bundle,
-        &args.output,
+        &output,
         &key,
         &vault,
         &notary,
@@ -117,6 +129,15 @@ pub async fn finalize(args: FinalizeArgs) -> Result<()> {
             args.bundle.display()
         )
     })?;
+    if let Some(config) = agent_config
+        && Catalog::open(&config.catalog.path, config.catalog.full_text_search)
+            .and_then(|catalog| catalog.record_finalized_package(bundle.capture_id(), &path))
+            .is_err()
+    {
+        eprintln!(
+            "warning: finalized package was written but could not be added to the local catalog"
+        );
+    }
     println!("wrote verified trace package: {}", path.display());
     println!("trusted notary key: {key_id}");
     Ok(())

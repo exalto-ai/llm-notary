@@ -27,12 +27,17 @@ use super::{
     notary::{parse_directory, pin},
 };
 use crate::{
-    DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredBundle,
-    DeferredCaptureConfig, attestable_request_header_bytes, chunked_request_body,
+    DeferredBundle, DeferredCaptureConfig, attestable_request_header_bytes,
+    catalog::{Catalog, NewCapture},
+    chunked_request_body,
+    config::{AgentConfig, ProviderConfig},
     deferred_streaming_request_to, notary_admission_error,
     notary_directory::{NotaryDirectory, NotaryDirectoryRecord, NotaryEndpoint},
     vault::Vault,
 };
+
+#[cfg(test)]
+use crate::{DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Provider {
@@ -68,7 +73,8 @@ impl Provider {
         }
     }
 
-    fn path_prefix(self) -> &'static str {
+    #[cfg(test)]
+    fn default_path_prefix(self) -> &'static str {
         match self {
             Self::Openai => "/openai",
             Self::Anthropic => "/anthropic",
@@ -76,12 +82,26 @@ impl Provider {
             Self::Openrouter => "/openrouter",
         }
     }
+
+    fn config(self, config: &AgentConfig) -> &ProviderConfig {
+        match self {
+            Self::Openai => &config.providers.openai,
+            Self::Anthropic => &config.providers.anthropic,
+            Self::Deepseek => &config.providers.deepseek,
+            Self::Openrouter => &config.providers.openrouter,
+        }
+    }
 }
 
 #[derive(Args, Debug)]
 pub struct ProxyArgs {
-    #[arg(long, default_value = "127.0.0.1:8787")]
-    listen: SocketAddr,
+    /// Versioned local agent configuration file.
+    #[arg(long)]
+    config: PathBuf,
+
+    /// Override proxy.listen from the configuration file for one run.
+    #[arg(long)]
+    listen: Option<SocketAddr>,
 
     /// Override the notary endpoint discovered from LLM Notary's public API.
     /// Use tcp:// or tls://; a bare host:port remains raw TCP.
@@ -89,18 +109,18 @@ pub struct ProxyArgs {
     notary: Option<NotaryEndpoint>,
 
     /// Where private local source bundles are written.
-    #[arg(long, default_value = "bundles")]
-    bundle_dir: PathBuf,
+    #[arg(long)]
+    bundle_dir: Option<PathBuf>,
 
     /// Largest control-protocol frame accepted from the paired notary.
     /// Must match the notary's --max-frame-bytes setting.
-    #[arg(long, default_value_t = DEFAULT_NOTARY_MAX_FRAME_BYTES)]
-    max_frame_bytes: usize,
+    #[arg(long)]
+    max_frame_bytes: Option<usize>,
 
     /// Maximum combined HTTP request and response bytes that can be privately
     /// committed and finalized by the notary.
-    #[arg(long, default_value_t = DEFAULT_MAX_ATTESTABLE_HTTP_BYTES)]
-    max_attestable_http_bytes: usize,
+    #[arg(long)]
+    max_attestable_http_bytes: Option<usize>,
 }
 
 #[derive(Clone)]
@@ -110,37 +130,55 @@ struct AppState {
     max_frame_bytes: usize,
     max_attestable_http_bytes: usize,
     vault: Arc<Vault>,
+    catalog: Arc<Catalog>,
+    config: Arc<AgentConfig>,
+    config_fingerprint: Arc<str>,
     serial: Arc<Mutex<u64>>,
 }
 
 pub async fn run(args: ProxyArgs) -> Result<()> {
-    if args.max_frame_bytes == 0 || args.max_frame_bytes > u32::MAX as usize {
+    let config = AgentConfig::load(&args.config)?;
+    let listen = args.listen.unwrap_or(config.proxy.listen);
+    let bundle_dir = args
+        .bundle_dir
+        .unwrap_or_else(|| config.storage.bundle_dir.clone());
+    let max_frame_bytes = args
+        .max_frame_bytes
+        .unwrap_or(config.notary.max_frame_bytes);
+    let max_attestable_http_bytes = args
+        .max_attestable_http_bytes
+        .unwrap_or(config.proxy.max_attestable_http_bytes);
+    if max_frame_bytes == 0 || max_frame_bytes > u32::MAX as usize {
         bail!(
             "notary frame limit must be between 1 and {} bytes",
             u32::MAX
         );
     }
-    if args.max_attestable_http_bytes == 0 {
+    if max_attestable_http_bytes == 0 {
         bail!("maximum attestable HTTP bytes must be non-zero");
     }
-    std::fs::create_dir_all(&args.bundle_dir)?;
-    let notary = match args.notary {
+    std::fs::create_dir_all(&bundle_dir)?;
+    let notary = match args.notary.or(config.notary_endpoint()?) {
         Some(notary) => notary,
         None => discover_notary().await?,
     };
     let vault = Vault::open_or_init_interactive().context("opening the local bundle vault (use `llm-notary vault init --passphrase` if this machine has no OS vault)")?;
+    let catalog = Catalog::open(&config.catalog.path, config.catalog.full_text_search)?;
     let state = AppState {
         notary: notary.clone(),
-        bundle_dir: args.bundle_dir,
-        max_frame_bytes: args.max_frame_bytes,
-        max_attestable_http_bytes: args.max_attestable_http_bytes,
+        bundle_dir,
+        max_frame_bytes,
+        max_attestable_http_bytes,
         vault: Arc::new(vault),
+        catalog: Arc::new(catalog),
+        config_fingerprint: Arc::from(config.fingerprint()?),
+        config: Arc::new(config),
         serial: Arc::new(Mutex::new(0)),
     };
     let app = Router::new().fallback(any(proxy)).with_state(state);
-    let listener = tokio::net::TcpListener::bind(args.listen).await?;
+    let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(
-        address = %args.listen,
+        address = %listen,
         notary = %notary,
         providers = ?Provider::ALL,
         "LLM Notary proxy listening"
@@ -255,9 +293,13 @@ fn proxy_error_response(error: &anyhow::Error) -> Response {
 /// removes that segment before the authenticated upstream request is formed.
 /// This keeps the caller from choosing an arbitrary destination while letting
 /// one local listener serve every supported provider.
-fn provider_route(uri: &http::Uri) -> Option<(Provider, http::Uri)> {
+fn provider_route(uri: &http::Uri, config: &AgentConfig) -> Option<(Provider, http::Uri)> {
     for provider in Provider::ALL {
-        let prefix = provider.path_prefix();
+        let provider_config = provider.config(config);
+        if !provider_config.enabled {
+            continue;
+        }
+        let prefix = provider_config.route_prefix.as_str();
         let Some(remainder) = uri.path().strip_prefix(prefix) else {
             continue;
         };
@@ -281,7 +323,7 @@ fn provider_route_not_found_response() -> Response {
     (
         StatusCode::NOT_FOUND,
         [("content-type", "application/json")],
-        r#"{"error":{"message":"provider path required; use /openai, /anthropic, /deepseek, or /openrouter"}}"#,
+        r#"{"error":{"message":"an enabled LLM Notary provider path is required"}}"#,
     )
         .into_response()
 }
@@ -316,7 +358,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         );
         return Ok(response);
     }
-    let Some((provider, upstream_uri)) = provider_route(&parts.uri) else {
+    let Some((provider, upstream_uri)) = provider_route(&parts.uri, &state.config) else {
         return Ok(provider_route_not_found_response());
     };
     let host = provider.host();
@@ -347,12 +389,15 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         })?;
     let input = collect_request_body(body, request_body_limit).await?;
     let streaming = wants_stream(&parts.headers, &input);
+    let request_metadata =
+        request_catalog_metadata(provider, &input, state.config.catalog.prompt_preview_chars);
     tracing::info!(
         provider = host,
         request_body_bytes = input.len(),
         streaming,
         "received provider request for notarization"
     );
+    let operation = upstream_uri.path().to_owned();
     let mut outbound = http::Request::builder()
         .method(parts.method)
         .uri(upstream_uri);
@@ -363,12 +408,24 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     let outbound = outbound.body(chunked_request_body(input))?;
 
     let (capture_id, created_at_unix_ms) = next_capture_metadata(&state).await?;
+    state.catalog.begin_capture(&NewCapture {
+        capture_id: capture_id.clone(),
+        created_at_unix_ms,
+        provider: provider.name().to_owned(),
+        operation,
+        requested_model: request_metadata.requested_model.clone(),
+        streaming,
+        request_bytes: request_body_bytes,
+        prompt_preview: request_metadata.prompt_preview,
+        prompt_preview_truncated: request_metadata.prompt_preview_truncated,
+        config_fingerprint: state.config_fingerprint.to_string(),
+    })?;
     let started = Instant::now();
     let upstream = deferred_streaming_request_to(
         &state.notary,
         host,
         DeferredCaptureConfig {
-            capture_id,
+            capture_id: capture_id.clone(),
             provider_name: provider.name().to_owned(),
             created_at_unix_ms,
             request_body_bytes,
@@ -377,7 +434,16 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         },
         outbound,
     )
-    .await?;
+    .await;
+    let upstream = match upstream {
+        Ok(upstream) => upstream,
+        Err(error) => {
+            let _ = state
+                .catalog
+                .mark_capture_failed(&capture_id, "notary_error");
+            return Err(error);
+        }
+    };
 
     if streaming {
         tracing::info!(
@@ -387,11 +453,14 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         let status = upstream.status;
         let headers = upstream.headers.clone();
         let trace_state = state.clone();
+        let capture_id_for_task = capture_id.clone();
+        let response_preview_limit = state.config.catalog.output_preview_chars;
         let (body_sender, body_receiver) = tokio::sync::mpsc::channel(32);
         tokio::spawn(async move {
             let mut upstream = upstream;
             let mut received_first_chunk = false;
             let mut client_connected = true;
+            let mut output_preview = StreamingOutputPreview::new(provider, response_preview_limit);
             while let Some(chunk) = upstream.body.recv().await {
                 if !received_first_chunk {
                     received_first_chunk = true;
@@ -399,6 +468,9 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                         elapsed_ms = started.elapsed().as_millis(),
                         "Proxy-TLS received first upstream response chunk"
                     );
+                }
+                if let Ok(bytes) = &chunk {
+                    output_preview.push(bytes);
                 }
                 if client_connected && body_sender.send(chunk).await.is_err() {
                     // Keep draining the provider stream so a caller
@@ -416,17 +488,46 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                 Ok(Ok(bundle)) => {
                     match save_bundle(&trace_state.bundle_dir, &bundle, &trace_state.vault) {
                         Ok(path) => {
-                            tracing::info!(bundle = %path.display(), provider = provider.host(), elapsed_ms = started.elapsed().as_millis(), "wrote deferred streaming bundle")
+                            let response_bytes = output_preview.response_bytes;
+                            let preview = output_preview.finish();
+                            let completed_at = current_unix_ms().unwrap_or(created_at_unix_ms);
+                            if trace_state
+                                .catalog
+                                .complete_capture(
+                                    &capture_id_for_task,
+                                    completed_at,
+                                    elapsed_ms(started),
+                                    status.as_u16(),
+                                    response_bytes,
+                                    None,
+                                    &preview.text,
+                                    preview.truncated,
+                                    &path,
+                                )
+                                .is_err()
+                            {
+                                tracing::warn!(capture_id = %capture_id_for_task, "could not index deferred streaming bundle");
+                            }
+                            tracing::info!(capture_id = %capture_id_for_task, provider = provider.host(), elapsed_ms = started.elapsed().as_millis(), "wrote deferred streaming bundle")
                         }
                         Err(error) => {
+                            let _ = trace_state
+                                .catalog
+                                .mark_capture_failed(&capture_id_for_task, "bundle_store_error");
                             tracing::warn!(%error, "could not save deferred streaming bundle")
                         }
                     }
                 }
                 Ok(Err(error)) => {
+                    let _ = trace_state
+                        .catalog
+                        .mark_capture_failed(&capture_id_for_task, "capture_error");
                     tracing::warn!(%error, "stream ended without an LLM Notary deferred bundle")
                 }
                 Err(error) => {
+                    let _ = trace_state
+                        .catalog
+                        .mark_capture_failed(&capture_id_for_task, "capture_task_error");
                     tracing::warn!(%error, "stream deferred capture task exited")
                 }
             }
@@ -435,6 +536,10 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         let mut response = Response::new(Body::from_stream(ReceiverStream::new(body_receiver)));
         *response.status_mut() = status;
         copy_end_to_end_headers(response.headers_mut(), &headers);
+        response.headers_mut().insert(
+            "x-llm-notary-capture-id",
+            HeaderValue::from_str(&capture_id)?,
+        );
         return Ok(response);
     }
 
@@ -443,21 +548,56 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     let mut upstream = upstream;
     let mut body = Vec::new();
     while let Some(chunk) = upstream.body.recv().await {
-        body.extend_from_slice(&chunk?);
+        match chunk {
+            Ok(chunk) => body.extend_from_slice(&chunk),
+            Err(error) => {
+                let _ = state
+                    .catalog
+                    .mark_capture_failed(&capture_id, "response_error");
+                return Err(error.into());
+            }
+        }
     }
     let bundle = upstream
         .bundle
         .await
         .context("deferred bundle task exited")??;
-    let path = save_bundle(&state.bundle_dir, &bundle, &state.vault)?;
-    tracing::info!(bundle = %path.display(), provider = host, "wrote deferred bundle");
+    let path = match save_bundle(&state.bundle_dir, &bundle, &state.vault) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = state
+                .catalog
+                .mark_capture_failed(&capture_id, "bundle_store_error");
+            return Err(error);
+        }
+    };
+    let response_metadata =
+        response_catalog_metadata(provider, &body, state.config.catalog.output_preview_chars);
+    if state
+        .catalog
+        .complete_capture(
+            &capture_id,
+            current_unix_ms().unwrap_or(created_at_unix_ms),
+            elapsed_ms(started),
+            status.as_u16(),
+            body.len(),
+            response_metadata.response_model.as_deref(),
+            &response_metadata.output_preview,
+            response_metadata.output_preview_truncated,
+            &path,
+        )
+        .is_err()
+    {
+        tracing::warn!(capture_id = %capture_id, "could not index deferred bundle");
+    }
+    tracing::info!(capture_id = %capture_id, provider = host, "wrote deferred bundle");
 
     let mut response = Response::new(Body::from(body));
     *response.status_mut() = status;
     copy_end_to_end_headers(response.headers_mut(), &headers);
     response.headers_mut().insert(
-        "x-llm-notary-bundle",
-        HeaderValue::from_str(&path.display().to_string())?,
+        "x-llm-notary-capture-id",
+        HeaderValue::from_str(&capture_id)?,
     );
     Ok(response)
 }
@@ -504,9 +644,317 @@ async fn next_capture_metadata(state: &AppState) -> Result<(String, u64)> {
         .try_into()
         .map_err(|_| anyhow::anyhow!("capture timestamp does not fit in u64"))?;
     Ok((
-        format!("cap-{created_at_unix_ms}-{serial:04}"),
+        format!(
+            "cap-{created_at_unix_ms}-{serial:04}-{}",
+            uuid::Uuid::new_v4().simple()
+        ),
         created_at_unix_ms,
     ))
+}
+
+fn current_unix_ms() -> Result<u64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock is before the Unix epoch")?
+        .as_millis()
+        .try_into()
+        .context("current time does not fit in u64 milliseconds")
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+#[derive(Default)]
+struct RequestCatalogMetadata {
+    requested_model: Option<String>,
+    prompt_preview: String,
+    prompt_preview_truncated: bool,
+}
+
+#[derive(Default)]
+struct ResponseCatalogMetadata {
+    response_model: Option<String>,
+    output_preview: String,
+    output_preview_truncated: bool,
+}
+
+struct Preview {
+    text: String,
+    truncated: bool,
+}
+
+/// Pulls only known textual message fields from a supported request shape. It
+/// intentionally never indexes raw HTTP, headers, or tool-call arguments.
+fn request_catalog_metadata(
+    provider: Provider,
+    bytes: &[u8],
+    maximum_preview_chars: usize,
+) -> RequestCatalogMetadata {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return RequestCatalogMetadata::default();
+    };
+    let requested_model = value
+        .get("model")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let mut preview = LimitedText::new(maximum_preview_chars);
+    match provider {
+        Provider::Openai | Provider::Deepseek | Provider::Openrouter => {
+            append_messages(&mut preview, value.get("messages"));
+            append_messages(&mut preview, value.get("input"));
+        }
+        Provider::Anthropic => {
+            append_text_value(&mut preview, value.get("system"));
+            append_messages(&mut preview, value.get("messages"));
+        }
+    }
+    let preview = preview.finish();
+    RequestCatalogMetadata {
+        requested_model,
+        prompt_preview: preview.text,
+        prompt_preview_truncated: preview.truncated,
+    }
+}
+
+/// Pulls visible assistant text from a complete non-streaming response.
+fn response_catalog_metadata(
+    provider: Provider,
+    bytes: &[u8],
+    maximum_preview_chars: usize,
+) -> ResponseCatalogMetadata {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+        return ResponseCatalogMetadata::default();
+    };
+    let mut preview = LimitedText::new(maximum_preview_chars);
+    append_response_text(provider, &mut preview, &value, false);
+    let preview = preview.finish();
+    ResponseCatalogMetadata {
+        response_model: value
+            .get("model")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        output_preview: preview.text,
+        output_preview_truncated: preview.truncated,
+    }
+}
+
+/// Incrementally extracts text from provider SSE events without retaining the
+/// raw stream in the catalog.
+struct StreamingOutputPreview {
+    provider: Provider,
+    preview: LimitedText,
+    pending: Vec<u8>,
+    response_bytes: usize,
+}
+
+impl StreamingOutputPreview {
+    fn new(provider: Provider, maximum_preview_chars: usize) -> Self {
+        Self {
+            provider,
+            preview: LimitedText::new(maximum_preview_chars),
+            pending: Vec::new(),
+            response_bytes: 0,
+        }
+    }
+
+    fn push(&mut self, bytes: &[u8]) {
+        self.response_bytes = self.response_bytes.saturating_add(bytes.len());
+        self.pending.extend_from_slice(bytes);
+        while let Some(newline) = self.pending.iter().position(|byte| *byte == b'\n') {
+            let line = self.pending.drain(..=newline).collect::<Vec<_>>();
+            let line = line.strip_suffix(b"\n").unwrap_or(&line);
+            let line = line.strip_suffix(b"\r").unwrap_or(line);
+            let Some(data) = line.strip_prefix(b"data:") else {
+                continue;
+            };
+            let data = trim_ascii(data);
+            if data == b"[DONE]" {
+                continue;
+            }
+            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+                append_response_text(self.provider, &mut self.preview, &value, true);
+            }
+        }
+    }
+
+    fn finish(mut self) -> Preview {
+        // Some providers send a final JSON body rather than SSE. It is safe to
+        // ignore an incomplete event rather than index raw bytes.
+        self.pending.clear();
+        self.preview.finish()
+    }
+}
+
+struct LimitedText {
+    maximum_chars: usize,
+    text: String,
+    truncated: bool,
+}
+
+impl LimitedText {
+    fn new(maximum_chars: usize) -> Self {
+        Self {
+            maximum_chars,
+            text: String::new(),
+            truncated: false,
+        }
+    }
+
+    fn push(&mut self, text: &str) {
+        if text.is_empty() || self.truncated || self.maximum_chars == 0 {
+            return;
+        }
+        let used = self.text.chars().count();
+        let available = self.maximum_chars.saturating_sub(used);
+        if available == 0 {
+            self.truncated = true;
+            return;
+        }
+        let mut characters = text.chars();
+        let prefix = characters.by_ref().take(available).collect::<String>();
+        self.text.push_str(&prefix);
+        if characters.next().is_some() {
+            self.truncated = true;
+        }
+    }
+
+    fn separator(&mut self) {
+        if !self.text.is_empty() {
+            self.push("\n");
+        }
+    }
+
+    fn finish(self) -> Preview {
+        Preview {
+            text: self.text,
+            truncated: self.truncated,
+        }
+    }
+}
+
+fn append_messages(preview: &mut LimitedText, value: Option<&serde_json::Value>) {
+    let Some(messages) = value.and_then(serde_json::Value::as_array) else {
+        append_text_value(preview, value);
+        return;
+    };
+    for message in messages {
+        let Some(message) = message.as_object() else {
+            append_text_value(preview, Some(message));
+            continue;
+        };
+        let content = message.get("content").or_else(|| message.get("text"));
+        let mut message_preview = LimitedText::new(usize::MAX);
+        append_text_value(&mut message_preview, content);
+        let message_preview = message_preview.finish();
+        if message_preview.text.is_empty() {
+            continue;
+        }
+        preview.separator();
+        if let Some(role) = message.get("role").and_then(serde_json::Value::as_str) {
+            preview.push(role);
+            preview.push(": ");
+        }
+        preview.push(&message_preview.text);
+    }
+}
+
+fn append_text_value(preview: &mut LimitedText, value: Option<&serde_json::Value>) {
+    let Some(value) = value else {
+        return;
+    };
+    if let Some(text) = value.as_str() {
+        preview.push(text);
+        return;
+    }
+    let Some(items) = value.as_array() else {
+        return;
+    };
+    for item in items {
+        if let Some(text) = item.as_str() {
+            preview.push(text);
+            continue;
+        }
+        let Some(item) = item.as_object() else {
+            continue;
+        };
+        let kind = item.get("type").and_then(serde_json::Value::as_str);
+        if matches!(kind, Some("text" | "input_text" | "output_text"))
+            && let Some(text) = item.get("text").and_then(serde_json::Value::as_str)
+        {
+            preview.push(text);
+        }
+    }
+}
+
+fn append_response_text(
+    provider: Provider,
+    preview: &mut LimitedText,
+    value: &serde_json::Value,
+    streaming: bool,
+) {
+    match provider {
+        Provider::Anthropic => {
+            if streaming {
+                if let Some(text) = value
+                    .get("delta")
+                    .and_then(|delta| delta.get("text"))
+                    .and_then(serde_json::Value::as_str)
+                {
+                    preview.push(text);
+                }
+            } else {
+                append_text_value(preview, value.get("content"));
+            }
+        }
+        Provider::Openai | Provider::Deepseek | Provider::Openrouter => {
+            if streaming {
+                if let Some(choices) = value.get("choices").and_then(serde_json::Value::as_array) {
+                    for choice in choices {
+                        if let Some(text) = choice
+                            .get("delta")
+                            .and_then(|delta| delta.get("content"))
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            preview.push(text);
+                        }
+                    }
+                }
+                if let Some(text) = value.get("delta").and_then(serde_json::Value::as_str) {
+                    preview.push(text);
+                }
+            } else {
+                if let Some(text) = value.get("output_text").and_then(serde_json::Value::as_str) {
+                    preview.push(text);
+                }
+                if let Some(choices) = value.get("choices").and_then(serde_json::Value::as_array) {
+                    for choice in choices {
+                        append_text_value(
+                            preview,
+                            choice
+                                .get("message")
+                                .and_then(|message| message.get("content")),
+                        );
+                    }
+                }
+                if let Some(output) = value.get("output").and_then(serde_json::Value::as_array) {
+                    for item in output {
+                        append_text_value(preview, item.get("content"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn trim_ascii(mut bytes: &[u8]) -> &[u8] {
+    while bytes.first().is_some_and(u8::is_ascii_whitespace) {
+        bytes = &bytes[1..];
+    }
+    while bytes.last().is_some_and(u8::is_ascii_whitespace) {
+        bytes = &bytes[..bytes.len() - 1];
+    }
+    bytes
 }
 
 fn wants_stream(headers: &HeaderMap, input: &[u8]) -> bool {
@@ -573,12 +1021,16 @@ mod tests {
     use super::*;
 
     fn state() -> AppState {
+        let config = AgentConfig::default();
         AppState {
             notary: "127.0.0.1:7047".parse().unwrap(),
             bundle_dir: PathBuf::from("bundles"),
             max_frame_bytes: DEFAULT_NOTARY_MAX_FRAME_BYTES,
             max_attestable_http_bytes: DEFAULT_MAX_ATTESTABLE_HTTP_BYTES,
             vault: Arc::new(Vault::test_only()),
+            catalog: Arc::new(Catalog::open(std::path::Path::new(":memory:"), true).unwrap()),
+            config_fingerprint: Arc::from(config.fingerprint().unwrap()),
+            config: Arc::new(config),
             serial: Arc::new(Mutex::new(0)),
         }
     }
@@ -611,30 +1063,87 @@ mod tests {
     fn provider_adapters_pin_their_authenticated_hosts() {
         assert_eq!(Provider::Openrouter.host(), "openrouter.ai");
         assert_eq!(Provider::Openrouter.name(), "openrouter");
+        assert_eq!(Provider::Openrouter.default_path_prefix(), "/openrouter");
     }
 
     #[test]
     fn provider_routes_select_the_adapter_and_strip_its_prefix() {
+        let config = AgentConfig::default();
         let uri = "/openai/v1/responses?stream=true".parse().unwrap();
-        let (provider, upstream_uri) = provider_route(&uri).unwrap();
+        let (provider, upstream_uri) = provider_route(&uri, &config).unwrap();
         assert_eq!(provider, Provider::Openai);
         assert_eq!(upstream_uri, "/v1/responses?stream=true");
 
         let uri = "/deepseek/chat/completions".parse().unwrap();
-        let (provider, upstream_uri) = provider_route(&uri).unwrap();
+        let (provider, upstream_uri) = provider_route(&uri, &config).unwrap();
         assert_eq!(provider, Provider::Deepseek);
         assert_eq!(upstream_uri, "/chat/completions");
     }
 
     #[test]
     fn provider_routes_only_match_a_complete_first_path_segment() {
+        let config = AgentConfig::default();
         let uri = "/openaiish/v1/responses".parse().unwrap();
-        assert!(provider_route(&uri).is_none());
+        assert!(provider_route(&uri, &config).is_none());
 
         let uri = "/anthropic".parse().unwrap();
-        let (provider, upstream_uri) = provider_route(&uri).unwrap();
+        let (provider, upstream_uri) = provider_route(&uri, &config).unwrap();
         assert_eq!(provider, Provider::Anthropic);
         assert_eq!(upstream_uri.to_string(), "/");
+    }
+
+    #[test]
+    fn disabled_provider_routes_are_not_available() {
+        let mut config = AgentConfig::default();
+        config.providers.openai.enabled = false;
+        let uri = "/openai/v1/responses".parse().unwrap();
+        assert!(provider_route(&uri, &config).is_none());
+    }
+
+    #[test]
+    fn catalog_previews_extract_textual_messages_without_headers() {
+        let request = request_catalog_metadata(
+            Provider::Openai,
+            br#"{"model":"gpt-5","messages":[{"role":"system","content":"Be concise"},{"role":"user","content":"Explain pricing"}]}"#,
+            1_000,
+        );
+        assert_eq!(request.requested_model.as_deref(), Some("gpt-5"));
+        assert_eq!(
+            request.prompt_preview,
+            "system: Be concise\nuser: Explain pricing"
+        );
+
+        let response = response_catalog_metadata(
+            Provider::Openai,
+            br#"{"model":"gpt-5","choices":[{"message":{"content":"Pricing is usage based."}}]}"#,
+            1_000,
+        );
+        assert_eq!(response.response_model.as_deref(), Some("gpt-5"));
+        assert_eq!(response.output_preview, "Pricing is usage based.");
+    }
+
+    #[test]
+    fn streaming_preview_handles_split_sse_events() {
+        let mut preview = StreamingOutputPreview::new(Provider::Openai, 1_000);
+        let first = br#"data: {"choices":[{"delta":{"content":"Price"}}]}"#;
+        let second = br#"data: {"choices":[{"delta":{"content":"d"}}]}"#;
+        preview.push(first);
+        preview.push(b"\n\n");
+        preview.push(second);
+        preview.push(b"\n\n");
+        assert_eq!(preview.response_bytes, first.len() + second.len() + 4);
+        assert_eq!(preview.finish().text, "Priced");
+    }
+
+    #[test]
+    fn zero_preview_limit_omits_text_without_marking_it_truncated() {
+        let request = request_catalog_metadata(
+            Provider::Openai,
+            br#"{"messages":[{"role":"user","content":"Do not store this preview"}]}"#,
+            0,
+        );
+        assert!(request.prompt_preview.is_empty());
+        assert!(!request.prompt_preview_truncated);
     }
 
     #[test]

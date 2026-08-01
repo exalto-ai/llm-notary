@@ -76,12 +76,19 @@ The notary prints its public key at startup. Retain that value for local or
 private deployments, where it is supplied with `--trusted-notary-key` as the
 explicit trust anchor. Production clients discover and pin the public key.
 
-In another terminal start the proxy. By default the released CLI discovers the
-current public notary endpoint from `$LLM_NOTARY_PUBLIC_ORIGIN/api/notary`.
-For a local notary, pass its address explicitly:
+In another terminal create the local agent configuration, then start the
+proxy. The generated configuration enables all built-in providers, writes
+encrypted source bundles under the platform data directory, and creates a
+SQLite capture catalog with 1,000-character prompt and output previews. By
+default the released client discovers the current public notary endpoint from
+`$LLM_NOTARY_PUBLIC_ORIGIN/api/notary`. For a local notary, set
+`notary.endpoint = "tcp://127.0.0.1:7047"` in the generated file.
 
 ```bash
-cargo run -p llm-notary-client --bin llm-notary -- proxy start --notary 127.0.0.1:7047 --bundle-dir bundles
+llm-notary config init
+# Edit ~/.config/llm-notary/agent.toml and set notary.endpoint for local development.
+llm-notary config validate
+llm-notary proxy start --config ~/.config/llm-notary/agent.toml
 ```
 
 One listener serves every supported provider at a fixed first path segment. The
@@ -96,9 +103,16 @@ request, and it does not accept a provider URL from the caller:
 | OpenRouter | `http://127.0.0.1:8787/openrouter/api/v1` | `/api/v1/...` |
 
 Keep the API key in the SDK as usual. Each completed request writes an
-encrypted `bundles/cap-....llmbundle`. On
-macOS and Windows, the default vault key is stored in the OS credential store;
-on Linux it uses the desktop secret service. To use a passphrase instead
+encrypted `.llmbundle` and records a local catalog entry. The catalog stores
+the provider, requested and response model when available, request/response
+size and status, plus short plain-text prompt and output previews. Its FTS5
+index searches those previews, so `llm-notary captures list --query pricing`
+can locate a capture without decrypting every bundle. The catalog deliberately
+does not store HTTP header values, cookies, or credentials. Its previews are
+plain local text; set either `catalog.*_preview_chars` to `0` if that is not
+appropriate for a particular machine. On macOS and Windows, the default vault
+key is stored in the OS credential store; on Linux it uses the desktop secret
+service. To use a passphrase instead
 (including an intentionally empty passphrase), initialize the vault before
 starting the proxy:
 
@@ -117,13 +131,16 @@ or environment variable containing the passphrase itself.
 
 ## Finalize a bundle
 
-List the locally encrypted bundles, then finalize one. The CLI fetches and
-caches the production directory key automatically:
+Search the locally cataloged captures, then finalize one. The CLI fetches and
+caches the production directory key automatically. Supplying `--config` uses
+the configured finalized-package directory and adds the retained package to
+the capture's catalog entry; it does not remove the encrypted source bundle:
 
 ```bash
-llm-notary bundles list
-llm-notary finalize bundles/cap-....llmbundle \
-  --output traces/cap-...
+llm-notary captures list --config ~/.config/llm-notary/agent.toml --query pricing
+llm-notary captures show cap-.... --config ~/.config/llm-notary/agent.toml
+llm-notary finalize /path/to/bundles/cap-....llmbundle \
+  --config ~/.config/llm-notary/agent.toml
 ```
 
 The output directory is a single portable package:
