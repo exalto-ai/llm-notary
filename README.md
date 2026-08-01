@@ -498,6 +498,8 @@ The command prints a short code and a browser URL. Open that URL in any browser
 already signed in to your configured public LLM Notary site, inspect the requested CLI device
 name and code, and approve it. The CLI polls using a separate high-entropy
 secret; the displayed code alone cannot approve or retrieve credentials.
+When using `--api` for a self-hosted site, use HTTPS; plain HTTP is accepted
+only for a loopback development origin.
 
 GitHub is used only by the website to identify the account. The CLI never
 receives, logs, or persists a GitHub token. It stores only an LLM Notary

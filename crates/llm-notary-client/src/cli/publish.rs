@@ -6,7 +6,7 @@ use crate::{
         extract_trace_package_archive,
     },
     bundle::{trace_package_created_at_unix_ms, trace_package_notary_key, verify_trace_package},
-    cli::{auth, notary, proxy::refresh_notary_directory_from},
+    cli::{api_origin::ApiOrigin, auth, notary, proxy::refresh_notary_directory_from},
     sha256_hex,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -140,7 +140,7 @@ async fn submit_archive(
         .context("building publication client")?;
     let created = api_json::<CreatePublishJobResponse>(
         client
-            .post(format!("{}/api/publish/jobs", authenticated.origin))
+            .post(authenticated.origin.api_url("/api/publish/jobs"))
             .bearer_auth(&authenticated.access_token)
             .header("Idempotency-Key", idempotency_key)
             .json(&CreatePublishJob {
@@ -162,10 +162,11 @@ async fn submit_archive(
         upload_archive(&client, &authenticated.origin, upload, archive).await?;
         api_json::<PublishJob>(
             client
-                .post(format!(
-                    "{}/api/publish/jobs/{}/complete",
-                    authenticated.origin, created.job.id
-                ))
+                .post(
+                    authenticated
+                        .origin
+                        .api_url(&format!("/api/publish/jobs/{}/complete", created.job.id)),
+                )
                 .bearer_auth(&authenticated.access_token)
                 .send()
                 .await
@@ -179,10 +180,11 @@ async fn submit_archive(
 
     api_json::<PublishJob>(
         client
-            .get(format!(
-                "{}/api/publish/jobs/{}",
-                authenticated.origin, created.job.id
-            ))
+            .get(
+                authenticated
+                    .origin
+                    .api_url(&format!("/api/publish/jobs/{}", created.job.id)),
+            )
             .bearer_auth(&authenticated.access_token)
             .send()
             .await
@@ -200,7 +202,7 @@ async fn submit_archive(
 
 async fn upload_archive(
     client: &reqwest::Client,
-    api_origin: &str,
+    api_origin: &ApiOrigin,
     instructions: UploadInstructions,
     archive: &[u8],
 ) -> Result<()> {
@@ -263,8 +265,7 @@ fn archive_idempotency_key(archive_sha256: &str) -> String {
     format!("trace-package:{archive_sha256}")
 }
 
-fn validated_upload_url(api_origin: &str, value: &str) -> Result<url::Url> {
-    let api = url::Url::parse(api_origin).context("invalid API origin")?;
+fn validated_upload_url(api_origin: &ApiOrigin, value: &str) -> Result<url::Url> {
     let upload =
         url::Url::parse(value).context("publication API returned an invalid upload URL")?;
     if upload.host_str().is_none()
@@ -275,7 +276,7 @@ fn validated_upload_url(api_origin: &str, value: &str) -> Result<url::Url> {
         bail!("publication API returned an invalid upload URL");
     }
 
-    let api_is_loopback = is_loopback_host(&api);
+    let api_is_loopback = api_origin.is_loopback();
     let upload_is_loopback = is_loopback_host(&upload);
     let upload_is_private_ip = upload.host().is_some_and(|host| match host {
         url::Host::Ipv4(address) => {
@@ -334,12 +335,12 @@ async fn api_json<T: DeserializeOwned>(response: Response, action: &str) -> Resu
     bail!("{action} failed with HTTP {status}: {message}")
 }
 
-fn absolute_status_url(origin: &str, status_url: &str) -> Result<String> {
-    let base = url::Url::parse(&format!("{origin}/")).context("invalid API origin")?;
-    let url = base
+fn absolute_status_url(origin: &ApiOrigin, status_url: &str) -> Result<String> {
+    let url = origin
+        .url()
         .join(status_url)
         .context("publication API returned an invalid status URL")?;
-    if url.origin() != base.origin() {
+    if url.origin() != origin.url().origin() {
         bail!("publication API returned a cross-origin status URL");
     }
     Ok(url.to_string())
@@ -434,7 +435,7 @@ mod tests {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let authenticated = auth::AuthenticatedApi {
-            origin,
+            origin: ApiOrigin::parse(&origin).unwrap(),
             access_token: "access-token".to_owned(),
         };
         let archive = b"deterministic archive";
@@ -456,8 +457,11 @@ mod tests {
     fn rejects_private_bundle_paths_and_cross_origin_status_urls() {
         assert!(reject_bundle_path(PathBuf::from("secret.llmbundle").as_path()).is_err());
         assert!(
-            absolute_status_url("https://llmnotary.example", "https://attacker.example/job")
-                .is_err()
+            absolute_status_url(
+                &ApiOrigin::parse("https://llmnotary.example").unwrap(),
+                "https://attacker.example/job"
+            )
+            .is_err()
         );
         let digest = "a".repeat(64);
         assert_eq!(
@@ -465,14 +469,25 @@ mod tests {
             format!("trace-package:{digest}")
         );
         assert!(
-            validated_upload_url("https://llmnotary.example", "http://objects.example/upload")
-                .is_err()
+            validated_upload_url(
+                &ApiOrigin::parse("https://llmnotary.example").unwrap(),
+                "http://objects.example/upload"
+            )
+            .is_err()
         );
         assert!(
-            validated_upload_url("https://llmnotary.example", "https://127.0.0.1/upload").is_err()
+            validated_upload_url(
+                &ApiOrigin::parse("https://llmnotary.example").unwrap(),
+                "https://127.0.0.1/upload"
+            )
+            .is_err()
         );
         assert!(
-            validated_upload_url("http://127.0.0.1:3000", "http://127.0.0.1:9000/upload").is_ok()
+            validated_upload_url(
+                &ApiOrigin::parse("http://127.0.0.1:3000").unwrap(),
+                "http://127.0.0.1:9000/upload"
+            )
+            .is_ok()
         );
     }
 }

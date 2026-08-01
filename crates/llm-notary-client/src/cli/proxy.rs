@@ -22,7 +22,7 @@ use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
-    DEFAULT_PUBLIC_ORIGIN,
+    api_origin::ApiOrigin,
     notary::{parse_directory, pin},
 };
 use crate::{
@@ -144,11 +144,13 @@ pub(crate) async fn discover_notary() -> Result<NotaryEndpoint> {
 }
 
 pub(crate) async fn refresh_notary_directory() -> Result<NotaryDirectory> {
-    refresh_notary_directory_from(DEFAULT_PUBLIC_ORIGIN).await
+    refresh_notary_directory_from(&ApiOrigin::default_public()).await
 }
 
-pub(crate) async fn refresh_notary_directory_from(api_origin: &str) -> Result<NotaryDirectory> {
-    let directory_url = notary_directory_url(api_origin)?;
+pub(crate) async fn refresh_notary_directory_from(
+    api_origin: &ApiOrigin,
+) -> Result<NotaryDirectory> {
+    let directory_url = notary_directory_url(api_origin);
     let bytes = reqwest::Client::builder()
         .user_agent("LLM-Notary/0.1")
         .build()?
@@ -171,18 +173,8 @@ pub(crate) async fn refresh_notary_directory_from(api_origin: &str) -> Result<No
     Ok(directory)
 }
 
-fn notary_directory_url(api_origin: &str) -> Result<url::Url> {
-    let origin = url::Url::parse(api_origin).context("invalid LLM Notary API origin")?;
-    if !matches!(origin.scheme(), "http" | "https")
-        || origin.host_str().is_none()
-        || origin.query().is_some()
-        || origin.fragment().is_some()
-    {
-        bail!("LLM Notary API origin must be HTTP(S) without a query or fragment");
-    }
-    origin
-        .join("/api/notary")
-        .context("building notary directory URL")
+fn notary_directory_url(api_origin: &ApiOrigin) -> url::Url {
+    api_origin.api_url("/api/notary")
 }
 
 pub(crate) async fn resolve_notary(record: &NotaryDirectoryRecord) -> Result<NotaryEndpoint> {
@@ -655,12 +647,11 @@ mod tests {
     #[test]
     fn directory_discovery_stays_on_the_configured_api_origin() {
         assert_eq!(
-            notary_directory_url("https://self-hosted.example/base")
-                .unwrap()
+            notary_directory_url(&ApiOrigin::parse("https://self-hosted.example").unwrap())
                 .as_str(),
             "https://self-hosted.example/api/notary"
         );
-        assert!(notary_directory_url("file:///tmp/notary").is_err());
+        assert!(ApiOrigin::parse("file:///tmp/notary").is_err());
     }
 
     #[tokio::test]

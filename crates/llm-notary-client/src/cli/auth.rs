@@ -13,7 +13,7 @@ use clap::Args;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 
-use super::{DEFAULT_PUBLIC_ORIGIN, storage};
+use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin, storage};
 
 const KEYCHAIN_SERVICE: &str = "llm-notary";
 const KEYCHAIN_ACCOUNT: &str = "publish-refresh-token";
@@ -80,23 +80,23 @@ struct CliSession {
 
 #[derive(Serialize, Deserialize)]
 struct FileCredentials {
-    api_origin: String,
+    api_origin: ApiOrigin,
     refresh_token: String,
 }
 
 pub(crate) struct AuthenticatedApi {
-    pub(crate) origin: String,
+    pub(crate) origin: ApiOrigin,
     pub(crate) access_token: String,
 }
 
 pub async fn login(args: LoginArgs) -> Result<()> {
-    let api_origin = normalize_origin(&args.api)?;
+    let api_origin = ApiOrigin::parse(&args.api)?;
     let client = reqwest::Client::builder()
         .user_agent("llm-notary-cli/0.1")
         .build()
         .context("building API client")?;
     let started = client
-        .post(format!("{api_origin}/api/cli/authorizations"))
+        .post(api_origin.api_url("/api/cli/authorizations"))
         .json(&StartAuthorization {
             device_name: &args.device_name,
         })
@@ -124,10 +124,10 @@ pub async fn login(args: LoginArgs) -> Result<()> {
             bail!("CLI authorization expired; run `llm-notary login` again")
         }
         let response = client
-            .post(format!(
-                "{api_origin}/api/cli/authorizations/{}/token",
+            .post(api_origin.api_url(&format!(
+                "/api/cli/authorizations/{}/token",
                 started.request_id
-            ))
+            )))
             .header("X-LLM-Notary-Poll-Secret", &started.poll_secret)
             .send()
             .await
@@ -146,7 +146,7 @@ pub async fn login(args: LoginArgs) -> Result<()> {
             .await
             .context("reading CLI credentials")?;
         save_credentials(&FileCredentials {
-            api_origin,
+            api_origin: api_origin.clone(),
             refresh_token: tokens.refresh_token,
         })?;
         // Deliberately do not retain or print the short-lived access token.
@@ -163,7 +163,7 @@ pub async fn logout() -> Result<()> {
     let credentials = load_credentials()?;
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{}/api/cli/logout", credentials.api_origin))
+        .post(credentials.api_origin.api_url("/api/cli/logout"))
         .json(&RefreshRequest {
             refresh_token: &credentials.refresh_token,
         })
@@ -183,7 +183,7 @@ pub async fn logout() -> Result<()> {
 pub async fn whoami() -> Result<()> {
     let authenticated = authenticate().await?;
     let response = reqwest::Client::new()
-        .get(format!("{}/api/cli/me", authenticated.origin))
+        .get(authenticated.origin.api_url("/api/cli/me"))
         .bearer_auth(authenticated.access_token)
         .send()
         .await
@@ -214,7 +214,7 @@ pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
 
 async fn refresh(credentials: &FileCredentials) -> Result<(String, String)> {
     let response = reqwest::Client::new()
-        .post(format!("{}/api/cli/token", credentials.api_origin))
+        .post(credentials.api_origin.api_url("/api/cli/token"))
         .json(&RefreshRequest {
             refresh_token: &credentials.refresh_token,
         })
@@ -228,18 +228,6 @@ async fn refresh(credentials: &FileCredentials) -> Result<(String, String)> {
         .context("reading refreshed CLI credentials")?;
     let _ = response.expires_in;
     Ok((response.access_token, response.refresh_token))
-}
-
-fn normalize_origin(value: &str) -> Result<String> {
-    let url = url::Url::parse(value).context("--api must be an absolute URL")?;
-    if !matches!(url.scheme(), "https" | "http")
-        || url.host_str().is_none()
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        bail!("--api must be an HTTP(S) origin without a query or fragment")
-    }
-    Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
 fn credentials_path() -> Result<PathBuf> {
@@ -442,13 +430,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalizes_only_http_origins() {
+    fn api_origin_uses_the_shared_trust_policy() {
         assert_eq!(
-            normalize_origin("https://example.com/").unwrap(),
+            ApiOrigin::parse("https://example.com/")
+                .unwrap()
+                .to_string(),
             "https://example.com"
         );
-        assert!(normalize_origin("https://example.com/path?x=1").is_err());
-        assert!(normalize_origin("file:///tmp/auth").is_err());
+        assert!(ApiOrigin::parse("http://example.com").is_err());
+        assert!(ApiOrigin::parse("http://localhost:3000").is_ok());
     }
 
     #[test]
@@ -456,11 +446,11 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config").join("credentials.json");
         let first = FileCredentials {
-            api_origin: "https://first.example".to_owned(),
+            api_origin: ApiOrigin::parse("https://first.example").unwrap(),
             refresh_token: "first-token".to_owned(),
         };
         let second = FileCredentials {
-            api_origin: "https://second.example".to_owned(),
+            api_origin: ApiOrigin::parse("https://second.example").unwrap(),
             refresh_token: "second-token".to_owned(),
         };
 
@@ -502,7 +492,7 @@ mod tests {
         let path = directory.path().join("config").join("credentials.json");
         fs::create_dir_all(&path).unwrap();
         let credentials = FileCredentials {
-            api_origin: "https://example.com".to_owned(),
+            api_origin: ApiOrigin::parse("https://example.com").unwrap(),
             refresh_token: "token".to_owned(),
         };
 
