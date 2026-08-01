@@ -1354,6 +1354,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn new_cli_session_is_usable_until_its_refresh_expiry() {
         let database = fresh_database().await;
         sqlx::query(
@@ -1409,6 +1410,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn web_users_can_list_and_revoke_only_their_cli_sessions() {
         let database = fresh_database().await;
         sqlx::query(
