@@ -37,16 +37,6 @@
   letter-spacing: .08em;
 }
 
-.modal-backdrop {
-  background: color-mix(in srgb, var(--paper) 76%, transparent);
-  backdrop-filter: none;
-}
-
-.verifier-modal,
-:root[data-theme="dark"] .verifier-modal {
-  box-shadow: none;
-}
-
 .preview-contents span {
   display: grid;
   grid-template-columns: 92px minmax(0, 1fr);
