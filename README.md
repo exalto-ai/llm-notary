@@ -69,7 +69,7 @@ Generate an ephemeral development signing key:
 
 ```bash
 openssl rand -hex 32 > notary.dev.key
-cargo run --bin certified-notary -- --signing-key notary.dev.key
+cargo run --bin llm-notary-server -- --signing-key notary.dev.key
 ```
 
 The notary prints its public key at startup. Retain that value for local or
