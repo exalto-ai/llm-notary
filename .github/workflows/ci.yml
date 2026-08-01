@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 # Only the newest revision of a PR needs feedback; obsolete runs consume runners
 # and delay the result for the commit a reviewer will actually merge.
@@ -22,8 +23,53 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Changed paths
+    runs-on: ubuntu-24.04
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      app: ${{ steps.filter.outputs.app }}
+      containers: ${{ steps.filter.outputs.containers }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+      - id: filter
+        uses: dorny/paths-filter@v4
+        with:
+          filters: |
+            rust:
+              - '.github/workflows/ci.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'build.rs'
+              - 'migrations-postgres/**'
+              - 'rust-toolchain.toml'
+              - 'src/**'
+              - 'tests/**'
+              - 'vendor/tlsn/**'
+            app:
+              - '.github/workflows/ci.yml'
+              - 'js/app/**'
+            containers:
+              - '.github/workflows/ci.yml'
+              - '.dockerignore'
+              - 'Dockerfile'
+              - 'build.rs'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'migrations-postgres/**'
+              - 'src/**'
+              - 'tests/**'
+              - 'vendor/tlsn/**'
+              - 'compose.yml'
+              - 'deploy/**'
+              - 'js/app/**'
+
   rust:
     name: Rust
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -40,7 +86,8 @@ jobs:
 
   postgres-integration:
     name: PostgreSQL integration
-    needs: rust
+    needs: [changes, rust]
+    if: ${{ always() && needs.changes.outputs.rust == 'true' && needs.rust.result == 'success' }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
@@ -57,6 +104,8 @@ jobs:
 
   app:
     name: SPA
+    needs: changes
+    if: needs.changes.outputs.app == 'true'
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -73,6 +122,8 @@ jobs:
 
   containers:
     name: Container configuration
+    needs: changes
+    if: needs.changes.outputs.containers == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
