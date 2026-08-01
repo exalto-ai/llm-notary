@@ -13,7 +13,7 @@ FROM chef AS planner
 
 # Keep the Rust build cache independent of the SPA, deployment files, and docs.
 # This image needs only the Rust workspace packages and vendored TLSNotary dependency.
-COPY Cargo.toml Cargo.lock build.rs ./
+COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY vendor/tlsn ./vendor/tlsn
 COPY src ./src
@@ -29,7 +29,7 @@ COPY --from=planner /app/recipe.json recipe.json
 COPY --from=planner /app/vendor/tlsn ./vendor/tlsn
 RUN cargo chef cook --release --no-default-features --features api --recipe-path recipe.json
 
-COPY Cargo.toml Cargo.lock build.rs ./
+COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY vendor/tlsn ./vendor/tlsn
 COPY src ./src
