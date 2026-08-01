@@ -11,14 +11,14 @@
 //! Example:
 //! `TLSN_PROFILE_TOKENS=32768 TLSN_NOTARY_ADDR=notary:7047 \
 //!   TLSN_NOTARY_PUBLIC_KEY=<compressed-sec1-hex> \
-//!   cargo test --release --test proxy_tls_split_profile -- --ignored --nocapture`
+//!   cargo test --release -p llm-notary-core --test proxy_tls_split_profile -- --ignored --nocapture`
 
 use std::{env, time::Instant};
 
 use anyhow::{Context, Result};
 use http::Request;
 use hyper::body::Bytes;
-use llm_notary::{
+use llm_notary_core::{
     DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredCaptureConfig,
     chunked_request_body, deferred_streaming_request, finalize_deferred_bundle,
 };

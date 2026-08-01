@@ -1,7 +1,7 @@
 //! Deterministic, opt-in resource benchmark for the exact Proxy-TLS proof path.
 //!
 //! Run with, for example:
-//! `TLSN_PROFILE_BYTES=65536 cargo test --release --test proxy_tls_profile -- --ignored --nocapture`
+//! `TLSN_PROFILE_BYTES=65536 cargo test --release -p llm-notary-core --test proxy_tls_profile -- --ignored --nocapture`
 //!
 //! For an exact OpenAI-scale request and response, use
 //! `TLSN_PROFILE_TOKENS=1050000`. This creates a token corpus that is counted

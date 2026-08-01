@@ -6,6 +6,10 @@ license = "MIT OR Apache-2.0"
 description = "Local LLM Notary proxy and command-line client"
 build = "build.rs"
 
+[[bin]]
+name = "llm-notary"
+path = "src/bin/llm-notary.rs"
+
 [dependencies]
 anyhow = "1.0"
 axum = { version = "0.8", features = ["macros"] }

@@ -6,10 +6,6 @@
 !Cargo.lock
 !crates/
 !crates/**
-!src/
-!src/**
-!tests/
-!tests/**
 !migrations-postgres/
 !migrations-postgres/**
 !vendor/

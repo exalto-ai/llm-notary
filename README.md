@@ -69,7 +69,7 @@ Generate an ephemeral development signing key:
 
 ```bash
 openssl rand -hex 32 > notary.dev.key
-cargo run --bin llm-notary-server -- --signing-key notary.dev.key
+cargo run -p llm-notary-server --bin llm-notary-server -- --signing-key notary.dev.key
 ```
 
 The notary prints its public key at startup. Retain that value for local or
@@ -81,7 +81,7 @@ current public notary endpoint from `$LLM_NOTARY_PUBLIC_ORIGIN/api/notary`.
 For a local notary, pass its address explicitly:
 
 ```bash
-cargo run --bin llm-notary -- proxy start --notary 127.0.0.1:7047 --provider openai --bundle-dir bundles
+cargo run -p llm-notary-client --bin llm-notary -- proxy start --notary 127.0.0.1:7047 --provider openai --bundle-dir bundles
 ```
 
 Point an OpenAI-compatible SDK at `http://127.0.0.1:8787/v1`; keep the API key
@@ -153,7 +153,7 @@ same proxy. Start it with `--provider deepseek`, point the client to
 environment:
 
 ```bash
-cargo run --bin llm-notary -- proxy start --provider deepseek --bundle-dir bundles
+cargo run -p llm-notary-client --bin llm-notary -- proxy start --provider deepseek --bundle-dir bundles
 
 curl http://127.0.0.1:8787/chat/completions \
   -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
@@ -172,7 +172,7 @@ at `http://127.0.0.1:8787/api/v1`, and retain `OPENROUTER_API_KEY` in the
 client environment:
 
 ```bash
-cargo run --bin llm-notary -- proxy start --provider openrouter --bundle-dir bundles
+cargo run -p llm-notary-client --bin llm-notary -- proxy start --provider openrouter --bundle-dir bundles
 
 curl http://127.0.0.1:8787/api/v1/chat/completions \
   -H "Authorization: Bearer $OPENROUTER_API_KEY" \
@@ -379,8 +379,8 @@ app's credentials and both database URLs in the local `.env`. Start the schema
 migrator once, then start the API alongside the SPA with:
 
 ```bash
-cargo run --no-default-features --features api --bin llm-notary-api-migrate
-cargo run --no-default-features --features api --bin llm-notary-api
+cargo run -p llm-notary-platform --bin llm-notary-api-migrate
+cargo run -p llm-notary-platform --bin llm-notary-api
 ```
 
 The PostgreSQL-backed API integration tests use disposable local PostgreSQL
@@ -388,8 +388,8 @@ The PostgreSQL-backed API integration tests use disposable local PostgreSQL
 suite because they require a running Docker daemon. Run them explicitly with:
 
 ```bash
-cargo test --bin llm-notary-api --all-features new_cli_session_is_usable_until_its_refresh_expiry -- --ignored
-cargo test --bin llm-notary-api --all-features web_users_can_list_and_revoke_only_their_cli_sessions -- --ignored
+cargo test -p llm-notary-platform new_cli_session_is_usable_until_its_refresh_expiry -- --ignored
+cargo test -p llm-notary-platform web_users_can_list_and_revoke_only_their_cli_sessions -- --ignored
 ```
 
 They require no database URL, database credentials, or external provider
