@@ -6,11 +6,16 @@ longer a supported API backend and no SQLite importer is maintained.
 
 ## Provision and configure Neon
 
-Create a Neon project in the API region and obtain its pooled connection URL.
-Store it only in the deployment secret store as `DATABASE_URL`. Retain
-`sslmode=require`; remove Neon's optional `channel_binding=require` parameter,
-which SQLx does not use. The pooled URL is correct for both the API and the
-migrator.
+Create a Neon project in the API region and obtain both its pooled and direct
+connection URLs. Store them only in the deployment secret store:
+
+- `DATABASE_URL` is the pooled URL used by API replicas.
+- `DATABASE_MIGRATIONS_URL` is the direct URL used only by the migrator.
+
+Retain `sslmode=require`; remove Neon's optional `channel_binding=require`
+parameter, which SQLx does not use. SQLx migrations use a session advisory
+lock, which Neon’s transaction-mode pooler does not support, so the migrator
+must never use the pooled URL.
 
 Budget the total of `LLM_NOTARY_DATABASE_MAX_CONNECTIONS` across API replicas,
 plus one transient migration connection, within the Neon plan's limit. The
@@ -21,13 +26,16 @@ For Fly, stage the secret before merging. This records it without restarting
 the current API release:
 
 ```bash
-fly secrets set --stage DATABASE_URL='postgresql://…?sslmode=require' \
+fly secrets set --stage \
+  DATABASE_URL='postgresql://…-pooler…?sslmode=require' \
+  DATABASE_MIGRATIONS_URL='postgresql://…?sslmode=require' \
   -a llm-notary-prod-api
 ```
 
-For a self-hosted Compose deployment, put the same value in a root-owned
+For a self-hosted Compose deployment, put both values in a root-owned
 environment file outside the repository, such as `/etc/llm-notary/compose.env`.
-Pass that exact path with `docker compose --env-file`; never commit a connection
+For a direct local PostgreSQL instance, the two values can be the same. Pass
+that exact path with `docker compose --env-file`; never commit a connection
 URL, signing key, capture, or environment file.
 
 ## Deploy schema migrations
@@ -36,13 +44,16 @@ URL, signing key, capture, or environment file.
 it: future PostgreSQL schema changes must be new, forward-only migration files.
 Fly runs `llm-notary-api-migrate` as the API release command before replacing
 any API Machines. Compose runs the same one-shot `migrate` service before it
-starts API replicas. SQLx takes an advisory migration lock; a migration failure
-stops the new API replicas from starting.
+starts API replicas. SQLx takes an advisory migration lock. The migrator uses a
+60-second PostgreSQL lock timeout so contention fails clearly instead of
+consuming the entire deploy timeout; a migration failure stops the new API
+replicas from starting.
 
 1. Preserve the platform signing key and notary directory as rollback evidence.
    Do not generate new signing material.
-2. Merge the release. The normal Fly deploy invokes the release command against
-   the staged pooled `DATABASE_URL`; no database secret belongs in GitHub.
+2. Confirm both staged secrets exist, then merge the release. The normal Fly
+   deploy invokes the release command against the direct
+   `DATABASE_MIGRATIONS_URL`; no database secret belongs in GitHub.
 3. Confirm the release command applied pending migrations and that two Machines
    become healthy:
 
@@ -58,8 +69,8 @@ stops the new API replicas from starting.
 For source development, run the same migrator before starting the API:
 
 ```bash
-DATABASE_URL='postgresql://…?sslmode=require' \
-  cargo run --no-default-features --features api --bin llm-notary-api-migrate
+DATABASE_MIGRATIONS_URL='postgresql://…?sslmode=require' \
+cargo run --no-default-features --features api --bin llm-notary-api-migrate
 ```
 
 ## Scale and monitor
