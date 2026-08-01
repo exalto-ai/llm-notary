@@ -20,4 +20,9 @@ in this repository. The vendored crates declare the following licenses in their
 | `tlsn`, `tls-server-fixture`, `mpc-tls`, `core`, `sdk-core`, `wasm` | MIT OR Apache-2.0 |
 | `tls-core` | Apache-2.0 OR ISC OR MIT |
 
+The workspace additionally vendors a locally patched copy of the TLSNotary
+`spansy` parser crate (from `tlsnotary/tlsn-utils`) in `vendor/tlsn-utils`,
+declared as MIT OR Apache-2.0. Its patch bounds JSON parser stack usage and is
+described in `vendor/tlsn-utils/README.md`.
+
 No third-party trademark rights are granted by this notice.
