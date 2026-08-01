@@ -12,8 +12,9 @@ RUN cargo install cargo-chef --version 0.1.77 --locked
 FROM chef AS planner
 
 # Keep the Rust build cache independent of the SPA, deployment files, and docs.
-# This image needs only the Rust package and its vendored TLSNotary dependency.
+# This image needs only the Rust workspace packages and vendored TLSNotary dependency.
 COPY Cargo.toml Cargo.lock build.rs ./
+COPY crates ./crates
 COPY vendor/tlsn ./vendor/tlsn
 COPY src ./src
 COPY migrations-postgres ./migrations-postgres
@@ -29,6 +30,7 @@ COPY --from=planner /app/vendor/tlsn ./vendor/tlsn
 RUN cargo chef cook --release --no-default-features --features api --recipe-path recipe.json
 
 COPY Cargo.toml Cargo.lock build.rs ./
+COPY crates ./crates
 COPY vendor/tlsn ./vendor/tlsn
 COPY src ./src
 COPY migrations-postgres ./migrations-postgres
