@@ -96,7 +96,7 @@ services:
     restart: unless-stopped
 
   notary:
-    image: ${NOTARY_IMAGE:-llm-notary-notary:local}
+    image: ${NOTARY_IMAGE:-llm-notary-server:local}
     build:
       context: .
       dockerfile: Dockerfile
@@ -121,7 +121,7 @@ services:
       - ALL
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "test \"$(certified-notary --signing-key /run/secrets/notary_signing_key --print-public-key)\" = \"$${LLM_NOTARY_NOTARY_PUBLIC_KEY}\""]
+      test: ["CMD-SHELL", "test \"$(llm-notary-server --signing-key /run/secrets/notary_signing_key --print-public-key)\" = \"$${LLM_NOTARY_NOTARY_PUBLIC_KEY}\""]
       interval: 30s
       timeout: 5s
       retries: 3

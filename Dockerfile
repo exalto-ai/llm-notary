@@ -34,7 +34,7 @@ COPY src ./src
 COPY migrations-postgres ./migrations-postgres
 # The API and notary share a dependency graph. Building both here lets BuildKit
 # reuse one compilation for the two final images.
-RUN cargo build --release --no-default-features --features api --bin certified-notary --bin llm-notary-api --bin llm-notary-api-migrate
+RUN cargo build --release --no-default-features --features api --bin llm-notary-server --bin llm-notary-api --bin llm-notary-api-migrate
 
 # Opt-in target for the split-process resource benchmark. It deliberately is
 # not part of the production image: the test client also hosts a local TLS
@@ -60,8 +60,8 @@ FROM debian:bookworm-slim AS notary
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/certified-notary /usr/local/bin/certified-notary
-RUN certified-notary --help >/dev/null
+COPY --from=builder /app/target/release/llm-notary-server /usr/local/bin/llm-notary-server
+RUN llm-notary-server --help >/dev/null
 
 EXPOSE 7047
-ENTRYPOINT ["/bin/sh", "-ec", "key_file=${NOTARY_SIGNING_KEY_FILE:-/run/secrets/notary_signing_key}; if ! test -r \"$key_file\"; then echo 'notary signing key file is required and must be readable' >&2; exit 1; fi; exec certified-notary --listen 0.0.0.0:7047 --signing-key \"$key_file\" --allow-host api.openai.com --allow-host api.anthropic.com --allow-host api.deepseek.com --allow-host openrouter.ai \"$@\"", "--"]
+ENTRYPOINT ["/bin/sh", "-ec", "key_file=${NOTARY_SIGNING_KEY_FILE:-/run/secrets/notary_signing_key}; if ! test -r \"$key_file\"; then echo 'notary signing key file is required and must be readable' >&2; exit 1; fi; exec llm-notary-server --listen 0.0.0.0:7047 --signing-key \"$key_file\" --allow-host api.openai.com --allow-host api.anthropic.com --allow-host api.deepseek.com --allow-host openrouter.ai \"$@\"", "--"]

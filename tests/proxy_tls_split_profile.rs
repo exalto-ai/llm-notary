@@ -1,7 +1,7 @@
 //! Opt-in, split-container resource benchmark for the production capture and
 //! finalization protocol.
 //!
-//! Run a memory-limited `certified-notary --profile-sessions` container, then
+//! Run a memory-limited `llm-notary-server --profile-sessions` container, then
 //! run this test from a separate client container on the same Docker network.
 //! The test deliberately sends an invalid, synthetic OpenAI credential: the
 //! provider should reject it, but the request and response still exercise the
@@ -16,12 +16,12 @@
 use std::{env, time::Instant};
 
 use anyhow::{Context, Result};
-use certified::{
+use http::Request;
+use hyper::body::Bytes;
+use llm_notary::{
     DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES, DeferredCaptureConfig,
     chunked_request_body, deferred_streaming_request, finalize_deferred_bundle,
 };
-use http::Request;
-use hyper::body::Bytes;
 use tiktoken_rs::o200k_base;
 
 const DEFAULT_PROFILE_TOKENS: usize = 32_768;
