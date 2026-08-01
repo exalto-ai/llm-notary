@@ -3287,6 +3287,7 @@ dependencies = [
  "k256",
  "llm-notary-client",
  "llm-notary-core",
+  "llm-notary-server",
  "metrics",
  "metrics-exporter-prometheus",
  "opentelemetry",
@@ -3391,6 +3392,21 @@ dependencies = [
  "uuid",
  "webpki-roots 1.0.9",
  "zip",
+]
+
+[[package]]
+name = "llm-notary-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "clap",
+ "hex",
+ "k256",
+ "llm-notary-core",
+ "metrics",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

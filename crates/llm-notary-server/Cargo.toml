@@ -1,0 +1,17 @@
+[package]
+name = "llm-notary-server"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Remote Proxy-TLS notary daemon for LLM Notary"
+
+[dependencies]
+anyhow = "1.0"
+axum = "0.8"
+clap = { version = "4.5", features = ["derive"] }
+hex = "0.4"
+k256 = { version = "0.13", features = ["ecdsa"] }
+llm-notary-core = { path = "../llm-notary-core" }
+metrics = { version = "0.24.6", default-features = false }
+tokio = { version = "1.45", features = ["full"] }
+tracing = "0.1"
