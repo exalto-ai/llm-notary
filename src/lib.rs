@@ -5,6 +5,3 @@
 //! while the local client and hosted services are extracted in later layers.
 
 pub use llm_notary_core::*;
-
-#[cfg(feature = "cli")]
-pub mod cli;
