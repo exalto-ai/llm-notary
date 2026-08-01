@@ -1,5 +1,6 @@
 use anyhow::Result;
-use certified::cli::{
+use clap::{Parser, Subcommand};
+use llm_notary::cli::{
     auth::{self, LoginArgs},
     bundle::{self, BundlesCommand, FinalizeArgs, VerifyArgs as VerifyTraceArgs},
     download::{self, DownloadArgs},
@@ -8,7 +9,6 @@ use certified::cli::{
     publish::{self, PublishArgs},
     vault::{self, VaultCommand},
 };
-use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -64,7 +64,7 @@ enum ProxyCommand {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _telemetry = certified::telemetry::init("llm-notary-cli")?;
+    let _telemetry = llm_notary::telemetry::init("llm-notary-cli")?;
     match Cli::parse().command {
         CommandName::Login(args) => auth::login(args).await,
         CommandName::Logout => auth::logout().await,

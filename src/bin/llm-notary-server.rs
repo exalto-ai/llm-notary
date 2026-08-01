@@ -11,13 +11,13 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use axum::{Router, http::header, response::IntoResponse, routing::get};
-use certified::{
+use clap::Parser;
+use k256::ecdsa::SigningKey;
+use llm_notary::{
     DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES, NotaryAdmissionRejection,
     NotarySessionMode, read_notary_session_prelude, run_notary_session_after_prelude,
     write_notary_admission,
 };
-use clap::Parser;
-use k256::ecdsa::SigningKey;
 use metrics::{counter, gauge, histogram};
 use tokio::{
     net::TcpListener,
@@ -384,7 +384,7 @@ fn delta(start: Option<u64>, end: Option<u64>) -> Option<u64> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let _telemetry = certified::telemetry::init("llm-notary-notary")?;
+    let _telemetry = llm_notary::telemetry::init("llm-notary-server")?;
     let args = Args::parse();
     if args.max_private_chunk_bytes == 0
         || args.max_total_private_chunk_bytes == 0
@@ -608,7 +608,7 @@ async fn metrics() -> impl IntoResponse {
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
-        certified::telemetry::prometheus_metrics(),
+        llm_notary::telemetry::prometheus_metrics(),
     )
 }
 

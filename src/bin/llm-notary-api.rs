@@ -22,12 +22,12 @@ use tracing::Instrument as _;
 use url::Url;
 use uuid::Uuid;
 
-use certified::notary_directory::{
+use llm_notary::notary_directory::{
     DIRECTORY_FORMAT_V3, NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, NotaryTransport,
     key_id, parse_directory,
 };
-use certified::sha256_hex;
-use certified::telemetry;
+use llm_notary::sha256_hex;
+use llm_notary::telemetry;
 use opentelemetry::global;
 use opentelemetry_http::HeaderExtractor;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
