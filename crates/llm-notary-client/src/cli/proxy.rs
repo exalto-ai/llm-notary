@@ -23,6 +23,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
     api_origin::ApiOrigin,
+    http_client_builder,
     notary::{parse_directory, pin},
 };
 use crate::{
@@ -151,8 +152,7 @@ pub(crate) async fn refresh_notary_directory_from(
     api_origin: &ApiOrigin,
 ) -> Result<NotaryDirectory> {
     let directory_url = notary_directory_url(api_origin);
-    let bytes = reqwest::Client::builder()
-        .user_agent("LLM-Notary/0.1")
+    let bytes = http_client_builder()
         .build()?
         .get(directory_url.clone())
         .send()
