@@ -22,7 +22,7 @@ use super::{
     ApiError, ApiResult, AppState, DatabasePool, database_error, publish::PublishJobRow,
     unix_timestamp,
 };
-use llm_notary::{
+use llm_notary_core::{
     archive::extract_trace_package_archive,
     bundle::{trace_package_created_at_unix_ms, trace_package_notary_key, verify_trace_package},
     public::{ProviderProvenance, TLSNOTARY_PROVENANCE, platform_key_id, stamp_trace},
@@ -464,7 +464,7 @@ async fn collection_publication(
             &artifact.public_stamp_sha256,
         ),
     )?;
-    let stamp: llm_notary::public::PublicStamp =
+    let stamp: llm_notary_core::public::PublicStamp =
         serde_json::from_slice(&stamp).map_err(|error| ApiError::internal(error.into()))?;
     let (model, span_count, tool_use) = trace_facts(&trace).map_err(ApiError::internal)?;
     let tags = artifact
@@ -1010,7 +1010,7 @@ fn finish_admission_metric(outcome: &'static str, started: Instant) {
 fn verify_and_stamp(
     job_id: &str,
     archive: &[u8],
-    directory: &llm_notary::notary_directory::NotaryDirectory,
+    directory: &llm_notary_core::notary_directory::NotaryDirectory,
     signing_key: &k256::ecdsa::SigningKey,
     issuer: String,
     issued_at_unix_ms: u64,
@@ -1522,7 +1522,7 @@ mod tests {
              VALUES ('job-1', 'user-1', 'idempotency-key-0001', 'queued', $1,
                      $2, $3, 'upload-key', 'intake-key', 1000, 1, 1, 1)",
         )
-        .bind(llm_notary::archive::ARCHIVE_FORMAT)
+        .bind(llm_notary_core::archive::ARCHIVE_FORMAT)
         .bind(bytes.len() as i64)
         .bind(sha256)
         .execute(&state.database)

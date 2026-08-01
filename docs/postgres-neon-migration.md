@@ -70,7 +70,7 @@ For source development, run the same migrator before starting the API:
 
 ```bash
 DATABASE_MIGRATIONS_URL='postgresql://…?sslmode=require' \
-cargo run --no-default-features --features api --bin llm-notary-api-migrate
+cargo run -p llm-notary-platform --bin llm-notary-api-migrate
 ```
 
 ## Scale and monitor

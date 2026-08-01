@@ -1,0 +1,46 @@
+[package]
+name = "llm-notary-platform"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Hosted publication and library platform for LLM Notary"
+
+[[bin]]
+name = "llm-notary-api"
+path = "src/bin/llm-notary-api.rs"
+
+[[bin]]
+name = "llm-notary-api-migrate"
+path = "src/bin/llm-notary-api-migrate.rs"
+
+[dependencies]
+anyhow = "1.0"
+aws-sdk-s3 = { version = "1.140", default-features = false, features = [
+    "default-https-client",
+    "rt-tokio",
+    "rustls",
+] }
+axum = { version = "0.8", features = ["macros"] }
+axum-extra = { version = "0.10", features = ["cookie"] }
+dotenvy = "0.15"
+hex = "0.4"
+k256 = { version = "0.13", features = ["ecdsa"] }
+llm-notary-core = { path = "../llm-notary-core" }
+metrics = { version = "0.24.6", default-features = false }
+opentelemetry = "0.32.0"
+opentelemetry-http = "0.32.0"
+rand = "0.9"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["macros", "migrate", "runtime-tokio-rustls", "postgres"] }
+time = "0.3"
+tokio = { version = "1.45", features = ["full"] }
+tracing = "0.1"
+tracing-opentelemetry = "0.33.0"
+url = "2.5"
+uuid = { version = "1.16", features = ["v4"] }
+
+[dev-dependencies]
+testcontainers-modules = { version = "0.15", default-features = false, features = ["postgres"] }

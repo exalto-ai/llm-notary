@@ -6,11 +6,11 @@ use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 
-static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations-postgres");
+static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("../../migrations-postgres");
 const SET_MIGRATION_LOCK_TIMEOUT: &str = "SET lock_timeout = '60s'";
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Applies the hosted platform's PostgreSQL schema migrations.
+pub async fn run_migrations() -> Result<()> {
     dotenvy::dotenv().ok();
     let database_url = env::var("DATABASE_MIGRATIONS_URL")
         .context("DATABASE_MIGRATIONS_URL must be set to a direct PostgreSQL connection URL")?;

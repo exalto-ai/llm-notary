@@ -27,21 +27,19 @@ use tracing::Instrument as _;
 use url::Url;
 use uuid::Uuid;
 
-use llm_notary::notary_directory::{
+use llm_notary_core::notary_directory::{
     DIRECTORY_FORMAT_V3, NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, NotaryTransport,
     key_id, parse_directory,
 };
-use llm_notary::sha256_hex;
-use llm_notary::telemetry;
+use llm_notary_core::sha256_hex;
+use llm_notary_core::telemetry;
 use opentelemetry::global;
 use opentelemetry_http::HeaderExtractor;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
-#[path = "../api/admission.rs"]
 mod admission;
-#[path = "../api/intake.rs"]
 mod intake;
-#[path = "../api/publish.rs"]
+pub mod migrate;
 mod publish;
 
 const SESSION_COOKIE: &str = "llm_notary_session";
@@ -272,8 +270,8 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// Runs the hosted LLM Notary platform API.
+pub async fn run_api() -> Result<()> {
     dotenvy::dotenv().ok();
     let _telemetry = telemetry::init("llm-notary-api")?;
     let state = AppState::from_env().await?;
@@ -1382,7 +1380,7 @@ mod test_database {
             .connect(&database_url)
             .await
             .expect("connect to isolated PostgreSQL test database");
-        sqlx::migrate!("./migrations-postgres")
+        sqlx::migrate!("../../migrations-postgres")
             .run(&pool)
             .await
             .expect("apply PostgreSQL test migrations");

@@ -5,6 +5,10 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Remote Proxy-TLS notary daemon for LLM Notary"
 
+[[bin]]
+name = "llm-notary-server"
+path = "src/bin/llm-notary-server.rs"
+
 [dependencies]
 anyhow = "1.0"
 axum = "0.8"
