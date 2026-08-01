@@ -30,7 +30,6 @@ use rustls::{
     ClientConfig, RootCertStore as OuterRootCertStore, pki_types::ServerName as TlsServerName,
 };
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use tlsn::{
     Session,
     attestation::{
@@ -61,14 +60,14 @@ use tokio::{
 use tokio_rustls::TlsConnector;
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
-pub mod archive;
+pub use llm_notary_evidence::archive;
 #[cfg(any(feature = "api", feature = "cli"))]
 pub mod bundle;
 #[cfg(feature = "cli")]
 pub mod cli;
 pub mod normalize;
 pub mod notary_directory;
-pub mod public;
+pub use llm_notary_evidence::public;
 pub mod telemetry;
 #[cfg(feature = "cli")]
 pub mod vault;
@@ -94,7 +93,7 @@ const REDACTED_REQUEST_HEADERS: &[&str] = &[
     "x-api-key",
 ];
 const REDACTED_RESPONSE_HEADERS: &[&str] = &["set-cookie"];
-pub const CAPTURE_FORMAT: &str = "llm-notary/capture/v1";
+pub use llm_notary_evidence::{CAPTURE_FORMAT, sha256_hex};
 const DEFERRED_BUNDLE_FORMAT: &str = "llm-notary/deferred-bundle/v1";
 const DEFERRED_RECEIPT_FORMAT: &str = "llm-notary/deferred-receipt/v1";
 const NOTARY_CONTROL_MAGIC_V1: &[u8; 8] = b"LLMN\0\0\0\x01";
@@ -1576,10 +1575,6 @@ fn restrict_file(path: &Path) -> Result<()> {
 #[cfg(not(unix))]
 fn restrict_file(_path: &Path) -> Result<()> {
     Ok(())
-}
-
-pub fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
 }
 
 fn handshake_data(transcript: &tlsn::transcript::TlsTranscript) -> Result<HandshakeData> {
