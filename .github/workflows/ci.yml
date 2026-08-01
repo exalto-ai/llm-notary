@@ -89,6 +89,7 @@ jobs:
             GITHUB_OAUTH_CLIENT_ID=ci-placeholder \
             GITHUB_OAUTH_CLIENT_SECRET=ci-placeholder \
             DATABASE_URL=postgresql://ci-placeholder:ci-placeholder@db.example.com/llm_notary?sslmode=require \
+            DATABASE_MIGRATIONS_URL=postgresql://ci-placeholder:ci-placeholder@db.example.com/llm_notary?sslmode=require \
             LLM_NOTARY_NOTARY_HOST=203.0.113.10 \
             LLM_NOTARY_S3_ACCESS_KEY_ID=ci-placeholder \
             LLM_NOTARY_S3_SECRET_ACCESS_KEY=ci-placeholder \

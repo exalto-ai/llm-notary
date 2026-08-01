@@ -370,11 +370,13 @@ notary key.
 For source development, `LLM_NOTARY_PUBLIC_ORIGIN` defaults to
 `http://localhost:4173`, but `DATABASE_URL` is required and must point to a
 PostgreSQL database. A Neon development branch is a suitable low-operations
-choice; use its pooled URL and keep `LLM_NOTARY_DATABASE_MAX_CONNECTIONS` at
-or below 5. GitHub OAuth Apps have one callback URL, so use a separate
-development OAuth App with `http://localhost:4173/api/auth/github/callback`
-and place that app's credentials and `DATABASE_URL` in the local `.env`. Start
-the schema migrator once, then start the API alongside the SPA with:
+choice; use its pooled URL for `DATABASE_URL`, its direct URL for
+`DATABASE_MIGRATIONS_URL`, and keep `LLM_NOTARY_DATABASE_MAX_CONNECTIONS` at
+or below 5. For a direct local PostgreSQL instance, the two URLs can be the
+same. GitHub OAuth Apps have one callback URL, so use a separate development
+OAuth App with `http://localhost:4173/api/auth/github/callback` and place that
+app's credentials and both database URLs in the local `.env`. Start the schema
+migrator once, then start the API alongside the SPA with:
 
 ```bash
 cargo run --no-default-features --features api --bin llm-notary-api-migrate
