@@ -2,7 +2,7 @@
 # Install the latest LLM Notary CLI for macOS or Linux.
 set -eu
 
-repo="exalto-ai/llmnotary"
+repo="exalto-ai/llm-notary"
 base_url="https://github.com/$repo/releases/download"
 install_dir="${LLM_NOTARY_INSTALL_DIR:-${HOME}/.local/bin}"
 
