@@ -179,7 +179,7 @@ function Landing() {
     <PublishingArchitecture />
     <section className="section install capture">
       <div><span className="eyebrow">Local capture</span><h2>Capture locally.</h2><p>Point your existing tools at the local proxy. Provider calls keep streaming normally while encrypted bundles stay on your machine.</p></div>
-      <div className="terminal"><div><i /><i /><i /></div><pre><code><b>$</b> {installCommand}{'\n\n'}<b>$</b> llm-notary proxy start --provider openai{'\n\n'}listening  <em>127.0.0.1:8787</em>{'\n'}saving bundles locally</code></pre><a href="#/docs/getting-started">Installation and setup</a></div>
+      <div className="terminal"><div><i /><i /><i /></div><pre><code><b>$</b> {installCommand}{'\n\n'}<b>$</b> llm-notary proxy start{'\n\n'}listening  <em>127.0.0.1:8787</em>{'\n'}saving bundles locally</code></pre><a href="#/docs/getting-started">Installation and setup</a></div>
     </section>
     <CollectionPreview />
     <section className="section verify" id="verify">
@@ -222,7 +222,7 @@ const docPages = {
       },
       {
         heading: 'A first successful run',
-        code: `${installCommand}\n\nllm-notary proxy start --provider openai\n# In another terminal, run your OpenAI client against http://127.0.0.1:8787/v1\n\nllm-notary bundles list\nllm-notary finalize bundles/cap-....llmbundle --output verified-trace\nllm-notary verify-trace verified-trace`,
+        code: `${installCommand}\n\nllm-notary proxy start\n# In another terminal, run your OpenAI client against http://127.0.0.1:8787/openai/v1\n\nllm-notary bundles list\nllm-notary finalize bundles/cap-....llmbundle --output verified-trace\nllm-notary verify-trace verified-trace`,
       },
       {
         heading: 'The claim',
@@ -270,11 +270,11 @@ const docPages = {
   },
   'getting-started': {
     title: 'Install and capture.',
-    lead: 'Install one CLI, start a provider-specific local proxy, and point your existing client at it. You keep using the same API key and request shape.',
+    lead: 'Install one CLI, start one local proxy, and point each existing client at its provider path. You keep using the same API key and request shape.',
     blocks: [
       { heading: 'Install the CLI', code: installCommand },
       { heading: 'Supported systems', body: 'The installer selects checksum-verified macOS or Linux releases for Apple silicon, Intel, x86_64, and ARM64. Windows x86_64 is available as a ZIP release. Every package contains the same llm-notary command.' },
-      { heading: 'Start the proxy', code: 'llm-notary proxy start \\\n  --provider openai \\\n  --bundle-dir bundles' },
+      { heading: 'Start the proxy', code: 'llm-notary proxy start --bundle-dir bundles' },
       { heading: 'Bundle encryption is automatic', body: 'On first use, the proxy creates a random bundle-encryption key and stores it in Keychain on macOS, Credential Manager on Windows, or the desktop secret service on Linux. The OS may ask you to unlock that credential. You do not need to run a separate initialization command.' },
       { heading: 'Optional passphrase mode', body: 'If you prefer a passphrase instead of the operating-system credential service, choose it before the first proxy run. An empty passphrase is accepted for low-friction local testing, but it provides no meaningful protection if someone obtains both your bundles and vault configuration.', code: 'llm-notary vault init --passphrase' },
       { heading: 'What happens online', body: 'The local proxy handles plaintext while the notary participates in the provider TLS connection without seeing application data. Provider response bytes stream back to your agent as they arrive.' },
@@ -282,19 +282,19 @@ const docPages = {
       {
         heading: 'Connect an SDK',
         definitions: [
-          { term: 'OpenAI', description: 'Start with --provider openai. Set your SDK base URL to http://127.0.0.1:8787/v1 and continue using the Responses API.' },
-          { term: 'Anthropic', description: 'Start with --provider anthropic. Set the SDK base URL to http://127.0.0.1:8787 and continue sending Messages API requests to /v1/messages.' },
-          { term: 'DeepSeek', description: 'Start with --provider deepseek. Set the OpenAI-compatible base URL to http://127.0.0.1:8787 and continue using /chat/completions.' },
-          { term: 'OpenRouter', description: 'Start with --provider openrouter. Set the OpenAI-compatible base URL to http://127.0.0.1:8787/api/v1, retain OPENROUTER_API_KEY, and use /chat/completions. Verified origin is openrouter.ai; a namespaced model slug is metadata, not proof of a direct upstream-vendor connection.' },
+          { term: 'OpenAI', description: 'Set your SDK base URL to http://127.0.0.1:8787/openai/v1 and continue using the Responses API.' },
+          { term: 'Anthropic', description: 'Set the SDK base URL to http://127.0.0.1:8787/anthropic and continue sending Messages API requests to /v1/messages.' },
+          { term: 'DeepSeek', description: 'Set the OpenAI-compatible base URL to http://127.0.0.1:8787/deepseek and continue using /chat/completions.' },
+          { term: 'OpenRouter', description: 'Set the OpenAI-compatible base URL to http://127.0.0.1:8787/openrouter/api/v1, retain OPENROUTER_API_KEY, and use /chat/completions. Verified origin is openrouter.ai; a namespaced model slug is metadata, not proof of a direct upstream-vendor connection.' },
         ],
       },
-      { heading: 'OpenRouter + Chat Completions', body: 'The model slug remains trace metadata. The resulting evidence authenticates OpenRouter—not the vendor named in that slug. Authorization is redacted; optional HTTP-Referer and X-Title attribution headers remain in the private capture.', code: 'llm-notary proxy start --provider openrouter --bundle-dir bundles\n\ncurl http://127.0.0.1:8787/api/v1/chat/completions \\\n  -H "Authorization: Bearer $OPENROUTER_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -H "HTTP-Referer: https://example.test" \\\n  -H "X-Title: LLM Notary example" \\\n  -d \'{"model":"openai/gpt-4o","stream":true,"messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}\'' },
+      { heading: 'OpenRouter + Chat Completions', body: 'The model slug remains trace metadata. The resulting evidence authenticates OpenRouter—not the vendor named in that slug. Authorization is redacted; optional HTTP-Referer and X-Title attribution headers remain in the private capture.', code: 'curl http://127.0.0.1:8787/openrouter/api/v1/chat/completions \\\n  -H "Authorization: Bearer $OPENROUTER_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -H "HTTP-Referer: https://example.test" \\\n  -H "X-Title: LLM Notary example" \\\n  -d \'{"model":"openai/gpt-4o","stream":true,"messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}\'' },
       { heading: 'Where the API key comes from', body: 'Keep configuring credentials exactly as your SDK or agent expects—for example, OPENAI_API_KEY in your shell or secret manager. LLM Notary does not create, load, or require a .env file. A .env file is only one optional way your own application might populate environment variables.' },
-      { heading: 'Provider boundary', body: 'The selected adapter fixes the upstream hostname to an explicit allowlist. The notary—not a caller-supplied URL—resolves and opens the provider connection.' },
-      { heading: 'Codex + OpenAI', code: 'Add this to ~/.codex/config.toml:\n\nmodel_provider = "llm-notary"\n\n[model_providers.llm-notary]\nname = "LLM Notary local proxy"\nbase_url = "http://127.0.0.1:8787/v1"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"\nsupports_websockets = false' },
-      { heading: 'Run Codex', code: 'codex exec --ephemeral --skip-git-repo-check \\\n  -m gpt-4.1-mini \\\n  \'Reply with exactly: hello\'' },
-      { heading: 'Claude Code + Anthropic', code: 'ANTHROPIC_BASE_URL=http://127.0.0.1:8787 \\\nclaude --bare --no-session-persistence \\\n  -p --model claude-haiku-4-5-20251001 \\\n  \'Reply with exactly: hello\'' },
-      { heading: 'OpenCode + DeepSeek', body: 'Set the provider base URL to http://127.0.0.1:8787 and retain DEEPSEEK_API_KEY in the OpenCode environment.' },
+      { heading: 'Provider boundary', body: 'The first local path segment selects a fixed adapter: /openai, /anthropic, /deepseek, or /openrouter. Each adapter fixes the upstream hostname to an explicit allowlist. The notary—not a caller-supplied URL—resolves and opens the provider connection.' },
+      { heading: 'Codex + OpenAI', code: 'Add this to ~/.codex/config.toml:\n\nmodel_provider = "llm-notary"\nmodel = "gpt-5-mini"\nmodel_reasoning_effort = "low"\n\n[model_providers.llm-notary]\nname = "LLM Notary local proxy"\nbase_url = "http://127.0.0.1:8787/openai/v1"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"\nsupports_websockets = false' },
+      { heading: 'Run Codex', code: 'codex exec --ephemeral --ignore-user-config --skip-git-repo-check \\\n  -m gpt-5-mini \\\n  -c \'model_reasoning_effort="low"\' \\\n  \'Reply with exactly: hello\'' },
+      { heading: 'Claude Code + Anthropic', code: 'ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic \\\nclaude --bare --no-session-persistence \\\n  -p --model claude-haiku-4-5-20251001 \\\n  \'Reply with exactly: hello\'' },
+      { heading: 'OpenCode + DeepSeek', body: 'Set the provider base URL to http://127.0.0.1:8787/deepseek and retain DEEPSEEK_API_KEY in the OpenCode environment.' },
       { heading: 'List captured bundles', body: 'Each completed provider interaction appears as one encrypted file. Bundles are private checkpoints, not signatures or publicly verifiable evidence.', code: 'llm-notary bundles list --bundle-dir bundles' },
       { heading: 'Stopping and retrying', body: 'Once the end-of-stream bundle is sealed, stopping the proxy does not invalidate it. Finalization can happen later. If finalization is interrupted, the unchanged bundle can be retried, although the interrupted proof computation starts over.' },
     ],
