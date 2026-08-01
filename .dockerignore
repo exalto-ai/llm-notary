@@ -11,8 +11,6 @@
 !tests/**
 !migrations-postgres/
 !migrations-postgres/**
-!examples/
-!examples/production-seed/
 !vendor/
 !vendor/tlsn/
 !vendor/tlsn/**
