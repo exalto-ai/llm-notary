@@ -11,6 +11,10 @@
 //! `TLSN_PROFILE_CHUNKED_BODY_COMMIT=1` and set
 //! `TLSN_ZK_EPHEMERAL_CHUNK_BYTES` for this benchmark. The prover and notary
 //! use fixed protocol scheduling; no peer-matched environment flags are needed.
+//!
+//! Add `TLSN_PROFILE_JSON=1` to wrap the byte corpus in an
+//! `application/json` request with escape-dense string content, the input
+//! shape that overflowed the recursive spansy string parser.
 
 use std::{env, time::Instant};
 
@@ -35,7 +39,7 @@ use tlsn::{
     verifier::VerifierCommitStart,
     webpki::{CertificateDer, RootCertStore},
 };
-use tlsn_formats::http::{DefaultHttpCommitter, HttpCommit, HttpTranscript};
+use tlsn_formats::http::{BodyContent, DefaultHttpCommitter, HttpCommit, HttpTranscript};
 use tokio_util::compat::{FuturesAsyncReadCompatExt, TokioAsyncReadCompatExt};
 
 #[global_allocator]
@@ -67,23 +71,51 @@ fn profile_tokens() -> Result<Option<usize>> {
         .transpose()
 }
 
-fn profile_body(bytes: usize, tokens: Option<usize>) -> Result<(Bytes, Option<usize>)> {
-    let Some(tokens) = tokens else {
-        return Ok((Bytes::from(vec![0x42; bytes]), None));
+/// OpenAI Responses-API-shaped wrapper used when the JSON profile is active.
+const JSON_REQUEST_PREFIX: &str =
+    "{\"model\":\"gpt-5\",\"input\":[{\"role\":\"user\",\"content\":\"";
+const JSON_REQUEST_SUFFIX: &str = "\"}]}";
+
+fn profile_body(bytes: usize, tokens: Option<usize>, json: bool) -> Result<(Bytes, Option<usize>)> {
+    let (corpus, actual) = match tokens {
+        Some(tokens) => {
+            // A leading-space ASCII word is a standalone token in o200k_base. Count
+            // rather than assume that property so this remains an exact benchmark if
+            // the tokenizer implementation changes.
+            let corpus = " a".repeat(tokens);
+            let tokenizer = o200k_base().context("load the o200k_base tokenizer")?;
+            let actual = tokenizer.encode_with_special_tokens(&corpus).len();
+            anyhow::ensure!(
+                actual == tokens,
+                "the generated corpus encoded to {actual} o200k_base tokens, expected {tokens}"
+            );
+            (corpus.into_bytes(), Some(actual))
+        }
+        None if json => {
+            // Escape-dense JSON string content, like an LLM prompt full of
+            // quoted source code: three escapes per 16 bytes. This is the
+            // input shape that overflowed the recursive spansy string parser.
+            const UNIT: &str = "\\\"word\\\"\\nplain ";
+            let wrapper = JSON_REQUEST_PREFIX.len() + JSON_REQUEST_SUFFIX.len();
+            anyhow::ensure!(
+                bytes > wrapper,
+                "TLSN_PROFILE_BYTES must exceed the JSON wrapper of {wrapper} bytes"
+            );
+            let target = bytes - wrapper;
+            let mut corpus = UNIT.repeat(target / UNIT.len());
+            corpus.push_str(&"x".repeat(target - corpus.len()));
+            (corpus.into_bytes(), None)
+        }
+        None => (vec![0x42; bytes], None),
     };
-
-    // A leading-space ASCII word is a standalone token in o200k_base. Count
-    // rather than assume that property so this remains an exact benchmark if
-    // the tokenizer implementation changes.
-    let body = " a".repeat(tokens);
-    let tokenizer = o200k_base().context("load the o200k_base tokenizer")?;
-    let actual = tokenizer.encode_with_special_tokens(&body).len();
-    anyhow::ensure!(
-        actual == tokens,
-        "the generated corpus encoded to {actual} o200k_base tokens, expected {tokens}"
-    );
-
-    Ok((Bytes::from(body), Some(actual)))
+    if !json {
+        return Ok((Bytes::from(corpus), actual));
+    }
+    let mut document = String::with_capacity(corpus.len() + 64);
+    document.push_str(JSON_REQUEST_PREFIX);
+    document.push_str(std::str::from_utf8(&corpus).expect("the corpus is ASCII"));
+    document.push_str(JSON_REQUEST_SUFFIX);
+    Ok((Bytes::from(document), actual))
 }
 
 fn fixture_roots() -> RootCertStore {
@@ -96,6 +128,7 @@ fn fixture_roots() -> RootCertStore {
 struct ProofProfile {
     bytes: usize,
     tokens: Option<usize>,
+    json: bool,
     reveal_all: bool,
     commit_http: bool,
     minimal_http_commit: bool,
@@ -116,7 +149,7 @@ struct NotaryPhaseTimings {
 }
 
 async fn run_proxy_tls_http_commitment_and_proof(profile: ProofProfile) -> Result<()> {
-    let (body, profile_tokens) = profile_body(profile.bytes, profile.tokens)?;
+    let (body, profile_tokens) = profile_body(profile.bytes, profile.tokens, profile.json)?;
     let bytes = body.len();
     let started = Instant::now();
 
@@ -184,14 +217,15 @@ async fn run_proxy_tls_http_commitment_and_proof(profile: ProofProfile) -> Resul
     tokio::spawn(connection);
     let prover_task = tokio::spawn(prover.into_future());
 
+    let mut request = Request::builder()
+        .method("POST")
+        .uri("/echo")
+        .header("authorization", "Bearer profile-secret");
+    if profile.json {
+        request = request.header("content-type", "application/json");
+    }
     let response = sender
-        .send_request(
-            Request::builder()
-                .method("POST")
-                .uri("/echo")
-                .header("authorization", "Bearer profile-secret")
-                .body(Full::new(body.clone()))?,
-        )
+        .send_request(request.body(Full::new(body.clone()))?)
         .await?;
     let response_body = response.into_body().collect().await?.to_bytes();
     assert_eq!(
@@ -208,6 +242,16 @@ async fn run_proxy_tls_http_commitment_and_proof(profile: ProofProfile) -> Resul
         let transcript = HttpTranscript::parse(prover.transcript())?;
         assert_eq!(transcript.requests.len(), 1);
         assert_eq!(transcript.responses.len(), 1);
+        if profile.json {
+            let request_body = transcript.requests[0]
+                .body
+                .as_ref()
+                .expect("the profile request has a body");
+            assert!(
+                matches!(request_body.content, BodyContent::Json(_)),
+                "the JSON profile must exercise the JSON body parser, not the opaque path"
+            );
+        }
         let mut builder = TranscriptCommitConfig::builder(prover.transcript());
         if profile.sha256_commitments {
             builder.default_kind(TranscriptCommitmentKind::Hash {
@@ -390,6 +434,7 @@ async fn private_chunk_proof_hides_the_transcript_and_redacts_authorization() ->
     run_proxy_tls_http_commitment_and_proof(ProofProfile {
         bytes: 4096,
         tokens: None,
+        json: false,
         reveal_all: false,
         commit_http: true,
         minimal_http_commit: false,
@@ -405,11 +450,39 @@ async fn private_chunk_proof_hides_the_transcript_and_redacts_authorization() ->
     .await
 }
 
+/// End-to-end closure for the client stack-overflow fix: an escape-dense JSON
+/// request body (the production failure shape) flows through Proxy-TLS
+/// capture, HTTP commitment, the bounded private proof, and selective
+/// disclosure on a default-sized test runtime. Parser-scale boundaries live in
+/// `tests/json_stack_safety.rs`; this test proves the proof machinery and the
+/// parser together, so a modest size is enough.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn escape_dense_json_capture_commits_and_discloses() -> Result<()> {
+    run_proxy_tls_http_commitment_and_proof(ProofProfile {
+        bytes: 8 * 1024,
+        tokens: None,
+        json: true,
+        reveal_all: false,
+        commit_http: true,
+        minimal_http_commit: false,
+        chunked_body_commit: true,
+        chunked_body_bytes: 1024,
+        sha256_commitments: false,
+        verifier_max_chunk_bytes: 1024 * 1024,
+        verifier_max_total_chunk_bytes: 16 * 1024 * 1024,
+        verifier_max_commitments: 128,
+        tamper_child_key: false,
+        expect_policy_rejection: false,
+    })
+    .await
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tampered_private_chunk_key_is_rejected_by_both_parties() -> Result<()> {
     run_proxy_tls_http_commitment_and_proof(ProofProfile {
         bytes: 1024,
         tokens: None,
+        json: false,
         reveal_all: false,
         commit_http: true,
         minimal_http_commit: false,
@@ -430,6 +503,7 @@ async fn verifier_rejects_a_private_chunk_over_its_policy_limit() -> Result<()> 
     run_proxy_tls_http_commitment_and_proof(ProofProfile {
         bytes: 1024,
         tokens: None,
+        json: false,
         reveal_all: false,
         commit_http: true,
         minimal_http_commit: false,
@@ -451,6 +525,7 @@ async fn verifier_rejects_private_chunks_over_its_total_policy_limit() -> Result
     run_proxy_tls_http_commitment_and_proof(ProofProfile {
         bytes: 1024,
         tokens: None,
+        json: false,
         reveal_all: false,
         commit_http: true,
         minimal_http_commit: false,
@@ -476,6 +551,7 @@ async fn profiles_proxy_tls_http_commitment_and_proof() -> Result<()> {
     run_proxy_tls_http_commitment_and_proof(ProofProfile {
         bytes: profile_bytes()?,
         tokens: profile_tokens()?,
+        json: env::var("TLSN_PROFILE_JSON").as_deref() == Ok("1"),
         reveal_all: env::var("TLSN_PROFILE_REVEAL_ALL").as_deref() == Ok("1"),
         commit_http: env::var("TLSN_PROFILE_NO_HTTP_COMMIT").as_deref() != Ok("1"),
         minimal_http_commit: env::var("TLSN_PROFILE_MINIMAL_HTTP_COMMIT").as_deref() == Ok("1"),
