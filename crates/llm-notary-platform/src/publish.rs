@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, path::Path as StdPath, sync::Arc, time::Duration};
 
 use anyhow::Context;
 use axum::{
@@ -15,14 +15,17 @@ use sqlx::FromRow;
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiResult, AppState, authenticated_web_user, bearer_token, database_error,
+    ApiError, ApiResult, AppState, authenticated_web_user, bearer_token,
+    config::StorageConfig,
+    database_error,
     intake::{ARCHIVE_FORMAT, IntakeStorage},
     unix_timestamp,
 };
 
+#[cfg(test)]
+use super::config::{DEFAULT_MAX_ARCHIVE_BYTES, DEFAULT_UPLOAD_TTL_SECS};
+
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
-const DEFAULT_MAX_ARCHIVE_BYTES: i64 = 128 * 1024 * 1024;
-const DEFAULT_UPLOAD_TTL_SECS: i64 = 15 * 60;
 const CLEANUP_INTERVAL_SECS: u64 = 10 * 60;
 
 #[derive(Clone)]
@@ -101,27 +104,25 @@ pub(super) struct PublishJobRow {
 }
 
 impl PublishService {
-    pub fn from_env(stamp_issuer: String) -> anyhow::Result<Self> {
-        let max_archive_bytes =
-            integer_env("LLM_NOTARY_INTAKE_MAX_BYTES")?.unwrap_or(DEFAULT_MAX_ARCHIVE_BYTES);
-        if max_archive_bytes <= 0 {
-            anyhow::bail!("LLM_NOTARY_INTAKE_MAX_BYTES must be positive");
-        }
-        let upload_ttl_secs =
-            integer_env("LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS")?.unwrap_or(DEFAULT_UPLOAD_TTL_SECS);
-        if !(60..=24 * 60 * 60).contains(&upload_ttl_secs) {
-            anyhow::bail!("LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS must be between 60 and 86400 seconds");
-        }
-        let storage = IntakeStorage::from_env()?;
+    pub fn from_config(config: &StorageConfig, stamp_issuer: String) -> anyhow::Result<Self> {
+        let storage = IntakeStorage::from_config(config)?;
         let (platform_signing_key, stamp_issuer) = if storage.is_enabled() {
-            (Some(Arc::new(load_platform_signing_key()?)), stamp_issuer)
+            let path = config.platform_signing_key_file.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE is required when publication intake is enabled"
+                )
+            })?;
+            (
+                Some(Arc::new(load_platform_signing_key(path)?)),
+                stamp_issuer,
+            )
         } else {
             (None, String::new())
         };
         Ok(Self {
             storage,
-            max_archive_bytes,
-            upload_ttl_secs,
+            max_archive_bytes: config.max_archive_bytes,
+            upload_ttl_secs: config.upload_ttl_secs,
             platform_signing_key,
             stamp_issuer,
         })
@@ -160,14 +161,9 @@ impl PublishService {
     }
 }
 
-fn load_platform_signing_key() -> anyhow::Result<SigningKey> {
-    let path = std::env::var("LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE").map_err(|_| {
-        anyhow::anyhow!(
-            "LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE is required when publication intake is enabled"
-        )
-    })?;
-    let text = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading platform signing key {path}"))?;
+fn load_platform_signing_key(path: &StdPath) -> anyhow::Result<SigningKey> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("reading platform signing key {}", path.display()))?;
     let bytes = hex::decode(text.trim()).context("platform signing key must be hexadecimal")?;
     if bytes.len() != 32 {
         anyhow::bail!("platform signing key must contain exactly 32 bytes");
@@ -708,17 +704,6 @@ fn job_response(job: &PublishJobRow) -> PublishJobResponse {
     }
 }
 
-fn integer_env(name: &str) -> anyhow::Result<Option<i64>> {
-    std::env::var(name)
-        .ok()
-        .map(|value| {
-            value
-                .parse::<i64>()
-                .map_err(|error| anyhow::anyhow!("{name} must be an integer: {error}"))
-        })
-        .transpose()
-}
-
 #[cfg(test)]
 mod tests {
     use axum_extra::extract::cookie::Cookie;
@@ -772,7 +757,7 @@ mod tests {
             secure_cookies: true,
             notary_directory: super::super::tests::directory_key(),
             publish: PublishService::mock(storage.clone()),
-            library_metadata: super::super::admission::MetadataService::from_env(),
+            library_metadata: super::super::admission::MetadataService::disabled(),
         };
         (
             state,

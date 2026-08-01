@@ -1,11 +1,9 @@
 use std::{
-    env,
-    net::SocketAddr,
     sync::atomic::{AtomicUsize, Ordering},
     time::{Duration, Instant},
 };
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use axum::{
     Json, Router,
     extract::{MatchedPath, Path, Query, Request, State},
@@ -18,19 +16,13 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use rand::RngCore;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    PgPool,
-    postgres::{PgConnectOptions, PgPoolOptions},
-};
+use sqlx::{PgPool, postgres::PgPoolOptions};
 use time::Duration as CookieDuration;
 use tracing::Instrument as _;
 use url::Url;
 use uuid::Uuid;
 
-use llm_notary_core::notary_directory::{
-    DIRECTORY_FORMAT_V3, NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, NotaryTransport,
-    key_id, parse_directory,
-};
+use llm_notary_core::notary_directory::NotaryDirectory;
 use llm_notary_core::sha256_hex;
 use llm_notary_core::telemetry;
 use opentelemetry::global;
@@ -38,9 +30,15 @@ use opentelemetry_http::HeaderExtractor;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 
 mod admission;
+mod config;
 mod intake;
 pub mod migrate;
 mod publish;
+
+pub use config::{
+    AuthConfig, DatabaseConfig, MetadataConfig, NotaryDirectoryConfig, PlatformConfig,
+    S3StorageConfig, StorageConfig,
+};
 
 const SESSION_COOKIE: &str = "llm_notary_session";
 const OAUTH_STATE_COOKIE: &str = "llm_notary_oauth_state";
@@ -49,8 +47,6 @@ const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 const CLI_AUTHORIZATION_TTL_SECS: i64 = 10 * 60;
 const CLI_ACCESS_TOKEN_TTL_SECS: i64 = 15 * 60;
 const CLI_REFRESH_TOKEN_TTL_SECS: i64 = 90 * 24 * 60 * 60;
-const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 5;
-const MAX_DATABASE_CONNECTIONS: u32 = 64;
 const IDLE_SHUTDOWN_POLL_SECS: u64 = 1;
 
 static ACTIVE_REQUESTS: AtomicUsize = AtomicUsize::new(0);
@@ -273,15 +269,13 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
 /// Runs the hosted LLM Notary platform API.
 pub async fn run_api() -> Result<()> {
     dotenvy::dotenv().ok();
+    let config = PlatformConfig::from_env()?;
     let _telemetry = telemetry::init("llm-notary-api")?;
-    let state = AppState::from_env().await?;
-    let listen = env::var("LLM_NOTARY_API_LISTEN")
-        .unwrap_or_else(|_| "127.0.0.1:8080".to_owned())
-        .parse::<SocketAddr>()
-        .context("LLM_NOTARY_API_LISTEN must be a socket address")?;
+    let state = AppState::from_config(&config).await?;
+    let listen = config.listen;
     publish::spawn_cleanup(state.clone());
     admission::spawn(state.clone());
-    let shutdown_rx = idle_shutdown_secs()?.map(|idle_shutdown_secs| {
+    let shutdown_rx = config.idle_shutdown_secs.map(|idle_shutdown_secs| {
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         spawn_idle_shutdown(state.clone(), idle_shutdown_secs, shutdown_tx);
         shutdown_rx
@@ -329,25 +323,6 @@ pub async fn run_api() -> Result<()> {
         })
         .await?;
     Ok(())
-}
-
-fn idle_shutdown_secs() -> Result<Option<u64>> {
-    let value = match env::var("LLM_NOTARY_IDLE_SHUTDOWN_SECS") {
-        Ok(value) => value,
-        Err(env::VarError::NotPresent) => return Ok(None),
-        Err(error) => return Err(error).context("reading LLM_NOTARY_IDLE_SHUTDOWN_SECS"),
-    };
-    parse_idle_shutdown_secs(&value).map(Some)
-}
-
-fn parse_idle_shutdown_secs(value: &str) -> Result<u64> {
-    let seconds = value
-        .parse::<u64>()
-        .context("LLM_NOTARY_IDLE_SHUTDOWN_SECS must be a positive integer")?;
-    if seconds == 0 {
-        bail!("LLM_NOTARY_IDLE_SHUTDOWN_SECS must be a positive integer");
-    }
-    Ok(seconds)
 }
 
 fn spawn_idle_shutdown(
@@ -476,34 +451,17 @@ impl Drop for RequestActivity {
 }
 
 impl AppState {
-    async fn from_env() -> Result<Self> {
-        let github_client_id = required_env("GITHUB_OAUTH_CLIENT_ID")?;
-        let github_client_secret = required_env("GITHUB_OAUTH_CLIENT_SECRET")?;
-        let app_url = Url::parse(
-            &env::var("LLM_NOTARY_PUBLIC_ORIGIN")
-                .unwrap_or_else(|_| "http://localhost:4173".to_owned()),
-        )
-        .context("LLM_NOTARY_PUBLIC_ORIGIN must be an absolute URL")?;
-        if app_url.path() != "/" || app_url.query().is_some() || app_url.fragment().is_some() {
-            bail!("LLM_NOTARY_PUBLIC_ORIGIN must be an origin without a path, query, or fragment");
-        }
-        let callback_url = app_url
-            .join("/api/auth/github/callback")
-            .context("building GitHub OAuth callback URL")?;
-        let notary_directory = notary_directory_from_env()?;
-        let publish = publish::PublishService::from_env(app_url.origin().ascii_serialization())?;
+    async fn from_config(config: &PlatformConfig) -> Result<Self> {
+        let publish = publish::PublishService::from_config(
+            &config.storage,
+            config.auth.app_url.origin().ascii_serialization(),
+        )?;
         publish.validate().await?;
-        let database = {
-            let database_url = required_env("DATABASE_URL")?;
-            let options = database_url
-                .parse::<PgConnectOptions>()
-                .context("DATABASE_URL must be a PostgreSQL connection URL")?;
-            PgPoolOptions::new()
-                .max_connections(database_max_connections()?)
-                .connect_with(options)
-                .await
-                .context("opening API database")?
-        };
+        let database = PgPoolOptions::new()
+            .max_connections(config.database.max_connections)
+            .connect_with(config.database.connect_options.clone())
+            .await
+            .context("opening API database")?;
         Ok(Self {
             database,
             #[cfg(test)]
@@ -512,14 +470,14 @@ impl AppState {
                 .user_agent("LLM-Notary/0.1")
                 .build()
                 .context("building GitHub client")?,
-            github_client_id,
-            github_client_secret,
-            callback_url,
-            secure_cookies: app_url.scheme() == "https",
-            app_url,
-            notary_directory,
+            github_client_id: config.auth.github_client_id.clone(),
+            github_client_secret: config.auth.github_client_secret.clone(),
+            callback_url: config.auth.callback_url.clone(),
+            secure_cookies: config.auth.app_url.scheme() == "https",
+            app_url: config.auth.app_url.clone(),
+            notary_directory: config.notary_directory.directory.clone(),
             publish,
-            library_metadata: admission::MetadataService::from_env(),
+            library_metadata: admission::MetadataService::from_config(config.metadata.as_ref()),
         })
     }
 
@@ -545,23 +503,6 @@ impl AppState {
     fn expired_cookie(&self, name: &'static str) -> Cookie<'static> {
         self.cookie(name, String::new(), 0)
     }
-}
-
-fn database_max_connections() -> Result<u32> {
-    let value = match env::var("LLM_NOTARY_DATABASE_MAX_CONNECTIONS") {
-        Ok(value) => value,
-        Err(env::VarError::NotPresent) => return Ok(DEFAULT_DATABASE_MAX_CONNECTIONS),
-        Err(error) => return Err(error).context("reading LLM_NOTARY_DATABASE_MAX_CONNECTIONS"),
-    };
-    let connections = value
-        .parse::<u32>()
-        .context("LLM_NOTARY_DATABASE_MAX_CONNECTIONS must be an integer")?;
-    if connections == 0 || connections > MAX_DATABASE_CONNECTIONS {
-        bail!(
-            "LLM_NOTARY_DATABASE_MAX_CONNECTIONS must be between 1 and {MAX_DATABASE_CONNECTIONS}"
-        );
-    }
-    Ok(connections)
 }
 
 async fn notary(State(state): State<AppState>) -> Json<NotaryDirectory> {
@@ -1268,71 +1209,6 @@ fn database_error(error: sqlx::Error) -> ApiError {
     ApiError::internal(anyhow!(error))
 }
 
-fn required_env(name: &str) -> Result<String> {
-    let value = env::var(name).with_context(|| format!("{name} must be set"))?;
-    if value.is_empty() {
-        bail!("{name} must not be empty");
-    }
-    Ok(value)
-}
-
-fn notary_directory_from_env() -> Result<NotaryDirectory> {
-    if let Ok(value) = env::var("LLM_NOTARY_NOTARY_DIRECTORY_JSON")
-        && !value.trim().is_empty()
-    {
-        let directory = parse_directory(value.as_bytes())
-            .context("LLM_NOTARY_NOTARY_DIRECTORY_JSON is invalid")?;
-        if let Ok(expected) = env::var("LLM_NOTARY_NOTARY_PUBLIC_KEY")
-            && !directory
-                .active()?
-                .public_key
-                .eq_ignore_ascii_case(expected.trim())
-        {
-            bail!("the active directory key does not match LLM_NOTARY_NOTARY_PUBLIC_KEY");
-        }
-        return Ok(directory);
-    }
-    let host = env::var("LLM_NOTARY_NOTARY_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
-    let port = env::var("LLM_NOTARY_NOTARY_PORT")
-        .unwrap_or_else(|_| "7047".to_owned())
-        .parse::<u16>()
-        .context("LLM_NOTARY_NOTARY_PORT must be a valid TCP port")?;
-    let transport = env::var("LLM_NOTARY_NOTARY_TRANSPORT")
-        .unwrap_or_else(|_| "tcp".to_owned())
-        .parse::<NotaryTransport>()
-        .context("LLM_NOTARY_NOTARY_TRANSPORT must be tcp or tls")?;
-    let public_key = hex::decode(
-        env::var("LLM_NOTARY_NOTARY_PUBLIC_KEY")
-            .context("LLM_NOTARY_NOTARY_PUBLIC_KEY is required")?,
-    )
-    .context("LLM_NOTARY_NOTARY_PUBLIC_KEY must be hexadecimal")?;
-    let key_id = key_id(&public_key);
-    let directory = NotaryDirectory {
-        format: DIRECTORY_FORMAT_V3.to_owned(),
-        generation: env::var("LLM_NOTARY_NOTARY_DIRECTORY_GENERATION")
-            .unwrap_or_else(|_| "1".to_owned())
-            .parse()
-            .context("LLM_NOTARY_NOTARY_DIRECTORY_GENERATION must be a u64")?,
-        active_key_id: key_id.clone(),
-        notaries: vec![NotaryDirectoryRecord {
-            host,
-            port,
-            transport,
-            key_id,
-            public_key: hex::encode(public_key),
-            status: NotaryKeyStatus::Active,
-            valid_from_unix_ms: env::var("LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS")
-                .unwrap_or_else(|_| "0".to_owned())
-                .parse()
-                .context("LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS must be a u64")?,
-            valid_until_unix_ms: None,
-            finalize_until_unix_ms: None,
-        }],
-    };
-    directory.validate()?;
-    Ok(directory)
-}
-
 #[cfg(test)]
 mod test_database {
     use std::{ops::Deref, sync::Arc};
@@ -1396,15 +1272,11 @@ use test_database::fresh_database;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use llm_notary_core::notary_directory::{
+        DIRECTORY_FORMAT_V3, NotaryDirectoryRecord, NotaryKeyStatus, NotaryTransport, key_id,
+    };
 
-    #[test]
-    fn idle_shutdown_seconds_must_be_a_positive_integer() {
-        assert_eq!(parse_idle_shutdown_secs("45").expect("valid duration"), 45);
-        assert!(parse_idle_shutdown_secs("0").is_err());
-        assert!(parse_idle_shutdown_secs("-1").is_err());
-        assert!(parse_idle_shutdown_secs("soon").is_err());
-    }
+    use super::*;
 
     #[test]
     fn observability_probes_do_not_extend_the_idle_window() {
@@ -1460,7 +1332,7 @@ mod tests {
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
-            library_metadata: admission::MetadataService::from_env(),
+            library_metadata: admission::MetadataService::disabled(),
         };
         let url = state
             .authorization_url("state-token")
@@ -1524,7 +1396,7 @@ mod tests {
                 secure_cookies: true,
                 notary_directory: directory_key(),
                 publish: publish::PublishService::disabled_for_test(),
-                library_metadata: admission::MetadataService::from_env(),
+                library_metadata: admission::MetadataService::disabled(),
             }),
             Json(RefreshRequest {
                 refresh_token: tokens.refresh_token,
@@ -1596,7 +1468,7 @@ mod tests {
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
-            library_metadata: admission::MetadataService::from_env(),
+            library_metadata: admission::MetadataService::disabled(),
         };
         let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
 

@@ -85,6 +85,10 @@ cost estimate. The default rates are the current standard `gpt-5.6-luna` rates
 ($0.20/M input, $0.02/M cached input, $0.25/M cache writes, and $1.20/M output);
 configure all rates whenever the metadata model is
 changed. A budget-limited trace keeps a fallback title and is retried later.
+The API validates the configured metadata budget and all token prices during
+startup; each supplied value must be a positive integer. Invalid values stop
+startup rather than silently falling back to the defaults. Leaving
+`OPENAI_API_KEY` unset disables metadata generation.
 
 Stable client-visible rejection codes currently include
 `object_missing`, `object_size_mismatch`, `object_sha256_mismatch`,
