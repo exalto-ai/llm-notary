@@ -147,7 +147,7 @@ impl SessionBudgets {
 struct SessionProfile {
     mode: NotarySessionMode,
     started: Instant,
-    cgroup: Option<CgroupV2>,
+    cgroup: Option<Cgroup>,
     cpu_start: Option<CgroupCpuStat>,
     memory_current_start_bytes: Option<u64>,
     memory_peak_start_bytes: Option<u64>,
@@ -159,11 +159,11 @@ struct SessionProfile {
 
 impl SessionProfile {
     fn start(mode: NotarySessionMode) -> Self {
-        let cgroup = CgroupV2::for_current_process();
+        let cgroup = Cgroup::for_current_process();
         let sampled_memory_peak_bytes = Arc::new(AtomicU64::new(
             cgroup
                 .as_ref()
-                .and_then(CgroupV2::memory_current_bytes)
+                .and_then(Cgroup::memory_current_bytes)
                 .unwrap_or_default(),
         ));
         let peak = Arc::clone(&sampled_memory_peak_bytes);
@@ -182,7 +182,7 @@ impl SessionProfile {
                     _ = ticker.tick() => {
                         if let Some(current) = sampler_cgroup
                             .as_ref()
-                            .and_then(CgroupV2::memory_current_bytes)
+                            .and_then(Cgroup::memory_current_bytes)
                         {
                             peak.fetch_max(current, Ordering::Relaxed);
                         }
@@ -193,10 +193,10 @@ impl SessionProfile {
         Self {
             mode,
             started: Instant::now(),
-            cpu_start: cgroup.as_ref().and_then(CgroupV2::cpu_stat),
-            memory_current_start_bytes: cgroup.as_ref().and_then(CgroupV2::memory_current_bytes),
-            memory_peak_start_bytes: cgroup.as_ref().and_then(CgroupV2::memory_peak_bytes),
-            memory_events_start: cgroup.as_ref().and_then(CgroupV2::memory_events),
+            cpu_start: cgroup.as_ref().and_then(Cgroup::cpu_stat),
+            memory_current_start_bytes: cgroup.as_ref().and_then(Cgroup::memory_current_bytes),
+            memory_peak_start_bytes: cgroup.as_ref().and_then(Cgroup::memory_peak_bytes),
+            memory_events_start: cgroup.as_ref().and_then(Cgroup::memory_events),
             cgroup,
             sampled_memory_peak_bytes,
             stop,
@@ -208,18 +208,15 @@ impl SessionProfile {
         let _ = self.stop.send(true);
         let _ = self.sampler.await;
         let sampled_memory_peak_bytes = self.sampled_memory_peak_bytes.load(Ordering::Relaxed);
-        let cpu_end = self.cgroup.as_ref().and_then(CgroupV2::cpu_stat);
-        let memory_current_end_bytes = self
-            .cgroup
-            .as_ref()
-            .and_then(CgroupV2::memory_current_bytes);
-        let memory_peak_end_bytes = self.cgroup.as_ref().and_then(CgroupV2::memory_peak_bytes);
-        let memory_events_end = self.cgroup.as_ref().and_then(CgroupV2::memory_events);
+        let cpu_end = self.cgroup.as_ref().and_then(Cgroup::cpu_stat);
+        let memory_current_end_bytes = self.cgroup.as_ref().and_then(Cgroup::memory_current_bytes);
+        let memory_peak_end_bytes = self.cgroup.as_ref().and_then(Cgroup::memory_peak_bytes);
+        let memory_events_end = self.cgroup.as_ref().and_then(Cgroup::memory_events);
         tracing::info!(
             mode = session_mode_label(self.mode),
             outcome,
             elapsed_ms = self.started.elapsed().as_millis(),
-            cgroup_path = ?self.cgroup.as_ref().map(|cgroup| cgroup.path.display().to_string()),
+            cgroup_path = ?self.cgroup.as_ref().map(Cgroup::path_display),
             cgroup_cpu_usage_usec = ?CgroupCpuStat::usage_delta_usec(self.cpu_start, cpu_end),
             cgroup_cpu_user_usec = ?CgroupCpuStat::user_delta_usec(self.cpu_start, cpu_end),
             cgroup_cpu_system_usec = ?CgroupCpuStat::system_delta_usec(self.cpu_start, cpu_end),
@@ -230,11 +227,67 @@ impl SessionProfile {
             cgroup_memory_peak_start_bytes = ?self.memory_peak_start_bytes,
             cgroup_memory_peak_end_bytes = ?memory_peak_end_bytes,
             cgroup_memory_peak_increase_bytes = ?delta(self.memory_peak_start_bytes, memory_peak_end_bytes),
-            cgroup_memory_max_bytes = ?self.cgroup.as_ref().and_then(CgroupV2::memory_max_bytes),
+            cgroup_memory_max_bytes = ?self.cgroup.as_ref().and_then(Cgroup::memory_max_bytes),
             cgroup_memory_events_oom = ?CgroupMemoryEvents::oom_delta(self.memory_events_start, memory_events_end),
             cgroup_memory_events_oom_kill = ?CgroupMemoryEvents::oom_kill_delta(self.memory_events_start, memory_events_end),
             "notary session resource profile"
         );
+    }
+}
+
+#[derive(Clone, Debug)]
+enum Cgroup {
+    V2(CgroupV2),
+    V1(CgroupV1),
+}
+
+impl Cgroup {
+    fn for_current_process() -> Option<Self> {
+        CgroupV2::for_current_process()
+            .map(Self::V2)
+            .or_else(|| CgroupV1::for_current_process().map(Self::V1))
+    }
+
+    fn path_display(&self) -> String {
+        match self {
+            Self::V2(cgroup) => cgroup.path.display().to_string(),
+            Self::V1(cgroup) => cgroup.path_display(),
+        }
+    }
+
+    fn cpu_stat(&self) -> Option<CgroupCpuStat> {
+        match self {
+            Self::V2(cgroup) => cgroup.cpu_stat(),
+            Self::V1(cgroup) => cgroup.cpu_stat(),
+        }
+    }
+
+    fn memory_current_bytes(&self) -> Option<u64> {
+        match self {
+            Self::V2(cgroup) => cgroup.memory_current_bytes(),
+            Self::V1(cgroup) => cgroup.memory_current_bytes(),
+        }
+    }
+
+    fn memory_peak_bytes(&self) -> Option<u64> {
+        match self {
+            Self::V2(cgroup) => cgroup.memory_peak_bytes(),
+            Self::V1(cgroup) => cgroup.memory_peak_bytes(),
+        }
+    }
+
+    fn memory_max_bytes(&self) -> Option<u64> {
+        match self {
+            Self::V2(cgroup) => cgroup.memory_max_bytes(),
+            Self::V1(cgroup) => cgroup.memory_max_bytes(),
+        }
+    }
+
+    fn memory_events(&self) -> Option<CgroupMemoryEvents> {
+        match self {
+            Self::V2(cgroup) => cgroup.memory_events(),
+            Self::V1(cgroup) => cgroup.memory_events(),
+        }
     }
 }
 
@@ -284,12 +337,117 @@ impl CgroupV2 {
     }
 }
 
+#[derive(Clone, Debug)]
+struct CgroupV1 {
+    cpuacct_path: Option<PathBuf>,
+    cpu_path: Option<PathBuf>,
+    memory_path: Option<PathBuf>,
+}
+
+impl CgroupV1 {
+    fn for_current_process() -> Option<Self> {
+        let memberships = fs::read_to_string("/proc/self/cgroup").ok()?;
+        let mut cpuacct_path = None;
+        let mut cpu_path = None;
+        let mut memory_path = None;
+
+        for membership in memberships.lines() {
+            let mut fields = membership.splitn(3, ':');
+            let (Some(_hierarchy), Some(controllers), Some(relative_path)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if controllers.is_empty() {
+                continue;
+            }
+            let path = Path::new("/sys/fs/cgroup")
+                .join(controllers)
+                .join(relative_path.trim_start_matches('/'));
+            if !path.is_dir() {
+                continue;
+            }
+            if controllers
+                .split(',')
+                .any(|controller| controller == "cpuacct")
+            {
+                cpuacct_path = Some(path.clone());
+            }
+            if controllers.split(',').any(|controller| controller == "cpu") {
+                cpu_path = Some(path.clone());
+            }
+            if controllers
+                .split(',')
+                .any(|controller| controller == "memory")
+            {
+                memory_path = Some(path);
+            }
+        }
+
+        (cpuacct_path.is_some() || memory_path.is_some()).then_some(Self {
+            cpuacct_path,
+            cpu_path,
+            memory_path,
+        })
+    }
+
+    fn path_display(&self) -> String {
+        self.cpuacct_path
+            .as_ref()
+            .or(self.memory_path.as_ref())
+            .or(self.cpu_path.as_ref())
+            .map(|path| path.display().to_string())
+            .unwrap_or_default()
+    }
+
+    fn number(path: Option<&PathBuf>, file: &str) -> Option<u64> {
+        fs::read_to_string(path?.join(file))
+            .ok()?
+            .trim()
+            .parse()
+            .ok()
+    }
+
+    fn cpu_stat(&self) -> Option<CgroupCpuStat> {
+        let usage_usec = Self::number(self.cpuacct_path.as_ref(), "cpuacct.usage")? / 1_000;
+        let throttled_usec = self
+            .cpu_path
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path.join("cpu.stat")).ok())
+            .and_then(|stat| parse_cgroup_v1_throttled_usec(&stat));
+        Some(CgroupCpuStat {
+            usage_usec,
+            user_usec: None,
+            system_usec: None,
+            throttled_usec,
+        })
+    }
+
+    fn memory_current_bytes(&self) -> Option<u64> {
+        Self::number(self.memory_path.as_ref(), "memory.usage_in_bytes")
+    }
+
+    fn memory_peak_bytes(&self) -> Option<u64> {
+        Self::number(self.memory_path.as_ref(), "memory.max_usage_in_bytes")
+    }
+
+    fn memory_max_bytes(&self) -> Option<u64> {
+        Self::number(self.memory_path.as_ref(), "memory.limit_in_bytes")
+    }
+
+    fn memory_events(&self) -> Option<CgroupMemoryEvents> {
+        // cgroup v1 exposes only a limit-charge failure counter. It is not an
+        // OOM/OOM-kill counter, so leave these v2-specific fields absent.
+        None
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct CgroupCpuStat {
     usage_usec: u64,
-    user_usec: u64,
-    system_usec: u64,
-    throttled_usec: u64,
+    user_usec: Option<u64>,
+    system_usec: Option<u64>,
+    throttled_usec: Option<u64>,
 }
 
 impl CgroupCpuStat {
@@ -302,22 +460,22 @@ impl CgroupCpuStat {
 
     fn user_delta_usec(start: Option<Self>, end: Option<Self>) -> Option<u64> {
         delta(
-            start.map(|stat| stat.user_usec),
-            end.map(|stat| stat.user_usec),
+            start.and_then(|stat| stat.user_usec),
+            end.and_then(|stat| stat.user_usec),
         )
     }
 
     fn system_delta_usec(start: Option<Self>, end: Option<Self>) -> Option<u64> {
         delta(
-            start.map(|stat| stat.system_usec),
-            end.map(|stat| stat.system_usec),
+            start.and_then(|stat| stat.system_usec),
+            end.and_then(|stat| stat.system_usec),
         )
     }
 
     fn throttled_delta_usec(start: Option<Self>, end: Option<Self>) -> Option<u64> {
         delta(
-            start.map(|stat| stat.throttled_usec),
-            end.map(|stat| stat.throttled_usec),
+            start.and_then(|stat| stat.throttled_usec),
+            end.and_then(|stat| stat.throttled_usec),
         )
     }
 }
@@ -329,13 +487,22 @@ fn parse_cgroup_cpu_stat(stat: &str) -> Option<CgroupCpuStat> {
         let value = value.parse().ok()?;
         match name {
             "usage_usec" => parsed.usage_usec = value,
-            "user_usec" => parsed.user_usec = value,
-            "system_usec" => parsed.system_usec = value,
-            "throttled_usec" => parsed.throttled_usec = value,
+            "user_usec" => parsed.user_usec = Some(value),
+            "system_usec" => parsed.system_usec = Some(value),
+            "throttled_usec" => parsed.throttled_usec = Some(value),
             _ => {}
         }
     }
     (parsed.usage_usec != 0).then_some(parsed)
+}
+
+fn parse_cgroup_v1_throttled_usec(stat: &str) -> Option<u64> {
+    stat.lines().find_map(|line| {
+        let (name, value) = line.split_once(' ')?;
+        (name == "throttled_time")
+            .then(|| value.parse::<u64>().ok().map(|value| value / 1_000))
+            .flatten()
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -649,10 +816,18 @@ mod tests {
             parse_cgroup_cpu_stat(stat),
             Some(CgroupCpuStat {
                 usage_usec: 42,
-                user_usec: 21,
-                system_usec: 21,
-                throttled_usec: 3,
+                user_usec: Some(21),
+                system_usec: Some(21),
+                throttled_usec: Some(3),
             })
+        );
+    }
+
+    #[test]
+    fn parses_cgroup_v1_throttled_time() {
+        assert_eq!(
+            parse_cgroup_v1_throttled_usec("nr_periods 2\nnr_throttled 1\nthrottled_time 4500\n"),
+            Some(4)
         );
     }
 

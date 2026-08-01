@@ -371,16 +371,17 @@ Transcript parsing uses constant stack regardless of input size, so these
 limits hold on the default runtime; the client additionally reserves a 32 MiB
 worker stack purely as containment.
 
-For staged capacity measurements, run the notary in a Linux cgroup v2
-container with `--profile-sessions` and no other workload in that cgroup. It
-emits a structured record tagged `mode=capture` or `mode=finalize`, including
-elapsed time, user/system CPU deltas, sampled and kernel-tracked memory peaks,
-cgroup memory limit, and OOM counters. The opt-in `proxy_tls_split_profile`
-test runs the production protocol against a separate notary container and uses
-an intentionally invalid synthetic provider credential, so it never needs an
-API key or creates an inference. The smaller in-process `proxy_tls_profile`
-test remains useful for deterministic timing regressions but is not a
-substitute for isolated notary measurements.
+For staged capacity measurements, run the notary in a Linux cgroup container
+with `--profile-sessions` and no other workload in that cgroup. It emits a
+structured record tagged `mode=capture` or `mode=finalize`, including elapsed
+time, CPU use, sampled and kernel-tracked memory peaks, and cgroup memory
+limits. cgroup v2 also reports user/system CPU splits and OOM counters; cgroup
+v1 reports aggregate CPU use and CPU throttling. The opt-in
+`proxy_tls_split_profile` test runs the production protocol against a separate
+notary container and uses an intentionally invalid synthetic provider
+credential, so it never needs an API key or creates an inference. The smaller
+in-process `proxy_tls_profile` test remains useful for deterministic timing
+regressions but is not a substitute for isolated notary measurements.
 
 ## Website sign-in
 
