@@ -12,7 +12,7 @@ use tokio::io::AsyncWriteExt;
 use url::Url;
 use uuid::Uuid;
 
-use super::DEFAULT_PUBLIC_ORIGIN;
+use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin};
 use crate::public::{
     PLATFORM_STAMP_FORMAT, PublicStamp, platform_key_id, validate_public_trace_bytes,
     verify_public_trace_bytes,
@@ -64,7 +64,7 @@ struct PlatformDirectory {
 
 pub async fn run(args: DownloadArgs) -> Result<()> {
     let publication_id = validated_publication_id(&args.publication_id)?;
-    let origin = normalize_origin(&args.api)?;
+    let origin = ApiOrigin::parse(&args.api)?;
     let output = output_path(&publication_id, args.output)?;
     prepare_output(&output, args.overwrite)?;
 
@@ -73,9 +73,7 @@ pub async fn run(args: DownloadArgs) -> Result<()> {
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("building public download client")?;
-    let metadata_url = origin
-        .join(&format!("api/public/traces/{publication_id}"))
-        .expect("validated API origin always accepts a relative path");
+    let metadata_url = origin.api_url(&format!("/api/public/traces/{publication_id}"));
     let metadata: PublicTraceMetadata =
         get_json(&client, metadata_url, "resolving publication").await?;
     ensure!(
@@ -113,9 +111,7 @@ pub async fn run(args: DownloadArgs) -> Result<()> {
     let verified = if args.verify {
         let directory: PlatformDirectory = get_json(
             &client,
-            origin
-                .join("api/platform")
-                .expect("validated API origin always accepts a relative path"),
+            origin.api_url("/api/platform"),
             "retrieving platform signing key",
         )
         .await?;
@@ -143,10 +139,14 @@ pub async fn run(args: DownloadArgs) -> Result<()> {
     Ok(())
 }
 
-async fn record_download_event(client: &Client, origin: &Url, publication_id: &str) -> Result<()> {
-    let url = origin.join(&format!(
-        "api/public/traces/{publication_id}/events/download"
-    ))?;
+async fn record_download_event(
+    client: &Client,
+    origin: &ApiOrigin,
+    publication_id: &str,
+) -> Result<()> {
+    let url = origin.api_url(&format!(
+        "/api/public/traces/{publication_id}/events/download"
+    ));
     let response = client
         .post(url)
         .json(&serde_json::json!({ "subject": Uuid::new_v4().hyphenated().to_string() }))
@@ -169,33 +169,6 @@ fn validated_publication_id(value: &str) -> Result<String> {
         "publication ID must be a lowercase hyphenated UUID"
     );
     Ok(canonical)
-}
-
-fn normalize_origin(value: &str) -> Result<Url> {
-    let mut url = Url::parse(value).context("--api must be an absolute URL")?;
-    if !matches!(url.scheme(), "https" | "http")
-        || url.host_str().is_none()
-        || url.path() != "/"
-        || url.query().is_some()
-        || url.fragment().is_some()
-        || !url.username().is_empty()
-        || url.password().is_some()
-    {
-        bail!("--api must be an HTTP(S) origin without a path, credentials, query, or fragment")
-    }
-    if url.scheme() == "http" && !is_loopback_url(&url) {
-        bail!("--api must use HTTPS except for a loopback development origin")
-    }
-    url.set_path("/");
-    Ok(url)
-}
-
-fn is_loopback_url(url: &Url) -> bool {
-    url.host().is_some_and(|host| match host {
-        url::Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
-        url::Host::Ipv4(address) => address.is_loopback(),
-        url::Host::Ipv6(address) => address.is_loopback(),
-    })
 }
 
 fn output_path(publication_id: &str, requested: Option<PathBuf>) -> Result<PathBuf> {
@@ -240,12 +213,13 @@ fn prepare_output(output: &Path, overwrite: bool) -> Result<()> {
     Ok(())
 }
 
-fn artifact_url(origin: &Url, value: &str, publication_id: &str, file: &str) -> Result<Url> {
+fn artifact_url(origin: &ApiOrigin, value: &str, publication_id: &str, file: &str) -> Result<Url> {
     let url = origin
+        .url()
         .join(value)
         .context("publication API returned an invalid artifact URL")?;
     let expected_path = format!("/api/public/traces/{publication_id}/{file}");
-    if url.origin() != origin.origin()
+    if url.origin() != origin.url().origin()
         || url.path() != expected_path
         || url.query().is_some()
         || url.fragment().is_some()
@@ -445,7 +419,7 @@ mod tests {
 
     #[test]
     fn artifact_urls_stay_on_the_public_api() {
-        let origin = normalize_origin("https://example.test").unwrap();
+        let origin = ApiOrigin::parse("https://example.test").unwrap();
         assert!(
             artifact_url(
                 &origin,
@@ -473,8 +447,8 @@ mod tests {
             )
             .is_err()
         );
-        assert!(normalize_origin("http://example.test").is_err());
-        assert!(normalize_origin("http://127.0.0.1:8787").is_ok());
+        assert!(ApiOrigin::parse("http://example.test").is_err());
+        assert!(ApiOrigin::parse("http://127.0.0.1:8787").is_ok());
     }
 
     #[tokio::test]
