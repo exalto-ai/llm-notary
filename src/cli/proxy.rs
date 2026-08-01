@@ -706,10 +706,11 @@ mod tests {
 
     #[tokio::test]
     async fn maps_capture_capacity_to_a_retryable_service_unavailable_response() {
-        let response = proxy_error_response(&anyhow::Error::new(crate::NotaryAdmissionError {
-            rejection: crate::NotaryAdmissionRejection::CaptureAtCapacity,
-            retry_after: std::time::Duration::from_secs(7),
-        }));
+        let response =
+            proxy_error_response(&anyhow::Error::new(crate::NotaryAdmissionError::test_only(
+                crate::NotaryAdmissionRejection::CaptureAtCapacity,
+                std::time::Duration::from_secs(7),
+            )));
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             response.headers().get(http::header::RETRY_AFTER).unwrap(),

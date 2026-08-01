@@ -781,12 +781,16 @@ mod tests {
     fn fixture(name: &str) -> Value {
         let source = match name {
             "openai-chat" => include_str!("../tests/fixtures/normalize/openai-chat.json"),
-            "openai-responses" => include_str!("../tests/fixtures/normalize/openai-responses.json"),
+            "openai-responses" => {
+                include_str!("../tests/fixtures/normalize/openai-responses.json")
+            }
             "anthropic-messages" => {
                 include_str!("../tests/fixtures/normalize/anthropic-messages.json")
             }
             "deepseek-chat" => include_str!("../tests/fixtures/normalize/deepseek-chat.json"),
-            "openrouter-chat" => include_str!("../tests/fixtures/normalize/openrouter-chat.json"),
+            "openrouter-chat" => {
+                include_str!("../tests/fixtures/normalize/openrouter-chat.json")
+            }
             _ => panic!("unknown fixture {name}"),
         };
         serde_json::from_str(source).expect("fixture JSON")
