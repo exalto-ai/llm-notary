@@ -665,6 +665,56 @@ pub fn spawn(state: AppState) {
     });
 }
 
+/// Returns whether admission, private-artifact purging, or active/currently-due
+/// Library metadata generation still needs an API Machine to remain running.
+/// Future metadata retries are intentionally demand-driven: a later API
+/// request wakes a Machine and resumes the normal retry loop.
+pub async fn has_pending_work(state: &AppState) -> Result<bool> {
+    let job_work: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM publish_jobs
+             WHERE state IN ('queued', 'verifying')
+                OR (state IN ('admitted', 'rejected') AND private_purged_at IS NULL)
+             LIMIT 1
+         )",
+    )
+    .fetch_one(&state.database)
+    .await?;
+    if job_work || state.library_metadata.api_key.is_none() {
+        return Ok(job_work);
+    }
+
+    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
+    let metadata_work: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM publish_jobs
+             LEFT JOIN publication_metadata
+               ON publication_metadata.publication_id = publish_jobs.id
+             WHERE publish_jobs.state = 'admitted'
+               AND publish_jobs.public_trace_object_key IS NOT NULL
+               AND publish_jobs.public_stamp_object_key IS NOT NULL
+               AND (publication_metadata.publication_id IS NULL
+                    OR (publication_metadata.title_source = 'fallback'
+                        AND (
+                             (publication_metadata.generation_claim IS NOT NULL
+                              AND publication_metadata.generation_claimed_at >= $1)
+                             OR (
+                                  COALESCE(publication_metadata.last_generation_attempt_at, 0) <= $2
+                                  AND (publication_metadata.generation_claim IS NULL
+                                       OR publication_metadata.generation_claimed_at < $1)
+                             )
+                        )))
+             LIMIT 1
+         )",
+    )
+    .bind(now - METADATA_CLAIM_TIMEOUT_SECS)
+    .bind(now - METADATA_RETRY_SECS)
+    .fetch_one(&state.database)
+    .await?;
+    Ok(metadata_work)
+}
+
 async fn update_queue_metrics(state: &AppState) -> Result<()> {
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
     let (count, oldest): (i64, Option<i64>) =
@@ -1490,6 +1540,49 @@ mod tests {
         queued_job(&state, b"archive", &sha256_hex(b"archive")).await;
         assert!(claim_next_job(&state).await.unwrap().is_some());
         assert!(claim_next_job(&state).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn queued_admission_work_prevents_idle_shutdown() {
+        let (state, _) = test_state().await;
+        assert!(!has_pending_work(&state).await.unwrap());
+
+        queued_job(&state, b"archive", &sha256_hex(b"archive")).await;
+        assert!(has_pending_work(&state).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn active_metadata_generation_prevents_idle_shutdown() {
+        let (mut state, _) = test_state().await;
+        let sha256 = sha256_hex(b"archive");
+        queued_job(&state, b"archive", &sha256).await;
+        let now = unix_timestamp().unwrap();
+        sqlx::query(
+            "UPDATE publish_jobs
+             SET state = 'admitted', admitted_at = $1, private_purged_at = $1,
+                 public_trace_object_key = 'trace-key', public_trace_size_bytes = 1,
+                 public_trace_sha256 = $2, public_stamp_object_key = 'stamp-key',
+                 public_stamp_size_bytes = 1, public_stamp_sha256 = $2
+             WHERE id = 'job-1'",
+        )
+        .bind(now)
+        .bind(&sha256)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO publication_metadata
+             (publication_id, title, tags_json, title_source, last_generation_attempt_at,
+              updated_at, generation_claim, generation_claimed_at)
+             VALUES ('job-1', 'Verified LLM trace', '[]', 'fallback', $1, $1, 'claim-1', $1)",
+        )
+        .bind(now)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        state.library_metadata.api_key = Some("test-key".to_owned());
+
+        assert!(has_pending_work(&state).await.unwrap());
     }
 
     #[tokio::test]
