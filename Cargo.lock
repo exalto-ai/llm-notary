@@ -3269,16 +3269,13 @@ name = "llm-notary"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "argon2",
  "aws-sdk-s3",
  "axum",
  "axum-extra",
  "bincode",
  "bytes",
- "chacha20poly1305",
  "clap",
  "dhat",
- "directories",
  "dotenvy",
  "futures",
  "hex",
@@ -3288,7 +3285,7 @@ dependencies = [
  "hyper 1.11.0",
  "hyper-util",
  "k256",
- "keyring",
+ "llm-notary-client",
  "llm-notary-core",
  "metrics",
  "metrics-exporter-prometheus",
@@ -3299,13 +3296,11 @@ dependencies = [
  "rand 0.9.5",
  "rangeset",
  "reqwest 0.12.28",
- "rpassword",
  "rustls 0.23.42",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
- "tempfile",
  "testcontainers-modules",
  "tiktoken-rs",
  "time",
@@ -3324,6 +3319,31 @@ dependencies = [
  "webpki-roots 1.0.9",
  "windows-sys 0.61.2",
  "zip",
+]
+
+[[package]]
+name = "llm-notary-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bytes",
+ "clap",
+ "hex",
+ "http 1.4.2",
+ "http-body-util",
+ "k256",
+ "llm-notary-core",
+ "reqwest 0.12.28",
+ "rpassword",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-stream",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]
