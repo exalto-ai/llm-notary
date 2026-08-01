@@ -10,12 +10,18 @@ kill_timeout = "30s"
 [env]
   LLM_NOTARY_METRICS_LISTEN = "0.0.0.0:9090"
 
+[processes]
+# This emits operational resource measurements only; it never logs transcripts,
+# headers, credentials, or bundle paths.
+app = "--profile-sessions"
+
 [metrics]
   # This listener is internal-only; the public TLS service is exposed on 443.
   port = 9090
   path = "/metrics"
 
 [[services]]
+  processes = ["app"]
   internal_port = 7047
   protocol = "tcp"
   auto_stop_machines = "suspend"
