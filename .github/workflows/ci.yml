@@ -35,8 +35,8 @@ jobs:
       - run: cargo fmt --check
       - name: Install native build tools
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends build-essential
-      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test --workspace --all-targets --all-features
+      - run: cargo clippy -p llm-notary-core -p llm-notary-client -p llm-notary-server -p llm-notary-platform --all-targets --all-features -- -D warnings
+      - run: cargo test -p llm-notary-core -p llm-notary-client -p llm-notary-server -p llm-notary-platform --all-targets --all-features
 
   postgres-integration:
     name: PostgreSQL integration

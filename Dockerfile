@@ -16,7 +16,6 @@ FROM chef AS planner
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY vendor/tlsn ./vendor/tlsn
-COPY src ./src
 COPY migrations-postgres ./migrations-postgres
 RUN cargo chef prepare --recipe-path recipe.json
 
@@ -27,23 +26,23 @@ FROM chef AS builder
 # reuse the compiled dependencies on normal source-only changes.
 COPY --from=planner /app/recipe.json recipe.json
 COPY --from=planner /app/vendor/tlsn ./vendor/tlsn
-RUN cargo chef cook --release --no-default-features --features api --recipe-path recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json --package llm-notary-server --package llm-notary-platform
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY vendor/tlsn ./vendor/tlsn
-COPY src ./src
 COPY migrations-postgres ./migrations-postgres
 # The API and notary share a dependency graph. Building both here lets BuildKit
 # reuse one compilation for the two final images.
-RUN cargo build --release --no-default-features --features api --bin llm-notary-server --bin llm-notary-api --bin llm-notary-api-migrate
+RUN cargo build --release \
+    -p llm-notary-server --bin llm-notary-server \
+    -p llm-notary-platform --bin llm-notary-api --bin llm-notary-api-migrate
 
 # Opt-in target for the split-process resource benchmark. It deliberately is
 # not part of the production image: the test client also hosts a local TLS
 # fixture while the notary runs in a separate, memory-limited container.
 FROM builder AS profile
-COPY tests ./tests
-RUN cargo test --release --no-default-features --test proxy_tls_split_profile --no-run
+RUN cargo test --release -p llm-notary-core --test proxy_tls_split_profile --no-run
 
 FROM debian:bookworm-slim AS api
 

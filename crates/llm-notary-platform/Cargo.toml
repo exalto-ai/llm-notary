@@ -5,6 +5,14 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Hosted publication and library platform for LLM Notary"
 
+[[bin]]
+name = "llm-notary-api"
+path = "src/bin/llm-notary-api.rs"
+
+[[bin]]
+name = "llm-notary-api-migrate"
+path = "src/bin/llm-notary-api-migrate.rs"
+
 [dependencies]
 anyhow = "1.0"
 aws-sdk-s3 = { version = "1.140", default-features = false, features = [

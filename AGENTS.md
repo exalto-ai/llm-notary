@@ -2,8 +2,8 @@
 
 ## Project map
 
-- `src/lib.rs` contains the Proxy-TLS protocol, private capture format, and local verification.
-- `src/cli/` implements the `llm-notary` local proxy and verifier; `src/bin/` contains the notary and website API binaries.
+- `crates/llm-notary-core/` contains the Proxy-TLS protocol, capture/bundle and public-artifact contracts, plus local verification.
+- `crates/llm-notary-client/` implements the `llm-notary` local proxy and verifier; `crates/llm-notary-server/` and `crates/llm-notary-platform/` own the notary and website API binaries.
 - `vendor/tlsn/` is a pinned, locally patched TLSNotary dependency. Treat it as third-party code; change it only when the protocol requires it and explain the patch.
 - `js/app/` is the Vite/React SPA. Follow [`DESIGN.md`](DESIGN.md) for any UI work.
 - `compose.yml`, `deploy/`, and `.github/workflows/` define the container configuration and Fly.io deployment.
@@ -21,7 +21,7 @@ Run the checks relevant to edited code before handing work off:
 
 ```bash
 cargo fmt --check
-cargo test --all-targets --all-features
+cargo test -p llm-notary-core -p llm-notary-client -p llm-notary-server -p llm-notary-platform --all-targets --all-features
 npm --prefix js/app run build
 ```
 

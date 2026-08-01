@@ -45,7 +45,7 @@ jobs:
           toolchain: 1.95.0
           targets: ${{ matrix.target }}
       - name: Build release binaries
-        run: cargo build --release --target ${{ matrix.target }} --bin llm-notary
+        run: cargo build --release --target ${{ matrix.target }} -p llm-notary-client --bin llm-notary
       - name: Exercise Windows trust-store replacement
         if: runner.os == 'Windows'
         run: cargo test --target ${{ matrix.target }} -p llm-notary-client cli::notary::tests::write_store_atomically_replaces_an_existing_file
