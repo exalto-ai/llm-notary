@@ -16,7 +16,7 @@ use axum::{
     routing::any,
 };
 use bytes::{Bytes, BytesMut};
-use clap::{Args, ValueEnum};
+use clap::Args;
 use http_body_util::BodyExt as _;
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
@@ -34,7 +34,7 @@ use crate::{
     vault::Vault,
 };
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Provider {
     Openai,
     Anthropic,
@@ -43,6 +43,13 @@ enum Provider {
 }
 
 impl Provider {
+    const ALL: [Self; 4] = [
+        Self::Openai,
+        Self::Anthropic,
+        Self::Deepseek,
+        Self::Openrouter,
+    ];
+
     fn host(self) -> &'static str {
         match self {
             Self::Openai => "api.openai.com",
@@ -60,15 +67,21 @@ impl Provider {
             Self::Openrouter => "openrouter",
         }
     }
+
+    fn path_prefix(self) -> &'static str {
+        match self {
+            Self::Openai => "/openai",
+            Self::Anthropic => "/anthropic",
+            Self::Deepseek => "/deepseek",
+            Self::Openrouter => "/openrouter",
+        }
+    }
 }
 
 #[derive(Args, Debug)]
 pub struct ProxyArgs {
     #[arg(long, default_value = "127.0.0.1:8787")]
     listen: SocketAddr,
-
-    #[arg(long, value_enum, default_value_t = Provider::Openai)]
-    provider: Provider,
 
     /// Override the notary endpoint discovered from LLM Notary's public API.
     /// Use tcp:// or tls://; a bare host:port remains raw TCP.
@@ -92,7 +105,6 @@ pub struct ProxyArgs {
 
 #[derive(Clone)]
 struct AppState {
-    provider: Provider,
     notary: NotaryEndpoint,
     bundle_dir: PathBuf,
     max_frame_bytes: usize,
@@ -118,7 +130,6 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     };
     let vault = Vault::open_or_init_interactive().context("opening the local bundle vault (use `llm-notary vault init --passphrase` if this machine has no OS vault)")?;
     let state = AppState {
-        provider: args.provider,
         notary: notary.clone(),
         bundle_dir: args.bundle_dir,
         max_frame_bytes: args.max_frame_bytes,
@@ -128,7 +139,12 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     };
     let app = Router::new().fallback(any(proxy)).with_state(state);
     let listener = tokio::net::TcpListener::bind(args.listen).await?;
-    tracing::info!(address = %args.listen, notary = %notary, "LLM Notary proxy listening");
+    tracing::info!(
+        address = %args.listen,
+        notary = %notary,
+        providers = ?Provider::ALL,
+        "LLM Notary proxy listening"
+    );
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -235,6 +251,41 @@ fn proxy_error_response(error: &anyhow::Error) -> Response {
     response
 }
 
+/// Selects a fixed provider adapter from the first local path segment and
+/// removes that segment before the authenticated upstream request is formed.
+/// This keeps the caller from choosing an arbitrary destination while letting
+/// one local listener serve every supported provider.
+fn provider_route(uri: &http::Uri) -> Option<(Provider, http::Uri)> {
+    for provider in Provider::ALL {
+        let prefix = provider.path_prefix();
+        let Some(remainder) = uri.path().strip_prefix(prefix) else {
+            continue;
+        };
+        if !remainder.is_empty() && !remainder.starts_with('/') {
+            continue;
+        }
+        let upstream_path = if remainder.is_empty() { "/" } else { remainder };
+        let path_and_query = match uri.query() {
+            Some(query) => format!("{upstream_path}?{query}"),
+            None => upstream_path.to_owned(),
+        };
+        let upstream_uri = path_and_query
+            .parse()
+            .expect("a path and query taken from a parsed URI remain valid");
+        return Some((provider, upstream_uri));
+    }
+    None
+}
+
+fn provider_route_not_found_response() -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        [("content-type", "application/json")],
+        r#"{"error":{"message":"provider path required; use /openai, /anthropic, /deepseek, or /openrouter"}}"#,
+    )
+        .into_response()
+}
+
 async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     let (parts, body) = request.into_parts();
     if parts.method == http::Method::GET || parts.method == http::Method::HEAD {
@@ -265,7 +316,10 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         );
         return Ok(response);
     }
-    let host = state.provider.host();
+    let Some((provider, upstream_uri)) = provider_route(&parts.uri) else {
+        return Ok(provider_route_not_found_response());
+    };
+    let host = provider.host();
     let mut outbound_headers = end_to_end_headers(&parts.headers);
     // The provider hostname is selected by the local adapter, never by the
     // caller. `Host` is connection-specific here because we create a new
@@ -281,7 +335,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         HeaderValue::from_static("identity"),
     );
     let request_header_bytes =
-        attestable_request_header_bytes(&parts.method, &parts.uri, &outbound_headers)?;
+        attestable_request_header_bytes(&parts.method, &upstream_uri, &outbound_headers)?;
     let request_body_limit = state
         .max_attestable_http_bytes
         .checked_sub(request_header_bytes)
@@ -299,13 +353,9 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         streaming,
         "received provider request for notarization"
     );
-    let mut outbound = http::Request::builder().method(parts.method).uri(
-        parts
-            .uri
-            .path_and_query()
-            .map(|x| x.as_str())
-            .unwrap_or("/"),
-    );
+    let mut outbound = http::Request::builder()
+        .method(parts.method)
+        .uri(upstream_uri);
     for (name, value) in &outbound_headers {
         outbound = outbound.header(name, value);
     }
@@ -319,7 +369,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         host,
         DeferredCaptureConfig {
             capture_id,
-            provider_name: state.provider.name().to_owned(),
+            provider_name: provider.name().to_owned(),
             created_at_unix_ms,
             request_body_bytes,
             max_attestable_http_bytes: state.max_attestable_http_bytes,
@@ -366,7 +416,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                 Ok(Ok(bundle)) => {
                     match save_bundle(&trace_state.bundle_dir, &bundle, &trace_state.vault) {
                         Ok(path) => {
-                            tracing::info!(bundle = %path.display(), provider = trace_state.provider.host(), elapsed_ms = started.elapsed().as_millis(), "wrote deferred streaming bundle")
+                            tracing::info!(bundle = %path.display(), provider = provider.host(), elapsed_ms = started.elapsed().as_millis(), "wrote deferred streaming bundle")
                         }
                         Err(error) => {
                             tracing::warn!(%error, "could not save deferred streaming bundle")
@@ -524,7 +574,6 @@ mod tests {
 
     fn state() -> AppState {
         AppState {
-            provider: Provider::Openai,
             notary: "127.0.0.1:7047".parse().unwrap(),
             bundle_dir: PathBuf::from("bundles"),
             max_frame_bytes: DEFAULT_NOTARY_MAX_FRAME_BYTES,
@@ -562,6 +611,30 @@ mod tests {
     fn provider_adapters_pin_their_authenticated_hosts() {
         assert_eq!(Provider::Openrouter.host(), "openrouter.ai");
         assert_eq!(Provider::Openrouter.name(), "openrouter");
+    }
+
+    #[test]
+    fn provider_routes_select_the_adapter_and_strip_its_prefix() {
+        let uri = "/openai/v1/responses?stream=true".parse().unwrap();
+        let (provider, upstream_uri) = provider_route(&uri).unwrap();
+        assert_eq!(provider, Provider::Openai);
+        assert_eq!(upstream_uri, "/v1/responses?stream=true");
+
+        let uri = "/deepseek/chat/completions".parse().unwrap();
+        let (provider, upstream_uri) = provider_route(&uri).unwrap();
+        assert_eq!(provider, Provider::Deepseek);
+        assert_eq!(upstream_uri, "/chat/completions");
+    }
+
+    #[test]
+    fn provider_routes_only_match_a_complete_first_path_segment() {
+        let uri = "/openaiish/v1/responses".parse().unwrap();
+        assert!(provider_route(&uri).is_none());
+
+        let uri = "/anthropic".parse().unwrap();
+        let (provider, upstream_uri) = provider_route(&uri).unwrap();
+        assert_eq!(provider, Provider::Anthropic);
+        assert_eq!(upstream_uri.to_string(), "/");
     }
 
     #[test]
@@ -691,6 +764,22 @@ mod tests {
             response.headers().get(http::header::ALLOW).unwrap(),
             "GET, HEAD, POST"
         );
+        assert!(response.headers().get("x-llm-notary-bundle").is_none());
+        assert_eq!(*serial.lock().await, 0);
+    }
+
+    #[tokio::test]
+    async fn rejects_posts_outside_the_fixed_provider_paths_without_a_bundle() {
+        let state = state();
+        let serial = state.serial.clone();
+        let request = Request::builder()
+            .method(http::Method::POST)
+            .uri("/v1/responses")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = proxy_inner(state, request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert!(response.headers().get("x-llm-notary-bundle").is_none());
         assert_eq!(*serial.lock().await, 0);
     }

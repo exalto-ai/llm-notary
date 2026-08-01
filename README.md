@@ -81,12 +81,22 @@ current public notary endpoint from `$LLM_NOTARY_PUBLIC_ORIGIN/api/notary`.
 For a local notary, pass its address explicitly:
 
 ```bash
-cargo run -p llm-notary-client --bin llm-notary -- proxy start --notary 127.0.0.1:7047 --provider openai --bundle-dir bundles
+cargo run -p llm-notary-client --bin llm-notary -- proxy start --notary 127.0.0.1:7047 --bundle-dir bundles
 ```
 
-Point an OpenAI-compatible SDK at `http://127.0.0.1:8787/v1`; keep the API key
-in the SDK as usual. The proxy does not accept a provider URL from the caller.
-Each completed request writes an encrypted `bundles/cap-....llmbundle`. On
+One listener serves every supported provider at a fixed first path segment. The
+proxy removes that local segment before making the authenticated upstream
+request, and it does not accept a provider URL from the caller:
+
+| Provider | Local SDK base URL | Upstream request path |
+| --- | --- | --- |
+| OpenAI | `http://127.0.0.1:8787/openai/v1` | `/v1/...` |
+| Anthropic | `http://127.0.0.1:8787/anthropic` | `/v1/...` |
+| DeepSeek | `http://127.0.0.1:8787/deepseek` | `/...` |
+| OpenRouter | `http://127.0.0.1:8787/openrouter/api/v1` | `/api/v1/...` |
+
+Keep the API key in the SDK as usual. Each completed request writes an
+encrypted `bundles/cap-....llmbundle`. On
 macOS and Windows, the default vault key is stored in the OS credential store;
 on Linux it uses the desktop secret service. To use a passphrase instead
 (including an intentionally empty passphrase), initialize the vault before
@@ -145,17 +155,27 @@ finish reasons when the provider supplies them. A provider trace proves the
 model exchange; it does not claim that a local runtime actually executed a
 requested tool.
 
+### Anthropic
+
+Anthropic's Messages API is available at the `/anthropic` local route. Keep
+the `x-api-key` and `anthropic-version` headers in the client exactly as usual:
+
+```bash
+curl http://127.0.0.1:8787/anthropic/v1/messages \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H 'anthropic-version: 2023-06-01' \
+  -H 'content-type: application/json' \
+  -d '{"model":"claude-haiku-4-5-20251001","max_tokens":32,"messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}'
+```
+
 ### DeepSeek
 
 DeepSeek's OpenAI-compatible Chat Completions API can be traced through the
-same proxy. Start it with `--provider deepseek`, point the client to
-`http://127.0.0.1:8787`, and retain `DEEPSEEK_API_KEY` in the client
-environment:
+same listener. Point the client to `http://127.0.0.1:8787/deepseek` and retain
+`DEEPSEEK_API_KEY` in the client environment:
 
 ```bash
-cargo run -p llm-notary-client --bin llm-notary -- proxy start --provider deepseek --bundle-dir bundles
-
-curl http://127.0.0.1:8787/chat/completions \
+curl http://127.0.0.1:8787/deepseek/chat/completions \
   -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
   -H 'Content-Type: application/json' \
   -d '{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}'
@@ -166,15 +186,13 @@ suffix); the proxy preserves the requested API path.
 
 ### OpenRouter
 
-OpenRouter's OpenAI-compatible Chat Completions API is supported through the
-explicit `openrouter` adapter. Start the proxy, point an OpenAI-compatible SDK
-at `http://127.0.0.1:8787/api/v1`, and retain `OPENROUTER_API_KEY` in the
-client environment:
+OpenRouter's OpenAI-compatible Chat Completions API is available at the
+`/openrouter` local route. Point an OpenAI-compatible SDK at
+`http://127.0.0.1:8787/openrouter/api/v1`, and retain `OPENROUTER_API_KEY` in
+the client environment:
 
 ```bash
-cargo run -p llm-notary-client --bin llm-notary -- proxy start --provider openrouter --bundle-dir bundles
-
-curl http://127.0.0.1:8787/api/v1/chat/completions \
+curl http://127.0.0.1:8787/openrouter/api/v1/chat/completions \
   -H "Authorization: Bearer $OPENROUTER_API_KEY" \
   -H 'Content-Type: application/json' \
   -H 'HTTP-Referer: https://example.test' \
@@ -280,10 +298,12 @@ prewarm, which this HTTP/1.1 prototype intentionally does not implement.
 
 ```toml
 model_provider = "llm-notary"
+model = "gpt-5-mini"
+model_reasoning_effort = "low"
 
 [model_providers.llm-notary]
 name = "LLM Notary local proxy"
-base_url = "http://127.0.0.1:8787/v1"
+base_url = "http://127.0.0.1:8787/openai/v1"
 env_key = "OPENAI_API_KEY"
 wire_api = "responses"
 supports_websockets = false
@@ -293,11 +313,12 @@ For a one-off CLI invocation (with `OPENAI_API_KEY` already in the
 environment):
 
 ```bash
-CODEX_HOME=$(mktemp -d) codex exec --ephemeral --skip-git-repo-check \
-  -m gpt-4.1-mini \
+codex exec --ephemeral --ignore-user-config --skip-git-repo-check \
+  -m gpt-5-mini \
+  -c 'model_reasoning_effort="low"' \
   -c 'model_provider="llm-notary"' \
   -c 'model_providers.llm-notary.name="LLM Notary local proxy"' \
-  -c 'model_providers.llm-notary.base_url="http://127.0.0.1:8787/v1"' \
+  -c 'model_providers.llm-notary.base_url="http://127.0.0.1:8787/openai/v1"' \
   -c 'model_providers.llm-notary.env_key="OPENAI_API_KEY"' \
   -c 'model_providers.llm-notary.wire_api="responses"' \
   -c 'model_providers.llm-notary.supports_websockets=false' \
