@@ -736,18 +736,27 @@ impl DeferredBundle {
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         let file_name = path
             .file_name()
             .ok_or_else(|| anyhow!("bundle path has no file name"))?
             .to_string_lossy();
-        let staging = parent.join(format!(".{file_name}.{}.partial", std::process::id()));
-        if staging.exists() {
-            bail!("bundle staging file already exists: {}", staging.display());
-        }
+        let staging = parent.join(format!(
+            ".{file_name}.{}.{:016x}.partial",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
         let bytes = bincode::serialize(self).context("serializing deferred bundle")?;
-        write_private_file(&staging, &vault.encrypt(&bytes)?)?;
-        fs::rename(&staging, path)
-            .with_context(|| format!("finalizing encrypted bundle {}", path.display()))
+        let encrypted = vault.encrypt(&bytes)?;
+        let result = (|| -> Result<()> {
+            write_private_file(&staging, &encrypted)?;
+            fs::rename(&staging, path)
+                .with_context(|| format!("finalizing encrypted bundle {}", path.display()))
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&staging);
+        }
+        result
     }
 
     /// Reads and decrypts a pending bundle.

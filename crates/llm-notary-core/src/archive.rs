@@ -8,7 +8,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
     io::{Cursor, Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -155,21 +155,8 @@ pub fn extract_trace_package_archive(
             output_dir.display()
         );
     }
-    let parent = output_dir
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-        .unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
-    let package_name = output_dir
-        .file_name()
-        .ok_or_else(|| anyhow!("extraction path has no directory name"))?
-        .to_string_lossy();
-    let staging = parent.join(format!(".{package_name}.{}.partial", std::process::id()));
-    if staging.exists() {
-        bail!("archive extraction staging path already exists");
-    }
+    let staging = create_staging_directory(output_dir)?;
     let result = (|| -> Result<()> {
-        fs::create_dir(&staging).with_context(|| format!("creating {}", staging.display()))?;
         for name in PACKAGE_FILES {
             fs::write(
                 staging.join(name),
@@ -187,6 +174,42 @@ pub fn extract_trace_package_archive(
     }
     result?;
     Ok(manifest)
+}
+
+/// Creates a unique staging directory beside an output directory.
+///
+/// Callers must remove it if writing or publishing fails.
+pub(crate) fn create_staging_directory(output_dir: &Path) -> Result<PathBuf> {
+    let parent = output_dir
+        .parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    let output_name = output_dir
+        .file_name()
+        .ok_or_else(|| anyhow!("output path has no directory name"))?
+        .to_string_lossy();
+
+    for _ in 0..16 {
+        let staging = parent.join(format!(
+            ".{output_name}.{}.{:016x}.partial",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        match fs::create_dir(&staging) {
+            Ok(()) => return Ok(staging),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("creating staging directory {}", staging.display()));
+            }
+        }
+    }
+
+    bail!(
+        "could not create a unique staging directory beside {}",
+        output_dir.display()
+    )
 }
 
 fn read_validated_archive(
