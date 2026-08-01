@@ -32,7 +32,7 @@ enum CommandName {
     Logout,
     /// Show the account authenticated for publishing.
     Whoami,
-    /// Create or validate local agent configuration.
+    /// Validate local agent configuration (created automatically on first use).
     Config {
         #[command(subcommand)]
         command: cli::config::ConfigCommand,
@@ -49,11 +49,6 @@ enum CommandName {
     },
     /// Turn an encrypted local bundle into a verified OTel trace package.
     Finalize(cli::bundle::FinalizeArgs),
-    /// Inspect encrypted local bundles.
-    Bundles {
-        #[command(subcommand)]
-        command: cli::bundle::BundlesCommand,
-    },
     /// Verify a finalized OTel trace package without uploading it.
     VerifyTrace(cli::bundle::VerifyArgs),
     /// Configure encryption for local bundles.
@@ -88,7 +83,6 @@ pub async fn run() -> Result<()> {
             command: ProxyCommand::Start(args),
         } => cli::proxy::run(args).await,
         CommandName::Finalize(args) => cli::bundle::finalize(args).await,
-        CommandName::Bundles { command } => cli::bundle::bundles(command),
         CommandName::VerifyTrace(args) => cli::bundle::verify(args),
         CommandName::Vault { command } => cli::vault::run(command),
         CommandName::VerifyPublic(args) => cli::public::run_verify_public(args),

@@ -9,7 +9,7 @@ use std::{
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::sha256_hex;
+use crate::{config::AgentConfig, sha256_hex};
 
 const CATALOG_SCHEMA_VERSION: i64 = 1;
 
@@ -60,6 +60,14 @@ pub struct Artifact {
     pub sha256: String,
 }
 
+/// The result of reconciling captures that were active when the prior process
+/// stopped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecoverySummary {
+    pub recovered_bundles: usize,
+    pub interrupted_captures: usize,
+}
+
 /// A single-process SQLite capture inventory.
 pub struct Catalog {
     connection: Mutex<Connection>,
@@ -91,6 +99,24 @@ impl Catalog {
             connection: Mutex::new(connection),
             full_text_search,
         })
+    }
+
+    /// Opens the configured catalog without changing capture state. This is
+    /// safe for concurrent read-only CLI commands while a proxy is capturing.
+    pub fn open_for_config(config: &AgentConfig) -> Result<Self> {
+        Self::open(&config.catalog.path, config.catalog.full_text_search)
+    }
+
+    /// Opens the configured catalog and recovers any source bundle saved just
+    /// before an earlier proxy process stopped. Only proxy startup performs
+    /// recovery so catalog readers cannot mistake a live capture for an
+    /// interrupted one. The capture row is intentionally written before
+    /// capture begins, so its identifier also determines the encrypted bundle
+    /// filename without reading private bundle contents.
+    pub fn open_for_proxy(config: &AgentConfig) -> Result<(Self, RecoverySummary)> {
+        let catalog = Self::open_for_config(config)?;
+        let recovery = catalog.reconcile_incomplete_captures(&config.storage.bundle_dir)?;
+        Ok((catalog, recovery))
     }
 
     /// Records the start of a capture before the notary connection begins.
@@ -215,6 +241,72 @@ impl Catalog {
             "UPDATE captures SET finalization_state = 'finalized' WHERE capture_id = ?",
             params![capture_id],
         )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Reconciles `capturing` rows from an earlier process. A present bundle is
+    /// made visible as pending evidence; a missing bundle is marked as an
+    /// interrupted capture instead of appearing to run forever.
+    pub fn reconcile_incomplete_captures(&self, bundle_dir: &Path) -> Result<RecoverySummary> {
+        let capture_ids = {
+            let connection = self.connection.lock().expect("catalog mutex poisoned");
+            let mut statement = connection
+                .prepare("SELECT capture_id FROM captures WHERE capture_state = 'capturing'")?;
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+
+        let mut summary = RecoverySummary::default();
+        for capture_id in capture_ids {
+            let path = bundle_dir.join(format!("{capture_id}.llmbundle"));
+            if path.is_file() {
+                self.recover_bundle(&capture_id, &path)?;
+                summary.recovered_bundles += 1;
+            } else {
+                self.mark_capture_failed(&capture_id, "interrupted")?;
+                summary.interrupted_captures += 1;
+            }
+        }
+        Ok(summary)
+    }
+
+    fn recover_bundle(&self, capture_id: &str, path: &Path) -> Result<()> {
+        let (size_bytes, sha256) = artifact_digest(path)?;
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE captures SET capture_state = 'pending', failure_code = NULL
+             WHERE capture_id = ?",
+            params![capture_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO artifacts (capture_id, kind, path, size_bytes, sha256, state)
+             VALUES (?, 'deferred_bundle', ?, ?, ?, 'available')
+             ON CONFLICT(capture_id, kind) DO UPDATE SET
+                path = excluded.path,
+                size_bytes = excluded.size_bytes,
+                sha256 = excluded.sha256,
+                state = 'available'",
+            params![
+                capture_id,
+                path.to_string_lossy(),
+                i64::try_from(size_bytes)?,
+                sha256,
+            ],
+        )?;
+        if self.full_text_search {
+            transaction.execute(
+                "DELETE FROM capture_search WHERE capture_id = ?",
+                params![capture_id],
+            )?;
+            transaction.execute(
+                "INSERT INTO capture_search(capture_id, prompt_preview, output_preview)
+                 VALUES (?, (SELECT prompt_preview FROM captures WHERE capture_id = ?), '')",
+                params![capture_id, capture_id],
+            )?;
+        }
         transaction.commit()?;
         Ok(())
     }
@@ -561,5 +653,55 @@ mod tests {
             .unwrap();
         let capture = catalog.capture("cap-1").unwrap().unwrap();
         assert_eq!(capture.capture_state, "failed");
+    }
+
+    #[test]
+    fn reconciliation_makes_a_saved_bundle_searchable_after_an_interruption() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle_dir = directory.path().join("bundles");
+        fs::create_dir_all(&bundle_dir).unwrap();
+        let bundle = bundle_dir.join("cap-1.llmbundle");
+        fs::write(&bundle, b"ciphertext").unwrap();
+        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
+        catalog.begin_capture(&new_capture("cap-1")).unwrap();
+
+        assert_eq!(
+            catalog.reconcile_incomplete_captures(&bundle_dir).unwrap(),
+            RecoverySummary {
+                recovered_bundles: 1,
+                interrupted_captures: 0,
+            }
+        );
+        let capture = catalog.capture("cap-1").unwrap().unwrap();
+        assert_eq!(capture.capture_state, "pending");
+        assert_eq!(catalog.artifacts("cap-1").unwrap().len(), 1);
+        assert_eq!(
+            catalog
+                .list_captures(Some("quarterly"), None)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn reconciliation_marks_missing_bundles_interrupted() {
+        let directory = tempfile::tempdir().unwrap();
+        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
+        catalog.begin_capture(&new_capture("cap-1")).unwrap();
+
+        assert_eq!(
+            catalog
+                .reconcile_incomplete_captures(&directory.path().join("bundles"))
+                .unwrap(),
+            RecoverySummary {
+                recovered_bundles: 0,
+                interrupted_captures: 1,
+            }
+        );
+        assert_eq!(
+            catalog.capture("cap-1").unwrap().unwrap().capture_state,
+            "failed"
+        );
     }
 }

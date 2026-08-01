@@ -2,7 +2,7 @@
 
 use std::{
     env, fs,
-    io::Write as _,
+    io::{ErrorKind, Write as _},
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -201,34 +201,42 @@ impl AgentConfig {
         Ok(config)
     }
 
-    /// Writes the editable local default configuration without replacing an
-    /// existing file.
-    pub fn write_default(path: &Path) -> Result<()> {
-        if path.exists() {
-            bail!(
-                "refusing to overwrite existing agent configuration {}",
-                path.display()
-            );
-        }
+    /// Creates an editable default configuration when the file does not yet
+    /// exist. Returns whether this invocation created the file.
+    pub fn ensure_default(path: &Path) -> Result<bool> {
         let parent = path
             .parent()
             .filter(|parent| !parent.as_os_str().is_empty())
             .ok_or_else(|| anyhow::anyhow!("agent configuration path has no parent"))?;
         fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         let contents = format!(
-            "# LLM Notary local agent configuration.\n# Edit this file, then run `llm-notary config validate` before starting the proxy.\n\n{}",
+            "# LLM Notary local agent configuration.\n# This file is created automatically on first use. Edit it to change local behavior.\n\n{}",
             toml::to_string_pretty(&Self::default())?
         );
-        let mut file = fs::OpenOptions::new()
+        let mut file = match fs::OpenOptions::new()
             .create_new(true)
             .write(true)
             .open(path)
-            .with_context(|| format!("creating agent configuration {}", path.display()))?;
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => return Ok(false),
+            Err(error) => {
+                return Err(error)
+                    .with_context(|| format!("creating agent configuration {}", path.display()));
+            }
+        };
         file.write_all(contents.as_bytes())
             .with_context(|| format!("writing agent configuration {}", path.display()))?;
         file.sync_all()
             .with_context(|| format!("syncing agent configuration {}", path.display()))?;
-        Ok(())
+        Ok(true)
+    }
+
+    /// Loads a configuration, first materializing the standard defaults when
+    /// the requested file does not exist.
+    pub fn load_or_create(path: &Path) -> Result<(Self, bool)> {
+        let created = Self::ensure_default(path)?;
+        Ok((Self::load(path)?, created))
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -270,7 +278,7 @@ impl AgentConfig {
             ("deepseek", &self.providers.deepseek),
             ("openrouter", &self.providers.openrouter),
         ];
-        let mut prefixes = std::collections::BTreeSet::new();
+        let mut prefixes: Vec<(&str, &str)> = Vec::new();
         for (name, provider) in routes {
             ensure!(
                 provider.route_prefix.starts_with('/'),
@@ -295,11 +303,14 @@ impl AgentConfig {
                 "providers.{name}.route_prefix contains an invalid character"
             );
             if provider.enabled {
-                ensure!(
-                    prefixes.insert(provider.route_prefix.as_str()),
-                    "two enabled providers use route prefix {}",
-                    provider.route_prefix
-                );
+                for (other_name, other_prefix) in &prefixes {
+                    ensure!(
+                        !route_prefixes_overlap(&provider.route_prefix, other_prefix),
+                        "enabled provider route prefixes overlap: providers.{name}.route_prefix ({}) and providers.{other_name}.route_prefix ({other_prefix})",
+                        provider.route_prefix,
+                    );
+                }
+                prefixes.push((name, provider.route_prefix.as_str()));
             }
         }
         Ok(())
@@ -319,6 +330,16 @@ impl AgentConfig {
     }
 }
 
+fn route_prefixes_overlap(left: &str, right: &str) -> bool {
+    left == right
+        || left
+            .strip_prefix(right)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+        || right
+            .strip_prefix(left)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
 /// Finds the usual user-editable configuration location.
 pub fn default_config_path() -> Result<PathBuf> {
     let base = if let Some(path) = env::var_os("XDG_CONFIG_HOME") {
@@ -326,7 +347,12 @@ pub fn default_config_path() -> Result<PathBuf> {
     } else if let Some(path) = env::var_os("APPDATA") {
         PathBuf::from(path)
     } else if let Some(path) = env::var_os("HOME") {
-        PathBuf::from(path).join(".config")
+        let home = PathBuf::from(path);
+        if cfg!(target_os = "macos") {
+            home.join("Library/Application Support")
+        } else {
+            home.join(".config")
+        }
     } else {
         bail!("could not determine a configuration directory")
     };
@@ -361,7 +387,12 @@ fn default_data_dir() -> PathBuf {
     } else if let Some(path) = env::var_os("LOCALAPPDATA") {
         PathBuf::from(path).join("llm-notary")
     } else if let Some(path) = env::var_os("HOME") {
-        PathBuf::from(path).join(".local/share/llm-notary")
+        let home = PathBuf::from(path);
+        if cfg!(target_os = "macos") {
+            home.join("Library/Application Support/llm-notary")
+        } else {
+            home.join(".local/share/llm-notary")
+        }
     } else {
         PathBuf::from("llm-notary-data")
     }
@@ -400,6 +431,24 @@ mod tests {
         let mut config = AgentConfig::default();
         config.providers.anthropic.route_prefix = "/openai".to_owned();
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn overlapping_enabled_routes_are_rejected() {
+        let mut config = AgentConfig::default();
+        config.providers.openai.route_prefix = "/ai".to_owned();
+        config.providers.anthropic.route_prefix = "/ai/anthropic".to_owned();
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn creating_a_default_configuration_is_idempotent() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent.toml");
+        let (config, created) = AgentConfig::load_or_create(&path).unwrap();
+        assert!(created);
+        config.validate().unwrap();
+        assert!(!AgentConfig::ensure_default(&path).unwrap());
     }
 
     #[test]

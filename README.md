@@ -76,19 +76,20 @@ The notary prints its public key at startup. Retain that value for local or
 private deployments, where it is supplied with `--trusted-notary-key` as the
 explicit trust anchor. Production clients discover and pin the public key.
 
-In another terminal create the local agent configuration, then start the
-proxy. The generated configuration enables all built-in providers, writes
+In another terminal, start the proxy. On first use it automatically writes an
+editable configuration file in the standard platform location: XDG config on
+Linux, `%APPDATA%` on Windows, and `~/Library/Application Support/llm-notary`
+on macOS. The generated configuration enables all built-in providers, writes
 encrypted source bundles under the platform data directory, and creates a
 SQLite capture catalog with 1,000-character prompt and output previews. By
 default the released client discovers the current public notary endpoint from
 `$LLM_NOTARY_PUBLIC_ORIGIN/api/notary`. For a local notary, set
-`notary.endpoint = "tcp://127.0.0.1:7047"` in the generated file.
+`notary.endpoint = "tcp://127.0.0.1:7047"` in that file.
 
 ```bash
-llm-notary config init
-# Edit ~/.config/llm-notary/agent.toml and set notary.endpoint for local development.
+llm-notary proxy start
+# Optionally edit the automatically created agent.toml, then check it:
 llm-notary config validate
-llm-notary proxy start --config ~/.config/llm-notary/agent.toml
 ```
 
 One listener serves every supported provider at a fixed first path segment. The
@@ -132,15 +133,14 @@ or environment variable containing the passphrase itself.
 ## Finalize a bundle
 
 Search the locally cataloged captures, then finalize one. The CLI fetches and
-caches the production directory key automatically. Supplying `--config` uses
-the configured finalized-package directory and adds the retained package to
-the capture's catalog entry; it does not remove the encrypted source bundle:
+caches the production directory key automatically. It uses the configured
+finalized-package directory and adds the retained package to the capture's
+catalog entry; it does not remove the encrypted source bundle:
 
 ```bash
-llm-notary captures list --config ~/.config/llm-notary/agent.toml --query pricing
-llm-notary captures show cap-.... --config ~/.config/llm-notary/agent.toml
-llm-notary finalize /path/to/bundles/cap-....llmbundle \
-  --config ~/.config/llm-notary/agent.toml
+llm-notary captures list --query pricing
+llm-notary captures show cap-....
+llm-notary finalize /path/to/bundles/cap-....llmbundle
 ```
 
 The output directory is a single portable package:
@@ -368,12 +368,12 @@ rejection before TLSN setup: the proxy returns HTTP `503` with `Retry-After`
 and `error.code` set to `capture_at_capacity`, while `finalize` says that the
 encrypted bundle is unchanged and can be retried.
 
-The proxy and finalizer also share a 15 MiB `--max-attestable-http-bytes`
-budget across one provider request and response. The proxy accounts for the
-request before opening the authenticated provider connection and accounts for
-the response as it arrives, so it cannot write a deferred bundle that exceeds
-the default notary private-proof limit. Keep this option the same for capture
-and finalization, and keep the public notary's
+The proxy and finalizer share the `proxy.max_attestable_http_bytes` setting
+(15 MiB by default) across one provider request and response. The proxy
+accounts for the request before opening the authenticated provider connection
+and accounts for the response as it arrives, so it cannot write a deferred
+bundle that exceeds the default notary private-proof limit. The same configured
+value is automatically used for finalization. Keep the public notary's
 `--max-total-private-chunk-bytes` at least as large. Raising it requires
 raising and capacity-testing the notary's private-proof byte and commitment
 limits as well.
@@ -465,11 +465,11 @@ notary key. The lifecycle and operator rotation procedure are documented in
 sign-in authorizes publication; the platform signing key is the trust root for
 published stamps.
 
-For an explicit endpoint override, use `--notary tls://host:443` for a
-public-CA TLS endpoint or `--notary host:7047` (equivalent to
-`tcp://host:7047`) for direct TCP. TLS validates the advertised hostname before
-the LLMN protocol begins; local development and self-hosted deployments may
-continue to use direct loopback TCP.
+To use an explicit endpoint, set `notary.endpoint` in the local agent
+configuration to `tls://host:443` for a public-CA TLS endpoint or `host:7047`
+(equivalent to `tcp://host:7047`) for direct TCP. TLS validates the advertised
+hostname before the LLMN protocol begins; local development and self-hosted
+deployments may continue to use direct loopback TCP.
 
 ### Operational telemetry
 

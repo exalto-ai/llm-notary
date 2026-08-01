@@ -1,6 +1,5 @@
 use std::{
     collections::HashSet,
-    net::SocketAddr,
     path::PathBuf,
     sync::Arc,
     time::{Instant, SystemTime, UNIX_EPOCH},
@@ -23,6 +22,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
     api_origin::ApiOrigin,
+    config::load_agent_config,
     http_client_builder,
     notary::{parse_directory, pin},
 };
@@ -95,32 +95,10 @@ impl Provider {
 
 #[derive(Args, Debug)]
 pub struct ProxyArgs {
-    /// Versioned local agent configuration file.
+    /// Versioned local agent configuration file. Defaults to the standard
+    /// path, creating an editable default there on first use.
     #[arg(long)]
-    config: PathBuf,
-
-    /// Override proxy.listen from the configuration file for one run.
-    #[arg(long)]
-    listen: Option<SocketAddr>,
-
-    /// Override the notary endpoint discovered from LLM Notary's public API.
-    /// Use tcp:// or tls://; a bare host:port remains raw TCP.
-    #[arg(long)]
-    notary: Option<NotaryEndpoint>,
-
-    /// Where private local source bundles are written.
-    #[arg(long)]
-    bundle_dir: Option<PathBuf>,
-
-    /// Largest control-protocol frame accepted from the paired notary.
-    /// Must match the notary's --max-frame-bytes setting.
-    #[arg(long)]
-    max_frame_bytes: Option<usize>,
-
-    /// Maximum combined HTTP request and response bytes that can be privately
-    /// committed and finalized by the notary.
-    #[arg(long)]
-    max_attestable_http_bytes: Option<usize>,
+    config: Option<PathBuf>,
 }
 
 #[derive(Clone)]
@@ -137,17 +115,11 @@ struct AppState {
 }
 
 pub async fn run(args: ProxyArgs) -> Result<()> {
-    let config = AgentConfig::load(&args.config)?;
-    let listen = args.listen.unwrap_or(config.proxy.listen);
-    let bundle_dir = args
-        .bundle_dir
-        .unwrap_or_else(|| config.storage.bundle_dir.clone());
-    let max_frame_bytes = args
-        .max_frame_bytes
-        .unwrap_or(config.notary.max_frame_bytes);
-    let max_attestable_http_bytes = args
-        .max_attestable_http_bytes
-        .unwrap_or(config.proxy.max_attestable_http_bytes);
+    let (config, config_path) = load_agent_config(args.config.as_deref())?;
+    let listen = config.proxy.listen;
+    let bundle_dir = config.storage.bundle_dir.clone();
+    let max_frame_bytes = config.notary.max_frame_bytes;
+    let max_attestable_http_bytes = config.proxy.max_attestable_http_bytes;
     if max_frame_bytes == 0 || max_frame_bytes > u32::MAX as usize {
         bail!(
             "notary frame limit must be between 1 and {} bytes",
@@ -158,12 +130,19 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         bail!("maximum attestable HTTP bytes must be non-zero");
     }
     std::fs::create_dir_all(&bundle_dir)?;
-    let notary = match args.notary.or(config.notary_endpoint()?) {
+    let notary = match config.notary_endpoint()? {
         Some(notary) => notary,
         None => discover_notary().await?,
     };
     let vault = Vault::open_or_init_interactive().context("opening the local bundle vault (use `llm-notary vault init --passphrase` if this machine has no OS vault)")?;
-    let catalog = Catalog::open(&config.catalog.path, config.catalog.full_text_search)?;
+    let (catalog, recovery) = Catalog::open_for_proxy(&config)?;
+    if recovery.recovered_bundles > 0 || recovery.interrupted_captures > 0 {
+        tracing::warn!(
+            recovered_bundles = recovery.recovered_bundles,
+            interrupted_captures = recovery.interrupted_captures,
+            "reconciled captures left incomplete by an earlier proxy process"
+        );
+    }
     let state = AppState {
         notary: notary.clone(),
         bundle_dir,
@@ -180,6 +159,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     tracing::info!(
         address = %listen,
         notary = %notary,
+        config = %config_path.display(),
         providers = ?Provider::ALL,
         "LLM Notary proxy listening"
     );
@@ -499,7 +479,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                                     elapsed_ms(started),
                                     status.as_u16(),
                                     response_bytes,
-                                    None,
+                                    preview.response_model.as_deref(),
                                     &preview.text,
                                     preview.truncated,
                                     &path,
@@ -558,10 +538,21 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
             }
         }
     }
-    let bundle = upstream
-        .bundle
-        .await
-        .context("deferred bundle task exited")??;
+    let bundle = match upstream.bundle.await {
+        Ok(Ok(bundle)) => bundle,
+        Ok(Err(error)) => {
+            let _ = state
+                .catalog
+                .mark_capture_failed(&capture_id, "capture_error");
+            return Err(error);
+        }
+        Err(error) => {
+            let _ = state
+                .catalog
+                .mark_capture_failed(&capture_id, "capture_task_error");
+            return Err(error).context("deferred bundle task exited");
+        }
+    };
     let path = match save_bundle(&state.bundle_dir, &bundle, &state.vault) {
         Ok(path) => path,
         Err(error) => {
@@ -746,6 +737,13 @@ struct StreamingOutputPreview {
     preview: LimitedText,
     pending: Vec<u8>,
     response_bytes: usize,
+    response_model: Option<String>,
+}
+
+struct StreamingResponseMetadata {
+    text: String,
+    truncated: bool,
+    response_model: Option<String>,
 }
 
 impl StreamingOutputPreview {
@@ -755,6 +753,7 @@ impl StreamingOutputPreview {
             preview: LimitedText::new(maximum_preview_chars),
             pending: Vec::new(),
             response_bytes: 0,
+            response_model: None,
         }
     }
 
@@ -773,17 +772,37 @@ impl StreamingOutputPreview {
                 continue;
             }
             if let Ok(value) = serde_json::from_slice::<serde_json::Value>(data) {
+                if self.response_model.is_none() {
+                    self.response_model = response_model_from_stream_event(&value);
+                }
                 append_response_text(self.provider, &mut self.preview, &value, true);
             }
         }
     }
 
-    fn finish(mut self) -> Preview {
+    fn finish(mut self) -> StreamingResponseMetadata {
         // Some providers send a final JSON body rather than SSE. It is safe to
         // ignore an incomplete event rather than index raw bytes.
         self.pending.clear();
-        self.preview.finish()
+        let preview = self.preview.finish();
+        StreamingResponseMetadata {
+            text: preview.text,
+            truncated: preview.truncated,
+            response_model: self.response_model,
+        }
     }
+}
+
+fn response_model_from_stream_event(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("model")
+        .or_else(|| {
+            value
+                .get("message")
+                .and_then(|message| message.get("model"))
+        })
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
 }
 
 struct LimitedText {
@@ -1125,14 +1144,16 @@ mod tests {
     #[test]
     fn streaming_preview_handles_split_sse_events() {
         let mut preview = StreamingOutputPreview::new(Provider::Openai, 1_000);
-        let first = br#"data: {"choices":[{"delta":{"content":"Price"}}]}"#;
+        let first = br#"data: {"model":"gpt-5","choices":[{"delta":{"content":"Price"}}]}"#;
         let second = br#"data: {"choices":[{"delta":{"content":"d"}}]}"#;
         preview.push(first);
         preview.push(b"\n\n");
         preview.push(second);
         preview.push(b"\n\n");
         assert_eq!(preview.response_bytes, first.len() + second.len() + 4);
-        assert_eq!(preview.finish().text, "Priced");
+        let preview = preview.finish();
+        assert_eq!(preview.text, "Priced");
+        assert_eq!(preview.response_model.as_deref(), Some("gpt-5"));
     }
 
     #[test]
