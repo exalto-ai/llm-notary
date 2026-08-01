@@ -340,6 +340,16 @@ and finalization, and keep the public notary's
 raising and capacity-testing the notary's private-proof byte and commitment
 limits as well.
 
+The full 15 MiB envelope is tested with escape-dense JSON in request-heavy,
+response-heavy, and balanced shapes by the `json_stack_safety` suite, which
+also covers the known 544,933-byte escaped-string reproduction, chunked
+transfer framing, and SSE streaming. JSON bodies are accepted up to 128
+levels of object/array nesting (matching `serde_json`'s default); deeper
+nesting is rejected with a typed parse error at capture time, never a crash.
+Transcript parsing uses constant stack regardless of input size, so these
+limits hold on the default runtime; the client additionally reserves a 32 MiB
+worker stack purely as containment.
+
 For staged capacity measurements, run the notary in a Linux cgroup v2
 container with `--profile-sessions` and no other workload in that cgroup. It
 emits a structured record tagged `mode=capture` or `mode=finalize`, including
