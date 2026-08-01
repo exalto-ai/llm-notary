@@ -41,7 +41,6 @@ const ADMISSION_INTERVAL_SECS: u64 = 2;
 const METADATA_INTERVAL_SECS: u64 = 10;
 const CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
 const MAX_JOBS_PER_TICK: usize = 4;
-const MAX_LIBRARY_CARD_BACKFILL_PER_TICK: usize = 4;
 const MAX_METADATA_PER_TICK: usize = 4;
 const METADATA_RETRY_SECS: i64 = 60 * 60;
 const METADATA_CLAIM_TIMEOUT_SECS: i64 = 5 * 60;
@@ -95,11 +94,11 @@ struct LibraryRow {
     id: String,
     github_login: String,
     admitted_at: i64,
-    library_provider: Option<String>,
-    library_host: Option<String>,
-    library_model: Option<String>,
-    library_span_count: Option<i64>,
-    library_tool_use: Option<bool>,
+    library_provider: String,
+    library_host: String,
+    library_model: String,
+    library_span_count: i64,
+    library_tool_use: bool,
     title: Option<String>,
     tags_json: Option<String>,
     recent_downloads: i64,
@@ -119,14 +118,14 @@ struct CollectionResponse {
 struct CollectionPublication {
     id: String,
     title: String,
-    tool_use: Option<bool>,
+    tool_use: bool,
     tags: Vec<String>,
     author: String,
     admitted_at: i64,
-    provider: Option<String>,
-    host: Option<String>,
-    model: Option<String>,
-    span_count: Option<usize>,
+    provider: String,
+    host: String,
+    model: String,
+    span_count: usize,
     recent_downloads: i64,
     trace_url: String,
     stamp_url: String,
@@ -459,14 +458,9 @@ fn collection_publication(artifact: LibraryRow) -> ApiResult<CollectionPublicati
         .unwrap_or_default();
     Ok(CollectionPublication {
         id: artifact.id.clone(),
-        title: artifact.title.unwrap_or_else(|| {
-            artifact
-                .library_provider
-                .as_deref()
-                .zip(artifact.library_model.as_deref())
-                .map(|(provider, model)| fallback_title(provider, model))
-                .unwrap_or_else(|| "Verified LLM trace".to_owned())
-        }),
+        title: artifact
+            .title
+            .unwrap_or_else(|| fallback_title(&artifact.library_provider, &artifact.library_model)),
         tool_use: artifact.library_tool_use,
         tags,
         author: artifact.github_login,
@@ -474,10 +468,7 @@ fn collection_publication(artifact: LibraryRow) -> ApiResult<CollectionPublicati
         provider: artifact.library_provider,
         host: artifact.library_host,
         model: artifact.library_model,
-        span_count: artifact
-            .library_span_count
-            .map(usize::try_from)
-            .transpose()
+        span_count: usize::try_from(artifact.library_span_count)
             .map_err(|error| ApiError::internal(anyhow::Error::from(error)))?,
         recent_downloads: artifact.recent_downloads,
         trace_url: format!("/api/public/traces/{}/trace.otlp.json", artifact.id),
@@ -643,9 +634,6 @@ pub fn spawn(state: AppState) {
             if let Err(error) = update_queue_metrics(&state).await {
                 tracing::error!(%error, "updating publication admission metrics failed");
             }
-            if let Err(error) = backfill_library_card_facts(&state).await {
-                tracing::error!(%error, "backfilling Library card facts failed");
-            }
             for _ in 0..MAX_JOBS_PER_TICK {
                 match claim_next_job(&state).await {
                     Ok(Some((job, claim))) => process_claim(&state, job, claim).await,
@@ -660,9 +648,8 @@ pub fn spawn(state: AppState) {
     });
 }
 
-/// Returns whether admission, private-artifact purging, Library card-fact
-/// backfilling, or active/currently-due Library metadata generation still needs
-/// an API Machine to remain running.
+/// Returns whether admission, private-artifact purging, or active/currently-due
+/// Library metadata generation still needs an API Machine to remain running.
 /// Future metadata retries are intentionally demand-driven: a later API
 /// request wakes a Machine and resumes the normal retry loop.
 pub async fn has_pending_work(state: &AppState) -> Result<bool> {
@@ -671,10 +658,6 @@ pub async fn has_pending_work(state: &AppState) -> Result<bool> {
              SELECT 1 FROM publish_jobs
              WHERE state IN ('queued', 'verifying')
                 OR (state IN ('admitted', 'rejected') AND private_purged_at IS NULL)
-                OR (state = 'admitted'
-                    AND public_trace_object_key IS NOT NULL
-                    AND public_stamp_object_key IS NOT NULL
-                    AND library_provider IS NULL)
              LIMIT 1
          )",
     )
@@ -727,78 +710,6 @@ async fn update_queue_metrics(state: &AppState) -> Result<()> {
             .map(|queued_at| now.saturating_sub(queued_at) as f64)
             .unwrap_or(0.0),
     );
-    Ok(())
-}
-
-async fn backfill_library_card_facts(state: &AppState) -> Result<()> {
-    for _ in 0..MAX_LIBRARY_CARD_BACKFILL_PER_TICK {
-        let mut transaction = state.database.begin().await?;
-        let artifact = sqlx::query_as::<_, PublicArtifactRow>(
-            "SELECT id, public_trace_object_key, public_trace_size_bytes,
-                    public_trace_sha256, public_stamp_object_key,
-                    public_stamp_size_bytes, public_stamp_sha256
-             FROM publish_jobs
-             WHERE state = 'admitted'
-               AND public_trace_object_key IS NOT NULL
-               AND public_stamp_object_key IS NOT NULL
-               AND library_provider IS NULL
-             ORDER BY admitted_at, id
-             FOR UPDATE SKIP LOCKED
-             LIMIT 1",
-        )
-        .fetch_optional(&mut *transaction)
-        .await?;
-        let Some(artifact) = artifact else {
-            transaction.commit().await?;
-            break;
-        };
-        let trace = load_public_bytes(
-            state,
-            &artifact.public_trace_object_key,
-            artifact.public_trace_size_bytes,
-            &artifact.public_trace_sha256,
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
-        let stamp = load_public_bytes(
-            state,
-            &artifact.public_stamp_object_key,
-            artifact.public_stamp_size_bytes,
-            &artifact.public_stamp_sha256,
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
-        let stamp: llm_notary_core::public::PublicStamp = serde_json::from_slice(&stamp)?;
-        let card = library_card_facts(stamp.provider.name, stamp.provider.host, &trace)?;
-        let updated = sqlx::query(
-            "UPDATE publish_jobs
-             SET library_provider = $1, library_host = $2, library_model = $3,
-                 library_span_count = $4, library_tool_use = $5
-             WHERE id = $6 AND library_provider IS NULL",
-        )
-        .bind(card.provider)
-        .bind(card.host)
-        .bind(card.model)
-        .bind(card.span_count)
-        .bind(card.tool_use)
-        .bind(&artifact.id)
-        .execute(&mut *transaction)
-        .await?;
-        transaction.commit().await?;
-        if updated.rows_affected() != 1 {
-            tracing::warn!(job_id = %artifact.id, "Library card facts changed before backfill completed");
-        }
-    }
-    let remaining: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM publish_jobs
-         WHERE state = 'admitted'
-           AND public_trace_object_key IS NOT NULL
-           AND public_stamp_object_key IS NOT NULL
-           AND library_provider IS NULL",
-    )
-    .fetch_one(&state.database)
-    .await?;
-    metrics::gauge!("llm_notary_library_card_backfill_remaining").set(remaining as f64);
     Ok(())
 }
 
@@ -1658,7 +1569,10 @@ mod tests {
              SET state = 'admitted', admitted_at = $1, private_purged_at = $1,
                  public_trace_object_key = 'trace-key', public_trace_size_bytes = 1,
                  public_trace_sha256 = $2, public_stamp_object_key = 'stamp-key',
-                 public_stamp_size_bytes = 1, public_stamp_sha256 = $2
+                 public_stamp_size_bytes = 1, public_stamp_sha256 = $2,
+                 library_provider = 'OpenAI', library_host = 'api.openai.com',
+                 library_model = 'gpt-test', library_span_count = 1,
+                 library_tool_use = FALSE
              WHERE id = 'job-1'",
         )
         .bind(now)
@@ -1690,7 +1604,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn library_serves_unmaterialized_card_facts_as_null_without_loading_artifacts() {
+    async fn admitted_records_require_materialized_library_card_facts() {
+        let (state, _) = test_state().await;
+        queued_job(&state, b"archive", &sha256_hex(b"archive")).await;
+
+        assert!(
+            sqlx::query("UPDATE publish_jobs SET state = 'admitted' WHERE id = 'job-1'")
+                .execute(&state.database)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn library_uses_materialized_card_facts_without_loading_artifacts() {
         let (state, storage) = test_state().await;
         let sha256 = sha256_hex(b"archive");
         queued_job(&state, b"archive", &sha256).await;
@@ -1699,7 +1626,10 @@ mod tests {
              SET state = 'admitted', admitted_at = 100, private_purged_at = 100,
                  public_trace_object_key = 'trace-key', public_trace_size_bytes = 1,
                  public_trace_sha256 = $1, public_stamp_object_key = 'stamp-key',
-                 public_stamp_size_bytes = 1, public_stamp_sha256 = $1
+                 public_stamp_size_bytes = 1, public_stamp_sha256 = $1,
+                 library_provider = 'OpenAI', library_host = 'api.openai.com',
+                 library_model = 'gpt-test', library_span_count = 2,
+                 library_tool_use = TRUE
              WHERE id = 'job-1'",
         )
         .bind(&sha256)
@@ -1710,85 +1640,13 @@ mod tests {
         let response = traces_collection(State(state)).await.unwrap().0;
         assert_eq!(response.publications.len(), 1);
         let publication = &response.publications[0];
-        assert_eq!(publication.title, "Verified LLM trace");
-        assert_eq!(publication.provider, None);
-        assert_eq!(publication.host, None);
-        assert_eq!(publication.model, None);
-        assert_eq!(publication.span_count, None);
-        assert_eq!(publication.tool_use, None);
+        assert_eq!(publication.title, "OpenAI gpt-test trace");
+        assert_eq!(publication.provider, "OpenAI");
+        assert_eq!(publication.host, "api.openai.com");
+        assert_eq!(publication.model, "gpt-test");
+        assert_eq!(publication.span_count, 2);
+        assert!(publication.tool_use);
         assert!(storage.bodies.lock().unwrap().is_empty());
-    }
-
-    #[tokio::test]
-    async fn library_card_backfill_materializes_legacy_admissions() {
-        let (state, storage) = test_state().await;
-        let archive = b"archive";
-        queued_job(&state, archive, &sha256_hex(archive)).await;
-        let trace = serde_json::json!({
-            "resourceSpans": [{
-                "scopeSpans": [{
-                    "spans": [{
-                        "attributes": [
-                            {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-test"}},
-                            {"key": "gen_ai.output.messages", "value": {"stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"call-1\",\"name\":\"lookup\",\"arguments\":{}}]}]"}}
-                        ]
-                    }]
-                }]
-            }]
-        });
-        let trace = serde_json::to_vec(&trace).unwrap();
-        let stamp = serde_json::json!({
-            "canonicalization": "llm-notary/json-lexicographic-v1",
-            "capture_format": "llm-notary/trace-package/v1",
-            "format": "llm-notary/platform-stamp/v1",
-            "issued_at_unix_ms": 1,
-            "issuer": "https://example.com",
-            "key_id": "sha256:test",
-            "normalizer_version": "llm-notary/normalizer/v1",
-            "otel_semconv_version": "1.37.0",
-            "provider": {
-                "evidence": "tlsnotary-presentation/v1",
-                "host": "api.openai.com",
-                "name": "OpenAI"
-            },
-            "signature": {"algorithm": "secp256k1-ecdsa-sha256", "value": "test"},
-            "trace_sha256": sha256_hex(&trace)
-        });
-        let stamp = serde_json::to_vec(&stamp).unwrap();
-        storage.object_bytes("trace-key", trace.clone());
-        storage.object_bytes("stamp-key", stamp.clone());
-        sqlx::query(
-            "UPDATE publish_jobs
-             SET state = 'admitted', admitted_at = 100, private_purged_at = 100,
-                 public_trace_object_key = 'trace-key', public_trace_size_bytes = $1,
-                 public_trace_sha256 = $2, public_stamp_object_key = 'stamp-key',
-                 public_stamp_size_bytes = $3, public_stamp_sha256 = $4
-             WHERE id = 'job-1'",
-        )
-        .bind(trace.len() as i64)
-        .bind(sha256_hex(&trace))
-        .bind(stamp.len() as i64)
-        .bind(sha256_hex(&stamp))
-        .execute(&state.database)
-        .await
-        .unwrap();
-
-        backfill_library_card_facts(&state).await.unwrap();
-
-        let row: (String, String, String, i64, bool) = sqlx::query_as(
-            "SELECT library_provider, library_host, library_model,
-                    library_span_count, library_tool_use
-             FROM publish_jobs WHERE id = 'job-1'",
-        )
-        .fetch_one(&state.database)
-        .await
-        .unwrap();
-        assert_eq!(row.0, "OpenAI");
-        assert_eq!(row.1, "api.openai.com");
-        assert_eq!(row.2, "gpt-test");
-        assert_eq!(row.3, 1);
-        assert!(row.4);
-        assert!(!has_pending_work(&state).await.unwrap());
     }
 
     #[test]
