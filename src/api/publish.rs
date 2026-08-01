@@ -206,6 +206,25 @@ pub fn spawn_cleanup(state: AppState) {
     });
 }
 
+/// Returns whether expired uploads must be cleaned up before the API can enter
+/// its application-managed idle shutdown. Uploads that expire while every API
+/// Machine is stopped are cleaned up when the next request wakes a Machine.
+pub async fn has_pending_cleanup(state: &AppState) -> ApiResult<bool> {
+    let now = unix_timestamp()?;
+    let pending: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM publish_jobs
+             WHERE state = 'uploading' AND upload_expires_at <= $1
+             LIMIT 1
+         )",
+    )
+    .bind(now)
+    .fetch_one(&state.database)
+    .await
+    .map_err(database_error)?;
+    Ok(pending)
+}
+
 async fn create_publish_job(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -769,6 +788,25 @@ mod tests {
             size_bytes: 1234,
             sha256: SHA256.to_owned(),
         }
+    }
+
+    #[tokio::test]
+    async fn expired_upload_cleanup_prevents_idle_shutdown() {
+        let (state, _, headers, _) = test_state().await;
+        create_publish_job(State(state.clone()), headers, Json(request()))
+            .await
+            .expect("create");
+        assert!(
+            !has_pending_cleanup(&state)
+                .await
+                .expect("no expired uploads")
+        );
+
+        sqlx::query("UPDATE publish_jobs SET upload_expires_at = 1")
+            .execute(&state.database)
+            .await
+            .expect("expire upload");
+        assert!(has_pending_cleanup(&state).await.expect("expired upload"));
     }
 
     #[tokio::test]

@@ -26,9 +26,13 @@ kill_timeout = "30s"
   LLM_NOTARY_S3_PREFIX = "llm-notary"
   LLM_NOTARY_S3_FORCE_PATH_STYLE = "true"
   LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE = "/run/secrets/platform_signing_key"
-  # Keep the per-Machine pool small. With two replicas this is ten database
-  # connections at steady state; use Neon's pooled connection URL.
+  # Keep the per-Machine pool small. With both replicas active this is ten
+  # database connections; use Neon's pooled connection URL.
   LLM_NOTARY_DATABASE_MAX_CONNECTIONS = "5"
+  # Each API Machine exits after this much activity-free time once durable
+  # admission and cleanup work is clear. Fly starts a stopped Machine on the
+  # next Flycast request.
+  LLM_NOTARY_IDLE_SHUTDOWN_SECS = "45"
 
 [metrics]
   # Fly scrapes this private route every 15 seconds; it is not exposed through
@@ -39,11 +43,12 @@ kill_timeout = "30s"
 [http_service]
   internal_port = 8080
   force_https = false
-  # The API has database-coordinated background workers, so it can run on
-  # multiple Machines without duplicate admission or metadata generation.
+  # The API's database-coordinated workers keep each Machine alive until its
+  # durable work is clear, then the process exits after its idle grace period.
+  # Fly autostart wakes a stopped Machine for the next Flycast request.
   auto_stop_machines = "off"
   auto_start_machines = true
-  min_machines_running = 2
+  min_machines_running = 0
 
   [http_service.concurrency]
     type = "requests"
