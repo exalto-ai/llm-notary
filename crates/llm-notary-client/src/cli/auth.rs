@@ -429,6 +429,30 @@ fn write_file_credentials_at(path: &Path, credentials: &FileCredentials) -> Resu
     )
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum KeychainLookupOutcome {
+    Found,
+    Missing,
+    Unavailable,
+}
+
+fn classify_keychain_lookup(
+    success: bool,
+    exit_code: Option<i32>,
+    stderr: &[u8],
+    missing_exit_code: i32,
+    missing_must_be_quiet: bool,
+) -> KeychainLookupOutcome {
+    if success {
+        KeychainLookupOutcome::Found
+    } else if exit_code == Some(missing_exit_code) && (!missing_must_be_quiet || stderr.is_empty())
+    {
+        KeychainLookupOutcome::Missing
+    } else {
+        KeychainLookupOutcome::Unavailable
+    }
+}
+
 #[cfg(target_os = "macos")]
 fn keychain_store(token: &str) -> Result<()> {
     let status = Command::new("security")
@@ -464,15 +488,21 @@ fn keychain_load() -> Result<Option<String>> {
         ])
         .output()
         .context("read macOS Keychain")?;
-    if output.status.success() {
-        Ok(Some(
+    match classify_keychain_lookup(
+        output.status.success(),
+        output.status.code(),
+        &output.stderr,
+        44,
+        false,
+    ) {
+        KeychainLookupOutcome::Found => Ok(Some(
             String::from_utf8(output.stdout)
                 .context("decode Keychain token")?
                 .trim()
                 .to_owned(),
-        ))
-    } else {
-        Ok(None)
+        )),
+        KeychainLookupOutcome::Missing => Ok(None),
+        KeychainLookupOutcome::Unavailable => bail!("macOS Keychain lookup failed"),
     }
 }
 
@@ -534,15 +564,21 @@ fn keychain_load() -> Result<Option<String>> {
         ])
         .output()
         .context("read OS keychain")?;
-    if output.status.success() {
-        Ok(Some(
+    match classify_keychain_lookup(
+        output.status.success(),
+        output.status.code(),
+        &output.stderr,
+        1,
+        true,
+    ) {
+        KeychainLookupOutcome::Found => Ok(Some(
             String::from_utf8(output.stdout)
                 .context("decode OS keychain token")?
                 .trim()
                 .to_owned(),
-        ))
-    } else {
-        Ok(None)
+        )),
+        KeychainLookupOutcome::Missing => Ok(None),
+        KeychainLookupOutcome::Unavailable => bail!("OS keychain lookup failed"),
     }
 }
 
@@ -630,6 +666,34 @@ mod tests {
                 .await
                 .unwrap_err(),
             PublicationAuthenticationError::Unavailable
+        );
+    }
+
+    #[test]
+    fn keychain_lookup_distinguishes_missing_items_from_operational_failures() {
+        assert_eq!(
+            classify_keychain_lookup(true, Some(0), b"", 44, false),
+            KeychainLookupOutcome::Found
+        );
+        assert_eq!(
+            classify_keychain_lookup(false, Some(44), b"item not found", 44, false),
+            KeychainLookupOutcome::Missing
+        );
+        assert_eq!(
+            classify_keychain_lookup(false, Some(36), b"keychain locked", 44, false),
+            KeychainLookupOutcome::Unavailable
+        );
+        assert_eq!(
+            classify_keychain_lookup(false, Some(1), b"", 1, true),
+            KeychainLookupOutcome::Missing
+        );
+        assert_eq!(
+            classify_keychain_lookup(false, Some(1), b"secret service unavailable", 1, true),
+            KeychainLookupOutcome::Unavailable
+        );
+        assert_eq!(
+            classify_keychain_lookup(false, None, b"terminated", 1, true),
+            KeychainLookupOutcome::Unavailable
         );
     }
 
