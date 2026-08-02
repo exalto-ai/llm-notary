@@ -111,6 +111,12 @@ pub(crate) struct AuthenticatedApi {
     pub(crate) access_token: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PublicationAuthenticationError {
+    Required,
+    Unavailable,
+}
+
 pub async fn login(args: LoginArgs) -> Result<()> {
     let pending = start_authorization(&args.api, &args.device_name).await?;
     println!("Open this URL in a browser and approve the request:");
@@ -284,6 +290,20 @@ pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
     })
 }
 
+pub(crate) async fn authenticate_for_publication_status()
+-> std::result::Result<AuthenticatedApi, PublicationAuthenticationError> {
+    let mut credentials =
+        load_credentials().map_err(|_| PublicationAuthenticationError::Required)?;
+    let (access_token, rotated_refresh_token) =
+        refresh_for_publication_status(&credentials).await?;
+    credentials.refresh_token = rotated_refresh_token;
+    save_credentials(&credentials).map_err(|_| PublicationAuthenticationError::Unavailable)?;
+    Ok(AuthenticatedApi {
+        origin: credentials.api_origin,
+        access_token,
+    })
+}
+
 async fn refresh(credentials: &FileCredentials) -> Result<(String, String)> {
     let response = http_client_builder()
         .build()
@@ -300,6 +320,37 @@ async fn refresh(credentials: &FileCredentials) -> Result<(String, String)> {
         .json::<RefreshResponse>()
         .await
         .context("reading refreshed CLI credentials")?;
+    let _ = response.expires_in;
+    Ok((response.access_token, response.refresh_token))
+}
+
+async fn refresh_for_publication_status(
+    credentials: &FileCredentials,
+) -> std::result::Result<(String, String), PublicationAuthenticationError> {
+    let client = http_client_builder()
+        .build()
+        .map_err(|_| PublicationAuthenticationError::Unavailable)?;
+    let response = client
+        .post(credentials.api_origin.api_url("/api/cli/token"))
+        .json(&RefreshRequest {
+            refresh_token: &credentials.refresh_token,
+        })
+        .send()
+        .await
+        .map_err(|_| PublicationAuthenticationError::Unavailable)?;
+    if matches!(
+        response.status(),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ) {
+        return Err(PublicationAuthenticationError::Required);
+    }
+    if !response.status().is_success() {
+        return Err(PublicationAuthenticationError::Unavailable);
+    }
+    let response = response
+        .json::<RefreshResponse>()
+        .await
+        .map_err(|_| PublicationAuthenticationError::Unavailable)?;
     let _ = response.expires_in;
     Ok((response.access_token, response.refresh_token))
 }
@@ -504,6 +555,28 @@ fn keychain_delete() -> Result<()> {
 mod tests {
     use super::*;
 
+    async fn publication_status_refresh_result(
+        status: StatusCode,
+        body: &'static str,
+    ) -> std::result::Result<(String, String), PublicationAuthenticationError> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new().route(
+            "/api/cli/token",
+            axum::routing::post(move || async move {
+                (status, [("content-type", "application/json")], body)
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let credentials = FileCredentials {
+            api_origin: ApiOrigin::parse(&origin).unwrap(),
+            refresh_token: "refresh-token".to_owned(),
+        };
+        let result = refresh_for_publication_status(&credentials).await;
+        server.abort();
+        result
+    }
+
     #[test]
     fn api_origin_uses_the_shared_trust_policy() {
         assert_eq!(
@@ -514,6 +587,28 @@ mod tests {
         );
         assert!(ApiOrigin::parse("http://example.com").is_err());
         assert!(ApiOrigin::parse("http://localhost:3000").is_ok());
+    }
+
+    #[tokio::test]
+    async fn publication_status_refresh_distinguishes_reauthorization_from_outages() {
+        assert_eq!(
+            publication_status_refresh_result(StatusCode::UNAUTHORIZED, "{}")
+                .await
+                .unwrap_err(),
+            PublicationAuthenticationError::Required
+        );
+        assert_eq!(
+            publication_status_refresh_result(StatusCode::SERVICE_UNAVAILABLE, "{}")
+                .await
+                .unwrap_err(),
+            PublicationAuthenticationError::Unavailable
+        );
+        assert_eq!(
+            publication_status_refresh_result(StatusCode::OK, "not-json")
+                .await
+                .unwrap_err(),
+            PublicationAuthenticationError::Unavailable
+        );
     }
 
     #[test]

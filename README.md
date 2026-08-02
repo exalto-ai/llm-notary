@@ -353,10 +353,10 @@ supported span attributes are:
 - `gen_ai.response.finish_reasons`, `gen_ai.conversation.id`, and
   `server.address` (optional provider-inference metadata)
 
-Several verified private captures can be normalized in CLI order as spans in a
-single conversation trace. This deliberately excludes runtime-reported agent
-and tool-execution spans: a model requesting a tool is recorded as a message
-part; no claim is made that a local runtime actually executed it.
+A finalized capture is normalized as a span in its conversation trace. This
+deliberately excludes runtime-reported agent and tool-execution spans: a model
+requesting a tool is recorded as a message part; no claim is made that a local
+runtime actually executed it.
 
 `stamp.json` has format `llm-notary/platform-stamp/v1` and includes the issuer,
 SHA-256-derived platform key ID, issue time in Unix milliseconds, trace
@@ -365,8 +365,9 @@ version, canonicalization ID, and provider provenance (`name`, `host`, and
 `tlsnotary-presentation/v1`). Its `signature` is a compact, low-S secp256k1
 ECDSA signature over the SHA-256 of the canonical JSON encoding of every stamp
 field except `signature`; the signing payload has the same lexicographic JSON
-rule but no trailing LF. `verify-public` checks every version and provenance
-claim against the trace before it verifies the signature.
+rule but no trailing LF. `POST /v1/public-traces/{publication_id}/verify`
+checks every version and provenance claim against the trace before it verifies
+the signature.
 
 The stamp says that the LLM Notary platform admitted this exact normalized
 trace after checking private source evidence. It does **not** include or replace
@@ -525,8 +526,9 @@ generations, a transport-aware hostname and port, separate capture/finalization
 deadlines, and endpoints for an active key and historical rotation records.
 Clients reject directory rollback, cache revocation monotonically, route
 pending bundles to an active or retiring signer, and retain retired keys for
-timestamp-scoped offline verification. `publish` refreshes the directory after
-local verification so current revocations are enforced before upload. A
+timestamp-scoped offline verification. The
+`POST /v1/captures/{capture_id}/publications` endpoint refreshes the directory
+after local verification so current revocations are enforced before upload. A
 retiring notary process must run with `--finalize-only`. The
 Compose health check compares the advertised active key with the running
 notary key. The lifecycle and operator rotation procedure are documented in
@@ -655,7 +657,7 @@ Publishing is an explicit consent boundary: the current admission design may
 inspect the disclosed plaintext in the finalized package to reproduce and
 verify the public trace. Provider credentials and cookie values remain
 redacted. The encrypted `.llmbundle` is private retry state and is never a
-valid input to `publish`.
+valid input to the publication endpoint.
 
 ## Important trust statement
 

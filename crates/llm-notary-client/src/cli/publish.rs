@@ -158,9 +158,16 @@ pub(crate) async fn publish_package(
 pub(crate) async fn publication_status(
     job_id: &str,
 ) -> std::result::Result<PublicationStatus, PublicationStatusError> {
-    let authenticated = auth::authenticate()
+    let authenticated = auth::authenticate_for_publication_status()
         .await
-        .map_err(|_| PublicationStatusError::Authentication)?;
+        .map_err(|error| match error {
+            auth::PublicationAuthenticationError::Required => {
+                PublicationStatusError::Authentication
+            }
+            auth::PublicationAuthenticationError::Unavailable => {
+                PublicationStatusError::Unavailable
+            }
+        })?;
     let client = http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
