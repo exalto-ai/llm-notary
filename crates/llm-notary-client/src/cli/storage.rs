@@ -30,23 +30,6 @@ pub(crate) fn write_private_file_atomically(path: &Path, contents: &[u8]) -> Res
     Ok(())
 }
 
-/// Publishes a fully written private file only when `path` does not exist.
-///
-/// The hard link is an atomic create-if-absent operation. This prevents two
-/// service processes starting at the same time from replacing each other's
-/// newly generated administration token.
-pub(crate) fn write_private_file_if_absent(path: &Path, contents: &[u8]) -> Result<bool> {
-    let pending = write_private_pending_file(path, contents)?;
-    match fs::hard_link(pending.path(), path) {
-        Ok(()) => {
-            ensure_private_file(path)?;
-            Ok(true)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(error) => Err(error).with_context(|| format!("atomically create {}", path.display())),
-    }
-}
-
 fn write_private_pending_file(path: &Path, contents: &[u8]) -> Result<PendingFile> {
     let parent = path
         .parent()
@@ -112,26 +95,6 @@ fn create_private_directory(path: &Path) -> Result<()> {
             restrict_windows_acl(path, "(OI)(CI)F")?;
         }
     }
-    Ok(())
-}
-
-pub(crate) fn ensure_private_file(path: &Path) -> Result<()> {
-    #[cfg(windows)]
-    restrict_windows_acl(path, "F")?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        let metadata = fs::metadata(path)
-            .with_context(|| format!("inspect private file {}", path.display()))?;
-        if metadata.permissions().mode() & 0o077 != 0 {
-            bail!(
-                "private file {} must not be readable by group or others",
-                path.display()
-            );
-        }
-    }
-    #[cfg(all(not(unix), not(windows)))]
-    let _ = path;
     Ok(())
 }
 
@@ -226,16 +189,6 @@ mod tests {
             fs::metadata(destination).unwrap().permissions().mode() & 0o777,
             0o600
         );
-    }
-
-    #[test]
-    fn private_create_if_absent_never_replaces_the_winner() {
-        let directory = tempfile::tempdir().unwrap();
-        let destination = directory.path().join("admin-token");
-
-        assert!(write_private_file_if_absent(&destination, b"first").unwrap());
-        assert!(!write_private_file_if_absent(&destination, b"second").unwrap());
-        assert_eq!(fs::read(destination).unwrap(), b"first");
     }
 }
 

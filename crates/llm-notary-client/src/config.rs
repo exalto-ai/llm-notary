@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use argon2::PasswordHash;
 use k256::ecdsa::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
@@ -46,8 +47,18 @@ pub struct AgentConfig {
 pub struct AdminConfig {
     #[serde(default = "default_admin_listen")]
     pub listen: SocketAddr,
-    #[serde(default = "default_admin_token_path")]
-    pub token_path: PathBuf,
+    /// Optional HTTP Basic authentication for the loopback administration
+    /// listener. The listener is open to local processes when omitted.
+    pub auth: Option<AdminAuthConfig>,
+}
+
+/// Optional password authentication for the local administration listener.
+/// The password is stored only as an Argon2id PHC string.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminAuthConfig {
+    pub username: String,
+    pub password_hash: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -144,7 +155,7 @@ impl Default for AdminConfig {
     fn default() -> Self {
         Self {
             listen: default_admin_listen(),
-            token_path: default_admin_token_path(),
+            auth: None,
         }
     }
 }
@@ -290,10 +301,22 @@ impl AgentConfig {
             self.admin.listen != self.proxy.listen,
             "admin.listen and proxy.listen must be different addresses"
         );
-        ensure!(
-            !self.admin.token_path.as_os_str().is_empty(),
-            "admin.token_path must not be empty"
-        );
+        if let Some(auth) = &self.admin.auth {
+            ensure!(
+                !auth.username.is_empty() && auth.username.len() <= 128,
+                "admin.auth.username must contain between 1 and 128 bytes"
+            );
+            ensure!(
+                !auth.username.contains(':'),
+                "admin.auth.username must not contain a colon"
+            );
+            let password_hash = PasswordHash::new(&auth.password_hash)
+                .map_err(|error| anyhow::anyhow!("admin.auth.password_hash is invalid: {error}"))?;
+            ensure!(
+                password_hash.algorithm.as_str() == "argon2id",
+                "admin.auth.password_hash must use Argon2id"
+            );
+        }
         match (&self.notary.endpoint, &self.notary.public_key) {
             (Some(endpoint), Some(_)) => {
                 endpoint
@@ -479,10 +502,6 @@ fn default_catalog_path() -> PathBuf {
     default_data_dir().join("catalog.db")
 }
 
-fn default_admin_token_path() -> PathBuf {
-    default_data_dir().join("admin-token")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -499,6 +518,7 @@ mod tests {
         assert!(config.catalog.full_text_search);
         assert_eq!(config.proxy.listen.to_string(), "127.0.0.1:8787");
         assert_eq!(config.admin.listen.to_string(), "127.0.0.1:8788");
+        assert!(config.admin.auth.is_none());
     }
 
     #[test]
@@ -524,6 +544,20 @@ mod tests {
 
         config.notary.endpoint = None;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn configured_admin_auth_requires_an_argon2id_hash() {
+        let mut config = AgentConfig::default();
+        config.admin.auth = Some(AdminAuthConfig {
+            username: "local-admin".to_owned(),
+            password_hash: "$2b$12$not-an-argon2id-hash".to_owned(),
+        });
+        assert!(config.validate().is_err());
+
+        config.admin.auth.as_mut().unwrap().password_hash =
+            "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0c2FsdA$yJIR0lVleM2KSPdVmBvsQ9uhA06YIR8aPCbRDbNvXXQ".to_owned();
+        config.validate().unwrap();
     }
 
     #[test]

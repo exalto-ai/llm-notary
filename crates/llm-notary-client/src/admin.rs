@@ -9,6 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     Json, Router,
     extract::{Path, Query, Request, State, rejection::QueryRejection},
@@ -17,8 +18,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde::{Deserialize, Serialize};
-use subtle::ConstantTimeEq as _;
 use tokio::sync::{Mutex, Notify};
 use tower_http::{
     limit::RequestBodyLimitLayer,
@@ -53,7 +54,6 @@ const DASHBOARD_HEADER: &str = "x-llm-notary-request";
 pub(crate) struct AdminState {
     catalog: Arc<Catalog>,
     config: Arc<AgentConfig>,
-    token: Arc<str>,
     sessions: Arc<Mutex<HashMap<String, u64>>>,
     pending_authorizations: Arc<Mutex<HashMap<String, auth::PendingAuthorization>>>,
     publication_credentials: Arc<Mutex<()>>,
@@ -62,7 +62,6 @@ pub(crate) struct AdminState {
 
 impl AdminState {
     pub(crate) fn new(catalog: Arc<Catalog>, config: Arc<AgentConfig>) -> Result<Self> {
-        let token = load_or_create_token(&config.admin.token_path)?;
         let interrupted = catalog.recover_operations(now_ms()?)?;
         if interrupted > 0 {
             tracing::warn!(interrupted, "recovered interrupted finalization operations");
@@ -70,7 +69,6 @@ impl AdminState {
         Ok(Self {
             catalog,
             config,
-            token: Arc::from(token),
             sessions: Arc::new(Mutex::new(HashMap::new())),
             pending_authorizations: Arc::new(Mutex::new(HashMap::new())),
             publication_credentials: Arc::new(Mutex::new(())),
@@ -151,7 +149,11 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
 
 #[derive(OpenApi)]
 #[openapi(
-    info(title = "LLM Notary local administration API", version = "1.0.0"),
+    info(
+        title = "LLM Notary local administration API",
+        version = "1.0.0",
+        description = "Loopback administration API. Routes are available without credentials by default; configure admin.auth to require HTTP Basic authentication."
+    ),
     paths(
         health, openapi, start_session, end_session, status, captures, capture,
         start_finalization, operations, operation, retry_operation, trace,
@@ -179,13 +181,8 @@ impl Modify for SecurityAddon {
         use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
         if let Some(components) = openapi.components.as_mut() {
             components.add_security_scheme(
-                "bearerAuth",
-                SecurityScheme::Http(
-                    HttpBuilder::new()
-                        .scheme(HttpAuthScheme::Bearer)
-                        .bearer_format("opaque local token")
-                        .build(),
-                ),
+                "basicAuth",
+                SecurityScheme::Http(HttpBuilder::new().scheme(HttpAuthScheme::Basic).build()),
             );
         }
     }
@@ -205,10 +202,13 @@ async fn openapi() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
 
-#[utoipa::path(post, path = "/v1/session", summary = "Start a dashboard session", description = "Exchanges the local admin bearer token for an HttpOnly browser session cookie.", responses((status = 204, description = "HttpOnly dashboard session established"), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/session", summary = "Start a dashboard session", description = "Exchanges configured HTTP Basic credentials for an HttpOnly browser session cookie. Returns without a cookie when admin authentication is disabled.", responses((status = 204, description = "Dashboard access established"), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_session(State(state): State<AdminState>, request: Request) -> Response {
-    if !bearer_matches(&state, request.headers()) {
-        return ApiError::unauthorized().into_response();
+    if state.config.admin.auth.is_none() {
+        return StatusCode::NO_CONTENT.into_response();
+    }
+    if !basic_matches(&state, request.headers()).await {
+        return unauthorized_response();
     }
     let session = new_secret();
     let expires_at = match now_ms().and_then(|now| {
@@ -234,7 +234,7 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
     response
 }
 
-#[utoipa::path(delete, path = "/v1/session", summary = "End a dashboard session", description = "Deletes the current browser session and expires its local cookie.", responses((status = 204, description = "Dashboard session ended"), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/session", summary = "End a dashboard session", description = "Deletes the current browser session and expires its local cookie.", responses((status = 204, description = "Dashboard session ended"), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn end_session(State(state): State<AdminState>, request: Request) -> Response {
     if let Some(session) = session_from_headers(request.headers()) {
         state.sessions.lock().await.remove(session);
@@ -250,8 +250,11 @@ async fn end_session(State(state): State<AdminState>, request: Request) -> Respo
 }
 
 async fn require_auth(State(state): State<AdminState>, request: Request, next: Next) -> Response {
-    let bearer_ok = bearer_matches(&state, request.headers());
-    let session_ok = if bearer_ok {
+    if state.config.admin.auth.is_none() {
+        return next.run(request).await;
+    }
+    let basic_ok = basic_matches(&state, request.headers()).await;
+    let session_ok = if basic_ok {
         false
     } else if request
         .headers()
@@ -270,14 +273,14 @@ async fn require_auth(State(state): State<AdminState>, request: Request, next: N
     } else {
         false
     };
-    if bearer_ok || session_ok {
+    if basic_ok || session_ok {
         next.run(request).await
     } else {
-        ApiError::unauthorized().into_response()
+        unauthorized_response()
     }
 }
 
-#[utoipa::path(get, path = "/v1/status", summary = "Get local service status", description = "Returns listener addresses, vault and notary configuration, preview limits, and current capture counts.", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/status", summary = "Get local service status", description = "Returns listener addresses, vault and notary configuration, preview limits, and current capture counts.", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>, ApiError> {
     let catalog = state.catalog.clone();
     let counts = tokio::task::spawn_blocking(move || catalog.counts())
@@ -311,7 +314,7 @@ struct CaptureQuery {
     offset: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/captures", summary = "Search local captures", description = "Lists the bounded local capture catalog with punctuation-safe preview search and exact metadata filters.", params(("query" = Option<String>, Query), ("model" = Option<String>, Query), ("provider" = Option<String>, Query), ("capture_state" = Option<String>, Query), ("finalization_state" = Option<String>, Query), ("limit" = Option<usize>, Query), ("offset" = Option<usize>, Query)), responses((status = 200, body = CaptureListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures", summary = "Search local captures", description = "Lists the bounded local capture catalog with punctuation-safe preview search and exact metadata filters.", params(("query" = Option<String>, Query), ("model" = Option<String>, Query), ("provider" = Option<String>, Query), ("capture_state" = Option<String>, Query), ("finalization_state" = Option<String>, Query), ("limit" = Option<usize>, Query), ("offset" = Option<usize>, Query)), responses((status = 200, body = CaptureListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn captures(
     State(state): State<AdminState>,
     query: Result<Query<CaptureQuery>, QueryRejection>,
@@ -341,7 +344,7 @@ async fn captures(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/captures/{capture_id}", summary = "Get a capture", description = "Returns safe capture metadata, retained artifact digests, and finalization history for one capture.", params(("capture_id" = String, Path)), responses((status = 200, body = CaptureDetailResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures/{capture_id}", summary = "Get a capture", description = "Returns safe capture metadata, retained artifact digests, and finalization history for one capture.", params(("capture_id" = String, Path)), responses((status = 200, body = CaptureDetailResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn capture(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -385,7 +388,7 @@ async fn capture(
     }))
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/finalizations", summary = "Queue capture finalization", description = "Queues durable proof generation for a pending capture or returns its existing finalization operation.", params(("capture_id" = String, Path)), responses((status = 202, body = FinalizationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/finalizations", summary = "Queue capture finalization", description = "Queues durable proof generation for a pending capture or returns its existing finalization operation.", params(("capture_id" = String, Path)), responses((status = 202, body = FinalizationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_finalization(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -423,7 +426,7 @@ struct OperationQuery {
     limit: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/operations", summary = "List background operations", description = "Lists durable background operations with optional state, kind, and capture filters.", params(("state" = Option<String>, Query), ("kind" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("limit" = Option<usize>, Query)), responses((status = 200, body = OperationListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/operations", summary = "List background operations", description = "Lists durable background operations with optional state, kind, and capture filters.", params(("state" = Option<String>, Query), ("kind" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("limit" = Option<usize>, Query)), responses((status = 200, body = OperationListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn operations(
     State(state): State<AdminState>,
     query: Result<Query<OperationQuery>, QueryRejection>,
@@ -448,7 +451,7 @@ async fn operations(
     Ok(Json(OperationListResponse { items: values }))
 }
 
-#[utoipa::path(get, path = "/v1/operations/{operation_id}", summary = "Get an operation", description = "Returns the current state and complete attempt history for one durable operation.", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/operations/{operation_id}", summary = "Get an operation", description = "Returns the current state and complete attempt history for one durable operation.", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn operation(
     State(state): State<AdminState>,
     Path(operation_id): Path<String>,
@@ -468,7 +471,7 @@ async fn operation(
     Ok(Json(value))
 }
 
-#[utoipa::path(post, path = "/v1/operations/{operation_id}/retry", summary = "Retry an operation", description = "Requeues a failed or restart-interrupted operation while preserving its durable identity and attempt history.", params(("operation_id" = String, Path)), responses((status = 202, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/operations/{operation_id}/retry", summary = "Retry an operation", description = "Requeues a failed or restart-interrupted operation while preserving its durable identity and attempt history.", params(("operation_id" = String, Path)), responses((status = 202, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn retry_operation(
     State(state): State<AdminState>,
     Path(operation_id): Path<String>,
@@ -489,7 +492,7 @@ async fn retry_operation(
     Ok((StatusCode::ACCEPTED, Json(value)))
 }
 
-#[utoipa::path(get, path = "/v1/captures/{capture_id}/trace", summary = "Decode a finalized trace", description = "Returns the finalized package manifest and canonical OpenTelemetry trace for inspection.", params(("capture_id" = String, Path)), responses((status = 200, body = TraceResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures/{capture_id}/trace", summary = "Decode a finalized trace", description = "Returns the finalized package manifest and canonical OpenTelemetry trace for inspection.", params(("capture_id" = String, Path)), responses((status = 200, body = TraceResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn trace(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -509,7 +512,7 @@ async fn trace(
     Ok(Json(value))
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/trace:verify", summary = "Verify a finalized trace", description = "Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.", params(("capture_id" = String, Path)), responses((status = 200, body = VerificationResponse), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/trace:verify", summary = "Verify a finalized trace", description = "Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.", params(("capture_id" = String, Path)), responses((status = 200, body = VerificationResponse), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn verify_trace(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -560,7 +563,7 @@ struct EventQuery {
     limit: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/events", summary = "List service events", description = "Lists the bounded redacted event history with cursor, severity, type, resource, and time filters.", params(("cursor" = Option<u64>, Query), ("severity" = Option<String>, Query), ("event_type" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("operation_id" = Option<String>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<usize>, Query)), responses((status = 200, body = EventListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/events", summary = "List service events", description = "Lists the bounded redacted event history with cursor, severity, type, resource, and time filters.", params(("cursor" = Option<u64>, Query), ("severity" = Option<String>, Query), ("event_type" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("operation_id" = Option<String>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<usize>, Query)), responses((status = 200, body = EventListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn events(
     State(state): State<AdminState>,
     query: Result<Query<EventQuery>, QueryRejection>,
@@ -588,7 +591,7 @@ async fn events(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/publication/auth", summary = "Get publication authorization", description = "Reports whether this local service has an active publication account session.", responses((status = 200, body = PublicationAuthResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/publication/auth", summary = "Get publication authorization", description = "Reports whether this local service has an active publication account session.", responses((status = 200, body = PublicationAuthResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn publication_auth_status(
     State(state): State<AdminState>,
 ) -> Result<Json<PublicationAuthResponse>, ApiError> {
@@ -623,7 +626,7 @@ fn default_device_name() -> String {
     "LLM Notary local dashboard".to_owned()
 }
 
-#[utoipa::path(post, path = "/v1/publication/auth", summary = "Start publication authorization", description = "Starts the browser approval flow used to authorize this local service to publish traces.", request_body = PublicationAuthRequest, responses((status = 202, body = PublicationAuthStartedResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/publication/auth", summary = "Start publication authorization", description = "Starts the browser approval flow used to authorize this local service to publish traces.", request_body = PublicationAuthRequest, responses((status = 202, body = PublicationAuthStartedResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_publication_auth(
     State(state): State<AdminState>,
     Json(body): Json<PublicationAuthRequest>,
@@ -647,7 +650,7 @@ async fn start_publication_auth(
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
-#[utoipa::path(get, path = "/v1/publication/auth/{request_id}", summary = "Poll publication authorization", description = "Checks a pending browser approval request after its required polling interval.", params(("request_id" = String, Path)), responses((status = 200, body = PublicationAuthResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/publication/auth/{request_id}", summary = "Poll publication authorization", description = "Checks a pending browser approval request after its required polling interval.", params(("request_id" = String, Path)), responses((status = 200, body = PublicationAuthResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn poll_publication_auth(
     State(state): State<AdminState>,
     Path(request_id): Path<String>,
@@ -688,7 +691,7 @@ async fn poll_publication_auth(
     }
 }
 
-#[utoipa::path(delete, path = "/v1/publication/auth", summary = "Revoke publication authorization", description = "Removes the local publication credentials so a new browser approval is required.", responses((status = 204, description = "Publication credentials revoked"), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/publication/auth", summary = "Revoke publication authorization", description = "Removes the local publication credentials so a new browser approval is required.", responses((status = 204, description = "Publication credentials revoked"), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn end_publication_auth(State(state): State<AdminState>) -> Result<StatusCode, ApiError> {
     let _credentials = state.publication_credentials.lock().await;
     auth::logout_for_service()
@@ -697,7 +700,7 @@ async fn end_publication_auth(State(state): State<AdminState>) -> Result<StatusC
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/publications", summary = "Publish a finalized trace", description = "Verifies one finalized capture locally, uploads only its publication archive, and returns the durable publication job.", params(("capture_id" = String, Path)), responses((status = 202, body = PublicationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/publications", summary = "Publish a finalized trace", description = "Verifies one finalized capture locally, uploads only its publication archive, and returns the durable publication job.", params(("capture_id" = String, Path)), responses((status = 202, body = PublicationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn publish_capture(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -720,7 +723,7 @@ async fn publish_capture(
     ))
 }
 
-#[utoipa::path(get, path = "/v1/publications/{job_id}", summary = "Get publication status", description = "Returns the latest admission state and public artifact links for a publication job.", params(("job_id" = String, Path)), responses((status = 200, body = PublicationStatusResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/publications/{job_id}", summary = "Get publication status", description = "Returns the latest admission state and public artifact links for a publication job.", params(("job_id" = String, Path)), responses((status = 200, body = PublicationStatusResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn publication_status(
     State(state): State<AdminState>,
     Path(job_id): Path<String>,
@@ -754,7 +757,7 @@ struct PublicTraceQuery {
     api_origin: Option<String>,
 }
 
-#[utoipa::path(get, path = "/v1/public-traces/{publication_id}", summary = "Get a public trace", description = "Fetches one public canonical trace and platform stamp through the configured publication API.", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/public-traces/{publication_id}", summary = "Get a public trace", description = "Fetches one public canonical trace and platform stamp through the configured publication API.", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn download_public_trace(
     Path(publication_id): Path<String>,
     query: Result<Query<PublicTraceQuery>, QueryRejection>,
@@ -763,7 +766,7 @@ async fn download_public_trace(
     fetch_public_trace(publication_id, query.api_origin, false).await
 }
 
-#[utoipa::path(post, path = "/v1/public-traces/{publication_id}/verify", summary = "Verify a public trace", description = "Fetches a public trace and verifies its canonical bytes, contract versions, hash, issuer, key, and signature.", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/public-traces/{publication_id}/verify", summary = "Verify a public trace", description = "Fetches a public trace and verifies its canonical bytes, contract versions, hash, issuer, key, and signature.", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn verify_public_trace(
     Path(publication_id): Path<String>,
     query: Result<Query<PublicTraceQuery>, QueryRejection>,
@@ -932,39 +935,6 @@ fn validate_id(value: &str, prefix: &str) -> Result<(), ApiError> {
     }
 }
 
-fn load_or_create_token(path: &std::path::Path) -> Result<String> {
-    if let Some(token) = read_admin_token(path)? {
-        return Ok(token);
-    }
-    let token = new_secret();
-    if crate::cli::storage::write_private_file_if_absent(path, token.as_bytes())? {
-        return Ok(token);
-    }
-    read_admin_token(path)?.context("admin token file disappeared during concurrent startup")
-}
-
-fn read_admin_token(path: &std::path::Path) -> Result<Option<String>> {
-    let metadata = match fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("reading admin token file {}", path.display()));
-        }
-    };
-    if !metadata.is_file() {
-        anyhow::bail!("admin token path is not a regular file");
-    }
-    crate::cli::storage::ensure_private_file(path)?;
-    let token = fs::read_to_string(path)
-        .with_context(|| format!("reading admin token file {}", path.display()))?;
-    let token = token.trim().to_owned();
-    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        anyhow::bail!("admin token file contains an invalid token");
-    }
-    Ok(Some(token))
-}
-
 fn new_secret() -> String {
     format!(
         "{}{}",
@@ -973,16 +943,49 @@ fn new_secret() -> String {
     )
 }
 
-fn token_matches(expected: &str, actual: &str) -> bool {
-    expected.as_bytes().ct_eq(actual.as_bytes()).into()
-}
-
-fn bearer_matches(state: &AdminState, headers: &axum::http::HeaderMap) -> bool {
-    headers
+fn basic_credentials(headers: &axum::http::HeaderMap) -> Option<(String, String)> {
+    let value = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|value| token_matches(&state.token, value))
+        .and_then(|value| value.split_once(' '))?;
+    if !value.0.eq_ignore_ascii_case("basic") {
+        return None;
+    }
+    let decoded = BASE64_STANDARD.decode(value.1).ok()?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    let (username, password) = decoded.split_once(':')?;
+    Some((username.to_owned(), password.to_owned()))
+}
+
+async fn basic_matches(state: &AdminState, headers: &axum::http::HeaderMap) -> bool {
+    let Some(auth) = state.config.admin.auth.as_ref() else {
+        return true;
+    };
+    let Some((username, password)) = basic_credentials(headers) else {
+        return false;
+    };
+    if username != auth.username {
+        return false;
+    }
+    let password_hash = auth.password_hash.clone();
+    tokio::task::spawn_blocking(move || {
+        PasswordHash::new(&password_hash).ok().is_some_and(|hash| {
+            Argon2::default()
+                .verify_password(password.as_bytes(), &hash)
+                .is_ok()
+        })
+    })
+    .await
+    .unwrap_or(false)
+}
+
+fn unauthorized_response() -> Response {
+    let mut response = ApiError::unauthorized().into_response();
+    response.headers_mut().insert(
+        header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("Basic realm=\"LLM Notary\", charset=\"UTF-8\""),
+    );
+    response
 }
 
 fn session_from_headers(headers: &axum::http::HeaderMap) -> Option<&str> {
@@ -1373,12 +1376,10 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use argon2::{PasswordHasher, password_hash::SaltString};
     use axum::{body::Body, http::Request};
     use http_body_util::BodyExt as _;
-    use std::{
-        io::Write as IoWrite,
-        sync::{Barrier, Mutex as StdMutex},
-    };
+    use std::{io::Write as IoWrite, sync::Mutex as StdMutex};
     use tower::ServiceExt as _;
     use tracing_subscriber::fmt::MakeWriter;
 
@@ -1407,11 +1408,33 @@ mod tests {
     }
 
     fn state(directory: &std::path::Path) -> AdminState {
+        state_with_auth(directory, None)
+    }
+
+    fn protected_state(directory: &std::path::Path) -> AdminState {
+        let salt = SaltString::encode_b64(b"llm-notary-test-salt").unwrap();
+        let password_hash = Argon2::default()
+            .hash_password(b"correct horse battery staple", &salt)
+            .unwrap()
+            .to_string();
+        state_with_auth(
+            directory,
+            Some(crate::config::AdminAuthConfig {
+                username: "local-admin".to_owned(),
+                password_hash,
+            }),
+        )
+    }
+
+    fn state_with_auth(
+        directory: &std::path::Path,
+        auth: Option<crate::config::AdminAuthConfig>,
+    ) -> AdminState {
         let mut config = AgentConfig::default();
         config.catalog.path = directory.join("catalog.db");
         config.storage.bundle_dir = directory.join("bundles");
         config.storage.finalized_dir = directory.join("traces");
-        config.admin.token_path = directory.join("admin-token");
+        config.admin.auth = auth;
         AdminState::new(
             Arc::new(Catalog::open_for_config(&config).unwrap()),
             Arc::new(config),
@@ -1419,11 +1442,31 @@ mod tests {
         .unwrap()
     }
 
+    fn basic_header(username: &str, password: &str) -> String {
+        format!(
+            "Basic {}",
+            BASE64_STANDARD.encode(format!("{username}:{password}"))
+        )
+    }
+
+    #[tokio::test]
+    async fn admin_routes_are_open_by_default() {
+        let directory = tempfile::tempdir().unwrap();
+        let response = router(state(directory.path()))
+            .unwrap()
+            .oneshot(Request::get("/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn protected_routes_reject_missing_or_wrong_auth_without_echoing_it() {
         let directory = tempfile::tempdir().unwrap();
-        let app = router(state(directory.path())).unwrap();
-        for value in [None, Some("Bearer deliberately-wrong-secret")] {
+        let app = router(protected_state(directory.path())).unwrap();
+        let wrong_header = basic_header("local-admin", "deliberately-wrong-secret");
+        for value in [None, Some(wrong_header.as_str())] {
             let mut request = Request::builder().uri("/v1/status");
             if let Some(value) = value {
                 request = request.header(header::AUTHORIZATION, value);
@@ -1434,11 +1477,13 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+            assert!(response.headers().contains_key(header::WWW_AUTHENTICATE));
             let body = response.into_body().collect().await.unwrap().to_bytes();
             assert!(!String::from_utf8_lossy(&body).contains("deliberately-wrong-secret"));
         }
 
         let response = app
+            .clone()
             .oneshot(
                 Request::post("/v1/captures/cap-example/finalizations")
                     .body(Body::empty())
@@ -1447,10 +1492,24 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = app
+            .oneshot(
+                Request::get("/v1/status")
+                    .header(
+                        header::AUTHORIZATION,
+                        basic_header("local-admin", "correct horse battery staple"),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]
-    fn request_tracing_never_logs_the_bearer_token() {
+    fn request_tracing_never_logs_the_password() {
         let directory = tempfile::tempdir().unwrap();
         let output = Arc::new(StdMutex::new(Vec::new()));
         let subscriber = tracing_subscriber::fmt()
@@ -1470,11 +1529,11 @@ mod tests {
             // callsite-interest cache without a subscriber.
             tracing::info!(request_path = "/v1/status", "capturing admin request logs");
             runtime.block_on(async {
-                router(state(directory.path()))
+                router(protected_state(directory.path()))
                     .unwrap()
                     .oneshot(
                         Request::get(format!("/v1/status?query={secret}"))
-                            .header(header::AUTHORIZATION, format!("Bearer {secret}"))
+                            .header(header::AUTHORIZATION, basic_header("local-admin", secret))
                             .body(Body::empty())
                             .unwrap(),
                     )
@@ -1502,7 +1561,7 @@ mod tests {
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
         assert_eq!(body["openapi"], "3.1.0");
-        assert!(body["components"]["securitySchemes"]["bearerAuth"].is_object());
+        assert!(body["components"]["securitySchemes"]["basicAuth"].is_object());
         for path in [
             "/healthz",
             "/openapi.json",
@@ -1551,6 +1610,11 @@ mod tests {
                 body["paths"][path][method]["responses"]["401"].is_object(),
                 "OpenAPI missing the protected response for {method} {path}"
             );
+            assert_eq!(
+                body["paths"][path][method]["security"],
+                serde_json::json!([{}, {"basicAuth": []}]),
+                "OpenAPI must describe optional Basic authentication for {method} {path}"
+            );
         }
         let mut documented_operations = 0;
         for path in body["paths"].as_object().unwrap().values() {
@@ -1579,9 +1643,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_numeric_queries_use_the_json_error_envelope() {
         let directory = tempfile::tempdir().unwrap();
-        let state = state(directory.path());
-        let token = state.token.to_string();
-        let app = router(state).unwrap();
+        let app = router(state(directory.path())).unwrap();
         for path in [
             "/v1/captures?limit=-1",
             "/v1/operations?limit=-1",
@@ -1589,12 +1651,7 @@ mod tests {
         ] {
             let response = app
                 .clone()
-                .oneshot(
-                    Request::get(path)
-                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
-                        .body(Body::empty())
-                        .unwrap(),
-                )
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
@@ -1610,16 +1667,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dashboard_session_exchanges_the_token_without_returning_or_persisting_it() {
+    async fn dashboard_session_exchanges_basic_credentials_without_persisting_the_password() {
         let directory = tempfile::tempdir().unwrap();
-        let state = state(directory.path());
-        let token = state.token.to_string();
+        let state = protected_state(directory.path());
+        let password = "correct horse battery staple";
         let app = router(state).unwrap();
         let response = app
             .clone()
             .oneshot(
                 Request::post("/v1/session")
-                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .header(header::AUTHORIZATION, basic_header("local-admin", password))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1636,7 +1693,8 @@ mod tests {
             .next()
             .unwrap()
             .to_owned();
-        assert!(!cookie.contains(&token));
+        assert!(!cookie.contains(password));
+        assert!(!cookie.contains("local-admin"));
 
         let response = app
             .oneshot(
@@ -1650,13 +1708,13 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert!(!String::from_utf8_lossy(&body).contains(&token));
+        assert!(!String::from_utf8_lossy(&body).contains(password));
     }
 
     #[tokio::test]
     async fn expired_dashboard_sessions_are_rejected_and_removed() {
         let directory = tempfile::tempdir().unwrap();
-        let state = state(directory.path());
+        let state = protected_state(directory.path());
         state.sessions.lock().await.insert("expired".into(), 0);
 
         let response = router(state.clone())
@@ -1673,29 +1731,5 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert!(state.sessions.lock().await.is_empty());
-    }
-
-    #[test]
-    fn concurrent_first_starts_share_the_winning_admin_token() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = Arc::new(directory.path().join("admin-token"));
-        let barrier = Arc::new(Barrier::new(8));
-        let threads = (0..8)
-            .map(|_| {
-                let path = path.clone();
-                let barrier = barrier.clone();
-                std::thread::spawn(move || {
-                    barrier.wait();
-                    load_or_create_token(&path).unwrap()
-                })
-            })
-            .collect::<Vec<_>>();
-        let tokens = threads
-            .into_iter()
-            .map(|thread| thread.join().unwrap())
-            .collect::<Vec<_>>();
-
-        assert!(tokens.iter().all(|token| token == &tokens[0]));
-        assert_eq!(fs::read_to_string(path.as_ref()).unwrap(), tokens[0]);
     }
 }
