@@ -57,6 +57,8 @@ pub(crate) fn write_private_file_atomically(path: &Path, contents: &[u8]) -> Res
         .sync_all()
         .with_context(|| format!("sync {}", pending.path().display()))?;
     drop(output);
+    #[cfg(windows)]
+    restrict_windows_acl(pending.path(), "F")?;
     pending.replace(path)?;
     Ok(())
 }
@@ -74,8 +76,61 @@ fn create_private_directory(path: &Path) -> Result<()> {
         fs::set_permissions(path, fs::Permissions::from_mode(0o700))
             .with_context(|| format!("restrict {}", path.display()))?;
     }
-    #[cfg(not(unix))]
+    #[cfg(all(not(unix), not(windows)))]
     fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
+    #[cfg(windows)]
+    {
+        fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
+        restrict_windows_acl(path, "(OI)(CI)F")?;
+    }
+    Ok(())
+}
+
+pub(crate) fn ensure_private_file(path: &Path) -> Result<()> {
+    #[cfg(windows)]
+    restrict_windows_acl(path, "F")?;
+    #[cfg(not(windows))]
+    let _ = path;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn restrict_windows_acl(path: &Path, permission: &str) -> Result<()> {
+    use std::process::Command;
+
+    let output = Command::new("whoami")
+        .output()
+        .context("determine the current Windows account for private-file permissions")?;
+    if !output.status.success() {
+        bail!("could not determine the current Windows account for private-file permissions");
+    }
+    let identity = String::from_utf8(output.stdout)
+        .context("current Windows account name is not UTF-8")?
+        .trim()
+        .to_owned();
+    if identity.is_empty() {
+        bail!("current Windows account name is empty");
+    }
+    let grant = format!("{identity}:{permission}");
+    let status = Command::new("icacls")
+        .arg(path)
+        .args([
+            "/inheritance:r",
+            "/grant:r",
+            grant.as_str(),
+            "/remove:g",
+            "*S-1-1-0",
+            "*S-1-5-11",
+            "*S-1-5-18",
+            "*S-1-5-32-544",
+            "*S-1-5-32-545",
+            "/Q",
+        ])
+        .status()
+        .with_context(|| format!("restrict permissions on {}", path.display()))?;
+    if !status.success() {
+        bail!("could not restrict permissions on {}", path.display());
+    }
     Ok(())
 }
 

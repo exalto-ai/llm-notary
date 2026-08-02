@@ -8,6 +8,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use k256::ecdsa::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -64,6 +65,10 @@ pub struct NotaryConfig {
     /// Optional explicit endpoint. Without this the client uses the signed
     /// notary directory at the configured public API origin.
     pub endpoint: Option<String>,
+    /// Explicit SEC1 secp256k1 trust anchor for `endpoint`. The endpoint and
+    /// key are configured together so a self-hosted connection cannot become
+    /// an implicit trust decision.
+    pub public_key: Option<String>,
     #[serde(default = "default_max_frame_bytes")]
     pub max_frame_bytes: usize,
 }
@@ -72,6 +77,7 @@ impl Default for NotaryConfig {
     fn default() -> Self {
         Self {
             endpoint: None,
+            public_key: None,
             max_frame_bytes: default_max_frame_bytes(),
         }
     }
@@ -288,10 +294,15 @@ impl AgentConfig {
             !self.admin.token_path.as_os_str().is_empty(),
             "admin.token_path must not be empty"
         );
-        if let Some(endpoint) = &self.notary.endpoint {
-            endpoint
-                .parse::<NotaryEndpoint>()
-                .context("notary.endpoint is invalid")?;
+        match (&self.notary.endpoint, &self.notary.public_key) {
+            (Some(endpoint), Some(_)) => {
+                endpoint
+                    .parse::<NotaryEndpoint>()
+                    .context("notary.endpoint is invalid")?;
+                self.notary_public_key()?;
+            }
+            (None, None) => {}
+            _ => bail!("notary.endpoint and notary.public_key must be configured together"),
         }
         ensure!(
             self.notary.max_frame_bytes > 0 && self.notary.max_frame_bytes <= u32::MAX as usize,
@@ -366,6 +377,19 @@ impl AgentConfig {
 
     pub fn notary_endpoint(&self) -> Result<Option<NotaryEndpoint>> {
         self.notary.endpoint.as_deref().map(str::parse).transpose()
+    }
+
+    pub fn notary_public_key(&self) -> Result<Option<Vec<u8>>> {
+        self.notary
+            .public_key
+            .as_deref()
+            .map(|value| {
+                let key = hex::decode(value).context("notary.public_key must be hexadecimal")?;
+                VerifyingKey::from_sec1_bytes(&key)
+                    .context("notary.public_key must be a SEC1 secp256k1 key")?;
+                Ok(key)
+            })
+            .transpose()
     }
 }
 
@@ -484,6 +508,21 @@ mod tests {
         assert!(config.validate().is_err());
 
         config.admin.listen = config.proxy.listen;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn explicit_notary_endpoint_requires_a_valid_trust_anchor() {
+        let mut config = AgentConfig::default();
+        config.notary.endpoint = Some("tcp://127.0.0.1:7047".to_owned());
+        assert!(config.validate().is_err());
+
+        config.notary.public_key =
+            Some("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".to_owned());
+        config.validate().unwrap();
+        assert_eq!(config.notary_public_key().unwrap().unwrap().len(), 33);
+
+        config.notary.endpoint = None;
         assert!(config.validate().is_err());
     }
 

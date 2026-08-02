@@ -1341,18 +1341,36 @@ mod tests {
 
     #[tokio::test]
     async fn admin_paths_are_not_reachable_from_the_proxy_listener() {
-        let state = state();
-        let serial = state.serial.clone();
-        let request = Request::builder()
-            .method(http::Method::GET)
-            .uri("/v1/status")
-            .body(Body::empty())
+        for (method, path) in [
+            (http::Method::GET, "/openapi.json"),
+            (http::Method::GET, "/v1/status"),
+            (http::Method::GET, "/v1/captures"),
+            (http::Method::POST, "/v1/captures/cap-example/finalizations"),
+            (http::Method::GET, "/v1/operations/op-example"),
+            (http::Method::POST, "/v1/operations/op-example/retry"),
+            (http::Method::POST, "/v1/captures/cap-example/trace:verify"),
+            (http::Method::GET, "/v1/events"),
+            (http::Method::POST, "/v1/session"),
+            (http::Method::GET, "/v1/publication/auth"),
+            (http::Method::POST, "/v1/captures/cap-example/publications"),
+            (http::Method::GET, "/v1/public-traces/publication-example"),
+        ] {
+            let state = state();
+            let serial = state.serial.clone();
+            let response = proxy_inner(
+                state,
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
             .unwrap();
-
-        let response = proxy_inner(state, request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        assert!(response.headers().get("x-llm-notary-bundle").is_none());
-        assert_eq!(*serial.lock().await, 0);
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            assert!(response.headers().get("x-llm-notary-bundle").is_none());
+            assert_eq!(*serial.lock().await, 0);
+        }
     }
 
     #[tokio::test]

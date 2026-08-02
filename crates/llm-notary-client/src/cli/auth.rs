@@ -273,8 +273,8 @@ pub(crate) async fn publication_auth_status() -> Result<PublicationAuthStatus> {
 }
 
 pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
-    let mut credentials =
-        load_credentials().context("CLI authentication required; run `llm-notary login`")?;
+    let mut credentials = load_credentials()
+        .context("publication authorization is required through the local admin API")?;
     let (access_token, rotated_refresh_token) = refresh(&credentials).await?;
     credentials.refresh_token = rotated_refresh_token;
     save_credentials(&credentials)?;
@@ -325,8 +325,9 @@ fn load_credentials() -> Result<FileCredentials> {
     let mut credentials: FileCredentials =
         serde_json::from_slice(&data).context("parse CLI credentials")?;
     if credentials.refresh_token.is_empty() {
-        credentials.refresh_token = keychain_load()?
-            .ok_or_else(|| anyhow!("CLI credentials are missing; run `llm-notary login`"))?;
+        credentials.refresh_token = keychain_load()?.ok_or_else(|| {
+            anyhow!("publication credentials are missing; authorize through the local admin API")
+        })?;
     }
     Ok(credentials)
 }

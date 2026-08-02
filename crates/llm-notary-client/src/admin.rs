@@ -36,6 +36,7 @@ use crate::{
     catalog::{CaptureFilters, CaptureSummary, Catalog, Event, Operation},
     cli::{DEFAULT_PUBLIC_ORIGIN, auth, download, notary, proxy, publish},
     config::AgentConfig,
+    notary_directory::key_id,
     vault::Vault,
 };
 
@@ -50,6 +51,7 @@ pub(crate) struct AdminState {
     token: Arc<str>,
     sessions: Arc<Mutex<HashSet<String>>>,
     pending_authorizations: Arc<Mutex<HashMap<String, auth::PendingAuthorization>>>,
+    publication_credentials: Arc<Mutex<()>>,
     pub(crate) work_available: Arc<Notify>,
 }
 
@@ -66,6 +68,7 @@ impl AdminState {
             token: Arc::from(token),
             sessions: Arc::new(Mutex::new(HashSet::new())),
             pending_authorizations: Arc::new(Mutex::new(HashMap::new())),
+            publication_credentials: Arc::new(Mutex::new(())),
             work_available: Arc::new(Notify::new()),
         })
     }
@@ -138,7 +141,7 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
         download_public_trace, verify_public_trace
     ),
     components(schemas(
-        HealthResponse, SessionRequest, StatusResponse, CountsResponse,
+        HealthResponse, StatusResponse, CountsResponse,
         CaptureResponse, CaptureDetailResponse, ArtifactResponse, CaptureListResponse,
         OperationResponse, OperationListResponse, FinalizationResponse, EventResponse,
         EventListResponse, TraceResponse, VerificationResponse, PublicationAuthResponse,
@@ -183,18 +186,9 @@ async fn openapi() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
-struct SessionRequest {
-    /// The private value read from the configured admin token file.
-    token: String,
-}
-
-#[utoipa::path(post, path = "/v1/session", request_body = SessionRequest, responses((status = 204, description = "HttpOnly dashboard session established"), (status = 401, body = ErrorEnvelope)), tag = "local-admin")]
-async fn start_session(
-    State(state): State<AdminState>,
-    Json(body): Json<SessionRequest>,
-) -> Response {
-    if !token_matches(&state.token, &body.token) {
+#[utoipa::path(post, path = "/v1/session", responses((status = 204, description = "HttpOnly dashboard session established"), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+async fn start_session(State(state): State<AdminState>, request: Request) -> Response {
+    if !bearer_matches(&state, request.headers()) {
         return ApiError::unauthorized().into_response();
     }
     let session = new_secret();
@@ -225,12 +219,7 @@ async fn end_session(State(state): State<AdminState>, request: Request) -> Respo
 }
 
 async fn require_auth(State(state): State<AdminState>, request: Request, next: Next) -> Response {
-    let bearer_ok = request
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .is_some_and(|value| token_matches(&state.token, value));
+    let bearer_ok = bearer_matches(&state, request.headers());
     let session_ok = if bearer_ok {
         false
     } else if request
@@ -450,17 +439,30 @@ async fn verify_trace(
     validate_id(&capture_id, "cap-")?;
     let path = finalized_path(&state.catalog, &capture_id).await?;
     let verified_at_unix_ms = now_ms().map_err(|_| ApiError::internal("clock_error"))?;
+    let configured_key = state
+        .config
+        .notary_public_key()
+        .map_err(|_| ApiError::internal("notary_configuration_invalid"))?;
     let value = tokio::task::spawn_blocking(move || -> Result<VerificationResponse> {
         let embedded_key = trace_package_notary_key(&path)?;
-        let created_at = trace_package_created_at_unix_ms(&path)?;
-        let (key_id, trust) = notary::cached_key_at(&embedded_key, created_at)?;
-        let manifest = verify_trace_package(&path, &embedded_key)?;
+        let (trusted_key, notary_key_id, trust_source) = match configured_key {
+            Some(key) => {
+                let key_id = key_id(&key);
+                (key, key_id, "configuration".to_owned())
+            }
+            None => {
+                let created_at = trace_package_created_at_unix_ms(&path)?;
+                let (key_id, trust) = notary::cached_key_at(&embedded_key, created_at)?;
+                (embedded_key, key_id, trust)
+            }
+        };
+        let manifest = verify_trace_package(&path, &trusted_key)?;
         Ok(VerificationResponse {
             capture_id: manifest.capture_id().into(),
             verified: true,
             verified_at_unix_ms,
-            notary_key_id: key_id,
-            trust_source: trust,
+            notary_key_id,
+            trust_source,
         })
     })
     .await
@@ -495,7 +497,14 @@ async fn events(
 }
 
 #[utoipa::path(get, path = "/v1/publication/auth", responses((status = 200, body = PublicationAuthResponse)), security(("bearerAuth" = [])), tag = "local-admin")]
-async fn publication_auth_status() -> Result<Json<PublicationAuthResponse>, ApiError> {
+async fn publication_auth_status(
+    State(state): State<AdminState>,
+) -> Result<Json<PublicationAuthResponse>, ApiError> {
+    let _credentials = state.publication_credentials.lock().await;
+    load_publication_auth_status().await
+}
+
+async fn load_publication_auth_status() -> Result<Json<PublicationAuthResponse>, ApiError> {
     let status = auth::publication_auth_status()
         .await
         .map_err(|_| ApiError::internal("publication_auth_status_failed"))?;
@@ -566,6 +575,7 @@ async fn poll_publication_auth(
         .get(&request_id)
         .cloned()
         .ok_or_else(|| ApiError::not_found("authorization_not_found"))?;
+    let _credentials = state.publication_credentials.lock().await;
     match auth::poll_authorization(&pending)
         .await
         .map_err(|_| ApiError::internal("publication_auth_poll_failed"))?
@@ -581,13 +591,14 @@ async fn poll_publication_auth(
                 .lock()
                 .await
                 .remove(&request_id);
-            publication_auth_status().await
+            load_publication_auth_status().await
         }
     }
 }
 
 #[utoipa::path(delete, path = "/v1/publication/auth", responses((status = 204, description = "Publication credentials revoked")), security(("bearerAuth" = [])), tag = "local-admin")]
-async fn end_publication_auth() -> Result<StatusCode, ApiError> {
+async fn end_publication_auth(State(state): State<AdminState>) -> Result<StatusCode, ApiError> {
+    let _credentials = state.publication_credentials.lock().await;
     auth::logout_for_service()
         .await
         .map_err(|_| ApiError::internal("publication_logout_failed"))?;
@@ -601,9 +612,11 @@ async fn publish_capture(
 ) -> Result<(StatusCode, Json<PublicationResponse>), ApiError> {
     validate_id(&capture_id, "cap-")?;
     let path = finalized_path(&state.catalog, &capture_id).await?;
-    let (publication, verified_capture_id, _) = publish::publish_package(&path, None)
-        .await
-        .map_err(|_| ApiError::internal("publication_failed"))?;
+    let _credentials = state.publication_credentials.lock().await;
+    let (publication, verified_capture_id, _) =
+        publish::publish_package(&path, state.config.notary.public_key.as_deref())
+            .await
+            .map_err(|_| ApiError::internal("publication_failed"))?;
     Ok((
         StatusCode::ACCEPTED,
         Json(PublicationResponse {
@@ -742,19 +755,32 @@ async fn finalize_operation(
         .context("capture has no encrypted deferred bundle")?;
     let output = config.storage.finalized_dir.join(capture_id);
     if output.is_dir() {
-        let key = trace_package_notary_key(&output)?;
-        let created_at = trace_package_created_at_unix_ms(&output)?;
-        notary::cached_key_at(&key, created_at)?;
+        let embedded_key = trace_package_notary_key(&output)?;
+        let key = match config.notary_public_key()? {
+            Some(key) => key,
+            None => {
+                let created_at = trace_package_created_at_unix_ms(&output)?;
+                notary::cached_key_at(&embedded_key, created_at)?;
+                embedded_key
+            }
+        };
         verify_trace_package(&output, &key)?;
         catalog.record_finalized_package(capture_id, &output)?;
         return Ok(());
     }
     let bundle = DeferredBundle::load(&bundle_path, vault)?;
-    let _ = proxy::refresh_notary_directory().await;
-    let (key, record) = notary::cached_record_for_bundle(&bundle)?;
-    let endpoint = match config.notary_endpoint()? {
-        Some(endpoint) => endpoint,
-        None => proxy::resolve_notary(&record).await?,
+    let (key, endpoint) = match (config.notary_public_key()?, config.notary_endpoint()?) {
+        (Some(key), Some(endpoint)) => {
+            bundle.verify_notary_key(&key)?;
+            (key, endpoint)
+        }
+        (None, None) => {
+            let _ = proxy::refresh_notary_directory().await;
+            let (key, record) = notary::cached_record_for_bundle(&bundle)?;
+            let endpoint = proxy::resolve_notary(&record).await?;
+            (key, endpoint)
+        }
+        _ => anyhow::bail!("notary endpoint and public key configuration are inconsistent"),
     };
     let path = finalize_bundle(
         &bundle_path,
@@ -785,6 +811,7 @@ fn validate_id(value: &str, prefix: &str) -> Result<(), ApiError> {
 
 fn load_or_create_token(path: &std::path::Path) -> Result<String> {
     if path.exists() {
+        crate::cli::storage::ensure_private_file(path)?;
         let metadata = fs::metadata(path)
             .with_context(|| format!("reading admin token file {}", path.display()))?;
         if !metadata.is_file() {
@@ -820,6 +847,14 @@ fn new_secret() -> String {
 
 fn token_matches(expected: &str, actual: &str) -> bool {
     expected.as_bytes().ct_eq(actual.as_bytes()).into()
+}
+
+fn bearer_matches(state: &AdminState, headers: &axum::http::HeaderMap) -> bool {
+    headers
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|value| token_matches(&state.token, value))
 }
 
 fn session_from_headers(headers: &axum::http::HeaderMap) -> Option<&str> {
@@ -1195,6 +1230,16 @@ mod tests {
             let body = response.into_body().collect().await.unwrap().to_bytes();
             assert!(!String::from_utf8_lossy(&body).contains("deliberately-wrong-secret"));
         }
+
+        let response = app
+            .oneshot(
+                Request::post("/v1/captures/cap-example/finalizations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -1245,10 +1290,8 @@ mod tests {
             .clone()
             .oneshot(
                 Request::post("/v1/session")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        serde_json::json!({ "token": token.clone() }).to_string(),
-                    ))
+                    .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                    .body(Body::empty())
                     .unwrap(),
             )
             .await

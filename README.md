@@ -72,10 +72,9 @@ openssl rand -hex 32 > notary.dev.key
 cargo run -p llm-notary-server --bin llm-notary-server -- --signing-key notary.dev.key
 ```
 
-The notary prints its public key at startup. Retain that value for local or
-private deployments, where `finalize` and `verify-trace` receive it with
-`--trusted-notary-key` as the explicit trust anchor. Production clients
-discover and pin the public key.
+The notary prints its public key at startup. A local or private deployment sets
+that value as `notary.public_key` alongside its explicit endpoint. Production
+clients discover and pin the public key through the signed directory.
 
 In another terminal, start `llm-notary`. The foreground process owns both the
 provider proxy at `127.0.0.1:8787` and the authenticated administration API at
@@ -88,7 +87,8 @@ encrypted source bundles under the platform data directory, and creates a
 SQLite capture catalog with 1,000-character prompt and output previews. By
 default the released client discovers the current public notary endpoint from
 `$LLM_NOTARY_PUBLIC_ORIGIN/api/notary`. For a local notary, set
-`notary.endpoint = "tcp://127.0.0.1:7047"` in that file.
+`notary.endpoint = "tcp://127.0.0.1:7047"` and the printed key as
+`notary.public_key` in that file.
 
 ```bash
 llm-notary
@@ -128,6 +128,7 @@ listen = "127.0.0.1:8788"
 [notary]
 # Set this only for a local or self-hosted notary.
 # endpoint = "tcp://127.0.0.1:7047"
+# public_key = "02..." # Compressed SEC1 key printed by that notary.
 
 [storage]
 # bundle_dir = "/platform/data/llm-notary/bundles"
@@ -150,10 +151,10 @@ existing local setup. Enabled prefixes must be distinct and non-overlapping.
 The provider hostname and API format stay fixed by the built-in adapter; the
 configuration does not permit arbitrary upstream hosts.
 
-For a local or self-hosted notary, set `notary.endpoint` in this file. Supply
-its expected public key to `finalize` and `verify-trace` with
-`--trusted-notary-key`; that is an intentional, explicit trust decision.
-Hosted installations leave the endpoint unset and use the signed notary
+For a local or self-hosted notary, set `notary.endpoint` and
+`notary.public_key` together. The service refuses an explicit endpoint without
+its expected compressed SEC1 key; this is an intentional trust decision.
+Hosted installations leave both values unset and use the signed notary
 directory instead.
 
 One listener serves every supported provider at a fixed first path segment. The

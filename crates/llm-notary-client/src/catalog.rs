@@ -131,7 +131,7 @@ impl Catalog {
         {
             fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
         }
-        let connection = Connection::open(path)
+        let mut connection = Connection::open(path)
             .with_context(|| format!("opening capture catalog {}", path.display()))?;
         connection
             .pragma_update(None, "foreign_keys", "ON")
@@ -142,7 +142,7 @@ impl Catalog {
         connection
             .pragma_update(None, "synchronous", "FULL")
             .context("configuring SQLite durability")?;
-        migrate(&connection)?;
+        migrate(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
             full_text_search,
@@ -779,7 +779,7 @@ impl Catalog {
     }
 }
 
-fn migrate(connection: &Connection) -> Result<()> {
+fn migrate(connection: &mut Connection) -> Result<()> {
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version INTEGER PRIMARY KEY
@@ -794,7 +794,8 @@ fn migrate(connection: &Connection) -> Result<()> {
         anyhow::bail!("capture catalog was created by a newer client version");
     }
     if version == 0 {
-        connection.execute_batch(
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
             "CREATE TABLE captures (
                 capture_id TEXT PRIMARY KEY,
                 created_at_unix_ms INTEGER NOT NULL,
@@ -834,11 +835,13 @@ fn migrate(connection: &Connection) -> Result<()> {
                 output_preview
             );",
         )?;
-        connection.execute("INSERT INTO schema_migrations(version) VALUES (1)", [])?;
+        transaction.execute("INSERT INTO schema_migrations(version) VALUES (1)", [])?;
+        transaction.commit()?;
     }
     if version < 2 {
-        connection.execute_batch(
-            "CREATE TABLE operations (
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE IF NOT EXISTS operations (
                 operation_id TEXT PRIMARY KEY,
                 kind TEXT NOT NULL,
                 capture_id TEXT REFERENCES captures(capture_id),
@@ -849,11 +852,11 @@ fn migrate(connection: &Connection) -> Result<()> {
                 completed_at_unix_ms INTEGER,
                 failure_code TEXT
             );
-            CREATE UNIQUE INDEX one_active_finalization_per_capture
+            CREATE UNIQUE INDEX IF NOT EXISTS one_active_finalization_per_capture
                 ON operations(capture_id, kind)
                 WHERE kind = 'finalization' AND state IN ('queued', 'running');
-            CREATE INDEX operations_created_at_idx ON operations(created_at_unix_ms DESC);
-            CREATE TABLE events (
+            CREATE INDEX IF NOT EXISTS operations_created_at_idx ON operations(created_at_unix_ms DESC);
+            CREATE TABLE IF NOT EXISTS events (
                 event_id INTEGER PRIMARY KEY AUTOINCREMENT,
                 created_at_unix_ms INTEGER NOT NULL,
                 event_type TEXT NOT NULL,
@@ -862,9 +865,10 @@ fn migrate(connection: &Connection) -> Result<()> {
                 severity TEXT NOT NULL,
                 message TEXT NOT NULL
             );
-            CREATE INDEX events_created_at_idx ON events(created_at_unix_ms DESC);
-            INSERT INTO schema_migrations(version) VALUES (2);",
+            CREATE INDEX IF NOT EXISTS events_created_at_idx ON events(created_at_unix_ms DESC);",
         )?;
+        transaction.execute("INSERT INTO schema_migrations(version) VALUES (2)", [])?;
+        transaction.commit()?;
     }
     Ok(())
 }
@@ -1206,5 +1210,46 @@ mod tests {
             .unwrap();
         assert_eq!(retried.state, "queued");
         assert_eq!(catalog.events(None, 20).unwrap().len(), 4);
+    }
+
+    #[test]
+    fn durable_operation_migration_is_atomic_and_resumable() {
+        let mut connection = Connection::open_in_memory().unwrap();
+        migrate(&mut connection).unwrap();
+        connection
+            .execute("DELETE FROM schema_migrations WHERE version = 2", [])
+            .unwrap();
+        connection
+            .execute_batch(
+                "DROP TABLE events;
+                 DROP INDEX operations_created_at_idx;
+                 DROP INDEX one_active_finalization_per_capture;
+                 DROP TABLE operations;
+                 CREATE TABLE operations (operation_id TEXT PRIMARY KEY);",
+            )
+            .unwrap();
+
+        assert!(migrate(&mut connection).is_err());
+        assert_eq!(
+            connection
+                .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            1
+        );
+
+        connection.execute("DROP TABLE operations", []).unwrap();
+        migrate(&mut connection).unwrap();
+        assert_eq!(
+            connection
+                .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| row
+                    .get::<_, i64>(
+                    0
+                ))
+                .unwrap(),
+            2
+        );
     }
 }
