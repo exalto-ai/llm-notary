@@ -27,7 +27,20 @@ export default defineConfig(({ mode }) => {
       __BRAND_ASSET_VERSION__: JSON.stringify(brandAssetVersion),
       __PUBLIC_ORIGIN__: JSON.stringify(publicOrigin)
     },
-    plugins: [react(), ...(!localDashboard ? [{
+    plugins: [react(), ...(localDashboard ? [{
+      name: 'local-dashboard-openapi',
+      configureServer(server) {
+        server.middlewares.use('/openapi.json', (request, response, next) => {
+          if (!['GET', 'HEAD'].includes(request.method ?? '')) return next();
+          const body = readFileSync(new URL('./src/local-dashboard/generated/openapi.json', import.meta.url));
+          response.statusCode = 200;
+          response.setHeader('Content-Type', 'application/json; charset=utf-8');
+          response.setHeader('Cache-Control', 'no-store');
+          response.setHeader('Content-Length', body.byteLength);
+          response.end(request.method === 'HEAD' ? undefined : body);
+        });
+      }
+    }] : [{
       name: 'brand-asset-version',
       transformIndexHtml(html) {
         return html
@@ -38,7 +51,7 @@ export default defineConfig(({ mode }) => {
         const llmsPath = new URL('./dist/llms.txt', import.meta.url);
         writeFileSync(llmsPath, readFileSync(llmsPath, 'utf8').replaceAll('%PUBLIC_ORIGIN%', publicOrigin));
       }
-    }] : [])],
+    }])],
     build: localDashboard ? {
       outDir: '../../crates/llm-notary-client/dashboard',
       emptyOutDir: true,

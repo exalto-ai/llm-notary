@@ -66,6 +66,14 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText(/sha256:3828b21f/)).toBeVisible();
   });
 
+  test('renders the disclosed prompt and response as a readable transcript', async () => {
+    renderDashboard('/traces/cap-20260727-research-brief');
+    await expect.element(page.getByRole('heading', { name: 'Prompt and response' })).toBeVisible();
+    await expect.element(page.getByText(/Summarize these sanitized public research notes/)).toBeVisible();
+    await expect.element(page.getByText(/The notes support three conclusions/)).toBeVisible();
+    await expect.element(page.getByText('assistant', { exact: true })).toBeVisible();
+  });
+
   test('clears verification when a different trace is selected', async () => {
     renderDashboard('/traces/cap-20260727-research-brief');
     await page.getByRole('button', { name: 'Verify now' }).click();
@@ -93,6 +101,27 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('service_restarted')).toBeVisible();
   });
 
+  test('labels operation fixtures and anchors their timestamps to the supplied clock', async () => {
+    const now = Date.UTC(2030, 0, 2, 12, 0, 0);
+    const api = createFixtureApi({ nowUnixMs: now });
+    expect((await api.operation('op-finalize-safety-review')).started_at_unix_ms).toBe(now - 108_000);
+    renderDashboard('/finalizations/op-finalize-safety-review', api);
+    await expect.element(page.getByText('Simulation only.', { exact: false })).toBeVisible();
+    await expect.element(page.getByText('No proof worker is running.', { exact: false })).toBeVisible();
+  });
+
+  test('advances a fixture finalization and keeps related state consistent', async () => {
+    const api = createFixtureApi();
+    const queued = await api.startFinalization('cap-20260728-knowledge-eval');
+    expect(queued.operation.state).toBe('queued');
+    expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('queued');
+    expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('running');
+    expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('finalized');
+    expect((await api.capture('cap-20260728-knowledge-eval')).capture.finalization_state).toBe('finalized');
+    expect((await api.events()).items.some((event) => event.event_type === 'finalization_completed'
+      && event.capture_id === 'cap-20260728-knowledge-eval')).toBe(true);
+  });
+
   test('keeps a pending publication authorization visible until approval', async () => {
     const api = createFixtureApi();
     let polls = 0;
@@ -100,7 +129,7 @@ describe('local evidence dashboard', () => {
     const publicationApi: LocalApi = {
       ...api,
       startPublicationAuth: async () => ({
-        request_id: 'auth-test', user_code: 'TEST-123', verification_uri_complete: 'https://example.test/activate',
+        request_id: 'auth-test', user_code: 'TEST-123', verification_uri_complete: '#/publishing',
         expires_in_seconds: 600, poll_interval_seconds: 0, state: 'pending'
       }),
       pollPublicationAuth: async () => ++polls === 1
@@ -114,10 +143,11 @@ describe('local evidence dashboard', () => {
     renderDashboard('/publishing', publicationApi);
     await page.getByRole('button', { name: 'Begin authorization' }).click();
     await expect.element(page.getByText('TEST-123')).toBeVisible();
-    await expect.element(page.getByRole('button', { name: 'Check approval' })).toBeEnabled();
-    await page.getByRole('button', { name: 'Check approval' }).click();
+    await expect.element(page.getByRole('link', { name: 'Open approval page' })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Approve demo session' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Approve demo session' }).click();
     await expect.element(page.getByText('TEST-123')).toBeVisible();
-    await page.getByRole('button', { name: 'Check approval' }).click();
+    await page.getByRole('button', { name: 'Approve demo session' }).click();
     await expect.element(page.getByRole('heading', { name: 'approved-user' })).toBeVisible();
     await page.getByRole('button', { name: 'Review publication' }).click();
     await page.getByRole('button', { name: 'Publish trace' }).click();
@@ -125,6 +155,24 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('cap-20260727-research-brief')).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Refresh status' })).toBeVisible();
     expect(publishedCapture).toBe('cap-20260727-research-brief');
+  });
+
+  test('completes the documentation publication flow without external services', async () => {
+    renderDashboard('/publishing');
+    await page.getByRole('button', { name: 'Begin authorization' }).click();
+    await expect.element(page.getByText('This documentation fixture does not contact GitHub.')).toBeVisible();
+    await page.getByRole('button', { name: 'Approve demo session' }).click();
+    await expect.element(page.getByRole('heading', { name: 'fixture-user' })).toBeVisible();
+    await page.getByRole('button', { name: 'Review publication' }).click();
+    await page.getByRole('button', { name: 'Publish trace' }).click();
+    await expect.element(page.getByText('queued', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Refresh status' }).click();
+    await expect.element(page.getByText('verifying', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Refresh status' }).click();
+    await expect.element(page.getByText('admitted', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('No data was uploaded.', { exact: false })).toBeVisible();
+    await page.getByRole('button', { name: 'Inspect admitted fixture' }).click();
+    await expect.element(page.getByRole('heading', { name: 'Prompt and response' })).toBeVisible();
   });
 
   test('shows the authentication gate after a 401 status response', async () => {

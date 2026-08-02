@@ -9,6 +9,7 @@ const repoRoot = resolve(appRoot, '../..');
 const outputDir = resolve(repoRoot, 'docs/images/local-dashboard');
 const port = Number(process.env.LLM_NOTARY_DOCS_SCREENSHOT_PORT ?? 4175);
 const origin = `http://127.0.0.1:${port}`;
+const fixtureNow = Date.UTC(2026, 6, 28, 16, 42, 0);
 
 mkdirSync(outputDir, { recursive: true });
 
@@ -41,7 +42,7 @@ async function fixturePage(browser, { scheme, viewport, route }) {
   }, scheme);
   const page = await context.newPage();
   await page.emulateMedia({ colorScheme: scheme === 'dark' ? 'dark' : 'light', reducedMotion: 'reduce' });
-  await page.goto(`${origin}/local.html?fixture=docs&${route}`, { waitUntil: 'networkidle' });
+  await page.goto(`${origin}/local.html?fixture=docs&fixture_now=${fixtureNow}&${route}`, { waitUntil: 'networkidle' });
   await page.addStyleTag({ content: `
     *, *::before, *::after { animation: none !important; caret-color: transparent !important; transition: none !important; }
     .mantine-Notifications-root { display: none !important; }

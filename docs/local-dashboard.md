@@ -66,7 +66,9 @@ Failed and restart-interrupted operations show only a safe failure code and a
 Select **Finalized traces**, choose a capture, and inspect four document-like
 views:
 
-- **Summary** describes the authenticated inference and package format.
+- **Summary** describes the authenticated inference and package format, then
+  renders the disclosed prompt and response as a readable conversation. This
+  is finalized trace content, not decrypted source-bundle data.
 - **Evidence** shows the exact trace hash, authenticated provider, source time,
   and manifest format reported by the selected package.
 - **Trace** shows the canonical OpenTelemetry document.
@@ -135,12 +137,24 @@ states and a focal action.
 ## Documentation fixture and screenshots
 
 All images above come from `js/app/src/local-dashboard/fixtures.ts`. The data
-is synthetic and fixed: it contains no user prompts, provider keys, account
+is synthetic and fixed: it contains no real user prompts, provider keys, account
 names, local paths, or bundle contents. Desktop viewports use 1440 × 1000 px;
 the mobile viewport uses 390 × 844 px. The browser locale is `en-US` and its
 timezone is UTC so timestamps remain deterministic. The overview,
 finalization, and mobile images use Light mode. Captures and trace verification
 use Dark mode.
+
+Interactive fixture actions are simulated entirely in the browser. Device
+authorization never opens GitHub, publication advances from queued to admitted
+without an upload, and the admitted-fixture action returns to the synthetic
+local trace. The fixture Vite server also serves the generated contract at
+`/openapi.json`, matching the real admin listener. No fixture action contacts a
+provider, notary, publication platform, or account service.
+
+When opened normally, fixture timestamps are generated relative to the current
+time. A visible note identifies operation states as simulations rather than
+real background workers. Screenshot generation supplies an explicit fixed
+fixture clock so the committed images remain reproducible.
 
 Regenerate every image from the repository root after a dashboard change:
 

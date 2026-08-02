@@ -107,8 +107,22 @@ const fixtureTrace: Trace = {
   },
   trace: {
     resourceSpans: [{ scopeSpans: [{ spans: [{ name: 'gen_ai.inference', traceId: '31f90c419f264b70b09fb1baf4f567d0',
-      attributes: [{ key: 'gen_ai.system', value: { stringValue: 'openrouter' } },
-        { key: 'gen_ai.request.model', value: { stringValue: 'openai/gpt-5-mini' } }] }] }] }]
+      attributes: [
+        { key: 'gen_ai.provider.name', value: { stringValue: 'openrouter' } },
+        { key: 'gen_ai.operation.name', value: { stringValue: 'chat' } },
+        { key: 'gen_ai.request.model', value: { stringValue: 'openai/gpt-5-mini' } },
+        { key: 'gen_ai.response.model', value: { stringValue: 'openai/gpt-5-mini' } },
+        { key: 'server.address', value: { stringValue: 'openrouter.ai' } },
+        { key: 'gen_ai.usage.input_tokens', value: { intValue: '184' } },
+        { key: 'gen_ai.usage.output_tokens', value: { intValue: '126' } },
+        { key: 'gen_ai.input.messages', value: { stringValue: JSON.stringify([
+          { role: 'system', parts: [{ type: 'text', content: 'Write a concise research brief. Separate direct evidence from inference and preserve the supplied source labels.' }] },
+          { role: 'user', parts: [{ type: 'text', content: 'Summarize these sanitized public research notes:\n\nSource A — Reproducible evaluations pin the model version and decoding settings.\nSource B — Published evidence should bind claims to the exact provider response bytes.\nSource C — Independent verification should not require access to the original API credential.' }] }
+        ]) } },
+        { key: 'gen_ai.output.messages', value: { stringValue: JSON.stringify([
+          { role: 'assistant', finish_reason: 'stop', parts: [{ type: 'text', content: 'The notes support three conclusions:\n\n1. Reproducibility starts with a pinned model version and decoding configuration (Source A).\n2. A trustworthy record binds its claims to the exact authenticated provider response (Source B).\n3. Verification can remain independent without redisclosing the caller\u2019s API credential (Source C).\n\nTogether, these controls make an evaluation easier to reproduce, audit, and share safely.' }] }
+        ]) } }
+      ] }] }] }]
   }
 };
 
@@ -118,11 +132,7 @@ const fixtureVerification: Verification = {
   trust_source: 'directory'
 };
 
-let captures = structuredClone(fixtureCaptures);
-let operations = structuredClone(fixtureOperations);
-let publicationAuth: PublicationAuth = { signed_in: false };
-
-function detail(captureId: string): CaptureDetail {
+function detail(captureId: string, captures: Capture[], operations: Operation[]): CaptureDetail {
   const capture = captures.find((item) => item.capture_id === captureId) ?? captures[0];
   return {
     capture,
@@ -136,10 +146,99 @@ function detail(captureId: string): CaptureDetail {
   };
 }
 
-export function createFixtureApi(): LocalApi {
-  captures = structuredClone(fixtureCaptures);
-  operations = structuredClone(fixtureOperations);
-  publicationAuth = { signed_in: false };
+function shiftCapture(capture: Capture, offset: number): Capture {
+  return {
+    ...capture,
+    created_at_unix_ms: capture.created_at_unix_ms + offset,
+    completed_at_unix_ms: capture.completed_at_unix_ms == null ? capture.completed_at_unix_ms : capture.completed_at_unix_ms + offset
+  };
+}
+
+function shiftOperation(operation: Operation, offset: number): Operation {
+  return {
+    ...operation,
+    created_at_unix_ms: operation.created_at_unix_ms + offset,
+    started_at_unix_ms: operation.started_at_unix_ms == null ? operation.started_at_unix_ms : operation.started_at_unix_ms + offset,
+    completed_at_unix_ms: operation.completed_at_unix_ms == null ? operation.completed_at_unix_ms : operation.completed_at_unix_ms + offset,
+    attempt_history: operation.attempt_history.map((attempt) => ({
+      ...attempt,
+      started_at_unix_ms: attempt.started_at_unix_ms == null ? attempt.started_at_unix_ms : attempt.started_at_unix_ms + offset,
+      completed_at_unix_ms: attempt.completed_at_unix_ms == null ? attempt.completed_at_unix_ms : attempt.completed_at_unix_ms + offset
+    }))
+  };
+}
+
+function shiftedTrace(captureId: string, offset: number): Trace {
+  const trace = structuredClone(fixtureTrace);
+  const manifest = trace.manifest as { source?: { created_at_unix_ms?: number } };
+  if (typeof manifest.source?.created_at_unix_ms === 'number') manifest.source.created_at_unix_ms += offset;
+  return { ...trace, capture_id: captureId };
+}
+
+export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: number } = {}): LocalApi {
+  const clock = Number.isFinite(nowUnixMs) && nowUnixMs > 0 ? nowUnixMs : Date.now();
+  const offset = clock - fixtureNow;
+  let captures = fixtureCaptures.map((capture) => shiftCapture(structuredClone(capture), offset));
+  let operations = fixtureOperations.map((operation) => shiftOperation(structuredClone(operation), offset));
+  let events = fixtureEvents.map((event) => ({ ...structuredClone(event), created_at_unix_ms: event.created_at_unix_ms + offset }));
+  let publicationAuth: PublicationAuth = { signed_in: false };
+  let nextEventId = Math.max(...events.map((event) => event.event_id)) + 1;
+  let nextActionTime = clock;
+  const progressingOperations = new Set<string>();
+  const publicationJobs = new Map<string, { captureId: string; state: string }>();
+  const actionTimestamp = () => {
+    nextActionTime += 1000;
+    return nextActionTime;
+  };
+  const recordEvent = (eventType: string, message: string, severity: string, captureId?: string, operationId?: string) => {
+    events = [{ event_id: nextEventId, created_at_unix_ms: actionTimestamp(),
+      event_type: eventType, capture_id: captureId, operation_id: operationId, severity, message }, ...events];
+    nextEventId += 1;
+  };
+  const setCaptureFinalization = (captureId: string, finalizationState: string) => {
+    captures = captures.map((capture) => capture.capture_id === captureId
+      ? { ...capture, finalization_state: finalizationState } : capture);
+  };
+  const advanceDemoOperations = () => {
+    for (const operationId of progressingOperations) {
+      const operation = operations.find((item) => item.operation_id === operationId);
+      if (!operation?.capture_id) {
+        progressingOperations.delete(operationId);
+        continue;
+      }
+      if (operation.state === 'queued') {
+        const attempt = operation.attempt + 1;
+        const startedAt = actionTimestamp();
+        operations = operations.map((item) => item.operation_id === operationId ? {
+          ...item, state: 'running', attempt, started_at_unix_ms: startedAt, completed_at_unix_ms: null,
+          attempt_history: [{ attempt, state: 'running', started_at_unix_ms: startedAt }, ...item.attempt_history]
+        } : item);
+        setCaptureFinalization(operation.capture_id, 'running');
+        recordEvent('finalization_started', 'Finalization started', 'info', operation.capture_id, operationId);
+      } else if (operation.state === 'running') {
+        const completedAt = actionTimestamp();
+        operations = operations.map((item) => item.operation_id === operationId ? {
+          ...item, state: 'finalized', completed_at_unix_ms: completedAt,
+          attempt_history: item.attempt_history.map((attempt, index) => index === 0
+            ? { ...attempt, state: 'finalized', completed_at_unix_ms: completedAt } : attempt)
+        } : item);
+        setCaptureFinalization(operation.capture_id, 'finalized');
+        recordEvent('finalization_completed', 'Finalization completed', 'success', operation.capture_id, operationId);
+        progressingOperations.delete(operationId);
+      }
+    }
+  };
+  const status = (): Status => ({
+    ...fixtureStatus,
+    counts: {
+      total_captures: captures.length,
+      capturing: captures.filter((capture) => capture.capture_state === 'capturing').length,
+      pending: captures.filter((capture) => capture.capture_state === 'pending' && capture.finalization_state === 'not_requested').length,
+      finalized: captures.filter((capture) => capture.finalization_state === 'finalized').length,
+      failed: captures.filter((capture) => ['failed', 'interrupted'].includes(capture.finalization_state)).length,
+      active_operations: operations.filter((operation) => ['queued', 'running'].includes(operation.state)).length
+    }
+  });
   const filteredCaptures = (filters: Record<string, string | number | undefined> = {}) => {
     const query = String(filters.query ?? '').toLowerCase();
     const state = String(filters.finalization_state ?? '');
@@ -156,44 +255,70 @@ export function createFixtureApi(): LocalApi {
   return {
     session: async () => undefined,
     endSession: async () => undefined,
-    status: async () => fixtureStatus,
+    status: async () => status(),
     captures: async (filters = {}) => {
       const limit = Number(filters.limit ?? 50);
       const offset = Number(filters.offset ?? 0);
       return { items: filteredCaptures(filters).slice(offset, offset + limit), limit, offset };
     },
     allCaptures: async (filters = {}) => ({ items: filteredCaptures(filters), limit: 200, offset: 0 }),
-    capture: async (captureId) => detail(captureId),
+    capture: async (captureId) => detail(captureId, captures, operations),
     startFinalization: async (captureId) => {
       const existing = operations.find((operation) => operation.capture_id === captureId
         && ['queued', 'running', 'finalized'].includes(operation.state));
       if (existing) return { operation: existing, deduplicated: true };
       const operation: Operation = { operation_id: 'op-finalize-queued-fixture', kind: 'finalization',
-        capture_id: captureId, state: 'queued', attempt: 0, created_at_unix_ms: fixtureNow, attempt_history: [] };
+        capture_id: captureId, state: 'queued', attempt: 0, created_at_unix_ms: actionTimestamp(), attempt_history: [] };
       operations = [operation, ...operations];
-      captures = captures.map((capture) => capture.capture_id === captureId
-        ? { ...capture, finalization_state: 'queued' } : capture);
+      setCaptureFinalization(captureId, 'queued');
+      progressingOperations.add(operation.operation_id);
+      recordEvent('finalization_queued', 'Finalization queued', 'info', captureId, operation.operation_id);
       return { operation, deduplicated: false };
     },
-    operations: async () => ({ items: operations }),
+    operations: async () => {
+      const items = structuredClone(operations);
+      advanceDemoOperations();
+      return { items };
+    },
     operation: async (operationId) => operations.find((item) => item.operation_id === operationId) ?? operations[0],
     retry: async (operationId) => {
       operations = operations.map((operation) => operation.operation_id === operationId
-        ? { ...operation, state: 'queued', failure_code: null } : operation);
-      return operations.find((operation) => operation.operation_id === operationId)!;
+        ? { ...operation, state: 'queued', failure_code: null, completed_at_unix_ms: null } : operation);
+      const operation = operations.find((item) => item.operation_id === operationId)!;
+      if (operation.capture_id) {
+        setCaptureFinalization(operation.capture_id, 'queued');
+        progressingOperations.add(operationId);
+        recordEvent('finalization_queued', 'Finalization retry queued', 'info', operation.capture_id, operationId);
+      }
+      return operation;
     },
-    events: async () => ({ items: fixtureEvents, next_cursor: 14 }),
-    trace: async (captureId) => ({ ...fixtureTrace, capture_id: captureId }),
-    verify: async (captureId) => ({ ...fixtureVerification, capture_id: captureId }),
+    events: async () => ({ items: events, next_cursor: events[0]?.event_id }),
+    trace: async (captureId) => shiftedTrace(captureId, offset),
+    verify: async (captureId) => ({ ...fixtureVerification, capture_id: captureId, verified_at_unix_ms: fixtureVerification.verified_at_unix_ms + offset }),
     publicationAuth: async () => publicationAuth,
     startPublicationAuth: async () => ({ request_id: 'auth-docs-fixture', user_code: 'NOTARY-7K3',
-      verification_uri_complete: 'https://llm-notary.example/activate?code=NOTARY-7K3', expires_in_seconds: 600,
-      poll_interval_seconds: 3, state: 'pending' }),
+      verification_uri_complete: '#/publishing', expires_in_seconds: 600,
+      poll_interval_seconds: 0, state: 'pending' }),
     pollPublicationAuth: async () => {
       publicationAuth = { signed_in: true, github_login: 'fixture-user', device_name: 'Local dashboard' };
       return publicationAuth;
     },
-    publish: async (captureId) => ({ capture_id: captureId, job_id: 'pub-job-fixture', state: 'queued', status_url: '/v1/publications/pub-job-fixture' }),
-    publicationStatus: async (jobId) => ({ job_id: jobId, state: 'queued' })
+    publish: async (captureId) => {
+      const jobId = 'pub-job-fixture';
+      publicationJobs.set(jobId, { captureId, state: 'queued' });
+      return { capture_id: captureId, job_id: jobId, state: 'queued', status_url: `/v1/publications/${jobId}` };
+    },
+    publicationStatus: async (jobId) => {
+      const job = publicationJobs.get(jobId);
+      if (!job) return { job_id: jobId, state: 'queued' };
+      const state = job.state;
+      if (state === 'queued') job.state = 'verifying';
+      else if (state === 'verifying') job.state = 'admitted';
+      return {
+        job_id: jobId,
+        state,
+        ...(state === 'admitted' ? { trace_url: `/local.html?fixture=docs#/traces/${job.captureId}` } : {})
+      };
+    }
   };
 }
