@@ -130,7 +130,21 @@ describe('local evidence dashboard', () => {
   test('shows the authentication gate after a 401 status response', async () => {
     const api: LocalApi = { ...createFixtureApi(), status: async () => { throw new LocalApiError(401, 'unauthorized', 'Unauthorized'); } };
     renderDashboard('/overview', api);
-    await expect.element(page.getByRole('heading', { name: 'Sign in to the local dashboard' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+  });
+
+  test('exchanges configured credentials for a dashboard session', async () => {
+    let credentials: [string, string] | undefined;
+    const api: LocalApi = {
+      ...createFixtureApi(),
+      status: async () => { throw new LocalApiError(401, 'unauthorized', 'Unauthorized'); },
+      session: async (username, password) => { credentials = [username, password]; }
+    };
+    renderDashboard('/overview', api);
+    await page.getByLabelText('Username').fill('local-admin');
+    await page.getByRole('textbox', { name: 'Password' }).fill('correct horse battery staple');
+    await page.getByRole('button', { name: 'Open dashboard' }).click();
+    await expect.poll(() => credentials).toEqual(['local-admin', 'correct horse battery staple']);
   });
 
   test('does not show stale online state after a status failure', async () => {

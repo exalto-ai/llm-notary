@@ -30,8 +30,15 @@ export class LocalApiError extends Error {
 type RequestOptions = {
   method?: 'GET' | 'POST' | 'DELETE';
   body?: unknown;
-  bearerToken?: string;
+  basicAuth?: { username: string; password: string };
 };
+
+function basicAuthorization(username: string, password: string) {
+  const bytes = new TextEncoder().encode(`${username}:${password}`);
+  let binary = '';
+  bytes.forEach((byte) => { binary += String.fromCharCode(byte); });
+  return `Basic ${btoa(binary)}`;
+}
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const response = await fetch(path, {
@@ -39,7 +46,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     credentials: 'same-origin',
     headers: {
       'x-llm-notary-request': 'dashboard',
-      ...(options.bearerToken ? { authorization: `Bearer ${options.bearerToken}` } : {}),
+      ...(options.basicAuth ? { authorization: basicAuthorization(options.basicAuth.username, options.basicAuth.password) } : {}),
       ...(options.body === undefined ? {} : { 'content-type': 'application/json' })
     },
     body: options.body === undefined ? undefined : JSON.stringify(options.body)
@@ -68,7 +75,9 @@ function queryString(values: Record<string, string | number | undefined>) {
 }
 
 export const localApi = {
-  session: (token: string) => request<void>('/v1/session', { method: 'POST', bearerToken: token }),
+  session: (username: string, password: string) => request<void>('/v1/session', {
+    method: 'POST', basicAuth: { username, password }
+  }),
   endSession: () => request<void>('/v1/session', { method: 'DELETE' }),
   status: () => request<Status>('/v1/status'),
   captures: (filters: Record<string, string | number | undefined> = {}) =>

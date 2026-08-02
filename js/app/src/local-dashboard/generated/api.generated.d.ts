@@ -363,7 +363,7 @@ export interface paths {
         put?: never;
         /**
          * Start a dashboard session
-         * @description Exchanges the local admin bearer token for an HttpOnly browser session cookie.
+         * @description Exchanges configured HTTP Basic credentials for an HttpOnly browser session cookie. Returns without a cookie when admin authentication is disabled.
          */
         post: operations["start_session"];
         /**
@@ -1294,7 +1294,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description HttpOnly dashboard session established */
+            /** @description Dashboard access established */
             204: {
                 headers: {
                     [name: string]: unknown;

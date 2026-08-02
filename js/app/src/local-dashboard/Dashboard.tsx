@@ -144,23 +144,26 @@ function SchemeControl() {
 }
 
 function AuthGate({ api, onAuthenticated }: { api: LocalApi; onAuthenticated: () => void }) {
-  const [token, setToken] = useState('');
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
   const mutation = useMutation({
-    mutationFn: () => api.session(token),
-    onSuccess: () => { setToken(''); onAuthenticated(); },
-    onError: () => notifications.show({ color: 'red', title: 'Authentication failed', message: 'Read the private admin token file and try again.' })
+    mutationFn: () => api.session(username, password),
+    onSuccess: () => { setUsername(''); setPassword(''); onAuthenticated(); },
+    onError: () => notifications.show({ color: 'red', title: 'Authentication failed', message: 'Check the username and password configured under admin.auth.' })
   });
-  const submit = (event: FormEvent) => { event.preventDefault(); if (token) mutation.mutate(); };
+  const submit = (event: FormEvent) => { event.preventDefault(); if (username && password) mutation.mutate(); };
   return <main className="auth-shell">
     <section className="auth-document">
       <Brand />
       <Text className="eyebrow">Local administration</Text>
-      <Title order={1}>Sign in to the local dashboard</Title>
-      <Text className="auth-copy">Exchange the private admin token for an HttpOnly browser session. The token is cleared from this form and is never stored by the dashboard.</Text>
+      <Title order={1}>Sign in</Title>
+      <Text className="auth-copy">This service requires the credentials configured under admin.auth.</Text>
       <form onSubmit={submit}>
-        <PasswordInput label="Admin token" description="Read it from the token_path named in your local service configuration."
-          value={token} onChange={(event) => setToken(event.currentTarget.value)} autoComplete="off" autoFocus />
-        <Button type="submit" loading={mutation.isPending} disabled={!token} rightSection={<ChevronRight size={15} />}>Open dashboard</Button>
+        <TextInput label="Username" value={username} onChange={(event) => setUsername(event.currentTarget.value)}
+          autoComplete="username" autoFocus />
+        <PasswordInput label="Password" value={password} onChange={(event) => setPassword(event.currentTarget.value)}
+          autoComplete="current-password" />
+        <Button type="submit" loading={mutation.isPending} disabled={!username || !password} rightSection={<ChevronRight size={15} />}>Open dashboard</Button>
       </form>
       <div className="trust-note"><ShieldCheck aria-hidden="true" /><div><b>Loopback only</b><span>This control surface is available only on the local admin listener.</span></div></div>
     </section>

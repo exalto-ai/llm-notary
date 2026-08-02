@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "LLM Notary local administration API",
-    "description": "Local LLM Notary proxy and administration service",
+    "description": "Loopback administration API. Routes are available without credentials by default; configure admin.auth to require HTTP Basic authentication.",
     "license": {
       "name": "MIT OR Apache-2.0",
       "identifier": "MIT OR Apache-2.0"
@@ -148,8 +148,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -205,8 +206,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -262,8 +264,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -319,8 +322,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -376,8 +380,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -433,8 +438,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -543,8 +549,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -625,8 +632,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -682,8 +690,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -739,8 +748,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -814,8 +824,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -889,8 +900,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -926,8 +938,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       },
@@ -971,8 +984,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       },
@@ -999,8 +1013,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -1056,8 +1071,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -1133,8 +1149,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -1145,11 +1162,11 @@
           "local-admin"
         ],
         "summary": "Start a dashboard session",
-        "description": "Exchanges the local admin bearer token for an HttpOnly browser session cookie.",
+        "description": "Exchanges configured HTTP Basic credentials for an HttpOnly browser session cookie. Returns without a cookie when admin authentication is disabled.",
         "operationId": "start_session",
         "responses": {
           "204": {
-            "description": "HttpOnly dashboard session established"
+            "description": "Dashboard access established"
           },
           "401": {
             "description": "",
@@ -1163,8 +1180,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       },
@@ -1191,8 +1209,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -1228,8 +1247,9 @@
           }
         },
         "security": [
+          {},
           {
-            "bearerAuth": []
+            "basicAuth": []
           }
         ]
       }
@@ -1962,10 +1982,9 @@
       }
     },
     "securitySchemes": {
-      "bearerAuth": {
+      "basicAuth": {
         "type": "http",
-        "scheme": "bearer",
-        "bearerFormat": "opaque local token"
+        "scheme": "basic"
       }
     }
   },
