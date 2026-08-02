@@ -89,7 +89,8 @@ export const localApi = {
       `/v1/captures/${encodeURIComponent(captureId)}/finalizations`,
       { method: 'POST' }
     ),
-  operations: () => request<OperationList>('/v1/operations'),
+  operations: (filters: Record<string, string | number | undefined> = {}) =>
+    request<OperationList>(`/v1/operations${queryString(filters)}`),
   operation: (operationId: string) => request<Operation>(`/v1/operations/${encodeURIComponent(operationId)}`),
   retry: (operationId: string) => request<Operation>(
     `/v1/operations/${encodeURIComponent(operationId)}/retry`,

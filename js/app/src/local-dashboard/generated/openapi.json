@@ -15,6 +15,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Check service health",
+        "description": "Returns the local service health and API version without requiring authentication.",
         "operationId": "health",
         "responses": {
           "200": {
@@ -35,6 +37,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Get the OpenAPI contract",
+        "description": "Returns the exact OpenAPI 3.1 contract implemented by this local service.",
         "operationId": "openapi",
         "responses": {
           "200": {
@@ -48,6 +52,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Search local captures",
+        "description": "Lists the bounded local capture catalog with punctuation-safe preview search and exact metadata filters.",
         "operationId": "captures",
         "parameters": [
           {
@@ -120,6 +126,16 @@
               }
             }
           },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "401": {
             "description": "",
             "content": {
@@ -143,6 +159,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Get a capture",
+        "description": "Returns safe capture metadata, retained artifact digests, and finalization history for one capture.",
         "operationId": "capture",
         "parameters": [
           {
@@ -198,6 +216,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Queue capture finalization",
+        "description": "Queues durable proof generation for a pending capture or returns its existing finalization operation.",
         "operationId": "start_finalization",
         "parameters": [
           {
@@ -253,6 +273,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Publish a finalized trace",
+        "description": "Verifies one finalized capture locally, uploads only its publication archive, and returns the durable publication job.",
         "operationId": "publish_capture",
         "parameters": [
           {
@@ -308,6 +330,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Decode a finalized trace",
+        "description": "Returns the finalized package manifest and canonical OpenTelemetry trace for inspection.",
         "operationId": "trace",
         "parameters": [
           {
@@ -363,6 +387,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Verify a finalized trace",
+        "description": "Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.",
         "operationId": "verify_trace",
         "parameters": [
           {
@@ -418,10 +444,54 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "List service events",
+        "description": "Lists the bounded redacted event history with cursor, severity, type, resource, and time filters.",
         "operationId": "events",
         "parameters": [
           {
             "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "severity",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "event_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "capture_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "operation_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "created_after_unix_ms",
             "in": "query",
             "required": false,
             "schema": {
@@ -451,6 +521,16 @@
               }
             }
           },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "401": {
             "description": "",
             "content": {
@@ -474,8 +554,34 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "List background operations",
+        "description": "Lists durable background operations with optional state, kind, and capture filters.",
         "operationId": "operations",
         "parameters": [
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "capture_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "limit",
             "in": "query",
@@ -493,6 +599,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/OperationListResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -520,6 +636,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Get an operation",
+        "description": "Returns the current state and complete attempt history for one durable operation.",
         "operationId": "operation",
         "parameters": [
           {
@@ -575,6 +693,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Retry an operation",
+        "description": "Requeues a failed or restart-interrupted operation while preserving its durable identity and attempt history.",
         "operationId": "retry_operation",
         "parameters": [
           {
@@ -630,6 +750,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Get a public trace",
+        "description": "Fetches one public canonical trace and platform stamp through the configured publication API.",
         "operationId": "download_public_trace",
         "parameters": [
           {
@@ -656,6 +778,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PublicTraceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -693,6 +825,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Verify a public trace",
+        "description": "Fetches a public trace and verifies its canonical bytes, contract versions, hash, issuer, key, and signature.",
         "operationId": "verify_public_trace",
         "parameters": [
           {
@@ -719,6 +853,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/PublicTraceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             }
@@ -756,6 +900,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Get publication authorization",
+        "description": "Reports whether this local service has an active publication account session.",
         "operationId": "publication_auth_status",
         "responses": {
           "200": {
@@ -789,6 +935,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Start publication authorization",
+        "description": "Starts the browser approval flow used to authorize this local service to publish traces.",
         "operationId": "start_publication_auth",
         "requestBody": {
           "content": {
@@ -832,6 +980,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Revoke publication authorization",
+        "description": "Removes the local publication credentials so a new browser approval is required.",
         "operationId": "end_publication_auth",
         "responses": {
           "204": {
@@ -860,6 +1010,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Poll publication authorization",
+        "description": "Checks a pending browser approval request after its required polling interval.",
         "operationId": "poll_publication_auth",
         "parameters": [
           {
@@ -915,6 +1067,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Get publication status",
+        "description": "Returns the latest admission state and public artifact links for a publication job.",
         "operationId": "publication_status",
         "parameters": [
           {
@@ -990,6 +1144,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Start a dashboard session",
+        "description": "Exchanges the local admin bearer token for an HttpOnly browser session cookie.",
         "operationId": "start_session",
         "responses": {
           "204": {
@@ -1016,6 +1172,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "End a dashboard session",
+        "description": "Deletes the current browser session and expires its local cookie.",
         "operationId": "end_session",
         "responses": {
           "204": {
@@ -1044,6 +1202,8 @@
         "tags": [
           "local-admin"
         ],
+        "summary": "Get local service status",
+        "description": "Returns listener addresses, vault and notary configuration, preview limits, and current capture counts.",
         "operationId": "status",
         "responses": {
           "200": {

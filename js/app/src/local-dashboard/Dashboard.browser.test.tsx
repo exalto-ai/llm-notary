@@ -42,7 +42,7 @@ describe('local evidence dashboard', () => {
   });
 
   test('persists an explicit theme and can return to system mode', async () => {
-    renderDashboard();
+    renderDashboard('/settings');
     await page.getByRole('button', { name: 'Dark color scheme' }).click();
     await expect.poll(() => document.documentElement.dataset.mantineColorScheme).toBe('dark');
     expect(localStorage.getItem('mantine-color-scheme-value')).toBe('dark');
@@ -147,6 +147,27 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByRole('dialog')).toBeVisible();
     await page.getByRole('dialog').getByRole('button', { name: /Activity/ }).click();
     await expect.element(page.getByRole('heading', { name: 'Activity' })).toBeVisible();
+  });
+
+  test('does not repeat service status in the dashboard shell', async () => {
+    renderDashboard();
+    await expect.element(page.getByText('Admin 127.0.0.1:8788')).not.toBeInTheDocument();
+    await expect.element(page.getByText('Online', { exact: true })).not.toBeInTheDocument();
+  });
+
+  test('sends activity filters to the service', async () => {
+    const api: LocalApi = createFixtureApi();
+    let receivedFilters: Record<string, string | number | undefined> = {};
+    const filteredApi: LocalApi = {
+      ...api,
+      events: async (filters = {}) => {
+        receivedFilters = filters;
+        return api.events(filters);
+      }
+    };
+    renderDashboard('/activity', filteredApi);
+    await page.getByLabelText('Activity event type').fill('finalization_completed');
+    await expect.poll(() => receivedFilters.event_type).toBe('finalization_completed');
   });
 
   test('uses separate trace list and detail views on mobile', async () => {

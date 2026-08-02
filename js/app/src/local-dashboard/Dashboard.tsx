@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
-  ActionIcon, AppShell, Badge, Box, Burger, Button, Center, Divider, Drawer, Group,
+  ActionIcon, AppShell, Badge, Box, Burger, Button, Center, Drawer, Group,
   Loader, Modal, NavLink, Paper, PasswordInput, ScrollArea, Select, SimpleGrid,
   Stack, Table, Tabs, Text, TextInput, ThemeIcon, Title, Tooltip, UnstyledButton,
   useMantineColorScheme
@@ -118,6 +118,12 @@ function withinTime(timestamp: number, range: string | null) {
   return timestamp >= Date.now() - milliseconds;
 }
 
+function timeRangeStart(range: string | null) {
+  if (!range) return undefined;
+  const milliseconds = range === 'hour' ? 60 * 60 * 1000 : range === 'day' ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+  return Date.now() - milliseconds;
+}
+
 function LoadingState({ label = 'Loading local evidence' }: { label?: string }) {
   return <Center className="loading-state"><Stack align="center" gap="sm"><Loader size="sm" /><Text>{label}</Text></Stack></Center>;
 }
@@ -168,21 +174,21 @@ function Brand() {
   </span><span>LLM Notary</span></div>;
 }
 
-function Sidebar({ route, status, onNavigate, fixture }: {
-  route: Route; status: Status; onNavigate: (route: Route) => void; fixture: boolean;
+function Sidebar({ route, status, onNavigate, fixture, showBrand = true }: {
+  route: Route; status: Status; onNavigate: (route: Route) => void; fixture: boolean; showBrand?: boolean;
 }) {
   const count = (view: DashboardView) => view === 'captures' ? status.counts.pending
     : view === 'finalizations' ? status.counts.active_operations : undefined;
   return <div className="sidebar-inner">
-    <nav aria-label="Local dashboard">
-      {navigation.map(({ view, label, icon: Icon }) => <NavLink key={view} component="button" type="button" aria-label={label} active={route.view === view}
-        label={label} leftSection={<Icon size={17} strokeWidth={1.7} />} rightSection={count(view) ? <Badge size="xs">{count(view)}</Badge> : null}
-        onClick={() => onNavigate({ view })} />)}
-    </nav>
-    <div className="sidebar-foot">
-      {fixture && <div className="fixture-flag"><Database size={14} aria-hidden="true" />Documentation fixture</div>}
-      <StatusLabel state="online" /><Text>Admin {status.admin_listener}</Text>
+    <div className="sidebar-primary">
+      {showBrand && <Brand />}
+      <nav aria-label="Local dashboard">
+        {navigation.map(({ view, label, icon: Icon }) => <NavLink key={view} component="button" type="button" aria-label={label} active={route.view === view}
+          label={label} leftSection={<Icon size={17} strokeWidth={1.7} />} rightSection={count(view) ? <Badge size="xs">{count(view)}</Badge> : null}
+          onClick={() => onNavigate({ view })} />)}
+      </nav>
     </div>
+    {fixture && <div className="sidebar-foot"><div className="fixture-flag"><Database size={14} aria-hidden="true" />Documentation fixture</div></div>}
   </div>;
 }
 
@@ -201,20 +207,16 @@ export function Dashboard({ api, fixture = false }: { api: LocalApi; fixture?: b
   if (!statusQuery.data) return <ErrorState onRetry={() => statusQuery.refetch()} />;
   const status = statusQuery.data;
   return <AppShell
-    header={{ height: 64 }} navbar={{ width: 248, breakpoint: 820, collapsed: { mobile: true } }}
+    navbar={{ width: 248, breakpoint: 820, collapsed: { mobile: true } }}
     padding={0} className="dashboard-shell">
-    <AppShell.Header className="dashboard-header">
-      <Group h="100%" justify="space-between" wrap="nowrap">
-        <Group gap="sm" wrap="nowrap"><Burger opened={navOpened} onClick={openNav} className="mobile-burger" size="sm" aria-label="Open navigation" />
-          <Brand /><Divider orientation="vertical" className="desktop-context" /><Text className="header-context desktop-context">Local evidence</Text></Group>
-        <Group gap="md" wrap="nowrap"><div className="header-health"><StatusLabel state="online" /><span>{status.counts.active_operations ? `${status.counts.active_operations} active` : 'Idle'}</span></div><SchemeControl /></Group>
-      </Group>
-    </AppShell.Header>
     <AppShell.Navbar className="dashboard-navbar"><Sidebar route={route} status={status} onNavigate={navigate} fixture={fixture} /></AppShell.Navbar>
     <Drawer opened={navOpened} onClose={closeNav} title={<Brand />} size="min(88vw, 340px)" classNames={{ body: 'mobile-nav-body' }}>
-      <Sidebar route={route} status={status} onNavigate={navigate} fixture={fixture} />
+      <Sidebar route={route} status={status} onNavigate={navigate} fixture={fixture} showBrand={false} />
     </Drawer>
-    <AppShell.Main className="dashboard-main"><View route={route} status={status} api={api} navigate={navigate} /></AppShell.Main>
+    <AppShell.Main className="dashboard-main">
+      <Burger opened={navOpened} onClick={openNav} className="mobile-nav-trigger" size="sm" aria-label="Open navigation" />
+      <View route={route} status={status} api={api} navigate={navigate} />
+    </AppShell.Main>
   </AppShell>;
 }
 
@@ -380,7 +382,7 @@ function ArtifactList({ detail }: { detail: CaptureDetail }) {
 }
 
 function FinalizationsView({ api, selectedId, navigate }: { api: LocalApi; selectedId?: string; navigate: (route: Route) => void }) {
-  const operations = useQuery({ queryKey: ['operations'], queryFn: api.operations, refetchInterval: 3_000 });
+  const operations = useQuery({ queryKey: ['operations'], queryFn: () => api.operations(), refetchInterval: 3_000 });
   const selectedOperation = useQuery({
     queryKey: ['operation', selectedId], queryFn: () => api.operation(selectedId!),
     enabled: Boolean(selectedId), refetchInterval: 3_000
@@ -535,19 +537,25 @@ function PublishingView({ api }: { api: LocalApi }) {
 }
 
 function ActivityView({ api }: { api: LocalApi }) {
-  const events = useQuery({ queryKey: ['events'], queryFn: () => api.events(), refetchInterval: 5_000 });
   const [severity, setSeverity] = useState<string | null>(null);
   const [captureId, setCaptureId] = useState('');
   const [operationId, setOperationId] = useState('');
   const [eventType, setEventType] = useState('');
   const [time, setTime] = useState<string | null>(null);
-  const visible = events.data?.items.filter((event) =>
-    (!severity || event.severity === severity)
-    && (!captureId || event.capture_id?.toLowerCase().includes(captureId.toLowerCase()))
-    && (!operationId || event.operation_id?.toLowerCase().includes(operationId.toLowerCase()))
-    && (!eventType || event.event_type.toLowerCase().includes(eventType.toLowerCase()))
-    && withinTime(event.created_at_unix_ms, time)
-  ) ?? [];
+  const createdAfter = useMemo(() => timeRangeStart(time), [time]);
+  const filters = {
+    severity: severity ?? undefined,
+    capture_id: captureId,
+    operation_id: operationId,
+    event_type: eventType,
+    created_after_unix_ms: createdAfter
+  };
+  const events = useQuery({
+    queryKey: ['events', filters],
+    queryFn: () => api.events(filters),
+    refetchInterval: 5_000
+  });
+  const visible = events.data?.items ?? [];
   return <div className="view-page"><PageHeader eyebrow="Service events" title="Activity" copy="Event history contains defined identifiers and failure codes. It excludes credentials, raw headers, bundle contents, and artifact paths." action={<Button variant="outline" leftSection={<RefreshCw size={14} />} onClick={() => events.refetch()}>Refresh</Button>} />
     <div className="filter-bar filter-bar--activity"><Select aria-label="Activity severity" placeholder="All severities" clearable data={['info', 'success', 'warning', 'error']} value={severity} onChange={setSeverity} />
       <TextInput aria-label="Activity capture ID" placeholder="Capture ID" value={captureId} onChange={(event) => setCaptureId(event.currentTarget.value)} />
@@ -579,6 +587,12 @@ function SettingsView({ status }: { status: Status }) {
       copy="View how this service is configured without exposing credentials or artifact paths."
     />
     <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg">
+      <Paper className="settings-panel">
+        <Text className="eyebrow">Appearance</Text>
+        <Title order={2}>Color scheme</Title>
+        <Text>Follow your system setting or choose a theme for this browser.</Text>
+        <SchemeControl />
+      </Paper>
       <Paper className="settings-panel">
         <Text className="eyebrow">Listeners</Text>
         <Title order={2}>Listener addresses</Title>

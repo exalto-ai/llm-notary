@@ -11,6 +11,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Check service health
+         * @description Returns the local service health and API version without requiring authentication.
+         */
         get: operations["health"];
         put?: never;
         post?: never;
@@ -27,6 +31,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Get the OpenAPI contract
+         * @description Returns the exact OpenAPI 3.1 contract implemented by this local service.
+         */
         get: operations["openapi"];
         put?: never;
         post?: never;
@@ -43,6 +51,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Search local captures
+         * @description Lists the bounded local capture catalog with punctuation-safe preview search and exact metadata filters.
+         */
         get: operations["captures"];
         put?: never;
         post?: never;
@@ -59,6 +71,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Get a capture
+         * @description Returns safe capture metadata, retained artifact digests, and finalization history for one capture.
+         */
         get: operations["capture"];
         put?: never;
         post?: never;
@@ -77,6 +93,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * Queue capture finalization
+         * @description Queues durable proof generation for a pending capture or returns its existing finalization operation.
+         */
         post: operations["start_finalization"];
         delete?: never;
         options?: never;
@@ -93,6 +113,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * Publish a finalized trace
+         * @description Verifies one finalized capture locally, uploads only its publication archive, and returns the durable publication job.
+         */
         post: operations["publish_capture"];
         delete?: never;
         options?: never;
@@ -107,6 +131,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Decode a finalized trace
+         * @description Returns the finalized package manifest and canonical OpenTelemetry trace for inspection.
+         */
         get: operations["trace"];
         put?: never;
         post?: never;
@@ -125,6 +153,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * Verify a finalized trace
+         * @description Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.
+         */
         post: operations["verify_trace"];
         delete?: never;
         options?: never;
@@ -139,6 +171,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * List service events
+         * @description Lists the bounded redacted event history with cursor, severity, type, resource, and time filters.
+         */
         get: operations["events"];
         put?: never;
         post?: never;
@@ -155,6 +191,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * List background operations
+         * @description Lists durable background operations with optional state, kind, and capture filters.
+         */
         get: operations["operations"];
         put?: never;
         post?: never;
@@ -171,6 +211,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Get an operation
+         * @description Returns the current state and complete attempt history for one durable operation.
+         */
         get: operations["operation"];
         put?: never;
         post?: never;
@@ -189,6 +233,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * Retry an operation
+         * @description Requeues a failed or restart-interrupted operation while preserving its durable identity and attempt history.
+         */
         post: operations["retry_operation"];
         delete?: never;
         options?: never;
@@ -203,6 +251,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Get a public trace
+         * @description Fetches one public canonical trace and platform stamp through the configured publication API.
+         */
         get: operations["download_public_trace"];
         put?: never;
         post?: never;
@@ -221,6 +273,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * Verify a public trace
+         * @description Fetches a public trace and verifies its canonical bytes, contract versions, hash, issuer, key, and signature.
+         */
         post: operations["verify_public_trace"];
         delete?: never;
         options?: never;
@@ -235,9 +291,21 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Get publication authorization
+         * @description Reports whether this local service has an active publication account session.
+         */
         get: operations["publication_auth_status"];
         put?: never;
+        /**
+         * Start publication authorization
+         * @description Starts the browser approval flow used to authorize this local service to publish traces.
+         */
         post: operations["start_publication_auth"];
+        /**
+         * Revoke publication authorization
+         * @description Removes the local publication credentials so a new browser approval is required.
+         */
         delete: operations["end_publication_auth"];
         options?: never;
         head?: never;
@@ -251,6 +319,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Poll publication authorization
+         * @description Checks a pending browser approval request after its required polling interval.
+         */
         get: operations["poll_publication_auth"];
         put?: never;
         post?: never;
@@ -267,6 +339,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Get publication status
+         * @description Returns the latest admission state and public artifact links for a publication job.
+         */
         get: operations["publication_status"];
         put?: never;
         post?: never;
@@ -285,7 +361,15 @@ export interface paths {
         };
         get?: never;
         put?: never;
+        /**
+         * Start a dashboard session
+         * @description Exchanges the local admin bearer token for an HttpOnly browser session cookie.
+         */
         post: operations["start_session"];
+        /**
+         * End a dashboard session
+         * @description Deletes the current browser session and expires its local cookie.
+         */
         delete: operations["end_session"];
         options?: never;
         head?: never;
@@ -299,6 +383,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
+        /**
+         * Get local service status
+         * @description Returns listener addresses, vault and notary configuration, preview limits, and current capture counts.
+         */
         get: operations["status"];
         put?: never;
         post?: never;
@@ -569,6 +657,14 @@ export interface operations {
                     "application/json": components["schemas"]["CaptureListResponse"];
                 };
             };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -768,6 +864,11 @@ export interface operations {
         parameters: {
             query?: {
                 cursor?: number;
+                severity?: string;
+                event_type?: string;
+                capture_id?: string;
+                operation_id?: string;
+                created_after_unix_ms?: number;
                 limit?: number;
             };
             header?: never;
@@ -784,6 +885,14 @@ export interface operations {
                     "application/json": components["schemas"]["EventListResponse"];
                 };
             };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -797,6 +906,9 @@ export interface operations {
     operations: {
         parameters: {
             query?: {
+                state?: string;
+                kind?: string;
+                capture_id?: string;
                 limit?: number;
             };
             header?: never;
@@ -811,6 +923,14 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["OperationListResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
             401: {
@@ -918,6 +1038,14 @@ export interface operations {
                     "application/json": components["schemas"]["PublicTraceResponse"];
                 };
             };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -955,6 +1083,14 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PublicTraceResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
             401: {
