@@ -1,7 +1,7 @@
 //! Authenticated loopback administration API and durable background work.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     fs,
     path::PathBuf,
     sync::Arc,
@@ -24,6 +24,7 @@ use tower_http::{
     limit::RequestBodyLimitLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     sensitive_headers::SetSensitiveRequestHeadersLayer,
+    trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 use utoipa::{Modify, OpenApi, ToSchema};
 
@@ -42,6 +43,7 @@ use crate::{
 
 const API_VERSION: &str = "v1";
 const SESSION_COOKIE: &str = "llm_notary_admin_session";
+const SESSION_MAX_AGE_SECONDS: u64 = 43_200;
 const DASHBOARD_HEADER: &str = "x-llm-notary-request";
 
 #[derive(Clone)]
@@ -49,7 +51,7 @@ pub(crate) struct AdminState {
     catalog: Arc<Catalog>,
     config: Arc<AgentConfig>,
     token: Arc<str>,
-    sessions: Arc<Mutex<HashSet<String>>>,
+    sessions: Arc<Mutex<HashMap<String, u64>>>,
     pending_authorizations: Arc<Mutex<HashMap<String, auth::PendingAuthorization>>>,
     publication_credentials: Arc<Mutex<()>>,
     pub(crate) work_available: Arc<Notify>,
@@ -66,7 +68,7 @@ impl AdminState {
             catalog,
             config,
             token: Arc::from(token),
-            sessions: Arc::new(Mutex::new(HashSet::new())),
+            sessions: Arc::new(Mutex::new(HashMap::new())),
             pending_authorizations: Arc::new(Mutex::new(HashMap::new())),
             publication_credentials: Arc::new(Mutex::new(())),
             work_available: Arc::new(Notify::new()),
@@ -124,6 +126,12 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
             header::HeaderName::from_static("x-request-id"),
             MakeRequestUuid,
         ))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO))
+                .on_request(DefaultOnRequest::new().level(tracing::Level::INFO))
+                .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
+        )
         .layer(SetSensitiveRequestHeadersLayer::new(std::iter::once(
             header::AUTHORIZATION,
         )))
@@ -192,9 +200,21 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
         return ApiError::unauthorized().into_response();
     }
     let session = new_secret();
-    state.sessions.lock().await.insert(session.clone());
-    let cookie =
-        format!("{SESSION_COOKIE}={session}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200");
+    let expires_at = match now_ms().and_then(|now| {
+        now.checked_add(SESSION_MAX_AGE_SECONDS * 1_000)
+            .context("dashboard session expiry overflowed")
+    }) {
+        Ok(expires_at) => expires_at,
+        Err(_) => return ApiError::internal("clock_error").into_response(),
+    };
+    state
+        .sessions
+        .lock()
+        .await
+        .insert(session.clone(), expires_at);
+    let cookie = format!(
+        "{SESSION_COOKIE}={session}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_MAX_AGE_SECONDS}"
+    );
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
@@ -203,7 +223,7 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
     response
 }
 
-#[utoipa::path(delete, path = "/v1/session", responses((status = 204, description = "Dashboard session ended")), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/session", responses((status = 204, description = "Dashboard session ended"), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn end_session(State(state): State<AdminState>, request: Request) -> Response {
     if let Some(session) = session_from_headers(request.headers()) {
         state.sessions.lock().await.remove(session);
@@ -228,9 +248,13 @@ async fn require_auth(State(state): State<AdminState>, request: Request, next: N
         .and_then(|value| value.to_str().ok())
         == Some("dashboard")
     {
-        match session_from_headers(request.headers()) {
-            Some(value) => state.sessions.lock().await.contains(value),
-            None => false,
+        match (session_from_headers(request.headers()), now_ms()) {
+            (Some(value), Ok(now)) => {
+                let mut sessions = state.sessions.lock().await;
+                sessions.retain(|_, expires_at| *expires_at > now);
+                sessions.contains_key(value)
+            }
+            _ => false,
         }
     } else {
         false
@@ -810,31 +834,36 @@ fn validate_id(value: &str, prefix: &str) -> Result<(), ApiError> {
 }
 
 fn load_or_create_token(path: &std::path::Path) -> Result<String> {
-    if path.exists() {
-        crate::cli::storage::ensure_private_file(path)?;
-        let metadata = fs::metadata(path)
-            .with_context(|| format!("reading admin token file {}", path.display()))?;
-        if !metadata.is_file() {
-            anyhow::bail!("admin token path is not a regular file");
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            if metadata.permissions().mode() & 0o077 != 0 {
-                anyhow::bail!("admin token file must not be readable by group or others");
-            }
-        }
-        let token = fs::read_to_string(path)
-            .with_context(|| format!("reading admin token file {}", path.display()))?;
-        let token = token.trim().to_owned();
-        if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            anyhow::bail!("admin token file contains an invalid token");
-        }
+    if let Some(token) = read_admin_token(path)? {
         return Ok(token);
     }
     let token = new_secret();
-    crate::cli::storage::write_private_file_atomically(path, token.as_bytes())?;
-    Ok(token)
+    if crate::cli::storage::write_private_file_if_absent(path, token.as_bytes())? {
+        return Ok(token);
+    }
+    read_admin_token(path)?.context("admin token file disappeared during concurrent startup")
+}
+
+fn read_admin_token(path: &std::path::Path) -> Result<Option<String>> {
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("reading admin token file {}", path.display()));
+        }
+    };
+    if !metadata.is_file() {
+        anyhow::bail!("admin token path is not a regular file");
+    }
+    crate::cli::storage::ensure_private_file(path)?;
+    let token = fs::read_to_string(path)
+        .with_context(|| format!("reading admin token file {}", path.display()))?;
+    let token = token.trim().to_owned();
+    if token.len() != 64 || !token.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        anyhow::bail!("admin token file contains an invalid token");
+    }
+    Ok(Some(token))
 }
 
 fn new_secret() -> String {
@@ -1197,7 +1226,36 @@ mod tests {
     use super::*;
     use axum::{body::Body, http::Request};
     use http_body_util::BodyExt as _;
+    use std::{
+        io::Write as IoWrite,
+        sync::{Barrier, Mutex as StdMutex},
+    };
     use tower::ServiceExt as _;
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone)]
+    struct SharedLog(Arc<StdMutex<Vec<u8>>>);
+
+    struct SharedLogWriter(Arc<StdMutex<Vec<u8>>>);
+
+    impl IoWrite for SharedLogWriter {
+        fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'writer> MakeWriter<'writer> for SharedLog {
+        type Writer = SharedLogWriter;
+
+        fn make_writer(&'writer self) -> Self::Writer {
+            SharedLogWriter(self.0.clone())
+        }
+    }
 
     fn state(directory: &std::path::Path) -> AdminState {
         let mut config = AgentConfig::default();
@@ -1240,6 +1298,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[test]
+    fn request_tracing_never_logs_the_bearer_token() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = Arc::new(StdMutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(SharedLog(output.clone()))
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+        let secret = "deliberately-wrong-secret-that-must-not-appear";
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let response = tracing::dispatcher::with_default(&dispatch, || {
+            runtime.block_on(async {
+                router(state(directory.path()))
+                    .unwrap()
+                    .oneshot(
+                        Request::get("/v1/status")
+                            .header(header::AUTHORIZATION, format!("Bearer {secret}"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap()
+            })
+        });
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let logs = String::from_utf8(output.lock().unwrap().clone()).unwrap();
+        assert!(logs.contains("/v1/status"));
+        assert!(!logs.contains(secret));
     }
 
     #[tokio::test]
@@ -1296,13 +1390,13 @@ mod tests {
             ("/v1/captures/{capture_id}/publications", "post"),
             ("/v1/public-traces/{publication_id}", "get"),
             ("/v1/public-traces/{publication_id}/verify", "post"),
+            ("/v1/session", "delete"),
         ] {
             assert!(
                 body["paths"][path][method]["responses"]["401"].is_object(),
                 "OpenAPI missing the protected response for {method} {path}"
             );
         }
-        assert!(body["paths"]["/v1/session"]["delete"]["responses"]["401"].is_null());
     }
 
     #[tokio::test]
@@ -1347,5 +1441,51 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert!(!String::from_utf8_lossy(&body).contains(&token));
+    }
+
+    #[tokio::test]
+    async fn expired_dashboard_sessions_are_rejected_and_removed() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        state.sessions.lock().await.insert("expired".into(), 0);
+
+        let response = router(state.clone())
+            .unwrap()
+            .oneshot(
+                Request::get("/v1/status")
+                    .header(header::COOKIE, format!("{SESSION_COOKIE}=expired"))
+                    .header(DASHBOARD_HEADER, "dashboard")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(state.sessions.lock().await.is_empty());
+    }
+
+    #[test]
+    fn concurrent_first_starts_share_the_winning_admin_token() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = Arc::new(directory.path().join("admin-token"));
+        let barrier = Arc::new(Barrier::new(8));
+        let threads = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    load_or_create_token(&path).unwrap()
+                })
+            })
+            .collect::<Vec<_>>();
+        let tokens = threads
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<Vec<_>>();
+
+        assert!(tokens.iter().all(|token| token == &tokens[0]));
+        assert_eq!(fs::read_to_string(path.as_ref()).unwrap(), tokens[0]);
     }
 }

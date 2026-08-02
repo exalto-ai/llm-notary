@@ -25,6 +25,29 @@ pub(super) fn config_file(name: &str) -> Result<PathBuf> {
 }
 
 pub(crate) fn write_private_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
+    let pending = write_private_pending_file(path, contents)?;
+    pending.replace(path)?;
+    Ok(())
+}
+
+/// Publishes a fully written private file only when `path` does not exist.
+///
+/// The hard link is an atomic create-if-absent operation. This prevents two
+/// service processes starting at the same time from replacing each other's
+/// newly generated administration token.
+pub(crate) fn write_private_file_if_absent(path: &Path, contents: &[u8]) -> Result<bool> {
+    let pending = write_private_pending_file(path, contents)?;
+    match fs::hard_link(pending.path(), path) {
+        Ok(()) => {
+            ensure_private_file(path)?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        Err(error) => Err(error).with_context(|| format!("atomically create {}", path.display())),
+    }
+}
+
+fn write_private_pending_file(path: &Path, contents: &[u8]) -> Result<PendingFile> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -59,11 +82,13 @@ pub(crate) fn write_private_file_atomically(path: &Path, contents: &[u8]) -> Res
     drop(output);
     #[cfg(windows)]
     restrict_windows_acl(pending.path(), "F")?;
-    pending.replace(path)?;
-    Ok(())
+    Ok(pending)
 }
 
 fn create_private_directory(path: &Path) -> Result<()> {
+    let existed = path
+        .try_exists()
+        .with_context(|| format!("inspect {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -73,15 +98,19 @@ fn create_private_directory(path: &Path) -> Result<()> {
             .mode(0o700)
             .create(path)
             .with_context(|| format!("create {}", path.display()))?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("restrict {}", path.display()))?;
+        if !existed {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("restrict {}", path.display()))?;
+        }
     }
     #[cfg(all(not(unix), not(windows)))]
     fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
     #[cfg(windows)]
     {
         fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
-        restrict_windows_acl(path, "(OI)(CI)F")?;
+        if !existed {
+            restrict_windows_acl(path, "(OI)(CI)F")?;
+        }
     }
     Ok(())
 }
@@ -89,7 +118,19 @@ fn create_private_directory(path: &Path) -> Result<()> {
 pub(crate) fn ensure_private_file(path: &Path) -> Result<()> {
     #[cfg(windows)]
     restrict_windows_acl(path, "F")?;
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let metadata = fs::metadata(path)
+            .with_context(|| format!("inspect private file {}", path.display()))?;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            bail!(
+                "private file {} must not be readable by group or others",
+                path.display()
+            );
+        }
+    }
+    #[cfg(all(not(unix), not(windows)))]
     let _ = path;
     Ok(())
 }
@@ -162,6 +203,40 @@ impl Drop for PendingFile {
 #[cfg(not(windows))]
 fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
     fs::rename(source, destination)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn private_write_preserves_an_existing_parent_directory_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        let destination = directory.path().join("admin-token");
+
+        write_private_file_atomically(&destination, b"secret").unwrap();
+
+        assert_eq!(
+            fs::metadata(directory.path()).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(
+            fs::metadata(destination).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn private_create_if_absent_never_replaces_the_winner() {
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("admin-token");
+
+        assert!(write_private_file_if_absent(&destination, b"first").unwrap());
+        assert!(!write_private_file_if_absent(&destination, b"second").unwrap());
+        assert_eq!(fs::read(destination).unwrap(), b"first");
+    }
 }
 
 #[cfg(windows)]

@@ -39,3 +39,4 @@ uuid = { version = "1.16", features = ["v4"] }
 [dev-dependencies]
 llm-notary-core = { path = "../llm-notary-core", features = ["test-utils"] }
 tower = { version = "0.5", features = ["util"] }
+tracing-subscriber = { version = "0.3", features = ["fmt"] }

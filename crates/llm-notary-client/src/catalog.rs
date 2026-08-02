@@ -525,8 +525,9 @@ impl Catalog {
             .map_err(Into::into)
     }
 
-    /// Queues a finalization or returns the active/completed operation that
-    /// already represents it. The partial unique index closes races.
+    /// Queues a finalization or returns the durable operation that already
+    /// represents it. Failed and interrupted work keeps the same identity and
+    /// must be resumed through the explicit retry endpoint.
     pub fn enqueue_finalization(
         &self,
         capture_id: &str,
@@ -547,7 +548,7 @@ impl Catalog {
         }
         if let Some(operation) = transaction
             .query_row(
-                "SELECT * FROM operations WHERE capture_id = ? AND kind = 'finalization' AND state IN ('queued', 'running', 'finalized') ORDER BY created_at_unix_ms DESC LIMIT 1",
+                "SELECT * FROM operations WHERE capture_id = ? AND kind = 'finalization' ORDER BY created_at_unix_ms DESC LIMIT 1",
                 params![capture_id],
                 operation_from_row,
             )
@@ -1204,8 +1205,12 @@ mod tests {
                 .state,
             "interrupted"
         );
+        let (same, duplicate) = catalog.enqueue_finalization("cap-1", 7).unwrap().unwrap();
+        assert!(duplicate);
+        assert_eq!(same.operation_id, running.operation_id);
+        assert_eq!(same.state, "interrupted");
         let retried = catalog
-            .retry_operation(&running.operation_id, 7)
+            .retry_operation(&running.operation_id, 8)
             .unwrap()
             .unwrap();
         assert_eq!(retried.state, "queued");
