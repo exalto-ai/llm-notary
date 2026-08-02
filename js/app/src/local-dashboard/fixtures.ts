@@ -29,8 +29,8 @@ export const fixtureCaptures: Capture[] = [
     completed_at_unix_ms: fixtureNow - hour * 18 + 2312, provider: 'openrouter', operation: '/api/v1/chat/completions',
     requested_model: 'openai/gpt-5-mini', response_model: 'openai/gpt-5-mini', http_status: 200,
     streaming: true, request_bytes: 2208, response_bytes: 14392, duration_ms: 2312,
-    capture_state: 'pending', finalization_state: 'finalized', prompt_preview: 'Summarize the supplied public research notes into a concise brief.',
-    prompt_preview_truncated: false, output_preview: 'The evidence supports three conclusions, each tied to a source in the supplied notes.',
+    capture_state: 'pending', finalization_state: 'finalized', prompt_preview: 'Choose a reproducibility baseline from two sanitized evaluation runs and explain the limits of the evidence.',
+    prompt_preview_truncated: false, output_preview: 'Use Run 15 as the baseline; its settings were recorded and all 20 reruns matched.',
     output_preview_truncated: false
   },
   {
@@ -116,11 +116,11 @@ const fixtureTrace: Trace = {
         { key: 'gen_ai.usage.input_tokens', value: { intValue: '184' } },
         { key: 'gen_ai.usage.output_tokens', value: { intValue: '126' } },
         { key: 'gen_ai.input.messages', value: { stringValue: JSON.stringify([
-          { role: 'system', parts: [{ type: 'text', content: 'Write a concise research brief. Separate direct evidence from inference and preserve the supplied source labels.' }] },
-          { role: 'user', parts: [{ type: 'text', content: 'Summarize these sanitized public research notes:\n\nSource A — Reproducible evaluations pin the model version and decoding settings.\nSource B — Published evidence should bind claims to the exact provider response bytes.\nSource C — Independent verification should not require access to the original API credential.' }] }
+          { role: 'system', parts: [{ type: 'text', content: 'Write a short research note. Preserve source labels and flag conclusions that go beyond the notes.' }] },
+          { role: 'user', parts: [{ type: 'text', content: 'Choose a reproducibility baseline from these sanitized evaluation notes.\n\nRun 14 (Source A): The model version was pinned, but temperature was omitted. A 20-case rerun produced three different answers.\nRun 15 (Source B): The model version and temperature=0 were pinned. A 20-case rerun matched every answer.\nArchive check (Source C): The stored response SHA-256 matched the bytes downloaded from the provider.' }] }
         ]) } },
         { key: 'gen_ai.output.messages', value: { stringValue: JSON.stringify([
-          { role: 'assistant', finish_reason: 'stop', parts: [{ type: 'text', content: 'The notes support three conclusions:\n\n1. Reproducibility starts with a pinned model version and decoding configuration (Source A).\n2. A trustworthy record binds its claims to the exact authenticated provider response (Source B).\n3. Verification can remain independent without redisclosing the caller\u2019s API credential (Source C).\n\nTogether, these controls make an evaluation easier to reproduce, audit, and share safely.' }] }
+          { role: 'assistant', finish_reason: 'stop', parts: [{ type: 'text', content: 'Use Run 15 as the reproducibility baseline. It records both the model version and temperature, and its 20-case rerun matched exactly (Source B).\n\nRun 14 is weaker because the missing temperature leaves a plausible explanation for its three mismatches (Source A). The notes do not prove that temperature caused them.\n\nThe archive check confirms that the retained response matches the downloaded provider bytes (Source C). It does not establish that the response is factually correct.' }] }
         ]) } }
       ] }] }] }]
   }

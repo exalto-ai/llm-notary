@@ -69,8 +69,8 @@ describe('local evidence dashboard', () => {
   test('renders the disclosed prompt and response as a readable transcript', async () => {
     renderDashboard('/traces/cap-20260727-research-brief');
     await expect.element(page.getByRole('heading', { name: 'Prompt and response' })).toBeVisible();
-    await expect.element(page.getByText(/Summarize these sanitized public research notes/)).toBeVisible();
-    await expect.element(page.getByText(/The notes support three conclusions/)).toBeVisible();
+    await expect.element(page.getByText(/Run 14 \(Source A\):/)).toBeVisible();
+    await expect.element(page.getByText(/Use Run 15 as the reproducibility baseline/)).toBeVisible();
     await expect.element(page.getByText('assistant', { exact: true })).toBeVisible();
   });
 
@@ -160,7 +160,7 @@ describe('local evidence dashboard', () => {
   test('completes the documentation publication flow without external services', async () => {
     renderDashboard('/publishing');
     await page.getByRole('button', { name: 'Begin authorization' }).click();
-    await expect.element(page.getByText('This documentation fixture does not contact GitHub.')).toBeVisible();
+    await expect.element(page.getByText('This fixture stays in the browser and does not contact GitHub.')).toBeVisible();
     await page.getByRole('button', { name: 'Approve demo session' }).click();
     await expect.element(page.getByRole('heading', { name: 'fixture-user' })).toBeVisible();
     await page.getByRole('button', { name: 'Review publication' }).click();
@@ -170,7 +170,7 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('verifying', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Refresh status' }).click();
     await expect.element(page.getByText('admitted', { exact: true })).toBeVisible();
-    await expect.element(page.getByText('No data was uploaded.', { exact: false })).toBeVisible();
+    await expect.element(page.getByText('It did not upload data.', { exact: false })).toBeVisible();
     await page.getByRole('button', { name: 'Inspect admitted fixture' }).click();
     await expect.element(page.getByRole('heading', { name: 'Prompt and response' })).toBeVisible();
   });

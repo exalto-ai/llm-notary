@@ -533,7 +533,7 @@ function TraceInspector({ api, captureId, mobile, onBack }: { api: LocalApi; cap
       if (currentCapture.current !== result.capture_id) return;
       setVerification(result);
       setActiveTab('verification');
-      notifications.show({ title: 'Trace verified', message: 'Evidence, disclosure, hashes, and canonical OTLP all match.' });
+      notifications.show({ title: 'Trace verified', message: 'The package passed every local verification check.' });
     },
     onError: (error) => mutationError('Trace verification failed', error)
   });
@@ -551,7 +551,7 @@ function TraceInspector({ api, captureId, mobile, onBack }: { api: LocalApi; cap
   return <article className="trace-inspector">{mobile && <Button variant="subtle" leftSection={<ArrowLeft size={15} />} onClick={onBack}>All finalized traces</Button>}<Group justify="space-between"><div><Text className="eyebrow">Verified trace package</Text><Title order={2}>{captureId}</Title></div><Button leftSection={<ShieldCheck size={15} />} loading={verify.isPending} onClick={() => verify.mutate()}>Verify now</Button></Group>
     <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
       <Tabs.List><Tabs.Tab value="summary">Summary</Tabs.Tab><Tabs.Tab value="evidence">Evidence</Tabs.Tab><Tabs.Tab value="trace">Trace</Tabs.Tab><Tabs.Tab value="verification">Verification</Tabs.Tab></Tabs.List>
-      <Tabs.Panel value="summary"><div className="document-panel"><Title order={3}>Authenticated inference</Title><Text>This portable package binds canonical OpenTelemetry output to the disclosed provider exchange and TLSNotary evidence.</Text><dl className="metadata-grid"><Fact label="Capture" value={captureId} /><Fact label="Format" value={typeof manifest.format === 'string' ? manifest.format : 'Not reported'} /><Fact label="Normalizer" value={typeof manifest.normalizer_version === 'string' ? manifest.normalizer_version : 'Not reported'} /><Fact label="Provider" value={providerLabel} /></dl><TraceTranscriptView transcripts={transcripts} /></div></Tabs.Panel>
+      <Tabs.Panel value="summary"><div className="document-panel"><Title order={3}>Authenticated inference</Title><Text>The package contains the disclosed provider exchange, its canonical OpenTelemetry trace, and the supporting TLSNotary evidence.</Text><dl className="metadata-grid"><Fact label="Capture" value={captureId} /><Fact label="Format" value={typeof manifest.format === 'string' ? manifest.format : 'Not reported'} /><Fact label="Normalizer" value={typeof manifest.normalizer_version === 'string' ? manifest.normalizer_version : 'Not reported'} /><Fact label="Provider" value={providerLabel} /></dl><TraceTranscriptView transcripts={transcripts} /></div></Tabs.Panel>
       <Tabs.Panel value="evidence"><Receipt title="Evidence receipt" fields={[
         ['Trace SHA-256', traceDigest], ['Provider', providerLabel], ['Source created', typeof source.created_at_unix_ms === 'number' ? formatDate(source.created_at_unix_ms) : 'Not reported'], ['Manifest format', typeof manifest.format === 'string' ? manifest.format : 'Not reported']
       ]} /></Tabs.Panel>
@@ -564,19 +564,51 @@ function TraceInspector({ api, captureId, mobile, onBack }: { api: LocalApi; cap
 }
 
 function TraceTranscriptView({ transcripts }: { transcripts: TraceTranscript[] }) {
+  const messageCount = transcripts.reduce((count, transcript) => count + transcript.input.length + transcript.output.length, 0);
   return <section className="trace-transcript" aria-label="Disclosed prompt and response">
-    <div className="trace-transcript-heading"><div><Text className="eyebrow">Disclosed trace contents</Text><Title order={3}>Prompt and response</Title></div><Text>{transcripts.reduce((count, transcript) => count + transcript.input.length + transcript.output.length, 0)} messages</Text></div>
-    {!transcripts.length ? <Text className="trace-transcript-empty">This trace does not disclose message contents.</Text> : transcripts.map((transcript, inferenceIndex) => <section className="trace-inference" key={`${transcript.model}-${inferenceIndex}`}>
-      {transcripts.length > 1 && <Text className="trace-inference-label">Inference {inferenceIndex + 1} · {transcript.model}</Text>}
-      <div className="trace-message-list">{[...transcript.input.map((message) => ({ flow: 'Prompt', message })), ...transcript.output.map((message) => ({ flow: 'Response', message }))].map(({ flow, message }, messageIndex) => <article className="trace-message" key={`${flow}-${messageIndex}`}>
-        <header><span>{flow}</span><b>{message.role}</b>{message.finishReason && <em>{message.finishReason}</em>}</header>
-        <div className="trace-message-body">{message.parts.length ? message.parts.map((part, partIndex) => part.kind === 'text'
-          ? <p key={partIndex}>{part.text}</p>
-          : <div className="trace-structured-part" key={partIndex}><span>{part.kind}</span><pre>{part.text}</pre></div>)
-          : <p className="trace-transcript-empty">No disclosed content.</p>}</div>
-      </article>)}</div>
-    </section>)}
+    <div className="trace-transcript-heading">
+      <div>
+        <Text className="eyebrow">Disclosed trace contents</Text>
+        <Title order={3}>Prompt and response</Title>
+      </div>
+      <Text>{messageCount} messages</Text>
+    </div>
+    {!transcripts.length
+      ? <Text className="trace-transcript-empty">This trace does not disclose message contents.</Text>
+      : transcripts.map((transcript, inferenceIndex) => {
+        const messages = [
+          ...transcript.input.map((message) => ({ flow: 'Prompt', message })),
+          ...transcript.output.map((message) => ({ flow: 'Response', message }))
+        ];
+        return <section className="trace-inference" key={`${transcript.model}-${inferenceIndex}`}>
+          {transcripts.length > 1 && <Text className="trace-inference-label">Inference {inferenceIndex + 1} · {transcript.model}</Text>}
+          <div className="trace-message-list">
+            {messages.map(({ flow, message }, messageIndex) => <TraceMessageView
+              key={`${flow}-${messageIndex}`}
+              flow={flow}
+              message={message}
+            />)}
+          </div>
+        </section>;
+      })}
   </section>;
+}
+
+function TraceMessageView({ flow, message }: { flow: string; message: TraceMessage }) {
+  return <article className="trace-message">
+    <header>
+      <span>{flow}</span>
+      <b>{message.role}</b>
+      {message.finishReason && <em>{message.finishReason}</em>}
+    </header>
+    <div className="trace-message-body">
+      {message.parts.length
+        ? message.parts.map((part, index) => part.kind === 'text'
+          ? <p key={index}>{part.text}</p>
+          : <div className="trace-structured-part" key={index}><span>{part.kind}</span><pre>{part.text}</pre></div>)
+        : <p className="trace-transcript-empty">No disclosed content.</p>}
+    </div>
+  </article>;
 }
 
 function Receipt({ title, fields, verified = false }: { title: string; fields: Array<[string, string]>; verified?: boolean }) {
@@ -632,17 +664,78 @@ function PublishingView({ api, fixture, navigate }: { api: LocalApi; fixture: bo
   }, onError: (error) => mutationError('Publication failed', error) });
   const pollReady = Boolean(started && (fixture || now >= started.nextPollAt));
   const publicationState = publication.data?.state ?? submitted?.state;
-  const publicationCopy = publicationState === 'admitted'
-    ? fixture ? 'The documentation fixture completed admission locally. No data was uploaded.' : 'The platform admitted this trace and published its verification record.'
-    : publicationState && ['rejected', 'expired', 'failed'].includes(publicationState)
-      ? `The publication ended in ${publicationState}. Review the safe failure code before retrying.`
-      : `The local service reports ${publicationState ?? 'queued'}. Status refreshes while admission is in progress.`;
+  let publicationCopy = `The local service reports ${publicationState ?? 'queued'}. Status refreshes while admission is in progress.`;
+  if (publicationState === 'admitted') {
+    publicationCopy = fixture
+      ? 'The fixture completed admission in this browser. It did not upload data.'
+      : 'The platform admitted this trace and published its verification record.';
+  } else if (publicationState && ['rejected', 'expired', 'failed'].includes(publicationState)) {
+    publicationCopy = `The publication ended in ${publicationState}. Review the safe failure code before retrying.`;
+  }
+
   return <div className="view-page"><PageHeader eyebrow="Public upload" title="Publishing" copy="Publishing is separate from finalization. Select and confirm a verified trace before uploading it." />
-    <div className="publishing-grid"><Paper className="publishing-auth"><Group justify="space-between"><Text className="eyebrow">Publication account</Text><KeyRound size={17} /></Group>
-      {auth.isLoading ? <Loader size="sm" /> : auth.error ? <QueryError error={auth.error} title="Publication authorization is unavailable" /> : auth.data?.signed_in ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.device_name}</Text><StatusLabel state="ready" /></> : <><Title order={2}>Not authorized</Title><Text>{fixture ? 'Run the local approval simulation to explore the complete publication flow.' : 'Begin the device flow, then approve the recognizable local dashboard session in your browser.'}</Text><Button variant="outline" loading={beginAuth.isPending} onClick={() => beginAuth.mutate()}>Begin authorization</Button></>}
-      {started && <div className="authorization-code"><Text className="eyebrow">{fixture ? 'Example approval code' : 'Approval code'}</Text><code>{started.flow.user_code}</code>{fixture ? <div className="fixture-flow-note"><Database size={16} aria-hidden="true" /><Text>This documentation fixture does not contact GitHub. Approve the simulated session here to continue.</Text></div> : <a href={started.flow.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a>}<Text>{pollReady ? fixture ? 'The demo session is ready for approval.' : 'Approval can now be checked.' : `Waiting ${Math.max(1, Math.ceil((started.nextPollAt - now) / 1000))}s before the next check.`}</Text><Button size="xs" variant="subtle" disabled={!pollReady} loading={pollAuth.isPending} onClick={() => pollAuth.mutate()}>{fixture ? 'Approve demo session' : 'Check approval'}</Button></div>}
-    </Paper><Paper className="publication-choice"><Text className="eyebrow">Eligible finalized trace</Text><Title order={2}>Choose what to publish</Title>{traces.error ? <QueryError error={traces.error} title="Eligible traces are unavailable" /> : traces.isLoading ? <Loader size="sm" /> : eligible.length ? <><Select label="Finalized trace" data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} /><div className="consent-copy"><ShieldCheck size={18} /><Text>The finalized disclosure is verified locally before upload. The encrypted source bundle is never a publication input.</Text></div><Button disabled={!auth.data?.signed_in || !selectedId} onClick={() => setConfirm(true)}>Review publication</Button>{submitted && <div className="publication-result"><Group justify="space-between"><Text className="eyebrow">Latest submission</Text><StatusLabel state={publicationState ?? 'queued'} /></Group><Text>Capture <code>{submitted.capture_id}</code></Text><code>{submitted.job_id}</code>{publication.error ? <QueryError error={publication.error} title="Publication status is unavailable" /> : <Text>{publicationCopy}</Text>}{publication.data?.failure_code && <Text>Safe failure code: <code>{publication.data.failure_code}</code></Text>}<Group><Button variant="outline" loading={publication.isFetching} onClick={() => publication.refetch()}>Refresh status</Button>{fixture && publicationState === 'admitted' ? <Button variant="outline" onClick={() => navigate({ view: 'traces', id: submitted.capture_id })}>Inspect admitted fixture</Button> : publication.data?.trace_url && <Button component="a" href={publication.data.trace_url} target="_blank" rel="noreferrer" variant="outline">Open public trace</Button>}{!fixture && publication.data?.stamp_url && <Button component="a" href={publication.data.stamp_url} target="_blank" rel="noreferrer" variant="outline">Open admission receipt</Button>}</Group></div>}</> : <EmptyState title="Nothing eligible" copy="Finalize a capture first." />}</Paper></div>
-    <Modal opened={confirm} onClose={() => setConfirm(false)} title="Publish this finalized trace?" centered><Stack><Text>This creates a public admission job for <code>{selectedId}</code>. Public trace content may be visible to anyone.</Text><Group justify="flex-end"><Button variant="subtle" onClick={() => setConfirm(false)}>Keep private</Button><Button loading={publish.isPending} onClick={() => publish.mutate()}>Publish trace</Button></Group></Stack></Modal>
+    <div className="publishing-grid">
+      <Paper className="publishing-auth">
+        <Group justify="space-between"><Text className="eyebrow">Publication account</Text><KeyRound size={17} /></Group>
+        {auth.isLoading
+          ? <Loader size="sm" />
+          : auth.error
+            ? <QueryError error={auth.error} title="Publication authorization is unavailable" />
+            : auth.data?.signed_in
+              ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.device_name}</Text><StatusLabel state="ready" /></>
+              : <>
+                <Title order={2}>Not authorized</Title>
+                <Text>{fixture ? 'Use the simulated approval below to test publication.' : 'Begin the device flow, then approve this dashboard session in your browser.'}</Text>
+                <Button variant="outline" loading={beginAuth.isPending} onClick={() => beginAuth.mutate()}>Begin authorization</Button>
+              </>}
+        {started && <div className="authorization-code">
+          <Text className="eyebrow">{fixture ? 'Example approval code' : 'Approval code'}</Text>
+          <code>{started.flow.user_code}</code>
+          {fixture
+            ? <div className="fixture-flow-note"><Database size={16} aria-hidden="true" /><Text>This fixture stays in the browser and does not contact GitHub.</Text></div>
+            : <a href={started.flow.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a>}
+          <Text>{pollReady
+            ? fixture ? 'You can approve the simulated session now.' : 'You can check for approval now.'
+            : `Waiting ${Math.max(1, Math.ceil((started.nextPollAt - now) / 1000))}s before the next check.`}</Text>
+          <Button size="xs" variant="subtle" disabled={!pollReady} loading={pollAuth.isPending} onClick={() => pollAuth.mutate()}>{fixture ? 'Approve demo session' : 'Check approval'}</Button>
+        </div>}
+      </Paper>
+      <Paper className="publication-choice">
+        <Text className="eyebrow">Eligible finalized trace</Text>
+        <Title order={2}>Choose what to publish</Title>
+        {traces.error
+          ? <QueryError error={traces.error} title="Eligible traces are unavailable" />
+          : traces.isLoading
+            ? <Loader size="sm" />
+            : eligible.length
+              ? <>
+                <Select label="Finalized trace" data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} />
+                <div className="consent-copy"><ShieldCheck size={18} /><Text>The service verifies the disclosure before upload. It never uploads the encrypted source bundle.</Text></div>
+                <Button disabled={!auth.data?.signed_in || !selectedId} onClick={() => setConfirm(true)}>Review publication</Button>
+                {submitted && <div className="publication-result">
+                  <Group justify="space-between"><Text className="eyebrow">Latest submission</Text><StatusLabel state={publicationState ?? 'queued'} /></Group>
+                  <Text>Capture <code>{submitted.capture_id}</code></Text>
+                  <code>{submitted.job_id}</code>
+                  {publication.error ? <QueryError error={publication.error} title="Publication status is unavailable" /> : <Text>{publicationCopy}</Text>}
+                  {publication.data?.failure_code && <Text>Safe failure code: <code>{publication.data.failure_code}</code></Text>}
+                  <Group>
+                    <Button variant="outline" loading={publication.isFetching} onClick={() => publication.refetch()}>Refresh status</Button>
+                    {fixture && publicationState === 'admitted'
+                      ? <Button variant="outline" onClick={() => navigate({ view: 'traces', id: submitted.capture_id })}>Inspect admitted fixture</Button>
+                      : publication.data?.trace_url && <Button component="a" href={publication.data.trace_url} target="_blank" rel="noreferrer" variant="outline">Open public trace</Button>}
+                    {!fixture && publication.data?.stamp_url && <Button component="a" href={publication.data.stamp_url} target="_blank" rel="noreferrer" variant="outline">Open admission receipt</Button>}
+                  </Group>
+                </div>}
+              </>
+              : <EmptyState title="Nothing eligible" copy="Finalize a capture first." />}
+      </Paper>
+    </div>
+    <Modal opened={confirm} onClose={() => setConfirm(false)} title="Publish this finalized trace?" centered>
+      <Stack>
+        <Text>This submits <code>{selectedId}</code> for public admission. Its disclosed trace may become visible to anyone.</Text>
+        <Group justify="flex-end"><Button variant="subtle" onClick={() => setConfirm(false)}>Keep private</Button><Button loading={publish.isPending} onClick={() => publish.mutate()}>Publish trace</Button></Group>
+      </Stack>
+    </Modal>
   </div>;
 }
 

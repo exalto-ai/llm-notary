@@ -11,14 +11,14 @@ provider proxy on port 8787 never serves it.
 
 ## Find the next useful action
 
-The **Overview** starts with service, vault, notary, and work-queue health. The
+**Overview** shows service, vault, notary, and work-queue health. The
 capture-state strip distinguishes live captures, pending evidence, active
 finalization work, finalized traces, and failures. Recent activity uses safe
 event summaries and links back to the relevant work.
 
 ![Local dashboard in light mode showing an online service, available vault and notary, capture-state counts, the next finalization action, and recent activity.](images/local-dashboard/overview-light.png)
 
-The stable left sidebar separates the local workflow:
+Use the sidebar to move between these parts of the local workflow:
 
 - **Captures** searches and filters private evidence, then opens a selected
   capture in a detail panel.
@@ -27,9 +27,9 @@ The stable left sidebar separates the local workflow:
 - **Finalized traces** presents the portable package and an independent local
   verification action.
 - **Publishing** keeps optional public publication separate from local proof
-  creation and requires a deliberate confirmation.
+  creation and requires confirmation.
 - **Activity** shows a bounded redacted event stream.
-- **Settings and API** reports safe listener, vault, notary, and preview-policy
+- **Settings** reports safe listener, vault, notary, and preview-policy
   state and links to the live OpenAPI contract.
 
 ## Inspect a capture
@@ -53,8 +53,9 @@ deduplicated; it does not create parallel work.
 
 The operation queue shows state, capture identifier, attempt, and enqueue time.
 The inspector shows the known stage, timestamps, and `attempt_history`, with
-one durable record for each worker attempt. Proof generation may take minutes,
-so a running operation deliberately has no invented percentage.
+one durable record for each worker attempt. Proof generation may take minutes.
+The dashboard does not show a percentage because the service does not report
+one.
 
 Failed and restart-interrupted operations show only a safe failure code and a
 **Retry finalization** action. Retry requeues the same durable operation.
@@ -92,12 +93,12 @@ retains the capture and job identifiers, then polls authenticated
 `GET /v1/publications/{job_id}` through the local service for later admission
 changes. Remote publication credentials never enter the browser.
 
-## Activity, settings, and API discovery
+## Activity and settings
 
 Activity can be refreshed and filtered by severity, capture identifier,
 operation identifier, event type, or time. Events contain bounded messages and
 identifiers, never request bodies, response bodies, raw headers, credentials,
-or filesystem paths. Settings and API shows safe runtime facts and the exact
+or filesystem paths. Settings shows safe runtime facts and the exact
 `http://127.0.0.1:8788/openapi.json` discovery URL for scripts and coding
 agents.
 
