@@ -163,8 +163,8 @@ function AuthGate({ api, onAuthenticated }: { api: LocalApi; onAuthenticated: ()
 
 function Brand() {
   return <div className="local-brand"><span className="local-mark" aria-hidden="true">
-    <img className="local-mark-light" src={logoDarkUrl} alt="" />
-    <img className="local-mark-dark" src={logoLightUrl} alt="" />
+    <img className="local-mark-light" src={logoDarkUrl} alt="" width={30} height={30} />
+    <img className="local-mark-dark" src={logoLightUrl} alt="" width={30} height={30} />
   </span><span>LLM Notary</span></div>;
 }
 
