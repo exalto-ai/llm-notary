@@ -3,13 +3,11 @@ name: CI
 on:
   pull_request:
     paths-ignore:
-      - "**.md"
       - "LICENSE*"
   push:
     branches:
       - main
     paths-ignore:
-      - "**.md"
       - "LICENSE*"
 
 permissions:
@@ -29,6 +27,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       app: ${{ steps.filter.outputs.app }}
+      docs: ${{ steps.filter.outputs.docs }}
       containers: ${{ steps.filter.outputs.containers }}
     steps:
       - uses: actions/checkout@v6
@@ -58,6 +57,12 @@ jobs:
               - 'crates/llm-notary-client/src/admin.rs'
               - 'crates/llm-notary-client/examples/export-local-openapi.rs'
               - 'js/app/**'
+            docs:
+              - '.github/workflows/ci.yml'
+              - 'README.md'
+              - 'docs/**'
+              - 'js/app/scripts/check-local-docs.mjs'
+              - 'js/app/src/local-dashboard/generated/openapi.json'
             containers:
               - '.github/workflows/ci.yml'
               - '.dockerignore'
@@ -137,6 +142,18 @@ jobs:
       - name: Install dashboard browser
         run: npx playwright install --with-deps chromium
       - run: npm run test:dashboard
+
+  docs:
+    name: Local workflow documentation
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+      - run: node js/app/scripts/check-local-docs.mjs
 
   containers:
     name: Container configuration

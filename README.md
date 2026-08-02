@@ -73,8 +73,9 @@ cargo run -p llm-notary-server --bin llm-notary-server -- --signing-key notary.d
 ```
 
 The notary prints its public key at startup. A local or private deployment sets
-that value as `notary.public_key` alongside its explicit endpoint. Production
-clients discover and pin the public key through the signed directory.
+that value as `notary.public_key` alongside its explicit endpoint and reports
+its key identifier during finalized-trace verification. Production clients
+discover and pin the public key through the signed directory.
 
 In another terminal, start `llm-notary`. The foreground process owns both the
 provider proxy at `127.0.0.1:8787` and the authenticated administration API at
@@ -103,6 +104,17 @@ send it only in `Authorization: Bearer ...`, and never put it in a URL. The
 provider proxy does not mount any admin route. Operational CLI subcommands
 have been removed; scripts and coding agents should fetch `/openapi.json` and
 use the versioned REST API.
+
+Open [http://127.0.0.1:8788](http://127.0.0.1:8788) for the local evidence
+dashboard. It exchanges the token for an HttpOnly browser session and supports
+the complete capture, finalization, verification, activity, and publication
+workflow. See the [local service and REST API guide](docs/local-service.md),
+[dashboard guide](docs/local-dashboard.md), and [coding-agent
+playbook](docs/agent-playbook.md) for the complete flow.
+
+> **Migration:** the old local operational subcommands have been removed.
+> Start the foreground service with `llm-notary`; use the dashboard or the
+> code-generated REST API for every local operation.
 
 ### Configure the local client
 
@@ -210,6 +222,9 @@ curl -X POST -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
 curl -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   http://127.0.0.1:8788/v1/operations/op-example
 ```
+
+For safe token loading, exact state transitions, deduplication, restart
+recovery, and retry behavior, follow the [local service guide](docs/local-service.md).
 
 The output directory is a single portable package:
 
