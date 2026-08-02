@@ -9,13 +9,16 @@ import { useDisclosure, useMediaQuery } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Activity, Archive, ArrowLeft, BookOpenCheck, Check, CheckCircle2, CodeXml,
+  Activity, Archive, ArrowLeft, Check, CheckCircle2, CodeXml,
   ChevronRight, CircleDot, Clock3, Copy, Database, FileCheck2, FileJson2, Gauge,
   KeyRound, ListChecks, Moon, PanelLeft, Play, RefreshCw, Search,
   Send, Settings, ShieldCheck, Sun, TerminalSquare, Unplug, XCircle
 } from 'lucide-react';
 import { LocalApiError } from './api';
 import type { Capture, CaptureDetail, Event, LocalApi, Operation, Publication, PublicationAuthStarted, Status, Verification } from './api';
+
+const logoDarkUrl = new URL('../../public/logo-dark.png', import.meta.url).href;
+const logoLightUrl = new URL('../../public/logo-light.png', import.meta.url).href;
 
 export type DashboardView = 'overview' | 'captures' | 'finalizations' | 'traces' | 'publishing' | 'activity' | 'settings';
 
@@ -159,7 +162,10 @@ function AuthGate({ api, onAuthenticated }: { api: LocalApi; onAuthenticated: ()
 }
 
 function Brand() {
-  return <div className="local-brand"><span className="local-mark"><BookOpenCheck size={17} aria-hidden="true" /></span><span>LLM Notary</span></div>;
+  return <div className="local-brand"><span className="local-mark" aria-hidden="true">
+    <img className="local-mark-light" src={logoDarkUrl} alt="" />
+    <img className="local-mark-dark" src={logoLightUrl} alt="" />
+  </span><span>LLM Notary</span></div>;
 }
 
 function Sidebar({ route, status, onNavigate, fixture }: {

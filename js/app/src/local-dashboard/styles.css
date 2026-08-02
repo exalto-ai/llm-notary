@@ -69,7 +69,11 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'DM Mono', ui-monospace
 .dashboard-main { height: calc(100vh - 64px); overflow: auto; }
 .mobile-burger { display: none; }
 .local-brand { align-items: center; display: inline-flex; font-size: 15px; font-weight: 800; gap: 9px; letter-spacing: -.035em; white-space: nowrap; }
-.local-mark { align-items: center; background: var(--ink); border-radius: 999px; color: var(--surface); display: inline-flex; height: 30px; justify-content: center; width: 30px; }
+.local-mark { display: inline-flex; height: 30px; width: 30px; }
+.local-mark img { border-radius: 7px; display: block; height: 30px; width: 30px; }
+.local-mark-dark { display: none !important; }
+[data-mantine-color-scheme='dark'] .local-mark-light { display: none; }
+[data-mantine-color-scheme='dark'] .local-mark-dark { display: block !important; }
 .header-context { color: var(--muted); font-size: 13px; }
 .header-health { align-items: center; display: flex; gap: 9px; }
 .header-health > span:last-child { color: var(--muted); font-family: 'DM Mono', monospace; font-size: 11px; }
