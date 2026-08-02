@@ -292,8 +292,7 @@ pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
 
 pub(crate) async fn authenticate_for_publication_status()
 -> std::result::Result<AuthenticatedApi, PublicationAuthenticationError> {
-    let mut credentials =
-        load_credentials().map_err(|_| PublicationAuthenticationError::Required)?;
+    let mut credentials = load_credentials_for_publication_status()?;
     let (access_token, rotated_refresh_token) =
         refresh_for_publication_status(&credentials).await?;
     credentials.refresh_token = rotated_refresh_token;
@@ -379,6 +378,32 @@ fn load_credentials() -> Result<FileCredentials> {
         credentials.refresh_token = keychain_load()?.ok_or_else(|| {
             anyhow!("publication credentials are missing; authorize through the local admin API")
         })?;
+    }
+    Ok(credentials)
+}
+
+fn load_credentials_for_publication_status()
+-> std::result::Result<FileCredentials, PublicationAuthenticationError> {
+    let path = credentials_path().map_err(|_| PublicationAuthenticationError::Unavailable)?;
+    load_credentials_for_publication_status_at(&path)
+}
+
+fn load_credentials_for_publication_status_at(
+    path: &Path,
+) -> std::result::Result<FileCredentials, PublicationAuthenticationError> {
+    let data = match fs::read(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(PublicationAuthenticationError::Required);
+        }
+        Err(_) => return Err(PublicationAuthenticationError::Unavailable),
+    };
+    let mut credentials: FileCredentials =
+        serde_json::from_slice(&data).map_err(|_| PublicationAuthenticationError::Unavailable)?;
+    if credentials.refresh_token.is_empty() {
+        credentials.refresh_token = keychain_load()
+            .map_err(|_| PublicationAuthenticationError::Unavailable)?
+            .ok_or(PublicationAuthenticationError::Required)?;
     }
     Ok(credentials)
 }
@@ -499,7 +524,7 @@ fn keychain_store(token: &str) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn keychain_load() -> Result<Option<String>> {
-    let output = match Command::new("secret-tool")
+    let output = Command::new("secret-tool")
         .args([
             "lookup",
             "service",
@@ -508,10 +533,7 @@ fn keychain_load() -> Result<Option<String>> {
             KEYCHAIN_ACCOUNT,
         ])
         .output()
-    {
-        Ok(output) => output,
-        Err(_) => return Ok(None),
-    };
+        .context("read OS keychain")?;
     if output.status.success() {
         Ok(Some(
             String::from_utf8(output.stdout)
@@ -609,6 +631,32 @@ mod tests {
                 .unwrap_err(),
             PublicationAuthenticationError::Unavailable
         );
+    }
+
+    #[test]
+    fn publication_status_credential_load_distinguishes_absence_from_broken_storage() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config").join("credentials.json");
+        assert!(matches!(
+            load_credentials_for_publication_status_at(&path),
+            Err(PublicationAuthenticationError::Required)
+        ));
+
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"not-json").unwrap();
+        assert!(matches!(
+            load_credentials_for_publication_status_at(&path),
+            Err(PublicationAuthenticationError::Unavailable)
+        ));
+
+        let credentials = FileCredentials {
+            api_origin: ApiOrigin::parse("https://example.com").unwrap(),
+            refresh_token: "refresh-token".to_owned(),
+        };
+        write_file_credentials_at(&path, &credentials).unwrap();
+        let loaded = load_credentials_for_publication_status_at(&path).unwrap();
+        assert_eq!(loaded.api_origin, credentials.api_origin);
+        assert_eq!(loaded.refresh_token, credentials.refresh_token);
     }
 
     #[test]
