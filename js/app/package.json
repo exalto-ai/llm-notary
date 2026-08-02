@@ -12,6 +12,8 @@
     "build:site": "vite build",
     "check:dashboard-types": "tsc -p tsconfig.dashboard.json",
     "build:dashboard": "npm run check:dashboard-types && vite build --mode local-dashboard",
+    "capture:dashboard-docs": "node scripts/capture-dashboard-docs.mjs",
+    "check:local-docs": "node scripts/check-local-docs.mjs",
     "test:dashboard": "vitest run --config vitest.dashboard.config.js",
     "preview": "vite preview --host 127.0.0.1",
     "preview:dashboard": "vite preview --outDir ../../crates/llm-notary-client/dashboard --host 127.0.0.1"

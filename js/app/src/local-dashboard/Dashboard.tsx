@@ -68,9 +68,9 @@ function formatBytes(value?: number | null) {
 }
 
 function stateTone(state: string) {
-  if (['finalized', 'verified', 'ready', 'success'].includes(state)) return 'ready';
-  if (['failed', 'interrupted', 'error', 'unavailable'].includes(state)) return 'danger';
-  if (['running', 'capturing', 'queued'].includes(state)) return 'active';
+  if (['finalized', 'verified', 'ready', 'success', 'admitted'].includes(state)) return 'ready';
+  if (['failed', 'interrupted', 'error', 'unavailable', 'rejected', 'expired'].includes(state)) return 'danger';
+  if (['running', 'capturing', 'queued', 'uploading', 'verifying'].includes(state)) return 'active';
   return 'muted';
 }
 
@@ -110,6 +110,82 @@ function mutationError(title: string, error: unknown) {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+type TraceMessagePart = { kind: string; text: string };
+type TraceMessage = { role: string; parts: TraceMessagePart[]; finishReason?: string };
+type TraceTranscript = { model: string; input: TraceMessage[]; output: TraceMessage[] };
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function readableTraceValue(value: unknown) {
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function traceMessagePart(value: unknown): TraceMessagePart {
+  const part = asRecord(value);
+  const kind = typeof part.type === 'string' ? part.type : 'structured content';
+  if (kind === 'text') {
+    return { kind, text: typeof part.content === 'string' ? part.content : readableTraceValue(part.content) };
+  }
+  if (kind === 'tool_call') {
+    const name = typeof part.name === 'string' && part.name ? part.name : 'unnamed tool';
+    return { kind: 'tool call', text: `${name}(${readableTraceValue(part.arguments)})` };
+  }
+  if (kind === 'tool_call_response') {
+    return { kind: 'tool result', text: readableTraceValue(part.result) };
+  }
+  return { kind: kind.replaceAll('_', ' '), text: readableTraceValue(value) };
+}
+
+function traceMessages(value?: string): TraceMessage[] {
+  if (!value) return [];
+  try {
+    return asArray(JSON.parse(value)).map((item) => {
+      const message = asRecord(item);
+      return {
+        role: typeof message.role === 'string' ? message.role : 'message',
+        parts: asArray(message.parts).map(traceMessagePart),
+        ...(typeof message.finish_reason === 'string' ? { finishReason: message.finish_reason } : {})
+      };
+    });
+  } catch {
+    return [];
+  }
+}
+
+function traceTranscripts(value: unknown): TraceTranscript[] {
+  const trace = asRecord(value);
+  const transcripts: TraceTranscript[] = [];
+  for (const resourceValue of asArray(trace.resourceSpans)) {
+    const resource = asRecord(resourceValue);
+    for (const scopeValue of asArray(resource.scopeSpans)) {
+      const scope = asRecord(scopeValue);
+      for (const spanValue of asArray(scope.spans)) {
+        const span = asRecord(spanValue);
+        const attributes = new Map<string, string>();
+        for (const attributeValue of asArray(span.attributes)) {
+          const attribute = asRecord(attributeValue);
+          const key = typeof attribute.key === 'string' ? attribute.key : null;
+          const stringValue = asRecord(attribute.value).stringValue;
+          if (key && typeof stringValue === 'string') attributes.set(key, stringValue);
+        }
+        const input = traceMessages(attributes.get('gen_ai.input.messages'));
+        const output = traceMessages(attributes.get('gen_ai.output.messages'));
+        if (input.length || output.length) {
+          transcripts.push({ model: attributes.get('gen_ai.response.model') ?? attributes.get('gen_ai.request.model') ?? 'Model not reported', input, output });
+        }
+      }
+    }
+  }
+  return transcripts;
 }
 
 function withinTime(timestamp: number, range: string | null) {
@@ -199,7 +275,7 @@ export function Dashboard({ api, fixture = false }: { api: LocalApi; fixture?: b
   const route = useRoute();
   const queryClient = useQueryClient();
   const [navOpened, { open: openNav, close: closeNav }] = useDisclosure(false);
-  const statusQuery = useQuery({ queryKey: ['status'], queryFn: api.status, retry: false, refetchInterval: fixture ? false : 10_000 });
+  const statusQuery = useQuery({ queryKey: ['status'], queryFn: api.status, retry: false, refetchInterval: 10_000 });
   const navigate = (next: Route) => { closeNav(); goTo(next); };
 
   if (statusQuery.isLoading) return <LoadingState label="Connecting to the local service" />;
@@ -218,17 +294,17 @@ export function Dashboard({ api, fixture = false }: { api: LocalApi; fixture?: b
     </Drawer>
     <AppShell.Main className="dashboard-main">
       <Burger opened={navOpened} onClick={openNav} className="mobile-nav-trigger" size="sm" aria-label="Open navigation" />
-      <View route={route} status={status} api={api} navigate={navigate} />
+      <View route={route} status={status} api={api} navigate={navigate} fixture={fixture} />
     </AppShell.Main>
   </AppShell>;
 }
 
-function View({ route, status, api, navigate }: { route: Route; status: Status; api: LocalApi; navigate: (route: Route) => void }) {
+function View({ route, status, api, navigate, fixture }: { route: Route; status: Status; api: LocalApi; navigate: (route: Route) => void; fixture: boolean }) {
   switch (route.view) {
     case 'captures': return <CapturesView api={api} selectedId={route.id} navigate={navigate} />;
-    case 'finalizations': return <FinalizationsView api={api} selectedId={route.id} navigate={navigate} />;
+    case 'finalizations': return <FinalizationsView api={api} selectedId={route.id} navigate={navigate} fixture={fixture} />;
     case 'traces': return <TracesView api={api} selectedId={route.id} navigate={navigate} />;
-    case 'publishing': return <PublishingView api={api} />;
+    case 'publishing': return <PublishingView api={api} fixture={fixture} navigate={navigate} />;
     case 'activity': return <ActivityView api={api} />;
     case 'settings': return <SettingsView status={status} />;
     default: return <OverviewView api={api} status={status} navigate={navigate} />;
@@ -323,6 +399,8 @@ function CaptureInspector({ api, capture, mobile, onBack, navigate }: { api: Loc
       notifications.show({ title: result.deduplicated ? 'Already in the queue' : 'Finalization queued', message: result.deduplicated ? 'The existing operation remains active.' : 'Proof generation will run in the background.' });
       queryClient.invalidateQueries({ queryKey: ['captures'] });
       queryClient.invalidateQueries({ queryKey: ['operations'] });
+      queryClient.invalidateQueries({ queryKey: ['status'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
       navigate({ view: 'finalizations', id: result.operation.operation_id });
     },
     onError: (error) => mutationError('Could not finalize', error)
@@ -333,6 +411,8 @@ function CaptureInspector({ api, capture, mobile, onBack, navigate }: { api: Loc
       notifications.show({ title: 'Retry queued', message: 'The existing durable operation will make another attempt.' });
       queryClient.invalidateQueries({ queryKey: ['captures'] });
       queryClient.invalidateQueries({ queryKey: ['operations'] });
+      queryClient.invalidateQueries({ queryKey: ['status'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
       navigate({ view: 'finalizations', id: operation.operation_id });
     },
     onError: (error) => mutationError('Could not retry finalization', error)
@@ -384,7 +464,7 @@ function ArtifactList({ detail }: { detail: CaptureDetail }) {
   return <div className="artifact-list">{detail.artifacts.map((artifact) => <div key={artifact.kind}><FileJson2 size={17} aria-hidden="true" /><div><b>{artifact.kind.replaceAll('_', ' ')}</b><span>{formatBytes(artifact.size_bytes)}</span></div><code>{artifact.sha256.slice(0, 12)}…</code></div>)}</div>;
 }
 
-function FinalizationsView({ api, selectedId, navigate }: { api: LocalApi; selectedId?: string; navigate: (route: Route) => void }) {
+function FinalizationsView({ api, selectedId, navigate, fixture }: { api: LocalApi; selectedId?: string; navigate: (route: Route) => void; fixture: boolean }) {
   const operations = useQuery({ queryKey: ['operations'], queryFn: () => api.operations(), refetchInterval: 3_000 });
   const selectedOperation = useQuery({
     queryKey: ['operation', selectedId], queryFn: () => api.operation(selectedId!),
@@ -398,19 +478,23 @@ function FinalizationsView({ api, selectedId, navigate }: { api: LocalApi; selec
         <Table.Thead><Table.Tr><Table.Th>State</Table.Th><Table.Th>Capture</Table.Th><Table.Th>Attempt</Table.Th><Table.Th>Queued</Table.Th><Table.Th /></Table.Tr></Table.Thead>
         <Table.Tbody>{(operations.data?.items ?? []).map((operation) => <Table.Tr key={operation.operation_id} className={active?.operation_id === operation.operation_id ? 'is-selected' : ''}>
           <Table.Td><StatusLabel state={operation.state} /></Table.Td><Table.Td><code>{operation.capture_id}</code></Table.Td><Table.Td>{operation.attempt}</Table.Td><Table.Td>{formatDate(operation.created_at_unix_ms)}</Table.Td><Table.Td><ActionIcon variant="subtle" aria-label={`Inspect ${operation.operation_id}`} onClick={() => navigate({ view: 'finalizations', id: operation.operation_id })}><ChevronRight size={16} /></ActionIcon></Table.Td>
-        </Table.Tr>)}</Table.Tbody></Table></Table.ScrollContainer></div>{active && <OperationInspector api={api} operation={active} />}</div>}
+        </Table.Tr>)}</Table.Tbody></Table></Table.ScrollContainer></div>{active && <OperationInspector api={api} operation={active} fixture={fixture} />}</div>}
   </div>;
 }
 
-function OperationInspector({ api, operation }: { api: LocalApi; operation: Operation }) {
+function OperationInspector({ api, operation, fixture }: { api: LocalApi; operation: Operation; fixture: boolean }) {
   const queryClient = useQueryClient();
   const retry = useMutation({ mutationFn: () => api.retry(operation.operation_id), onSuccess: (updated) => {
     notifications.show({ title: 'Retry queued', message: 'The same durable operation will make another attempt.' });
     queryClient.setQueryData(['operation', operation.operation_id], updated);
     queryClient.invalidateQueries({ queryKey: ['operations'] });
+    queryClient.invalidateQueries({ queryKey: ['captures'] });
+    queryClient.invalidateQueries({ queryKey: ['status'] });
+    queryClient.invalidateQueries({ queryKey: ['events'] });
   }, onError: (error) => mutationError('Could not retry finalization', error) });
   const retryable = ['failed', 'interrupted'].includes(operation.state);
-  return <Paper className="operation-inspector"><Text className="eyebrow">Selected operation</Text><Group justify="space-between" align="flex-start"><div><Title order={2}>{operation.state === 'running' ? 'Generating private proof' : operation.state.replaceAll('_', ' ')}</Title><Text className="mono-id">{operation.operation_id}</Text></div><StatusLabel state={operation.state} /></Group>
+  return <Paper className="operation-inspector"><Text className="eyebrow">Selected operation</Text><Group justify="space-between" align="flex-start"><div><Title order={2}>{operation.state === 'running' ? fixture ? 'Simulated proof generation' : 'Generating private proof' : operation.state.replaceAll('_', ' ')}</Title><Text className="mono-id">{operation.operation_id}</Text></div><StatusLabel state={operation.state} /></Group>
+    {fixture && <div className="fixture-flow-note operation-fixture-note"><Database size={16} aria-hidden="true" /><Text><b>Simulation only.</b> No proof worker is running. Times are relative to when this preview was opened.</Text></div>}
     <div className="operation-stage"><span className={['queued', 'running', 'finalized'].includes(operation.state) ? 'complete' : ''}>Queued</span><i /><span className={['running', 'finalized'].includes(operation.state) ? 'complete' : ''}>Proof generation</span><i /><span className={operation.state === 'finalized' ? 'complete' : ''}>Verified package</span></div>
     <dl className="receipt-list"><Fact label="Capture" value={operation.capture_id ?? '—'} /><Fact label="Attempt" value={String(operation.attempt)} /><Fact label="Started" value={formatDate(operation.started_at_unix_ms)} /><Fact label="Finished" value={formatDate(operation.completed_at_unix_ms)} />{operation.failure_code && <Fact label="Safe failure code" value={operation.failure_code} />}</dl>
     <div className="attempt-history"><Text className="eyebrow">Attempt history</Text>{operation.attempt_history.length ? <ol className="history-list">{operation.attempt_history.map((attempt) => <li key={attempt.attempt}><div><Group gap="xs"><b>Attempt {attempt.attempt}</b><StatusLabel state={attempt.state} /></Group><Text>{formatDate(attempt.started_at_unix_ms)} → {formatDate(attempt.completed_at_unix_ms)}</Text>{attempt.failure_code && <code>{attempt.failure_code}</code>}</div></li>)}</ol> : <Text className="empty-copy">No proof attempt has started yet.</Text>}</div>
@@ -449,7 +533,7 @@ function TraceInspector({ api, captureId, mobile, onBack }: { api: LocalApi; cap
       if (currentCapture.current !== result.capture_id) return;
       setVerification(result);
       setActiveTab('verification');
-      notifications.show({ title: 'Trace verified', message: 'Evidence, disclosure, hashes, and canonical OTLP all match.' });
+      notifications.show({ title: 'Trace verified', message: 'The package passed every local verification check.' });
     },
     onError: (error) => mutationError('Trace verification failed', error)
   });
@@ -463,10 +547,11 @@ function TraceInspector({ api, captureId, mobile, onBack }: { api: LocalApi; cap
   const providerHost = typeof provider.host === 'string' ? provider.host : null;
   const providerLabel = [providerName, providerHost].filter(Boolean).join(' · ') || 'Not reported';
   const traceDigest = typeof manifest.trace_sha256 === 'string' ? manifest.trace_sha256 : 'Not reported';
+  const transcripts = traceTranscripts(trace.data.trace);
   return <article className="trace-inspector">{mobile && <Button variant="subtle" leftSection={<ArrowLeft size={15} />} onClick={onBack}>All finalized traces</Button>}<Group justify="space-between"><div><Text className="eyebrow">Verified trace package</Text><Title order={2}>{captureId}</Title></div><Button leftSection={<ShieldCheck size={15} />} loading={verify.isPending} onClick={() => verify.mutate()}>Verify now</Button></Group>
     <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
       <Tabs.List><Tabs.Tab value="summary">Summary</Tabs.Tab><Tabs.Tab value="evidence">Evidence</Tabs.Tab><Tabs.Tab value="trace">Trace</Tabs.Tab><Tabs.Tab value="verification">Verification</Tabs.Tab></Tabs.List>
-      <Tabs.Panel value="summary"><div className="document-panel"><Title order={3}>Authenticated inference</Title><Text>This portable package binds canonical OpenTelemetry output to the disclosed provider exchange and TLSNotary evidence.</Text><dl className="metadata-grid"><Fact label="Capture" value={captureId} /><Fact label="Format" value={typeof manifest.format === 'string' ? manifest.format : 'Not reported'} /><Fact label="Normalizer" value={typeof manifest.normalizer_version === 'string' ? manifest.normalizer_version : 'Not reported'} /><Fact label="Provider" value={providerLabel} /></dl></div></Tabs.Panel>
+      <Tabs.Panel value="summary"><div className="document-panel"><Title order={3}>Authenticated inference</Title><Text>The package contains the disclosed provider exchange, its canonical OpenTelemetry trace, and the supporting TLSNotary evidence.</Text><dl className="metadata-grid"><Fact label="Capture" value={captureId} /><Fact label="Format" value={typeof manifest.format === 'string' ? manifest.format : 'Not reported'} /><Fact label="Normalizer" value={typeof manifest.normalizer_version === 'string' ? manifest.normalizer_version : 'Not reported'} /><Fact label="Provider" value={providerLabel} /></dl><TraceTranscriptView transcripts={transcripts} /></div></Tabs.Panel>
       <Tabs.Panel value="evidence"><Receipt title="Evidence receipt" fields={[
         ['Trace SHA-256', traceDigest], ['Provider', providerLabel], ['Source created', typeof source.created_at_unix_ms === 'number' ? formatDate(source.created_at_unix_ms) : 'Not reported'], ['Manifest format', typeof manifest.format === 'string' ? manifest.format : 'Not reported']
       ]} /></Tabs.Panel>
@@ -478,11 +563,59 @@ function TraceInspector({ api, captureId, mobile, onBack }: { api: LocalApi; cap
   </article>;
 }
 
+function TraceTranscriptView({ transcripts }: { transcripts: TraceTranscript[] }) {
+  const messageCount = transcripts.reduce((count, transcript) => count + transcript.input.length + transcript.output.length, 0);
+  return <section className="trace-transcript" aria-label="Disclosed prompt and response">
+    <div className="trace-transcript-heading">
+      <div>
+        <Text className="eyebrow">Disclosed trace contents</Text>
+        <Title order={3}>Prompt and response</Title>
+      </div>
+      <Text>{messageCount} messages</Text>
+    </div>
+    {!transcripts.length
+      ? <Text className="trace-transcript-empty">This trace does not disclose message contents.</Text>
+      : transcripts.map((transcript, inferenceIndex) => {
+        const messages = [
+          ...transcript.input.map((message) => ({ flow: 'Prompt', message })),
+          ...transcript.output.map((message) => ({ flow: 'Response', message }))
+        ];
+        return <section className="trace-inference" key={`${transcript.model}-${inferenceIndex}`}>
+          {transcripts.length > 1 && <Text className="trace-inference-label">Inference {inferenceIndex + 1} · {transcript.model}</Text>}
+          <div className="trace-message-list">
+            {messages.map(({ flow, message }, messageIndex) => <TraceMessageView
+              key={`${flow}-${messageIndex}`}
+              flow={flow}
+              message={message}
+            />)}
+          </div>
+        </section>;
+      })}
+  </section>;
+}
+
+function TraceMessageView({ flow, message }: { flow: string; message: TraceMessage }) {
+  return <article className="trace-message">
+    <header>
+      <span>{flow}</span>
+      <b>{message.role}</b>
+      {message.finishReason && <em>{message.finishReason}</em>}
+    </header>
+    <div className="trace-message-body">
+      {message.parts.length
+        ? message.parts.map((part, index) => part.kind === 'text'
+          ? <p key={index}>{part.text}</p>
+          : <div className="trace-structured-part" key={index}><span>{part.kind}</span><pre>{part.text}</pre></div>)
+        : <p className="trace-transcript-empty">No disclosed content.</p>}
+    </div>
+  </article>;
+}
+
 function Receipt({ title, fields, verified = false }: { title: string; fields: Array<[string, string]>; verified?: boolean }) {
   return <div className="receipt"><Group justify="space-between"><Text className="eyebrow">{title}</Text>{verified && <StatusLabel state="verified" />}</Group><dl>{fields.map(([label, value]) => <Fact key={label} label={label} value={value} />)}</dl></div>;
 }
 
-function PublishingView({ api }: { api: LocalApi }) {
+function PublishingView({ api, fixture, navigate }: { api: LocalApi; fixture: boolean; navigate: (route: Route) => void }) {
   const queryClient = useQueryClient();
   const auth = useQuery({ queryKey: ['publication-auth'], queryFn: api.publicationAuth, retry: false });
   const traces = useQuery({ queryKey: ['captures', 'publishing'], queryFn: () => api.allCaptures({ finalization_state: 'finalized' }) });
@@ -529,13 +662,80 @@ function PublishingView({ api }: { api: LocalApi }) {
   const publish = useMutation({ mutationFn: () => api.publish(selectedId!), onSuccess: (result) => {
     setConfirm(false); setSubmitted(result); notifications.show({ title: 'Publication submitted', message: `Job ${result.job_id} is ${result.state}.` });
   }, onError: (error) => mutationError('Publication failed', error) });
-  const pollReady = Boolean(started && now >= started.nextPollAt);
+  const pollReady = Boolean(started && (fixture || now >= started.nextPollAt));
+  const publicationState = publication.data?.state ?? submitted?.state;
+  let publicationCopy = `The local service reports ${publicationState ?? 'queued'}. Status refreshes while admission is in progress.`;
+  if (publicationState === 'admitted') {
+    publicationCopy = fixture
+      ? 'The fixture completed admission in this browser. It did not upload data.'
+      : 'The platform admitted this trace and published its verification record.';
+  } else if (publicationState && ['rejected', 'expired', 'failed'].includes(publicationState)) {
+    publicationCopy = `The publication ended in ${publicationState}. Review the safe failure code before retrying.`;
+  }
+
   return <div className="view-page"><PageHeader eyebrow="Public upload" title="Publishing" copy="Publishing is separate from finalization. Select and confirm a verified trace before uploading it." />
-    <div className="publishing-grid"><Paper className="publishing-auth"><Group justify="space-between"><Text className="eyebrow">Publication account</Text><KeyRound size={17} /></Group>
-      {auth.isLoading ? <Loader size="sm" /> : auth.error ? <QueryError error={auth.error} title="Publication authorization is unavailable" /> : auth.data?.signed_in ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.device_name}</Text><StatusLabel state="ready" /></> : <><Title order={2}>Not authorized</Title><Text>Begin the device flow, then approve the recognizable local dashboard session in your browser.</Text><Button variant="outline" loading={beginAuth.isPending} onClick={() => beginAuth.mutate()}>Begin authorization</Button></>}
-      {started && <div className="authorization-code"><Text className="eyebrow">Approval code</Text><code>{started.flow.user_code}</code><a href={started.flow.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a><Text>{pollReady ? 'Approval can now be checked.' : `Waiting ${Math.max(1, Math.ceil((started.nextPollAt - now) / 1000))}s before the next check.`}</Text><Button size="xs" variant="subtle" disabled={!pollReady} loading={pollAuth.isPending} onClick={() => pollAuth.mutate()}>Check approval</Button></div>}
-    </Paper><Paper className="publication-choice"><Text className="eyebrow">Eligible finalized trace</Text><Title order={2}>Choose what to publish</Title>{traces.error ? <QueryError error={traces.error} title="Eligible traces are unavailable" /> : traces.isLoading ? <Loader size="sm" /> : eligible.length ? <><Select label="Finalized trace" data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} /><div className="consent-copy"><ShieldCheck size={18} /><Text>The finalized disclosure is verified locally before upload. The encrypted source bundle is never a publication input.</Text></div><Button disabled={!auth.data?.signed_in || !selectedId} onClick={() => setConfirm(true)}>Review publication</Button>{submitted && <div className="publication-result"><Group justify="space-between"><Text className="eyebrow">Latest submission</Text><StatusLabel state={publication.data?.state ?? submitted.state} /></Group><Text>Capture <code>{submitted.capture_id}</code></Text><code>{submitted.job_id}</code>{publication.error ? <QueryError error={publication.error} title="Publication status is unavailable" /> : <Text>The local service reports {publication.data?.state ?? submitted.state}. Status refreshes while admission is in progress.</Text>}{publication.data?.failure_code && <Text>Safe failure code: <code>{publication.data.failure_code}</code></Text>}<Group><Button variant="outline" loading={publication.isFetching} onClick={() => publication.refetch()}>Refresh status</Button>{publication.data?.trace_url && <Button component="a" href={publication.data.trace_url} target="_blank" rel="noreferrer" variant="outline">Open public trace</Button>}</Group></div>}</> : <EmptyState title="Nothing eligible" copy="Finalize a capture first." />}</Paper></div>
-    <Modal opened={confirm} onClose={() => setConfirm(false)} title="Publish this finalized trace?" centered><Stack><Text>This creates a public admission job for <code>{selectedId}</code>. Public trace content may be visible to anyone.</Text><Group justify="flex-end"><Button variant="subtle" onClick={() => setConfirm(false)}>Keep private</Button><Button loading={publish.isPending} onClick={() => publish.mutate()}>Publish trace</Button></Group></Stack></Modal>
+    <div className="publishing-grid">
+      <Paper className="publishing-auth">
+        <Group justify="space-between"><Text className="eyebrow">Publication account</Text><KeyRound size={17} /></Group>
+        {auth.isLoading
+          ? <Loader size="sm" />
+          : auth.error
+            ? <QueryError error={auth.error} title="Publication authorization is unavailable" />
+            : auth.data?.signed_in
+              ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.device_name}</Text><StatusLabel state="ready" /></>
+              : <>
+                <Title order={2}>Not authorized</Title>
+                <Text>{fixture ? 'Use the simulated approval below to test publication.' : 'Begin the device flow, then approve this dashboard session in your browser.'}</Text>
+                <Button variant="outline" loading={beginAuth.isPending} onClick={() => beginAuth.mutate()}>Begin authorization</Button>
+              </>}
+        {started && <div className="authorization-code">
+          <Text className="eyebrow">{fixture ? 'Example approval code' : 'Approval code'}</Text>
+          <code>{started.flow.user_code}</code>
+          {fixture
+            ? <div className="fixture-flow-note"><Database size={16} aria-hidden="true" /><Text>This fixture stays in the browser and does not contact GitHub.</Text></div>
+            : <a href={started.flow.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a>}
+          <Text>{pollReady
+            ? fixture ? 'You can approve the simulated session now.' : 'You can check for approval now.'
+            : `Waiting ${Math.max(1, Math.ceil((started.nextPollAt - now) / 1000))}s before the next check.`}</Text>
+          <Button size="xs" variant="subtle" disabled={!pollReady} loading={pollAuth.isPending} onClick={() => pollAuth.mutate()}>{fixture ? 'Approve demo session' : 'Check approval'}</Button>
+        </div>}
+      </Paper>
+      <Paper className="publication-choice">
+        <Text className="eyebrow">Eligible finalized trace</Text>
+        <Title order={2}>Choose what to publish</Title>
+        {traces.error
+          ? <QueryError error={traces.error} title="Eligible traces are unavailable" />
+          : traces.isLoading
+            ? <Loader size="sm" />
+            : eligible.length
+              ? <>
+                <Select label="Finalized trace" data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} />
+                <div className="consent-copy"><ShieldCheck size={18} /><Text>The service verifies the disclosure before upload. It never uploads the encrypted source bundle.</Text></div>
+                <Button disabled={!auth.data?.signed_in || !selectedId} onClick={() => setConfirm(true)}>Review publication</Button>
+                {submitted && <div className="publication-result">
+                  <Group justify="space-between"><Text className="eyebrow">Latest submission</Text><StatusLabel state={publicationState ?? 'queued'} /></Group>
+                  <Text>Capture <code>{submitted.capture_id}</code></Text>
+                  <code>{submitted.job_id}</code>
+                  {publication.error ? <QueryError error={publication.error} title="Publication status is unavailable" /> : <Text>{publicationCopy}</Text>}
+                  {publication.data?.failure_code && <Text>Safe failure code: <code>{publication.data.failure_code}</code></Text>}
+                  <Group>
+                    <Button variant="outline" loading={publication.isFetching} onClick={() => publication.refetch()}>Refresh status</Button>
+                    {fixture && publicationState === 'admitted'
+                      ? <Button variant="outline" onClick={() => navigate({ view: 'traces', id: submitted.capture_id })}>Inspect admitted fixture</Button>
+                      : publication.data?.trace_url && <Button component="a" href={publication.data.trace_url} target="_blank" rel="noreferrer" variant="outline">Open public trace</Button>}
+                    {!fixture && publication.data?.stamp_url && <Button component="a" href={publication.data.stamp_url} target="_blank" rel="noreferrer" variant="outline">Open admission receipt</Button>}
+                  </Group>
+                </div>}
+              </>
+              : <EmptyState title="Nothing eligible" copy="Finalize a capture first." />}
+      </Paper>
+    </div>
+    <Modal opened={confirm} onClose={() => setConfirm(false)} title="Publish this finalized trace?" centered>
+      <Stack>
+        <Text>This submits <code>{selectedId}</code> for public admission. Its disclosed trace may become visible to anyone.</Text>
+        <Group justify="flex-end"><Button variant="subtle" onClick={() => setConfirm(false)}>Keep private</Button><Button loading={publish.isPending} onClick={() => publish.mutate()}>Publish trace</Button></Group>
+      </Stack>
+    </Modal>
   </div>;
 }
 

@@ -177,7 +177,7 @@ mod tests {
     fn private_write_preserves_an_existing_parent_directory_mode() {
         let directory = tempfile::tempdir().unwrap();
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755)).unwrap();
-        let destination = directory.path().join("admin-token");
+        let destination = directory.path().join("private-credentials");
 
         write_private_file_atomically(&destination, b"secret").unwrap();
 

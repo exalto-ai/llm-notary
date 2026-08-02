@@ -41,10 +41,11 @@ anchor. Every v3 record must state its transport explicitly.
 
 ## Compatibility
 
-Directory v1 and v2 are end of life. The project has not published a CLI
-release or tag, so there are no released clients to support; the API and CLI
-accept and write v3 only. A development build with an old `notary-trust.json`
-cache must remove that cache and refresh the directory before use. This avoids
+Directory v1 and v2 are end of life. The project has not published a local
+service release or tag, so there are no released clients to support; the
+platform API and local service accept and write v3 only. A development build
+with an old `notary-trust.json` cache must remove that cache and refresh the
+directory before use. This avoids
 silently downgrading an endpoint with an explicit TLS requirement to raw TCP.
 
 ## Status semantics
@@ -57,25 +58,26 @@ silently downgrading an endpoint with an explicit TLS requirement to raw TCP.
 | `revoked` | no | no | no after the client refreshes the directory |
 
 The active key is used for new proxy sessions. A deferred bundle contains a
-notary-signed receipt, so `finalize` tries cached active and retiring records
-and selects the endpoint whose key verifies that receipt. This lets a planned
-rotation drain old bundles without making the notary store per-user state.
+notary-signed receipt, so the finalization worker tries cached active and
+retiring records and selects the endpoint whose key verifies that receipt.
+This lets a planned rotation drain old bundles without making the notary store
+per-user state.
 
 `valid_until_unix_ms` is the last authenticated provider-connection timestamp
 the key may sign. `finalize_until_unix_ms` is the later wall-clock drain
 deadline for already-created bundles. The authenticated provider-connection
 timestamp in a capture or finalized package selects the historical trust
-window. Local `verify` remains offline and therefore uses the last cached
-directory. `publish` always refreshes the directory and enforces current
-revocation state before sending any bytes, even when an explicit key was used
-for the initial local verification.
+window. `POST /v1/captures/{capture_id}/trace:verify` remains offline and
+therefore uses the last cached directory. Publication always refreshes the
+directory and enforces current revocation state before sending any bytes, even
+when a configured explicit key was used for the initial local verification.
 
-Setting `notary.endpoint` in the client’s `config.toml` and passing
-`--trusted-notary-key` to `finalize` and `verify-trace` is an operator
-override. It does not use directory lifecycle policy. Use
-`--config /path/to/config.toml` when that client configuration is not in the
-standard user location. Explicit endpoints use `tls://host:port` or
-`tcp://host:port`; a bare `host:port` remains TCP for compatibility.
+Setting `notary.endpoint` and `notary.public_key` together in the local
+service's `config.toml` is an operator override. It does not use directory
+lifecycle policy. Start with `llm-notary --config /path/to/config.toml` when
+that configuration is not in the standard user location. Explicit endpoints
+use `tls://host:port` or `tcp://host:port`; a bare `host:port` remains TCP for
+compatibility.
 
 ## Planned rotation
 
