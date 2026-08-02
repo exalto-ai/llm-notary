@@ -1,14 +1,3 @@
-:root {
-  --ink: #101010;
-  --paper: #f6f5f2;
-  --white: #fff;
-  --line: #d8d7d2;
-  --muted: #6e6d68;
-  --green: #b9ff38;
-  --green-ink: #315400;
-  --soft: #ecebe6;
-}
-
 * {
   box-sizing: border-box;
 }
@@ -21,7 +10,7 @@ body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
-  font-family: Manrope, Arial, sans-serif;
+  font-family: 'Instrument Sans', Arial, sans-serif;
 }
 
 button,
@@ -305,7 +294,7 @@ a {
 .terminal pre b,
 .terminal pre em,
 .terminal a {
-  color: var(--green);
+  color: var(--inverse-accent);
 }
 
 .terminal pre em {
@@ -314,7 +303,7 @@ a {
 
 .terminal a {
   padding-bottom: 3px;
-  border-bottom: 1px solid var(--green);
+  border-bottom: 1px solid var(--inverse-accent);
   font-size: 11px;
   font-weight: 700;
 }

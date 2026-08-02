@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
-  ActionIcon, AppShell, Badge, Box, Burger, Button, Center, Drawer, Group,
-  Loader, Modal, NavLink, Paper, PasswordInput, ScrollArea, Select, SimpleGrid,
-  Stack, Table, Tabs, Text, TextInput, ThemeIcon, Title, Tooltip, UnstyledButton,
+  useEffect, useMemo, useRef, useState, type CSSProperties, type FormEvent,
+  type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode
+} from 'react';
+import {
+  ActionIcon, AppShell, Badge, Burger, Button, Center, Drawer, Group,
+  Loader, NavLink, Paper, PasswordInput, ScrollArea, SimpleGrid,
+  Stack, Tabs, Text, TextInput, ThemeIcon, Title, Tooltip, UnstyledButton,
   useMantineColorScheme
 } from '@mantine/core';
 import { useDisclosure, useMediaQuery } from '@mantine/hooks';
@@ -14,15 +17,56 @@ import {
   KeyRound, ListChecks, Moon, PanelLeft, Play, RefreshCw, Search,
   Send, Settings, ShieldCheck, Sun, TerminalSquare, Unplug, XCircle
 } from 'lucide-react';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle
+} from '@/components/ui/alert-dialog';
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue
+} from '@/components/ui/select';
 import { LocalApiError } from './api';
 import type { Capture, CaptureDetail, Event, LocalApi, Operation, Publication, PublicationAuthStarted, Status, Verification } from './api';
 
-const logoDarkUrl = new URL('../../public/logo-dark.png', import.meta.url).href;
-const logoLightUrl = new URL('../../public/logo-light.png', import.meta.url).href;
+const logoUrl = new URL('../../public/notary-mark.svg', import.meta.url).href;
 
 export type DashboardView = 'overview' | 'captures' | 'finalizations' | 'traces' | 'publishing' | 'activity' | 'settings';
 
 type Route = { view: DashboardView; id?: string };
+
+type AxisSelectOption = string | { value: string; label: string };
+
+function AxisSelect({
+  value,
+  onChange,
+  data,
+  placeholder,
+  ariaLabel,
+  label,
+  clearable = true
+}: {
+  value: string | null;
+  onChange: (value: string | null) => void;
+  data: AxisSelectOption[];
+  placeholder: string;
+  ariaLabel?: string;
+  label?: string;
+  clearable?: boolean;
+}) {
+  const allValue = '__axis_all__';
+  const options = data.map((option) => typeof option === 'string' ? { value: option, label: option } : option);
+  return <div className="axis-select-field">
+    {label && <span className="axis-select-label">{label}</span>}
+    <Select value={value ?? (clearable ? allValue : undefined)} onValueChange={(next) => onChange(next === allValue ? null : next)}>
+      <SelectTrigger className="axis-select-trigger" aria-label={ariaLabel ?? label}>
+        <SelectValue placeholder={placeholder} />
+      </SelectTrigger>
+      <SelectContent className="axis-select-content" position="popper" align="start">
+        {clearable && <SelectItem value={allValue}>{placeholder}</SelectItem>}
+        {options.map((option) => <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>)}
+      </SelectContent>
+    </Select>
+  </div>;
+}
 
 const navigation: Array<{ view: DashboardView; label: string; icon: typeof Gauge }> = [
   { view: 'overview', label: 'Overview', icon: Gauge },
@@ -78,13 +122,6 @@ function StatusLabel({ state }: { state: string }) {
   return <span className={`status-label status-label--${stateTone(state)}`}>
     <span aria-hidden="true" />{state.replaceAll('_', ' ')}
   </span>;
-}
-
-function PageHeader({ eyebrow, title, copy, action }: { eyebrow: string; title: string; copy: string; action?: ReactNode }) {
-  return <div className="page-header">
-    <div><Text className="eyebrow">{eyebrow}</Text><Title order={1}>{title}</Title><Text className="page-copy">{copy}</Text></div>
-    {action && <div className="page-action">{action}</div>}
-  </div>;
 }
 
 function EmptyState({ icon: Icon = Archive, title, copy }: { icon?: typeof Archive; title: string; copy: string }) {
@@ -204,6 +241,67 @@ function LoadingState({ label = 'Loading local evidence' }: { label?: string }) 
   return <Center className="loading-state"><Stack align="center" gap="sm"><Loader size="sm" /><Text>{label}</Text></Stack></Center>;
 }
 
+const splitStorageKey = 'llm-notary-dashboard-split-width';
+const splitDefault = 320;
+const splitMinimum = 272;
+const splitMaximum = 460;
+const splitDetailMinimum = 360;
+
+function storedSplitWidth() {
+  const stored = Number(window.localStorage.getItem(splitStorageKey));
+  return Number.isFinite(stored) && stored >= splitMinimum && stored <= splitMaximum ? stored : splitDefault;
+}
+
+function ResizableSplit({ className, children }: { className: string; children: [ReactNode, ReactNode] }) {
+  const container = useRef<HTMLDivElement>(null);
+  const [leftWidth, setLeftWidth] = useState(storedSplitWidth);
+  const clampWidth = (width: number) => {
+    const available = container.current?.getBoundingClientRect().width ?? splitMaximum + splitDetailMinimum;
+    return Math.round(Math.max(splitMinimum, Math.min(splitMaximum, available - splitDetailMinimum, width)));
+  };
+  const updateWidth = (width: number, persist = false) => {
+    const next = clampWidth(width);
+    setLeftWidth(next);
+    if (persist) window.localStorage.setItem(splitStorageKey, String(next));
+  };
+  const resizeFromPointer = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const bounds = container.current?.getBoundingClientRect();
+    if (bounds) updateWidth(event.clientX - bounds.left);
+  };
+  const stopResize = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const bounds = container.current?.getBoundingClientRect();
+    if (bounds) updateWidth(event.clientX - bounds.left, true);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    document.documentElement.classList.remove('is-resizing-split');
+  };
+  const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const next = event.key === 'ArrowLeft' ? leftWidth - 16
+      : event.key === 'ArrowRight' ? leftWidth + 16
+        : event.key === 'Home' ? splitMinimum
+          : event.key === 'End' ? splitMaximum : null;
+    if (next === null) return;
+    event.preventDefault();
+    updateWidth(next, true);
+  };
+  return <div ref={container} className={`resizable-split ${className}`} style={{ '--split-left': `${leftWidth}px` } as CSSProperties}>
+    {children[0]}
+    <div className="split-handle" role="separator" aria-label="Resize list and detail panels" aria-orientation="vertical"
+      aria-valuemin={splitMinimum} aria-valuemax={splitMaximum} aria-valuenow={leftWidth} tabIndex={0}
+      onKeyDown={onKeyDown}
+      onPointerDown={(event) => {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        document.documentElement.classList.add('is-resizing-split');
+        resizeFromPointer(event);
+      }}
+      onPointerMove={(event) => {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) resizeFromPointer(event);
+      }}
+      onPointerUp={stopResize}
+      onPointerCancel={stopResize} />
+    {children[1]}
+  </div>;
+}
+
 function SchemeControl() {
   const { colorScheme, setColorScheme } = useMantineColorScheme();
   const options = [
@@ -248,27 +346,35 @@ function AuthGate({ api, onAuthenticated }: { api: LocalApi; onAuthenticated: ()
 
 function Brand() {
   return <div className="local-brand"><span className="local-mark" aria-hidden="true">
-    <img className="local-mark-light" src={logoDarkUrl} alt="" width={30} height={30} />
-    <img className="local-mark-dark" src={logoLightUrl} alt="" width={30} height={30} />
+    <img src={logoUrl} alt="" width={30} height={30} />
   </span><span>LLM Notary</span></div>;
 }
 
-function Sidebar({ route, status, onNavigate, fixture, showBrand = true }: {
-  route: Route; status: Status; onNavigate: (route: Route) => void; fixture: boolean; showBrand?: boolean;
+function Sidebar({ route, status, onNavigate }: {
+  route: Route; status: Status; onNavigate: (route: Route) => void;
 }) {
   const count = (view: DashboardView) => view === 'captures' ? status.counts.pending
     : view === 'finalizations' ? status.counts.active_operations : undefined;
   return <div className="sidebar-inner">
     <div className="sidebar-primary">
-      {showBrand && <Brand />}
       <nav aria-label="Local dashboard">
         {navigation.map(({ view, label, icon: Icon }) => <NavLink key={view} component="button" type="button" aria-label={label} active={route.view === view}
           label={label} leftSection={<Icon size={17} strokeWidth={1.7} />} rightSection={count(view) ? <Badge size="xs">{count(view)}</Badge> : null}
           onClick={() => onNavigate({ view })} />)}
       </nav>
     </div>
-    {fixture && <div className="sidebar-foot"><div className="fixture-flag"><Database size={14} aria-hidden="true" />Documentation fixture</div></div>}
   </div>;
+}
+
+function TopNav({ route, status, onNavigate, opened, onOpenNavigation }: {
+  route: Route; status: Status; onNavigate: (route: Route) => void; opened: boolean; onOpenNavigation: () => void;
+}) {
+  const count = (view: DashboardView) => view === 'captures' ? status.counts.pending
+    : view === 'finalizations' ? status.counts.active_operations : undefined;
+  return <header className="local-topbar"><nav aria-label="Local dashboard">
+    {navigation.map(({ view, label, icon: Icon }) => <UnstyledButton key={view} className={route.view === view ? 'is-active' : ''}
+      onClick={() => onNavigate({ view })}><Icon size={15} aria-hidden="true" /><span>{label}</span>{count(view) ? <b>{count(view)}</b> : null}</UnstyledButton>)}
+  </nav><div className="local-topbar-status"><Burger opened={opened} onClick={onOpenNavigation} size="sm" aria-label="Open navigation" /></div></header>;
 }
 
 export function Dashboard({ api, fixture = false }: { api: LocalApi; fixture?: boolean }) {
@@ -285,15 +391,12 @@ export function Dashboard({ api, fixture = false }: { api: LocalApi; fixture?: b
   if (statusQuery.error) return <ErrorState onRetry={() => statusQuery.refetch()} />;
   if (!statusQuery.data) return <ErrorState onRetry={() => statusQuery.refetch()} />;
   const status = statusQuery.data;
-  return <AppShell
-    navbar={{ width: 248, breakpoint: 820, collapsed: { mobile: true } }}
-    padding={0} className="dashboard-shell">
-    <AppShell.Navbar className="dashboard-navbar"><Sidebar route={route} status={status} onNavigate={navigate} fixture={fixture} /></AppShell.Navbar>
-    <Drawer opened={navOpened} onClose={closeNav} title={<Brand />} size="min(88vw, 340px)" classNames={{ body: 'mobile-nav-body' }}>
-      <Sidebar route={route} status={status} onNavigate={navigate} fixture={fixture} showBrand={false} />
+  return <AppShell header={{ height: 50 }} padding={0} className="dashboard-shell">
+    <AppShell.Header className="dashboard-header"><TopNav route={route} status={status} onNavigate={navigate} opened={navOpened} onOpenNavigation={openNav} /></AppShell.Header>
+    <Drawer opened={navOpened} onClose={closeNav} title="Navigation" size="min(88vw, 340px)" classNames={{ body: 'mobile-nav-body' }}>
+      <Sidebar route={route} status={status} onNavigate={navigate} />
     </Drawer>
     <AppShell.Main className="dashboard-main">
-      <Burger opened={navOpened} onClick={openNav} className="mobile-nav-trigger" size="sm" aria-label="Open navigation" />
       <View route={route} status={status} api={api} navigate={navigate} fixture={fixture} />
     </AppShell.Main>
   </AppShell>;
@@ -318,9 +421,7 @@ function OverviewView({ api, status, navigate }: { api: LocalApi; status: Status
     ['Finalizing', status.counts.active_operations, 'active'], ['Finalized', status.counts.finalized, 'ready'],
     ['Failed', status.counts.failed, 'danger']
   ] as const;
-  return <div className="view-page overview-page"><PageHeader eyebrow="Local service" title="Service overview"
-    copy="Review captures as they move from private recording to a verified trace." />
-    <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing={0} className="service-grid">
+  return <div className="view-page overview-page"><SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing={0} className="service-grid">
       <ServiceFact icon={CheckCircle2} label="Service" value="Online" detail={`v${status.version}`} tone="ready" />
       <ServiceFact icon={KeyRound} label="Vault" value={status.vault} detail="Key material stays local" />
       <ServiceFact icon={ShieldCheck} label="Notary" value={status.notary === 'directory' ? 'Directory pinned' : 'Configured'} detail="Provider connection delegated" />
@@ -363,28 +464,26 @@ function CapturesView({ api, selectedId, navigate }: { api: LocalApi; selectedId
   const activeId = selectedId ?? visible[0]?.capture_id;
   const active = visible.find((capture) => capture.capture_id === activeId) ?? selectedDetail.data?.capture;
   const showDetail = Boolean(mobile && selectedId);
-  return <div className="view-page capture-page"><PageHeader eyebrow="Local catalog" title="Captures"
-    copy="Search the prompt and output previews stored in the local catalog. Select a pending capture to finalize it." />
-    {!showDetail && <div className="filter-bar filter-bar--captures"><TextInput aria-label="Search captures" placeholder="Search prompt and output previews" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
+  return <div className="view-page capture-page">{!showDetail && <div className="filter-bar filter-bar--captures"><TextInput aria-label="Search captures" placeholder="Search prompt and output previews" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
       <TextInput aria-label="Model filter" placeholder="All models" value={model} onChange={(event) => setModel(event.currentTarget.value)} />
-      <Select aria-label="Provider filter" placeholder="All providers" clearable data={['openai', 'anthropic', 'deepseek', 'openrouter']} value={provider} onChange={setProvider} />
-      <Select aria-label="Capture state filter" placeholder="All capture states" clearable data={['capturing', 'pending', 'failed']} value={captureState} onChange={setCaptureState} />
-      <Select aria-label="Finalization filter" placeholder="All finalization states" clearable data={['not_requested', 'queued', 'running', 'finalized', 'failed', 'interrupted']} value={finalization} onChange={setFinalization} />
-      <Select aria-label="Streaming filter" placeholder="Streaming or buffered" clearable data={[{ value: 'streaming', label: 'Streaming' }, { value: 'buffered', label: 'Buffered' }]} value={streaming} onChange={setStreaming} />
-      <Select aria-label="Capture time filter" placeholder="Any time" clearable data={[{ value: 'hour', label: 'Last hour' }, { value: 'day', label: 'Last 24 hours' }, { value: 'week', label: 'Last 7 days' }]} value={time} onChange={setTime} /></div>}
+      <AxisSelect ariaLabel="Provider filter" placeholder="All providers" data={['openai', 'anthropic', 'deepseek', 'openrouter']} value={provider} onChange={setProvider} />
+      <AxisSelect ariaLabel="Capture state filter" placeholder="All capture states" data={['capturing', 'pending', 'failed']} value={captureState} onChange={setCaptureState} />
+      <AxisSelect ariaLabel="Finalization filter" placeholder="All finalization states" data={['not_requested', 'queued', 'running', 'finalized', 'failed', 'interrupted']} value={finalization} onChange={setFinalization} />
+      <AxisSelect ariaLabel="Streaming filter" placeholder="Streaming or buffered" data={[{ value: 'streaming', label: 'Streaming' }, { value: 'buffered', label: 'Buffered' }]} value={streaming} onChange={setStreaming} />
+      <AxisSelect ariaLabel="Capture time filter" placeholder="Any time" data={[{ value: 'hour', label: 'Last hour' }, { value: 'day', label: 'Last 24 hours' }, { value: 'week', label: 'Last 7 days' }]} value={time} onChange={setTime} /></div>}
     {captures.isLoading || (selectedId && selectedDetail.isLoading) ? <LoadingState /> : captures.error ? <QueryError error={captures.error} title="Captures are unavailable" /> : selectedDetail.error ? <QueryError error={selectedDetail.error} title="Capture detail is unavailable" /> : !visible.length && !active ? <EmptyState title="No captures match" copy="Clear a filter or send a new request through the provider proxy." />
-      : <div className={`master-detail ${showDetail ? 'show-detail' : ''}`}>
+      : <ResizableSplit className={`master-detail ${showDetail ? 'show-detail' : ''}`}>
         <ScrollArea className="master-list" type="auto"><ul className="capture-list" aria-label="Captures">{visible.map((capture) => <li key={capture.capture_id}><CaptureRow capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'captures', id: capture.capture_id })} /></li>)}</ul></ScrollArea>
         <div className="detail-panel">{active ? <CaptureInspector api={api} capture={active} mobile={Boolean(mobile)} onBack={() => navigate({ view: 'captures' })} navigate={navigate} /> : null}</div>
-      </div>}
+      </ResizableSplit>}
   </div>;
 }
 
 function CaptureRow({ capture, active, onClick }: { capture: Capture; active: boolean; onClick: () => void }) {
   return <UnstyledButton className={`capture-row ${active ? 'is-active' : ''}`} onClick={onClick}>
-    <Group justify="space-between" wrap="nowrap"><Text className="row-provider">{capture.provider}</Text><Text className="mono-time">{formatDate(capture.created_at_unix_ms)}</Text></Group>
-    <Title order={3}>{capture.requested_model ?? 'Model not reported'}</Title><Text lineClamp={2}>{capture.prompt_preview || 'Preview disabled for this capture.'}</Text>
-    <Group justify="space-between"><StatusLabel state={capture.finalization_state === 'not_requested' ? capture.capture_state : capture.finalization_state} /><Text className="row-size">{formatBytes(capture.response_bytes)}</Text></Group>
+    <span className="capture-row-state"><StatusLabel state={capture.finalization_state === 'not_requested' ? capture.capture_state : capture.finalization_state} /></span>
+    <span className="capture-row-copy"><b>{capture.requested_model ?? 'Model not reported'}</b><small>{capture.provider} · {capture.operation}</small></span>
+    <time className="mono-time">{formatDate(capture.created_at_unix_ms)}</time>
   </UnstyledButton>;
 }
 
@@ -472,14 +571,20 @@ function FinalizationsView({ api, selectedId, navigate, fixture }: { api: LocalA
   });
   const active = operations.data?.items.find((item) => item.operation_id === selectedId)
     ?? selectedOperation.data ?? operations.data?.items[0];
-  return <div className="view-page"><PageHeader eyebrow="Proof operations" title="Finalizations" copy="See queued, running, failed, and completed proof operations. Retry interrupted work here." />
-    {operations.isLoading || (selectedId && selectedOperation.isLoading) ? <LoadingState /> : operations.error ? <QueryError error={operations.error} title="Finalizations are unavailable" /> : selectedOperation.error ? <QueryError error={selectedOperation.error} title="Finalization detail is unavailable" /> : !operations.data?.items.length && !active ? <EmptyState icon={ListChecks} title="No finalizations yet" copy="Queue one from a pending capture." />
-      : <div className="operations-layout"><div className="operations-table"><Table.ScrollContainer minWidth={700}><Table highlightOnHover>
-        <Table.Thead><Table.Tr><Table.Th>State</Table.Th><Table.Th>Capture</Table.Th><Table.Th>Attempt</Table.Th><Table.Th>Queued</Table.Th><Table.Th /></Table.Tr></Table.Thead>
-        <Table.Tbody>{(operations.data?.items ?? []).map((operation) => <Table.Tr key={operation.operation_id} className={active?.operation_id === operation.operation_id ? 'is-selected' : ''}>
-          <Table.Td><StatusLabel state={operation.state} /></Table.Td><Table.Td><code>{operation.capture_id}</code></Table.Td><Table.Td>{operation.attempt}</Table.Td><Table.Td>{formatDate(operation.created_at_unix_ms)}</Table.Td><Table.Td><ActionIcon variant="subtle" aria-label={`Inspect ${operation.operation_id}`} onClick={() => navigate({ view: 'finalizations', id: operation.operation_id })}><ChevronRight size={16} /></ActionIcon></Table.Td>
-        </Table.Tr>)}</Table.Tbody></Table></Table.ScrollContainer></div>{active && <OperationInspector api={api} operation={active} fixture={fixture} />}</div>}
+  return <div className="view-page">{operations.isLoading || (selectedId && selectedOperation.isLoading) ? <LoadingState /> : operations.error ? <QueryError error={operations.error} title="Finalizations are unavailable" /> : selectedOperation.error ? <QueryError error={selectedOperation.error} title="Finalization detail is unavailable" /> : !operations.data?.items.length && !active ? <EmptyState icon={ListChecks} title="No finalizations yet" copy="Queue one from a pending capture." />
+      : <ResizableSplit className="operations-layout">
+        <ScrollArea className="operations-list-scroll" type="auto"><ul className="operations-list" aria-label="Finalizations">{(operations.data?.items ?? []).map((operation) => <li key={operation.operation_id}><OperationRow operation={operation} active={active?.operation_id === operation.operation_id} onClick={() => navigate({ view: 'finalizations', id: operation.operation_id })} /></li>)}</ul></ScrollArea>
+        {active ? <OperationInspector api={api} operation={active} fixture={fixture} /> : <div />}
+      </ResizableSplit>}
   </div>;
+}
+
+function OperationRow({ operation, active, onClick }: { operation: Operation; active: boolean; onClick: () => void }) {
+  return <UnstyledButton className={`operation-row ${active ? 'is-active' : ''}`} onClick={onClick} aria-label={`Inspect ${operation.operation_id}`}>
+    <span className="operation-row-top"><StatusLabel state={operation.state} /><time>{formatDate(operation.created_at_unix_ms)}</time></span>
+    <code>{operation.capture_id ?? 'Capture not reported'}</code>
+    <small>Attempt {operation.attempt} · {operation.operation_id}</small>
+  </UnstyledButton>;
 }
 
 function OperationInspector({ api, operation, fixture }: { api: LocalApi; operation: Operation; fixture: boolean }) {
@@ -510,10 +615,12 @@ function TracesView({ api, selectedId, navigate }: { api: LocalApi; selectedId?:
   const visible = (captures.data?.items ?? []).filter((capture) => `${capture.capture_id} ${capture.provider} ${capture.requested_model ?? ''} ${capture.prompt_preview} ${capture.output_preview}`.toLowerCase().includes(query.toLowerCase()));
   const activeId = selectedId ?? visible[0]?.capture_id;
   const showDetail = Boolean(mobile && selectedId);
-  return <div className="view-page"><PageHeader eyebrow="Finalized packages" title="Finalized traces" copy="Inspect a finalized trace and run local verification against its evidence." />
-    {!showDetail && <div className="filter-bar filter-bar--short"><TextInput aria-label="Search finalized traces" placeholder="Search finalized traces" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} /></div>}
+  return <div className="view-page">{!showDetail && <div className="filter-bar filter-bar--short"><TextInput aria-label="Search finalized traces" placeholder="Search finalized traces" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} /></div>}
     {captures.isLoading ? <LoadingState /> : captures.error ? <QueryError error={captures.error} title="Finalized traces are unavailable" /> : !visible.length && !selectedId ? <EmptyState icon={FileCheck2} title="No finalized traces" copy="Finalize a pending capture or clear the search." />
-      : <div className={`trace-layout ${showDetail ? 'show-detail' : ''}`}>{!showDetail && <ul className="trace-list" aria-label="Finalized traces">{visible.map((capture) => <li key={capture.capture_id}><CaptureRow capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'traces', id: capture.capture_id })} /></li>)}</ul>}{activeId && (!mobile || selectedId) && <TraceInspector api={api} captureId={activeId} mobile={Boolean(mobile)} onBack={() => navigate({ view: 'traces' })} />}</div>}
+      : <ResizableSplit className={`trace-layout ${showDetail ? 'show-detail' : ''}`}>
+        {!showDetail ? <ul className="trace-list" aria-label="Finalized traces">{visible.map((capture) => <li key={capture.capture_id}><CaptureRow capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'traces', id: capture.capture_id })} /></li>)}</ul> : <div />}
+        {activeId && (!mobile || selectedId) ? <TraceInspector api={api} captureId={activeId} mobile={Boolean(mobile)} onBack={() => navigate({ view: 'traces' })} /> : <div />}
+      </ResizableSplit>}
   </div>;
 }
 
@@ -673,8 +780,7 @@ function PublishingView({ api, fixture, navigate }: { api: LocalApi; fixture: bo
     publicationCopy = `The publication ended in ${publicationState}. Review the safe failure code before retrying.`;
   }
 
-  return <div className="view-page"><PageHeader eyebrow="Public upload" title="Publishing" copy="Publishing is separate from finalization. Select and confirm a verified trace before uploading it." />
-    <div className="publishing-grid">
+  return <div className="view-page"><div className="publishing-grid">
       <Paper className="publishing-auth">
         <Group justify="space-between"><Text className="eyebrow">Publication account</Text><KeyRound size={17} /></Group>
         {auth.isLoading
@@ -709,7 +815,7 @@ function PublishingView({ api, fixture, navigate }: { api: LocalApi; fixture: bo
             ? <Loader size="sm" />
             : eligible.length
               ? <>
-                <Select label="Finalized trace" data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} />
+                <AxisSelect label="Finalized trace" placeholder="Choose a finalized trace" clearable={false} data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} />
                 <div className="consent-copy"><ShieldCheck size={18} /><Text>The service verifies the disclosure before upload. It never uploads the encrypted source bundle.</Text></div>
                 <Button disabled={!auth.data?.signed_in || !selectedId} onClick={() => setConfirm(true)}>Review publication</Button>
                 {submitted && <div className="publication-result">
@@ -730,12 +836,18 @@ function PublishingView({ api, fixture, navigate }: { api: LocalApi; fixture: bo
               : <EmptyState title="Nothing eligible" copy="Finalize a capture first." />}
       </Paper>
     </div>
-    <Modal opened={confirm} onClose={() => setConfirm(false)} title="Publish this finalized trace?" centered>
-      <Stack>
-        <Text>This submits <code>{selectedId}</code> for public admission. Its disclosed trace may become visible to anyone.</Text>
-        <Group justify="flex-end"><Button variant="subtle" onClick={() => setConfirm(false)}>Keep private</Button><Button loading={publish.isPending} onClick={() => publish.mutate()}>Publish trace</Button></Group>
-      </Stack>
-    </Modal>
+    <AlertDialog open={confirm} onOpenChange={setConfirm}>
+      <AlertDialogContent className="axis-local-dialog">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Publish this finalized trace?</AlertDialogTitle>
+          <AlertDialogDescription>This submits <code>{selectedId}</code> for public admission. Its disclosed trace may become visible to anyone.</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Keep private</AlertDialogCancel>
+          <AlertDialogAction disabled={publish.isPending} onClick={() => publish.mutate()}>{publish.isPending ? 'Publishing…' : 'Publish trace'}</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   </div>;
 }
 
@@ -759,12 +871,12 @@ function ActivityView({ api }: { api: LocalApi }) {
     refetchInterval: 5_000
   });
   const visible = events.data?.items ?? [];
-  return <div className="view-page"><PageHeader eyebrow="Service events" title="Activity" copy="Event history contains defined identifiers and failure codes. It excludes credentials, raw headers, bundle contents, and artifact paths." action={<Button variant="outline" leftSection={<RefreshCw size={14} />} onClick={() => events.refetch()}>Refresh</Button>} />
-    <div className="filter-bar filter-bar--activity"><Select aria-label="Activity severity" placeholder="All severities" clearable data={['info', 'success', 'warning', 'error']} value={severity} onChange={setSeverity} />
+  return <div className="view-page"><div className="filter-bar filter-bar--activity"><AxisSelect ariaLabel="Activity severity" placeholder="All severities" data={['info', 'success', 'warning', 'error']} value={severity} onChange={setSeverity} />
       <TextInput aria-label="Activity capture ID" placeholder="Capture ID" value={captureId} onChange={(event) => setCaptureId(event.currentTarget.value)} />
       <TextInput aria-label="Activity operation ID" placeholder="Operation ID" value={operationId} onChange={(event) => setOperationId(event.currentTarget.value)} />
       <TextInput aria-label="Activity event type" placeholder="Event type" value={eventType} onChange={(event) => setEventType(event.currentTarget.value)} />
-      <Select aria-label="Activity time filter" placeholder="Any time" clearable data={[{ value: 'hour', label: 'Last hour' }, { value: 'day', label: 'Last 24 hours' }, { value: 'week', label: 'Last 7 days' }]} value={time} onChange={setTime} /></div>
+      <AxisSelect ariaLabel="Activity time filter" placeholder="Any time" data={[{ value: 'hour', label: 'Last hour' }, { value: 'day', label: 'Last 24 hours' }, { value: 'week', label: 'Last 7 days' }]} value={time} onChange={setTime} />
+      <Button variant="outline" leftSection={<RefreshCw size={14} />} onClick={() => events.refetch()}>Refresh</Button></div>
     {events.isLoading ? <LoadingState /> : events.error ? <QueryError error={events.error} title="Activity is unavailable" /> : visible.length ? <EventList events={visible} /> : <EmptyState icon={Activity} title="No activity" copy="New capture and finalization events will appear here." />}</div>;
 }
 
@@ -783,13 +895,7 @@ function SettingsView({ status }: { status: Status }) {
     });
   };
 
-  return <div className="view-page">
-    <PageHeader
-      eyebrow="Configuration"
-      title="Settings"
-      copy="View how this service is configured without exposing credentials or artifact paths."
-    />
-    <Paper className="appearance-setting">
+  return <div className="view-page"><Paper className="appearance-setting">
       <Text fw={700}>Theme</Text>
       <SchemeControl />
     </Paper>

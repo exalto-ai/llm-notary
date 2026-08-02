@@ -1,8 +1,14 @@
 import react from '@vitejs/plugin-react';
 import { playwright } from '@vitest/browser-playwright';
+import { resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@': resolve(process.cwd(), 'src')
+    }
+  },
   plugins: [react()],
   test: {
     include: ['src/local-dashboard/**/*.browser.test.tsx'],

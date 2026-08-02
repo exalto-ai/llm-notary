@@ -1,12 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import '@fontsource-variable/instrument-sans';
+import '@fontsource-variable/space-grotesk';
+import '@fontsource/dm-mono/400.css';
+import '@fontsource/dm-mono/500.css';
 import { ChevronDown, Moon, Sun } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Command, CommandDialog, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import './shadcn.css';
 import './styles.css';
 import './hero-evidence.css';
 import './trust-grid.css';
 import './commons.css';
-import './theme.css';
 import './branding.css';
 import './account.css';
 import './collections.css';
@@ -14,15 +22,14 @@ import './docs.css';
 import './legal.css';
 import './relay-animation.css';
 import './landing.css';
+import './axis.css';
 import { RelayAnimation } from './RelayAnimation';
 
 const publicOrigin = __PUBLIC_ORIGIN__;
 const installCommand = `curl -fsSLO ${publicOrigin}/install.sh && sh install.sh`;
 const publishCommand = 'POST /v1/captures/{capture_id}/publications';
-const brandAssetVersion = __BRAND_ASSET_VERSION__;
-
-function PenMark({ inverse = false }) {
-  return <span className={`pen-mark${inverse ? ' pen-mark--inverse' : ''}`} aria-hidden="true">{inverse ? <img src={`/logo-light.png?v=${brandAssetVersion}`} alt="" /> : <picture><source media="(prefers-color-scheme: dark)" srcSet={`/logo-light.png?v=${brandAssetVersion}`} /><img src={`/logo-dark.png?v=${brandAssetVersion}`} alt="" /></picture>}</span>;
+function PenMark() {
+  return <span className="pen-mark" aria-hidden="true"><img src="/notary-mark.svg" alt="" /></span>;
 }
 
 function HeroSignalField() {
@@ -264,7 +271,7 @@ const docPages = {
       },
       {
         heading: 'How trust is established',
-        body: 'The service retrieves the signed production notary directory over HTTPS and caches its key history. Finalized packages identify the notary key that signed their evidence; verification accepts it only if that key was trusted at the package timestamp. A self-hosted deployment pairs notary.endpoint with notary.public_key in config.toml, but that is not part of the normal hosted workflow.',
+        body: 'The service retrieves the signed production notary directory over HTTPS and caches its key history. Finalized packages identify the notary key that signed their evidence; verification accepts it only if that key was trusted at the package timestamp. A self-hosted deployment pairs `notary.endpoint` with `notary.public_key` in `config.toml`, but that is not part of the normal hosted workflow.',
       },
     ],
   },
@@ -275,14 +282,14 @@ const docPages = {
       { heading: 'Install the service', code: installCommand },
       { heading: 'Supported systems', body: 'The installer selects checksum-verified macOS or Linux releases for Apple silicon, Intel, x86_64, and ARM64. Windows x86_64 is available as a ZIP release. Every package contains the same llm-notary command.' },
       { heading: 'Start the service', code: 'llm-notary' },
-      { heading: 'Open the local dashboard', body: 'Visit http://127.0.0.1:8788 and use the sidebar for captures, finalizations, trace verification, publishing, activity, and settings. The default loopback configuration opens directly. If admin.auth is enabled, sign in with its configured username and password; the dashboard exchanges them for an HttpOnly session and does not store the password.' },
-      { heading: 'Configuration file', body: 'The first service start creates an editable config.toml at the standard user location: ~/.config/llm-notary on Linux, %APPDATA%\\llm-notary on Windows, and ~/Library/Application Support/llm-notary on macOS. It is written once and never replaced. Start with an explicit file when needed:', code: 'llm-notary --config /path/to/config.toml' },
-      { heading: 'What it controls', body: 'config.toml holds the listener address, optional admin authentication, an optional local or self-hosted notary endpoint, bundle and trace directories, the SQLite catalog path and preview limits, and the enabled provider routes. All built-in providers start enabled. The hostname and API behavior of each provider remain fixed; configuration cannot direct the proxy to an arbitrary upstream host.' },
+      { heading: 'Open the local dashboard', body: 'Visit `http://127.0.0.1:8788` and use the tabs for captures, finalizations, trace verification, publishing, activity, and settings. The default loopback configuration opens directly. If `admin.auth` is enabled, sign in with its configured username and password; the dashboard exchanges them for an `HttpOnly` session and does not store the password.' },
+      { heading: 'Configuration file', body: 'The first service start creates an editable `config.toml` at the standard user location: `~/.config/llm-notary` on Linux, `%APPDATA%\\llm-notary` on Windows, and `~/Library/Application Support/llm-notary` on macOS. It is written once and never replaced. Start with an explicit file when needed:', code: 'llm-notary --config /path/to/config.toml' },
+      { heading: 'What it controls', body: '`config.toml` holds the listener address, optional admin authentication, an optional local or self-hosted notary endpoint, bundle and trace directories, the SQLite catalog path and preview limits, and the enabled provider routes. All built-in providers start enabled. The hostname and API behavior of each provider remain fixed; configuration cannot direct the proxy to an arbitrary upstream host.' },
       { heading: 'Optional admin sign-in', body: 'The loopback administration API is available to local processes without credentials by default. To require sign-in, configure a username and an Argon2id PHC password hash. Store the hash, including its salt and work parameters, rather than the plaintext password. A prompted tool such as caddy hash-password --algorithm argon2id can generate it.', code: '[admin.auth]\nusername = "local-admin"\npassword_hash = "$argon2id$v=19$m=32768,t=2,p=1$..."' },
       { heading: 'Bundle encryption is automatic', body: 'On first use, the proxy creates a random bundle-encryption key and stores it in Keychain on macOS, Credential Manager on Windows, or the desktop secret service on Linux. The OS may ask you to unlock that credential. You do not need to run a separate initialization command.' },
-      { heading: 'Optional passphrase mode', body: 'If you prefer a passphrase instead of the operating-system credential service, point LLM_NOTARY_VAULT_PASSPHRASE_FILE at a private UTF-8 file before the first service start. An empty passphrase is accepted for low-friction local testing, but it provides no meaningful protection if someone obtains both your bundles and vault configuration.', code: 'export LLM_NOTARY_VAULT_PASSPHRASE_FILE=/private/local/path/vault-passphrase\nllm-notary' },
+      { heading: 'Optional passphrase mode', body: 'If you prefer a passphrase instead of the operating-system credential service, point `LLM_NOTARY_VAULT_PASSPHRASE_FILE` at a private UTF-8 file before the first service start. An empty passphrase is accepted for low-friction local testing, but it provides no meaningful protection if someone obtains both your bundles and vault configuration.', code: 'export LLM_NOTARY_VAULT_PASSPHRASE_FILE=/private/local/path/vault-passphrase\nllm-notary' },
       { heading: 'What happens online', body: 'The local proxy handles plaintext while the notary participates in the provider TLS connection without seeing application data. Provider response bytes stream back to your agent as they arrive.' },
-      { heading: 'What happens at end-of-stream', body: 'The proxy seals encrypted deferred state into one .llmbundle. It does not perform the expensive final proof before returning control to your workflow.' },
+      { heading: 'What happens at end-of-stream', body: 'The proxy seals encrypted deferred state into one `.llmbundle`. It does not perform the expensive final proof before returning control to your workflow.' },
       {
         heading: 'Connect an SDK',
         definitions: [
@@ -311,10 +318,10 @@ const docPages = {
     lead: 'Turn one encrypted bundle into a portable evidence package, inspect its canonical OpenTelemetry trace, and verify the entire package offline.',
     blocks: [
       { heading: 'Finalize one interaction', body: 'Select a pending capture identifier in the dashboard or admin API. The service writes to storage.finalized_dir/<capture-id> by default, records that package in the catalog, and retains the encrypted source bundle.', code: 'curl -X POST http://127.0.0.1:8788/v1/captures/cap-example/finalizations' },
-      { heading: 'Notary discovery is automatic', body: 'For hosted use, the service refreshes the production notary directory, selects a worker compatible with the bundle, and verifies the resulting evidence against its locally pinned key history. For local or self-hosted use, set notary.endpoint and notary.public_key together in config.toml.' },
+      { heading: 'Notary discovery is automatic', body: 'For hosted use, the service refreshes the production notary directory, selects a worker compatible with the bundle, and verifies the resulting evidence against its locally pinned key history. For local or self-hosted use, set `notary.endpoint` and `notary.public_key` together in `config.toml`.' },
       { heading: 'Fresh notary connection', body: 'The original provider stream and proxy no longer need to be running. A new notary worker holding the same notary identity and key can complete finalization without a stored server-side checkpoint.' },
       { heading: 'Expect this step to take time', body: 'Private proof generation is slower than capture. Deferring it keeps the interactive agent response fast and makes proof work an explicit background or batch operation.' },
-      { heading: 'Interruption behavior', body: 'The pending bundle is not consumed. If finalization fails or the service stops, retry the failed or interrupted durable operation through POST /v1/operations/{operation_id}/retry; proof work from the interrupted attempt is not resumed.' },
+      { heading: 'Interruption behavior', body: 'The pending bundle is not consumed. If finalization fails or the service stops, retry the failed or interrupted durable operation through `POST /v1/operations/{operation_id}/retry`; proof work from the interrupted attempt is not resumed.' },
       { heading: 'Package layout', code: 'verified-trace/\n├── evidence.tlsn\n├── manifest.json\n├── request.disclosed.http\n├── response.http\n└── trace.otlp.json' },
       {
         heading: 'Artifact responsibilities',
@@ -326,7 +333,7 @@ const docPages = {
           { term: 'manifest.json', description: 'The versioned source metadata and trace hash. The cryptographic signature lives in evidence.tlsn, not in this JSON file.' },
         ],
       },
-      { heading: 'Package versus publication', body: 'The finalized source package uses manifest.json. A later public trace pairs the canonical trace.otlp.json with a platform-issued stamp.json; that public stamp does not replace the private TLSNotary evidence.' },
+      { heading: 'Package versus publication', body: 'The finalized source package uses `manifest.json`. A later public trace pairs the canonical `trace.otlp.json` with a platform-issued `stamp.json`; that public stamp does not replace the private TLSNotary evidence.' },
       { heading: 'Inspect or verify a Library trace', code: 'GET /v1/public-traces/{publication_id}\nPOST /v1/public-traces/{publication_id}/verify', body: 'The local admin API resolves the publication through the public API and returns its canonical trace and stamp. The verify operation checks canonical bytes, trace hash, contract versions, platform key ID, stamp issuer, and signature without accepting an output path.' },
       { heading: 'Complete context is intentional', body: 'The raw verified package can include system context, tool definitions, session metadata, prompts, responses, and tool results. Inspect it before sharing. A future selective publication format can disclose less without weakening what the private source package proves.' },
       { heading: 'Verify locally', code: 'POST /v1/captures/{capture_id}/trace:verify' },
@@ -348,7 +355,7 @@ const docPages = {
     title: 'Publish a trace package',
     lead: 'Publishing is a deliberate upload of one already-finalized package. The local service verifies it before it contacts LLM Notary.',
     blocks: [
-      { heading: 'Authorize publication', body: 'Use the dashboard Publishing view, or begin the documented POST /v1/publication/auth device flow and poll its returned request identifier at the required interval.' },
+      { heading: 'Authorize publication', body: 'Use the dashboard Publishing view, or begin the documented `POST /v1/publication/auth` device flow and poll its returned request identifier at the required interval.' },
       { heading: 'Submit one finalized package', code: 'POST /v1/captures/{capture_id}/publications' },
       { heading: 'Script-friendly output', code: `{"capture_id":"cap-…","job_id":"…","state":"queued","status_url":"${publicOrigin}/api/publish/jobs/…"}` },
       {
@@ -472,6 +479,12 @@ function copyToClipboard(value) {
   return navigator.clipboard?.writeText(value).catch(() => {});
 }
 
+function DocsInlineText({ children }) {
+  return String(children).split('`').map((part, index) => index % 2
+    ? <code className="docs-inline-code" key={`${part}-${index}`}>{part}</code>
+    : part);
+}
+
 function DocsBlock({ block, pageKey }) {
   const Heading = docHeadingLevel(pageKey, block) === 3 ? 'h3' : 'h2';
   const slug = docSlug(block.heading);
@@ -482,7 +495,7 @@ function DocsBlock({ block, pageKey }) {
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1500);
   };
-  return <section id={slug} className={`docs-section docs-section--level-${docHeadingLevel(pageKey, block)}`}><div className="docs-heading-row"><Heading>{block.heading}</Heading><button type="button" className="docs-copy-button docs-anchor" onClick={() => copy(headingLink)} aria-label={`${copied ? 'Copied link to' : 'Copy link to'} ${block.heading}`} title={copied ? 'Copied' : 'Copy link'}>{copied ? <CheckIcon /> : <LinkIcon />}</button></div>{block.body && <p>{block.body}</p>}{block.code && <div className="docs-code"><button type="button" className="docs-copy-button" onClick={() => copy(block.code)} aria-label={`Copy code for ${block.heading}`}>{copied ? 'Copied' : 'Copy'}</button><pre><code>{block.code}</code></pre></div>}{block.note && <aside className="docs-note">{block.note}</aside>}{block.items && <ul className="docs-list">{block.items.map((item) => <li key={item}>{item}</li>)}</ul>}{block.steps && <ol className="docs-flow">{block.steps.map((step, index) => <li key={step.title}><span>{String(index + 1).padStart(2, '0')}</span><div><b>{step.title}</b><p>{step.body}</p></div></li>)}</ol>}{block.cards && <div className="docs-card-grid">{block.cards.map((card) => <article key={`${card.meta}-${card.title}`}><span>{card.meta}</span><h3>{card.title}</h3><p>{card.body}</p></article>)}</div>}{block.columns && <div className="docs-boundary-grid">{block.columns.map((column) => <article key={column.title}><h3>{column.title}</h3><ul>{column.items.map((item) => <li key={item}>{item}</li>)}</ul></article>)}</div>}{block.definitions && <dl className="docs-definitions">{block.definitions.map((item) => <div key={item.term}><dt>{item.term}</dt><dd>{item.description}</dd></div>)}</dl>}</section>;
+  return <section id={slug} className={`docs-section docs-section--level-${docHeadingLevel(pageKey, block)}`}><div className="docs-heading-row"><Heading>{block.heading}</Heading><button type="button" className="docs-copy-button docs-anchor" onClick={() => copy(headingLink)} aria-label={`${copied ? 'Copied link to' : 'Copy link to'} ${block.heading}`} title={copied ? 'Copied' : 'Copy link'}>{copied ? <CheckIcon /> : <LinkIcon />}</button></div>{block.body && <p><DocsInlineText>{block.body}</DocsInlineText></p>}{block.code && <div className="docs-code"><button type="button" className="docs-copy-button" onClick={() => copy(block.code)} aria-label={`Copy code for ${block.heading}`}>{copied ? 'Copied' : 'Copy'}</button><pre><code>{block.code}</code></pre></div>}{block.note && <aside className="docs-note"><DocsInlineText>{block.note}</DocsInlineText></aside>}{block.items && <ul className="docs-list">{block.items.map((item) => <li key={item}><DocsInlineText>{item}</DocsInlineText></li>)}</ul>}{block.steps && <ol className="docs-flow">{block.steps.map((step, index) => <li key={step.title}><span>{String(index + 1).padStart(2, '0')}</span><div><b>{step.title}</b><p><DocsInlineText>{step.body}</DocsInlineText></p></div></li>)}</ol>}{block.cards && <div className="docs-card-grid">{block.cards.map((card) => <article key={`${card.meta}-${card.title}`}><span>{card.meta}</span><h3>{card.title}</h3><p><DocsInlineText>{card.body}</DocsInlineText></p></article>)}</div>}{block.columns && <div className="docs-boundary-grid">{block.columns.map((column) => <article key={column.title}><h3>{column.title}</h3><ul>{column.items.map((item) => <li key={item}><DocsInlineText>{item}</DocsInlineText></li>)}</ul></article>)}</div>}{block.definitions && <dl className="docs-definitions">{block.definitions.map((item) => <div key={item.term}><dt>{item.term}</dt><dd><DocsInlineText>{item.description}</DocsInlineText></dd></div>)}</dl>}</section>;
 }
 
 function DocsOutline({ page, pageKey, section, onNavigate }) {
@@ -492,19 +505,15 @@ function DocsOutline({ page, pageKey, section, onNavigate }) {
 
 function DocsSearch({ open, onClose }) {
   const [query, setQuery] = useState('');
-  const [selected, setSelected] = useState(0);
-  const inputRef = useRef(null);
   const entries = useMemo(() => Object.entries(docPages).map(([key, page]) => ({ key, title: page.title, lead: page.lead, blocks: page.blocks, text: `${page.title} ${page.lead} ${page.blocks.map(getBlockText).join(' ')}`.toLowerCase() })), []);
   const results = useMemo(() => {
     const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
     if (!terms.length) return entries.slice(0, 7);
     return entries.filter((entry) => terms.every((term) => entry.text.includes(term))).slice(0, 10);
   }, [entries, query]);
-  useEffect(() => { if (open) { setQuery(''); setSelected(0); window.setTimeout(() => inputRef.current?.focus(), 0); } }, [open]);
-  useEffect(() => { setSelected((current) => Math.min(current, Math.max(results.length - 1, 0))); }, [results.length]);
-  if (!open) return null;
+  useEffect(() => { if (open) setQuery(''); }, [open]);
   const choose = (result) => { window.location.hash = docHref(result.key); onClose(); };
-  return <div className="docs-search-backdrop" role="presentation" onMouseDown={onClose}><section className="docs-search-dialog" role="dialog" aria-modal="true" aria-label="Search documentation" onMouseDown={(event) => event.stopPropagation()}><header><label htmlFor="docs-search-input">Search documentation</label><kbd>ESC</kbd></header><input id="docs-search-input" ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); setSelected((value) => Math.min(value + 1, results.length - 1)); } if (event.key === 'ArrowUp') { event.preventDefault(); setSelected((value) => Math.max(value - 1, 0)); } if (event.key === 'Enter' && results[selected]) choose(results[selected]); if (event.key === 'Escape') onClose(); }} placeholder="Search setup, captures, providers…" /><div className="docs-search-results" role="listbox">{results.length ? results.map((result, index) => <button type="button" className={index === selected ? 'active' : ''} onMouseEnter={() => setSelected(index)} onClick={() => choose(result)} role="option" aria-selected={index === selected} key={result.key}><span>{result.title}</span><small>{result.lead}</small></button>) : <p>No documentation matches “{query}”.</p>}</div><footer><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span></footer></section></div>;
+  return <CommandDialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen) onClose(); }} title="Search documentation" description="Search setup, captures, providers, and publishing." className="docs-command-dialog"><Command shouldFilter={false} className="docs-command"><CommandInput value={query} onValueChange={setQuery} placeholder="Search setup, captures, providers…" /><CommandList><CommandEmpty>No documentation matches “{query}”.</CommandEmpty>{results.map((result) => <CommandItem value={result.key} onSelect={() => choose(result)} key={result.key}><span className="docs-command-copy"><b>{result.title}</b><small>{result.lead}</small></span></CommandItem>)}</CommandList><div className="docs-command-footer"><span>↑↓ navigate</span><span>↵ open</span><span>esc close</span></div></Command></CommandDialog>;
 }
 
 function DocsMobileToolbar({ currentKey, page, section, onSearch }) {
@@ -660,6 +669,31 @@ function traceSnippets(spans) {
   ].filter(Boolean);
 }
 
+function LibraryLoading() {
+  return <main className="library-shell library-shell--loading" aria-busy="true">
+    <section className="library-controls library-loading-controls" aria-hidden="true">
+      <i className="library-loading-control library-loading-control--search" />
+      <i className="library-loading-control" />
+      <i className="library-loading-control" />
+      <i className="library-loading-control" />
+    </section>
+    <div className="library-browse-meta library-loading-meta"><span role="status">Loading library</span></div>
+    <section className="library-results library-loading-results" aria-hidden="true">
+      <div className="collection-workspace">
+        <div className="collection-list">
+          <div className="library-grid">{Array.from({ length: 5 }, (_, index) => <div className={`model-card library-loading-row${index === 0 ? ' is-current' : ''}`} key={index}><i /><span><b /><small /></span></div>)}</div>
+        </div>
+        <article className="collection-inspector library-loading-inspector">
+          <header><i /><i /></header>
+          <h2 />
+          <div className="library-loading-facts">{Array.from({ length: 4 }, (_, index) => <i key={index} />)}</div>
+          <div className="library-loading-document"><i /><i /><i /></div>
+        </article>
+      </div>
+    </section>
+  </main>;
+}
+
 function Collections() {
   const [collection, setCollection] = useState(null);
   const [loadError, setLoadError] = useState('');
@@ -710,15 +744,16 @@ function Collections() {
       .catch((error) => { if (!cancelled) setTraceError(error.message); });
     return () => { cancelled = true; };
   }, [active]);
+  if (collection === null && !loadError) return <LibraryLoading />;
   return <main className="library-shell">
     {loadError ? <section className="collection-empty" role="alert">{loadError}</section>
-      : collection === null ? <section className="collection-empty" role="status"><b>Loading traces…</b><p>Checking admitted traces and their artifact metadata.</p></section>
+      : collection === null ? null
         : <>
           <section className="library-controls" aria-label="Browse traces">
-            <label className="library-search"><span>Search traces</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by model, provider, or topic" /></label>
-            <label><span>Provider</span><select value={provider} onChange={(event) => setProvider(event.target.value)}>{providers.map((value) => <option key={value}>{value}</option>)}</select></label>
-            <label><span>Model</span><select value={model} onChange={(event) => setModel(event.target.value)}>{models.map((value) => <option key={value}>{value}</option>)}</select></label>
-            <label><span>Sort</span><select value={sort} onChange={(event) => setSort(event.target.value)}><option>Newest</option><option>Downloads</option><option>Title</option></select></label>
+            <label className="library-search"><span>Search traces</span><Input className="axis-library-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by model, provider, or topic" /></label>
+            <Select value={provider} onValueChange={setProvider}><SelectTrigger className="axis-select-trigger" aria-label="Provider"><SelectValue /></SelectTrigger><SelectContent className="axis-select-content">{providers.map((value) => <SelectItem value={value} key={value}>{value}</SelectItem>)}</SelectContent></Select>
+            <Select value={model} onValueChange={setModel}><SelectTrigger className="axis-select-trigger" aria-label="Model"><SelectValue /></SelectTrigger><SelectContent className="axis-select-content">{models.map((value) => <SelectItem value={value} key={value}>{value}</SelectItem>)}</SelectContent></Select>
+            <Select value={sort} onValueChange={setSort}><SelectTrigger className="axis-select-trigger" aria-label="Sort"><SelectValue /></SelectTrigger><SelectContent className="axis-select-content"><SelectItem value="Newest">Newest</SelectItem><SelectItem value="Downloads">Downloads</SelectItem><SelectItem value="Title">Title</SelectItem></SelectContent></Select>
           </section>
           <div className="library-browse-meta"><nav className="topic-filter" aria-label="Filter by topic">{tags.map((value) => <button key={value} className={tag === value ? 'active' : ''} aria-pressed={tag === value} onClick={() => setTag((current) => current === value ? null : value)}>{value}</button>)}</nav><span className="library-count">{filtered.length} {filtered.length === 1 ? 'trace' : 'traces'}</span></div>
           {publications.length === 0
@@ -762,6 +797,7 @@ function Dashboard({ user }) {
   const [sessions, setSessions] = useState(null);
   const [sessionError, setSessionError] = useState(null);
   const [revoking, setRevoking] = useState(null);
+  const [revokeTarget, setRevokeTarget] = useState(null);
   const [jobs, setJobs] = useState(null);
   const [jobError, setJobError] = useState(null);
   const [publicationById, setPublicationById] = useState({});
@@ -774,6 +810,13 @@ function Dashboard({ user }) {
       .catch((reason) => { if (!cancelled) setSessionError(reason.message); });
     return () => { cancelled = true; };
   }, []);
+
+  useEffect(() => {
+    if (!revokeTarget) return undefined;
+    const closeOnEscape = (event) => { if (event.key === 'Escape' && revoking !== revokeTarget.id) setRevokeTarget(null); };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [revokeTarget, revoking]);
 
   useEffect(() => {
     let cancelled = false;
@@ -793,7 +836,6 @@ function Dashboard({ user }) {
   }, []);
 
   const revoke = async (session) => {
-    if (!window.confirm(`Revoke ${session.device_name}? This local service will need to authorize again before it can publish.`)) return;
     setRevoking(session.id);
     setSessionError(null);
     try {
@@ -804,13 +846,14 @@ function Dashboard({ user }) {
       setSessionError(reason.message);
     } finally {
       setRevoking(null);
+      setRevokeTarget(null);
     }
   };
 
   const verifiedCount = jobs?.filter((job) => job.state === 'admitted').length || 0;
   const activeCount = jobs?.filter((job) => ['uploading', 'queued', 'verifying'].includes(job.state)).length || 0;
 
-  return <main className="dashboard-shell">
+  return <main className="dashboard-shell dashboard-shell--account">
     <span className="eyebrow">Account</span>
     <h1>Your traces.</h1>
     <p>Review publication status and download the public evidence attached to your account.</p>
@@ -839,7 +882,8 @@ function Dashboard({ user }) {
         </article>;
       })}</div> : <div className="dashboard-empty"><b>No published traces yet.</b><p>Finalize a bundle, then run <code>{publishCommand}</code>.</p><a href="#/docs/publish">Read the publishing guide</a></div>}
     </section>
-    <section className="dashboard-sessions" aria-labelledby="publishing-sessions-title"><header><div><span className="eyebrow">Local service access</span><h2 id="publishing-sessions-title">Authorized devices</h2></div><p>Revoke a device to require a new browser approval before it can publish.</p></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading authorized devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => revoke(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are authorized to publish.</p>}</section>
+    <section className="dashboard-sessions" aria-labelledby="publishing-sessions-title"><header><div><span className="eyebrow">Local service access</span><h2 id="publishing-sessions-title">Authorized devices</h2></div><p>Revoke a device to require a new browser approval before it can publish.</p></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading authorized devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are authorized to publish.</p>}</section>
+    <AlertDialog open={Boolean(revokeTarget)} onOpenChange={(nextOpen) => { if (!nextOpen && !revoking) setRevokeTarget(null); }}><AlertDialogContent className="axis-alert-dialog"><AlertDialogHeader><AlertDialogTitle>Revoke {revokeTarget?.device_name}?</AlertDialogTitle><AlertDialogDescription>This local service will need a new browser approval before it can publish again.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={Boolean(revoking)}>Keep authorization</AlertDialogCancel><AlertDialogAction disabled={Boolean(revoking)} onClick={() => revokeTarget && revoke(revokeTarget)}>{revoking ? 'Revoking…' : 'Revoke device'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </main>;
 }
 

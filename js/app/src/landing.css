@@ -34,7 +34,7 @@
 }
 
 .receipt-contents i {
-  color: var(--green);
+  color: var(--inverse-accent);
   font-style: normal;
   letter-spacing: .08em;
 }
@@ -50,7 +50,7 @@
   margin: 0;
   overflow: hidden;
   color: var(--body-copy-soft);
-  font: 12px/1.5 Manrope, Arial, sans-serif;
+  font: 12px/1.5 'Instrument Sans', Arial, sans-serif;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }
@@ -71,7 +71,7 @@
 }
 
 .preview-command code {
-  color: var(--green);
+  color: var(--inverse-accent);
   font: 10px/1.5 'DM Mono', monospace;
   overflow-wrap: anywhere;
 }

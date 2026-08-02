@@ -31,9 +31,9 @@ afterEach(() => cleanup());
 describe('local evidence dashboard', () => {
   test('navigates, filters captures, and selects a capture', async () => {
     renderDashboard();
-    await expect.element(page.getByRole('heading', { name: 'Service overview' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Online' })).toBeVisible();
     await page.getByRole('button', { name: /Captures/ }).click();
-    await expect.element(page.getByRole('heading', { name: 'Captures' })).toBeVisible();
+    await expect.element(page.getByLabelText('Search captures')).toBeVisible();
     await page.getByLabelText('Search captures').fill('**benchmark**');
     await expect.element(page.getByText('deepseek-v4-flash')).toBeVisible();
     await expect.element(page.getByText('gpt-5.2', { exact: true })).not.toBeInTheDocument();
@@ -53,8 +53,7 @@ describe('local evidence dashboard', () => {
   test('queues a finalization and makes the durable operation visible', async () => {
     renderDashboard('/captures/cap-20260728-knowledge-eval');
     await page.getByRole('button', { name: 'Finalize', exact: true }).click();
-    await expect.element(page.getByRole('heading', { name: 'Finalizations' })).toBeVisible();
-    await expect.element(page.getByText('op-finalize-queued-fixture')).toBeVisible();
+    await expect.element(page.getByText('op-finalize-queued-fixture', { exact: true })).toBeVisible();
     await expect.element(page.getByText('queued', { exact: true }).first()).toBeVisible();
   });
 
@@ -87,8 +86,7 @@ describe('local evidence dashboard', () => {
   test('retries a failed capture through its durable operation', async () => {
     renderDashboard('/captures/cap-20260727-benchmark');
     await page.getByRole('button', { name: 'Retry finalization' }).click();
-    await expect.element(page.getByRole('heading', { name: 'Finalizations' })).toBeVisible();
-    await expect.element(page.getByText('op-finalize-benchmark')).toBeVisible();
+    await expect.element(page.getByText('op-finalize-benchmark', { exact: true })).toBeVisible();
     await expect.element(page.getByText('queued', { exact: true }).first()).toBeVisible();
   });
 
@@ -207,8 +205,9 @@ describe('local evidence dashboard', () => {
     renderDashboard();
     await page.getByRole('button', { name: 'Open navigation' }).click();
     await expect.element(page.getByRole('dialog')).toBeVisible();
+    await expect.element(page.getByText('Documentation fixture')).not.toBeInTheDocument();
     await page.getByRole('dialog').getByRole('button', { name: /Activity/ }).click();
-    await expect.element(page.getByRole('heading', { name: 'Activity' })).toBeVisible();
+    await expect.element(page.getByRole('combobox', { name: 'Activity severity' })).toBeVisible();
   });
 
   test('does not repeat service status in the dashboard shell', async () => {
@@ -242,5 +241,20 @@ describe('local evidence dashboard', () => {
     await page.getByRole('list', { name: 'Finalized traces' }).getByRole('button').click();
     await expect.element(page.getByRole('button', { name: 'All finalized traces' })).toBeVisible();
     await expect.element(page.getByRole('listitem')).not.toBeInTheDocument();
+  });
+
+  test('shares an adjustable list width across split views', async () => {
+    await page.viewport(1280, 800);
+    renderDashboard('/captures');
+    const divider = page.getByRole('separator', { name: 'Resize list and detail panels' });
+    await expect.element(divider).toHaveAttribute('aria-valuenow', '320');
+    document.querySelector<HTMLElement>('[role="separator"]')?.focus();
+    await userEvent.keyboard('{ArrowRight}');
+    await expect.element(divider).toHaveAttribute('aria-valuenow', '336');
+    expect(localStorage.getItem('llm-notary-dashboard-split-width')).toBe('336');
+
+    window.location.hash = '/finalizations';
+    await expect.element(page.getByRole('list', { name: 'Finalizations' })).toBeVisible();
+    await expect.element(page.getByRole('separator', { name: 'Resize list and detail panels' })).toHaveAttribute('aria-valuenow', '336');
   });
 });
