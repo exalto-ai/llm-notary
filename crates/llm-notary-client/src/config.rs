@@ -356,7 +356,7 @@ pub fn default_config_path() -> Result<PathBuf> {
     } else {
         bail!("could not determine a configuration directory")
     };
-    Ok(base.join("llm-notary").join("agent.toml"))
+    Ok(base.join("llm-notary").join("config.toml"))
 }
 
 fn default_listen() -> SocketAddr {
@@ -444,7 +444,7 @@ mod tests {
     #[test]
     fn creating_a_default_configuration_is_idempotent() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("agent.toml");
+        let path = directory.path().join("config.toml");
         let (config, created) = AgentConfig::load_or_create(&path).unwrap();
         assert!(created);
         config.validate().unwrap();

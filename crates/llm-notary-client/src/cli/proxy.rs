@@ -801,6 +801,11 @@ fn response_model_from_stream_event(value: &serde_json::Value) -> Option<String>
                 .get("message")
                 .and_then(|message| message.get("model"))
         })
+        .or_else(|| {
+            value
+                .get("response")
+                .and_then(|response| response.get("model"))
+        })
         .and_then(serde_json::Value::as_str)
         .map(str::to_owned)
 }
@@ -1154,6 +1159,18 @@ mod tests {
         let preview = preview.finish();
         assert_eq!(preview.text, "Priced");
         assert_eq!(preview.response_model.as_deref(), Some("gpt-5"));
+    }
+
+    #[test]
+    fn streaming_preview_reads_the_openai_responses_model() {
+        let mut preview = StreamingOutputPreview::new(Provider::Openai, 1_000);
+        preview.push(
+            b"data: {\"type\":\"response.created\",\"response\":{\"model\":\"gpt-5-mini\"}}\n\n",
+        );
+        assert_eq!(
+            preview.finish().response_model.as_deref(),
+            Some("gpt-5-mini")
+        );
     }
 
     #[test]

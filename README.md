@@ -88,7 +88,7 @@ default the released client discovers the current public notary endpoint from
 
 ```bash
 llm-notary proxy start
-# Optionally edit the automatically created agent.toml, then check it:
+# Optionally edit the automatically created config.toml, then check it:
 llm-notary config validate
 ```
 
