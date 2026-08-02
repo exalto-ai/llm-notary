@@ -73,8 +73,9 @@ cargo run -p llm-notary-server --bin llm-notary-server -- --signing-key notary.d
 ```
 
 The notary prints its public key at startup. Retain that value for local or
-private deployments, where it is supplied with `--trusted-notary-key` as the
-explicit trust anchor. Production clients discover and pin the public key.
+private deployments, where `finalize` and `verify-trace` receive it with
+`--trusted-notary-key` as the explicit trust anchor. Production clients
+discover and pin the public key.
 
 In another terminal, start the proxy. On first use it automatically writes an
 editable configuration file in the standard platform location: XDG config on
@@ -91,6 +92,54 @@ llm-notary proxy start
 # Optionally edit the automatically created config.toml, then check it:
 llm-notary config validate
 ```
+
+### Configure the local client
+
+`config.toml` is the client’s durable, user-editable setup. The CLI writes it
+once and never replaces it, so it is the place to change a listener, storage
+location, enabled providers, or catalog behavior. To use a configuration file
+outside the standard location, pass `--config /path/to/config.toml` to
+`proxy start`, `config validate`, `captures`, or `finalize`.
+
+The generated file includes all defaults. This shorter, valid configuration
+shows the settings most installations change:
+
+```toml
+format = "llm-notary/agent-config/v1"
+
+[proxy]
+listen = "127.0.0.1:8787"
+
+[notary]
+# Set this only for a local or self-hosted notary.
+# endpoint = "tcp://127.0.0.1:7047"
+
+[storage]
+# bundle_dir = "/platform/data/llm-notary/bundles"
+# finalized_dir = "/platform/data/llm-notary/traces"
+
+[catalog]
+# path = "/platform/data/llm-notary/catalog.db"
+prompt_preview_chars = 1000
+output_preview_chars = 1000
+full_text_search = true
+
+[providers.openai]
+enabled = true
+route_prefix = "/openai"
+```
+
+All four built-in providers start enabled. Set a provider’s `enabled` value to
+`false` to remove its local route, or change its `route_prefix` to fit an
+existing local setup. Enabled prefixes must be distinct and non-overlapping.
+The provider hostname and API format stay fixed by the built-in adapter; the
+configuration does not permit arbitrary upstream hosts.
+
+For a local or self-hosted notary, set `notary.endpoint` in this file. Supply
+its expected public key to `finalize` and `verify-trace` with
+`--trusted-notary-key`; that is an intentional, explicit trust decision.
+Hosted installations leave the endpoint unset and use the signed notary
+directory instead.
 
 One listener serves every supported provider at a fixed first path segment. The
 proxy removes that local segment before making the authenticated upstream

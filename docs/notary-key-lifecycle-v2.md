@@ -70,10 +70,12 @@ directory. `publish` always refreshes the directory and enforces current
 revocation state before sending any bytes, even when an explicit key was used
 for the initial local verification.
 
-Passing both `--trusted-notary-key` and an explicit `--notary` is an operator
-override. It does not use directory lifecycle policy. Explicit endpoints use
-`tls://host:port` or `tcp://host:port`; a bare `host:port` remains TCP for
-compatibility.
+Setting `notary.endpoint` in the client’s `config.toml` and passing
+`--trusted-notary-key` to `finalize` and `verify-trace` is an operator
+override. It does not use directory lifecycle policy. Use
+`--config /path/to/config.toml` when that client configuration is not in the
+standard user location. Explicit endpoints use `tls://host:port` or
+`tcp://host:port`; a bare `host:port` remains TCP for compatibility.
 
 ## Planned rotation
 
