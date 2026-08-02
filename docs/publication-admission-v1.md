@@ -113,16 +113,16 @@ analytics schema. Only `download` is accepted today.
 Authenticated `GET /api/publish/jobs/{id}` also returns `trace_url` and
 `stamp_url` after admission.
 
-## CLI download
+## Local public-trace verification
 
-`llm-notary download <publication-id>` first resolves the public metadata
-endpoint, then accepts only its same-origin canonical trace and stamp paths.
-It writes both artifacts into a staging directory and renames that directory
-into place only after both downloads are complete. Existing output requires
-`--overwrite`; failed transfer or verification leaves the existing directory
-unchanged. `--verify` fetches the platform directory from the same configured
-API origin and applies the independent public-trace verifier before saving the
-download.
+`GET /v1/public-traces/{publication_id}` on the authenticated local admin API
+resolves the public metadata endpoint, accepts only its same-origin canonical
+trace and stamp paths, and returns the validated JSON artifacts without
+accepting an output path. `POST
+/v1/public-traces/{publication_id}/verify` additionally fetches the platform
+directory from the same configured API origin and applies the independent
+public-trace verifier before returning the trace, stamp, and verification
+receipt.
 
 ## Key handling
 

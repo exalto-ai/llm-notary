@@ -4,7 +4,7 @@ This contract uploads one locally finalized trace package to private object
 storage. It does not admit or publish the package; the admission path owns
 content hashing, safe extraction, cryptographic verification, and stamping.
 
-The supported CLI packages a finalized trace directory as
+The local service packages a finalized trace directory as
 `llmnotary.trace-package-archive/v1`. It must never package or upload an
 encrypted `.llmbundle`. The intake API deliberately treats uploaded bytes as
 untrusted and opaque, so a malicious client can mislabel arbitrary bytes. The
@@ -43,7 +43,7 @@ job is created binds the complete transport object.
 
 ```http
 POST /api/publish/jobs
-Authorization: Bearer <CLI access token>
+Authorization: Bearer <publication access token>
 Idempotency-Key: <16-200 safe ASCII characters>
 Content-Type: application/json
 
@@ -62,7 +62,7 @@ A new job returns `201 Created`. Reusing the idempotency key with identical
 metadata returns `200 OK` and the same job. Reusing it with different metadata
 returns `409 Conflict`.
 
-The supported CLI derives the idempotency key from the exact archive SHA-256.
+The local service derives the idempotency key from the exact archive SHA-256.
 Repeating `publish` for unchanged package bytes therefore resumes the same job
 after an ambiguous upload, completion, or polling failure instead of creating
 a duplicate publication. If its upload window has expired, the API reopens
@@ -111,7 +111,7 @@ If a duplicate create request finds a job that is no longer accepting uploads,
 
 ```http
 POST /api/publish/jobs/{job_id}/complete
-Authorization: Bearer <CLI access token>
+Authorization: Bearer <publication access token>
 ```
 
 Completion checks the staging object's size and signed metadata, then copies it
@@ -138,7 +138,7 @@ Completion returns:
 
 ```http
 GET /api/publish/jobs/{job_id}
-Authorization: Bearer <CLI access token>
+Authorization: Bearer <publication access token>
 ```
 
 Jobs are account-scoped. A caller cannot discover another user's job by ID.

@@ -529,7 +529,7 @@ cargo test -p llm-notary-platform web_users_can_list_and_revoke_only_their_cli_s
 They require no database URL, database credentials, or external provider
 account; each test state receives a fresh production-schema database.
 
-The API has `GET /api/notary` for CLI endpoint and public-key discovery,
+The API has `GET /api/notary` for local-service endpoint and public-key discovery,
 `GET /api/auth/github`, `GET /api/auth/github/callback`, `GET /api/me`,
 `POST /api/auth/logout`, `GET /api/healthz`, and database-backed
 `GET /api/readyz`, plus authenticated publication intake endpoints and

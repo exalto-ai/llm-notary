@@ -34,11 +34,12 @@ The stable left sidebar separates the local workflow:
 
 ## Inspect a capture
 
-Use full-text search over enabled previews, then narrow by provider or
-finalization state. A result always has a textual state; color is only a second
-signal. The detail panel shows safe model and response metadata, a lifecycle,
-privacy-aware truncated previews, artifact availability, hashes, and prior
-finalization state. It never decrypts or renders the source bundle.
+Use full-text search over enabled previews, then narrow by model, provider,
+capture state, finalization state, streaming mode, or time. A result always has
+a textual state; color is only a second signal. The detail panel shows safe
+model and response metadata, a lifecycle, privacy-aware truncated previews,
+artifact availability, hashes, and prior finalization state. It never decrypts
+or renders the source bundle.
 
 ![Local dashboard in dark mode with Captures selected, provider and finalization filters, a running Anthropic capture selected in the results, privacy-aware previews, lifecycle, and artifact details.](images/local-dashboard/captures-dark.png)
 
@@ -64,8 +65,8 @@ Select **Finalized traces**, choose a capture, and inspect four document-like
 views:
 
 - **Summary** describes the authenticated inference and package format.
-- **Evidence** shows the trace hash, authenticated provider, redaction state,
-  and included TLS evidence.
+- **Evidence** shows the exact trace hash, authenticated provider, source time,
+  and manifest format reported by the selected package.
 - **Trace** shows the canonical OpenTelemetry document.
 - **Verification** contains the durable human-readable result after **Verify
   now** rechecks the package.
@@ -86,18 +87,19 @@ because a trace was finalized or verified.
 
 ## Activity, settings, and API discovery
 
-Activity can be refreshed and filtered by severity. Events contain bounded
-messages and identifiers, never request bodies, response bodies, raw headers,
-credentials, or filesystem paths. Settings and API shows safe runtime facts
-and the exact `http://127.0.0.1:8788/openapi.json` discovery URL for scripts and
-coding agents.
+Activity can be refreshed and filtered by severity, capture identifier,
+operation identifier, event type, or time. Events contain bounded messages and
+identifiers, never request bodies, response bodies, raw headers, credentials,
+or filesystem paths. Settings and API shows safe runtime facts and the exact
+`http://127.0.0.1:8788/openapi.json` discovery URL for scripts and coding
+agents.
 
 ## Responsive navigation and color mode
 
-At 820 px and below, the sidebar becomes a full-height drawer and list/detail
-workspaces become a single routed panel. Use the back action to return from a
-capture inspector. Keyboard focus is visible, dialogs and drawers return focus
-to their trigger, and reduced-motion preferences are respected.
+At 820 px and below, the sidebar becomes a full-height drawer and capture and
+trace list/detail workspaces become separate routed panels. Use the back action
+to return from an inspector. Keyboard focus is visible, dialogs and drawers
+return focus to their trigger, and reduced-motion preferences are respected.
 
 ![Mobile local dashboard with a private capture detail behind the open full-height navigation drawer, including pending and active-work counts and all dashboard destinations.](images/local-dashboard/mobile-navigation.png)
 
@@ -124,9 +126,11 @@ states and a focal action.
 
 All images above come from `js/app/src/local-dashboard/fixtures.ts`. The data
 is synthetic and fixed: it contains no user prompts, provider keys, account
-names, local paths, or bundle contents. Desktop captures use 1440 × 1000 px;
-the mobile capture uses 390 × 844 px. The overview, finalization, and mobile
-images use Light mode. Captures and trace verification use Dark mode.
+names, local paths, or bundle contents. Desktop viewports use 1440 × 1000 px;
+the mobile viewport uses 390 × 844 px. The browser locale is `en-US` and its
+timezone is UTC so timestamps remain deterministic. The overview,
+finalization, and mobile images use Light mode. Captures and trace verification
+use Dark mode.
 
 Regenerate every image from the repository root after a dashboard change:
 
@@ -141,4 +145,3 @@ The capture command starts an isolated Vite server on `127.0.0.1:4175`, opens
 fixed fixture deep links in headless Chromium, and replaces only the five files
 under `docs/images/local-dashboard/`. Review every image for layout and
 sensitive data before committing it.
-

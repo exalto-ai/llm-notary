@@ -33,20 +33,22 @@ async function waitForServer() {
 }
 
 async function fixturePage(browser, { scheme, viewport, route }) {
-  const context = await browser.newContext({ viewport, deviceScaleFactor: 1 });
+  const context = await browser.newContext({
+    viewport, deviceScaleFactor: 1, locale: 'en-US', timezoneId: 'UTC'
+  });
   await context.addInitScript((colorScheme) => {
     window.localStorage.setItem('llm-notary-dashboard-color-scheme', colorScheme);
   }, scheme);
   const page = await context.newPage();
-  await page.goto(`${origin}/local.html?fixture=docs&${route}`, { waitUntil: 'networkidle' });
   await page.emulateMedia({ colorScheme: scheme === 'dark' ? 'dark' : 'light', reducedMotion: 'reduce' });
+  await page.goto(`${origin}/local.html?fixture=docs&${route}`, { waitUntil: 'networkidle' });
   return { context, page };
 }
 
 async function capture(browser, spec) {
   const { context, page } = await fixturePage(browser, spec);
   if (spec.prepare) await spec.prepare(page);
-  await page.screenshot({ path: resolve(outputDir, spec.file), fullPage: true });
+  await page.screenshot({ path: resolve(outputDir, spec.file) });
   await context.close();
   process.stdout.write(`Captured docs/images/local-dashboard/${spec.file}\n`);
 }

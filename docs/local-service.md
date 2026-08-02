@@ -41,7 +41,9 @@ listen = "127.0.0.1:8788"
 token_path = "/private/local/path/admin-token"
 
 [notary]
-# endpoint = "tcp://127.0.0.1:7047" # Only for a local/self-hosted notary.
+# A local/self-hosted endpoint and its compressed SEC1 public key are paired.
+# endpoint = "tcp://127.0.0.1:7047"
+# public_key = "02..."
 ```
 
 The service creates a high-entropy token at `admin.token_path` with private
@@ -50,10 +52,13 @@ print, or send the token to the provider proxy.
 
 ## Health, discovery, and authentication
 
-`GET /healthz` and `GET /openapi.json` are the only unauthenticated service
-endpoints. They intentionally reveal only basic availability and the API
-contract. Every `/v1` route requires either the bearer token or the dashboard's
-HttpOnly, SameSite browser session.
+The dashboard shell and its static assets are public on the loopback admin
+listener so a browser can render the sign-in form. `GET /healthz` and `GET /openapi.json`
+are also unauthenticated and reveal basic availability and the
+API contract. No private capture data is present in those responses. Every
+`/v1` data or operation route requires the bearer token or the dashboard's
+HttpOnly, SameSite browser session; `POST /v1/session` is the bearer-authenticated
+bootstrap that creates that session.
 
 Load the token from its configured file without putting its value into shell
 history:
@@ -90,11 +95,26 @@ browser backend.
   Codes and messages exclude credentials, plaintext headers, and local paths.
 - Capture lists use `limit` and `offset`. Supported filters are `query`,
   `provider`, `model`, `capture_state`, and `finalization_state`.
-- Activity uses a monotonic `cursor`; pass `next_cursor` to the next request.
+- Activity uses a monotonic `cursor`. Pass the returned `next_cursor` on a
+  later request to ask only for newer events.
 - Mutations that start or retry background work return `202 Accepted`. Record
   the returned operation identifier and poll its resource. A 202 response does
   not mean the proof is complete.
 - Cancellation is not implemented. Do not invent or call a cancellation route.
+
+The OpenAPI document is the complete schema reference. This compact map shows
+which workflow owns each operation:
+
+| Workflow | Operations |
+| --- | --- |
+| Session and status | `POST /v1/session`, `DELETE /v1/session`, `GET /v1/status` |
+| Captures | `GET /v1/captures`, `GET /v1/captures/{capture_id}` |
+| Finalization | `POST /v1/captures/{capture_id}/finalizations`, `GET /v1/operations`, `GET /v1/operations/{operation_id}`, `POST /v1/operations/{operation_id}/retry` |
+| Finalized trace | `GET /v1/captures/{capture_id}/trace`, `POST /v1/captures/{capture_id}/trace:verify` |
+| Activity | `GET /v1/events` |
+| Publication account | `GET /v1/publication/auth`, `POST /v1/publication/auth`, `GET /v1/publication/auth/{request_id}`, `DELETE /v1/publication/auth` |
+| Publication | `POST /v1/captures/{capture_id}/publications` |
+| Public trace | `GET /v1/public-traces/{publication_id}`, `POST /v1/public-traces/{publication_id}/verify` |
 
 For example, search the plain-text preview index and fetch one capture by its
 identifier:
@@ -178,21 +198,32 @@ curl --fail-with-body -X POST \
 A successful response contains `verified: true`, a verification time, notary
 key identifier, and trust source. This operation rechecks the evidence,
 disclosure, hashes, provider adapter, and canonical trace bytes.
+`GET /v1/captures/{capture_id}/trace` decodes the same finalized package into
+its manifest and canonical trace document for inspection; it does not replace
+the verification operation.
 
 Publication is a later, explicit consent decision. It is never part of local
 finalization. The `/v1/publication/auth` device flow authorizes the local
 service, and `POST /v1/captures/{capture_id}/publications` accepts only an
 eligible finalized capture. Ask the user before either publishing or changing
-service configuration.
+service configuration. Device authorization starts with `202 Accepted`; obey
+its `poll_interval_seconds` and keep polling the returned
+`/v1/publication/auth/{request_id}` route while `signed_in` is false. Public
+Library traces can be inspected through `GET /v1/public-traces/{publication_id}`
+or independently checked through `POST
+/v1/public-traces/{publication_id}/verify` without accepting an output path.
 
 ## Local trust boundary
 
 The API is intentionally identifier-based. It does not accept arbitrary input
 or output paths and does not return decrypted bundle contents, credential
 values, cookies, raw authenticated headers, vault keys, token values, or
-presigned upload URLs. Logs follow the same rule. Keep these constraints when
-adding endpoints: private evidence stays local, and public artifacts must not
-claim guarantees beyond what their verifier checks.
+presigned upload URLs. API errors and activity events follow the same rule.
+Foreground startup diagnostics can name a configured local path when that path
+must be repaired, so treat process logs as local-sensitive operational data.
+Keep these constraints when adding endpoints: private evidence stays local,
+and public artifacts must not claim guarantees beyond what their verifier
+checks.
 
 For exact operations and schemas, use the live [OpenAPI document](http://127.0.0.1:8788/openapi.json).
 For the visual workflow, continue with the [local dashboard guide](local-dashboard.md).

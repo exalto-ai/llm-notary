@@ -6,14 +6,14 @@
 
 - [Overview](%PUBLIC_ORIGIN%/docs): Capture now, prove later. Understand the lifecycle and two artifact states.
 - [Trust and guarantees](%PUBLIC_ORIGIN%/docs/how-it-works): The provenance claim, participants, authenticated versus observed data, and limits.
-- [Install and capture](%PUBLIC_ORIGIN%/docs/install): Install the CLI, create the default local configuration automatically, and start the proxy.
-- [Configuration](%PUBLIC_ORIGIN%/docs/proxy?section=configuration-file): Edit `config.toml` to choose local storage, catalog behavior, provider routes, or a self-hosted notary endpoint.
-- [Captures](%PUBLIC_ORIGIN%/docs/captures): Search, inspect, retain, and retry locally cataloged encrypted `.llmbundle` checkpoints.
+- [Install and capture](%PUBLIC_ORIGIN%/docs/install): Install the foreground service, create the default local configuration automatically, and start both loopback listeners.
+- [Configuration](%PUBLIC_ORIGIN%/docs/proxy?section=configuration-file): Edit `config.toml` to choose local storage, catalog behavior, provider routes, admin listener, or a self-hosted notary endpoint and key.
+- [Captures](%PUBLIC_ORIGIN%/docs/captures): Search, inspect, retain, and finalize locally cataloged encrypted `.llmbundle` checkpoints through the dashboard or REST API.
 - [Providers](%PUBLIC_ORIGIN%/docs/providers): Configure OpenAI, Anthropic, and DeepSeek clients against the local proxy.
 - [Agents](%PUBLIC_ORIGIN%/docs/harnesses): Recipes for Codex, Claude Code, and OpenCode.
-- [Finalize](%PUBLIC_ORIGIN%/docs/finalize): Turn one pending bundle into a verified trace package.
+- [Finalize](%PUBLIC_ORIGIN%/docs/finalize): Queue a durable operation that turns one pending capture into a verified trace package.
 - [Artifacts](%PUBLIC_ORIGIN%/docs/artifacts): Evidence, disclosed HTTP, normalized OTLP, and manifest responsibilities.
-- [Verify](%PUBLIC_ORIGIN%/docs/verify): Offline verification with the trusted notary public key.
+- [Verify](%PUBLIC_ORIGIN%/docs/verify): Verify a finalized trace through the authenticated local service and its configured trust source.
 - [Publish](%PUBLIC_ORIGIN%/docs/publish): Deliberately submit an already-finalized trace package.
 
 ## Core trust boundary
@@ -22,20 +22,19 @@ The local proxy handles plaintext and provider credentials. The remote notary pa
 
 On first use, the client creates a user-editable `config.toml` at the standard platform configuration location. It enables the OpenAI, Anthropic, DeepSeek, and OpenRouter routes by default; keeps encrypted bundles and finalized packages under the platform data directory; and creates a local SQLite catalog. The catalog indexes short, plain-text prompt and output previews for search, along with provider, model, status, size, duration, and artifact metadata. It does not store header values, cookies, or credentials.
 
-## Commands
+## Local service and API
 
 ```sh
 curl -fsSLO %PUBLIC_ORIGIN%/install.sh && sh install.sh
-llm-notary proxy start
-llm-notary config validate
-llm-notary captures list --query pricing
-llm-notary captures show cap-....
-llm-notary finalize /path/to/bundles/cap-....llmbundle
-llm-notary verify-trace /path/to/traces/cap-....
-llm-notary publish /path/to/traces/cap-....
+llm-notary
+
+curl http://127.0.0.1:8788/healthz
+curl http://127.0.0.1:8788/openapi.json
+curl -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  "http://127.0.0.1:8788/v1/captures?query=pricing"
 ```
 
-Use `--config /path/to/config.toml` with config-driven commands to select a non-standard local configuration. For a self-hosted notary, set `notary.endpoint` in that file and provide `--trusted-notary-key` to finalize and verify as the explicit trust anchor. Hosted clients discover the notary endpoint and key from the signed directory.
+Open `http://127.0.0.1:8788` for the local dashboard. Read the bearer token from the private `admin.token_path` file, send it only in the Authorization header, and follow the live OpenAPI document instead of guessing routes or request bodies. Use `llm-notary --config /path/to/config.toml` to select a non-standard local configuration. For a self-hosted notary, set `notary.endpoint` and `notary.public_key` together in that file. Hosted services discover the notary endpoint and key from the signed directory.
 
 ## Package layout
 
