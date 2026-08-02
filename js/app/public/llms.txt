@@ -6,9 +6,9 @@
 
 - [Overview](%PUBLIC_ORIGIN%/docs): Capture now, prove later. Understand the lifecycle and two artifact states.
 - [Trust and guarantees](%PUBLIC_ORIGIN%/docs/how-it-works): The provenance claim, participants, authenticated versus observed data, and limits.
-- [Install](%PUBLIC_ORIGIN%/docs/install): Install the CLI and initialize local bundle encryption.
-- [Run the proxy](%PUBLIC_ORIGIN%/docs/proxy): Start a provider-specific local proxy while keeping plaintext and credentials local.
-- [Bundles](%PUBLIC_ORIGIN%/docs/bundles): List, keep, retry, and understand encrypted `.llmbundle` checkpoints.
+- [Install and capture](%PUBLIC_ORIGIN%/docs/install): Install the CLI, create the default local configuration automatically, and start the proxy.
+- [Configuration](%PUBLIC_ORIGIN%/docs/proxy?section=configuration-file): Edit `config.toml` to choose local storage, catalog behavior, provider routes, or a self-hosted notary endpoint.
+- [Captures](%PUBLIC_ORIGIN%/docs/captures): Search, inspect, retain, and retry locally cataloged encrypted `.llmbundle` checkpoints.
 - [Providers](%PUBLIC_ORIGIN%/docs/providers): Configure OpenAI, Anthropic, and DeepSeek clients against the local proxy.
 - [Agents](%PUBLIC_ORIGIN%/docs/harnesses): Recipes for Codex, Claude Code, and OpenCode.
 - [Finalize](%PUBLIC_ORIGIN%/docs/finalize): Turn one pending bundle into a verified trace package.
@@ -20,17 +20,22 @@
 
 The local proxy handles plaintext and provider credentials. The remote notary participates in the authenticated provider TLS connection without receiving API-key values, prompts, or responses. A pending encrypted bundle is private retry state, not public proof. A finalized trace package is independently verifiable with the trusted notary public key.
 
+On first use, the client creates a user-editable `config.toml` at the standard platform configuration location. It enables the OpenAI, Anthropic, DeepSeek, and OpenRouter routes by default; keeps encrypted bundles and finalized packages under the platform data directory; and creates a local SQLite catalog. The catalog indexes short, plain-text prompt and output previews for search, along with provider, model, status, size, duration, and artifact metadata. It does not store header values, cookies, or credentials.
+
 ## Commands
 
 ```sh
 curl -fsSLO %PUBLIC_ORIGIN%/install.sh && sh install.sh
-llm-notary vault init
-llm-notary proxy start --provider openai --bundle-dir bundles
-llm-notary bundles list --bundle-dir bundles
-llm-notary finalize bundles/cap-....llmbundle --output verified-trace --trusted-notary-key <notary-public-key>
-llm-notary verify-trace verified-trace --trusted-notary-key <notary-public-key>
-llm-notary publish verified-trace
+llm-notary proxy start
+llm-notary config validate
+llm-notary captures list --query pricing
+llm-notary captures show cap-....
+llm-notary finalize /path/to/bundles/cap-....llmbundle
+llm-notary verify-trace /path/to/traces/cap-....
+llm-notary publish /path/to/traces/cap-....
 ```
+
+Use `--config /path/to/config.toml` with config-driven commands to select a non-standard local configuration. For a self-hosted notary, set `notary.endpoint` in that file and provide `--trusted-notary-key` to finalize and verify as the explicit trust anchor. Hosted clients discover the notary endpoint and key from the signed directory.
 
 ## Package layout
 

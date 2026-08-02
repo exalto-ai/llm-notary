@@ -222,7 +222,7 @@ const docPages = {
       },
       {
         heading: 'A first successful run',
-        code: `${installCommand}\n\nllm-notary proxy start\n# In another terminal, run your OpenAI client against http://127.0.0.1:8787/openai/v1\n\nllm-notary bundles list\nllm-notary finalize bundles/cap-....llmbundle --output verified-trace\nllm-notary verify-trace verified-trace`,
+        code: `${installCommand}\n\nllm-notary proxy start\n# In another terminal, run your OpenAI client against http://127.0.0.1:8787/openai/v1\n\nllm-notary captures list\nllm-notary captures show cap-....\nllm-notary finalize /path/to/bundles/cap-....llmbundle\nllm-notary verify-trace /path/to/traces/cap-....`,
       },
       {
         heading: 'The claim',
@@ -274,7 +274,9 @@ const docPages = {
     blocks: [
       { heading: 'Install the CLI', code: installCommand },
       { heading: 'Supported systems', body: 'The installer selects checksum-verified macOS or Linux releases for Apple silicon, Intel, x86_64, and ARM64. Windows x86_64 is available as a ZIP release. Every package contains the same llm-notary command.' },
-      { heading: 'Start the proxy', code: 'llm-notary proxy start --bundle-dir bundles' },
+      { heading: 'Start the proxy', code: 'llm-notary proxy start' },
+      { heading: 'Configuration file', body: 'The first config-driven command creates an editable config.toml at the standard user location: ~/.config/llm-notary on Linux, %APPDATA%\\llm-notary on Windows, and ~/Library/Application Support/llm-notary on macOS. It is written once and never replaced. Check a change before starting the proxy with:', code: 'llm-notary config validate' },
+      { heading: 'What it controls', body: 'config.toml holds the listener address, an optional local or self-hosted notary endpoint, bundle and trace directories, the SQLite catalog path and preview limits, and the enabled provider routes. All built-in providers start enabled. The hostname and API behavior of each provider remain fixed; configuration cannot direct the proxy to an arbitrary upstream host.' },
       { heading: 'Bundle encryption is automatic', body: 'On first use, the proxy creates a random bundle-encryption key and stores it in Keychain on macOS, Credential Manager on Windows, or the desktop secret service on Linux. The OS may ask you to unlock that credential. You do not need to run a separate initialization command.' },
       { heading: 'Optional passphrase mode', body: 'If you prefer a passphrase instead of the operating-system credential service, choose it before the first proxy run. An empty passphrase is accepted for low-friction local testing, but it provides no meaningful protection if someone obtains both your bundles and vault configuration.', code: 'llm-notary vault init --passphrase' },
       { heading: 'What happens online', body: 'The local proxy handles plaintext while the notary participates in the provider TLS connection without seeing application data. Provider response bytes stream back to your agent as they arrive.' },
@@ -295,7 +297,8 @@ const docPages = {
       { heading: 'Run Codex', code: 'codex exec --ephemeral --ignore-user-config --skip-git-repo-check \\\n  -m gpt-5-mini \\\n  -c \'model_reasoning_effort="low"\' \\\n  \'Reply with exactly: hello\'' },
       { heading: 'Claude Code + Anthropic', code: 'ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic \\\nclaude --bare --no-session-persistence \\\n  -p --model claude-haiku-4-5-20251001 \\\n  \'Reply with exactly: hello\'' },
       { heading: 'OpenCode + DeepSeek', body: 'Set the provider base URL to http://127.0.0.1:8787/deepseek and retain DEEPSEEK_API_KEY in the OpenCode environment.' },
-      { heading: 'List captured bundles', body: 'Each completed provider interaction appears as one encrypted file. Bundles are private checkpoints, not signatures or publicly verifiable evidence.', code: 'llm-notary bundles list --bundle-dir bundles' },
+      { heading: 'Search local captures', body: 'Each completed provider interaction keeps its encrypted bundle and gains a row in the local SQLite catalog. Search prompt and output previews or narrow the results to a requested model:', code: 'llm-notary captures list --query pricing\nllm-notary captures list --model gpt-5\nllm-notary captures show cap-....' },
+      { heading: 'What the catalog records', body: 'A capture records its provider, request and response model when available, HTTP status, request and response sizes, duration, finalization state, and the retained artifact paths. By default, it indexes the first 1,000 characters of the request prompt and output as plain local text. It does not store header values, cookies, or credentials. Change the catalog path, disable full-text search, or set either preview limit to 0 in config.toml.' },
       { heading: 'Stopping and retrying', body: 'Once the end-of-stream bundle is sealed, stopping the proxy does not invalidate it. Finalization can happen later. If finalization is interrupted, the unchanged bundle can be retried, although the interrupted proof computation starts over.' },
     ],
   },
@@ -303,8 +306,8 @@ const docPages = {
     title: 'Finalize and verify.',
     lead: 'Turn one encrypted bundle into a portable evidence package, inspect its canonical OpenTelemetry trace, and verify the entire package offline.',
     blocks: [
-      { heading: 'Finalize one interaction', code: 'llm-notary finalize bundles/cap-....llmbundle \\\n  --output verified-trace' },
-      { heading: 'Notary discovery is automatic', body: 'The CLI refreshes the production notary directory, selects a worker compatible with the bundle, and verifies the resulting evidence against its locally pinned key history. The --notary and --trusted-notary-key flags are overrides for self-hosted development, not normal hosted use.' },
+      { heading: 'Finalize one interaction', body: 'Use captures show to obtain the path of the deferred_bundle artifact. Finalization writes to storage.finalized_dir/<capture-id> by default, records that package in the catalog, and retains the encrypted source bundle.', code: 'llm-notary captures show cap-....\n# Copy the deferred_bundle path from the ARTIFACTS section.\nllm-notary finalize /path/to/bundles/cap-....llmbundle' },
+      { heading: 'Notary discovery is automatic', body: 'For hosted use, the CLI refreshes the production notary directory, selects a worker compatible with the bundle, and verifies the resulting evidence against its locally pinned key history. For local or self-hosted use, set notary.endpoint in config.toml and pass --trusted-notary-key as the explicit trust anchor when finalizing and verifying.' },
       { heading: 'Fresh notary connection', body: 'The original provider stream and proxy no longer need to be running. A new notary worker holding the same notary identity and key can complete finalization without a stored server-side checkpoint.' },
       { heading: 'Expect this step to take time', body: 'Private proof generation is slower than capture. Deferring it keeps the interactive agent response fast and makes proof work an explicit background or batch operation.' },
       { heading: 'Interruption behavior', body: 'The pending bundle is not consumed. If finalization fails or the process stops, run the command again; work from the interrupted attempt is not resumed.' },
@@ -377,6 +380,8 @@ const docPages = {
 const docSubheadings = {
   'getting-started': new Set([
     'Supported systems',
+    'Configuration file',
+    'What it controls',
     'Bundle encryption is automatic',
     'Optional passphrase mode',
     'What happens online',
@@ -388,6 +393,7 @@ const docSubheadings = {
     'Run Codex',
     'Claude Code + Anthropic',
     'OpenCode + DeepSeek',
+    'What the catalog records',
     'Stopping and retrying',
   ]),
   'trace-packages': new Set([
@@ -422,6 +428,7 @@ const docAliases = {
   install: 'getting-started',
   proxy: 'getting-started',
   bundles: 'getting-started',
+  captures: 'getting-started',
   providers: 'getting-started',
   harnesses: 'getting-started',
   finalize: 'trace-packages',
@@ -493,7 +500,7 @@ function DocsSearch({ open, onClose }) {
   useEffect(() => { setSelected((current) => Math.min(current, Math.max(results.length - 1, 0))); }, [results.length]);
   if (!open) return null;
   const choose = (result) => { window.location.hash = docHref(result.key); onClose(); };
-  return <div className="docs-search-backdrop" role="presentation" onMouseDown={onClose}><section className="docs-search-dialog" role="dialog" aria-modal="true" aria-label="Search documentation" onMouseDown={(event) => event.stopPropagation()}><header><label htmlFor="docs-search-input">Search documentation</label><kbd>ESC</kbd></header><input id="docs-search-input" ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); setSelected((value) => Math.min(value + 1, results.length - 1)); } if (event.key === 'ArrowUp') { event.preventDefault(); setSelected((value) => Math.max(value - 1, 0)); } if (event.key === 'Enter' && results[selected]) choose(results[selected]); if (event.key === 'Escape') onClose(); }} placeholder="Search setup, bundles, providers…" /><div className="docs-search-results" role="listbox">{results.length ? results.map((result, index) => <button type="button" className={index === selected ? 'active' : ''} onMouseEnter={() => setSelected(index)} onClick={() => choose(result)} role="option" aria-selected={index === selected} key={result.key}><span>{result.title}</span><small>{result.lead}</small></button>) : <p>No documentation matches “{query}”.</p>}</div><footer><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span></footer></section></div>;
+  return <div className="docs-search-backdrop" role="presentation" onMouseDown={onClose}><section className="docs-search-dialog" role="dialog" aria-modal="true" aria-label="Search documentation" onMouseDown={(event) => event.stopPropagation()}><header><label htmlFor="docs-search-input">Search documentation</label><kbd>ESC</kbd></header><input id="docs-search-input" ref={inputRef} value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === 'ArrowDown') { event.preventDefault(); setSelected((value) => Math.min(value + 1, results.length - 1)); } if (event.key === 'ArrowUp') { event.preventDefault(); setSelected((value) => Math.max(value - 1, 0)); } if (event.key === 'Enter' && results[selected]) choose(results[selected]); if (event.key === 'Escape') onClose(); }} placeholder="Search setup, captures, providers…" /><div className="docs-search-results" role="listbox">{results.length ? results.map((result, index) => <button type="button" className={index === selected ? 'active' : ''} onMouseEnter={() => setSelected(index)} onClick={() => choose(result)} role="option" aria-selected={index === selected} key={result.key}><span>{result.title}</span><small>{result.lead}</small></button>) : <p>No documentation matches “{query}”.</p>}</div><footer><span><kbd>↑</kbd><kbd>↓</kbd> navigate</span><span><kbd>↵</kbd> open</span></footer></section></div>;
 }
 
 function DocsMobileToolbar({ currentKey, page, section, onSearch }) {
