@@ -42,12 +42,20 @@ async function fixturePage(browser, { scheme, viewport, route }) {
   const page = await context.newPage();
   await page.emulateMedia({ colorScheme: scheme === 'dark' ? 'dark' : 'light', reducedMotion: 'reduce' });
   await page.goto(`${origin}/local.html?fixture=docs&${route}`, { waitUntil: 'networkidle' });
+  await page.addStyleTag({ content: `
+    *, *::before, *::after { animation: none !important; caret-color: transparent !important; transition: none !important; }
+    .mantine-Notifications-root { display: none !important; }
+  ` });
+  await page.evaluate(() => document.fonts.ready);
   return { context, page };
 }
 
 async function capture(browser, spec) {
   const { context, page } = await fixturePage(browser, spec);
   if (spec.prepare) await spec.prepare(page);
+  await page.evaluate(() => new Promise((resolveFrame) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolveFrame));
+  }));
   await page.screenshot({ path: resolve(outputDir, spec.file) });
   await context.close();
   process.stdout.write(`Captured docs/images/local-dashboard/${spec.file}\n`);

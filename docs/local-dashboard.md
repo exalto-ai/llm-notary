@@ -83,7 +83,9 @@ The Publishing view first shows whether the service has an authorized public
 account. Its device flow displays a short code and approval URL. After approval,
 select one eligible finalized trace and review the explicit confirmation. The
 source `.llmbundle` is never a publication input. Nothing is uploaded merely
-because a trace was finalized or verified.
+because a trace was finalized or verified. After submission, the dashboard
+retains the job identifier and initial state and links to the publication
+status page for later admission changes.
 
 ## Activity, settings, and API discovery
 
