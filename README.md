@@ -73,11 +73,12 @@ cargo run -p llm-notary-server --bin llm-notary-server -- --signing-key notary.d
 ```
 
 The notary prints its public key at startup. A local or private deployment sets
-that value as `notary.public_key` alongside its explicit endpoint. Production
-clients discover and pin the public key through the signed directory.
+that value as `notary.public_key` alongside its explicit endpoint and reports
+its key identifier during finalized-trace verification. Production clients
+discover and pin the public key through the signed directory.
 
 In another terminal, start `llm-notary`. The foreground process owns both the
-provider proxy at `127.0.0.1:8787` and the authenticated administration API at
+provider proxy at `127.0.0.1:8787` and the administration API at
 `127.0.0.1:8788`. A service manager can supervise that same foreground
 process. On first use it automatically writes an
 editable configuration file in the standard platform location: XDG config on
@@ -96,13 +97,23 @@ llm-notary
 llm-notary --config /path/to/config.toml
 ```
 
-`GET http://127.0.0.1:8788/healthz` and `/openapi.json` are public on the
-loopback admin listener. Every `/v1` operation requires the bearer token stored
-in the private `admin.token_path` file. Read that value without printing it,
-send it only in `Authorization: Bearer ...`, and never put it in a URL. The
-provider proxy does not mount any admin route. Operational CLI subcommands
-have been removed; scripts and coding agents should fetch `/openapi.json` and
-use the versioned REST API.
+The loopback admin listener is available without credentials by default. Set
+`admin.auth` to require a username and an Argon2id password hash. The provider
+proxy does not mount any admin route. Operational CLI subcommands have been
+removed; scripts and coding agents should fetch `/openapi.json` and use the
+versioned REST API.
+
+Open [http://127.0.0.1:8788](http://127.0.0.1:8788) for the local evidence
+dashboard. It opens directly under the default configuration. When
+`admin.auth` is enabled, it exchanges the configured credentials for an
+HttpOnly browser session. It supports the complete capture, finalization,
+verification, activity, and publication workflow. See the [local service and REST API guide](docs/local-service.md),
+[dashboard guide](docs/local-dashboard.md), and [coding-agent
+playbook](docs/agent-playbook.md) for the complete flow.
+
+> **Migration:** the old local operational subcommands have been removed.
+> Start the foreground service with `llm-notary`; use the dashboard or the
+> code-generated REST API for every local operation.
 
 ### Configure the local client
 
@@ -123,7 +134,11 @@ listen = "127.0.0.1:8787"
 
 [admin]
 listen = "127.0.0.1:8788"
-# token_path = "/platform/data/llm-notary/admin-token"
+
+# Optional. The admin listener is open to local processes when this table is absent.
+# [admin.auth]
+# username = "local-admin"
+# password_hash = "$argon2id$v=19$m=32768,t=2,p=1$..."
 
 [notary]
 # Set this only for a local or self-hosted notary.
@@ -144,6 +159,13 @@ full_text_search = true
 enabled = true
 route_prefix = "/openai"
 ```
+
+Both listeners are restricted to loopback addresses. If other local processes
+should not be able to use the admin API, enable `admin.auth` and store only an
+Argon2id PHC string, never a plaintext password. A password tool that prompts
+instead of putting the secret in the process list can generate one; for
+example, `caddy hash-password --algorithm argon2id`. Copy its complete output,
+including the salt and work parameters, into `password_hash`.
 
 All four built-in providers start enabled. Set a provider’s `enabled` value to
 `false` to remove its local route, or change its `route_prefix` to fit an
@@ -173,7 +195,9 @@ encrypted `.llmbundle` and records a local catalog entry. The catalog stores
 the provider, requested and response model when available, request/response
 size and status, plus short plain-text prompt and output previews. Its FTS5
 index powers `GET /v1/captures?query=pricing`, which can locate a capture
-without decrypting every bundle. The catalog deliberately
+without decrypting every bundle. Search punctuation is treated as text
+boundaries rather than raw FTS syntax, and quoted phrases remain phrases. The
+catalog deliberately
 does not store HTTP header values, cookies, or credentials. Its previews are
 plain local text; set either `catalog.*_preview_chars` to `0` if that is not
 appropriate for a particular machine. Both listeners must remain on distinct
@@ -203,13 +227,14 @@ identifier; poll that operation until it reaches `finalized`, `failed`, or
 `interrupted`:
 
 ```bash
-curl -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
-  'http://127.0.0.1:8788/v1/captures?query=pricing'
-curl -X POST -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+curl 'http://127.0.0.1:8788/v1/captures?query=pricing'
+curl -X POST \
   http://127.0.0.1:8788/v1/captures/cap-example/finalizations
-curl -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
-  http://127.0.0.1:8788/v1/operations/op-example
+curl http://127.0.0.1:8788/v1/operations/op-example
 ```
+
+For optional authentication, exact state transitions, deduplication, restart
+recovery, and retry behavior, follow the [local service guide](docs/local-service.md).
 
 The output directory is a single portable package:
 
@@ -226,7 +251,7 @@ Verify it locally by rechecking the TLSNotary presentation, every source-file
 hash, the provider adapter, and the exact canonical OTLP bytes:
 
 ```bash
-curl -X POST -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+curl -X POST \
   http://127.0.0.1:8788/v1/captures/cap-example/trace:verify
 ```
 
@@ -303,7 +328,7 @@ and billing check; the regular test suite uses deterministic fixtures.
 Verify a named Library publication without a private capture or local path:
 
 ```bash
-curl -X POST -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+curl -X POST \
   http://127.0.0.1:8788/v1/public-traces/3d3d727f-e0b1-432e-be3c-0b2e3ead35d1/verify
 ```
 
@@ -314,8 +339,7 @@ stamp.
 Retrieve the canonical public trace and stamp as JSON through the admin API:
 
 ```bash
-curl -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
-  http://127.0.0.1:8788/v1/public-traces/3d3d727f-e0b1-432e-be3c-0b2e3ead35d1
+curl http://127.0.0.1:8788/v1/public-traces/3d3d727f-e0b1-432e-be3c-0b2e3ead35d1
 ```
 
 The service resolves public artifact links through the configured API, rejects
@@ -514,7 +538,7 @@ cargo test -p llm-notary-platform web_users_can_list_and_revoke_only_their_cli_s
 They require no database URL, database credentials, or external provider
 account; each test state receives a fresh production-schema database.
 
-The API has `GET /api/notary` for CLI endpoint and public-key discovery,
+The API has `GET /api/notary` for local-service endpoint and public-key discovery,
 `GET /api/auth/github`, `GET /api/auth/github/callback`, `GET /api/me`,
 `POST /api/auth/logout`, `GET /api/healthz`, and database-backed
 `GET /api/readyz`, plus authenticated publication intake endpoints and
@@ -601,7 +625,7 @@ Before submitting a finalized trace, start the existing device authorization
 flow through the local API:
 
 ```bash
-curl -X POST -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+curl -X POST \
   -H 'content-type: application/json' -d '{}' \
   http://127.0.0.1:8788/v1/publication/auth
 ```
@@ -632,7 +656,7 @@ disclosure, and deterministic OTLP mapping from that exact snapshot. Only
 after those checks pass does it refresh the publication login and create an upload job:
 
 ```bash
-curl -X POST -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+curl -X POST \
   http://127.0.0.1:8788/v1/captures/cap-example/publications
 ```
 
@@ -644,14 +668,17 @@ repeating the operation for identical bytes resumes the same job after an
 ambiguous network failure. The response contains `capture_id`, `job_id`,
 `state`, and `status_url`.
 
-Poll the returned job through the authenticated local service:
+Poll admission through the local service; the browser or agent
+does not need the separate vault-held publication credential:
 
 ```bash
 job_id=job-example
 curl --fail-with-body \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "http://127.0.0.1:8788/v1/publications/$job_id"
 ```
+
+`GET /v1/publications/{job_id}` returns the current state, a bounded failure
+code when applicable, and public trace and stamp URLs only after admission.
 
 Publishing is an explicit consent boundary: the current admission design may
 inspect the disclosed plaintext in the finalized package to reproduce and

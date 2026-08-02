@@ -62,7 +62,7 @@ replicas from starting.
    curl --fail https://llm-notary.exalto.ai/api/readyz
    ```
 
-4. Exercise GitHub sign-in, CLI refresh-token rotation, and one complete
+4. Exercise GitHub sign-in, publication-device refresh-token rotation, and one complete
    publication/admission cycle. Confirm the public object keys, sizes, and
    SHA-256 values match their private objects.
 

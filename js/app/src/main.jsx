@@ -18,7 +18,7 @@ import { RelayAnimation } from './RelayAnimation';
 
 const publicOrigin = __PUBLIC_ORIGIN__;
 const installCommand = `curl -fsSLO ${publicOrigin}/install.sh && sh install.sh`;
-const publishCommand = 'llm-notary publish verified-trace';
+const publishCommand = 'POST /v1/captures/{capture_id}/publications';
 const brandAssetVersion = __BRAND_ASSET_VERSION__;
 
 function PenMark({ inverse = false }) {
@@ -160,7 +160,7 @@ function CollectionPreview() {
     return () => { cancelled = true; };
   }, [active]);
   const snippets = traceSnippets(tracePreview || []);
-  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Library</span><h2>Featured traces.</h2></div></div>{collection === null && !loadError ? <div className="collection-pending" role="status"><b>Loading verified traces…</b><span>Retrieving admitted publications.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library is temporarily unavailable.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-workspace"><div className="preview-records" aria-label="Featured traces">{visible.map((publication) => <button type="button" className={publication.id === active?.id ? 'active' : ''} onClick={() => setActiveId(publication.id)} aria-pressed={publication.id === active?.id} key={publication.id}><i aria-hidden="true" /><span><b>{publication.title}</b><small>{publication.provider} · {publication.model}</small></span><em>{publication.tags[0] || 'trace'}</em></button>)}</div>{active && <article className="preview-inspector"><header><span className="eyebrow">Selected trace</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h3>{active.title}</h3><p>{active.provider} · {active.model}</p><div className="preview-contents">{snippets.length ? snippets.map((snippet) => <span key={snippet.label}><b>{snippet.label}</b><small>{snippet.text}</small></span>) : <span><b>Trace contents</b><small>Loading preview…</small></span>}</div><div className="preview-command"><span>Download + verify</span><code>llm-notary download {active.id} --verify</code></div></article>}</div> : <div className="collection-pending"><b>No verified traces yet.</b><span>New publications will appear here as they are admitted.</span></div>}<a className="button button-dark" href="#/library">Open Library</a></section>;
+  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Library</span><h2>Featured traces.</h2></div></div>{collection === null && !loadError ? <div className="collection-pending" role="status"><b>Loading verified traces…</b><span>Retrieving admitted publications.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library is temporarily unavailable.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-workspace"><div className="preview-records" aria-label="Featured traces">{visible.map((publication) => <button type="button" className={publication.id === active?.id ? 'active' : ''} onClick={() => setActiveId(publication.id)} aria-pressed={publication.id === active?.id} key={publication.id}><i aria-hidden="true" /><span><b>{publication.title}</b><small>{publication.provider} · {publication.model}</small></span><em>{publication.tags[0] || 'trace'}</em></button>)}</div>{active && <article className="preview-inspector"><header><span className="eyebrow">Selected trace</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h3>{active.title}</h3><p>{active.provider} · {active.model}</p><div className="preview-contents">{snippets.length ? snippets.map((snippet) => <span key={snippet.label}><b>{snippet.label}</b><small>{snippet.text}</small></span>) : <span><b>Trace contents</b><small>Loading preview…</small></span>}</div><div className="preview-command"><span>Verify from the local service</span><code>POST /v1/public-traces/{active.id}/verify</code></div></article>}</div> : <div className="collection-pending"><b>No verified traces yet.</b><span>New publications will appear here as they are admitted.</span></div>}<a className="button button-dark" href="#/library">Open Library</a></section>;
 }
 
 function MotionStudies() {
@@ -179,11 +179,11 @@ function Landing() {
     <PublishingArchitecture />
     <section className="section install capture">
       <div><span className="eyebrow">Local capture</span><h2>Capture locally.</h2><p>Point your existing tools at the local proxy. Provider calls keep streaming normally while encrypted bundles stay on your machine.</p></div>
-      <div className="terminal"><div><i /><i /><i /></div><pre><code><b>$</b> {installCommand}{'\n\n'}<b>$</b> llm-notary proxy start{'\n\n'}listening  <em>127.0.0.1:8787</em>{'\n'}saving bundles locally</code></pre><a href="#/docs/getting-started">Installation and setup</a></div>
+      <div className="terminal"><div><i /><i /><i /></div><pre><code><b>$</b> {installCommand}{'\n\n'}<b>$</b> llm-notary{'\n\n'}proxy  <em>127.0.0.1:8787</em>{'\n'}admin  <em>127.0.0.1:8788</em></code></pre><a href="#/docs/getting-started">Installation and setup</a></div>
     </section>
     <CollectionPreview />
     <section className="section verify" id="verify">
-      <div><span className="eyebrow">Independent verification</span><h2>Proof of origin.</h2><p>LLM Notary verifies the provider-authenticated exchange, then signs the exact trace hash. Anyone can check the signature and confirm the published trace has not been altered.</p><div className="verify-points"><span>OTLP JSON</span><span>Signed hash</span><span>Independently verifiable</span></div><div className="button-row"><a className="button button-dark" href="#/docs/trace-packages">Verify with the CLI</a></div></div>
+      <div><span className="eyebrow">Independent verification</span><h2>Proof of origin.</h2><p>LLM Notary verifies the provider-authenticated exchange, then signs the exact trace hash. Anyone can check the signature and confirm the published trace has not been altered.</p><div className="verify-points"><span>OTLP JSON</span><span>Signed hash</span><span>Independently verifiable</span></div><div className="button-row"><a className="button button-dark" href="#/docs/trace-packages">Verify with the local API</a></div></div>
       <div className="receipt"><header><PenMark inverse /><b>Publication stamp</b></header><h3>Verified</h3><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Artifact</dt><dd>trace.otlp.json</dd></div><div><dt>Trace hash</dt><dd>9b44f8…c21d</dd></div></dl><div className="receipt-contents"><span>Input messages <i>•••</i></span><span>Assistant responses <i>•••</i></span><span>Tool calls + results <i>•••</i></span></div><footer>LLM NOTARY / STAMP v1</footer></div>
     </section>
   </main>;
@@ -214,15 +214,15 @@ const docPages = {
       {
         heading: 'What is automatic',
         items: [
-          'The first proxy run creates or opens the local encrypted-bundle vault. On a desktop OS, its random key is stored in the system credential service.',
-          'The CLI discovers the production notary endpoint and public key from the LLM Notary directory, then pins that trust information locally.',
-          'Finalization and verification use the pinned notary identity. Normal hosted use does not require copying a public key into commands.',
+          'The first service start creates or opens the local encrypted-bundle vault. On a desktop OS, its random key is stored in the system credential service.',
+          'The service discovers the production notary endpoint and public key from the LLM Notary directory, then pins that trust information locally.',
+          'Finalization and verification use the pinned notary identity. Normal hosted use does not require copying a public key into an API request.',
           'Provider credentials remain in your existing SDK or agent environment; LLM Notary does not require a project .env file.',
         ],
       },
       {
         heading: 'A first successful run',
-        code: `${installCommand}\n\nllm-notary proxy start\n# In another terminal, run your OpenAI client against http://127.0.0.1:8787/openai/v1\n\nllm-notary captures list\nllm-notary captures show cap-....\nllm-notary finalize /path/to/bundles/cap-....llmbundle\nllm-notary verify-trace /path/to/traces/cap-....`,
+        code: `${installCommand}\n\nllm-notary\n# Open http://127.0.0.1:8788 for the local dashboard.\n# Point an OpenAI client at http://127.0.0.1:8787/openai/v1.\n\ncurl http://127.0.0.1:8788/healthz\ncurl http://127.0.0.1:8788/openapi.json`,
       },
       {
         heading: 'The claim',
@@ -264,21 +264,23 @@ const docPages = {
       },
       {
         heading: 'How trust is established',
-        body: 'The CLI retrieves the signed production notary directory over HTTPS and caches its key history. Finalized packages identify the notary key that signed their evidence; verification accepts it only if that key was trusted at the package timestamp. Explicit key and endpoint overrides remain available for self-hosted development, but they are not part of the normal product workflow.',
+        body: 'The service retrieves the signed production notary directory over HTTPS and caches its key history. Finalized packages identify the notary key that signed their evidence; verification accepts it only if that key was trusted at the package timestamp. A self-hosted deployment pairs notary.endpoint with notary.public_key in config.toml, but that is not part of the normal hosted workflow.',
       },
     ],
   },
   'getting-started': {
     title: 'Install and capture.',
-    lead: 'Install one CLI, start one local proxy, and point each existing client at its provider path. You keep using the same API key and request shape.',
+    lead: 'Install one local service, start its foreground process, and point each existing client at its provider path. You keep using the same API key and request shape.',
     blocks: [
-      { heading: 'Install the CLI', code: installCommand },
+      { heading: 'Install the service', code: installCommand },
       { heading: 'Supported systems', body: 'The installer selects checksum-verified macOS or Linux releases for Apple silicon, Intel, x86_64, and ARM64. Windows x86_64 is available as a ZIP release. Every package contains the same llm-notary command.' },
-      { heading: 'Start the proxy', code: 'llm-notary proxy start' },
-      { heading: 'Configuration file', body: 'The first config-driven command creates an editable config.toml at the standard user location: ~/.config/llm-notary on Linux, %APPDATA%\\llm-notary on Windows, and ~/Library/Application Support/llm-notary on macOS. It is written once and never replaced. Check a change before starting the proxy with:', code: 'llm-notary config validate' },
-      { heading: 'What it controls', body: 'config.toml holds the listener address, an optional local or self-hosted notary endpoint, bundle and trace directories, the SQLite catalog path and preview limits, and the enabled provider routes. All built-in providers start enabled. The hostname and API behavior of each provider remain fixed; configuration cannot direct the proxy to an arbitrary upstream host.' },
+      { heading: 'Start the service', code: 'llm-notary' },
+      { heading: 'Open the local dashboard', body: 'Visit http://127.0.0.1:8788 and use the sidebar for captures, finalizations, trace verification, publishing, activity, and settings. The default loopback configuration opens directly. If admin.auth is enabled, sign in with its configured username and password; the dashboard exchanges them for an HttpOnly session and does not store the password.' },
+      { heading: 'Configuration file', body: 'The first service start creates an editable config.toml at the standard user location: ~/.config/llm-notary on Linux, %APPDATA%\\llm-notary on Windows, and ~/Library/Application Support/llm-notary on macOS. It is written once and never replaced. Start with an explicit file when needed:', code: 'llm-notary --config /path/to/config.toml' },
+      { heading: 'What it controls', body: 'config.toml holds the listener address, optional admin authentication, an optional local or self-hosted notary endpoint, bundle and trace directories, the SQLite catalog path and preview limits, and the enabled provider routes. All built-in providers start enabled. The hostname and API behavior of each provider remain fixed; configuration cannot direct the proxy to an arbitrary upstream host.' },
+      { heading: 'Optional admin sign-in', body: 'The loopback administration API is available to local processes without credentials by default. To require sign-in, configure a username and an Argon2id PHC password hash. Store the hash, including its salt and work parameters, rather than the plaintext password. A prompted tool such as caddy hash-password --algorithm argon2id can generate it.', code: '[admin.auth]\nusername = "local-admin"\npassword_hash = "$argon2id$v=19$m=32768,t=2,p=1$..."' },
       { heading: 'Bundle encryption is automatic', body: 'On first use, the proxy creates a random bundle-encryption key and stores it in Keychain on macOS, Credential Manager on Windows, or the desktop secret service on Linux. The OS may ask you to unlock that credential. You do not need to run a separate initialization command.' },
-      { heading: 'Optional passphrase mode', body: 'If you prefer a passphrase instead of the operating-system credential service, choose it before the first proxy run. An empty passphrase is accepted for low-friction local testing, but it provides no meaningful protection if someone obtains both your bundles and vault configuration.', code: 'llm-notary vault init --passphrase' },
+      { heading: 'Optional passphrase mode', body: 'If you prefer a passphrase instead of the operating-system credential service, point LLM_NOTARY_VAULT_PASSPHRASE_FILE at a private UTF-8 file before the first service start. An empty passphrase is accepted for low-friction local testing, but it provides no meaningful protection if someone obtains both your bundles and vault configuration.', code: 'export LLM_NOTARY_VAULT_PASSPHRASE_FILE=/private/local/path/vault-passphrase\nllm-notary' },
       { heading: 'What happens online', body: 'The local proxy handles plaintext while the notary participates in the provider TLS connection without seeing application data. Provider response bytes stream back to your agent as they arrive.' },
       { heading: 'What happens at end-of-stream', body: 'The proxy seals encrypted deferred state into one .llmbundle. It does not perform the expensive final proof before returning control to your workflow.' },
       {
@@ -297,7 +299,9 @@ const docPages = {
       { heading: 'Run Codex', code: 'codex exec --ephemeral --ignore-user-config --skip-git-repo-check \\\n  -m gpt-5-mini \\\n  -c \'model_reasoning_effort="low"\' \\\n  \'Reply with exactly: hello\'' },
       { heading: 'Claude Code + Anthropic', code: 'ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic \\\nclaude --bare --no-session-persistence \\\n  -p --model claude-haiku-4-5-20251001 \\\n  \'Reply with exactly: hello\'' },
       { heading: 'OpenCode + DeepSeek', body: 'Set the provider base URL to http://127.0.0.1:8787/deepseek and retain DEEPSEEK_API_KEY in the OpenCode environment.' },
-      { heading: 'Search local captures', body: 'Each completed provider interaction keeps its encrypted bundle and gains a row in the local SQLite catalog. Search prompt and output previews or narrow the results to a requested model:', code: 'llm-notary captures list --query pricing\nllm-notary captures list --model gpt-5\nllm-notary captures show cap-....' },
+      { heading: 'Search local captures', body: 'Each completed provider interaction keeps its encrypted bundle and gains a row in the local SQLite catalog. Use the dashboard, or fetch the live OpenAPI document and query the local admin API:', code: 'curl "http://127.0.0.1:8788/v1/captures?query=pricing&model=gpt-5"' },
+      { heading: 'Search punctuation safely', body: 'Capture search treats punctuation as text boundaries instead of raw full-text-search syntax. Hyphenated terms, emphasis marks, multiple words, and double-quoted phrases return matches or an empty list through the normal JSON response.' },
+      { heading: 'Filter operations and activity', body: 'The service applies operation state and event severity/type filters before returning bounded results. Coding agents should discover state, kind, capture, event type, severity, and time filters from the live OpenAPI document instead of reimplementing them client-side.', code: 'GET /v1/operations?state=failed&kind=finalization&limit=20\nGET /v1/events?severity=error&event_type=finalization_failed&limit=20' },
       { heading: 'What the catalog records', body: 'A capture records its provider, request and response model when available, HTTP status, request and response sizes, duration, finalization state, and the retained artifact paths. By default, it indexes the first 1,000 characters of the request prompt and output as plain local text. It does not store header values, cookies, or credentials. Change the catalog path, disable full-text search, or set either preview limit to 0 in config.toml.' },
       { heading: 'Stopping and retrying', body: 'Once the end-of-stream bundle is sealed, stopping the proxy does not invalidate it. Finalization can happen later. If finalization is interrupted, the unchanged bundle can be retried, although the interrupted proof computation starts over.' },
     ],
@@ -306,11 +310,11 @@ const docPages = {
     title: 'Finalize and verify.',
     lead: 'Turn one encrypted bundle into a portable evidence package, inspect its canonical OpenTelemetry trace, and verify the entire package offline.',
     blocks: [
-      { heading: 'Finalize one interaction', body: 'Use captures show to obtain the path of the deferred_bundle artifact. Finalization writes to storage.finalized_dir/<capture-id> by default, records that package in the catalog, and retains the encrypted source bundle.', code: 'llm-notary captures show cap-....\n# Copy the deferred_bundle path from the ARTIFACTS section.\nllm-notary finalize /path/to/bundles/cap-....llmbundle' },
-      { heading: 'Notary discovery is automatic', body: 'For hosted use, the CLI refreshes the production notary directory, selects a worker compatible with the bundle, and verifies the resulting evidence against its locally pinned key history. For local or self-hosted use, set notary.endpoint in config.toml and pass --trusted-notary-key as the explicit trust anchor when finalizing and verifying.' },
+      { heading: 'Finalize one interaction', body: 'Select a pending capture identifier in the dashboard or admin API. The service writes to storage.finalized_dir/<capture-id> by default, records that package in the catalog, and retains the encrypted source bundle.', code: 'curl -X POST http://127.0.0.1:8788/v1/captures/cap-example/finalizations' },
+      { heading: 'Notary discovery is automatic', body: 'For hosted use, the service refreshes the production notary directory, selects a worker compatible with the bundle, and verifies the resulting evidence against its locally pinned key history. For local or self-hosted use, set notary.endpoint and notary.public_key together in config.toml.' },
       { heading: 'Fresh notary connection', body: 'The original provider stream and proxy no longer need to be running. A new notary worker holding the same notary identity and key can complete finalization without a stored server-side checkpoint.' },
       { heading: 'Expect this step to take time', body: 'Private proof generation is slower than capture. Deferring it keeps the interactive agent response fast and makes proof work an explicit background or batch operation.' },
-      { heading: 'Interruption behavior', body: 'The pending bundle is not consumed. If finalization fails or the process stops, run the command again; work from the interrupted attempt is not resumed.' },
+      { heading: 'Interruption behavior', body: 'The pending bundle is not consumed. If finalization fails or the service stops, retry the failed or interrupted durable operation through POST /v1/operations/{operation_id}/retry; proof work from the interrupted attempt is not resumed.' },
       { heading: 'Package layout', code: 'verified-trace/\n├── evidence.tlsn\n├── manifest.json\n├── request.disclosed.http\n├── response.http\n└── trace.otlp.json' },
       {
         heading: 'Artifact responsibilities',
@@ -323,9 +327,9 @@ const docPages = {
         ],
       },
       { heading: 'Package versus publication', body: 'The finalized source package uses manifest.json. A later public trace pairs the canonical trace.otlp.json with a platform-issued stamp.json; that public stamp does not replace the private TLSNotary evidence.' },
-      { heading: 'Download a Library trace', code: 'llm-notary download <publication-id> --verify', body: 'The command resolves the publication through the public API, downloads trace.otlp.json and stamp.json into a new local directory, and verifies canonical bytes, trace hash, contract versions, platform key ID, stamp issuer, and signature before reporting success. Pass --output for another directory; existing output requires --overwrite.' },
+      { heading: 'Inspect or verify a Library trace', code: 'GET /v1/public-traces/{publication_id}\nPOST /v1/public-traces/{publication_id}/verify', body: 'The local admin API resolves the publication through the public API and returns its canonical trace and stamp. The verify operation checks canonical bytes, trace hash, contract versions, platform key ID, stamp issuer, and signature without accepting an output path.' },
       { heading: 'Complete context is intentional', body: 'The raw verified package can include system context, tool definitions, session metadata, prompts, responses, and tool results. Inspect it before sharing. A future selective publication format can disclose less without weakening what the private source package proves.' },
-      { heading: 'Verify locally', code: 'llm-notary verify-trace verified-trace' },
+      { heading: 'Verify locally', code: 'POST /v1/captures/{capture_id}/trace:verify' },
       {
         heading: 'What verification checks',
         items: [
@@ -336,17 +340,17 @@ const docPages = {
           'The deterministic, versioned OTLP mapping byte-for-byte.',
         ],
       },
-      { heading: 'Offline trust', body: 'Verification does not contact the provider, proxy, or a live notary. It uses the notary key history already cached by the CLI. A new machine should run the proxy or another directory-refreshing command once before it verifies a package offline.' },
+      { heading: 'Offline trust', body: 'Verification does not contact the provider or a live notary. It uses the notary key history already cached by the service, or notary.public_key for a self-hosted endpoint. A hosted service must successfully refresh its directory before it can trust previously unseen evidence.' },
       { heading: 'Tool-use boundary', note: 'Verification proves that the model emitted a tool call and, on a later request, that the client sent a particular tool result. It does not prove the local tool actually executed.' },
     ],
   },
   publish: {
     title: 'Publish a trace package',
-    lead: 'Publishing is a deliberate upload of one already-finalized package. The CLI verifies it locally before it contacts LLM Notary.',
+    lead: 'Publishing is a deliberate upload of one already-finalized package. The local service verifies it before it contacts LLM Notary.',
     blocks: [
-      { heading: 'Sign in once', code: 'llm-notary login' },
-      { heading: 'Submit one finalized package', code: 'llm-notary publish verified-trace' },
-      { heading: 'Script-friendly output', code: `llm-notary publish verified-trace --json\n\n{"job_id":"…","state":"queued","status_url":"${publicOrigin}/api/publish/jobs/…"}` },
+      { heading: 'Authorize publication', body: 'Use the dashboard Publishing view, or begin the documented POST /v1/publication/auth device flow and poll its returned request identifier at the required interval.' },
+      { heading: 'Submit one finalized package', code: 'POST /v1/captures/{capture_id}/publications' },
+      { heading: 'Script-friendly output', code: `{"capture_id":"cap-…","job_id":"…","state":"queued","status_url":"${publicOrigin}/api/publish/jobs/…"}` },
       {
         heading: 'The upload boundary',
         columns: [
@@ -370,9 +374,9 @@ const docPages = {
           },
         ],
       },
-      { heading: 'Local checks before upload', body: 'The CLI creates a deterministic, versioned archive containing exactly the five finalized-package files. It rejects extra files, symlinks, malformed manifests, untrusted evidence, and non-canonical trace bytes before it creates an upload job.' },
+      { heading: 'Local checks before upload', body: 'The service creates a deterministic, versioned archive containing exactly the five finalized-package files. It rejects extra files, symlinks, malformed manifests, untrusted evidence, and non-canonical trace bytes before it creates an upload job.' },
       { heading: 'Current consent boundary', body: 'The initial admission service may inspect the disclosed request, response, system context, and tool data in a package to verify and reproduce the public trace. Authentication headers and cookie values remain redacted. A future artifact can add a stronger privacy-preserving verifier under a new format version.' },
-      { heading: 'Retry behavior', body: 'An upload or API failure does not change or delete the local package. Run publish again to create a fresh retry-safe job.' },
+      { heading: 'Retry behavior', body: 'An upload or API failure does not change or delete the local package. Submitting the same capture again reuses the archive-derived idempotency key and resumes the retry-safe publication job.' },
     ],
   },
 };
@@ -726,7 +730,7 @@ function Collections() {
                   <div className="collection-list">
                     <div className="library-grid">{filtered.map((item) => <button className={`model-card${activeId === item.id ? ' active' : ''}`} onClick={() => setActiveId(item.id)} aria-pressed={activeId === item.id} key={item.id}><span className="model-card-title">{item.title}</span><span className="model-card-model">{item.provider} · {item.model}<time>{new Date(item.admitted_at * 1000).toLocaleDateString()}</time></span>{item.tool_use && <span className="model-card-summary">tool use</span>}<span className="model-card-facts"><span><b>Publisher</b>{item.author}</span></span><span className="tag-list">{item.tags.map((value) => <span key={value}>{value}</span>)}</span></button>)}</div>
                   </div>
-                  {active && <article className="collection-inspector"><header><span className="eyebrow">Selected trace</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h2>{active.title}</h2><dl className="inspector-facts"><div><dt>Provider</dt><dd>{active.host}</dd></div><div><dt>Model</dt><dd>{active.model}</dd></div><div><dt>Publisher</dt><dd>{active.author}</dd></div><div><dt>Published</dt><dd>{new Date(active.admitted_at * 1000).toLocaleDateString()}</dd></div></dl><div className="trace-download"><span>CLI download</span><code>llm-notary download {active.id} --verify</code><small>Download the trace and stamp, then verify them locally.</small></div><section className="span-panel"><div className="span-panel-head"><span>Trace contents</span><small>{active.span_count} {active.span_count === 1 ? 'span' : 'spans'}</small></div><div className="trace-legend"><span><i className="source" /> Fields derived from verified provider exchanges</span></div>{traceError ? <p className="trace-preview-state">{traceError}</p> : tracePreview === null ? <p className="trace-preview-state">Loading messages…</p> : <SpanTree spans={tracePreview} />}</section></article>}
+                  {active && <article className="collection-inspector"><header><span className="eyebrow">Selected trace</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h2>{active.title}</h2><dl className="inspector-facts"><div><dt>Provider</dt><dd>{active.host}</dd></div><div><dt>Model</dt><dd>{active.model}</dd></div><div><dt>Publisher</dt><dd>{active.author}</dd></div><div><dt>Published</dt><dd>{new Date(active.admitted_at * 1000).toLocaleDateString()}</dd></div></dl><div className="trace-download"><span>Local verification</span><code>POST /v1/public-traces/{active.id}/verify</code><small>Use the local service to fetch the trace and verify its platform stamp.</small></div><section className="span-panel"><div className="span-panel-head"><span>Trace contents</span><small>{active.span_count} {active.span_count === 1 ? 'span' : 'spans'}</small></div><div className="trace-legend"><span><i className="source" /> Fields derived from verified provider exchanges</span></div>{traceError ? <p className="trace-preview-state">{traceError}</p> : tracePreview === null ? <p className="trace-preview-state">Loading messages…</p> : <SpanTree spans={tracePreview} />}</section></article>}
                 </div>
               </section>}
         </>}
@@ -765,7 +769,7 @@ function Dashboard({ user }) {
   useEffect(() => {
     let cancelled = false;
     fetch('/api/cli/sessions', { credentials: 'same-origin' })
-      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error((await response.json().catch(() => ({}))).error || 'Could not load CLI sessions.')))
+      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error((await response.json().catch(() => ({}))).error || 'Could not load publishing sessions.')))
       .then((payload) => { if (!cancelled) setSessions(payload.sessions); })
       .catch((reason) => { if (!cancelled) setSessionError(reason.message); });
     return () => { cancelled = true; };
@@ -789,12 +793,12 @@ function Dashboard({ user }) {
   }, []);
 
   const revoke = async (session) => {
-    if (!window.confirm(`Revoke ${session.device_name}? This CLI will need to sign in again before it can publish.`)) return;
+    if (!window.confirm(`Revoke ${session.device_name}? This local service will need to authorize again before it can publish.`)) return;
     setRevoking(session.id);
     setSessionError(null);
     try {
       const response = await fetch(`/api/cli/sessions/${encodeURIComponent(session.id)}`, { method: 'DELETE', credentials: 'same-origin' });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Could not revoke this CLI session.');
+      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Could not revoke this publishing session.');
       setSessions((current) => current?.filter((item) => item.id !== session.id) || []);
     } catch (reason) {
       setSessionError(reason.message);
@@ -816,7 +820,7 @@ function Dashboard({ user }) {
       <div><span>In progress</span><b>{jobs === null ? '—' : activeCount}</b></div>
     </div>
     <section className="dashboard-traces" aria-labelledby="published-traces-title">
-      <header><div><span className="eyebrow">Publications</span><h2 id="published-traces-title">Your traces</h2></div><a href="#/docs/publish">Publish from the CLI</a></header>
+      <header><div><span className="eyebrow">Publications</span><h2 id="published-traces-title">Your traces</h2></div><a href="#/docs/publish">Publish from the local dashboard</a></header>
       {jobError && <p className="dashboard-session-error" role="alert">{jobError}</p>}
       {jobs === null && !jobError ? <p className="dashboard-session-empty">Loading your traces…</p> : jobs?.length ? <div className="dashboard-trace-list">{jobs.map((job) => {
         const publication = publicationById[job.id];
@@ -835,7 +839,7 @@ function Dashboard({ user }) {
         </article>;
       })}</div> : <div className="dashboard-empty"><b>No published traces yet.</b><p>Finalize a bundle, then run <code>{publishCommand}</code>.</p><a href="#/docs/publish">Read the publishing guide</a></div>}
     </section>
-    <section className="dashboard-sessions" aria-labelledby="cli-sessions-title"><header><div><span className="eyebrow">CLI access</span><h2 id="cli-sessions-title">Authorized devices</h2></div><p>Revoke a device to require a new browser sign-in before it can publish.</p></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading authorized devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => revoke(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No active CLI devices are authorized.</p>}</section>
+    <section className="dashboard-sessions" aria-labelledby="publishing-sessions-title"><header><div><span className="eyebrow">Local service access</span><h2 id="publishing-sessions-title">Authorized devices</h2></div><p>Revoke a device to require a new browser approval before it can publish.</p></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading authorized devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => revoke(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are authorized to publish.</p>}</section>
   </main>;
 }
 
@@ -859,12 +863,12 @@ function CliApproval({ route, user }) {
     setError(null);
     const response = await fetch(`/api/cli/authorizations/${encodeURIComponent(requestId)}/approval?approval_secret=${encodeURIComponent(approvalSecret)}`, { method: 'POST', credentials: 'same-origin' });
     if (response.ok) setApproved(true);
-    else setError((await response.json().catch(() => ({}))).error || 'Could not approve this CLI request.');
+    else setError((await response.json().catch(() => ({}))).error || 'Could not approve this local service request.');
   };
-  if (!requestId || !approvalSecret) return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>Invalid authorization link.</h1><p>Return to the CLI and start login again.</p></main>;
-  if (!user) return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>Sign in to approve.</h1><p>This browser must be signed in to the LLM Notary account that should own the CLI publishing session.</p><a className="button button-dark" href={`/api/auth/github?return_to=${encodeURIComponent(window.location.hash)}`}>Sign in with GitHub</a></main>;
-  if (approved) return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>CLI approved.</h1><p>Your terminal will finish signing in shortly. You can close this page.</p></main>;
-  return <main className="dashboard-shell"><span className="eyebrow">CLI authorization</span><h1>Approve this CLI?</h1>{error ? <p>{error}</p> : details ? <><p>Allow <b>{details.device_name}</b> to publish through LLM Notary as <b>{user.github_login}</b>?</p><div className="dashboard-card"><span>Authorization code</span><b>{details.user_code}</b><span>Expires {sessionDate(details.expires_at)}</span><button className="button button-dark" onClick={approve}>Approve CLI</button></div></> : <p>Checking this authorization request…</p>}</main>;
+  if (!requestId || !approvalSecret) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Invalid authorization link.</h1><p>Return to the local dashboard and begin authorization again.</p></main>;
+  if (!user) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Sign in to approve.</h1><p>This browser must be signed in to the LLM Notary account that should own the local publishing session.</p><a className="button button-dark" href={`/api/auth/github?return_to=${encodeURIComponent(window.location.hash)}`}>Sign in with GitHub</a></main>;
+  if (approved) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Service approved.</h1><p>Your local dashboard will finish authorization shortly. You can close this page.</p></main>;
+  return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Approve this service?</h1>{error ? <p>{error}</p> : details ? <><p>Allow <b>{details.device_name}</b> to publish through LLM Notary as <b>{user.github_login}</b>?</p><div className="dashboard-card"><span>Authorization code</span><b>{details.user_code}</b><span>Expires {sessionDate(details.expires_at)}</span><button className="button button-dark" onClick={approve}>Approve service</button></div></> : <p>Checking this authorization request…</p>}</main>;
 }
 
 function App() {

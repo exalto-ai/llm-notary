@@ -209,6 +209,25 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'DM Mono', ui-monospace
 .document-panel { min-height: 360px; padding: 30px 5px; }
 .document-panel h3 { font-size: 25px; letter-spacing: -.05em; }
 .document-panel > p { color: var(--muted); line-height: 1.7; margin: 12px 0 32px; max-width: 620px; }
+.trace-transcript { border-top: 1px solid var(--rule); margin-top: 30px; padding-top: 28px; }
+.trace-transcript-heading { align-items: end; display: flex; gap: 24px; justify-content: space-between; }
+.trace-transcript-heading h3 { margin-top: 8px; }
+.trace-transcript-heading > p, .trace-inference-label { color: var(--muted); font-family: 'DM Mono', monospace; font-size: 10px; }
+.trace-inference + .trace-inference { border-top: 1px solid var(--rule); margin-top: 24px; padding-top: 24px; }
+.trace-inference-label { margin: 18px 0 8px; text-transform: uppercase; }
+.trace-message-list { border: 1px solid var(--rule); margin-top: 20px; }
+.trace-message { display: grid; grid-template-columns: 112px minmax(0, 1fr); }
+.trace-message + .trace-message { border-top: 1px solid var(--rule); }
+.trace-message > header { align-content: start; background: var(--subtle); border-right: 1px solid var(--rule); display: grid; gap: 7px; padding: 16px; }
+.trace-message > header span, .trace-message > header em { color: var(--muted); font: 9px 'DM Mono', monospace; letter-spacing: .05em; text-transform: uppercase; }
+.trace-message > header b { font: 500 11px 'DM Mono', monospace; text-transform: uppercase; }
+.trace-message > header em { font-style: normal; }
+.trace-message-body { min-width: 0; padding: 16px 18px; }
+.trace-message-body > p { line-height: 1.7; margin: 0; white-space: pre-wrap; }
+.trace-structured-part + .trace-structured-part, .trace-message-body > p + .trace-structured-part { margin-top: 14px; }
+.trace-structured-part > span { color: var(--muted); font: 9px 'DM Mono', monospace; letter-spacing: .05em; text-transform: uppercase; }
+.trace-structured-part pre { background: var(--subtle); border-left: 2px solid var(--rule-strong); font-size: 10px; margin: 7px 0 0; overflow: auto; padding: 12px; white-space: pre-wrap; }
+.trace-transcript-empty { color: var(--muted); font-size: 12px; margin-top: 18px; }
 .receipt { background: var(--inverse); border: 1px solid #484848; color: var(--inverse-ink); margin-top: 22px; min-height: 360px; padding: 24px; }
 .receipt .eyebrow, .receipt dt { color: #b8b8b8; }
 .receipt dl { display: grid; gap: 0; margin: 34px 0 0; }
@@ -224,6 +243,10 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'DM Mono', ui-monospace
 .authorization-code { border-top: 1px solid var(--rule); display: grid; gap: 12px; margin-top: 24px; padding-top: 18px; }
 .authorization-code code { font-size: 24px; letter-spacing: .08em; }
 .authorization-code a { color: var(--ink); font-size: 12px; }
+.fixture-flow-note { align-items: flex-start; background: var(--subtle); border-left: 2px solid var(--rule-strong); display: flex; gap: 10px; padding: 12px; }
+.fixture-flow-note p { color: var(--muted); font-size: 11px; line-height: 1.55; }
+.fixture-flow-note b { color: var(--ink); }
+.operation-fixture-note { margin-top: 22px; }
 .publication-choice .mantine-InputWrapper-root { margin-top: 22px; }
 .publication-result { border-top: 1px solid var(--rule); display: grid; gap: 10px; margin-top: 26px; padding-top: 20px; }
 .publication-result > code { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
@@ -323,6 +346,9 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'DM Mono', ui-monospace
   .lifecycle { grid-template-columns: 1fr; gap: 18px; }
   .metadata-grid, .receipt-list { grid-template-columns: 1fr; }
   .receipt dl div { grid-template-columns: 1fr; gap: 6px; }
+  .trace-transcript-heading { align-items: start; flex-direction: column; gap: 6px; }
+  .trace-message { grid-template-columns: 1fr; }
+  .trace-message > header { border-bottom: 1px solid var(--rule); border-right: 0; grid-template-columns: auto 1fr auto; }
   .event-row { align-items: start; grid-template-columns: auto 1fr; }
   .event-row time { grid-column: 2; }
 }

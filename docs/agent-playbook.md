@@ -1,0 +1,169 @@
+# Coding-agent playbook for the local service
+
+Give a coding agent the loopback administration origin and this playbook, not
+an old list of CLI commands. The live OpenAPI document is the endpoint and
+schema authority.
+
+## Required behavior
+
+1. Confirm `GET /healthz` succeeds and use only the configured loopback admin
+   origin. Do not follow an untrusted origin or expose the service remotely.
+2. Fetch `/openapi.json` before choosing a route, method, request body, or
+   response field. Do not rely on a memorized API shape.
+3. Call `/v1` without credentials unless the service returns 401. If the user
+   configured `admin.auth`, obtain its username and password through the
+   approved secret mechanism and use the OpenAPI `basicAuth` scheme. Never
+   print, log, embed, persist, or put the password in a URL.
+4. Find captures through `/v1/captures` and act on returned `cap-…`
+   identifiers. Never ask for or submit an arbitrary local filesystem path.
+   Search input may contain punctuation; the service treats it as text
+   boundaries rather than raw full-text-search syntax.
+5. Treat finalization as asynchronous. Save the returned `op-…` identifier and
+   poll its documented operation URL until `finalized`, `failed`, or
+   `interrupted`. Use `attempt_history` when explaining retries.
+6. Use `POST /v1/captures/{capture_id}/trace:verify` for cryptographic package
+   verification. Decrypting or structurally validating an encrypted bundle is
+   not independent verification.
+7. Never request, decode, upload, or expose decrypted `.llmbundle` contents,
+   credentials, cookies, raw authenticated headers, authentication secrets,
+   or vault material.
+8. Ask the user before publishing a finalized trace or changing service
+   configuration. Finalization alone is not publication consent.
+9. After approved publication, save `job_id` and poll
+   `GET /v1/publications/{job_id}` through the local admin API. Do not attempt
+   to extract or reproduce the vault-held publication credential.
+
+Use safe error codes and redacted event messages for diagnosis. If the OpenAPI
+document does not describe an operation, stop and explain that the installed
+service does not support it.
+
+Prefer server-side filters from the discovered contract. In particular,
+filter operations by `state`, `kind`, or `capture_id`, and filter events by
+`severity`, `event_type`, `capture_id`, `operation_id`, or
+`created_after_unix_ms`. Do not download a broad history merely to discard most
+of it in the client.
+
+## Example prompt for an agent
+
+```text
+Use the LLM Notary administration service at http://127.0.0.1:8788.
+First check /healthz and fetch /openapi.json. Use the local API without
+credentials unless it returns 401. If authentication is configured, use only
+the approved Basic credentials and never print or persist the password.
+Find the newest pending OpenAI capture whose preview matches "sanitized",
+show me its safe metadata, and ask before starting finalization. If I approve,
+record the returned operation identifier and poll it to a terminal state. When
+finalized, run the documented trace verification operation and report exactly
+what it verifies. Do not access bundle paths or contents, and do not publish.
+```
+
+## Safe shell workflow
+
+The default loopback configuration needs no credentials:
+
+```bash
+export LLM_NOTARY_ADMIN_ORIGIN=http://127.0.0.1:8788
+
+curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/healthz"
+curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/openapi.json" \
+  > /tmp/llm-notary-openapi.json
+```
+
+Inspect the downloaded specification, then search and select only an identifier
+returned by the service:
+
+```bash
+curl --fail-with-body \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&capture_state=pending&limit=10&offset=0"
+
+capture_id=cap-example
+curl --fail-with-body \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id"
+```
+
+After explicit user approval, queue finalization. A `202 Accepted` response has
+the shape `{"operation":{…},"deduplicated":false}`. `deduplicated: true`
+means an existing operation was returned and should be polled instead of
+starting another:
+
+```bash
+response=$(curl --fail-with-body -X POST \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/finalizations")
+operation_id=$(printf '%s' "$response" | jq -r '.operation.operation_id')
+
+while :; do
+  operation=$(curl --fail-with-body \
+    "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations/$operation_id") || exit 1
+  state=$(printf '%s' "$operation" | jq -r '.state')
+  case "$state" in
+    finalized|failed|interrupted) break ;;
+    queued|running) sleep 3 ;;
+    *) printf 'Unexpected operation state: %s\n' "$state" >&2; exit 1 ;;
+  esac
+done
+printf 'Operation %s ended in %s\n' "$operation_id" "$state"
+```
+
+If finalization succeeds, independently verify the finalized trace:
+
+```bash
+test "$state" = finalized || exit 1
+curl --fail-with-body -X POST \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/trace:verify"
+```
+
+Report `verified`, `verified_at_unix_ms`, `notary_key_id`, and `trust_source`.
+Do not translate a successful bundle read into a verification claim.
+
+If the user separately approves publication, submit the capture identifier and
+follow admission through the local service:
+
+```bash
+publication=$(curl --fail-with-body -X POST \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/publications")
+job_id=$(printf '%s' "$publication" | jq -r '.job_id')
+
+curl --fail-with-body \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/publications/$job_id"
+```
+
+Report the bounded admission state or failure code. Do not claim the trace is
+public until the returned state is `admitted`.
+
+## JavaScript example
+
+This example discovers the contract before using the default local API:
+
+```js
+const origin = 'http://127.0.0.1:8788';
+
+const health = await fetch(`${origin}/healthz`);
+if (!health.ok) throw new Error(`Local service unavailable: ${health.status}`);
+
+const specification = await fetch(`${origin}/openapi.json`).then((response) => response.json());
+if (!specification.paths['/v1/captures']) throw new Error('Installed API is incompatible');
+
+const response = await fetch(`${origin}/v1/captures?capture_state=pending&limit=10&offset=0`);
+if (!response.ok) throw new Error(`Capture search failed: ${response.status}`);
+const captures = await response.json();
+console.log(captures.items.map(({ capture_id, provider, requested_model, finalization_state }) => ({
+  capture_id, provider, requested_model, finalization_state
+})));
+```
+
+If a `/v1` request returns 401, do not guess credentials. Ask for the
+configured `admin.auth` username and password, then retry with HTTP Basic as
+described by the live specification. An interactive shell can use
+`curl --user local-admin URL` so curl prompts for the password rather than
+putting it in shell history or the process argument list.
+
+The service returns the documented JSON error envelope for invalid query
+values, including malformed numeric values. Branch on `error.code`; do not
+parse plain-text framework messages.
+
+This output is deliberately limited to safe catalog fields. An automation
+should not print previews unless the user explicitly asks and the local preview
+policy allows it.
+
+See the [local service guide](local-service.md) for state and trust semantics,
+and the [dashboard guide](local-dashboard.md) for the equivalent visual flow.
