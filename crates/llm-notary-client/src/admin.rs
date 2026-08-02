@@ -34,7 +34,7 @@ use crate::{
         finalize_bundle, trace_package_created_at_unix_ms, trace_package_notary_key,
         verify_trace_package,
     },
-    catalog::{CaptureFilters, CaptureSummary, Catalog, Event, Operation},
+    catalog::{CaptureFilters, CaptureSummary, Catalog, Event, Operation, OperationAttempt},
     cli::{DEFAULT_PUBLIC_ORIGIN, auth, download, notary, proxy, publish},
     config::AgentConfig,
     notary_directory::key_id,
@@ -151,7 +151,7 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
     components(schemas(
         HealthResponse, StatusResponse, CountsResponse,
         CaptureResponse, CaptureDetailResponse, ArtifactResponse, CaptureListResponse,
-        OperationResponse, OperationListResponse, FinalizationResponse, EventResponse,
+        OperationResponse, OperationAttemptResponse, OperationListResponse, FinalizationResponse, EventResponse,
         EventListResponse, TraceResponse, VerificationResponse, PublicationAuthResponse,
         PublicationAuthRequest, PublicationAuthStartedResponse, PublicationResponse,
         PublicTraceResponse, PublicTraceVerificationResponse, ErrorBody, ErrorEnvelope
@@ -347,6 +347,18 @@ async fn capture(
         .await
         .map_err(|_| ApiError::internal("catalog_task_failed"))?
         .map_err(|_| ApiError::internal("catalog_query_failed"))?;
+    let catalog = state.catalog.clone();
+    let capture_id = capture.capture_id.clone();
+    let finalizations = tokio::task::spawn_blocking(move || -> Result<Vec<OperationResponse>> {
+        catalog
+            .operations_for_capture(&capture_id)?
+            .into_iter()
+            .map(|operation| operation_response(&catalog, operation))
+            .collect()
+    })
+    .await
+    .map_err(|_| ApiError::internal("catalog_task_failed"))?
+    .map_err(|_| ApiError::internal("catalog_query_failed"))?;
     Ok(Json(CaptureDetailResponse {
         capture: capture.into(),
         artifacts: artifacts
@@ -357,6 +369,7 @@ async fn capture(
                 sha256: artifact.sha256,
             })
             .collect(),
+        finalizations,
     }))
 }
 
@@ -368,16 +381,23 @@ async fn start_finalization(
     validate_id(&capture_id, "cap-")?;
     let catalog = state.catalog.clone();
     let queued =
-        tokio::task::spawn_blocking(move || catalog.enqueue_finalization(&capture_id, now_ms()?))
-            .await
-            .map_err(|_| ApiError::internal("catalog_task_failed"))?
-            .map_err(|_| ApiError::internal("finalization_queue_failed"))?
-            .ok_or_else(|| ApiError::not_found("pending_capture_not_found"))?;
+        tokio::task::spawn_blocking(move || -> Result<Option<(OperationResponse, bool)>> {
+            let queued = catalog.enqueue_finalization(&capture_id, now_ms()?)?;
+            queued
+                .map(|(operation, deduplicated)| {
+                    Ok((operation_response(&catalog, operation)?, deduplicated))
+                })
+                .transpose()
+        })
+        .await
+        .map_err(|_| ApiError::internal("catalog_task_failed"))?
+        .map_err(|_| ApiError::internal("finalization_queue_failed"))?
+        .ok_or_else(|| ApiError::not_found("pending_capture_not_found"))?;
     state.work_available.notify_one();
     Ok((
         StatusCode::ACCEPTED,
         Json(FinalizationResponse {
-            operation: queued.0.into(),
+            operation: queued.0,
             deduplicated: queued.1,
         }),
     ))
@@ -394,13 +414,17 @@ async fn operations(
     Query(query): Query<LimitQuery>,
 ) -> Result<Json<OperationListResponse>, ApiError> {
     let catalog = state.catalog.clone();
-    let values = tokio::task::spawn_blocking(move || catalog.operations(query.limit.unwrap_or(50)))
-        .await
-        .map_err(|_| ApiError::internal("catalog_task_failed"))?
-        .map_err(|_| ApiError::internal("catalog_query_failed"))?;
-    Ok(Json(OperationListResponse {
-        items: values.into_iter().map(Into::into).collect(),
-    }))
+    let values = tokio::task::spawn_blocking(move || -> Result<Vec<OperationResponse>> {
+        catalog
+            .operations(query.limit.unwrap_or(50))?
+            .into_iter()
+            .map(|operation| operation_response(&catalog, operation))
+            .collect()
+    })
+    .await
+    .map_err(|_| ApiError::internal("catalog_task_failed"))?
+    .map_err(|_| ApiError::internal("catalog_query_failed"))?;
+    Ok(Json(OperationListResponse { items: values }))
 }
 
 #[utoipa::path(get, path = "/v1/operations/{operation_id}", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
@@ -410,12 +434,17 @@ async fn operation(
 ) -> Result<Json<OperationResponse>, ApiError> {
     validate_id(&operation_id, "op-")?;
     let catalog = state.catalog.clone();
-    let value = tokio::task::spawn_blocking(move || catalog.operation(&operation_id))
-        .await
-        .map_err(|_| ApiError::internal("catalog_task_failed"))?
-        .map_err(|_| ApiError::internal("catalog_query_failed"))?
-        .ok_or_else(|| ApiError::not_found("operation_not_found"))?;
-    Ok(Json(value.into()))
+    let value = tokio::task::spawn_blocking(move || -> Result<Option<OperationResponse>> {
+        catalog
+            .operation(&operation_id)?
+            .map(|operation| operation_response(&catalog, operation))
+            .transpose()
+    })
+    .await
+    .map_err(|_| ApiError::internal("catalog_task_failed"))?
+    .map_err(|_| ApiError::internal("catalog_query_failed"))?
+    .ok_or_else(|| ApiError::not_found("operation_not_found"))?;
+    Ok(Json(value))
 }
 
 #[utoipa::path(post, path = "/v1/operations/{operation_id}/retry", params(("operation_id" = String, Path)), responses((status = 202, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
@@ -425,14 +454,18 @@ async fn retry_operation(
 ) -> Result<(StatusCode, Json<OperationResponse>), ApiError> {
     validate_id(&operation_id, "op-")?;
     let catalog = state.catalog.clone();
-    let value =
-        tokio::task::spawn_blocking(move || catalog.retry_operation(&operation_id, now_ms()?))
-            .await
-            .map_err(|_| ApiError::internal("catalog_task_failed"))?
-            .map_err(|_| ApiError::internal("operation_retry_failed"))?
-            .ok_or_else(|| ApiError::conflict("operation_not_retryable"))?;
+    let value = tokio::task::spawn_blocking(move || -> Result<Option<OperationResponse>> {
+        catalog
+            .retry_operation(&operation_id, now_ms()?)?
+            .map(|operation| operation_response(&catalog, operation))
+            .transpose()
+    })
+    .await
+    .map_err(|_| ApiError::internal("catalog_task_failed"))?
+    .map_err(|_| ApiError::internal("operation_retry_failed"))?
+    .ok_or_else(|| ApiError::conflict("operation_not_retryable"))?;
     state.work_available.notify_one();
-    Ok((StatusCode::ACCEPTED, Json(value.into())))
+    Ok((StatusCode::ACCEPTED, Json(value)))
 }
 
 #[utoipa::path(get, path = "/v1/captures/{capture_id}/trace", params(("capture_id" = String, Path)), responses((status = 200, body = TraceResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
@@ -1006,6 +1039,7 @@ struct ArtifactResponse {
 struct CaptureDetailResponse {
     capture: CaptureResponse,
     artifacts: Vec<ArtifactResponse>,
+    finalizations: Vec<OperationResponse>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1026,17 +1060,43 @@ struct OperationResponse {
     started_at_unix_ms: Option<u64>,
     completed_at_unix_ms: Option<u64>,
     failure_code: Option<String>,
+    attempt_history: Vec<OperationAttemptResponse>,
 }
 
-impl From<Operation> for OperationResponse {
-    fn from(value: Operation) -> Self {
+fn operation_response(catalog: &Catalog, value: Operation) -> Result<OperationResponse> {
+    let attempt_history = catalog
+        .operation_attempts(&value.operation_id)?
+        .into_iter()
+        .map(Into::into)
+        .collect();
+    Ok(OperationResponse {
+        operation_id: value.operation_id,
+        kind: value.kind,
+        capture_id: value.capture_id,
+        state: value.state,
+        attempt: value.attempt,
+        created_at_unix_ms: value.created_at_unix_ms,
+        started_at_unix_ms: value.started_at_unix_ms,
+        completed_at_unix_ms: value.completed_at_unix_ms,
+        failure_code: value.failure_code,
+        attempt_history,
+    })
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct OperationAttemptResponse {
+    attempt: u32,
+    state: String,
+    started_at_unix_ms: u64,
+    completed_at_unix_ms: Option<u64>,
+    failure_code: Option<String>,
+}
+
+impl From<OperationAttempt> for OperationAttemptResponse {
+    fn from(value: OperationAttempt) -> Self {
         Self {
-            operation_id: value.operation_id,
-            kind: value.kind,
-            capture_id: value.capture_id,
-            state: value.state,
             attempt: value.attempt,
-            created_at_unix_ms: value.created_at_unix_ms,
+            state: value.state,
             started_at_unix_ms: value.started_at_unix_ms,
             completed_at_unix_ms: value.completed_at_unix_ms,
             failure_code: value.failure_code,
@@ -1316,6 +1376,10 @@ mod tests {
             .build()
             .unwrap();
         let response = tracing::dispatcher::with_default(&dispatch, || {
+            // This unique callsite proves the test writer is active even when
+            // other parallel tests have already populated tracing's global
+            // callsite-interest cache without a subscriber.
+            tracing::info!(request_path = "/v1/status", "capturing admin request logs");
             runtime.block_on(async {
                 router(state(directory.path()))
                     .unwrap()

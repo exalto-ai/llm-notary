@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{config::AgentConfig, sha256_hex};
 
-const CATALOG_SCHEMA_VERSION: i64 = 2;
+const CATALOG_SCHEMA_VERSION: i64 = 3;
 
 /// The durable capture fields that are safe and useful to query locally.
 #[derive(Clone, Debug)]
@@ -63,6 +63,17 @@ pub struct Operation {
     pub attempt: u32,
     pub created_at_unix_ms: u64,
     pub started_at_unix_ms: Option<u64>,
+    pub completed_at_unix_ms: Option<u64>,
+    pub failure_code: Option<String>,
+}
+
+/// One durable attempt belonging to an operation. Attempt history is kept
+/// separately because retries deliberately preserve the operation identity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperationAttempt {
+    pub attempt: u32,
+    pub state: String,
+    pub started_at_unix_ms: u64,
     pub completed_at_unix_ms: Option<u64>,
     pub failure_code: Option<String>,
 }
@@ -489,7 +500,7 @@ impl Catalog {
                 "SELECT
                     COUNT(*),
                     SUM(capture_state = 'capturing'),
-                    SUM(capture_state = 'pending'),
+                    SUM(capture_state = 'pending' AND finalization_state = 'not_requested'),
                     SUM(finalization_state = 'finalized'),
                     SUM(capture_state = 'failed' OR finalization_state = 'failed'),
                     (SELECT COUNT(*) FROM operations WHERE state IN ('queued', 'running'))
@@ -609,6 +620,10 @@ impl Catalog {
             params![operation_id],
             operation_from_row,
         )?;
+        transaction.execute(
+            "INSERT INTO operation_attempts (operation_id, attempt, state, started_at_unix_ms) VALUES (?, ?, 'running', ?)",
+            params![operation.operation_id, operation.attempt, i64::try_from(now)?],
+        )?;
         insert_event(
             &transaction,
             now,
@@ -628,6 +643,10 @@ impl Catalog {
         transaction.execute(
             "UPDATE operations SET state = 'finalized', completed_at_unix_ms = ?, failure_code = NULL WHERE operation_id = ?",
             params![i64::try_from(now)?, operation_id],
+        )?;
+        transaction.execute(
+            "UPDATE operation_attempts SET state = 'finalized', completed_at_unix_ms = ?, failure_code = NULL WHERE operation_id = ? AND attempt = (SELECT attempt FROM operations WHERE operation_id = ?)",
+            params![i64::try_from(now)?, operation_id, operation_id],
         )?;
         transaction.execute(
             "UPDATE captures SET finalization_state = 'finalized' WHERE capture_id = (SELECT capture_id FROM operations WHERE operation_id = ?)",
@@ -657,6 +676,10 @@ impl Catalog {
         transaction.execute(
             "UPDATE operations SET state = 'failed', completed_at_unix_ms = ?, failure_code = ? WHERE operation_id = ?",
             params![i64::try_from(now)?, failure_code, operation_id],
+        )?;
+        transaction.execute(
+            "UPDATE operation_attempts SET state = 'failed', completed_at_unix_ms = ?, failure_code = ? WHERE operation_id = ? AND attempt = (SELECT attempt FROM operations WHERE operation_id = ?)",
+            params![i64::try_from(now)?, failure_code, operation_id, operation_id],
         )?;
         transaction.execute(
             "UPDATE captures SET finalization_state = 'failed' WHERE capture_id = (SELECT capture_id FROM operations WHERE operation_id = ?)",
@@ -693,6 +716,7 @@ impl Catalog {
         drop(statement);
         for (operation_id, capture_id) in &interrupted {
             transaction.execute("UPDATE operations SET state = 'interrupted', completed_at_unix_ms = ?, failure_code = 'service_restarted' WHERE operation_id = ?", params![i64::try_from(now)?, operation_id])?;
+            transaction.execute("UPDATE operation_attempts SET state = 'interrupted', completed_at_unix_ms = ?, failure_code = 'service_restarted' WHERE operation_id = ? AND attempt = (SELECT attempt FROM operations WHERE operation_id = ?)", params![i64::try_from(now)?, operation_id, operation_id])?;
             transaction.execute(
                 "UPDATE captures SET finalization_state = 'interrupted' WHERE capture_id = ?",
                 params![capture_id],
@@ -760,6 +784,27 @@ impl Catalog {
             params![i64::try_from(limit.clamp(1, 200))?],
             operation_from_row,
         )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn operations_for_capture(&self, capture_id: &str) -> Result<Vec<Operation>> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let mut statement = connection.prepare(
+            "SELECT * FROM operations WHERE capture_id = ? ORDER BY created_at_unix_ms DESC LIMIT 200",
+        )?;
+        let rows = statement.query_map(params![capture_id], operation_from_row)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn operation_attempts(&self, operation_id: &str) -> Result<Vec<OperationAttempt>> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let mut statement = connection.prepare(
+            "SELECT attempt, state, started_at_unix_ms, completed_at_unix_ms, failure_code
+             FROM operation_attempts WHERE operation_id = ? ORDER BY attempt DESC",
+        )?;
+        let rows = statement.query_map(params![operation_id], operation_attempt_from_row)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -869,6 +914,32 @@ fn migrate(connection: &mut Connection) -> Result<()> {
             CREATE INDEX IF NOT EXISTS events_created_at_idx ON events(created_at_unix_ms DESC);",
         )?;
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (2)", [])?;
+        transaction.commit()?;
+    }
+    if version < 3 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE operation_attempts (
+                operation_id TEXT NOT NULL REFERENCES operations(operation_id),
+                attempt INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                started_at_unix_ms INTEGER NOT NULL,
+                completed_at_unix_ms INTEGER,
+                failure_code TEXT,
+                PRIMARY KEY(operation_id, attempt)
+            );
+            CREATE INDEX operation_attempts_started_at_idx
+                ON operation_attempts(started_at_unix_ms DESC);
+            INSERT INTO operation_attempts (
+                operation_id, attempt, state, started_at_unix_ms,
+                completed_at_unix_ms, failure_code
+            )
+            SELECT operation_id, attempt, state, started_at_unix_ms,
+                   completed_at_unix_ms, failure_code
+            FROM operations
+            WHERE attempt > 0 AND started_at_unix_ms IS NOT NULL;",
+        )?;
+        transaction.execute("INSERT INTO schema_migrations(version) VALUES (3)", [])?;
         transaction.commit()?;
     }
     Ok(())
@@ -1035,6 +1106,21 @@ fn operation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
     })
 }
 
+fn operation_attempt_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OperationAttempt> {
+    Ok(OperationAttempt {
+        attempt: row.get::<_, i64>("attempt")?.try_into().unwrap_or(0),
+        state: row.get("state")?,
+        started_at_unix_ms: row
+            .get::<_, i64>("started_at_unix_ms")?
+            .try_into()
+            .unwrap_or(0),
+        completed_at_unix_ms: row
+            .get::<_, Option<i64>>("completed_at_unix_ms")?
+            .and_then(|value| value.try_into().ok()),
+        failure_code: row.get("failure_code")?,
+    })
+}
+
 fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
     Ok(Event {
         event_id: row.get::<_, i64>("event_id")?.try_into().unwrap_or(0),
@@ -1186,9 +1272,11 @@ mod tests {
         catalog
             .complete_capture("cap-1", 2, 1, 200, 10, None, "done", false, &bundle)
             .unwrap();
+        assert_eq!(catalog.counts().unwrap().pending, 1);
 
         let (queued, duplicate) = catalog.enqueue_finalization("cap-1", 3).unwrap().unwrap();
         assert!(!duplicate);
+        assert_eq!(catalog.counts().unwrap().pending, 0);
         let (same, duplicate) = catalog.enqueue_finalization("cap-1", 4).unwrap().unwrap();
         assert!(duplicate);
         assert_eq!(same.operation_id, queued.operation_id);
@@ -1214,7 +1302,31 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(retried.state, "queued");
-        assert_eq!(catalog.events(None, 20).unwrap().len(), 4);
+        let second_attempt = catalog.claim_next_finalization(9).unwrap().unwrap();
+        assert_eq!(second_attempt.attempt, 2);
+        catalog
+            .fail_operation(&running.operation_id, 10, "proof_generation_failed")
+            .unwrap();
+        assert_eq!(
+            catalog.operation_attempts(&running.operation_id).unwrap(),
+            vec![
+                OperationAttempt {
+                    attempt: 2,
+                    state: "failed".into(),
+                    started_at_unix_ms: 9,
+                    completed_at_unix_ms: Some(10),
+                    failure_code: Some("proof_generation_failed".into()),
+                },
+                OperationAttempt {
+                    attempt: 1,
+                    state: "interrupted".into(),
+                    started_at_unix_ms: 5,
+                    completed_at_unix_ms: Some(6),
+                    failure_code: Some("service_restarted".into()),
+                },
+            ]
+        );
+        assert_eq!(catalog.events(None, 20).unwrap().len(), 6);
     }
 
     #[test]
@@ -1222,11 +1334,12 @@ mod tests {
         let mut connection = Connection::open_in_memory().unwrap();
         migrate(&mut connection).unwrap();
         connection
-            .execute("DELETE FROM schema_migrations WHERE version = 2", [])
+            .execute("DELETE FROM schema_migrations WHERE version >= 2", [])
             .unwrap();
         connection
             .execute_batch(
-                "DROP TABLE events;
+                "DROP TABLE operation_attempts;
+                 DROP TABLE events;
                  DROP INDEX operations_created_at_idx;
                  DROP INDEX one_active_finalization_per_capture;
                  DROP TABLE operations;
@@ -1254,7 +1367,7 @@ mod tests {
                     0
                 ))
                 .unwrap(),
-            2
+            3
         );
     }
 }
