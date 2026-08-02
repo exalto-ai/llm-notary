@@ -294,9 +294,11 @@ captures. Optional `HTTP-Referer` and `X-Title` attribution headers are safe
 metadata and retain their header names and values in the private capture.
 
 To exercise a real streamed request deliberately, run the command above with
-an `OPENROUTER_API_KEY`, wait for the encrypted bundle, then use `finalize` and
-`verify-trace` as described above. This is an opt-in network and billing check;
-the regular test suite uses deterministic fixtures.
+an `OPENROUTER_API_KEY`, wait for the encrypted bundle, find its identifier
+with `GET /v1/captures`, queue `POST
+/v1/captures/{capture_id}/finalizations`, poll the returned operation, and then
+call `POST /v1/captures/{capture_id}/trace:verify`. This is an opt-in network
+and billing check; the regular test suite uses deterministic fixtures.
 
 Verify a named Library publication without a private capture or local path:
 
@@ -320,8 +322,9 @@ The service resolves public artifact links through the configured API, rejects
 redirects and non-JSON responses, and never accepts an arbitrary local output
 path. Verification obtains the platform directory and checks the canonical
 trace bytes, trace hash, public-stamp contract versions, platform key ID,
-stamp issuer, and ECDSA signature before reporting success. Use `--api` for a
-local loopback or HTTPS self-hosted API origin.
+stamp issuer, and ECDSA signature before reporting success. For a self-hosted
+site, pass its loopback or HTTPS origin as the documented `api_origin` query
+parameter on the public-trace REST operation.
 
 ### Public trace and stamp contract
 
@@ -430,8 +433,9 @@ increasing either. Deferred receipts are replayable by design because the
 service is stateless, so a public deployment still needs per-source or per-user
 quotas. When a mode is full, current local clients receive a typed, retryable
 rejection before TLSN setup: the proxy returns HTTP `503` with `Retry-After`
-and `error.code` set to `capture_at_capacity`, while `finalize` says that the
-encrypted bundle is unchanged and can be retried.
+and `error.code` set to `capture_at_capacity`, while a finalization operation
+records the safe failure code `notary_capacity`. The encrypted bundle remains
+unchanged and the same durable operation can be retried.
 
 The proxy and finalizer share the `proxy.max_attestable_http_bytes` setting
 (15 MiB by default) across one provider request and response. The proxy
@@ -604,8 +608,8 @@ The response contains a short code and browser URL. Open that URL in any browser
 already signed in to your configured public LLM Notary site, inspect the requested local device
 name and code, and approve it. The service polls using a separate high-entropy
 secret; the displayed code alone cannot approve or retrieve credentials.
-When using `--api` for a self-hosted site, use HTTPS; plain HTTP is accepted
-only for a loopback development origin.
+When the device-flow request sets `api_origin` for a self-hosted site, use
+HTTPS; plain HTTP is accepted only for a loopback development origin.
 
 GitHub is used only by the website to identify the account. The service never
 receives, logs, or persists a GitHub token. It stores only an LLM Notary
@@ -632,11 +636,20 @@ curl -X POST -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
 
 The service creates a deterministic
 `llmnotary.trace-package-archive/v1` object in memory, uploads it through the
-job-scoped presigned URL, completes the upload, and prints the durable job ID
-and status URL. Its idempotency key is derived from the archive hash, so
+job-scoped presigned URL, completes the upload, and returns the durable job ID
+and local status URL. Its idempotency key is derived from the archive hash, so
 repeating the operation for identical bytes resumes the same job after an
-ambiguous network failure. The response contains `job_id`, `state`, and
-`status_url`.
+ambiguous network failure. The response contains `capture_id`, `job_id`,
+`state`, and `status_url`.
+
+Poll the returned job through the authenticated local service:
+
+```bash
+job_id=job-example
+curl --fail-with-body \
+  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  "http://127.0.0.1:8788/v1/publications/$job_id"
+```
 
 Publishing is an explicit consent boundary: the current admission design may
 inspect the disclosed plaintext in the finalized package to reproduce and

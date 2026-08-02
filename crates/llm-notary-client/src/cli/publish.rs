@@ -82,6 +82,13 @@ pub(crate) struct PublicationStatus {
     pub(crate) stamp_url: Option<String>,
 }
 
+#[derive(Debug)]
+pub(crate) enum PublicationStatusError {
+    Authentication,
+    NotFound,
+    Unavailable,
+}
+
 pub async fn run(args: PublishArgs) -> Result<()> {
     let (output, capture_id, key_id) =
         publish_package(&args.package, args.trusted_notary_key.as_deref()).await?;
@@ -148,39 +155,48 @@ pub(crate) async fn publish_package(
     Ok((output, manifest.capture_id().to_owned(), key_id))
 }
 
-pub(crate) async fn publication_status(job_id: &str) -> Result<PublicationStatus> {
-    let authenticated = auth::authenticate().await?;
+pub(crate) async fn publication_status(
+    job_id: &str,
+) -> std::result::Result<PublicationStatus, PublicationStatusError> {
+    let authenticated = auth::authenticate()
+        .await
+        .map_err(|_| PublicationStatusError::Authentication)?;
     let client = http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .context("building publication status client")?;
-    let job = api_json::<PublishJob>(
-        client
-            .get(
-                authenticated
-                    .origin
-                    .api_url(&format!("/api/publish/jobs/{job_id}")),
-            )
-            .bearer_auth(&authenticated.access_token)
-            .send()
-            .await
-            .context("polling publication job")?,
-        "polling publication job",
-    )
-    .await?;
+        .map_err(|_| PublicationStatusError::Unavailable)?;
+    let response = client
+        .get(
+            authenticated
+                .origin
+                .api_url(&format!("/api/publish/jobs/{job_id}")),
+        )
+        .bearer_auth(&authenticated.access_token)
+        .send()
+        .await
+        .map_err(|_| PublicationStatusError::Unavailable)?;
+    if let Some(error) = publication_status_http_error(response.status()) {
+        return Err(error);
+    }
+    let job = response
+        .json::<PublishJob>()
+        .await
+        .map_err(|_| PublicationStatusError::Unavailable)?;
     if job.id != job_id {
-        bail!("publication API returned the wrong job identifier");
+        return Err(PublicationStatusError::Unavailable);
     }
     let trace_url = job
         .trace_url
         .as_deref()
         .map(|value| absolute_same_origin_url(&authenticated.origin, value))
-        .transpose()?;
+        .transpose()
+        .map_err(|_| PublicationStatusError::Unavailable)?;
     let stamp_url = job
         .stamp_url
         .as_deref()
         .map(|value| absolute_same_origin_url(&authenticated.origin, value))
-        .transpose()?;
+        .transpose()
+        .map_err(|_| PublicationStatusError::Unavailable)?;
     Ok(PublicationStatus {
         job_id: job.id,
         state: job.state,
@@ -188,6 +204,15 @@ pub(crate) async fn publication_status(job_id: &str) -> Result<PublicationStatus
         trace_url,
         stamp_url,
     })
+}
+
+fn publication_status_http_error(status: StatusCode) -> Option<PublicationStatusError> {
+    match status {
+        StatusCode::NOT_FOUND => Some(PublicationStatusError::NotFound),
+        StatusCode::UNAUTHORIZED => Some(PublicationStatusError::Authentication),
+        status if !status.is_success() => Some(PublicationStatusError::Unavailable),
+        _ => None,
+    }
 }
 
 async fn submit_archive(
@@ -555,5 +580,22 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn publication_status_preserves_not_found_authentication_and_outage_errors() {
+        assert!(matches!(
+            publication_status_http_error(StatusCode::NOT_FOUND),
+            Some(PublicationStatusError::NotFound)
+        ));
+        assert!(matches!(
+            publication_status_http_error(StatusCode::UNAUTHORIZED),
+            Some(PublicationStatusError::Authentication)
+        ));
+        assert!(matches!(
+            publication_status_http_error(StatusCode::BAD_GATEWAY),
+            Some(PublicationStatusError::Unavailable)
+        ));
+        assert!(publication_status_http_error(StatusCode::OK).is_none());
     }
 }

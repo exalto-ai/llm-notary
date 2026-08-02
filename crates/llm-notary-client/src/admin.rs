@@ -24,7 +24,7 @@ use tower_http::{
     limit::RequestBodyLimitLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     sensitive_headers::SetSensitiveRequestHeadersLayer,
-    trace::{DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse, TraceLayer},
+    trace::{DefaultOnRequest, DefaultOnResponse, TraceLayer},
 };
 use utoipa::{Modify, OpenApi, ToSchema};
 
@@ -129,7 +129,14 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
         ))
         .layer(
             TraceLayer::new_for_http()
-                .make_span_with(DefaultMakeSpan::new().level(tracing::Level::INFO))
+                .make_span_with(|request: &axum::http::Request<axum::body::Body>| {
+                    tracing::info_span!(
+                        "admin_request",
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                        version = ?request.version()
+                    )
+                })
                 .on_request(DefaultOnRequest::new().level(tracing::Level::INFO))
                 .on_response(DefaultOnResponse::new().level(tracing::Level::INFO)),
         )
@@ -686,7 +693,7 @@ async fn publish_capture(
     ))
 }
 
-#[utoipa::path(get, path = "/v1/publications/{job_id}", params(("job_id" = String, Path)), responses((status = 200, body = PublicationStatusResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/publications/{job_id}", params(("job_id" = String, Path)), responses((status = 200, body = PublicationStatusResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn publication_status(
     State(state): State<AdminState>,
     Path(job_id): Path<String>,
@@ -695,7 +702,17 @@ async fn publication_status(
     let _credentials = state.publication_credentials.lock().await;
     let status = publish::publication_status(&job_id)
         .await
-        .map_err(|_| ApiError::not_found("publication_not_found"))?;
+        .map_err(|error| match error {
+            publish::PublicationStatusError::Authentication => {
+                ApiError::publication_authentication_required()
+            }
+            publish::PublicationStatusError::NotFound => {
+                ApiError::not_found("publication_not_found")
+            }
+            publish::PublicationStatusError::Unavailable => {
+                ApiError::service_unavailable("publication_status_unavailable")
+            }
+        })?;
     Ok(Json(PublicationStatusResponse {
         job_id: status.job_id,
         state: status.state,
@@ -1286,6 +1303,20 @@ impl ApiError {
             message: "The finalized trace did not verify",
         }
     }
+    fn publication_authentication_required() -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "publication_authentication_required",
+            message: "Publication authorization must be renewed",
+        }
+    }
+    fn service_unavailable(code: &'static str) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code,
+            message: "The publication service is temporarily unavailable",
+        }
+    }
     fn internal(code: &'static str) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -1413,7 +1444,7 @@ mod tests {
                 router(state(directory.path()))
                     .unwrap()
                     .oneshot(
-                        Request::get("/v1/status")
+                        Request::get(format!("/v1/status?query={secret}"))
                             .header(header::AUTHORIZATION, format!("Bearer {secret}"))
                             .body(Body::empty())
                             .unwrap(),
