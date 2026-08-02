@@ -2,11 +2,12 @@ import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 
 const brandAssetVersion = createHash('sha256')
-  .update(readFileSync(new URL('./public/logo-dark.png', import.meta.url)))
-  .update(readFileSync(new URL('./public/logo-light.png', import.meta.url)))
+  .update(readFileSync(new URL('./public/notary-mark.svg', import.meta.url)))
+  .update(readFileSync(new URL('./public/favicon.svg', import.meta.url)))
   .update(readFileSync(new URL('./public/social-preview.png', import.meta.url)))
   .digest('hex')
   .slice(0, 12);
@@ -18,16 +19,22 @@ if (!['http:', 'https:'].includes(publicOriginUrl.protocol)
   throw new Error('VITE_PUBLIC_ORIGIN must be an HTTP(S) origin without a path, query, or fragment');
 }
 const publicOrigin = publicOriginUrl.origin;
+const apiProxyOrigin = process.env.VITE_API_ORIGIN ?? 'http://127.0.0.1:8080';
 
 export default defineConfig(({ mode }) => {
   const localDashboard = mode === 'local-dashboard';
   return {
+    resolve: {
+      alias: {
+        '@': resolve(process.cwd(), 'src')
+      }
+    },
     publicDir: localDashboard ? false : 'public',
     define: {
       __BRAND_ASSET_VERSION__: JSON.stringify(brandAssetVersion),
       __PUBLIC_ORIGIN__: JSON.stringify(publicOrigin)
     },
-    plugins: [react(), ...(localDashboard ? [{
+    plugins: [react(), tailwindcss(), ...(localDashboard ? [{
       name: 'local-dashboard-openapi',
       configureServer(server) {
         server.middlewares.use('/openapi.json', (request, response, next) => {
@@ -70,7 +77,7 @@ export default defineConfig(({ mode }) => {
       allowedHosts: true,
       port: 4173,
       proxy: {
-        '/api': 'http://127.0.0.1:8080'
+        '/api': { target: apiProxyOrigin, changeOrigin: true }
       }
     }
   };

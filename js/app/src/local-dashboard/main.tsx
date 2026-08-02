@@ -1,5 +1,9 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
+import '@fontsource-variable/instrument-sans';
+import '@fontsource-variable/space-grotesk';
+import '@fontsource/dm-mono/400.css';
+import '@fontsource/dm-mono/500.css';
 import {
   MantineProvider, createTheme, localStorageColorSchemeManager
 } from '@mantine/core';
@@ -7,21 +11,23 @@ import { Notifications } from '@mantine/notifications';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
+import '../shadcn.css';
 import './styles.css';
+import './axis.css';
 import { Dashboard } from './Dashboard';
 import { localApi } from './api';
 import { createFixtureApi } from './fixtures';
 
 const colorSchemeManager = localStorageColorSchemeManager({ key: 'llm-notary-dashboard-color-scheme' });
 const theme = createTheme({
-  fontFamily: 'Manrope, system-ui, sans-serif',
+  fontFamily: 'Instrument Sans, system-ui, sans-serif',
   fontFamilyMonospace: '"DM Mono", ui-monospace, monospace',
-  headings: { fontFamily: 'Manrope, system-ui, sans-serif', fontWeight: '700' },
-  primaryColor: 'ink',
+  headings: { fontFamily: 'Space Grotesk, system-ui, sans-serif', fontWeight: '600' },
+  primaryColor: 'axis',
   defaultRadius: 0,
   colors: {
-    ink: ['#f6f6f6', '#e7e7e7', '#cfcfcf', '#a7a7a7', '#7d7d7d', '#555555', '#363636', '#202020', '#171717', '#101010'],
-    verify: ['#f6ffe5', '#eaffbd', '#dcff91', '#cdff66', '#b9ff38', '#9ee21f', '#7db514', '#5f8a0a', '#456604', '#315400']
+    axis: ['#edf4ff', '#dceaff', '#b9d8ff', '#8db8ff', '#6fa7ff', '#4e8df2', '#3775df', '#285fd1', '#1c55cd', '#143d94'],
+    verify: ['#edf4ff', '#dceaff', '#b9d8ff', '#8db8ff', '#6fa7ff', '#4e8df2', '#3775df', '#285fd1', '#1c55cd', '#143d94']
   },
   components: {
     Button: { defaultProps: { radius: 0 } }, Paper: { defaultProps: { radius: 0, shadow: undefined } },

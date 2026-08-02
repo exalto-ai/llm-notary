@@ -36,6 +36,9 @@
 }
 
 .library-controls {
+  display: grid;
+  grid-template-columns: 2fr 1fr 1.25fr .8fr;
+  gap: 10px;
   margin: 0 0 14px;
   padding: 0 0 18px;
   border: 0;
@@ -407,7 +410,7 @@
 }
 
 .trace-download code {
-  color: var(--green);
+  color: var(--inverse-accent);
   font: 11px/1.6 'DM Mono', monospace;
   overflow-wrap: anywhere;
 }
@@ -479,7 +482,7 @@
 
 .span-summary strong {
   grid-column: 3;
-  font: 700 13px/1.3 Manrope, Arial, sans-serif;
+  font: 700 13px/1.3 'Instrument Sans', Arial, sans-serif;
   letter-spacing: -.025em;
   overflow-wrap: anywhere;
 }
@@ -562,13 +565,13 @@
 .message-part p {
   margin: 4px 0 0;
   color: var(--body-copy-soft);
-  font: 400 var(--trace-copy)/1.5 Manrope, Arial, sans-serif;
+  font: 400 var(--trace-copy)/1.5 'Instrument Sans', Arial, sans-serif;
 }
 
 .message-markdown {
   margin-top: 4px;
   color: var(--body-copy-soft);
-  font: 400 var(--trace-copy)/1.55 Manrope, Arial, sans-serif;
+  font: 400 var(--trace-copy)/1.55 'Instrument Sans', Arial, sans-serif;
   overflow-wrap: anywhere;
 }
 

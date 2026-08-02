@@ -5,7 +5,7 @@
 .relay-node{grid-row:1/3;align-self:center;min-height:176px;padding:18px;display:flex;flex-direction:column;align-items:center;text-align:center}
 .relay-node b,.relay-output b{font:500 9px/1 'DM Mono',monospace;letter-spacing:.05em}
 .relay-node small{font:500 8px/1 'DM Mono',monospace;color:var(--muted)}
-.relay-node--provider strong{min-height:24px;margin-top:30px;font:700 20px/1 Manrope,Arial,sans-serif;letter-spacing:-.06em}
+.relay-node--provider strong{min-height:24px;margin-top:30px;font:700 20px/1 'Instrument Sans',Arial,sans-serif;letter-spacing:-.06em}
 .relay-node--provider strong span{display:inline-block;min-width:2px}
 .relay-node--provider strong i{display:inline-block;width:2px;height:20px;margin-left:3px;vertical-align:-3px;background:currentColor;animation:relay-cursor .72s steps(1,end) infinite}
 .relay-node--provider>small{margin-top:9px}
@@ -13,27 +13,27 @@
 .provider-lines i{display:block;height:3px;background:var(--ink)}
 .provider-lines i:nth-child(2){width:78%}.provider-lines i:nth-child(3){width:52%}
 .relay-node--notary{background:var(--inverse-surface);color:var(--inverse-text)}
-.relay-node--notary strong{margin:auto 0;font:500 18px/1.25 'DM Mono',monospace;letter-spacing:.08em;color:var(--green)}
+.relay-node--notary strong{margin:auto 0;font:500 18px/1.25 'DM Mono',monospace;letter-spacing:.08em;color:var(--inverse-accent)}
 .relay-node--notary small{color:var(--inverse-muted)}
 .relay-node--proxy{justify-content:center}
 .relay-node--proxy>b{position:absolute;top:18px;left:0;right:0}
 .relay-node--proxy>small{position:absolute;bottom:18px;left:0;right:0}
 .decrypt-display{width:110px;height:30px;position:relative;margin:0 auto;font:500 9px/1 'DM Mono',monospace}
-.decrypt-display__waiting,.decrypt-display__cipher,.decrypt-display__unlocked{position:absolute;top:0;width:30px;height:30px;display:grid;place-items:center;color:var(--green)}
+.decrypt-display__waiting,.decrypt-display__cipher,.decrypt-display__unlocked{position:absolute;top:0;width:30px;height:30px;display:grid;place-items:center}.decrypt-display__waiting{color:var(--action)}.decrypt-display__cipher,.decrypt-display__unlocked{color:var(--inverse-accent)}
 .decrypt-display__waiting{left:calc(50% - 15px);animation:relay-proxy-wait 4.6s steps(1,end) infinite}.decrypt-display__waiting svg{width:14px;height:14px;stroke-width:1.75;animation:relay-spinner .8s linear infinite}
 .decrypt-display__cipher{left:0;opacity:0;background:var(--inverse-surface);animation:relay-proxy-cipher 4.6s steps(1,end) infinite}.decrypt-display__cipher svg,.decrypt-display__unlocked svg{width:14px;height:14px;stroke-width:1.75}
 .decrypt-display__unlocked{left:80px;opacity:0;background:var(--inverse-surface);animation:relay-decrypt-unlocked 4.6s steps(1,end) infinite}
 .decrypt-display__arrow{position:absolute;left:48px;top:14px;width:14px;height:1px;background:var(--ink);opacity:0;animation:relay-proxy-arrow 4.6s steps(1,end) infinite}
 .decrypt-display__arrow:after{content:'';position:absolute;right:0;top:-3px;width:6px;height:6px;border-top:1px solid var(--ink);border-right:1px solid var(--ink);transform:rotate(45deg)}
 .relay-track{grid-row:1/3;align-self:center;height:1px;background:var(--ink);position:relative}
-.relay-packet{position:absolute;z-index:2;display:grid;place-items:center;width:14px;height:12px;border:1px solid var(--green);background:var(--inverse-surface)}
+.relay-packet{position:absolute;z-index:2;display:grid;place-items:center;width:14px;height:12px;border:1px solid var(--inverse-accent);background:var(--inverse-surface)}
 .relay-packet--lock{top:-10px;width:28px;height:20px;border:0;animation:relay-to-notary 4.6s linear infinite}
 .relay-track--notary .relay-packet{animation-name:relay-to-proxy}
-.relay-packet--lock svg{width:13px;height:13px;stroke:var(--green);stroke-width:1.75}
+.relay-packet--lock svg{width:13px;height:13px;stroke:var(--inverse-accent);stroke-width:1.75}
 .relay-branch{grid-column:6;grid-row:1/3;position:relative}
 .relay-branch svg{position:absolute;inset:0;width:100%;height:100%;overflow:visible}
 .relay-branch line{fill:none;stroke:var(--ink);stroke-width:1;vector-effect:non-scaling-stroke}
-.relay-branch .relay-packet{left:3px;padding:0 4px;width:auto;min-width:29px;height:15px;color:var(--green);font:500 7px/1 'DM Mono',monospace;border:0;opacity:0}
+.relay-branch .relay-packet{left:3px;padding:0 4px;width:auto;min-width:29px;height:15px;color:var(--inverse-accent);font:500 7px/1 'DM Mono',monospace;border:0;opacity:0}
 .relay-packet--text:before,.relay-packet--proof:before{content:'TEXT'}.relay-packet--proof:before{content:'PROOF'}
 .relay-packet--text{top:calc(37.5% - 8px);animation:relay-branch-text 4.6s linear infinite}.relay-packet--proof{top:calc(62.5% - 8px);animation:relay-branch-proof 4.6s linear infinite}
 .relay-output{grid-column:7;padding:15px;overflow:hidden}
@@ -44,7 +44,7 @@
 .relay-output--agent ul{list-style:none;padding:0;margin:0;display:grid;gap:5px;font-size:9px;line-height:1.3}
 .relay-output--agent li{animation:relay-agent-one 4.6s ease-out infinite}.relay-output--agent li:before{content:'→';margin-right:6px;color:var(--green-ink)}
 .relay-output--agent li:nth-child(2){animation-name:relay-agent-two}.relay-output--agent li:nth-child(3){animation-name:relay-agent-three}
-.certificate-seal{padding:5px 6px!important;color:#315400!important;background:var(--green);border:1px solid #315400;transform:rotate(-2deg);animation:relay-certificate-seal 4.6s ease-out infinite}
+.certificate-seal{padding:5px 6px!important;color:var(--action-dark)!important;background:var(--action-soft);border:1px solid var(--action);transform:rotate(-2deg);animation:relay-certificate-seal 4.6s ease-out infinite}
 .relay-output dl{display:grid;gap:6px;margin:10px 0 0}.relay-output dl div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:5px;font:500 8px/1 'DM Mono',monospace;animation:relay-certificate-one 4.6s ease-out infinite}.relay-output dl div:nth-child(2){animation-name:relay-certificate-two}.relay-output dl div:nth-child(3){animation-name:relay-certificate-three}.relay-output dt{color:var(--muted)}.relay-output dd{margin:0}
 .relay-output footer{margin-top:9px;color:var(--muted);font:500 8px/1 'DM Mono',monospace;animation:relay-certificate-footer 4.6s ease-out infinite}.relay-output footer i{display:inline-block;width:6px;height:6px;margin-right:5px;border:1px solid var(--green-ink);border-radius:50%;background:var(--green)}
 @keyframes relay-cursor{0%,46%{opacity:1}47%,100%{opacity:0}}

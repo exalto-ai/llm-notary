@@ -21,8 +21,11 @@ fi
 
 # Check only added lines and never echo a matched value. These patterns are a
 # last-line-of-defense, not a replacement for reviewing every staged change.
-if git diff --cached --no-ext-diff --unified=0 | grep -Eq \
-    '^\+.*(-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|sk-[A-Za-z0-9_-]{20,})'; then
+staged_diff=$(git diff --cached --no-ext-diff --unified=0)
+if printf '%s\n' "$staged_diff" | grep -Eq \
+    '^\+.*(-----BEGIN [A-Z ]*PRIVATE KEY-----|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,})' \
+    || printf '%s\n' "$staged_diff" | grep -Eq \
+    '(^\+sk-[A-Za-z0-9_-]{20,}|^\+.*[^A-Za-z0-9_]sk-[A-Za-z0-9_-]{20,})'; then
     printf '%s\n' 'error: staged diff appears to contain a private key or access token.' >&2
     printf '%s\n' 'Remove the credential and rotate it if it was valid.' >&2
     exit 1
