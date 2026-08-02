@@ -220,9 +220,9 @@ to fetch admission state; agents and the dashboard never receive that
 credential. A missing job returns `404`; missing or expired publication
 authorization returns `409`; a temporary platform or network failure returns
 `503` rather than pretending the job disappeared. Public Library traces can be inspected through
-`GET /v1/public-traces/{publication_id}`
-or independently checked through `POST
-/v1/public-traces/{publication_id}/verify` without accepting an output path.
+`GET /v1/public-traces/{publication_id}` or independently checked through
+`POST /v1/public-traces/{publication_id}/verify` without accepting an output
+path.
 
 ## Local trust boundary
 
