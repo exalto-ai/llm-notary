@@ -6,7 +6,7 @@ loopback listeners:
 | Listener | Default | Purpose |
 | --- | --- | --- |
 | Provider proxy | `http://127.0.0.1:8787` | Receives provider-compatible requests and creates private captures. |
-| Administration | `http://127.0.0.1:8788` | Serves the dashboard, health check, OpenAPI document, and authenticated `/v1` API. |
+| Administration | `http://127.0.0.1:8788` | Serves the dashboard, health check, OpenAPI document, and `/v1` API. |
 
 Both addresses must be distinct and loopback-only. The separation prevents a
 program that can send model requests through the proxy from automatically
@@ -38,7 +38,11 @@ listen = "127.0.0.1:8787"
 
 [admin]
 listen = "127.0.0.1:8788"
-token_path = "/private/local/path/admin-token"
+
+# Optional. Omit this table to allow access from local processes without credentials.
+# [admin.auth]
+# username = "local-admin"
+# password_hash = "$argon2id$v=19$m=32768,t=2,p=1$..."
 
 [notary]
 # A local/self-hosted endpoint and its compressed SEC1 public key are paired.
@@ -46,42 +50,55 @@ token_path = "/private/local/path/admin-token"
 # public_key = "02..."
 ```
 
-The service creates a high-entropy token at `admin.token_path` with private
-permissions. The path is local configuration, not an API value. Never commit,
-print, or send the token to the provider proxy.
+The admin listener is open to local processes by default. Both listeners must
+still use loopback addresses, and the provider proxy never mounts admin
+routes. This is the simplest setup for a single-user workstation and for a
+coding agent already running with the user's local permissions.
+
+To require credentials, add `[admin.auth]` with a username and an Argon2id PHC
+password hash. The hash contains its salt and work parameters; never store the
+plaintext password in the configuration. Generate it with a tool that prompts
+for the password instead of accepting it as a command-line value. For example:
+
+```bash
+caddy hash-password --algorithm argon2id
+```
+
+Copy the complete output into `password_hash`. LLM Notary rejects plaintext,
+bcrypt, and malformed values. The Argon2id requirement follows current
+[OWASP password-storage guidance](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html);
+the prompted Caddy command is one convenient generator, not a runtime
+dependency.
 
 ## Health, discovery, and authentication
 
-The dashboard shell and its static assets are public on the loopback admin
-listener so a browser can render the sign-in form. `GET /healthz` and `GET /openapi.json`
-are also unauthenticated and reveal basic availability and the
-API contract. No private capture data is present in those responses. Every
-`/v1` data or operation route requires the bearer token or the dashboard's
-HttpOnly, SameSite browser session; `POST /v1/session` is the bearer-authenticated
-bootstrap that creates that session.
+The dashboard shell, its static assets, `GET /healthz`, and
+`GET /openapi.json` are always public on the loopback admin listener. With the
+default configuration, `/v1` is also available without credentials. OpenAPI
+describes each operation as accepting anonymous access or HTTP Basic because
+the exact requirement is a local configuration choice.
 
-Load the token from its configured file without putting its value into shell
-history:
+Start with the default flow:
 
 ```bash
 export LLM_NOTARY_ADMIN_ORIGIN=http://127.0.0.1:8788
-export LLM_NOTARY_ADMIN_TOKEN_FILE=/private/local/path/admin-token
-IFS= read -r LLM_NOTARY_ADMIN_TOKEN < "$LLM_NOTARY_ADMIN_TOKEN_FILE"
-export LLM_NOTARY_ADMIN_TOKEN
 
 curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/healthz"
 curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/openapi.json" > /tmp/llm-notary-openapi.json
-curl --fail-with-body \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/status"
+curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/v1/status"
 ```
 
 Keep the origin fixed to the configured loopback listener. Do not accept an
-origin from untrusted input. Send the token only in `Authorization`; query
-strings can be copied, logged, cached, and retained in browser history.
+origin from untrusted input.
 
-The dashboard exchanges the token with `POST /v1/session`, clears it from the
-form, and uses an HttpOnly cookie afterward. The service deliberately sends no
+When `admin.auth` is configured, API clients may send standard HTTP Basic
+credentials. A browser receives 401, shows the username/password form, and
+exchanges those credentials at `POST /v1/session` for an HttpOnly, SameSite
+cookie. It clears the fields and does not keep the password in browser storage.
+For an interactive shell, `curl --user local-admin URL` prompts for the
+password without placing it in shell history or the process argument list.
+Noninteractive clients should obtain the password from their approved secret
+mechanism and follow the `basicAuth` scheme in OpenAPI. The service sends no
 cross-origin access headers, so another website cannot use the admin API as a
 browser backend.
 
@@ -130,12 +147,10 @@ identifier:
 
 ```bash
 curl --fail-with-body \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&limit=20&offset=0"
 
 capture_id=cap-example
 curl --fail-with-body \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id"
 ```
 
@@ -144,11 +159,9 @@ filtering the entire bounded history in the client:
 
 ```bash
 curl --fail-with-body \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations?state=failed&kind=finalization&limit=20"
 
 curl --fail-with-body \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/events?severity=error&event_type=finalization_failed&limit=20"
 ```
 
@@ -170,13 +183,11 @@ the durable operation identifier from the 202 response. Poll it with
 ```bash
 capture_id=cap-example
 response=$(curl --fail-with-body -X POST \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/finalizations")
 operation_id=$(printf '%s' "$response" | jq -r '.operation.operation_id')
 printf 'Queued operation %s\n' "$operation_id"
 
 curl --fail-with-body \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations/$operation_id"
 ```
 
@@ -194,7 +205,6 @@ operation and increments its attempt when the worker claims it:
 
 ```bash
 curl --fail-with-body -X POST \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations/$operation_id/retry"
 ```
 
@@ -218,7 +228,6 @@ through the capture identifier:
 ```bash
 capture_id=cap-example
 curl --fail-with-body -X POST \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/trace:verify"
 ```
 
@@ -236,8 +245,8 @@ eligible finalized capture. Ask the user before either publishing or changing
 service configuration. Device authorization starts with `202 Accepted`; obey
 its `poll_interval_seconds` and keep polling the returned
 `/v1/publication/auth/{request_id}` route while `signed_in` is false.
-After submission, poll authenticated `GET /v1/publications/{job_id}` on the
-local admin listener. The service uses the vault-held publication credential
+After submission, poll `GET /v1/publications/{job_id}` on the local admin
+listener. The service uses the vault-held publication credential
 to fetch admission state; agents and the dashboard never receive that
 credential. A missing job returns `404`; missing or expired publication
 authorization returns `409`; a temporary platform or network failure returns

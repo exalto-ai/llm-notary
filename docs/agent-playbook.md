@@ -10,9 +10,10 @@ schema authority.
    origin. Do not follow an untrusted origin or expose the service remotely.
 2. Fetch `/openapi.json` before choosing a route, method, request body, or
    response field. Do not rely on a memorized API shape.
-3. Read the approved local bearer token into `LLM_NOTARY_ADMIN_TOKEN`; send it
-   only in the `Authorization` header. Never print, log, embed, persist, or put
-   it in a URL.
+3. Call `/v1` without credentials unless the service returns 401. If the user
+   configured `admin.auth`, obtain its username and password through the
+   approved secret mechanism and use the OpenAPI `basicAuth` scheme. Never
+   print, log, embed, persist, or put the password in a URL.
 4. Find captures through `/v1/captures` and act on returned `cap-…`
    identifiers. Never ask for or submit an arbitrary local filesystem path.
    Search input may contain punctuation; the service treats it as text
@@ -24,8 +25,8 @@ schema authority.
    verification. Decrypting or structurally validating an encrypted bundle is
    not independent verification.
 7. Never request, decode, upload, or expose decrypted `.llmbundle` contents,
-   credentials, cookies, raw authenticated headers, bearer tokens, or vault
-   material.
+   credentials, cookies, raw authenticated headers, authentication secrets,
+   or vault material.
 8. Ask the user before publishing a finalized trace or changing service
    configuration. Finalization alone is not publication consent.
 9. After approved publication, save `job_id` and poll
@@ -46,8 +47,9 @@ of it in the client.
 
 ```text
 Use the LLM Notary administration service at http://127.0.0.1:8788.
-First check /healthz and fetch /openapi.json. Use the bearer token already
-available as LLM_NOTARY_ADMIN_TOKEN, but never print it or put it in a URL.
+First check /healthz and fetch /openapi.json. Use the local API without
+credentials unless it returns 401. If authentication is configured, use only
+the approved Basic credentials and never print or persist the password.
 Find the newest pending OpenAI capture whose preview matches "sanitized",
 show me its safe metadata, and ask before starting finalization. If I approve,
 record the returned operation identifier and poll it to a terminal state. When
@@ -57,14 +59,10 @@ what it verifies. Do not access bundle paths or contents, and do not publish.
 
 ## Safe shell workflow
 
-Load the token from the configured private file. This keeps the value itself
-out of shell history:
+The default loopback configuration needs no credentials:
 
 ```bash
 export LLM_NOTARY_ADMIN_ORIGIN=http://127.0.0.1:8788
-export LLM_NOTARY_ADMIN_TOKEN_FILE=/private/local/path/admin-token
-IFS= read -r LLM_NOTARY_ADMIN_TOKEN < "$LLM_NOTARY_ADMIN_TOKEN_FILE"
-export LLM_NOTARY_ADMIN_TOKEN
 
 curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/healthz"
 curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/openapi.json" \
@@ -76,12 +74,10 @@ returned by the service:
 
 ```bash
 curl --fail-with-body \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&capture_state=pending&limit=10&offset=0"
 
 capture_id=cap-example
 curl --fail-with-body \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id"
 ```
 
@@ -92,13 +88,11 @@ starting another:
 
 ```bash
 response=$(curl --fail-with-body -X POST \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/finalizations")
 operation_id=$(printf '%s' "$response" | jq -r '.operation.operation_id')
 
 while :; do
   operation=$(curl --fail-with-body \
-    -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
     "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations/$operation_id") || exit 1
   state=$(printf '%s' "$operation" | jq -r '.state')
   case "$state" in
@@ -115,7 +109,6 @@ If finalization succeeds, independently verify the finalized trace:
 ```bash
 test "$state" = finalized || exit 1
 curl --fail-with-body -X POST \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/trace:verify"
 ```
 
@@ -127,12 +120,10 @@ follow admission through the local service:
 
 ```bash
 publication=$(curl --fail-with-body -X POST \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/publications")
 job_id=$(printf '%s' "$publication" | jq -r '.job_id')
 
 curl --fail-with-body \
-  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/publications/$job_id"
 ```
 
@@ -141,13 +132,10 @@ public until the returned state is `admitted`.
 
 ## JavaScript example
 
-This example assumes the token is already supplied by an approved secret
-mechanism. It discovers the contract before making an authenticated request:
+This example discovers the contract before using the default local API:
 
 ```js
 const origin = 'http://127.0.0.1:8788';
-const token = process.env.LLM_NOTARY_ADMIN_TOKEN;
-if (!token) throw new Error('LLM_NOTARY_ADMIN_TOKEN is required');
 
 const health = await fetch(`${origin}/healthz`);
 if (!health.ok) throw new Error(`Local service unavailable: ${health.status}`);
@@ -155,15 +143,19 @@ if (!health.ok) throw new Error(`Local service unavailable: ${health.status}`);
 const specification = await fetch(`${origin}/openapi.json`).then((response) => response.json());
 if (!specification.paths['/v1/captures']) throw new Error('Installed API is incompatible');
 
-const response = await fetch(`${origin}/v1/captures?capture_state=pending&limit=10&offset=0`, {
-  headers: { Authorization: `Bearer ${token}` }
-});
+const response = await fetch(`${origin}/v1/captures?capture_state=pending&limit=10&offset=0`);
 if (!response.ok) throw new Error(`Capture search failed: ${response.status}`);
 const captures = await response.json();
 console.log(captures.items.map(({ capture_id, provider, requested_model, finalization_state }) => ({
   capture_id, provider, requested_model, finalization_state
 })));
 ```
+
+If a `/v1` request returns 401, do not guess credentials. Ask for the
+configured `admin.auth` username and password, then retry with HTTP Basic as
+described by the live specification. An interactive shell can use
+`curl --user local-admin URL` so curl prompts for the password rather than
+putting it in shell history or the process argument list.
 
 The service returns the documented JSON error envelope for invalid query
 values, including malformed numeric values. Branch on `error.code`; do not

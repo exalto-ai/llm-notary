@@ -115,7 +115,7 @@ Authenticated `GET /api/publish/jobs/{id}` also returns `trace_url` and
 
 ## Local public-trace verification
 
-`GET /v1/public-traces/{publication_id}` on the authenticated local admin API
+`GET /v1/public-traces/{publication_id}` on the local admin API
 resolves the public metadata endpoint, accepts only its same-origin canonical
 trace and stamp paths, and returns the validated JSON artifacts without
 accepting an output path. `POST

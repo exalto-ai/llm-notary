@@ -13,7 +13,7 @@
 - [Agents](%PUBLIC_ORIGIN%/docs/harnesses): Recipes for Codex, Claude Code, and OpenCode.
 - [Finalize](%PUBLIC_ORIGIN%/docs/finalize): Queue a durable operation that turns one pending capture into a verified trace package.
 - [Artifacts](%PUBLIC_ORIGIN%/docs/artifacts): Evidence, disclosed HTTP, normalized OTLP, and manifest responsibilities.
-- [Verify](%PUBLIC_ORIGIN%/docs/verify): Verify a finalized trace through the authenticated local service and its configured trust source.
+- [Verify](%PUBLIC_ORIGIN%/docs/verify): Verify a finalized trace through the local service and its configured trust source.
 - [Publish](%PUBLIC_ORIGIN%/docs/publish): Deliberately submit an already-finalized trace package.
 
 ## Core trust boundary
@@ -30,11 +30,10 @@ llm-notary
 
 curl http://127.0.0.1:8788/healthz
 curl http://127.0.0.1:8788/openapi.json
-curl -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
-  "http://127.0.0.1:8788/v1/captures?query=pricing"
+curl "http://127.0.0.1:8788/v1/captures?query=pricing"
 ```
 
-Open `http://127.0.0.1:8788` for the local dashboard. Read the bearer token from the private `admin.token_path` file, send it only in the Authorization header, and follow the live OpenAPI document instead of guessing routes or request bodies. Use `llm-notary --config /path/to/config.toml` to select a non-standard local configuration. For a self-hosted notary, set `notary.endpoint` and `notary.public_key` together in that file. Hosted services discover the notary endpoint and key from the signed directory.
+Open `http://127.0.0.1:8788` for the local dashboard. The loopback admin API is open to local processes by default; an installation can require HTTP Basic credentials by setting `admin.auth` to a username and Argon2id password hash. Follow the live OpenAPI document instead of guessing routes or request bodies. Use `llm-notary --config /path/to/config.toml` to select a non-standard local configuration. For a self-hosted notary, set `notary.endpoint` and `notary.public_key` together in that file. Hosted services discover the notary endpoint and key from the signed directory.
 
 ## Package layout
 

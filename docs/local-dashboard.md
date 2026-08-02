@@ -1,10 +1,10 @@
 # Local evidence dashboard
 
 Open [http://127.0.0.1:8788](http://127.0.0.1:8788) while `llm-notary` is
-running. On the first visit, paste the value from the `admin.token_path` named
-in the service configuration. The dashboard exchanges it for an HttpOnly local
-session, clears the field, and does not store the bearer token in a URL or
-browser storage.
+running. The default configuration opens the dashboard directly. If
+`admin.auth` is configured, the service asks for that username and password,
+exchanges them for an HttpOnly local session, clears the fields, and does not
+store the password in a URL or browser storage.
 
 The dashboard is served only by the loopback administration listener. The
 provider proxy on port 8787 never serves it.
@@ -90,7 +90,7 @@ account. Its device flow displays a short code and approval URL. After approval,
 select one eligible finalized trace and review the explicit confirmation. The
 source `.llmbundle` is never a publication input. Nothing is uploaded merely
 because a trace was finalized or verified. After submission, the dashboard
-retains the capture and job identifiers, then polls authenticated
+retains the capture and job identifiers, then polls
 `GET /v1/publications/{job_id}` through the local service for later admission
 changes. Remote publication credentials never enter the browser.
 
@@ -132,7 +132,7 @@ states and a focal action.
 | --- | --- |
 | Service unavailable | Confirm the foreground process is running and the browser uses the configured loopback admin address, normally port 8788. |
 | Address already in use | Stop the other process or assign distinct loopback `proxy.listen` and `admin.listen` ports, then restart. |
-| Unauthorized session | Re-read the private token file named by `admin.token_path`; the service can reject an old token after the file or profile changes. Never add the token to the URL. |
+| Unauthorized session | Confirm that `admin.auth` is enabled, then enter its configured username and password. Restart the service after changing the hash. Never add the password to the URL. |
 | Vault unavailable | Unlock the OS credential store or supply the configured private passphrase file, then restart. Do not move encrypted bundles outside their initialized vault profile. |
 | Notary directory unavailable | Check network access and directory configuration. An explicit local notary endpoint is appropriate only for local/self-hosted development. |
 | Operation interrupted | A running job was stopped by service restart. Inspect its safe code and use Retry finalization. |

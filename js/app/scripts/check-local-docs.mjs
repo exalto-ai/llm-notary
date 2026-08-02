@@ -8,6 +8,11 @@ const openapi = JSON.parse(readFileSync(resolve(appRoot, 'src/local-dashboard/ge
 const workflowDocuments = ['README.md', 'docs/local-service.md', 'docs/local-dashboard.md', 'docs/agent-playbook.md'];
 const workflowContent = workflowDocuments.map((file) => readFileSync(resolve(repoRoot, file), 'utf8')).join('\n');
 
+const basicAuth = openapi.components?.securitySchemes?.basicAuth;
+if (basicAuth?.type !== 'http' || basicAuth?.scheme !== 'basic') {
+  throw new Error('OpenAPI must expose the optional HTTP Basic security scheme');
+}
+
 const expectedOperations = {
   '/healthz': { get: ['200'] },
   '/openapi.json': { get: ['200'] },
@@ -41,6 +46,9 @@ for (const [path, methods] of Object.entries(expectedOperations)) {
     if (!operation) throw new Error(`OpenAPI is missing ${method.toUpperCase()} ${path}`);
     if (!operation.summary?.trim() || !operation.description?.trim()) {
       throw new Error(`${method.toUpperCase()} ${path} needs a summary and description`);
+    }
+    if (path.startsWith('/v1/') && JSON.stringify(operation.security) !== JSON.stringify([{}, { basicAuth: [] }])) {
+      throw new Error(`${method.toUpperCase()} ${path} must describe anonymous or configured Basic authentication`);
     }
     const actualStatuses = Object.keys(operation.responses).sort();
     const expectedStatuses = [...statuses].sort();
