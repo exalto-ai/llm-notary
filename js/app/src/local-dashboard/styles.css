@@ -217,6 +217,10 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'DM Mono', ui-monospace
 .authorization-code code { font-size: 24px; letter-spacing: .08em; }
 .authorization-code a { color: var(--ink); font-size: 12px; }
 .publication-choice .mantine-InputWrapper-root { margin-top: 22px; }
+.publication-result { border-top: 1px solid var(--rule); display: grid; gap: 10px; margin-top: 26px; padding-top: 20px; }
+.publication-result > code { color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
+.publication-result > p { font-size: 12px; }
+.publication-result .mantine-Button-root { justify-self: start; margin-top: 4px; }
 
 .event-list { background: var(--raised); border: 1px solid var(--rule); margin-top: 20px; }
 .event-row { align-items: center; border-bottom: 1px solid var(--rule); display: grid; gap: 13px; grid-template-columns: auto 1fr auto; min-height: 72px; padding: 12px 16px; }

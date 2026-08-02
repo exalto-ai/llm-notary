@@ -15,7 +15,7 @@ import {
   Send, Settings, ShieldCheck, Sun, TerminalSquare, Unplug, XCircle
 } from 'lucide-react';
 import { LocalApiError } from './api';
-import type { Capture, CaptureDetail, Event, LocalApi, Operation, PublicationAuthStarted, Status, Verification } from './api';
+import type { Capture, CaptureDetail, Event, LocalApi, Operation, Publication, PublicationAuthStarted, Status, Verification } from './api';
 
 export type DashboardView = 'overview' | 'captures' | 'finalizations' | 'traces' | 'publishing' | 'activity' | 'settings';
 
@@ -468,6 +468,7 @@ function PublishingView({ api }: { api: LocalApi }) {
   const traces = useQuery({ queryKey: ['captures', 'publishing'], queryFn: () => api.captures({ finalization_state: 'finalized' }) });
   const [selected, setSelected] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
+  const [submitted, setSubmitted] = useState<Publication | null>(null);
   const [started, setStarted] = useState<{ flow: PublicationAuthStarted; nextPollAt: number } | null>(null);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -491,7 +492,7 @@ function PublishingView({ api }: { api: LocalApi }) {
     onError: (error) => mutationError('Could not check authorization', error)
   });
   const publish = useMutation({ mutationFn: () => api.publish(selected!), onSuccess: (result) => {
-    setConfirm(false); notifications.show({ title: 'Publication submitted', message: `Job ${result.job_id} is ${result.state}.` });
+    setConfirm(false); setSubmitted(result); notifications.show({ title: 'Publication submitted', message: `Job ${result.job_id} is ${result.state}.` });
   }, onError: (error) => mutationError('Publication failed', error) });
   const eligible = traces.data?.items ?? [];
   const selectedId = selected ?? eligible[0]?.capture_id ?? null;
@@ -500,7 +501,7 @@ function PublishingView({ api }: { api: LocalApi }) {
     <div className="publishing-grid"><Paper className="publishing-auth"><Group justify="space-between"><Text className="eyebrow">Publication account</Text><KeyRound size={17} /></Group>
       {auth.isLoading ? <Loader size="sm" /> : auth.error ? <QueryError error={auth.error} title="Publication authorization is unavailable" /> : auth.data?.signed_in ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.device_name}</Text><StatusLabel state="ready" /></> : <><Title order={2}>Not authorized</Title><Text>Begin the device flow, then approve the recognizable local dashboard session in your browser.</Text><Button variant="outline" loading={beginAuth.isPending} onClick={() => beginAuth.mutate()}>Begin authorization</Button></>}
       {started && <div className="authorization-code"><Text className="eyebrow">Approval code</Text><code>{started.flow.user_code}</code><a href={started.flow.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a><Text>{pollReady ? 'Approval can now be checked.' : `Waiting ${Math.max(1, Math.ceil((started.nextPollAt - now) / 1000))}s before the next check.`}</Text><Button size="xs" variant="subtle" disabled={!pollReady} loading={pollAuth.isPending} onClick={() => pollAuth.mutate()}>Check approval</Button></div>}
-    </Paper><Paper className="publication-choice"><Text className="eyebrow">Eligible finalized trace</Text><Title order={2}>Choose what to publish</Title>{traces.error ? <QueryError error={traces.error} title="Eligible traces are unavailable" /> : traces.isLoading ? <Loader size="sm" /> : eligible.length ? <><Select label="Finalized trace" data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} /><div className="consent-copy"><ShieldCheck size={18} /><Text>The finalized disclosure is verified locally before upload. The encrypted source bundle is never a publication input.</Text></div><Button disabled={!auth.data?.signed_in || !selectedId} onClick={() => setConfirm(true)}>Review publication</Button></> : <EmptyState title="Nothing eligible" copy="Finalize a capture first." />}</Paper></div>
+    </Paper><Paper className="publication-choice"><Text className="eyebrow">Eligible finalized trace</Text><Title order={2}>Choose what to publish</Title>{traces.error ? <QueryError error={traces.error} title="Eligible traces are unavailable" /> : traces.isLoading ? <Loader size="sm" /> : eligible.length ? <><Select label="Finalized trace" data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} /><div className="consent-copy"><ShieldCheck size={18} /><Text>The finalized disclosure is verified locally before upload. The encrypted source bundle is never a publication input.</Text></div><Button disabled={!auth.data?.signed_in || !selectedId} onClick={() => setConfirm(true)}>Review publication</Button>{submitted && <div className="publication-result"><Group justify="space-between"><Text className="eyebrow">Latest submission</Text><StatusLabel state={submitted.state} /></Group><code>{submitted.job_id}</code><Text>The platform reported {submitted.state}. Follow the status page for later admission changes.</Text><Button component="a" href={submitted.status_url} target="_blank" rel="noreferrer" variant="outline">Open publication status</Button></div>}</> : <EmptyState title="Nothing eligible" copy="Finalize a capture first." />}</Paper></div>
     <Modal opened={confirm} onClose={() => setConfirm(false)} title="Publish this finalized trace?" centered><Stack><Text>This creates a public admission job for <code>{selectedId}</code>. Public trace content may be visible to anyone.</Text><Group justify="flex-end"><Button variant="subtle" onClick={() => setConfirm(false)}>Keep private</Button><Button loading={publish.isPending} onClick={() => publish.mutate()}>Publish trace</Button></Group></Stack></Modal>
   </div>;
 }

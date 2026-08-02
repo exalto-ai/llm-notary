@@ -105,6 +105,10 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('TEST-123')).toBeVisible();
     await page.getByRole('button', { name: 'Check approval' }).click();
     await expect.element(page.getByRole('heading', { name: 'approved-user' })).toBeVisible();
+    await page.getByRole('button', { name: 'Review publication' }).click();
+    await page.getByRole('button', { name: 'Publish trace' }).click();
+    await expect.element(page.getByText('pub-job-fixture')).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Open publication status' })).toBeVisible();
   });
 
   test('shows the authentication gate after a 401 status response', async () => {
