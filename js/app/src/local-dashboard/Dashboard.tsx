@@ -376,7 +376,8 @@ function ArtifactList({ detail }: { detail: CaptureDetail }) {
 function FinalizationsView({ api, selectedId, navigate }: { api: LocalApi; selectedId?: string; navigate: (route: Route) => void }) {
   const operations = useQuery({ queryKey: ['operations'], queryFn: api.operations, refetchInterval: 3_000 });
   const selectedOperation = useQuery({
-    queryKey: ['operation', selectedId], queryFn: () => api.operation(selectedId!), enabled: Boolean(selectedId)
+    queryKey: ['operation', selectedId], queryFn: () => api.operation(selectedId!),
+    enabled: Boolean(selectedId), refetchInterval: 3_000
   });
   const active = operations.data?.items.find((item) => item.operation_id === selectedId)
     ?? selectedOperation.data ?? operations.data?.items[0];
@@ -392,8 +393,9 @@ function FinalizationsView({ api, selectedId, navigate }: { api: LocalApi; selec
 
 function OperationInspector({ api, operation }: { api: LocalApi; operation: Operation }) {
   const queryClient = useQueryClient();
-  const retry = useMutation({ mutationFn: () => api.retry(operation.operation_id), onSuccess: () => {
+  const retry = useMutation({ mutationFn: () => api.retry(operation.operation_id), onSuccess: (updated) => {
     notifications.show({ title: 'Retry queued', message: 'The same durable operation will make another attempt.' });
+    queryClient.setQueryData(['operation', operation.operation_id], updated);
     queryClient.invalidateQueries({ queryKey: ['operations'] });
   }, onError: (error) => mutationError('Could not retry finalization', error) });
   const retryable = ['failed', 'interrupted'].includes(operation.state);
@@ -488,7 +490,10 @@ function PublishingView({ api }: { api: LocalApi }) {
     queryKey: ['publication', submitted?.job_id],
     queryFn: () => api.publicationStatus(submitted!.job_id),
     enabled: Boolean(submitted),
-    refetchInterval: submitted ? 3_000 : false
+    refetchInterval: (query) => {
+      const state = query.state.data?.state;
+      return state && ['admitted', 'rejected', 'expired', 'failed'].includes(state) ? false : 3_000;
+    }
   });
   useEffect(() => {
     if (!started) return;
