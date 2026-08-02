@@ -110,6 +110,25 @@ pub struct CaptureFilters<'a> {
     pub offset: usize,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct OperationFilters<'a> {
+    pub state: Option<&'a str>,
+    pub kind: Option<&'a str>,
+    pub capture_id: Option<&'a str>,
+    pub limit: usize,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct EventFilters<'a> {
+    pub after: Option<u64>,
+    pub severity: Option<&'a str>,
+    pub event_type: Option<&'a str>,
+    pub capture_id: Option<&'a str>,
+    pub operation_id: Option<&'a str>,
+    pub created_after_unix_ms: Option<u64>,
+    pub limit: usize,
+}
+
 /// One stored local artifact belonging to a capture.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Artifact {
@@ -380,6 +399,11 @@ impl Catalog {
         if query.is_some() && !self.full_text_search {
             anyhow::bail!("full-text preview search is disabled in this agent configuration");
         }
+        let search_query = query.and_then(capture_search_expression);
+        if query.is_some() && search_query.is_none() {
+            return Ok(Vec::new());
+        }
+        let query = search_query.as_deref();
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let mut statement = match (query, model) {
             (Some(_), Some(_)) => connection.prepare(
@@ -421,16 +445,20 @@ impl Catalog {
         if filters.query.is_some() && !self.full_text_search {
             anyhow::bail!("full-text preview search is disabled in this agent configuration");
         }
+        let search_query = filters.query.and_then(capture_search_expression);
+        if filters.query.is_some() && search_query.is_none() {
+            return Ok(Vec::new());
+        }
         let limit = filters.limit.clamp(1, 200);
         let connection = self.connection.lock().expect("catalog mutex poisoned");
-        let mut sql = if filters.query.is_some() {
+        let mut sql = if search_query.is_some() {
             "SELECT c.* FROM captures c JOIN capture_search search ON search.capture_id = c.capture_id WHERE capture_search MATCH ?".to_owned()
         } else {
             "SELECT c.* FROM captures c WHERE 1 = 1".to_owned()
         };
         let mut values = Vec::<rusqlite::types::Value>::new();
-        if let Some(query) = filters.query {
-            values.push(query.to_owned().into());
+        if let Some(query) = search_query {
+            values.push(query.into());
         }
         for (column, value) in [
             ("c.requested_model", filters.model),
@@ -777,15 +805,37 @@ impl Catalog {
     }
 
     pub fn operations(&self, limit: usize) -> Result<Vec<Operation>> {
+        self.filtered_operations(&OperationFilters {
+            limit,
+            ..OperationFilters::default()
+        })
+    }
+
+    pub fn filtered_operations(&self, filters: &OperationFilters<'_>) -> Result<Vec<Operation>> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
-        let mut statement = connection
-            .prepare("SELECT * FROM operations ORDER BY created_at_unix_ms DESC LIMIT ?")?;
-        let rows = statement.query_map(
-            params![i64::try_from(limit.clamp(1, 200))?],
-            operation_from_row,
-        )?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        let mut sql = "SELECT * FROM operations WHERE 1 = 1".to_owned();
+        let mut values = Vec::<rusqlite::types::Value>::new();
+        for (column, value) in [
+            ("state", filters.state),
+            ("kind", filters.kind),
+            ("capture_id", filters.capture_id),
+        ] {
+            if let Some(value) = value {
+                sql.push_str(" AND ");
+                sql.push_str(column);
+                sql.push_str(" = ?");
+                values.push(value.to_owned().into());
+            }
+        }
+        sql.push_str(" ORDER BY created_at_unix_ms DESC LIMIT ?");
+        values.push(i64::try_from(filters.limit.clamp(1, 200))?.into());
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows = statement.query(rusqlite::params_from_iter(values))?;
+        let mut operations = Vec::new();
+        while let Some(row) = rows.next()? {
+            operations.push(operation_from_row(row)?);
+        }
+        Ok(operations)
     }
 
     pub fn operations_for_capture(&self, capture_id: &str) -> Result<Vec<Operation>> {
@@ -810,19 +860,93 @@ impl Catalog {
     }
 
     pub fn events(&self, after: Option<u64>, limit: usize) -> Result<Vec<Event>> {
-        let connection = self.connection.lock().expect("catalog mutex poisoned");
-        let mut statement = connection
-            .prepare("SELECT * FROM events WHERE event_id > ? ORDER BY event_id DESC LIMIT ?")?;
-        let rows = statement.query_map(
-            params![
-                i64::try_from(after.unwrap_or(0))?,
-                i64::try_from(limit.clamp(1, 200))?
-            ],
-            event_from_row,
-        )?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        self.filtered_events(&EventFilters {
+            after,
+            limit,
+            ..EventFilters::default()
+        })
     }
+
+    pub fn filtered_events(&self, filters: &EventFilters<'_>) -> Result<Vec<Event>> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let mut sql = "SELECT * FROM events WHERE event_id > ?".to_owned();
+        let mut values = Vec::<rusqlite::types::Value>::from([i64::try_from(
+            filters.after.unwrap_or(0),
+        )?
+        .into()]);
+        for (column, value) in [
+            ("severity", filters.severity),
+            ("event_type", filters.event_type),
+            ("capture_id", filters.capture_id),
+            ("operation_id", filters.operation_id),
+        ] {
+            if let Some(value) = value {
+                sql.push_str(" AND ");
+                sql.push_str(column);
+                sql.push_str(" = ?");
+                values.push(value.to_owned().into());
+            }
+        }
+        if let Some(created_after) = filters.created_after_unix_ms {
+            sql.push_str(" AND created_at_unix_ms >= ?");
+            values.push(i64::try_from(created_after)?.into());
+        }
+        sql.push_str(" ORDER BY event_id DESC LIMIT ?");
+        values.push(i64::try_from(filters.limit.clamp(1, 200))?.into());
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows = statement.query(rusqlite::params_from_iter(values))?;
+        let mut events = Vec::new();
+        while let Some(row) = rows.next()? {
+            events.push(event_from_row(row)?);
+        }
+        Ok(events)
+    }
+}
+
+fn capture_search_expression(input: &str) -> Option<String> {
+    fn push_token(
+        token: &mut String,
+        phrase: &mut Vec<String>,
+        output: &mut Vec<String>,
+        quoted: bool,
+    ) {
+        if token.is_empty() {
+            return;
+        }
+        if quoted {
+            phrase.push(std::mem::take(token));
+        } else {
+            output.push(format!("\"{}\"", std::mem::take(token)));
+        }
+    }
+
+    fn push_phrase(phrase: &mut Vec<String>, output: &mut Vec<String>) {
+        if !phrase.is_empty() {
+            output.push(format!("\"{}\"", phrase.join(" ")));
+            phrase.clear();
+        }
+    }
+
+    let mut output = Vec::new();
+    let mut phrase = Vec::new();
+    let mut token = String::new();
+    let mut quoted = false;
+    for character in input.chars() {
+        if character == '"' {
+            push_token(&mut token, &mut phrase, &mut output, quoted);
+            if quoted {
+                push_phrase(&mut phrase, &mut output);
+            }
+            quoted = !quoted;
+        } else if character.is_alphanumeric() || character == '_' {
+            token.push(character);
+        } else {
+            push_token(&mut token, &mut phrase, &mut output, quoted);
+        }
+    }
+    push_token(&mut token, &mut phrase, &mut output, quoted);
+    push_phrase(&mut phrase, &mut output);
+    (!output.is_empty()).then(|| output.join(" "))
 }
 
 fn migrate(connection: &mut Connection) -> Result<()> {
@@ -1201,6 +1325,50 @@ mod tests {
     }
 
     #[test]
+    fn capture_search_treats_punctuation_as_text_boundaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("cap-1.llmbundle");
+        fs::write(&bundle, b"ciphertext").unwrap();
+        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
+        catalog.begin_capture(&new_capture("cap-1")).unwrap();
+        catalog
+            .complete_capture(
+                "cap-1",
+                2,
+                1,
+                200,
+                24,
+                Some("gpt-5"),
+                "Quarterly pricing is available.",
+                false,
+                &bundle,
+            )
+            .unwrap();
+
+        for query in [
+            "quarterly-pricing",
+            "**quarterly**",
+            "\"quarterly pricing\"",
+        ] {
+            assert_eq!(catalog.list_captures(Some(query), None).unwrap().len(), 1);
+        }
+        for query in ["definitely-not-present-xyz", "**"] {
+            assert!(catalog.list_captures(Some(query), None).unwrap().is_empty());
+        }
+        assert_eq!(
+            catalog
+                .filtered_captures(&CaptureFilters {
+                    query: Some("**quarterly**"),
+                    limit: 50,
+                    ..CaptureFilters::default()
+                })
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
     fn failed_captures_have_only_a_safe_failure_code() {
         let directory = tempfile::tempdir().unwrap();
         let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
@@ -1307,6 +1475,30 @@ mod tests {
         catalog
             .fail_operation(&running.operation_id, 10, "proof_generation_failed")
             .unwrap();
+        assert_eq!(
+            catalog
+                .filtered_operations(&OperationFilters {
+                    state: Some("failed"),
+                    kind: Some("finalization"),
+                    capture_id: Some("cap-1"),
+                    limit: 20,
+                })
+                .unwrap(),
+            vec![catalog.operation(&running.operation_id).unwrap().unwrap()]
+        );
+        let failed_events = catalog
+            .filtered_events(&EventFilters {
+                severity: Some("error"),
+                event_type: Some("finalization_failed"),
+                capture_id: Some("cap-1"),
+                operation_id: Some(&running.operation_id),
+                created_after_unix_ms: Some(10),
+                limit: 20,
+                ..EventFilters::default()
+            })
+            .unwrap();
+        assert_eq!(failed_events.len(), 1);
+        assert_eq!(failed_events[0].event_type, "finalization_failed");
         assert_eq!(
             catalog.operation_attempts(&running.operation_id).unwrap(),
             vec![

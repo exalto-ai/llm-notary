@@ -11,7 +11,7 @@ use std::{
 use anyhow::{Context, Result};
 use axum::{
     Json, Router,
-    extract::{Path, Query, Request, State},
+    extract::{Path, Query, Request, State, rejection::QueryRejection},
     http::{HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -34,7 +34,10 @@ use crate::{
         finalize_bundle, trace_package_created_at_unix_ms, trace_package_notary_key,
         verify_trace_package,
     },
-    catalog::{CaptureFilters, CaptureSummary, Catalog, Event, Operation, OperationAttempt},
+    catalog::{
+        CaptureFilters, CaptureSummary, Catalog, Event, EventFilters, Operation, OperationAttempt,
+        OperationFilters,
+    },
     cli::{DEFAULT_PUBLIC_ORIGIN, auth, download, notary, proxy, publish},
     config::AgentConfig,
     notary_directory::key_id,
@@ -188,7 +191,7 @@ impl Modify for SecurityAddon {
     }
 }
 
-#[utoipa::path(get, path = "/healthz", responses((status = 200, body = HealthResponse)), tag = "local-admin")]
+#[utoipa::path(get, path = "/healthz", summary = "Check service health", description = "Returns the local service health and API version without requiring authentication.", responses((status = 200, body = HealthResponse)), tag = "local-admin")]
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
         service: "llm-notary".into(),
@@ -197,12 +200,12 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
-#[utoipa::path(get, path = "/openapi.json", responses((status = 200, description = "OpenAPI 3.1 document")), tag = "local-admin")]
+#[utoipa::path(get, path = "/openapi.json", summary = "Get the OpenAPI contract", description = "Returns the exact OpenAPI 3.1 contract implemented by this local service.", responses((status = 200, description = "OpenAPI 3.1 document")), tag = "local-admin")]
 async fn openapi() -> Json<utoipa::openapi::OpenApi> {
     Json(ApiDoc::openapi())
 }
 
-#[utoipa::path(post, path = "/v1/session", responses((status = 204, description = "HttpOnly dashboard session established"), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/session", summary = "Start a dashboard session", description = "Exchanges the local admin bearer token for an HttpOnly browser session cookie.", responses((status = 204, description = "HttpOnly dashboard session established"), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn start_session(State(state): State<AdminState>, request: Request) -> Response {
     if !bearer_matches(&state, request.headers()) {
         return ApiError::unauthorized().into_response();
@@ -231,7 +234,7 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
     response
 }
 
-#[utoipa::path(delete, path = "/v1/session", responses((status = 204, description = "Dashboard session ended"), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/session", summary = "End a dashboard session", description = "Deletes the current browser session and expires its local cookie.", responses((status = 204, description = "Dashboard session ended"), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn end_session(State(state): State<AdminState>, request: Request) -> Response {
     if let Some(session) = session_from_headers(request.headers()) {
         state.sessions.lock().await.remove(session);
@@ -274,7 +277,7 @@ async fn require_auth(State(state): State<AdminState>, request: Request, next: N
     }
 }
 
-#[utoipa::path(get, path = "/v1/status", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/status", summary = "Get local service status", description = "Returns listener addresses, vault and notary configuration, preview limits, and current capture counts.", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>, ApiError> {
     let catalog = state.catalog.clone();
     let counts = tokio::task::spawn_blocking(move || catalog.counts())
@@ -308,11 +311,12 @@ struct CaptureQuery {
     offset: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/captures", params(("query" = Option<String>, Query), ("model" = Option<String>, Query), ("provider" = Option<String>, Query), ("capture_state" = Option<String>, Query), ("finalization_state" = Option<String>, Query), ("limit" = Option<usize>, Query), ("offset" = Option<usize>, Query)), responses((status = 200, body = CaptureListResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures", summary = "Search local captures", description = "Lists the bounded local capture catalog with punctuation-safe preview search and exact metadata filters.", params(("query" = Option<String>, Query), ("model" = Option<String>, Query), ("provider" = Option<String>, Query), ("capture_state" = Option<String>, Query), ("finalization_state" = Option<String>, Query), ("limit" = Option<usize>, Query), ("offset" = Option<usize>, Query)), responses((status = 200, body = CaptureListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn captures(
     State(state): State<AdminState>,
-    Query(query): Query<CaptureQuery>,
+    query: Result<Query<CaptureQuery>, QueryRejection>,
 ) -> Result<Json<CaptureListResponse>, ApiError> {
+    let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
     let catalog = state.catalog.clone();
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let offset = query.offset.unwrap_or(0);
@@ -337,7 +341,7 @@ async fn captures(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/captures/{capture_id}", params(("capture_id" = String, Path)), responses((status = 200, body = CaptureDetailResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures/{capture_id}", summary = "Get a capture", description = "Returns safe capture metadata, retained artifact digests, and finalization history for one capture.", params(("capture_id" = String, Path)), responses((status = 200, body = CaptureDetailResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn capture(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -381,7 +385,7 @@ async fn capture(
     }))
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/finalizations", params(("capture_id" = String, Path)), responses((status = 202, body = FinalizationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/finalizations", summary = "Queue capture finalization", description = "Queues durable proof generation for a pending capture or returns its existing finalization operation.", params(("capture_id" = String, Path)), responses((status = 202, body = FinalizationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn start_finalization(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -412,19 +416,28 @@ async fn start_finalization(
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct LimitQuery {
+struct OperationQuery {
+    state: Option<String>,
+    kind: Option<String>,
+    capture_id: Option<String>,
     limit: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/operations", params(("limit" = Option<usize>, Query)), responses((status = 200, body = OperationListResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/operations", summary = "List background operations", description = "Lists durable background operations with optional state, kind, and capture filters.", params(("state" = Option<String>, Query), ("kind" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("limit" = Option<usize>, Query)), responses((status = 200, body = OperationListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn operations(
     State(state): State<AdminState>,
-    Query(query): Query<LimitQuery>,
+    query: Result<Query<OperationQuery>, QueryRejection>,
 ) -> Result<Json<OperationListResponse>, ApiError> {
+    let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
     let catalog = state.catalog.clone();
     let values = tokio::task::spawn_blocking(move || -> Result<Vec<OperationResponse>> {
         catalog
-            .operations(query.limit.unwrap_or(50))?
+            .filtered_operations(&OperationFilters {
+                state: query.state.as_deref(),
+                kind: query.kind.as_deref(),
+                capture_id: query.capture_id.as_deref(),
+                limit: query.limit.unwrap_or(50),
+            })?
             .into_iter()
             .map(|operation| operation_response(&catalog, operation))
             .collect()
@@ -435,7 +448,7 @@ async fn operations(
     Ok(Json(OperationListResponse { items: values }))
 }
 
-#[utoipa::path(get, path = "/v1/operations/{operation_id}", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/operations/{operation_id}", summary = "Get an operation", description = "Returns the current state and complete attempt history for one durable operation.", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn operation(
     State(state): State<AdminState>,
     Path(operation_id): Path<String>,
@@ -455,7 +468,7 @@ async fn operation(
     Ok(Json(value))
 }
 
-#[utoipa::path(post, path = "/v1/operations/{operation_id}/retry", params(("operation_id" = String, Path)), responses((status = 202, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/operations/{operation_id}/retry", summary = "Retry an operation", description = "Requeues a failed or restart-interrupted operation while preserving its durable identity and attempt history.", params(("operation_id" = String, Path)), responses((status = 202, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn retry_operation(
     State(state): State<AdminState>,
     Path(operation_id): Path<String>,
@@ -476,7 +489,7 @@ async fn retry_operation(
     Ok((StatusCode::ACCEPTED, Json(value)))
 }
 
-#[utoipa::path(get, path = "/v1/captures/{capture_id}/trace", params(("capture_id" = String, Path)), responses((status = 200, body = TraceResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures/{capture_id}/trace", summary = "Decode a finalized trace", description = "Returns the finalized package manifest and canonical OpenTelemetry trace for inspection.", params(("capture_id" = String, Path)), responses((status = 200, body = TraceResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn trace(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -496,7 +509,7 @@ async fn trace(
     Ok(Json(value))
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/trace:verify", params(("capture_id" = String, Path)), responses((status = 200, body = VerificationResponse), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/trace:verify", summary = "Verify a finalized trace", description = "Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.", params(("capture_id" = String, Path)), responses((status = 200, body = VerificationResponse), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn verify_trace(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -539,17 +552,31 @@ async fn verify_trace(
 #[derive(Debug, Default, Deserialize)]
 struct EventQuery {
     cursor: Option<u64>,
+    severity: Option<String>,
+    event_type: Option<String>,
+    capture_id: Option<String>,
+    operation_id: Option<String>,
+    created_after_unix_ms: Option<u64>,
     limit: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/events", params(("cursor" = Option<u64>, Query), ("limit" = Option<usize>, Query)), responses((status = 200, body = EventListResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/events", summary = "List service events", description = "Lists the bounded redacted event history with cursor, severity, type, resource, and time filters.", params(("cursor" = Option<u64>, Query), ("severity" = Option<String>, Query), ("event_type" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("operation_id" = Option<String>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<usize>, Query)), responses((status = 200, body = EventListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn events(
     State(state): State<AdminState>,
-    Query(query): Query<EventQuery>,
+    query: Result<Query<EventQuery>, QueryRejection>,
 ) -> Result<Json<EventListResponse>, ApiError> {
+    let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
     let catalog = state.catalog.clone();
     let values = tokio::task::spawn_blocking(move || {
-        catalog.events(query.cursor, query.limit.unwrap_or(50))
+        catalog.filtered_events(&EventFilters {
+            after: query.cursor,
+            severity: query.severity.as_deref(),
+            event_type: query.event_type.as_deref(),
+            capture_id: query.capture_id.as_deref(),
+            operation_id: query.operation_id.as_deref(),
+            created_after_unix_ms: query.created_after_unix_ms,
+            limit: query.limit.unwrap_or(50),
+        })
     })
     .await
     .map_err(|_| ApiError::internal("catalog_task_failed"))?
@@ -561,7 +588,7 @@ async fn events(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/publication/auth", responses((status = 200, body = PublicationAuthResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/publication/auth", summary = "Get publication authorization", description = "Reports whether this local service has an active publication account session.", responses((status = 200, body = PublicationAuthResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn publication_auth_status(
     State(state): State<AdminState>,
 ) -> Result<Json<PublicationAuthResponse>, ApiError> {
@@ -596,7 +623,7 @@ fn default_device_name() -> String {
     "LLM Notary local dashboard".to_owned()
 }
 
-#[utoipa::path(post, path = "/v1/publication/auth", request_body = PublicationAuthRequest, responses((status = 202, body = PublicationAuthStartedResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/publication/auth", summary = "Start publication authorization", description = "Starts the browser approval flow used to authorize this local service to publish traces.", request_body = PublicationAuthRequest, responses((status = 202, body = PublicationAuthStartedResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn start_publication_auth(
     State(state): State<AdminState>,
     Json(body): Json<PublicationAuthRequest>,
@@ -620,7 +647,7 @@ async fn start_publication_auth(
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
-#[utoipa::path(get, path = "/v1/publication/auth/{request_id}", params(("request_id" = String, Path)), responses((status = 200, body = PublicationAuthResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/publication/auth/{request_id}", summary = "Poll publication authorization", description = "Checks a pending browser approval request after its required polling interval.", params(("request_id" = String, Path)), responses((status = 200, body = PublicationAuthResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn poll_publication_auth(
     State(state): State<AdminState>,
     Path(request_id): Path<String>,
@@ -661,7 +688,7 @@ async fn poll_publication_auth(
     }
 }
 
-#[utoipa::path(delete, path = "/v1/publication/auth", responses((status = 204, description = "Publication credentials revoked"), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/publication/auth", summary = "Revoke publication authorization", description = "Removes the local publication credentials so a new browser approval is required.", responses((status = 204, description = "Publication credentials revoked"), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn end_publication_auth(State(state): State<AdminState>) -> Result<StatusCode, ApiError> {
     let _credentials = state.publication_credentials.lock().await;
     auth::logout_for_service()
@@ -670,7 +697,7 @@ async fn end_publication_auth(State(state): State<AdminState>) -> Result<StatusC
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/publications", params(("capture_id" = String, Path)), responses((status = 202, body = PublicationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/publications", summary = "Publish a finalized trace", description = "Verifies one finalized capture locally, uploads only its publication archive, and returns the durable publication job.", params(("capture_id" = String, Path)), responses((status = 202, body = PublicationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn publish_capture(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -693,7 +720,7 @@ async fn publish_capture(
     ))
 }
 
-#[utoipa::path(get, path = "/v1/publications/{job_id}", params(("job_id" = String, Path)), responses((status = 200, body = PublicationStatusResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/publications/{job_id}", summary = "Get publication status", description = "Returns the latest admission state and public artifact links for a publication job.", params(("job_id" = String, Path)), responses((status = 200, body = PublicationStatusResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn publication_status(
     State(state): State<AdminState>,
     Path(job_id): Path<String>,
@@ -727,19 +754,21 @@ struct PublicTraceQuery {
     api_origin: Option<String>,
 }
 
-#[utoipa::path(get, path = "/v1/public-traces/{publication_id}", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/public-traces/{publication_id}", summary = "Get a public trace", description = "Fetches one public canonical trace and platform stamp through the configured publication API.", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn download_public_trace(
     Path(publication_id): Path<String>,
-    Query(query): Query<PublicTraceQuery>,
+    query: Result<Query<PublicTraceQuery>, QueryRejection>,
 ) -> Result<Json<PublicTraceResponse>, ApiError> {
+    let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
     fetch_public_trace(publication_id, query.api_origin, false).await
 }
 
-#[utoipa::path(post, path = "/v1/public-traces/{publication_id}/verify", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/public-traces/{publication_id}/verify", summary = "Verify a public trace", description = "Fetches a public trace and verifies its canonical bytes, contract versions, hash, issuer, key, and signature.", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn verify_public_trace(
     Path(publication_id): Path<String>,
-    Query(query): Query<PublicTraceQuery>,
+    query: Result<Query<PublicTraceQuery>, QueryRejection>,
 ) -> Result<Json<PublicTraceResponse>, ApiError> {
+    let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
     fetch_public_trace(publication_id, query.api_origin, true).await
 }
 
@@ -1522,6 +1551,61 @@ mod tests {
                 body["paths"][path][method]["responses"]["401"].is_object(),
                 "OpenAPI missing the protected response for {method} {path}"
             );
+        }
+        let mut documented_operations = 0;
+        for path in body["paths"].as_object().unwrap().values() {
+            for method in ["get", "post", "put", "patch", "delete"] {
+                let Some(operation) = path.get(method) else {
+                    continue;
+                };
+                assert!(
+                    operation["summary"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty()),
+                    "OpenAPI {method} operation is missing a summary"
+                );
+                assert!(
+                    operation["description"]
+                        .as_str()
+                        .is_some_and(|value| !value.is_empty()),
+                    "OpenAPI {method} operation is missing a description"
+                );
+                documented_operations += 1;
+            }
+        }
+        assert_eq!(documented_operations, 22);
+    }
+
+    #[tokio::test]
+    async fn invalid_numeric_queries_use_the_json_error_envelope() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        let token = state.token.to_string();
+        let app = router(state).unwrap();
+        for path in [
+            "/v1/captures?limit=-1",
+            "/v1/operations?limit=-1",
+            "/v1/events?limit=-1",
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::get(path)
+                        .header(header::AUTHORIZATION, format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{path}");
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE).unwrap(),
+                "application/json"
+            );
+            let body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(body["error"]["code"], "invalid_query_parameter");
         }
     }
 
