@@ -1,14 +1,17 @@
-//! Local proxy and CLI workflow for LLM Notary.
+//! Long-running local proxy and administration service for LLM Notary.
 //!
 //! The hosted public origin remains a distribution default in this package.
 //! Evidence formats and Proxy-TLS protocol behavior are provided by
 //! `llm-notary-core`.
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use std::path::PathBuf;
+
+use clap::Parser;
 
 pub use llm_notary_core::*;
 
+pub mod admin;
 pub mod catalog;
 pub mod cli;
 pub mod config;
@@ -20,73 +23,28 @@ pub mod config;
     version
 )]
 struct Cli {
-    #[command(subcommand)]
-    command: CommandName,
-}
-
-#[derive(Subcommand, Debug)]
-enum CommandName {
-    /// Sign in to the configured LLM Notary site to authorize publishing.
-    Login(cli::auth::LoginArgs),
-    /// Revoke this CLI session and remove its local credentials.
-    Logout,
-    /// Show the account authenticated for publishing.
-    Whoami,
-    /// Validate local agent configuration (created automatically on first use).
-    Config {
-        #[command(subcommand)]
-        command: cli::config::ConfigCommand,
-    },
-    /// Search and inspect locally cataloged captures.
-    Captures {
-        #[command(subcommand)]
-        command: cli::capture::CapturesCommand,
-    },
-    /// Start the local API proxy and save encrypted local bundles.
-    Proxy {
-        #[command(subcommand)]
-        command: ProxyCommand,
-    },
-    /// Turn an encrypted local bundle into a verified OTel trace package.
-    Finalize(cli::bundle::FinalizeArgs),
-    /// Verify a finalized OTel trace package without uploading it.
-    VerifyTrace(cli::bundle::VerifyArgs),
-    /// Configure encryption for local bundles.
-    Vault {
-        #[command(subcommand)]
-        command: cli::vault::VaultCommand,
-    },
-    /// Verify a public trace and platform stamp without a private capture.
-    VerifyPublic(cli::public::VerifyPublicArgs),
-    /// Download a public trace and platform stamp from the LLM Notary Library.
-    Download(cli::download::DownloadArgs),
-    /// Upload one finalized, locally verified trace package for publication.
-    Publish(cli::publish::PublishArgs),
-}
-
-#[derive(Subcommand, Debug)]
-enum ProxyCommand {
-    /// Start a local proxy.
-    Start(cli::proxy::ProxyArgs),
+    /// Versioned local service configuration file. Defaults to the standard
+    /// user configuration path and is created on first start.
+    #[arg(long)]
+    config: Option<PathBuf>,
 }
 
 /// Runs the client command line using process arguments.
 pub async fn run() -> Result<()> {
-    let _telemetry = telemetry::init("llm-notary-cli")?;
-    match Cli::parse().command {
-        CommandName::Login(args) => cli::auth::login(args).await,
-        CommandName::Logout => cli::auth::logout().await,
-        CommandName::Whoami => cli::auth::whoami().await,
-        CommandName::Config { command } => cli::config::run(command),
-        CommandName::Captures { command } => cli::capture::run(command),
-        CommandName::Proxy {
-            command: ProxyCommand::Start(args),
-        } => cli::proxy::run(args).await,
-        CommandName::Finalize(args) => cli::bundle::finalize(args).await,
-        CommandName::VerifyTrace(args) => cli::bundle::verify(args),
-        CommandName::Vault { command } => cli::vault::run(command),
-        CommandName::VerifyPublic(args) => cli::public::run_verify_public(args),
-        CommandName::Download(args) => cli::download::run(args).await,
-        CommandName::Publish(args) => cli::publish::run(args).await,
+    let _telemetry = telemetry::init("llm-notary-local-service")?;
+    let cli = Cli::parse();
+    cli::proxy::run(cli::proxy::ProxyArgs { config: cli.config }).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn operational_subcommands_are_no_longer_accepted() {
+        assert!(Cli::try_parse_from(["llm-notary"]).is_ok());
+        for removed in ["proxy", "captures", "finalize", "verify-trace", "publish"] {
+            assert!(Cli::try_parse_from(["llm-notary", removed]).is_err());
+        }
     }
 }

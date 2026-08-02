@@ -24,7 +24,13 @@ pub(super) fn config_file(name: &str) -> Result<PathBuf> {
     Ok(base.join("llm-notary").join(name))
 }
 
-pub(super) fn write_private_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
+pub(crate) fn write_private_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
+    let pending = write_private_pending_file(path, contents)?;
+    pending.replace(path)?;
+    Ok(())
+}
+
+fn write_private_pending_file(path: &Path, contents: &[u8]) -> Result<PendingFile> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
@@ -57,11 +63,15 @@ pub(super) fn write_private_file_atomically(path: &Path, contents: &[u8]) -> Res
         .sync_all()
         .with_context(|| format!("sync {}", pending.path().display()))?;
     drop(output);
-    pending.replace(path)?;
-    Ok(())
+    #[cfg(windows)]
+    restrict_windows_acl(pending.path(), "F")?;
+    Ok(pending)
 }
 
 fn create_private_directory(path: &Path) -> Result<()> {
+    let existed = path
+        .try_exists()
+        .with_context(|| format!("inspect {}", path.display()))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
@@ -71,11 +81,60 @@ fn create_private_directory(path: &Path) -> Result<()> {
             .mode(0o700)
             .create(path)
             .with_context(|| format!("create {}", path.display()))?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("restrict {}", path.display()))?;
+        if !existed {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700))
+                .with_context(|| format!("restrict {}", path.display()))?;
+        }
     }
-    #[cfg(not(unix))]
+    #[cfg(all(not(unix), not(windows)))]
     fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
+    #[cfg(windows)]
+    {
+        fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
+        if !existed {
+            restrict_windows_acl(path, "(OI)(CI)F")?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn restrict_windows_acl(path: &Path, permission: &str) -> Result<()> {
+    use std::process::Command;
+
+    let output = Command::new("whoami")
+        .output()
+        .context("determine the current Windows account for private-file permissions")?;
+    if !output.status.success() {
+        bail!("could not determine the current Windows account for private-file permissions");
+    }
+    let identity = String::from_utf8(output.stdout)
+        .context("current Windows account name is not UTF-8")?
+        .trim()
+        .to_owned();
+    if identity.is_empty() {
+        bail!("current Windows account name is empty");
+    }
+    let grant = format!("{identity}:{permission}");
+    let status = Command::new("icacls")
+        .arg(path)
+        .args([
+            "/inheritance:r",
+            "/grant:r",
+            grant.as_str(),
+            "/remove:g",
+            "*S-1-1-0",
+            "*S-1-5-11",
+            "*S-1-5-18",
+            "*S-1-5-32-544",
+            "*S-1-5-32-545",
+            "/Q",
+        ])
+        .status()
+        .with_context(|| format!("restrict permissions on {}", path.display()))?;
+    if !status.success() {
+        bail!("could not restrict permissions on {}", path.display());
+    }
     Ok(())
 }
 
@@ -107,6 +166,30 @@ impl Drop for PendingFile {
 #[cfg(not(windows))]
 fn replace_file(source: &Path, destination: &Path) -> std::io::Result<()> {
     fs::rename(source, destination)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
+
+    #[test]
+    fn private_write_preserves_an_existing_parent_directory_mode() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        let destination = directory.path().join("admin-token");
+
+        write_private_file_atomically(&destination, b"secret").unwrap();
+
+        assert_eq!(
+            fs::metadata(directory.path()).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert_eq!(
+            fs::metadata(destination).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
 }
 
 #[cfg(windows)]

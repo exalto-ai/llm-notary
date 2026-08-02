@@ -8,6 +8,8 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
+use argon2::PasswordHash;
+use k256::ecdsa::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -27,6 +29,8 @@ pub struct AgentConfig {
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
+    pub admin: AdminConfig,
+    #[serde(default)]
     pub notary: NotaryConfig,
     #[serde(default)]
     pub storage: StorageConfig,
@@ -34,6 +38,27 @@ pub struct AgentConfig {
     pub catalog: CatalogConfig,
     #[serde(default)]
     pub providers: ProvidersConfig,
+}
+
+/// Local administration listener. It is deliberately separate from the
+/// provider proxy so proxy callers cannot reach privileged routes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminConfig {
+    #[serde(default = "default_admin_listen")]
+    pub listen: SocketAddr,
+    /// Optional HTTP Basic authentication for the loopback administration
+    /// listener. The listener is open to local processes when omitted.
+    pub auth: Option<AdminAuthConfig>,
+}
+
+/// Optional password authentication for the local administration listener.
+/// The password is stored only as an Argon2id PHC string.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminAuthConfig {
+    pub username: String,
+    pub password_hash: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -51,6 +76,10 @@ pub struct NotaryConfig {
     /// Optional explicit endpoint. Without this the client uses the signed
     /// notary directory at the configured public API origin.
     pub endpoint: Option<String>,
+    /// Explicit SEC1 secp256k1 trust anchor for `endpoint`. The endpoint and
+    /// key are configured together so a self-hosted connection cannot become
+    /// an implicit trust decision.
+    pub public_key: Option<String>,
     #[serde(default = "default_max_frame_bytes")]
     pub max_frame_bytes: usize,
 }
@@ -59,6 +88,7 @@ impl Default for NotaryConfig {
     fn default() -> Self {
         Self {
             endpoint: None,
+            public_key: None,
             max_frame_bytes: default_max_frame_bytes(),
         }
     }
@@ -112,10 +142,20 @@ impl Default for AgentConfig {
         Self {
             format: CONFIG_FORMAT.to_owned(),
             proxy: ProxyConfig::default(),
+            admin: AdminConfig::default(),
             notary: NotaryConfig::default(),
             storage: StorageConfig::default(),
             catalog: CatalogConfig::default(),
             providers: ProvidersConfig::default(),
+        }
+    }
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            listen: default_admin_listen(),
+            auth: None,
         }
     }
 }
@@ -249,10 +289,43 @@ impl AgentConfig {
             self.proxy.max_attestable_http_bytes > 0,
             "proxy.max_attestable_http_bytes must be non-zero"
         );
-        if let Some(endpoint) = &self.notary.endpoint {
-            endpoint
-                .parse::<NotaryEndpoint>()
-                .context("notary.endpoint is invalid")?;
+        ensure!(
+            self.proxy.listen.ip().is_loopback(),
+            "proxy.listen must use a loopback address"
+        );
+        ensure!(
+            self.admin.listen.ip().is_loopback(),
+            "admin.listen must use a loopback address"
+        );
+        ensure!(
+            self.admin.listen != self.proxy.listen,
+            "admin.listen and proxy.listen must be different addresses"
+        );
+        if let Some(auth) = &self.admin.auth {
+            ensure!(
+                !auth.username.is_empty() && auth.username.len() <= 128,
+                "admin.auth.username must contain between 1 and 128 bytes"
+            );
+            ensure!(
+                !auth.username.contains(':'),
+                "admin.auth.username must not contain a colon"
+            );
+            let password_hash = PasswordHash::new(&auth.password_hash)
+                .map_err(|error| anyhow::anyhow!("admin.auth.password_hash is invalid: {error}"))?;
+            ensure!(
+                password_hash.algorithm.as_str() == "argon2id",
+                "admin.auth.password_hash must use Argon2id"
+            );
+        }
+        match (&self.notary.endpoint, &self.notary.public_key) {
+            (Some(endpoint), Some(_)) => {
+                endpoint
+                    .parse::<NotaryEndpoint>()
+                    .context("notary.endpoint is invalid")?;
+                self.notary_public_key()?;
+            }
+            (None, None) => {}
+            _ => bail!("notary.endpoint and notary.public_key must be configured together"),
         }
         ensure!(
             self.notary.max_frame_bytes > 0 && self.notary.max_frame_bytes <= u32::MAX as usize,
@@ -328,6 +401,19 @@ impl AgentConfig {
     pub fn notary_endpoint(&self) -> Result<Option<NotaryEndpoint>> {
         self.notary.endpoint.as_deref().map(str::parse).transpose()
     }
+
+    pub fn notary_public_key(&self) -> Result<Option<Vec<u8>>> {
+        self.notary
+            .public_key
+            .as_deref()
+            .map(|value| {
+                let key = hex::decode(value).context("notary.public_key must be hexadecimal")?;
+                VerifyingKey::from_sec1_bytes(&key)
+                    .context("notary.public_key must be a SEC1 secp256k1 key")?;
+                Ok(key)
+            })
+            .transpose()
+    }
 }
 
 fn route_prefixes_overlap(left: &str, right: &str) -> bool {
@@ -363,6 +449,12 @@ fn default_listen() -> SocketAddr {
     "127.0.0.1:8787"
         .parse()
         .expect("valid default listen address")
+}
+
+fn default_admin_listen() -> SocketAddr {
+    "127.0.0.1:8788"
+        .parse()
+        .expect("valid default admin listen address")
 }
 
 fn default_max_attestable_http_bytes() -> usize {
@@ -424,6 +516,48 @@ mod tests {
         assert!(config.providers.openrouter.enabled);
         assert_eq!(config.catalog.prompt_preview_chars, 1_000);
         assert!(config.catalog.full_text_search);
+        assert_eq!(config.proxy.listen.to_string(), "127.0.0.1:8787");
+        assert_eq!(config.admin.listen.to_string(), "127.0.0.1:8788");
+        assert!(config.admin.auth.is_none());
+    }
+
+    #[test]
+    fn non_loopback_or_shared_listeners_are_rejected() {
+        let mut config = AgentConfig::default();
+        config.admin.listen = "0.0.0.0:8788".parse().unwrap();
+        assert!(config.validate().is_err());
+
+        config.admin.listen = config.proxy.listen;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn explicit_notary_endpoint_requires_a_valid_trust_anchor() {
+        let mut config = AgentConfig::default();
+        config.notary.endpoint = Some("tcp://127.0.0.1:7047".to_owned());
+        assert!(config.validate().is_err());
+
+        config.notary.public_key =
+            Some("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".to_owned());
+        config.validate().unwrap();
+        assert_eq!(config.notary_public_key().unwrap().unwrap().len(), 33);
+
+        config.notary.endpoint = None;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn configured_admin_auth_requires_an_argon2id_hash() {
+        let mut config = AgentConfig::default();
+        config.admin.auth = Some(AdminAuthConfig {
+            username: "local-admin".to_owned(),
+            password_hash: "$2b$12$not-an-argon2id-hash".to_owned(),
+        });
+        assert!(config.validate().is_err());
+
+        config.admin.auth.as_mut().unwrap().password_hash =
+            "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0c2FsdA$yJIR0lVleM2KSPdVmBvsQ9uhA06YIR8aPCbRDbNvXXQ".to_owned();
+        config.validate().unwrap();
     }
 
     #[test]

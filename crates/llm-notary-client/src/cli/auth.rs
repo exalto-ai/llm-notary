@@ -43,6 +43,28 @@ struct AuthorizationStarted {
     poll_secret: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct PendingAuthorization {
+    pub(crate) request_id: String,
+    pub(crate) user_code: String,
+    pub(crate) verification_uri_complete: String,
+    pub(crate) expires_in: u64,
+    pub(crate) interval: u64,
+    poll_secret: String,
+    api_origin: ApiOrigin,
+}
+
+pub(crate) enum AuthorizationPoll {
+    Pending,
+    Complete,
+}
+
+pub(crate) struct PublicationAuthStatus {
+    pub(crate) signed_in: bool,
+    pub(crate) github_login: Option<String>,
+    pub(crate) device_name: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct AuthorizationComplete {
     access_token: String,
@@ -89,16 +111,50 @@ pub(crate) struct AuthenticatedApi {
     pub(crate) access_token: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PublicationAuthenticationError {
+    Required,
+    Unavailable,
+}
+
 pub async fn login(args: LoginArgs) -> Result<()> {
-    let api_origin = ApiOrigin::parse(&args.api)?;
+    let pending = start_authorization(&args.api, &args.device_name).await?;
+    println!("Open this URL in a browser and approve the request:");
+    println!("{}", pending.verification_uri_complete);
+    println!("\nCode: {}", pending.user_code);
+    println!(
+        "Waiting for approval (expires in {} minutes)…",
+        pending.expires_in / 60
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(pending.expires_in);
+    let interval = Duration::from_secs(pending.interval.clamp(1, 10));
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            bail!("authorization expired; start it again")
+        }
+        if matches!(
+            poll_authorization(&pending).await?,
+            AuthorizationPoll::Complete
+        ) {
+            println!("Signed in for publication.");
+            return Ok(());
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
+
+pub(crate) async fn start_authorization(
+    api: &str,
+    device_name: &str,
+) -> Result<PendingAuthorization> {
+    let api_origin = ApiOrigin::parse(api)?;
     let client = http_client_builder()
         .build()
         .context("building API client")?;
     let started = client
         .post(api_origin.api_url("/api/cli/authorizations"))
-        .json(&StartAuthorization {
-            device_name: &args.device_name,
-        })
+        .json(&StartAuthorization { device_name })
         .send()
         .await
         .context("starting CLI authorization")?
@@ -107,58 +163,61 @@ pub async fn login(args: LoginArgs) -> Result<()> {
         .json::<AuthorizationStarted>()
         .await
         .context("reading CLI authorization response")?;
+    Ok(PendingAuthorization {
+        request_id: started.request_id,
+        user_code: started.user_code,
+        verification_uri_complete: started.verification_uri_complete,
+        expires_in: started.expires_in,
+        interval: started.interval,
+        poll_secret: started.poll_secret,
+        api_origin,
+    })
+}
 
-    println!("Open this URL in a browser and approve the request:");
-    println!("{}", started.verification_uri_complete);
-    println!("\nCode: {}", started.user_code);
-    println!(
-        "Waiting for approval (expires in {} minutes)…",
-        started.expires_in / 60
-    );
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(started.expires_in);
-    let interval = Duration::from_secs(started.interval.clamp(1, 10));
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            bail!("CLI authorization expired; run `llm-notary login` again")
-        }
-        let response = client
-            .post(api_origin.api_url(&format!(
-                "/api/cli/authorizations/{}/token",
-                started.request_id
-            )))
-            .header("X-LLM-Notary-Poll-Secret", &started.poll_secret)
-            .send()
-            .await
-            .context("polling CLI authorization")?;
-        if response.status() == StatusCode::PRECONDITION_REQUIRED {
-            tokio::time::sleep(interval).await;
-            continue;
-        }
-        if response.status() == StatusCode::GONE {
-            bail!("CLI authorization expired or was already used; run `llm-notary login` again")
-        }
-        let tokens = response
-            .error_for_status()
-            .context("completing CLI authorization")?
-            .json::<AuthorizationComplete>()
-            .await
-            .context("reading CLI credentials")?;
-        save_credentials(&FileCredentials {
-            api_origin: api_origin.clone(),
-            refresh_token: tokens.refresh_token,
-        })?;
-        // Deliberately do not retain or print the short-lived access token.
-        let _ = tokens.access_token;
-        println!(
-            "Signed in. Publish access expires in {} minutes and refreshes automatically.",
-            tokens.expires_in / 60
-        );
-        return Ok(());
+pub(crate) async fn poll_authorization(
+    pending: &PendingAuthorization,
+) -> Result<AuthorizationPoll> {
+    let response = http_client_builder()
+        .build()
+        .context("building API client")?
+        .post(pending.api_origin.api_url(&format!(
+            "/api/cli/authorizations/{}/token",
+            pending.request_id
+        )))
+        .header("X-LLM-Notary-Poll-Secret", &pending.poll_secret)
+        .send()
+        .await
+        .context("polling publication authorization")?;
+    if response.status() == StatusCode::PRECONDITION_REQUIRED {
+        return Ok(AuthorizationPoll::Pending);
     }
+    if response.status() == StatusCode::GONE {
+        bail!("publication authorization expired or was already used")
+    }
+    let tokens = response
+        .error_for_status()
+        .context("completing publication authorization")?
+        .json::<AuthorizationComplete>()
+        .await
+        .context("reading publication credentials")?;
+    save_credentials(&FileCredentials {
+        api_origin: pending.api_origin.clone(),
+        refresh_token: tokens.refresh_token,
+    })?;
+    let _ = (tokens.access_token, tokens.expires_in);
+    Ok(AuthorizationPoll::Complete)
 }
 
 pub async fn logout() -> Result<()> {
+    logout_for_service().await?;
+    println!("Signed out.");
+    Ok(())
+}
+
+pub(crate) async fn logout_for_service() -> Result<()> {
+    if !credentials_path()?.exists() {
+        return Ok(());
+    }
     let credentials = load_credentials()?;
     let client = http_client_builder()
         .build()
@@ -177,11 +236,27 @@ pub async fn logout() -> Result<()> {
             .context("revoking CLI session")?;
     }
     delete_credentials()?;
-    println!("Signed out.");
     Ok(())
 }
 
 pub async fn whoami() -> Result<()> {
+    let status = publication_auth_status().await?;
+    println!(
+        "{} ({})",
+        status.github_login.unwrap_or_default(),
+        status.device_name.unwrap_or_default()
+    );
+    Ok(())
+}
+
+pub(crate) async fn publication_auth_status() -> Result<PublicationAuthStatus> {
+    if !credentials_path()?.exists() {
+        return Ok(PublicationAuthStatus {
+            signed_in: false,
+            github_login: None,
+            device_name: None,
+        });
+    }
     let authenticated = authenticate().await?;
     let response = http_client_builder()
         .build()
@@ -196,19 +271,32 @@ pub async fn whoami() -> Result<()> {
         .json::<WhoamiResponse>()
         .await
         .context("reading CLI session")?;
-    println!(
-        "{} ({})",
-        response.user.github_login, response.session.device_name
-    );
-    Ok(())
+    Ok(PublicationAuthStatus {
+        signed_in: true,
+        github_login: Some(response.user.github_login),
+        device_name: Some(response.session.device_name),
+    })
 }
 
 pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
-    let mut credentials =
-        load_credentials().context("CLI authentication required; run `llm-notary login`")?;
+    let mut credentials = load_credentials()
+        .context("publication authorization is required through the local admin API")?;
     let (access_token, rotated_refresh_token) = refresh(&credentials).await?;
     credentials.refresh_token = rotated_refresh_token;
     save_credentials(&credentials)?;
+    Ok(AuthenticatedApi {
+        origin: credentials.api_origin,
+        access_token,
+    })
+}
+
+pub(crate) async fn authenticate_for_publication_status()
+-> std::result::Result<AuthenticatedApi, PublicationAuthenticationError> {
+    let mut credentials = load_credentials_for_publication_status()?;
+    let (access_token, rotated_refresh_token) =
+        refresh_for_publication_status(&credentials).await?;
+    credentials.refresh_token = rotated_refresh_token;
+    save_credentials(&credentials).map_err(|_| PublicationAuthenticationError::Unavailable)?;
     Ok(AuthenticatedApi {
         origin: credentials.api_origin,
         access_token,
@@ -235,6 +323,37 @@ async fn refresh(credentials: &FileCredentials) -> Result<(String, String)> {
     Ok((response.access_token, response.refresh_token))
 }
 
+async fn refresh_for_publication_status(
+    credentials: &FileCredentials,
+) -> std::result::Result<(String, String), PublicationAuthenticationError> {
+    let client = http_client_builder()
+        .build()
+        .map_err(|_| PublicationAuthenticationError::Unavailable)?;
+    let response = client
+        .post(credentials.api_origin.api_url("/api/cli/token"))
+        .json(&RefreshRequest {
+            refresh_token: &credentials.refresh_token,
+        })
+        .send()
+        .await
+        .map_err(|_| PublicationAuthenticationError::Unavailable)?;
+    if matches!(
+        response.status(),
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
+    ) {
+        return Err(PublicationAuthenticationError::Required);
+    }
+    if !response.status().is_success() {
+        return Err(PublicationAuthenticationError::Unavailable);
+    }
+    let response = response
+        .json::<RefreshResponse>()
+        .await
+        .map_err(|_| PublicationAuthenticationError::Unavailable)?;
+    let _ = response.expires_in;
+    Ok((response.access_token, response.refresh_token))
+}
+
 fn credentials_path() -> Result<PathBuf> {
     storage::config_file("credentials.json")
 }
@@ -256,8 +375,35 @@ fn load_credentials() -> Result<FileCredentials> {
     let mut credentials: FileCredentials =
         serde_json::from_slice(&data).context("parse CLI credentials")?;
     if credentials.refresh_token.is_empty() {
-        credentials.refresh_token = keychain_load()?
-            .ok_or_else(|| anyhow!("CLI credentials are missing; run `llm-notary login`"))?;
+        credentials.refresh_token = keychain_load()?.ok_or_else(|| {
+            anyhow!("publication credentials are missing; authorize through the local admin API")
+        })?;
+    }
+    Ok(credentials)
+}
+
+fn load_credentials_for_publication_status()
+-> std::result::Result<FileCredentials, PublicationAuthenticationError> {
+    let path = credentials_path().map_err(|_| PublicationAuthenticationError::Unavailable)?;
+    load_credentials_for_publication_status_at(&path)
+}
+
+fn load_credentials_for_publication_status_at(
+    path: &Path,
+) -> std::result::Result<FileCredentials, PublicationAuthenticationError> {
+    let data = match fs::read(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(PublicationAuthenticationError::Required);
+        }
+        Err(_) => return Err(PublicationAuthenticationError::Unavailable),
+    };
+    let mut credentials: FileCredentials =
+        serde_json::from_slice(&data).map_err(|_| PublicationAuthenticationError::Unavailable)?;
+    if credentials.refresh_token.is_empty() {
+        credentials.refresh_token = keychain_load()
+            .map_err(|_| PublicationAuthenticationError::Unavailable)?
+            .ok_or(PublicationAuthenticationError::Required)?;
     }
     Ok(credentials)
 }
@@ -281,6 +427,30 @@ fn write_file_credentials_at(path: &Path, credentials: &FileCredentials) -> Resu
         path,
         &serde_json::to_vec(credentials).context("encode CLI credentials")?,
     )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum KeychainLookupOutcome {
+    Found,
+    Missing,
+    Unavailable,
+}
+
+fn classify_keychain_lookup(
+    success: bool,
+    exit_code: Option<i32>,
+    stderr: &[u8],
+    missing_exit_code: i32,
+    missing_must_be_quiet: bool,
+) -> KeychainLookupOutcome {
+    if success {
+        KeychainLookupOutcome::Found
+    } else if exit_code == Some(missing_exit_code) && (!missing_must_be_quiet || stderr.is_empty())
+    {
+        KeychainLookupOutcome::Missing
+    } else {
+        KeychainLookupOutcome::Unavailable
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -318,15 +488,21 @@ fn keychain_load() -> Result<Option<String>> {
         ])
         .output()
         .context("read macOS Keychain")?;
-    if output.status.success() {
-        Ok(Some(
+    match classify_keychain_lookup(
+        output.status.success(),
+        output.status.code(),
+        &output.stderr,
+        44,
+        false,
+    ) {
+        KeychainLookupOutcome::Found => Ok(Some(
             String::from_utf8(output.stdout)
                 .context("decode Keychain token")?
                 .trim()
                 .to_owned(),
-        ))
-    } else {
-        Ok(None)
+        )),
+        KeychainLookupOutcome::Missing => Ok(None),
+        KeychainLookupOutcome::Unavailable => bail!("macOS Keychain lookup failed"),
     }
 }
 
@@ -378,7 +554,7 @@ fn keychain_store(token: &str) -> Result<()> {
 
 #[cfg(target_os = "linux")]
 fn keychain_load() -> Result<Option<String>> {
-    let output = match Command::new("secret-tool")
+    let output = Command::new("secret-tool")
         .args([
             "lookup",
             "service",
@@ -387,19 +563,22 @@ fn keychain_load() -> Result<Option<String>> {
             KEYCHAIN_ACCOUNT,
         ])
         .output()
-    {
-        Ok(output) => output,
-        Err(_) => return Ok(None),
-    };
-    if output.status.success() {
-        Ok(Some(
+        .context("read OS keychain")?;
+    match classify_keychain_lookup(
+        output.status.success(),
+        output.status.code(),
+        &output.stderr,
+        1,
+        true,
+    ) {
+        KeychainLookupOutcome::Found => Ok(Some(
             String::from_utf8(output.stdout)
                 .context("decode OS keychain token")?
                 .trim()
                 .to_owned(),
-        ))
-    } else {
-        Ok(None)
+        )),
+        KeychainLookupOutcome::Missing => Ok(None),
+        KeychainLookupOutcome::Unavailable => bail!("OS keychain lookup failed"),
     }
 }
 
@@ -434,6 +613,28 @@ fn keychain_delete() -> Result<()> {
 mod tests {
     use super::*;
 
+    async fn publication_status_refresh_result(
+        status: StatusCode,
+        body: &'static str,
+    ) -> std::result::Result<(String, String), PublicationAuthenticationError> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = axum::Router::new().route(
+            "/api/cli/token",
+            axum::routing::post(move || async move {
+                (status, [("content-type", "application/json")], body)
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let credentials = FileCredentials {
+            api_origin: ApiOrigin::parse(&origin).unwrap(),
+            refresh_token: "refresh-token".to_owned(),
+        };
+        let result = refresh_for_publication_status(&credentials).await;
+        server.abort();
+        result
+    }
+
     #[test]
     fn api_origin_uses_the_shared_trust_policy() {
         assert_eq!(
@@ -444,6 +645,82 @@ mod tests {
         );
         assert!(ApiOrigin::parse("http://example.com").is_err());
         assert!(ApiOrigin::parse("http://localhost:3000").is_ok());
+    }
+
+    #[tokio::test]
+    async fn publication_status_refresh_distinguishes_reauthorization_from_outages() {
+        assert_eq!(
+            publication_status_refresh_result(StatusCode::UNAUTHORIZED, "{}")
+                .await
+                .unwrap_err(),
+            PublicationAuthenticationError::Required
+        );
+        assert_eq!(
+            publication_status_refresh_result(StatusCode::SERVICE_UNAVAILABLE, "{}")
+                .await
+                .unwrap_err(),
+            PublicationAuthenticationError::Unavailable
+        );
+        assert_eq!(
+            publication_status_refresh_result(StatusCode::OK, "not-json")
+                .await
+                .unwrap_err(),
+            PublicationAuthenticationError::Unavailable
+        );
+    }
+
+    #[test]
+    fn keychain_lookup_distinguishes_missing_items_from_operational_failures() {
+        assert_eq!(
+            classify_keychain_lookup(true, Some(0), b"", 44, false),
+            KeychainLookupOutcome::Found
+        );
+        assert_eq!(
+            classify_keychain_lookup(false, Some(44), b"item not found", 44, false),
+            KeychainLookupOutcome::Missing
+        );
+        assert_eq!(
+            classify_keychain_lookup(false, Some(36), b"keychain locked", 44, false),
+            KeychainLookupOutcome::Unavailable
+        );
+        assert_eq!(
+            classify_keychain_lookup(false, Some(1), b"", 1, true),
+            KeychainLookupOutcome::Missing
+        );
+        assert_eq!(
+            classify_keychain_lookup(false, Some(1), b"secret service unavailable", 1, true),
+            KeychainLookupOutcome::Unavailable
+        );
+        assert_eq!(
+            classify_keychain_lookup(false, None, b"terminated", 1, true),
+            KeychainLookupOutcome::Unavailable
+        );
+    }
+
+    #[test]
+    fn publication_status_credential_load_distinguishes_absence_from_broken_storage() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config").join("credentials.json");
+        assert!(matches!(
+            load_credentials_for_publication_status_at(&path),
+            Err(PublicationAuthenticationError::Required)
+        ));
+
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, b"not-json").unwrap();
+        assert!(matches!(
+            load_credentials_for_publication_status_at(&path),
+            Err(PublicationAuthenticationError::Unavailable)
+        ));
+
+        let credentials = FileCredentials {
+            api_origin: ApiOrigin::parse("https://example.com").unwrap(),
+            refresh_token: "refresh-token".to_owned(),
+        };
+        write_file_credentials_at(&path, &credentials).unwrap();
+        let loaded = load_credentials_for_publication_status_at(&path).unwrap();
+        assert_eq!(loaded.api_origin, credentials.api_origin);
+        assert_eq!(loaded.refresh_token, credentials.refresh_token);
     }
 
     #[test]

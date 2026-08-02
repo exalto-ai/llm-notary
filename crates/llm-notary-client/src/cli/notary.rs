@@ -128,7 +128,7 @@ pub fn cached_key_at(public_key: &[u8], authenticated_unix_ms: u64) -> Result<(S
         })
         .ok_or_else(|| {
             anyhow!(
-                "notary key {requested_id} is not present in the local trust store; supply --trusted-notary-key to override"
+                "notary key {requested_id} is not present in the local trust store; configure notary.public_key with an explicit endpoint for a self-hosted notary"
             )
         })?;
     if !record.trusted_at(authenticated_unix_ms) {
@@ -164,7 +164,7 @@ pub fn cached_record_for_bundle(
         }
     }
     bail!(
-        "no cached active or retiring notary can finalize this bundle; refresh the directory or set notary.endpoint and supply --trusted-notary-key"
+        "no cached active or retiring notary can finalize this bundle; refresh the directory or configure notary.endpoint and notary.public_key together"
     )
 }
 
