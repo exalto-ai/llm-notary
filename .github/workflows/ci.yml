@@ -123,6 +123,9 @@ jobs:
           cache-dependency-path: js/app/package-lock.json
       - run: npm ci
       - run: npm run build
+      - name: Install dashboard browser
+        run: npx playwright install --with-deps chromium
+      - run: npm run test:dashboard
 
   containers:
     name: Container configuration

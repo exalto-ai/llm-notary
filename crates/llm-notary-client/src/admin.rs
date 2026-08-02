@@ -19,6 +19,7 @@ use axum::{
     routing::{delete, get, post},
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
+use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, Notify};
 use tower_http::{
@@ -49,6 +50,10 @@ const API_VERSION: &str = "v1";
 const SESSION_COOKIE: &str = "llm_notary_admin_session";
 const SESSION_MAX_AGE_SECONDS: u64 = 43_200;
 const DASHBOARD_HEADER: &str = "x-llm-notary-request";
+
+#[derive(RustEmbed)]
+#[folder = "dashboard/"]
+struct DashboardAssets;
 
 #[derive(Clone)]
 pub(crate) struct AdminState {
@@ -118,6 +123,10 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
         .route("/v1/session", delete(end_session))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
     Ok(Router::new()
+        .route("/", get(dashboard_index))
+        .route("/dashboard", get(dashboard_index))
+        .route("/dashboard/", get(dashboard_index))
+        .route("/assets/{*path}", get(dashboard_asset))
         .route("/healthz", get(health))
         .route("/openapi.json", get(openapi))
         .route("/v1/session", post(start_session))
@@ -145,6 +154,45 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
             header::AUTHORIZATION,
         )))
         .with_state(state))
+}
+
+async fn dashboard_index() -> Response {
+    embedded_dashboard_response("local.html")
+}
+
+async fn dashboard_asset(Path(path): Path<String>) -> Response {
+    embedded_dashboard_response(&format!("assets/{path}"))
+}
+
+fn embedded_dashboard_response(path: &str) -> Response {
+    let Some(asset) = DashboardAssets::get(path) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let content_type = mime_guess::from_path(path).first_or_octet_stream();
+    let mut response = asset.data.into_owned().into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_str(content_type.as_ref()).expect("MIME type is a valid header"),
+    );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-cache, private"),
+    );
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    response.headers_mut().insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+        ),
+    );
+    response
 }
 
 #[derive(OpenApi)]
@@ -199,7 +247,13 @@ async fn health() -> Json<HealthResponse> {
 
 #[utoipa::path(get, path = "/openapi.json", summary = "Get the OpenAPI contract", description = "Returns the exact OpenAPI 3.1 contract implemented by this local service.", responses((status = 200, description = "OpenAPI 3.1 document")), tag = "local-admin")]
 async fn openapi() -> Json<utoipa::openapi::OpenApi> {
-    Json(ApiDoc::openapi())
+    Json(openapi_document())
+}
+
+/// Returns the exact code-generated contract served by `/openapi.json`.
+/// Dashboard client generation uses this function through the export example.
+pub fn openapi_document() -> utoipa::openapi::OpenApi {
+    ApiDoc::openapi()
 }
 
 #[utoipa::path(post, path = "/v1/session", summary = "Start a dashboard session", description = "Exchanges configured HTTP Basic credentials for an HttpOnly browser session cookie. Returns without a cookie when admin authentication is disabled.", responses((status = 204, description = "Dashboard access established"), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
@@ -1731,5 +1785,39 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         assert!(state.sessions.lock().await.is_empty());
+    }
+    #[tokio::test]
+    async fn dashboard_assets_are_embedded_only_on_the_admin_router() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = router(state(directory.path())).unwrap();
+        let index = app
+            .clone()
+            .oneshot(Request::get("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(index.status(), StatusCode::OK);
+        assert_eq!(
+            index
+                .headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .unwrap(),
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+        );
+        let body = index.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("/assets/dashboard.js"));
+
+        let script = app
+            .oneshot(
+                Request::get("/assets/dashboard.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(script.status(), StatusCode::OK);
+        assert_eq!(
+            script.headers().get(header::CONTENT_TYPE).unwrap(),
+            "text/javascript"
+        );
     }
 }
