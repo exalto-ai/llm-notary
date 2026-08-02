@@ -910,6 +910,61 @@
         ]
       }
     },
+    "/v1/publications/{job_id}": {
+      "get": {
+        "tags": [
+          "local-admin"
+        ],
+        "operationId": "publication_status",
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PublicationStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/v1/session": {
       "post": {
         "tags": [
@@ -945,8 +1000,23 @@
         "responses": {
           "204": {
             "description": "Dashboard session ended"
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/v1/status": {
@@ -1012,7 +1082,8 @@
         "type": "object",
         "required": [
           "capture",
-          "artifacts"
+          "artifacts",
+          "finalizations"
         ],
         "properties": {
           "artifacts": {
@@ -1023,6 +1094,12 @@
           },
           "capture": {
             "$ref": "#/components/schemas/CaptureResponse"
+          },
+          "finalizations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationResponse"
+            }
           }
         }
       },
@@ -1327,6 +1404,43 @@
           }
         }
       },
+      "OperationAttemptResponse": {
+        "type": "object",
+        "required": [
+          "attempt",
+          "state",
+          "started_at_unix_ms"
+        ],
+        "properties": {
+          "attempt": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "completed_at_unix_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "failure_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "started_at_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "state": {
+            "type": "string"
+          }
+        }
+      },
       "OperationListResponse": {
         "type": "object",
         "required": [
@@ -1348,13 +1462,20 @@
           "kind",
           "state",
           "attempt",
-          "created_at_unix_ms"
+          "created_at_unix_ms",
+          "attempt_history"
         ],
         "properties": {
           "attempt": {
             "type": "integer",
             "format": "int32",
             "minimum": 0
+          },
+          "attempt_history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OperationAttemptResponse"
+            }
           },
           "capture_id": {
             "type": [
@@ -1543,6 +1664,39 @@
           },
           "status_url": {
             "type": "string"
+          }
+        }
+      },
+      "PublicationStatusResponse": {
+        "type": "object",
+        "required": [
+          "job_id",
+          "state"
+        ],
+        "properties": {
+          "failure_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "job_id": {
+            "type": "string"
+          },
+          "stamp_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "trace_url": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

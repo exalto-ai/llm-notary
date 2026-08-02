@@ -37,7 +37,7 @@ describe('local evidence dashboard', () => {
     await page.getByLabelText('Search captures').fill('benchmark');
     await expect.element(page.getByText('deepseek-v4-flash')).toBeVisible();
     await expect.element(page.getByText('gpt-5.2', { exact: true })).not.toBeInTheDocument();
-    await page.getByRole('list', { name: 'Captures' }).getByRole('listitem').click();
+    await page.getByRole('list', { name: 'Captures' }).getByRole('button').click();
     await expect.element(page.getByText('cap-20260727-benchmark')).toBeVisible();
   });
 
@@ -84,9 +84,19 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('queued', { exact: true }).first()).toBeVisible();
   });
 
+  test('shows capture finalization and durable attempt histories', async () => {
+    renderDashboard('/captures/cap-20260727-benchmark');
+    await expect.element(page.getByRole('heading', { name: 'Finalization history' })).toBeVisible();
+    await page.getByRole('button', { name: 'Inspect' }).click();
+    await expect.element(page.getByText('Attempt 2', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('Attempt 1', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('service_restarted')).toBeVisible();
+  });
+
   test('keeps a pending publication authorization visible until approval', async () => {
     const api = createFixtureApi();
     let polls = 0;
+    let publishedCapture: string | null = null;
     const publicationApi: LocalApi = {
       ...api,
       startPublicationAuth: async () => ({
@@ -95,7 +105,11 @@ describe('local evidence dashboard', () => {
       }),
       pollPublicationAuth: async () => ++polls === 1
         ? { signed_in: false }
-        : { signed_in: true, github_login: 'approved-user', device_name: 'Local dashboard' }
+        : { signed_in: true, github_login: 'approved-user', device_name: 'Local dashboard' },
+      publish: async (captureId) => {
+        publishedCapture = captureId;
+        return { capture_id: captureId, job_id: 'pub-job-fixture', state: 'queued', status_url: '/v1/publications/pub-job-fixture' };
+      }
     };
     renderDashboard('/publishing', publicationApi);
     await page.getByRole('button', { name: 'Begin authorization' }).click();
@@ -108,7 +122,9 @@ describe('local evidence dashboard', () => {
     await page.getByRole('button', { name: 'Review publication' }).click();
     await page.getByRole('button', { name: 'Publish trace' }).click();
     await expect.element(page.getByText('pub-job-fixture')).toBeVisible();
-    await expect.element(page.getByRole('link', { name: 'Open publication status' })).toBeVisible();
+    await expect.element(page.getByText('cap-20260727-research-brief')).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Refresh status' })).toBeVisible();
+    expect(publishedCapture).toBe('cap-20260727-research-brief');
   });
 
   test('shows the authentication gate after a 401 status response', async () => {
@@ -138,7 +154,7 @@ describe('local evidence dashboard', () => {
     renderDashboard('/traces');
     await expect.element(page.getByRole('listitem')).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Verify now' })).not.toBeInTheDocument();
-    await page.getByRole('listitem').click();
+    await page.getByRole('list', { name: 'Finalized traces' }).getByRole('button').click();
     await expect.element(page.getByRole('button', { name: 'All finalized traces' })).toBeVisible();
     await expect.element(page.getByRole('listitem')).not.toBeInTheDocument();
   });

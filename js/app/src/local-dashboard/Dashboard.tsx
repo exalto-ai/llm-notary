@@ -265,7 +265,7 @@ function CapturesView({ api, selectedId, navigate }: { api: LocalApi; selectedId
   const mobile = useMediaQuery('(max-width: 820px)');
   const captures = useQuery({
     queryKey: ['captures', query, model, provider, captureState, finalization],
-    queryFn: () => api.captures({ query, model, provider: provider ?? undefined, capture_state: captureState ?? undefined, finalization_state: finalization ?? undefined })
+    queryFn: () => api.allCaptures({ query, model, provider: provider ?? undefined, capture_state: captureState ?? undefined, finalization_state: finalization ?? undefined })
   });
   const selectedDetail = useQuery({
     queryKey: ['capture', selectedId], queryFn: () => api.capture(selectedId!), enabled: Boolean(selectedId)
@@ -287,14 +287,14 @@ function CapturesView({ api, selectedId, navigate }: { api: LocalApi; selectedId
       <Select aria-label="Capture time filter" placeholder="Any time" clearable data={[{ value: 'hour', label: 'Last hour' }, { value: 'day', label: 'Last 24 hours' }, { value: 'week', label: 'Last 7 days' }]} value={time} onChange={setTime} /></div>}
     {captures.isLoading || (selectedId && selectedDetail.isLoading) ? <LoadingState /> : captures.error ? <QueryError error={captures.error} title="Captures are unavailable" /> : selectedDetail.error ? <QueryError error={selectedDetail.error} title="Capture detail is unavailable" /> : !visible.length && !active ? <EmptyState title="No captures match" copy="Clear a filter or send a new request through the provider proxy." />
       : <div className={`master-detail ${showDetail ? 'show-detail' : ''}`}>
-        <ScrollArea className="master-list" type="auto"><div className="capture-list" role="list" aria-label="Captures">{visible.map((capture) => <CaptureRow key={capture.capture_id} capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'captures', id: capture.capture_id })} />)}</div></ScrollArea>
+        <ScrollArea className="master-list" type="auto"><ul className="capture-list" aria-label="Captures">{visible.map((capture) => <li key={capture.capture_id}><CaptureRow capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'captures', id: capture.capture_id })} /></li>)}</ul></ScrollArea>
         <div className="detail-panel">{active ? <CaptureInspector api={api} capture={active} mobile={Boolean(mobile)} onBack={() => navigate({ view: 'captures' })} navigate={navigate} /> : null}</div>
       </div>}
   </div>;
 }
 
 function CaptureRow({ capture, active, onClick }: { capture: Capture; active: boolean; onClick: () => void }) {
-  return <UnstyledButton className={`capture-row ${active ? 'is-active' : ''}`} onClick={onClick} role="listitem">
+  return <UnstyledButton className={`capture-row ${active ? 'is-active' : ''}`} onClick={onClick}>
     <Group justify="space-between" wrap="nowrap"><Text className="row-provider">{capture.provider}</Text><Text className="mono-time">{formatDate(capture.created_at_unix_ms)}</Text></Group>
     <Title order={3}>{capture.requested_model ?? 'Model not reported'}</Title><Text lineClamp={2}>{capture.prompt_preview || 'Preview disabled for this capture.'}</Text>
     <Group justify="space-between"><StatusLabel state={capture.finalization_state === 'not_requested' ? capture.capture_state : capture.finalization_state} /><Text className="row-size">{formatBytes(capture.response_bytes)}</Text></Group>
@@ -304,11 +304,7 @@ function CaptureRow({ capture, active, onClick }: { capture: Capture; active: bo
 function CaptureInspector({ api, capture, mobile, onBack, navigate }: { api: LocalApi; capture: Capture; mobile: boolean; onBack: () => void; navigate: (route: Route) => void }) {
   const queryClient = useQueryClient();
   const detail = useQuery({ queryKey: ['capture', capture.capture_id], queryFn: () => api.capture(capture.capture_id) });
-  const operations = useQuery({
-    queryKey: ['operations'], queryFn: api.operations,
-    enabled: ['failed', 'interrupted'].includes(capture.finalization_state)
-  });
-  const failedOperation = operations.data?.items.find((operation) => operation.capture_id === capture.capture_id
+  const failedOperation = detail.data?.finalizations.find((operation) => operation.capture_id === capture.capture_id
     && ['failed', 'interrupted'].includes(operation.state));
   const finalize = useMutation({
     mutationFn: () => api.startFinalization(capture.capture_id),
@@ -345,7 +341,17 @@ function CaptureInspector({ api, capture, mobile, onBack, navigate }: { api: Loc
     <InspectorSection title="Safe metadata"><dl className="metadata-grid"><Fact label="Provider" value={capture.provider} /><Fact label="Operation" value={capture.operation} /><Fact label="HTTP status" value={capture.http_status?.toString() ?? 'In progress'} /><Fact label="Streaming" value={capture.streaming ? 'Yes' : 'No'} /><Fact label="Request" value={formatBytes(capture.request_bytes)} /><Fact label="Response" value={formatBytes(capture.response_bytes)} /></dl></InspectorSection>
     <InspectorSection title="Privacy-aware previews"><div className="preview-block"><Text className="eyebrow">Prompt {capture.prompt_preview_truncated && '· truncated'}</Text><Text>{capture.prompt_preview || 'Preview storage is disabled.'}</Text></div><div className="preview-block"><Text className="eyebrow">Output {capture.output_preview_truncated && '· truncated'}</Text><Text>{capture.output_preview || 'No output preview is available yet.'}</Text></div></InspectorSection>
     <InspectorSection title="Retained artifacts"><ArtifactList detail={value} /></InspectorSection>
+    <InspectorSection title="Finalization history"><FinalizationHistory operations={value.finalizations} navigate={navigate} /></InspectorSection>
   </article>;
+}
+
+function FinalizationHistory({ operations, navigate }: { operations: Operation[]; navigate: (route: Route) => void }) {
+  if (!operations.length) return <Text className="empty-copy">No finalization has been requested for this capture.</Text>;
+  return <ol className="history-list">{operations.map((operation) => <li key={operation.operation_id}>
+    <div><Group gap="xs"><b>Attempted finalization</b><StatusLabel state={operation.state} /></Group>
+      <Text>{operation.attempt} proof attempt{operation.attempt === 1 ? '' : 's'} · queued {formatDate(operation.created_at_unix_ms)}</Text></div>
+    <Button size="xs" variant="subtle" onClick={() => navigate({ view: 'finalizations', id: operation.operation_id })}>Inspect</Button>
+  </li>)}</ol>;
 }
 
 function Lifecycle({ capture }: { capture: Capture }) {
@@ -394,6 +400,7 @@ function OperationInspector({ api, operation }: { api: LocalApi; operation: Oper
   return <Paper className="operation-inspector"><Text className="eyebrow">Selected operation</Text><Group justify="space-between" align="flex-start"><div><Title order={2}>{operation.state === 'running' ? 'Generating private proof' : operation.state.replaceAll('_', ' ')}</Title><Text className="mono-id">{operation.operation_id}</Text></div><StatusLabel state={operation.state} /></Group>
     <div className="operation-stage"><span className={['queued', 'running', 'finalized'].includes(operation.state) ? 'complete' : ''}>Queued</span><i /><span className={['running', 'finalized'].includes(operation.state) ? 'complete' : ''}>Proof generation</span><i /><span className={operation.state === 'finalized' ? 'complete' : ''}>Verified package</span></div>
     <dl className="receipt-list"><Fact label="Capture" value={operation.capture_id ?? '—'} /><Fact label="Attempt" value={String(operation.attempt)} /><Fact label="Started" value={formatDate(operation.started_at_unix_ms)} /><Fact label="Finished" value={formatDate(operation.completed_at_unix_ms)} />{operation.failure_code && <Fact label="Safe failure code" value={operation.failure_code} />}</dl>
+    <div className="attempt-history"><Text className="eyebrow">Attempt history</Text>{operation.attempt_history.length ? <ol className="history-list">{operation.attempt_history.map((attempt) => <li key={attempt.attempt}><div><Group gap="xs"><b>Attempt {attempt.attempt}</b><StatusLabel state={attempt.state} /></Group><Text>{formatDate(attempt.started_at_unix_ms)} → {formatDate(attempt.completed_at_unix_ms)}</Text>{attempt.failure_code && <code>{attempt.failure_code}</code>}</div></li>)}</ol> : <Text className="empty-copy">No proof attempt has started yet.</Text>}</div>
     {operation.state === 'running' && <div className="no-progress-note"><Clock3 size={16} /><Text>Proof generation can take several minutes. The service does not report a meaningful percentage.</Text></div>}
     {retryable && <Button leftSection={<RefreshCw size={15} />} loading={retry.isPending} onClick={() => retry.mutate()}>Retry finalization</Button>}
   </Paper>;
@@ -402,14 +409,14 @@ function OperationInspector({ api, operation }: { api: LocalApi; operation: Oper
 function TracesView({ api, selectedId, navigate }: { api: LocalApi; selectedId?: string; navigate: (route: Route) => void }) {
   const [query, setQuery] = useState('');
   const mobile = useMediaQuery('(max-width: 820px)');
-  const captures = useQuery({ queryKey: ['captures', 'finalized'], queryFn: () => api.captures({ finalization_state: 'finalized' }) });
+  const captures = useQuery({ queryKey: ['captures', 'finalized'], queryFn: () => api.allCaptures({ finalization_state: 'finalized' }) });
   const visible = (captures.data?.items ?? []).filter((capture) => `${capture.capture_id} ${capture.provider} ${capture.requested_model ?? ''} ${capture.prompt_preview} ${capture.output_preview}`.toLowerCase().includes(query.toLowerCase()));
   const activeId = selectedId ?? visible[0]?.capture_id;
   const showDetail = Boolean(mobile && selectedId);
   return <div className="view-page"><PageHeader eyebrow="Portable evidence" title="Finalized traces" copy="Inspect the disclosed document, its evidence receipt, and a fresh independent verification result." />
     {!showDetail && <div className="filter-bar filter-bar--short"><TextInput aria-label="Search finalized traces" placeholder="Search finalized traces" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} /></div>}
     {captures.isLoading ? <LoadingState /> : captures.error ? <QueryError error={captures.error} title="Finalized traces are unavailable" /> : !visible.length && !selectedId ? <EmptyState icon={FileCheck2} title="No finalized traces" copy="Finalize a pending capture or clear the search." />
-      : <div className={`trace-layout ${showDetail ? 'show-detail' : ''}`}>{!showDetail && <div className="trace-list">{visible.map((capture) => <CaptureRow key={capture.capture_id} capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'traces', id: capture.capture_id })} />)}</div>}{activeId && (!mobile || selectedId) && <TraceInspector api={api} captureId={activeId} mobile={Boolean(mobile)} onBack={() => navigate({ view: 'traces' })} />}</div>}
+      : <div className={`trace-layout ${showDetail ? 'show-detail' : ''}`}>{!showDetail && <ul className="trace-list" aria-label="Finalized traces">{visible.map((capture) => <li key={capture.capture_id}><CaptureRow capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'traces', id: capture.capture_id })} /></li>)}</ul>}{activeId && (!mobile || selectedId) && <TraceInspector api={api} captureId={activeId} mobile={Boolean(mobile)} onBack={() => navigate({ view: 'traces' })} />}</div>}
   </div>;
 }
 
@@ -465,12 +472,24 @@ function Receipt({ title, fields, verified = false }: { title: string; fields: A
 function PublishingView({ api }: { api: LocalApi }) {
   const queryClient = useQueryClient();
   const auth = useQuery({ queryKey: ['publication-auth'], queryFn: api.publicationAuth, retry: false });
-  const traces = useQuery({ queryKey: ['captures', 'publishing'], queryFn: () => api.captures({ finalization_state: 'finalized' }) });
+  const traces = useQuery({ queryKey: ['captures', 'publishing'], queryFn: () => api.allCaptures({ finalization_state: 'finalized' }) });
   const [selected, setSelected] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
   const [submitted, setSubmitted] = useState<Publication | null>(null);
   const [started, setStarted] = useState<{ flow: PublicationAuthStarted; nextPollAt: number } | null>(null);
   const [now, setNow] = useState(Date.now());
+  const eligible = traces.data?.items ?? [];
+  const selectedId = selected ?? eligible[0]?.capture_id ?? null;
+  useEffect(() => {
+    setSubmitted(null);
+    setConfirm(false);
+  }, [selectedId]);
+  const publication = useQuery({
+    queryKey: ['publication', submitted?.job_id],
+    queryFn: () => api.publicationStatus(submitted!.job_id),
+    enabled: Boolean(submitted),
+    refetchInterval: submitted ? 3_000 : false
+  });
   useEffect(() => {
     if (!started) return;
     const timer = window.setInterval(() => setNow(Date.now()), 250);
@@ -491,17 +510,15 @@ function PublishingView({ api }: { api: LocalApi }) {
     },
     onError: (error) => mutationError('Could not check authorization', error)
   });
-  const publish = useMutation({ mutationFn: () => api.publish(selected!), onSuccess: (result) => {
+  const publish = useMutation({ mutationFn: () => api.publish(selectedId!), onSuccess: (result) => {
     setConfirm(false); setSubmitted(result); notifications.show({ title: 'Publication submitted', message: `Job ${result.job_id} is ${result.state}.` });
   }, onError: (error) => mutationError('Publication failed', error) });
-  const eligible = traces.data?.items ?? [];
-  const selectedId = selected ?? eligible[0]?.capture_id ?? null;
   const pollReady = Boolean(started && now >= started.nextPollAt);
   return <div className="view-page"><PageHeader eyebrow="Explicit consent" title="Publishing" copy="Local finalization and public publication are separate decisions. Nothing is uploaded until you confirm a selected verified trace." />
     <div className="publishing-grid"><Paper className="publishing-auth"><Group justify="space-between"><Text className="eyebrow">Publication account</Text><KeyRound size={17} /></Group>
       {auth.isLoading ? <Loader size="sm" /> : auth.error ? <QueryError error={auth.error} title="Publication authorization is unavailable" /> : auth.data?.signed_in ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.device_name}</Text><StatusLabel state="ready" /></> : <><Title order={2}>Not authorized</Title><Text>Begin the device flow, then approve the recognizable local dashboard session in your browser.</Text><Button variant="outline" loading={beginAuth.isPending} onClick={() => beginAuth.mutate()}>Begin authorization</Button></>}
       {started && <div className="authorization-code"><Text className="eyebrow">Approval code</Text><code>{started.flow.user_code}</code><a href={started.flow.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a><Text>{pollReady ? 'Approval can now be checked.' : `Waiting ${Math.max(1, Math.ceil((started.nextPollAt - now) / 1000))}s before the next check.`}</Text><Button size="xs" variant="subtle" disabled={!pollReady} loading={pollAuth.isPending} onClick={() => pollAuth.mutate()}>Check approval</Button></div>}
-    </Paper><Paper className="publication-choice"><Text className="eyebrow">Eligible finalized trace</Text><Title order={2}>Choose what to publish</Title>{traces.error ? <QueryError error={traces.error} title="Eligible traces are unavailable" /> : traces.isLoading ? <Loader size="sm" /> : eligible.length ? <><Select label="Finalized trace" data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} /><div className="consent-copy"><ShieldCheck size={18} /><Text>The finalized disclosure is verified locally before upload. The encrypted source bundle is never a publication input.</Text></div><Button disabled={!auth.data?.signed_in || !selectedId} onClick={() => setConfirm(true)}>Review publication</Button>{submitted && <div className="publication-result"><Group justify="space-between"><Text className="eyebrow">Latest submission</Text><StatusLabel state={submitted.state} /></Group><code>{submitted.job_id}</code><Text>The platform reported {submitted.state}. Follow the status page for later admission changes.</Text><Button component="a" href={submitted.status_url} target="_blank" rel="noreferrer" variant="outline">Open publication status</Button></div>}</> : <EmptyState title="Nothing eligible" copy="Finalize a capture first." />}</Paper></div>
+    </Paper><Paper className="publication-choice"><Text className="eyebrow">Eligible finalized trace</Text><Title order={2}>Choose what to publish</Title>{traces.error ? <QueryError error={traces.error} title="Eligible traces are unavailable" /> : traces.isLoading ? <Loader size="sm" /> : eligible.length ? <><Select label="Finalized trace" data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} /><div className="consent-copy"><ShieldCheck size={18} /><Text>The finalized disclosure is verified locally before upload. The encrypted source bundle is never a publication input.</Text></div><Button disabled={!auth.data?.signed_in || !selectedId} onClick={() => setConfirm(true)}>Review publication</Button>{submitted && <div className="publication-result"><Group justify="space-between"><Text className="eyebrow">Latest submission</Text><StatusLabel state={publication.data?.state ?? submitted.state} /></Group><Text>Capture <code>{submitted.capture_id}</code></Text><code>{submitted.job_id}</code>{publication.error ? <QueryError error={publication.error} title="Publication status is unavailable" /> : <Text>The local service reports {publication.data?.state ?? submitted.state}. Status refreshes while admission is in progress.</Text>}{publication.data?.failure_code && <Text>Safe failure code: <code>{publication.data.failure_code}</code></Text>}<Group><Button variant="outline" loading={publication.isFetching} onClick={() => publication.refetch()}>Refresh status</Button>{publication.data?.trace_url && <Button component="a" href={publication.data.trace_url} target="_blank" rel="noreferrer" variant="outline">Open public trace</Button>}</Group></div>}</> : <EmptyState title="Nothing eligible" copy="Finalize a capture first." />}</Paper></div>
     <Modal opened={confirm} onClose={() => setConfirm(false)} title="Publish this finalized trace?" centered><Stack><Text>This creates a public admission job for <code>{selectedId}</code>. Public trace content may be visible to anyone.</Text><Group justify="flex-end"><Button variant="subtle" onClick={() => setConfirm(false)}>Keep private</Button><Button loading={publish.isPending} onClick={() => publish.mutate()}>Publish trace</Button></Group></Stack></Modal>
   </div>;
 }

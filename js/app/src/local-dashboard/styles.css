@@ -141,9 +141,9 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'DM Mono', ui-monospace
 .filter-bar--activity { grid-template-columns: repeat(5, minmax(150px, 1fr)); }
 .master-detail { display: grid; gap: 24px; grid-template-columns: minmax(310px, .8fr) minmax(480px, 1.2fr); height: calc(100vh - 290px); min-height: 540px; padding-top: 20px; }
 .master-list { border: 1px solid var(--rule); background: var(--raised); }
-.capture-list { display: grid; }
+.capture-list { display: grid; list-style: none; margin: 0; padding: 0; }
 .capture-row { background: var(--raised); border-bottom: 1px solid var(--rule); color: var(--ink); display: grid; gap: 11px; padding: 17px; text-align: left; width: 100%; }
-.capture-row:last-child { border-bottom: 0; }
+.capture-list > li:last-child .capture-row, .trace-list > li:last-child .capture-row { border-bottom: 0; }
 .capture-row:hover, .capture-row.is-active { background: var(--subtle); }
 .capture-row.is-active { box-shadow: inset 3px 0 0 var(--ink); }
 .capture-row h3 { font-size: 17px; letter-spacing: -.035em; }
@@ -174,6 +174,13 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'DM Mono', ui-monospace
 .artifact-list b { display: block; font-size: 12px; text-transform: capitalize; }
 .artifact-list span { color: var(--muted); font-size: 10px; }
 .artifact-list code { color: var(--muted); font-size: 9px; }
+.empty-copy { color: var(--muted); font-size: 12px; }
+.history-list { display: grid; list-style: none; margin: 0; padding: 0; }
+.history-list > li { align-items: center; border-top: 1px solid var(--rule); display: flex; gap: 16px; justify-content: space-between; padding: 13px 0; }
+.history-list > li:first-child { border-top: 0; }
+.history-list b { font-size: 12px; }
+.history-list p { color: var(--muted); font-size: 10px; margin-top: 5px; }
+.history-list code { color: var(--danger); display: block; font-size: 9px; margin-top: 6px; }
 
 .operations-layout { display: grid; gap: 24px; grid-template-columns: minmax(600px, 1.2fr) minmax(320px, .8fr); margin-top: 26px; }
 .operations-table { background: var(--raised); border: 1px solid var(--rule); }
@@ -188,11 +195,12 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'DM Mono', ui-monospace
 .operation-stage span.complete { color: var(--accent-ink); font-weight: 700; }
 .operation-stage i { border-top: 1px solid var(--rule); }
 .receipt-list { display: grid; gap: 14px; grid-template-columns: repeat(2, 1fr); margin: 0 0 24px; }
+.attempt-history { border-top: 1px solid var(--rule); margin: 22px 0; padding-top: 20px; }
 .no-progress-note, .consent-copy, .safe-note { align-items: flex-start; background: var(--subtle); display: flex; gap: 10px; margin: 18px 0; padding: 13px; }
 .no-progress-note p, .consent-copy p { color: var(--muted); font-size: 11px; line-height: 1.55; }
 
 .trace-layout { display: grid; gap: 24px; grid-template-columns: minmax(290px, .65fr) minmax(600px, 1.35fr); margin-top: 26px; }
-.trace-list { background: var(--raised); border: 1px solid var(--rule); }
+.trace-list { background: var(--raised); border: 1px solid var(--rule); list-style: none; margin-bottom: 0; margin-top: 0; padding: 0; }
 .trace-inspector { background: var(--raised); border: 1px solid var(--rule); min-width: 0; padding: 24px; }
 .trace-inspector h2 { font-size: 20px; letter-spacing: -.045em; }
 .mantine-Tabs-list { border-color: var(--rule); margin-top: 30px; }

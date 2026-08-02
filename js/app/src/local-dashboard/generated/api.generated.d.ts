@@ -260,6 +260,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/publications/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["publication_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/session": {
         parameters: {
             query?: never;
@@ -305,6 +321,7 @@ export interface components {
         CaptureDetailResponse: {
             artifacts: components["schemas"]["ArtifactResponse"][];
             capture: components["schemas"]["CaptureResponse"];
+            finalizations: components["schemas"]["OperationResponse"][];
         };
         CaptureListResponse: {
             items: components["schemas"]["CaptureResponse"][];
@@ -384,12 +401,23 @@ export interface components {
             service: string;
             status: string;
         };
+        OperationAttemptResponse: {
+            /** Format: int32 */
+            attempt: number;
+            /** Format: int64 */
+            completed_at_unix_ms?: number | null;
+            failure_code?: string | null;
+            /** Format: int64 */
+            started_at_unix_ms: number;
+            state: string;
+        };
         OperationListResponse: {
             items: components["schemas"]["OperationResponse"][];
         };
         OperationResponse: {
             /** Format: int32 */
             attempt: number;
+            attempt_history: components["schemas"]["OperationAttemptResponse"][];
             capture_id?: string | null;
             /** Format: int64 */
             completed_at_unix_ms?: number | null;
@@ -440,6 +468,13 @@ export interface components {
             job_id: string;
             state: string;
             status_url: string;
+        };
+        PublicationStatusResponse: {
+            failure_code?: string | null;
+            job_id: string;
+            stamp_url?: string | null;
+            state: string;
+            trace_url?: string | null;
         };
         StatusResponse: {
             admin_listener: string;
@@ -1061,6 +1096,43 @@ export interface operations {
             };
         };
     };
+    publication_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicationStatusResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     start_session: {
         parameters: {
             query?: never;
@@ -1102,6 +1174,14 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
         };
     };

@@ -52,6 +52,11 @@ jobs:
               - 'vendor/tlsn-utils/**'
             app:
               - '.github/workflows/ci.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'crates/llm-notary-client/Cargo.toml'
+              - 'crates/llm-notary-client/src/admin.rs'
+              - 'crates/llm-notary-client/examples/export-local-openapi.rs'
               - 'js/app/**'
             containers:
               - '.github/workflows/ci.yml'
@@ -116,6 +121,10 @@ jobs:
         working-directory: js/app
     steps:
       - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v6
         with:
           node-version: 24
@@ -123,6 +132,8 @@ jobs:
           cache-dependency-path: js/app/package-lock.json
       - run: npm ci
       - run: npm run build
+      - name: Verify generated API and embedded dashboard are committed
+        run: git -C ../.. diff --exit-code -- js/app/src/local-dashboard/generated crates/llm-notary-client/dashboard
       - name: Install dashboard browser
         run: npx playwright install --with-deps chromium
       - run: npm run test:dashboard

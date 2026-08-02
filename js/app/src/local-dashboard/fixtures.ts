@@ -55,19 +55,28 @@ export const fixtureOperations: Operation[] = [
   {
     operation_id: 'op-finalize-safety-review', kind: 'finalization',
     capture_id: 'cap-20260728-safety-review', state: 'running', attempt: 1,
-    created_at_unix_ms: fixtureNow - 112_000, started_at_unix_ms: fixtureNow - 108_000
+    created_at_unix_ms: fixtureNow - 112_000, started_at_unix_ms: fixtureNow - 108_000,
+    attempt_history: [{ attempt: 1, state: 'running', started_at_unix_ms: fixtureNow - 108_000 }]
   },
   {
     operation_id: 'op-finalize-benchmark', kind: 'finalization',
     capture_id: 'cap-20260727-benchmark', state: 'failed', attempt: 2,
     created_at_unix_ms: fixtureNow - hour, started_at_unix_ms: fixtureNow - hour + 2_000,
-    completed_at_unix_ms: fixtureNow - hour + 18_000, failure_code: 'notary_capacity'
+    completed_at_unix_ms: fixtureNow - hour + 18_000, failure_code: 'notary_capacity',
+    attempt_history: [
+      { attempt: 2, state: 'failed', started_at_unix_ms: fixtureNow - hour + 2_000,
+        completed_at_unix_ms: fixtureNow - hour + 18_000, failure_code: 'notary_capacity' },
+      { attempt: 1, state: 'interrupted', started_at_unix_ms: fixtureNow - hour * 2,
+        completed_at_unix_ms: fixtureNow - hour * 2 + 9_000, failure_code: 'service_restarted' }
+    ]
   },
   {
     operation_id: 'op-finalize-research-brief', kind: 'finalization',
     capture_id: 'cap-20260727-research-brief', state: 'finalized', attempt: 1,
     created_at_unix_ms: fixtureNow - hour * 17, started_at_unix_ms: fixtureNow - hour * 17 + 1_000,
-    completed_at_unix_ms: fixtureNow - hour * 17 + 184_000
+    completed_at_unix_ms: fixtureNow - hour * 17 + 184_000,
+    attempt_history: [{ attempt: 1, state: 'finalized', started_at_unix_ms: fixtureNow - hour * 17 + 1_000,
+      completed_at_unix_ms: fixtureNow - hour * 17 + 184_000 }]
   }
 ];
 
@@ -86,7 +95,7 @@ export const fixtureEvents: Event[] = [
 export const fixtureStatus: Status = {
   version: '0.1.0', proxy_listener: '127.0.0.1:8787', admin_listener: '127.0.0.1:8788',
   vault: 'OS vault', notary: 'directory', preview_chars: 1000,
-  counts: { total_captures: 5, capturing: 1, pending: 4, finalized: 1, failed: 1, active_operations: 1 }
+  counts: { total_captures: 5, capturing: 1, pending: 1, finalized: 1, failed: 1, active_operations: 1 }
 };
 
 const fixtureTrace: Trace = {
@@ -122,7 +131,8 @@ function detail(captureId: string): CaptureDetail {
       ...(capture.finalization_state === 'finalized'
         ? [{ kind: 'finalized_package', size_bytes: 482_013, sha256: '9a32d7c66a7e4fdd525ea6c803355273ade0f46e7c8dc4973343399731585b26' }]
         : [])
-    ]
+    ],
+    finalizations: operations.filter((operation) => operation.capture_id === capture.capture_id)
   };
 }
 
@@ -130,27 +140,36 @@ export function createFixtureApi(): LocalApi {
   captures = structuredClone(fixtureCaptures);
   operations = structuredClone(fixtureOperations);
   publicationAuth = { signed_in: false };
+  const filteredCaptures = (filters: Record<string, string | number | undefined> = {}) => {
+    const query = String(filters.query ?? '').toLowerCase();
+    const state = String(filters.finalization_state ?? '');
+    const captureState = String(filters.capture_state ?? '');
+    const provider = String(filters.provider ?? '');
+    const model = String(filters.model ?? '');
+    return captures.filter((capture) =>
+      (!query || `${capture.prompt_preview} ${capture.output_preview} ${capture.requested_model}`.toLowerCase().includes(query))
+      && (!state || capture.finalization_state === state)
+      && (!captureState || capture.capture_state === captureState)
+      && (!provider || capture.provider === provider)
+      && (!model || capture.requested_model === model));
+  };
   return {
     session: async () => undefined,
     endSession: async () => undefined,
     status: async () => fixtureStatus,
     captures: async (filters = {}) => {
-      const query = String(filters.query ?? '').toLowerCase();
-      const state = String(filters.finalization_state ?? '');
-      const provider = String(filters.provider ?? '');
-      const items = captures.filter((capture) =>
-        (!query || `${capture.prompt_preview} ${capture.output_preview} ${capture.requested_model}`.toLowerCase().includes(query))
-        && (!state || capture.finalization_state === state)
-        && (!provider || capture.provider === provider));
-      return { items, limit: 50, offset: 0 };
+      const limit = Number(filters.limit ?? 50);
+      const offset = Number(filters.offset ?? 0);
+      return { items: filteredCaptures(filters).slice(offset, offset + limit), limit, offset };
     },
+    allCaptures: async (filters = {}) => ({ items: filteredCaptures(filters), limit: 200, offset: 0 }),
     capture: async (captureId) => detail(captureId),
     startFinalization: async (captureId) => {
       const existing = operations.find((operation) => operation.capture_id === captureId
         && ['queued', 'running', 'finalized'].includes(operation.state));
       if (existing) return { operation: existing, deduplicated: true };
       const operation: Operation = { operation_id: 'op-finalize-queued-fixture', kind: 'finalization',
-        capture_id: captureId, state: 'queued', attempt: 0, created_at_unix_ms: fixtureNow };
+        capture_id: captureId, state: 'queued', attempt: 0, created_at_unix_ms: fixtureNow, attempt_history: [] };
       operations = [operation, ...operations];
       captures = captures.map((capture) => capture.capture_id === captureId
         ? { ...capture, finalization_state: 'queued' } : capture);
@@ -174,6 +193,7 @@ export function createFixtureApi(): LocalApi {
       publicationAuth = { signed_in: true, github_login: 'fixture-user', device_name: 'Local dashboard' };
       return publicationAuth;
     },
-    publish: async (captureId) => ({ capture_id: captureId, job_id: 'pub-job-fixture', state: 'queued', status_url: '/library/jobs/pub-job-fixture' })
+    publish: async (captureId) => ({ capture_id: captureId, job_id: 'pub-job-fixture', state: 'queued', status_url: '/v1/publications/pub-job-fixture' }),
+    publicationStatus: async (jobId) => ({ job_id: jobId, state: 'queued' })
   };
 }

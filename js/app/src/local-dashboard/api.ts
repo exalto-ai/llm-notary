@@ -10,6 +10,7 @@ export type Verification = components['schemas']['VerificationResponse'];
 export type PublicationAuth = components['schemas']['PublicationAuthResponse'];
 export type PublicationAuthStarted = components['schemas']['PublicationAuthStartedResponse'];
 export type Publication = components['schemas']['PublicationResponse'];
+export type PublicationStatus = components['schemas']['PublicationStatusResponse'];
 type CaptureList = paths['/v1/captures']['get']['responses'][200]['content']['application/json'];
 type FinalizationResult = paths['/v1/captures/{capture_id}/finalizations']['post']['responses'][202]['content']['application/json'];
 type OperationList = paths['/v1/operations']['get']['responses'][200]['content']['application/json'];
@@ -72,6 +73,16 @@ export const localApi = {
   status: () => request<Status>('/v1/status'),
   captures: (filters: Record<string, string | number | undefined> = {}) =>
     request<CaptureList>(`/v1/captures${queryString(filters)}`),
+  allCaptures: async (filters: Record<string, string | number | undefined> = {}) => {
+    const items: Capture[] = [];
+    let offset = 0;
+    for (;;) {
+      const page = await request<CaptureList>(`/v1/captures${queryString({ ...filters, limit: 200, offset })}`);
+      items.push(...page.items);
+      if (page.items.length < page.limit) return { items, limit: page.limit, offset: 0 };
+      offset += page.items.length;
+    }
+  },
   capture: (captureId: string) => request<CaptureDetail>(`/v1/captures/${encodeURIComponent(captureId)}`),
   startFinalization: (captureId: string) =>
     request<FinalizationResult>(
@@ -100,6 +111,9 @@ export const localApi = {
   publish: (captureId: string) => request<Publication>(
     `/v1/captures/${encodeURIComponent(captureId)}/publications`,
     { method: 'POST' }
+  ),
+  publicationStatus: (jobId: string) => request<PublicationStatus>(
+    `/v1/publications/${encodeURIComponent(jobId)}`
   )
 };
 
