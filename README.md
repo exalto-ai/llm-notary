@@ -185,7 +185,9 @@ encrypted `.llmbundle` and records a local catalog entry. The catalog stores
 the provider, requested and response model when available, request/response
 size and status, plus short plain-text prompt and output previews. Its FTS5
 index powers `GET /v1/captures?query=pricing`, which can locate a capture
-without decrypting every bundle. The catalog deliberately
+without decrypting every bundle. Search punctuation is treated as text
+boundaries rather than raw FTS syntax, and quoted phrases remain phrases. The
+catalog deliberately
 does not store HTTP header values, cookies, or credentials. Its previews are
 plain local text; set either `catalog.*_preview_chars` to `0` if that is not
 appropriate for a particular machine. Both listeners must remain on distinct

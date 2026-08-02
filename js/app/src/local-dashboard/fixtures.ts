@@ -240,13 +240,14 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     }
   });
   const filteredCaptures = (filters: Record<string, string | number | undefined> = {}) => {
-    const query = String(filters.query ?? '').toLowerCase();
+    const queryTerms = String(filters.query ?? '').toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
     const state = String(filters.finalization_state ?? '');
     const captureState = String(filters.capture_state ?? '');
     const provider = String(filters.provider ?? '');
     const model = String(filters.model ?? '');
     return captures.filter((capture) =>
-      (!query || `${capture.prompt_preview} ${capture.output_preview} ${capture.requested_model}`.toLowerCase().includes(query))
+      (queryTerms.length === 0 || queryTerms.every((term) =>
+        `${capture.prompt_preview} ${capture.output_preview} ${capture.requested_model}`.toLowerCase().includes(term)))
       && (!state || capture.finalization_state === state)
       && (!captureState || capture.capture_state === captureState)
       && (!provider || capture.provider === provider)
@@ -275,8 +276,12 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       recordEvent('finalization_queued', 'Finalization queued', 'info', captureId, operation.operation_id);
       return { operation, deduplicated: false };
     },
-    operations: async () => {
-      const items = structuredClone(operations);
+    operations: async (filters = {}) => {
+      const limit = Number(filters.limit ?? 50);
+      const items = structuredClone(operations.filter((operation) =>
+        (!filters.state || operation.state === filters.state)
+        && (!filters.kind || operation.kind === filters.kind)
+        && (!filters.capture_id || operation.capture_id === filters.capture_id)).slice(0, limit));
       advanceDemoOperations();
       return { items };
     },
@@ -292,7 +297,19 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       }
       return operation;
     },
-    events: async () => ({ items: events, next_cursor: events[0]?.event_id }),
+    events: async (filters = {}) => {
+      const cursor = Number(filters.cursor ?? filters.after ?? 0);
+      const createdAfter = Number(filters.created_after_unix_ms ?? 0);
+      const limit = Number(filters.limit ?? 100);
+      const items = events.filter((event) =>
+        (!cursor || event.event_id > cursor)
+        && (!filters.severity || event.severity === filters.severity)
+        && (!filters.event_type || event.event_type === filters.event_type)
+        && (!filters.capture_id || event.capture_id === filters.capture_id)
+        && (!filters.operation_id || event.operation_id === filters.operation_id)
+        && (!createdAfter || event.created_at_unix_ms >= createdAfter)).slice(0, limit);
+      return { items, next_cursor: events[0]?.event_id };
+    },
     trace: async (captureId) => shiftedTrace(captureId, offset),
     verify: async (captureId) => ({ ...fixtureVerification, capture_id: captureId, verified_at_unix_ms: fixtureVerification.verified_at_unix_ms + offset }),
     publicationAuth: async () => publicationAuth,

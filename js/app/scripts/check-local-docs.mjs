@@ -13,21 +13,21 @@ const expectedOperations = {
   '/openapi.json': { get: ['200'] },
   '/v1/session': { post: ['204', '401'], delete: ['204', '401'] },
   '/v1/status': { get: ['200', '401'] },
-  '/v1/captures': { get: ['200', '401'] },
+  '/v1/captures': { get: ['200', '400', '401'] },
   '/v1/captures/{capture_id}': { get: ['200', '401', '404'] },
   '/v1/captures/{capture_id}/finalizations': { post: ['202', '401', '404'] },
-  '/v1/operations': { get: ['200', '401'] },
+  '/v1/operations': { get: ['200', '400', '401'] },
   '/v1/operations/{operation_id}': { get: ['200', '401', '404'] },
   '/v1/operations/{operation_id}/retry': { post: ['202', '401', '409'] },
   '/v1/captures/{capture_id}/trace': { get: ['200', '401', '404'] },
   '/v1/captures/{capture_id}/trace:verify': { post: ['200', '401', '422'] },
-  '/v1/events': { get: ['200', '401'] },
+  '/v1/events': { get: ['200', '400', '401'] },
   '/v1/publication/auth': { get: ['200', '401'], post: ['202', '401'], delete: ['204', '401'] },
   '/v1/publication/auth/{request_id}': { get: ['200', '401', '404'] },
   '/v1/captures/{capture_id}/publications': { post: ['202', '401', '404'] },
   '/v1/publications/{job_id}': { get: ['200', '401', '404', '409', '503'] },
-  '/v1/public-traces/{publication_id}': { get: ['200', '401', '404'] },
-  '/v1/public-traces/{publication_id}/verify': { post: ['200', '401', '422'] }
+  '/v1/public-traces/{publication_id}': { get: ['200', '400', '401', '404'] },
+  '/v1/public-traces/{publication_id}/verify': { post: ['200', '400', '401', '422'] }
 };
 
 const actualPaths = Object.keys(openapi.paths).sort();
@@ -39,6 +39,9 @@ for (const [path, methods] of Object.entries(expectedOperations)) {
   for (const [method, statuses] of Object.entries(methods)) {
     const operation = openapi.paths[path]?.[method];
     if (!operation) throw new Error(`OpenAPI is missing ${method.toUpperCase()} ${path}`);
+    if (!operation.summary?.trim() || !operation.description?.trim()) {
+      throw new Error(`${method.toUpperCase()} ${path} needs a summary and description`);
+    }
     const actualStatuses = Object.keys(operation.responses).sort();
     const expectedStatuses = [...statuses].sort();
     if (JSON.stringify(actualStatuses) !== JSON.stringify(expectedStatuses)) {
@@ -55,8 +58,8 @@ function parameterNames(path, method) {
 }
 const expectedParameters = {
   'GET /v1/captures': ['capture_state', 'finalization_state', 'limit', 'model', 'offset', 'provider', 'query'],
-  'GET /v1/operations': ['limit'],
-  'GET /v1/events': ['cursor', 'limit'],
+  'GET /v1/operations': ['capture_id', 'kind', 'limit', 'state'],
+  'GET /v1/events': ['capture_id', 'created_after_unix_ms', 'cursor', 'event_type', 'limit', 'operation_id', 'severity'],
   'GET /v1/publications/{job_id}': ['job_id'],
   'GET /v1/public-traces/{publication_id}': ['api_origin', 'publication_id'],
   'POST /v1/public-traces/{publication_id}/verify': ['api_origin', 'publication_id']

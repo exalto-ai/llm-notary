@@ -15,6 +15,8 @@ schema authority.
    it in a URL.
 4. Find captures through `/v1/captures` and act on returned `cap-…`
    identifiers. Never ask for or submit an arbitrary local filesystem path.
+   Search input may contain punctuation; the service treats it as text
+   boundaries rather than raw full-text-search syntax.
 5. Treat finalization as asynchronous. Save the returned `op-…` identifier and
    poll its documented operation URL until `finalized`, `failed`, or
    `interrupted`. Use `attempt_history` when explaining retries.
@@ -33,6 +35,12 @@ schema authority.
 Use safe error codes and redacted event messages for diagnosis. If the OpenAPI
 document does not describe an operation, stop and explain that the installed
 service does not support it.
+
+Prefer server-side filters from the discovered contract. In particular,
+filter operations by `state`, `kind`, or `capture_id`, and filter events by
+`severity`, `event_type`, `capture_id`, `operation_id`, or
+`created_after_unix_ms`. Do not download a broad history merely to discard most
+of it in the client.
 
 ## Example prompt for an agent
 
@@ -156,6 +164,10 @@ console.log(captures.items.map(({ capture_id, provider, requested_model, finaliz
   capture_id, provider, requested_model, finalization_state
 })));
 ```
+
+The service returns the documented JSON error envelope for invalid query
+values, including malformed numeric values. Branch on `error.code`; do not
+parse plain-text framework messages.
 
 This output is deliberately limited to safe catalog fields. An automation
 should not print previews unless the user explicitly asks and the local preview

@@ -93,10 +93,19 @@ browser backend.
   body. Identifiers are opaque strings such as `cap-…` and `op-…`.
 - Errors use `{"error":{"code":"safe_code","message":"safe message"}}`.
   Codes and messages exclude credentials, plaintext headers, and local paths.
+  Invalid query values use the same JSON envelope; for example, a negative
+  `limit` returns `invalid_query_parameter` instead of a framework error page.
 - Capture lists use `limit` and `offset`. Supported filters are `query`,
   `provider`, `model`, `capture_state`, and `finalization_state`.
-- Activity uses a monotonic `cursor`. Pass the returned `next_cursor` on a
-  later request to ask only for newer events.
+- Capture search treats punctuation as token boundaries, so `safety-review`
+  and `**safety**` are safe inputs. Space-separated words must all match;
+  double quotes preserve a phrase such as `"safety review"`.
+- Operation lists support exact `state`, `kind`, and `capture_id` filters plus
+  `limit`.
+- Activity supports exact `severity`, `event_type`, `capture_id`, and
+  `operation_id` filters, a `created_after_unix_ms` lower bound, and `limit`.
+  It also uses a monotonic `cursor`; pass the returned `next_cursor` on a later
+  request to ask only for newer events.
 - Mutations that start or retry background work return `202 Accepted`. Record
   the returned operation identifier and poll its resource. A 202 response does
   not mean the proof is complete.
@@ -128,6 +137,19 @@ capture_id=cap-example
 curl --fail-with-body \
   -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id"
+```
+
+Inspect only failed finalizations or error events without downloading and
+filtering the entire bounded history in the client:
+
+```bash
+curl --fail-with-body \
+  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations?state=failed&kind=finalization&limit=20"
+
+curl --fail-with-body \
+  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/events?severity=error&event_type=finalization_failed&limit=20"
 ```
 
 The catalog preview is local plaintext. Set `prompt_preview_chars` and

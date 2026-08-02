@@ -30,7 +30,8 @@ Use the sidebar to move between these parts of the local workflow:
   creation and requires confirmation.
 - **Activity** shows a bounded redacted event stream.
 - **Settings** reports safe listener, vault, notary, and preview-policy
-  state and links to the live OpenAPI contract.
+  state, contains the color-scheme control, and links to the live OpenAPI
+  contract.
 
 ## Inspect a capture
 
@@ -95,19 +96,22 @@ changes. Remote publication credentials never enter the browser.
 
 ## Activity and settings
 
-Activity can be refreshed and filtered by severity, capture identifier,
-operation identifier, event type, or time. Events contain bounded messages and
-identifiers, never request bodies, response bodies, raw headers, credentials,
-or filesystem paths. Settings shows safe runtime facts and the exact
-`http://127.0.0.1:8788/openapi.json` discovery URL for scripts and coding
-agents.
+Activity asks the service to filter by severity, capture identifier, operation
+identifier, event type, or time instead of downloading a broad history and
+filtering it in the browser. Events contain bounded messages and identifiers,
+never request bodies, response bodies, raw headers, credentials, or filesystem
+paths. Settings shows safe runtime facts, the System/Light/Dark control, and
+the exact `http://127.0.0.1:8788/openapi.json` discovery URL for scripts and
+coding agents.
 
 ## Responsive navigation and color mode
 
-At 820 px and below, the sidebar becomes a full-height drawer and capture and
-trace list/detail workspaces become separate routed panels. Use the back action
-to return from an inspector. Keyboard focus is visible, dialogs and drawers
-return focus to their trigger, and reduced-motion preferences are respected.
+At 820 px and below, a fixed menu button opens the sidebar as a full-height
+drawer, and capture and trace list/detail workspaces become separate routed
+panels. The local app has no separate header; its brand and navigation live in
+the desktop sidebar. Use the back action to return from an inspector. Keyboard
+focus is visible, dialogs and drawers return focus to their trigger, and
+reduced-motion preferences are respected.
 
 ![Mobile local dashboard with a private capture detail behind the open full-height navigation drawer, including pending and active-work counts and all dashboard destinations.](images/local-dashboard/mobile-navigation.png)
 
@@ -116,7 +120,7 @@ with a clear back action; the desktop list is not squeezed beside it.
 
 ![Mobile capture detail in a single-panel layout with an All captures back action, Finalize button, lifecycle, and safe metadata visible.](images/local-dashboard/mobile-capture-detail.png)
 
-The header provides **System**, **Light**, and **Dark** choices. System follows
+Settings provides **System**, **Light**, and **Dark** choices. System follows
 the operating-system preference and is the default. An explicit override is
 stored locally and can always be returned to System. Dark mode uses neutral
 charcoal surfaces; the lime accent remains reserved for verified or ready

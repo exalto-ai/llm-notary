@@ -34,7 +34,7 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByRole('heading', { name: 'Service overview' })).toBeVisible();
     await page.getByRole('button', { name: /Captures/ }).click();
     await expect.element(page.getByRole('heading', { name: 'Captures' })).toBeVisible();
-    await page.getByLabelText('Search captures').fill('benchmark');
+    await page.getByLabelText('Search captures').fill('**benchmark**');
     await expect.element(page.getByText('deepseek-v4-flash')).toBeVisible();
     await expect.element(page.getByText('gpt-5.2', { exact: true })).not.toBeInTheDocument();
     await page.getByRole('list', { name: 'Captures' }).getByRole('button').click();
@@ -230,6 +230,8 @@ describe('local evidence dashboard', () => {
     renderDashboard('/activity', filteredApi);
     await page.getByLabelText('Activity event type').fill('finalization_completed');
     await expect.poll(() => receivedFilters.event_type).toBe('finalization_completed');
+    await expect.element(page.getByText('Finalization completed')).toBeVisible();
+    await expect.element(page.getByText('Finalization failed')).not.toBeInTheDocument();
   });
 
   test('uses separate trace list and detail views on mobile', async () => {
