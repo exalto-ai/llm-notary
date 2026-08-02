@@ -203,7 +203,7 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
     response
 }
 
-#[utoipa::path(delete, path = "/v1/session", responses((status = 204, description = "Dashboard session ended"), (status = 401, body = ErrorEnvelope)), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/session", responses((status = 204, description = "Dashboard session ended")), tag = "local-admin")]
 async fn end_session(State(state): State<AdminState>, request: Request) -> Response {
     if let Some(session) = session_from_headers(request.headers()) {
         state.sessions.lock().await.remove(session);
@@ -305,7 +305,7 @@ async fn captures(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/captures/{capture_id}", params(("capture_id" = String, Path)), responses((status = 200, body = CaptureDetailResponse), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures/{capture_id}", params(("capture_id" = String, Path)), responses((status = 200, body = CaptureDetailResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn capture(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -336,7 +336,7 @@ async fn capture(
     }))
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/finalizations", params(("capture_id" = String, Path)), responses((status = 202, body = FinalizationResponse), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/finalizations", params(("capture_id" = String, Path)), responses((status = 202, body = FinalizationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn start_finalization(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -364,7 +364,7 @@ struct LimitQuery {
     limit: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/operations", params(("limit" = Option<usize>, Query)), responses((status = 200, body = OperationListResponse)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/operations", params(("limit" = Option<usize>, Query)), responses((status = 200, body = OperationListResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn operations(
     State(state): State<AdminState>,
     Query(query): Query<LimitQuery>,
@@ -379,7 +379,7 @@ async fn operations(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/operations/{operation_id}", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/operations/{operation_id}", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn operation(
     State(state): State<AdminState>,
     Path(operation_id): Path<String>,
@@ -394,7 +394,7 @@ async fn operation(
     Ok(Json(value.into()))
 }
 
-#[utoipa::path(post, path = "/v1/operations/{operation_id}/retry", params(("operation_id" = String, Path)), responses((status = 202, body = OperationResponse), (status = 409, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/operations/{operation_id}/retry", params(("operation_id" = String, Path)), responses((status = 202, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn retry_operation(
     State(state): State<AdminState>,
     Path(operation_id): Path<String>,
@@ -411,7 +411,7 @@ async fn retry_operation(
     Ok((StatusCode::ACCEPTED, Json(value.into())))
 }
 
-#[utoipa::path(get, path = "/v1/captures/{capture_id}/trace", params(("capture_id" = String, Path)), responses((status = 200, body = TraceResponse), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures/{capture_id}/trace", params(("capture_id" = String, Path)), responses((status = 200, body = TraceResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn trace(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -431,7 +431,7 @@ async fn trace(
     Ok(Json(value))
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/trace:verify", params(("capture_id" = String, Path)), responses((status = 200, body = VerificationResponse), (status = 422, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/trace:verify", params(("capture_id" = String, Path)), responses((status = 200, body = VerificationResponse), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn verify_trace(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -477,7 +477,7 @@ struct EventQuery {
     limit: Option<usize>,
 }
 
-#[utoipa::path(get, path = "/v1/events", params(("cursor" = Option<u64>, Query), ("limit" = Option<usize>, Query)), responses((status = 200, body = EventListResponse)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/events", params(("cursor" = Option<u64>, Query), ("limit" = Option<usize>, Query)), responses((status = 200, body = EventListResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn events(
     State(state): State<AdminState>,
     Query(query): Query<EventQuery>,
@@ -496,7 +496,7 @@ async fn events(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/publication/auth", responses((status = 200, body = PublicationAuthResponse)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/publication/auth", responses((status = 200, body = PublicationAuthResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn publication_auth_status(
     State(state): State<AdminState>,
 ) -> Result<Json<PublicationAuthResponse>, ApiError> {
@@ -531,7 +531,7 @@ fn default_device_name() -> String {
     "LLM Notary local dashboard".to_owned()
 }
 
-#[utoipa::path(post, path = "/v1/publication/auth", request_body = PublicationAuthRequest, responses((status = 202, body = PublicationAuthStartedResponse)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/publication/auth", request_body = PublicationAuthRequest, responses((status = 202, body = PublicationAuthStartedResponse), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn start_publication_auth(
     State(state): State<AdminState>,
     Json(body): Json<PublicationAuthRequest>,
@@ -555,7 +555,7 @@ async fn start_publication_auth(
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
-#[utoipa::path(get, path = "/v1/publication/auth/{request_id}", params(("request_id" = String, Path)), responses((status = 200, body = PublicationAuthResponse), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/publication/auth/{request_id}", params(("request_id" = String, Path)), responses((status = 200, body = PublicationAuthResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn poll_publication_auth(
     State(state): State<AdminState>,
     Path(request_id): Path<String>,
@@ -596,7 +596,7 @@ async fn poll_publication_auth(
     }
 }
 
-#[utoipa::path(delete, path = "/v1/publication/auth", responses((status = 204, description = "Publication credentials revoked")), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/publication/auth", responses((status = 204, description = "Publication credentials revoked"), (status = 401, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn end_publication_auth(State(state): State<AdminState>) -> Result<StatusCode, ApiError> {
     let _credentials = state.publication_credentials.lock().await;
     auth::logout_for_service()
@@ -605,7 +605,7 @@ async fn end_publication_auth(State(state): State<AdminState>) -> Result<StatusC
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/publications", params(("capture_id" = String, Path)), responses((status = 202, body = PublicationResponse), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/publications", params(("capture_id" = String, Path)), responses((status = 202, body = PublicationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn publish_capture(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -633,7 +633,7 @@ struct PublicTraceQuery {
     api_origin: Option<String>,
 }
 
-#[utoipa::path(get, path = "/v1/public-traces/{publication_id}", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/public-traces/{publication_id}", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn download_public_trace(
     Path(publication_id): Path<String>,
     Query(query): Query<PublicTraceQuery>,
@@ -641,7 +641,7 @@ async fn download_public_trace(
     fetch_public_trace(publication_id, query.api_origin, false).await
 }
 
-#[utoipa::path(post, path = "/v1/public-traces/{publication_id}/verify", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 422, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/public-traces/{publication_id}/verify", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
 async fn verify_public_trace(
     Path(publication_id): Path<String>,
     Query(query): Query<PublicTraceQuery>,
@@ -1278,6 +1278,31 @@ mod tests {
         ] {
             assert!(body["paths"].get(path).is_some(), "OpenAPI missing {path}");
         }
+        for (path, method) in [
+            ("/v1/status", "get"),
+            ("/v1/captures", "get"),
+            ("/v1/captures/{capture_id}", "get"),
+            ("/v1/captures/{capture_id}/finalizations", "post"),
+            ("/v1/operations", "get"),
+            ("/v1/operations/{operation_id}", "get"),
+            ("/v1/operations/{operation_id}/retry", "post"),
+            ("/v1/captures/{capture_id}/trace", "get"),
+            ("/v1/captures/{capture_id}/trace:verify", "post"),
+            ("/v1/events", "get"),
+            ("/v1/publication/auth", "get"),
+            ("/v1/publication/auth", "post"),
+            ("/v1/publication/auth", "delete"),
+            ("/v1/publication/auth/{request_id}", "get"),
+            ("/v1/captures/{capture_id}/publications", "post"),
+            ("/v1/public-traces/{publication_id}", "get"),
+            ("/v1/public-traces/{publication_id}/verify", "post"),
+        ] {
+            assert!(
+                body["paths"][path][method]["responses"]["401"].is_object(),
+                "OpenAPI missing the protected response for {method} {path}"
+            );
+        }
+        assert!(body["paths"]["/v1/session"]["delete"]["responses"]["401"].is_null());
     }
 
     #[tokio::test]
