@@ -105,6 +105,7 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
             "/v1/captures/{capture_id}/publications",
             post(publish_capture),
         )
+        .route("/v1/publications/{job_id}", get(publication_status))
         .route(
             "/v1/public-traces/{publication_id}",
             get(download_public_trace),
@@ -146,14 +147,14 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
         start_finalization, operations, operation, retry_operation, trace,
         verify_trace, events, publication_auth_status, start_publication_auth,
         end_publication_auth, poll_publication_auth, publish_capture,
-        download_public_trace, verify_public_trace
+        publication_status, download_public_trace, verify_public_trace
     ),
     components(schemas(
         HealthResponse, StatusResponse, CountsResponse,
         CaptureResponse, CaptureDetailResponse, ArtifactResponse, CaptureListResponse,
         OperationResponse, OperationAttemptResponse, OperationListResponse, FinalizationResponse, EventResponse,
         EventListResponse, TraceResponse, VerificationResponse, PublicationAuthResponse,
-        PublicationAuthRequest, PublicationAuthStartedResponse, PublicationResponse,
+        PublicationAuthRequest, PublicationAuthStartedResponse, PublicationResponse, PublicationStatusResponse,
         PublicTraceResponse, PublicTraceVerificationResponse, ErrorBody, ErrorEnvelope
     )),
     modifiers(&SecurityAddon),
@@ -678,11 +679,30 @@ async fn publish_capture(
         StatusCode::ACCEPTED,
         Json(PublicationResponse {
             capture_id: verified_capture_id,
+            status_url: format!("/v1/publications/{}", publication.job_id),
             job_id: publication.job_id,
             state: publication.state,
-            status_url: publication.status_url,
         }),
     ))
+}
+
+#[utoipa::path(get, path = "/v1/publications/{job_id}", params(("job_id" = String, Path)), responses((status = 200, body = PublicationStatusResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security(("bearerAuth" = [])), tag = "local-admin")]
+async fn publication_status(
+    State(state): State<AdminState>,
+    Path(job_id): Path<String>,
+) -> Result<Json<PublicationStatusResponse>, ApiError> {
+    validate_id(&job_id, "")?;
+    let _credentials = state.publication_credentials.lock().await;
+    let status = publish::publication_status(&job_id)
+        .await
+        .map_err(|_| ApiError::not_found("publication_not_found"))?;
+    Ok(Json(PublicationStatusResponse {
+        job_id: status.job_id,
+        state: status.state,
+        failure_code: status.failure_code,
+        trace_url: status.trace_url,
+        stamp_url: status.stamp_url,
+    }))
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1188,6 +1208,15 @@ struct PublicationResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+struct PublicationStatusResponse {
+    job_id: String,
+    state: String,
+    failure_code: Option<String>,
+    trace_url: Option<String>,
+    stamp_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 struct PublicTraceResponse {
     publication_id: String,
     trace: serde_json::Value,
@@ -1431,6 +1460,7 @@ mod tests {
             "/v1/publication/auth",
             "/v1/publication/auth/{request_id}",
             "/v1/captures/{capture_id}/publications",
+            "/v1/publications/{job_id}",
             "/v1/public-traces/{publication_id}",
             "/v1/public-traces/{publication_id}/verify",
         ] {
@@ -1452,6 +1482,7 @@ mod tests {
             ("/v1/publication/auth", "delete"),
             ("/v1/publication/auth/{request_id}", "get"),
             ("/v1/captures/{capture_id}/publications", "post"),
+            ("/v1/publications/{job_id}", "get"),
             ("/v1/public-traces/{publication_id}", "get"),
             ("/v1/public-traces/{publication_id}/verify", "post"),
             ("/v1/session", "delete"),

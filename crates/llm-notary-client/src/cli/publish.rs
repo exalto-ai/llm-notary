@@ -49,6 +49,9 @@ struct PublishJob {
     id: String,
     state: String,
     status_url: String,
+    failure_code: Option<String>,
+    trace_url: Option<String>,
+    stamp_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -68,6 +71,15 @@ pub(crate) struct PublishOutput {
     pub(crate) job_id: String,
     pub(crate) state: String,
     pub(crate) status_url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct PublicationStatus {
+    pub(crate) job_id: String,
+    pub(crate) state: String,
+    pub(crate) failure_code: Option<String>,
+    pub(crate) trace_url: Option<String>,
+    pub(crate) stamp_url: Option<String>,
 }
 
 pub async fn run(args: PublishArgs) -> Result<()> {
@@ -134,6 +146,48 @@ pub(crate) async fn publish_package(
         status_url,
     };
     Ok((output, manifest.capture_id().to_owned(), key_id))
+}
+
+pub(crate) async fn publication_status(job_id: &str) -> Result<PublicationStatus> {
+    let authenticated = auth::authenticate().await?;
+    let client = http_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("building publication status client")?;
+    let job = api_json::<PublishJob>(
+        client
+            .get(
+                authenticated
+                    .origin
+                    .api_url(&format!("/api/publish/jobs/{job_id}")),
+            )
+            .bearer_auth(&authenticated.access_token)
+            .send()
+            .await
+            .context("polling publication job")?,
+        "polling publication job",
+    )
+    .await?;
+    if job.id != job_id {
+        bail!("publication API returned the wrong job identifier");
+    }
+    let trace_url = job
+        .trace_url
+        .as_deref()
+        .map(|value| absolute_same_origin_url(&authenticated.origin, value))
+        .transpose()?;
+    let stamp_url = job
+        .stamp_url
+        .as_deref()
+        .map(|value| absolute_same_origin_url(&authenticated.origin, value))
+        .transpose()?;
+    Ok(PublicationStatus {
+        job_id: job.id,
+        state: job.state,
+        failure_code: job.failure_code,
+        trace_url,
+        stamp_url,
+    })
 }
 
 async fn submit_archive(
@@ -344,12 +398,16 @@ async fn api_json<T: DeserializeOwned>(response: Response, action: &str) -> Resu
 }
 
 fn absolute_status_url(origin: &ApiOrigin, status_url: &str) -> Result<String> {
+    absolute_same_origin_url(origin, status_url)
+}
+
+fn absolute_same_origin_url(origin: &ApiOrigin, value: &str) -> Result<String> {
     let url = origin
         .url()
-        .join(status_url)
-        .context("publication API returned an invalid status URL")?;
+        .join(value)
+        .context("publication API returned an invalid same-origin URL")?;
     if url.origin() != origin.url().origin() {
-        bail!("publication API returned a cross-origin status URL");
+        bail!("publication API returned a cross-origin URL");
     }
     Ok(url.to_string())
 }
