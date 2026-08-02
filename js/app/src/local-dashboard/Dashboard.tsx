@@ -586,13 +586,11 @@ function SettingsView({ status }: { status: Status }) {
       title="Settings"
       copy="View how this service is configured without exposing credentials or artifact paths."
     />
+    <Paper className="appearance-setting">
+      <Text fw={700}>Theme</Text>
+      <SchemeControl />
+    </Paper>
     <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg">
-      <Paper className="settings-panel">
-        <Text className="eyebrow">Appearance</Text>
-        <Title order={2}>Color scheme</Title>
-        <Text>Follow your system setting or choose a theme for this browser.</Text>
-        <SchemeControl />
-      </Paper>
       <Paper className="settings-panel">
         <Text className="eyebrow">Listeners</Text>
         <Title order={2}>Listener addresses</Title>
