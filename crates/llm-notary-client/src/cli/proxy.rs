@@ -15,7 +15,6 @@ use axum::{
     routing::any,
 };
 use bytes::{Bytes, BytesMut};
-use clap::Args;
 use http_body_util::BodyExt as _;
 use tokio::sync::Mutex;
 use tokio_stream::wrappers::ReceiverStream;
@@ -93,23 +92,22 @@ impl Provider {
     }
 }
 
-#[derive(Args, Debug)]
+#[derive(Debug)]
 pub struct ProxyArgs {
     /// Versioned local agent configuration file. Defaults to the standard
     /// path, creating an editable default there on first use.
-    #[arg(long)]
-    config: Option<PathBuf>,
+    pub(crate) config: Option<PathBuf>,
 }
 
 #[derive(Clone)]
-struct AppState {
+pub(crate) struct AppState {
     notary: NotaryEndpoint,
     bundle_dir: PathBuf,
     max_frame_bytes: usize,
     max_attestable_http_bytes: usize,
-    vault: Arc<Vault>,
-    catalog: Arc<Catalog>,
-    config: Arc<AgentConfig>,
+    pub(crate) vault: Arc<Vault>,
+    pub(crate) catalog: Arc<Catalog>,
+    pub(crate) config: Arc<AgentConfig>,
     config_fingerprint: Arc<str>,
     serial: Arc<Mutex<u64>>,
 }
@@ -134,7 +132,9 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         Some(notary) => notary,
         None => discover_notary().await?,
     };
-    let vault = Vault::open_or_init_interactive().context("opening the local bundle vault (use `llm-notary vault init --passphrase` if this machine has no OS vault)")?;
+    let vault = Vault::open_or_init_interactive().context(
+        "opening the local bundle vault (set LLM_NOTARY_VAULT_PASSPHRASE_FILE before first start when an OS vault is unavailable)",
+    )?;
     let (catalog, recovery) = Catalog::open_for_proxy(&config)?;
     if recovery.recovered_bundles > 0 || recovery.interrupted_captures > 0 {
         tracing::warn!(
@@ -154,8 +154,11 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         config: Arc::new(config),
         serial: Arc::new(Mutex::new(0)),
     };
-    let app = Router::new().fallback(any(proxy)).with_state(state);
+    let app = router(state.clone());
+    let admin_state = crate::admin::AdminState::new(state.catalog.clone(), state.config.clone())?;
+    let admin = crate::admin::router(admin_state.clone())?;
     let listener = tokio::net::TcpListener::bind(listen).await?;
+    let admin_listener = tokio::net::TcpListener::bind(state.config.admin.listen).await?;
     tracing::info!(
         address = %listen,
         notary = %notary,
@@ -163,8 +166,49 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         providers = ?Provider::ALL,
         "LLM Notary proxy listening"
     );
-    axum::serve(listener, app).await?;
-    Ok(())
+    tracing::info!(address = %state.config.admin.listen, "LLM Notary admin API listening");
+    let mut worker = crate::admin::spawn_finalization_worker(
+        state.catalog.clone(),
+        state.config.clone(),
+        state.vault.clone(),
+        admin_state.work_available.clone(),
+    );
+    let result = tokio::select! {
+        result = axum::serve(listener, app) => result.map_err(Into::into),
+        result = axum::serve(admin_listener, admin) => result.map_err(Into::into),
+        result = &mut worker => result.context("finalization worker exited")?,
+        () = shutdown_signal() => {
+            tracing::info!("LLM Notary service shutting down");
+            Ok(())
+        },
+    };
+    worker.abort();
+    result
+}
+
+pub(crate) fn router(state: AppState) -> Router {
+    Router::new().fallback(any(proxy)).with_state(state)
+}
+
+async fn shutdown_signal() {
+    let interrupt = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("installing Ctrl-C signal handler failed");
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("installing termination signal handler failed")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        () = interrupt => {},
+        () = terminate => {},
+    }
 }
 
 pub(crate) async fn discover_notary() -> Result<NotaryEndpoint> {
@@ -220,7 +264,14 @@ async fn proxy(State(state): State<AppState>, request: Request) -> Response {
     match proxy_inner(state, request).await {
         Ok(response) => response,
         Err(error) => {
-            tracing::warn!(%error, "proxy request failed");
+            tracing::warn!(
+                kind = if notary_admission_error(&error).is_some() {
+                    "notary_capacity"
+                } else {
+                    "proxy_error"
+                },
+                "proxy request failed"
+            );
             proxy_error_response(&error)
         }
     }
@@ -231,7 +282,7 @@ fn proxy_error_response(error: &anyhow::Error) -> Response {
         return (
             StatusCode::BAD_GATEWAY,
             [("content-type", "application/json")],
-            format!(r#"{{"error":{{"message":"LLM Notary proxy error: {error}"}}}}"#),
+            r#"{"error":{"message":"LLM Notary proxy request failed"}}"#,
         )
             .into_response();
     };
@@ -309,8 +360,19 @@ fn provider_route_not_found_response() -> Response {
 }
 
 async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
-    let (parts, body) = request.into_parts();
-    if parts.method == http::Method::GET || parts.method == http::Method::HEAD {
+    let (mut parts, body) = request.into_parts();
+    for name in [
+        http::header::AUTHORIZATION,
+        http::header::PROXY_AUTHORIZATION,
+        HeaderName::from_static("x-api-key"),
+    ] {
+        if let Some(value) = parts.headers.get_mut(name) {
+            value.set_sensitive(true);
+        }
+    }
+    if (parts.method == http::Method::GET || parts.method == http::Method::HEAD)
+        && matches!(parts.uri.path(), "/" | "/healthz")
+    {
         let mut response = if parts.method == http::Method::HEAD {
             Response::new(Body::empty())
         } else {
@@ -323,6 +385,9 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
             HeaderValue::from_static("application/json"),
         );
         return Ok(response);
+    }
+    if parts.method == http::Method::GET || parts.method == http::Method::HEAD {
+        return Ok(provider_route_not_found_response());
     }
     if parts.method != http::Method::POST {
         let mut response =
@@ -1275,24 +1340,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn answers_get_locally_without_creating_an_upstream_proof_task() {
-        let state = state();
-        let serial = state.serial.clone();
-        let request = Request::builder()
-            .method(http::Method::GET)
-            .uri("/v1/models")
-            .body(Body::empty())
+    async fn admin_paths_are_not_reachable_from_the_proxy_listener() {
+        for (method, path) in [
+            (http::Method::GET, "/openapi.json"),
+            (http::Method::GET, "/v1/status"),
+            (http::Method::GET, "/v1/captures"),
+            (http::Method::POST, "/v1/captures/cap-example/finalizations"),
+            (http::Method::GET, "/v1/operations/op-example"),
+            (http::Method::POST, "/v1/operations/op-example/retry"),
+            (http::Method::POST, "/v1/captures/cap-example/trace:verify"),
+            (http::Method::GET, "/v1/events"),
+            (http::Method::POST, "/v1/session"),
+            (http::Method::GET, "/v1/publication/auth"),
+            (http::Method::POST, "/v1/captures/cap-example/publications"),
+            (http::Method::GET, "/v1/public-traces/publication-example"),
+        ] {
+            let state = state();
+            let serial = state.serial.clone();
+            let response = proxy_inner(
+                state,
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
             .unwrap();
-
-        let response = proxy_inner(state, request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert!(response.headers().get("x-llm-notary-bundle").is_none());
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-            serde_json::json!({"service": "llm-notary-proxy", "status": "ok"})
-        );
-        assert_eq!(*serial.lock().await, 0);
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            assert!(response.headers().get("x-llm-notary-bundle").is_none());
+            assert_eq!(*serial.lock().await, 0);
+        }
     }
 
     #[tokio::test]

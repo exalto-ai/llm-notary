@@ -63,6 +63,8 @@ impl Vault {
     pub fn open_or_init_interactive() -> Result<Self> {
         if config_path()?.exists() {
             Self::open_interactive()
+        } else if let Some(passphrase) = passphrase_from_file_env()? {
+            Self::init_passphrase(&passphrase)
         } else {
             Self::init_os()
         }

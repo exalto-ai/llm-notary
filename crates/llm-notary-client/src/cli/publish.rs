@@ -49,6 +49,9 @@ struct PublishJob {
     id: String,
     state: String,
     status_url: String,
+    failure_code: Option<String>,
+    trace_url: Option<String>,
+    stamp_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -64,25 +67,59 @@ struct ApiErrorResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct PublishOutput {
-    job_id: String,
-    state: String,
-    status_url: String,
+pub(crate) struct PublishOutput {
+    pub(crate) job_id: String,
+    pub(crate) state: String,
+    pub(crate) status_url: String,
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) struct PublicationStatus {
+    pub(crate) job_id: String,
+    pub(crate) state: String,
+    pub(crate) failure_code: Option<String>,
+    pub(crate) trace_url: Option<String>,
+    pub(crate) stamp_url: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum PublicationStatusError {
+    Authentication,
+    NotFound,
+    Unavailable,
 }
 
 pub async fn run(args: PublishArgs) -> Result<()> {
-    reject_bundle_path(&args.package)?;
+    let (output, capture_id, key_id) =
+        publish_package(&args.package, args.trusted_notary_key.as_deref()).await?;
+    if args.json {
+        println!("{}", serde_json::to_string(&output)?);
+    } else {
+        println!("submitted verified trace package: {capture_id}");
+        println!("trusted notary key: {key_id}");
+        println!("publication job: {}", output.job_id);
+        println!("state: {}", output.state);
+        println!("status: {}", output.status_url);
+    }
+    Ok(())
+}
+
+pub(crate) async fn publish_package(
+    package: &std::path::Path,
+    trusted_key: Option<&str>,
+) -> Result<(PublishOutput, String, String)> {
+    reject_bundle_path(package)?;
     // Snapshot the package before verification. Verification and upload then
     // operate on the same immutable archive bytes even if the source directory
     // changes concurrently.
-    let archive = build_trace_package_archive(&args.package)
+    let archive = build_trace_package_archive(package)
         .context("building deterministic publication archive; nothing was uploaded")?;
     let snapshot = tempfile::tempdir().context("creating private publication snapshot")?;
     let snapshot_path = snapshot.path().join("package");
     extract_trace_package_archive(&archive, &snapshot_path)
         .context("validating private publication snapshot")?;
     let embedded_key = trace_package_notary_key(&snapshot_path)?;
-    let (trusted_notary_key, key_id) = match args.trusted_notary_key.as_deref() {
+    let (trusted_notary_key, key_id) = match trusted_key {
         Some(value) => notary::explicit_key(value)?,
         None => {
             let created_at = trace_package_created_at_unix_ms(&snapshot_path)?;
@@ -115,19 +152,74 @@ pub async fn run(args: PublishArgs) -> Result<()> {
         state: job.state,
         status_url,
     };
-    if args.json {
-        println!("{}", serde_json::to_string(&output)?);
-    } else {
-        println!(
-            "submitted verified trace package: {}",
-            manifest.capture_id()
-        );
-        println!("trusted notary key: {key_id}");
-        println!("publication job: {}", output.job_id);
-        println!("state: {}", output.state);
-        println!("status: {}", output.status_url);
+    Ok((output, manifest.capture_id().to_owned(), key_id))
+}
+
+pub(crate) async fn publication_status(
+    job_id: &str,
+) -> std::result::Result<PublicationStatus, PublicationStatusError> {
+    let authenticated = auth::authenticate_for_publication_status()
+        .await
+        .map_err(|error| match error {
+            auth::PublicationAuthenticationError::Required => {
+                PublicationStatusError::Authentication
+            }
+            auth::PublicationAuthenticationError::Unavailable => {
+                PublicationStatusError::Unavailable
+            }
+        })?;
+    let client = http_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| PublicationStatusError::Unavailable)?;
+    let response = client
+        .get(
+            authenticated
+                .origin
+                .api_url(&format!("/api/publish/jobs/{job_id}")),
+        )
+        .bearer_auth(&authenticated.access_token)
+        .send()
+        .await
+        .map_err(|_| PublicationStatusError::Unavailable)?;
+    if let Some(error) = publication_status_http_error(response.status()) {
+        return Err(error);
     }
-    Ok(())
+    let job = response
+        .json::<PublishJob>()
+        .await
+        .map_err(|_| PublicationStatusError::Unavailable)?;
+    if job.id != job_id {
+        return Err(PublicationStatusError::Unavailable);
+    }
+    let trace_url = job
+        .trace_url
+        .as_deref()
+        .map(|value| absolute_same_origin_url(&authenticated.origin, value))
+        .transpose()
+        .map_err(|_| PublicationStatusError::Unavailable)?;
+    let stamp_url = job
+        .stamp_url
+        .as_deref()
+        .map(|value| absolute_same_origin_url(&authenticated.origin, value))
+        .transpose()
+        .map_err(|_| PublicationStatusError::Unavailable)?;
+    Ok(PublicationStatus {
+        job_id: job.id,
+        state: job.state,
+        failure_code: job.failure_code,
+        trace_url,
+        stamp_url,
+    })
+}
+
+fn publication_status_http_error(status: StatusCode) -> Option<PublicationStatusError> {
+    match status {
+        StatusCode::NOT_FOUND => Some(PublicationStatusError::NotFound),
+        StatusCode::UNAUTHORIZED => Some(PublicationStatusError::Authentication),
+        status if !status.is_success() => Some(PublicationStatusError::Unavailable),
+        _ => None,
+    }
 }
 
 async fn submit_archive(
@@ -332,18 +424,24 @@ async fn api_json<T: DeserializeOwned>(response: Response, action: &str) -> Resu
                 .to_owned()
         });
     if status == StatusCode::UNAUTHORIZED {
-        bail!("{action} failed: {message}; run `llm-notary login` again");
+        bail!(
+            "{action} failed: {message}; authorize publication through the local dashboard or administration API"
+        );
     }
     bail!("{action} failed with HTTP {status}: {message}")
 }
 
 fn absolute_status_url(origin: &ApiOrigin, status_url: &str) -> Result<String> {
+    absolute_same_origin_url(origin, status_url)
+}
+
+fn absolute_same_origin_url(origin: &ApiOrigin, value: &str) -> Result<String> {
     let url = origin
         .url()
-        .join(status_url)
-        .context("publication API returned an invalid status URL")?;
+        .join(value)
+        .context("publication API returned an invalid same-origin URL")?;
     if url.origin() != origin.url().origin() {
-        bail!("publication API returned a cross-origin status URL");
+        bail!("publication API returned a cross-origin URL");
     }
     Ok(url.to_string())
 }
@@ -353,7 +451,9 @@ fn reject_bundle_path(path: &std::path::Path) -> Result<()> {
         .extension()
         .is_some_and(|extension| extension == "llmbundle")
     {
-        bail!("encrypted .llmbundle files cannot be published; run `llm-notary finalize` first");
+        bail!(
+            "encrypted .llmbundle files cannot be published; finalize the capture through the local administration API first"
+        );
     }
     Ok(())
 }
@@ -491,5 +591,22 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn publication_status_preserves_not_found_authentication_and_outage_errors() {
+        assert!(matches!(
+            publication_status_http_error(StatusCode::NOT_FOUND),
+            Some(PublicationStatusError::NotFound)
+        ));
+        assert!(matches!(
+            publication_status_http_error(StatusCode::UNAUTHORIZED),
+            Some(PublicationStatusError::Authentication)
+        ));
+        assert!(matches!(
+            publication_status_http_error(StatusCode::BAD_GATEWAY),
+            Some(PublicationStatusError::Unavailable)
+        ));
+        assert!(publication_status_http_error(StatusCode::OK).is_none());
     }
 }
