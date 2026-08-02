@@ -38,7 +38,7 @@ typography:
   display:
     fontFamily: "Space Grotesk"
     fontWeight: 600
-    letterSpacing: "-0.062em"
+    letterSpacing: "-0.05em"
     lineHeight: 0.93
   interface:
     fontFamily: "Instrument Sans"
@@ -204,7 +204,7 @@ Footer links remain visually quiet on pointer hover: no underline, color flash, 
 
 Motion explains an evidence transition; it does not make the product feel alive.
 
-- The landing hero may use the animated grid, but the animation is clipped to the hero and ends at that section boundary. The hero thesis sits below center but with roughly 15vh of space beneath it—low enough to preserve the signal field above, high enough that it does not feel pinned to the bottom. At display scale, use Space Grotesk around `-0.062em`; tighter tracking makes “Verifiable intelligence” visibly cramped.
+- The landing hero may use the animated grid, but the animation is clipped to the hero and ends at that section boundary. The hero thesis sits below center but with roughly 15vh of space beneath it—low enough to preserve the signal field above, high enough that it does not feel pinned to the bottom. At display scale, use Space Grotesk around `-0.05em`; tighter tracking makes “Verifiable intelligence” visibly cramped.
 - The relay diagram must not inherit the hero grid. It presents only the motion needed to explain the request, notary, provider, and evidence path.
 - The relay diagram keeps its data flow, but packets move in one deliberate pass and then rest. Avoid infinite typewriter effects, spinning controls, or repeated sealing theatrics.
 - Selection, filters, menus, and dialogs may fade or change surface color over 120–160ms. They do not spring, scale, or float.

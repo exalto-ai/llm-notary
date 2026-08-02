@@ -99,7 +99,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .signal-grid { opacity: .35; }.signal-cells { opacity: .54; }
 .signal-trace { stroke-dasharray: 112 96; animation-duration: 17s; }
 .signal-marks { fill: var(--action); stroke: var(--action-dark); }
-.hero h1 { max-width: 790px; margin: 0 0 19px; font-family: 'Space Grotesk', Arial, sans-serif; font-size: clamp(52px, 7.2vw, 90px); font-weight: 600; line-height: .93; letter-spacing: -.062em; }
+.hero h1 { max-width: 790px; margin: 0 0 19px; font-family: 'Space Grotesk', Arial, sans-serif; font-size: clamp(52px, 7.2vw, 90px); font-weight: 600; line-height: .93; letter-spacing: -.05em; }
 .hero > p { max-width: 470px; margin: 0; color: var(--body-copy); font-size: 16px; line-height: 1.5; }
 .hero-actions { gap: 17px; margin-top: 30px; }
 .section { padding: 76px clamp(16px, 7vw, 112px); border-top: 0; }
