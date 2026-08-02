@@ -6,7 +6,7 @@ RUN npm ci
 COPY . .
 ARG LLM_NOTARY_PUBLIC_ORIGIN
 ENV VITE_PUBLIC_ORIGIN=$LLM_NOTARY_PUBLIC_ORIGIN
-RUN npm run build
+RUN npm run build:site
 
 FROM caddy:2.10-alpine
 
