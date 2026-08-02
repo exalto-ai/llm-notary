@@ -1,6 +1,8 @@
 mod api_origin;
 pub mod auth;
 pub mod bundle;
+pub mod capture;
+pub mod config;
 pub mod download;
 pub mod notary;
 pub mod proxy;

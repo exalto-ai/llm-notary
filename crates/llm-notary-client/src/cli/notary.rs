@@ -164,7 +164,7 @@ pub fn cached_record_for_bundle(
         }
     }
     bail!(
-        "no cached active or retiring notary can finalize this bundle; refresh the directory or supply --notary and --trusted-notary-key"
+        "no cached active or retiring notary can finalize this bundle; refresh the directory or set notary.endpoint and supply --trusted-notary-key"
     )
 }
 
