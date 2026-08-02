@@ -31,7 +31,7 @@ const navigation: Array<{ view: DashboardView; label: string; icon: typeof Gauge
   { view: 'traces', label: 'Finalized traces', icon: FileCheck2 },
   { view: 'publishing', label: 'Publishing', icon: Send },
   { view: 'activity', label: 'Activity', icon: Activity },
-  { view: 'settings', label: 'Settings & API', icon: Settings }
+  { view: 'settings', label: 'Settings', icon: Settings }
 ];
 
 function routeFromHash(): Route {
@@ -149,7 +149,7 @@ function AuthGate({ api, onAuthenticated }: { api: LocalApi; onAuthenticated: ()
     <section className="auth-document">
       <Brand />
       <Text className="eyebrow">Local administration</Text>
-      <Title order={1}>Open your evidence workspace.</Title>
+      <Title order={1}>Sign in to the local dashboard</Title>
       <Text className="auth-copy">Exchange the private admin token for an HttpOnly browser session. The token is cleared from this form and is never stored by the dashboard.</Text>
       <form onSubmit={submit}>
         <PasswordInput label="Admin token" description="Read it from the token_path named in your local service configuration."
@@ -237,8 +237,8 @@ function OverviewView({ api, status, navigate }: { api: LocalApi; status: Status
     ['Finalizing', status.counts.active_operations, 'active'], ['Finalized', status.counts.finalized, 'ready'],
     ['Failed', status.counts.failed, 'danger']
   ] as const;
-  return <div className="view-page overview-page"><PageHeader eyebrow="Local service" title="Evidence at a glance."
-    copy="Capture privately, finalize deliberately, and verify from authenticated provider bytes." />
+  return <div className="view-page overview-page"><PageHeader eyebrow="Local service" title="Service overview"
+    copy="Review captures as they move from private recording to a verified trace." />
     <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing={0} className="service-grid">
       <ServiceFact icon={CheckCircle2} label="Service" value="Online" detail={`v${status.version}`} tone="ready" />
       <ServiceFact icon={KeyRound} label="Vault" value={status.vault} detail="Key material stays local" />
@@ -247,8 +247,8 @@ function OverviewView({ api, status, navigate }: { api: LocalApi; status: Status
     </SimpleGrid>
     <section className="overview-work"><div><Text className="eyebrow">Capture states</Text><div className="count-strip">{stats.map(([label, value, tone]) => <UnstyledButton key={label} onClick={() => navigate({ view: label === 'Finalizing' ? 'finalizations' : 'captures' })}>
       <span className={`count-marker count-marker--${tone}`} /><b>{value}</b><span>{label}</span></UnstyledButton>)}</div></div>
-      <Paper className="next-action"><Text className="eyebrow">Next action</Text><Title order={2}>{status.counts.pending ? 'Finalize pending evidence.' : 'Send a provider request.'}</Title>
-        <Text>{status.counts.pending ? `${status.counts.pending} capture${status.counts.pending === 1 ? '' : 's'} can be turned into independently verifiable traces.` : 'Point an SDK at the local provider proxy to create a private capture.'}</Text>
+      <Paper className="next-action"><Text className="eyebrow">Next action</Text><Title order={2}>{status.counts.pending ? 'Finalize pending evidence' : 'Send a provider request'}</Title>
+        <Text>{status.counts.pending ? `${status.counts.pending} capture${status.counts.pending === 1 ? ' is' : 's are'} ready to finalize.` : 'Point an SDK at the local provider proxy to create a private capture.'}</Text>
         <Button onClick={() => navigate({ view: status.counts.pending ? 'captures' : 'settings' })}>{status.counts.pending ? 'Review captures' : 'View proxy routes'}</Button></Paper>
     </section>
     <section className="recent-section"><Group justify="space-between"><div><Text className="eyebrow">Recent activity</Text><Title order={2}>What changed</Title></div><Button variant="subtle" onClick={() => navigate({ view: 'activity' })}>All activity</Button></Group>
@@ -282,8 +282,8 @@ function CapturesView({ api, selectedId, navigate }: { api: LocalApi; selectedId
   const activeId = selectedId ?? visible[0]?.capture_id;
   const active = visible.find((capture) => capture.capture_id === activeId) ?? selectedDetail.data?.capture;
   const showDetail = Boolean(mobile && selectedId);
-  return <div className="view-page capture-page"><PageHeader eyebrow="Private evidence" title="Captures"
-    copy="Search privacy-aware previews and move only selected captures into proof generation." />
+  return <div className="view-page capture-page"><PageHeader eyebrow="Local catalog" title="Captures"
+    copy="Search the prompt and output previews stored in the local catalog. Select a pending capture to finalize it." />
     {!showDetail && <div className="filter-bar filter-bar--captures"><TextInput aria-label="Search captures" placeholder="Search prompt and output previews" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
       <TextInput aria-label="Model filter" placeholder="All models" value={model} onChange={(event) => setModel(event.currentTarget.value)} />
       <Select aria-label="Provider filter" placeholder="All providers" clearable data={['openai', 'anthropic', 'deepseek', 'openrouter']} value={provider} onChange={setProvider} />
@@ -387,7 +387,7 @@ function FinalizationsView({ api, selectedId, navigate }: { api: LocalApi; selec
   });
   const active = operations.data?.items.find((item) => item.operation_id === selectedId)
     ?? selectedOperation.data ?? operations.data?.items[0];
-  return <div className="view-page"><PageHeader eyebrow="Background work" title="Finalizations" copy="Durable proof operations survive ambiguity: duplicates resolve to one active operation, and interruptions remain retryable." />
+  return <div className="view-page"><PageHeader eyebrow="Proof operations" title="Finalizations" copy="See queued, running, failed, and completed proof operations. Retry interrupted work here." />
     {operations.isLoading || (selectedId && selectedOperation.isLoading) ? <LoadingState /> : operations.error ? <QueryError error={operations.error} title="Finalizations are unavailable" /> : selectedOperation.error ? <QueryError error={selectedOperation.error} title="Finalization detail is unavailable" /> : !operations.data?.items.length && !active ? <EmptyState icon={ListChecks} title="No finalizations yet" copy="Queue one from a pending capture." />
       : <div className="operations-layout"><div className="operations-table"><Table.ScrollContainer minWidth={700}><Table highlightOnHover>
         <Table.Thead><Table.Tr><Table.Th>State</Table.Th><Table.Th>Capture</Table.Th><Table.Th>Attempt</Table.Th><Table.Th>Queued</Table.Th><Table.Th /></Table.Tr></Table.Thead>
@@ -421,7 +421,7 @@ function TracesView({ api, selectedId, navigate }: { api: LocalApi; selectedId?:
   const visible = (captures.data?.items ?? []).filter((capture) => `${capture.capture_id} ${capture.provider} ${capture.requested_model ?? ''} ${capture.prompt_preview} ${capture.output_preview}`.toLowerCase().includes(query.toLowerCase()));
   const activeId = selectedId ?? visible[0]?.capture_id;
   const showDetail = Boolean(mobile && selectedId);
-  return <div className="view-page"><PageHeader eyebrow="Portable evidence" title="Finalized traces" copy="Inspect the disclosed document, its evidence receipt, and a fresh independent verification result." />
+  return <div className="view-page"><PageHeader eyebrow="Finalized packages" title="Finalized traces" copy="Inspect a finalized trace and run local verification against its evidence." />
     {!showDetail && <div className="filter-bar filter-bar--short"><TextInput aria-label="Search finalized traces" placeholder="Search finalized traces" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} /></div>}
     {captures.isLoading ? <LoadingState /> : captures.error ? <QueryError error={captures.error} title="Finalized traces are unavailable" /> : !visible.length && !selectedId ? <EmptyState icon={FileCheck2} title="No finalized traces" copy="Finalize a pending capture or clear the search." />
       : <div className={`trace-layout ${showDetail ? 'show-detail' : ''}`}>{!showDetail && <ul className="trace-list" aria-label="Finalized traces">{visible.map((capture) => <li key={capture.capture_id}><CaptureRow capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'traces', id: capture.capture_id })} /></li>)}</ul>}{activeId && (!mobile || selectedId) && <TraceInspector api={api} captureId={activeId} mobile={Boolean(mobile)} onBack={() => navigate({ view: 'traces' })} />}</div>}
@@ -525,7 +525,7 @@ function PublishingView({ api }: { api: LocalApi }) {
     setConfirm(false); setSubmitted(result); notifications.show({ title: 'Publication submitted', message: `Job ${result.job_id} is ${result.state}.` });
   }, onError: (error) => mutationError('Publication failed', error) });
   const pollReady = Boolean(started && now >= started.nextPollAt);
-  return <div className="view-page"><PageHeader eyebrow="Explicit consent" title="Publishing" copy="Local finalization and public publication are separate decisions. Nothing is uploaded until you confirm a selected verified trace." />
+  return <div className="view-page"><PageHeader eyebrow="Public upload" title="Publishing" copy="Publishing is separate from finalization. Select and confirm a verified trace before uploading it." />
     <div className="publishing-grid"><Paper className="publishing-auth"><Group justify="space-between"><Text className="eyebrow">Publication account</Text><KeyRound size={17} /></Group>
       {auth.isLoading ? <Loader size="sm" /> : auth.error ? <QueryError error={auth.error} title="Publication authorization is unavailable" /> : auth.data?.signed_in ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.device_name}</Text><StatusLabel state="ready" /></> : <><Title order={2}>Not authorized</Title><Text>Begin the device flow, then approve the recognizable local dashboard session in your browser.</Text><Button variant="outline" loading={beginAuth.isPending} onClick={() => beginAuth.mutate()}>Begin authorization</Button></>}
       {started && <div className="authorization-code"><Text className="eyebrow">Approval code</Text><code>{started.flow.user_code}</code><a href={started.flow.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a><Text>{pollReady ? 'Approval can now be checked.' : `Waiting ${Math.max(1, Math.ceil((started.nextPollAt - now) / 1000))}s before the next check.`}</Text><Button size="xs" variant="subtle" disabled={!pollReady} loading={pollAuth.isPending} onClick={() => pollAuth.mutate()}>Check approval</Button></div>}
@@ -548,7 +548,7 @@ function ActivityView({ api }: { api: LocalApi }) {
     && (!eventType || event.event_type.toLowerCase().includes(eventType.toLowerCase()))
     && withinTime(event.created_at_unix_ms, time)
   ) ?? [];
-  return <div className="view-page"><PageHeader eyebrow="Redacted history" title="Activity" copy="Bounded service events use safe identifiers and failure codes—never credentials, raw headers, bundle plaintext, or arbitrary paths." action={<Button variant="outline" leftSection={<RefreshCw size={14} />} onClick={() => events.refetch()}>Refresh</Button>} />
+  return <div className="view-page"><PageHeader eyebrow="Service events" title="Activity" copy="Event history contains defined identifiers and failure codes. It excludes credentials, raw headers, bundle contents, and artifact paths." action={<Button variant="outline" leftSection={<RefreshCw size={14} />} onClick={() => events.refetch()}>Refresh</Button>} />
     <div className="filter-bar filter-bar--activity"><Select aria-label="Activity severity" placeholder="All severities" clearable data={['info', 'success', 'warning', 'error']} value={severity} onChange={setSeverity} />
       <TextInput aria-label="Activity capture ID" placeholder="Capture ID" value={captureId} onChange={(event) => setCaptureId(event.currentTarget.value)} />
       <TextInput aria-label="Activity operation ID" placeholder="Operation ID" value={operationId} onChange={(event) => setOperationId(event.currentTarget.value)} />
@@ -563,12 +563,62 @@ function EventList({ events }: { events: Event[] }) {
 }
 
 function SettingsView({ status }: { status: Status }) {
-  const copyOpenApi = async () => { await navigator.clipboard.writeText(`${window.location.origin}/openapi.json`); notifications.show({ title: 'OpenAPI URL copied', message: 'Point a coding agent at this local contract.' }); };
-  return <div className="view-page"><PageHeader eyebrow="Safe service information" title="Settings & API" copy="Inspect listener roles, preview policy, and endpoint discovery without exposing secrets or local artifact paths." />
-    <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg"><Paper className="settings-panel"><Text className="eyebrow">Listeners</Text><Title order={2}>Two ports, two roles.</Title><dl className="receipt-list"><Fact label="Provider proxy" value={status.proxy_listener} /><Fact label="Admin & dashboard" value={status.admin_listener} /><Fact label="API version" value="v1" /><Fact label="Service version" value={status.version} /></dl><Text className="safe-note"><ShieldCheck size={15} /> Both listeners are restricted to loopback.</Text></Paper>
-      <Paper className="settings-panel"><Text className="eyebrow">Agent discovery</Text><Title order={2}>OpenAPI is the contract.</Title><Text>Fetch the code-generated specification before selecting routes or request bodies.</Text><div className="api-link"><code>{window.location.origin}/openapi.json</code><ActionIcon variant="subtle" onClick={copyOpenApi} aria-label="Copy OpenAPI URL"><Copy size={15} /></ActionIcon></div><Button component="a" href="/openapi.json" target="_blank" variant="outline" leftSection={<CodeXml size={15} />}>Open specification</Button></Paper>
-      <Paper className="settings-panel"><Text className="eyebrow">Privacy policy</Text><Title order={2}>Preview storage</Title><Text>Up to {status.preview_chars.toLocaleString()} characters of known text fields are indexed locally. Raw headers are never cataloged.</Text><dl className="receipt-list"><Fact label="Vault" value={status.vault} /><Fact label="Notary discovery" value={status.notary} /></dl></Paper>
-      <Paper className="settings-panel inverse"><TerminalSquare size={20} /><Text className="eyebrow">Provider routes</Text><Title order={2}>Keep credentials in the SDK.</Title><code>http://{status.proxy_listener}/openai/v1</code><code>http://{status.proxy_listener}/anthropic</code><code>http://{status.proxy_listener}/deepseek</code><code>http://{status.proxy_listener}/openrouter/api/v1</code></Paper>
+  const openApiUrl = `${window.location.origin}/openapi.json`;
+  const copyOpenApi = async () => {
+    await navigator.clipboard.writeText(openApiUrl);
+    notifications.show({
+      title: 'OpenAPI URL copied',
+      message: 'Use this URL to discover admin routes and request bodies.'
+    });
+  };
+
+  return <div className="view-page">
+    <PageHeader
+      eyebrow="Configuration"
+      title="Settings"
+      copy="View how this service is configured without exposing credentials or artifact paths."
+    />
+    <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg">
+      <Paper className="settings-panel">
+        <Text className="eyebrow">Listeners</Text>
+        <Title order={2}>Listener addresses</Title>
+        <dl className="receipt-list">
+          <Fact label="Provider proxy" value={status.proxy_listener} />
+          <Fact label="Admin & dashboard" value={status.admin_listener} />
+          <Fact label="API version" value="v1" />
+          <Fact label="Service version" value={status.version} />
+        </dl>
+        <Text className="safe-note"><ShieldCheck size={15} /> Both listeners are restricted to loopback.</Text>
+      </Paper>
+      <Paper className="settings-panel">
+        <Text className="eyebrow">Agent discovery</Text>
+        <Title order={2}>API specification</Title>
+        <Text>Use the generated OpenAPI document to discover routes and request bodies.</Text>
+        <div className="api-link">
+          <code>{openApiUrl}</code>
+          <ActionIcon variant="subtle" onClick={copyOpenApi} aria-label="Copy OpenAPI URL"><Copy size={15} /></ActionIcon>
+        </div>
+        <Button component="a" href="/openapi.json" target="_blank" variant="outline" leftSection={<CodeXml size={15} />}>Open specification</Button>
+      </Paper>
+      <Paper className="settings-panel">
+        <Text className="eyebrow">Privacy policy</Text>
+        <Title order={2}>Preview storage</Title>
+        <Text>Up to {status.preview_chars.toLocaleString()} characters of known text fields are indexed locally. Raw headers are never cataloged.</Text>
+        <dl className="receipt-list">
+          <Fact label="Vault" value={status.vault} />
+          <Fact label="Notary discovery" value={status.notary} />
+        </dl>
+      </Paper>
+      <Paper className="settings-panel inverse">
+        <TerminalSquare size={20} />
+        <Text className="eyebrow">Provider routes</Text>
+        <Title order={2}>Proxy base URLs</Title>
+        <Text>Keep provider credentials in the SDK and replace its base URL with the matching local route.</Text>
+        <code>http://{status.proxy_listener}/openai/v1</code>
+        <code>http://{status.proxy_listener}/anthropic</code>
+        <code>http://{status.proxy_listener}/deepseek</code>
+        <code>http://{status.proxy_listener}/openrouter/api/v1</code>
+      </Paper>
     </SimpleGrid>
   </div>;
 }

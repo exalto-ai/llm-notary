@@ -31,7 +31,7 @@ afterEach(() => cleanup());
 describe('local evidence dashboard', () => {
   test('navigates, filters captures, and selects a capture', async () => {
     renderDashboard();
-    await expect.element(page.getByRole('heading', { name: 'Evidence at a glance.' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Service overview' })).toBeVisible();
     await page.getByRole('button', { name: /Captures/ }).click();
     await expect.element(page.getByRole('heading', { name: 'Captures' })).toBeVisible();
     await page.getByLabelText('Search captures').fill('benchmark');
@@ -130,7 +130,7 @@ describe('local evidence dashboard', () => {
   test('shows the authentication gate after a 401 status response', async () => {
     const api: LocalApi = { ...createFixtureApi(), status: async () => { throw new LocalApiError(401, 'unauthorized', 'Unauthorized'); } };
     renderDashboard('/overview', api);
-    await expect.element(page.getByRole('heading', { name: 'Open your evidence workspace.' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Sign in to the local dashboard' })).toBeVisible();
   });
 
   test('does not show stale online state after a status failure', async () => {
