@@ -21,7 +21,7 @@ const exported = spawnSync(
   { cwd: repoRoot, encoding: 'utf8' }
 );
 if (exported.status !== 0) {
-  process.stderr.write(exported.stderr);
+  process.stderr.write(exported.error ? `${exported.error.message}\n` : (exported.stderr ?? 'OpenAPI export failed.\n'));
   if (temporaryDir) rmSync(temporaryDir, { recursive: true, force: true });
   process.exit(exported.status ?? 1);
 }
@@ -33,7 +33,7 @@ const generated = spawnSync(
   { cwd: appRoot, encoding: 'utf8' }
 );
 if (generated.status !== 0) {
-  process.stderr.write(generated.stderr);
+  process.stderr.write(generated.error ? `${generated.error.message}\n` : (generated.stderr ?? 'OpenAPI type generation failed.\n'));
   if (temporaryDir) rmSync(temporaryDir, { recursive: true, force: true });
   process.exit(generated.status ?? 1);
 }
