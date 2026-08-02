@@ -11,7 +11,7 @@ const workflowContent = workflowDocuments.map((file) => readFileSync(resolve(rep
 const expectedOperations = {
   '/healthz': { get: ['200'] },
   '/openapi.json': { get: ['200'] },
-  '/v1/session': { post: ['204', '401'], delete: ['204'] },
+  '/v1/session': { post: ['204', '401'], delete: ['204', '401'] },
   '/v1/status': { get: ['200', '401'] },
   '/v1/captures': { get: ['200', '401'] },
   '/v1/captures/{capture_id}': { get: ['200', '401', '404'] },
@@ -25,6 +25,7 @@ const expectedOperations = {
   '/v1/publication/auth': { get: ['200', '401'], post: ['202', '401'], delete: ['204', '401'] },
   '/v1/publication/auth/{request_id}': { get: ['200', '401', '404'] },
   '/v1/captures/{capture_id}/publications': { post: ['202', '401', '404'] },
+  '/v1/publications/{job_id}': { get: ['200', '401', '404'] },
   '/v1/public-traces/{publication_id}': { get: ['200', '401', '404'] },
   '/v1/public-traces/{publication_id}/verify': { post: ['200', '401', '422'] }
 };
@@ -56,6 +57,7 @@ const expectedParameters = {
   'GET /v1/captures': ['capture_state', 'finalization_state', 'limit', 'model', 'offset', 'provider', 'query'],
   'GET /v1/operations': ['limit'],
   'GET /v1/events': ['cursor', 'limit'],
+  'GET /v1/publications/{job_id}': ['job_id'],
   'GET /v1/public-traces/{publication_id}': ['api_origin', 'publication_id'],
   'POST /v1/public-traces/{publication_id}/verify': ['api_origin', 'publication_id']
 };
@@ -69,14 +71,17 @@ for (const [operation, expected] of Object.entries(expectedParameters)) {
 
 const expectedRequiredFields = {
   CaptureListResponse: ['items', 'limit', 'offset'],
+  CaptureDetailResponse: ['artifacts', 'capture', 'finalizations'],
   CaptureResponse: ['capture_id', 'created_at_unix_ms', 'provider', 'operation', 'streaming', 'request_bytes', 'capture_state', 'finalization_state', 'prompt_preview', 'prompt_preview_truncated', 'output_preview', 'output_preview_truncated'],
   ErrorBody: ['code', 'message'],
   ErrorEnvelope: ['error'],
   EventResponse: ['event_id', 'created_at_unix_ms', 'event_type', 'severity', 'message'],
   FinalizationResponse: ['operation', 'deduplicated'],
-  OperationResponse: ['operation_id', 'kind', 'state', 'attempt', 'created_at_unix_ms'],
+  OperationAttemptResponse: ['attempt', 'state', 'started_at_unix_ms'],
+  OperationResponse: ['operation_id', 'kind', 'state', 'attempt', 'attempt_history', 'created_at_unix_ms'],
   PublicationAuthStartedResponse: ['request_id', 'user_code', 'verification_uri_complete', 'expires_in_seconds', 'poll_interval_seconds', 'state'],
   PublicationResponse: ['capture_id', 'job_id', 'state', 'status_url'],
+  PublicationStatusResponse: ['job_id', 'state'],
   TraceResponse: ['capture_id', 'manifest', 'trace'],
   VerificationResponse: ['capture_id', 'verified', 'verified_at_unix_ms', 'notary_key_id', 'trust_source']
 };
@@ -87,13 +92,13 @@ for (const [schema, expected] of Object.entries(expectedRequiredFields)) {
   }
 }
 
-for (const term of ['202 Accepted', 'deduplicated', 'next_cursor', 'poll_interval_seconds', 'notary_key_id', 'trust_source']) {
+for (const term of ['202 Accepted', 'deduplicated', 'attempt_history', 'next_cursor', 'poll_interval_seconds', 'notary_key_id', 'trust_source']) {
   if (!workflowContent.includes(term)) throw new Error(`Workflow documentation is missing contract term: ${term}`);
 }
 
 const screenshots = [
   'overview-light.png', 'captures-dark.png', 'finalization-retry.png',
-  'trace-verification.png', 'mobile-navigation.png'
+  'trace-verification.png', 'mobile-navigation.png', 'mobile-capture-detail.png'
 ];
 const dashboardGuide = readFileSync(resolve(repoRoot, 'docs/local-dashboard.md'), 'utf8');
 for (const file of screenshots) {

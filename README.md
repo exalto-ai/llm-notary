@@ -659,7 +659,8 @@ repeating the operation for identical bytes resumes the same job after an
 ambiguous network failure. The response contains `capture_id`, `job_id`,
 `state`, and `status_url`.
 
-Poll the returned job through the authenticated local service:
+Poll admission through the authenticated local service; the browser or agent
+does not need the separate vault-held publication credential:
 
 ```bash
 job_id=job-example
@@ -667,6 +668,9 @@ curl --fail-with-body \
   -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
   "http://127.0.0.1:8788/v1/publications/$job_id"
 ```
+
+`GET /v1/publications/{job_id}` returns the current state, a bounded failure
+code when applicable, and public trace and stamp URLs only after admission.
 
 Publishing is an explicit consent boundary: the current admission design may
 inspect the disclosed plaintext in the finalized package to reproduce and

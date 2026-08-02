@@ -113,7 +113,7 @@ which workflow owns each operation:
 | Finalized trace | `GET /v1/captures/{capture_id}/trace`, `POST /v1/captures/{capture_id}/trace:verify` |
 | Activity | `GET /v1/events` |
 | Publication account | `GET /v1/publication/auth`, `POST /v1/publication/auth`, `GET /v1/publication/auth/{request_id}`, `DELETE /v1/publication/auth` |
-| Publication | `POST /v1/captures/{capture_id}/publications` |
+| Publication | `POST /v1/captures/{capture_id}/publications`, `GET /v1/publications/{job_id}` |
 | Public trace | `GET /v1/public-traces/{publication_id}`, `POST /v1/public-traces/{publication_id}/verify` |
 
 For example, search the plain-text preview index and fetch one capture by its
@@ -176,6 +176,11 @@ curl --fail-with-body -X POST \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations/$operation_id/retry"
 ```
 
+Capture detail includes its `finalizations` history. Every operation response
+includes `attempt_history`, so an agent can distinguish earlier interrupted or
+failed attempts from the current aggregate state without searching a bounded
+event page.
+
 ## Validation, verification, and publication
 
 An encrypted `.llmbundle` is private retry state. Checking that the vault can
@@ -208,8 +213,12 @@ service, and `POST /v1/captures/{capture_id}/publications` accepts only an
 eligible finalized capture. Ask the user before either publishing or changing
 service configuration. Device authorization starts with `202 Accepted`; obey
 its `poll_interval_seconds` and keep polling the returned
-`/v1/publication/auth/{request_id}` route while `signed_in` is false. Public
-Library traces can be inspected through `GET /v1/public-traces/{publication_id}`
+`/v1/publication/auth/{request_id}` route while `signed_in` is false.
+After submission, poll authenticated `GET /v1/publications/{job_id}` on the
+local admin listener. The service uses the vault-held publication credential
+to fetch admission state; agents and the dashboard never receive that
+credential. Public Library traces can be inspected through
+`GET /v1/public-traces/{publication_id}`
 or independently checked through `POST
 /v1/public-traces/{publication_id}/verify` without accepting an output path.
 

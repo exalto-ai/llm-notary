@@ -39,7 +39,8 @@ capture state, finalization state, streaming mode, or time. A result always has
 a textual state; color is only a second signal. The detail panel shows safe
 model and response metadata, a lifecycle, privacy-aware truncated previews,
 artifact availability, hashes, and prior finalization state. It never decrypts
-or renders the source bundle.
+or renders the source bundle. The finalization history links every durable
+operation for that capture to its detailed attempt history.
 
 ![Local dashboard in dark mode with Captures selected, provider and finalization filters, a running Anthropic capture selected in the results, privacy-aware previews, lifecycle, and artifact details.](images/local-dashboard/captures-dark.png)
 
@@ -51,8 +52,9 @@ deduplicated; it does not create parallel work.
 ## Monitor and retry finalization
 
 The operation queue shows state, capture identifier, attempt, and enqueue time.
-The inspector shows the known stage and timestamps. Proof generation may take
-minutes, so a running operation deliberately has no invented percentage.
+The inspector shows the known stage, timestamps, and `attempt_history`, with
+one durable record for each worker attempt. Proof generation may take minutes,
+so a running operation deliberately has no invented percentage.
 
 Failed and restart-interrupted operations show only a safe failure code and a
 **Retry finalization** action. Retry requeues the same durable operation.
@@ -84,8 +86,9 @@ account. Its device flow displays a short code and approval URL. After approval,
 select one eligible finalized trace and review the explicit confirmation. The
 source `.llmbundle` is never a publication input. Nothing is uploaded merely
 because a trace was finalized or verified. After submission, the dashboard
-retains the job identifier and initial state and links to the publication
-status page for later admission changes.
+retains the capture and job identifiers, then polls authenticated
+`GET /v1/publications/{job_id}` through the local service for later admission
+changes. Remote publication credentials never enter the browser.
 
 ## Activity, settings, and API discovery
 
@@ -105,6 +108,11 @@ return focus to their trigger, and reduced-motion preferences are respected.
 
 ![Mobile local dashboard with a private capture detail behind the open full-height navigation drawer, including pending and active-work counts and all dashboard destinations.](images/local-dashboard/mobile-navigation.png)
 
+After the drawer closes, the selected capture occupies a single mobile panel
+with a clear back action; the desktop list is not squeezed beside it.
+
+![Mobile capture detail in a single-panel layout with an All captures back action, Finalize button, lifecycle, and safe metadata visible.](images/local-dashboard/mobile-capture-detail.png)
+
 The header provides **System**, **Light**, and **Dark** choices. System follows
 the operating-system preference and is the default. An explicit override is
 stored locally and can always be returned to System. Dark mode uses neutral
@@ -122,7 +130,7 @@ states and a focal action.
 | Notary directory unavailable | Check network access and directory configuration. An explicit local notary endpoint is appropriate only for local/self-hosted development. |
 | Operation interrupted | A running job was stopped by service restart. Inspect its safe code and use Retry finalization. |
 | Missing artifact | Keep the catalog, encrypted bundle directory, and finalized package directory together. The API intentionally does not accept a replacement filesystem path. |
-| Safe failure code | Use the code for diagnosis, then inspect redacted service logs. The UI will not expose underlying credentials, headers, or evidence plaintext. |
+| Safe failure code | Use the code for diagnosis, then inspect local process logs. Logs omit credentials, headers, and evidence plaintext but may contain configured paths, so do not share them verbatim. |
 
 ## Documentation fixture and screenshots
 
@@ -144,6 +152,6 @@ npm --prefix js/app run check:local-docs
 ```
 
 The capture command starts an isolated Vite server on `127.0.0.1:4175`, opens
-fixed fixture deep links in headless Chromium, and replaces only the five files
+fixed fixture deep links in headless Chromium, and replaces only the six files
 under `docs/images/local-dashboard/`. Review every image for layout and
 sensitive data before committing it.

@@ -85,6 +85,13 @@ try {
         await page.getByRole('tab', { name: 'Verification' }).click();
         await page.getByRole('tab', { name: 'Verification', selected: true }).waitFor();
         await page.getByText('Verification passed').waitFor();
+        await page.waitForFunction(() => {
+          const button = [...document.querySelectorAll('button')]
+            .find((candidate) => candidate.textContent?.includes('Verify now'));
+          return button && !button.hasAttribute('disabled') && !button.querySelector('.mantine-Loader-root');
+        });
+        await page.mouse.move(0, 0);
+        await page.evaluate(() => (document.activeElement instanceof HTMLElement) && document.activeElement.blur());
         await page.evaluate(() => new Promise((resolveFrame) => {
           requestAnimationFrame(() => requestAnimationFrame(resolveFrame));
         }));
@@ -96,6 +103,14 @@ try {
       prepare: async (page) => {
         await page.getByRole('button', { name: 'Open navigation' }).click();
         await page.getByRole('navigation', { name: 'Local dashboard' }).last().waitFor();
+      }
+    });
+    await capture(browser, {
+      file: 'mobile-capture-detail.png', scheme: 'light', viewport: { width: 390, height: 844 },
+      route: 'view=captures&id=cap-20260728-knowledge-eval',
+      prepare: async (page) => {
+        await page.getByRole('button', { name: 'All captures' }).waitFor();
+        await page.getByRole('heading', { name: 'gpt-5.2' }).waitFor();
       }
     });
   } finally {

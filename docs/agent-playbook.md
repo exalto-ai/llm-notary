@@ -17,7 +17,7 @@ schema authority.
    identifiers. Never ask for or submit an arbitrary local filesystem path.
 5. Treat finalization as asynchronous. Save the returned `op-…` identifier and
    poll its documented operation URL until `finalized`, `failed`, or
-   `interrupted`.
+   `interrupted`. Use `attempt_history` when explaining retries.
 6. Use `POST /v1/captures/{capture_id}/trace:verify` for cryptographic package
    verification. Decrypting or structurally validating an encrypted bundle is
    not independent verification.
@@ -26,6 +26,9 @@ schema authority.
    material.
 8. Ask the user before publishing a finalized trace or changing service
    configuration. Finalization alone is not publication consent.
+9. After approved publication, save `job_id` and poll
+   `GET /v1/publications/{job_id}` through the local admin API. Do not attempt
+   to extract or reproduce the vault-held publication credential.
 
 Use safe error codes and redacted event messages for diagnosis. If the OpenAPI
 document does not describe an operation, stop and explain that the installed
@@ -110,6 +113,23 @@ curl --fail-with-body -X POST \
 
 Report `verified`, `verified_at_unix_ms`, `notary_key_id`, and `trust_source`.
 Do not translate a successful bundle read into a verification claim.
+
+If the user separately approves publication, submit the capture identifier and
+follow admission through the local service:
+
+```bash
+publication=$(curl --fail-with-body -X POST \
+  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/publications")
+job_id=$(printf '%s' "$publication" | jq -r '.job_id')
+
+curl --fail-with-body \
+  -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/publications/$job_id"
+```
+
+Report the bounded admission state or failure code. Do not claim the trace is
+public until the returned state is `admitted`.
 
 ## JavaScript example
 
