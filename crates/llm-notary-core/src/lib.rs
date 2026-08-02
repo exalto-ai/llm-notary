@@ -47,7 +47,7 @@ use tlsn::{
     verifier::VerifierCommitStart,
     webpki::RootCertStore,
 };
-use tlsn_formats::http::HttpTranscript;
+use tlsn_formats::http::{HttpTranscript, Response as HttpTranscriptResponse};
 use tokio::{
     io::{AsyncReadExt as TokioAsyncReadExt, AsyncWriteExt as TokioAsyncWriteExt},
     net::TcpStream,
@@ -404,8 +404,15 @@ fn disclosed_http_ranges(
     transcript: &HttpTranscript,
     context: &'static str,
 ) -> Result<DisclosedHttpRanges> {
-    if transcript.requests.len() != 1 || transcript.responses.len() != 1 {
-        bail!("expected exactly one HTTP request and response {context}");
+    if transcript.requests.len() != 1 {
+        bail!("expected exactly one HTTP request {context}");
+    }
+    if transcript
+        .responses
+        .iter()
+        .any(|response| response.status.code.as_str() == "101")
+    {
+        bail!("HTTP 101 Switching Protocols is not supported {context}");
     }
     let request = &transcript.requests[0];
     let mut sent = RangeSet::default();
@@ -422,7 +429,16 @@ fn disclosed_http_ranges(
         sent.union_mut(body);
     }
 
-    let response = &transcript.responses[0];
+    let mut final_responses = transcript
+        .responses
+        .iter()
+        .filter(|response| !is_interim_http_response(response));
+    let response = final_responses
+        .next()
+        .ok_or_else(|| anyhow!("expected exactly one final HTTP response {context}"))?;
+    if final_responses.next().is_some() {
+        bail!("expected exactly one final HTTP response {context}");
+    }
     let mut received = RangeSet::default();
     received.union_mut(response.without_data());
     for value in &response.headers {
@@ -436,6 +452,15 @@ fn disclosed_http_ranges(
         received.union_mut(body);
     }
     Ok(DisclosedHttpRanges { sent, received })
+}
+
+/// HTTP/1.1 permits informational responses before the final response. They
+/// are covered by the TLS transcript but are not part of the provider response
+/// disclosed in a capture. `101 Switching Protocols` is rejected separately
+/// because the proxy only supports ordinary HTTP/1.1 exchanges.
+fn is_interim_http_response(response: &HttpTranscriptResponse) -> bool {
+    let code = response.status.code.as_str();
+    code.starts_with('1')
 }
 
 /// Packs disjoint HTTP ranges into the fewest bounded commitments. One child
@@ -2242,6 +2267,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn deferred_http_commitments_ignore_interim_responses() {
+        let sent = b"POST /v1/responses HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}".to_vec();
+        let interim = b"HTTP/1.1 100 Continue\r\n\r\n";
+        let final_response = b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\n\r\n{\"ok\":true}";
+        let mut received = interim.to_vec();
+        received.extend_from_slice(final_response);
+        let transcript = Transcript::new(sent, received);
+        let http = HttpTranscript::parse(&transcript).expect("parse HTTP transcript");
+        assert_eq!(http.responses.len(), 2);
+
+        let config = deferred_transcript_commit(&transcript, DEFAULT_MAX_ATTESTABLE_HTTP_BYTES)
+            .expect("interim response must not prevent deferred commitments");
+        let disclosure =
+            disclosed_http_ranges(&http, "in test").expect("derive disclosed HTTP ranges");
+        let mut committed_received = RangeSet::default();
+        for (direction, ranges, _) in config.to_request().iter_hash() {
+            if *direction == Direction::Received {
+                committed_received.union_mut(ranges);
+            }
+        }
+
+        assert_eq!(committed_received, disclosure.received);
+        assert!(
+            committed_received
+                .iter()
+                .all(|range| range.start >= interim.len()),
+            "interim response bytes must remain undisclosed"
+        );
+
+        let upgrade = Transcript::new(
+            b"GET / HTTP/1.1\r\n\r\n".to_vec(),
+            b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\r\n".to_vec(),
+        );
+        let error = deferred_transcript_commit(&upgrade, DEFAULT_MAX_ATTESTABLE_HTTP_BYTES)
+            .expect_err("protocol upgrades must remain unsupported");
+        assert!(error.to_string().contains("101 Switching Protocols"));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
