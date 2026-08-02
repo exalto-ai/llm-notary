@@ -25,7 +25,7 @@ const expectedOperations = {
   '/v1/publication/auth': { get: ['200', '401'], post: ['202', '401'], delete: ['204', '401'] },
   '/v1/publication/auth/{request_id}': { get: ['200', '401', '404'] },
   '/v1/captures/{capture_id}/publications': { post: ['202', '401', '404'] },
-  '/v1/publications/{job_id}': { get: ['200', '401', '404'] },
+  '/v1/publications/{job_id}': { get: ['200', '401', '404', '409', '503'] },
   '/v1/public-traces/{publication_id}': { get: ['200', '401', '404'] },
   '/v1/public-traces/{publication_id}/verify': { post: ['200', '401', '422'] }
 };

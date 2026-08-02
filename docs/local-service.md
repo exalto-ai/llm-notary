@@ -217,7 +217,9 @@ its `poll_interval_seconds` and keep polling the returned
 After submission, poll authenticated `GET /v1/publications/{job_id}` on the
 local admin listener. The service uses the vault-held publication credential
 to fetch admission state; agents and the dashboard never receive that
-credential. Public Library traces can be inspected through
+credential. A missing job returns `404`; missing or expired publication
+authorization returns `409`; a temporary platform or network failure returns
+`503` rather than pretending the job disappeared. Public Library traces can be inspected through
 `GET /v1/public-traces/{publication_id}`
 or independently checked through `POST
 /v1/public-traces/{publication_id}/verify` without accepting an output path.
