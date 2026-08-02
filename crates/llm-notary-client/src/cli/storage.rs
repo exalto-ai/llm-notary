@@ -24,7 +24,7 @@ pub(super) fn config_file(name: &str) -> Result<PathBuf> {
     Ok(base.join("llm-notary").join(name))
 }
 
-pub(super) fn write_private_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
+pub(crate) fn write_private_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())

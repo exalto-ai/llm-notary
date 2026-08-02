@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{config::AgentConfig, sha256_hex};
 
-const CATALOG_SCHEMA_VERSION: i64 = 1;
+const CATALOG_SCHEMA_VERSION: i64 = 2;
 
 /// The durable capture fields that are safe and useful to query locally.
 #[derive(Clone, Debug)]
@@ -49,6 +49,54 @@ pub struct CaptureSummary {
     pub prompt_preview_truncated: bool,
     pub output_preview: String,
     pub output_preview_truncated: bool,
+    pub failure_code: Option<String>,
+}
+
+/// One persisted administration operation. Error details are represented by
+/// bounded codes rather than arbitrary strings from providers or local paths.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Operation {
+    pub operation_id: String,
+    pub kind: String,
+    pub capture_id: Option<String>,
+    pub state: String,
+    pub attempt: u32,
+    pub created_at_unix_ms: u64,
+    pub started_at_unix_ms: Option<u64>,
+    pub completed_at_unix_ms: Option<u64>,
+    pub failure_code: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Event {
+    pub event_id: u64,
+    pub created_at_unix_ms: u64,
+    pub event_type: String,
+    pub capture_id: Option<String>,
+    pub operation_id: Option<String>,
+    pub severity: String,
+    pub message: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CatalogCounts {
+    pub total_captures: u64,
+    pub capturing: u64,
+    pub pending: u64,
+    pub finalized: u64,
+    pub failed: u64,
+    pub active_operations: u64,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CaptureFilters<'a> {
+    pub query: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub provider: Option<&'a str>,
+    pub capture_state: Option<&'a str>,
+    pub finalization_state: Option<&'a str>,
+    pub limit: usize,
+    pub offset: usize,
 }
 
 /// One stored local artifact belonging to a capture.
@@ -356,6 +404,48 @@ impl Catalog {
         Ok(captures)
     }
 
+    /// Lists captures using the complete REST filter set. Filter values are
+    /// bound parameters, and the result is always bounded.
+    pub fn filtered_captures(&self, filters: &CaptureFilters<'_>) -> Result<Vec<CaptureSummary>> {
+        if filters.query.is_some() && !self.full_text_search {
+            anyhow::bail!("full-text preview search is disabled in this agent configuration");
+        }
+        let limit = filters.limit.clamp(1, 200);
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let mut sql = if filters.query.is_some() {
+            "SELECT c.* FROM captures c JOIN capture_search search ON search.capture_id = c.capture_id WHERE capture_search MATCH ?".to_owned()
+        } else {
+            "SELECT c.* FROM captures c WHERE 1 = 1".to_owned()
+        };
+        let mut values = Vec::<rusqlite::types::Value>::new();
+        if let Some(query) = filters.query {
+            values.push(query.to_owned().into());
+        }
+        for (column, value) in [
+            ("c.requested_model", filters.model),
+            ("c.provider", filters.provider),
+            ("c.capture_state", filters.capture_state),
+            ("c.finalization_state", filters.finalization_state),
+        ] {
+            if let Some(value) = value {
+                sql.push_str(" AND ");
+                sql.push_str(column);
+                sql.push_str(" = ?");
+                values.push(value.to_owned().into());
+            }
+        }
+        sql.push_str(" ORDER BY c.created_at_unix_ms DESC LIMIT ? OFFSET ?");
+        values.push(i64::try_from(limit)?.into());
+        values.push(i64::try_from(filters.offset)?.into());
+        let mut statement = connection.prepare(&sql)?;
+        let mut rows = statement.query(rusqlite::params_from_iter(values))?;
+        let mut captures = Vec::new();
+        while let Some(row) = rows.next()? {
+            captures.push(capture_from_row(row)?);
+        }
+        Ok(captures)
+    }
+
     pub fn capture(&self, capture_id: &str) -> Result<Option<CaptureSummary>> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         connection
@@ -388,6 +478,302 @@ impl Catalog {
                 sha256: row.get(3)?,
             })
         })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn counts(&self) -> Result<CatalogCounts> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        connection
+            .query_row(
+                "SELECT
+                    COUNT(*),
+                    SUM(capture_state = 'capturing'),
+                    SUM(capture_state = 'pending'),
+                    SUM(finalization_state = 'finalized'),
+                    SUM(capture_state = 'failed' OR finalization_state = 'failed'),
+                    (SELECT COUNT(*) FROM operations WHERE state IN ('queued', 'running'))
+                 FROM captures",
+                [],
+                |row| {
+                    Ok(CatalogCounts {
+                        total_captures: row.get::<_, i64>(0)?.try_into().unwrap_or(0),
+                        capturing: row
+                            .get::<_, Option<i64>>(1)?
+                            .unwrap_or(0)
+                            .try_into()
+                            .unwrap_or(0),
+                        pending: row
+                            .get::<_, Option<i64>>(2)?
+                            .unwrap_or(0)
+                            .try_into()
+                            .unwrap_or(0),
+                        finalized: row
+                            .get::<_, Option<i64>>(3)?
+                            .unwrap_or(0)
+                            .try_into()
+                            .unwrap_or(0),
+                        failed: row
+                            .get::<_, Option<i64>>(4)?
+                            .unwrap_or(0)
+                            .try_into()
+                            .unwrap_or(0),
+                        active_operations: row.get::<_, i64>(5)?.try_into().unwrap_or(0),
+                    })
+                },
+            )
+            .map_err(Into::into)
+    }
+
+    /// Queues a finalization or returns the active/completed operation that
+    /// already represents it. The partial unique index closes races.
+    pub fn enqueue_finalization(
+        &self,
+        capture_id: &str,
+        now: u64,
+    ) -> Result<Option<(Operation, bool)>> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let transaction = connection.unchecked_transaction()?;
+        let exists = transaction
+            .query_row(
+                "SELECT 1 FROM captures WHERE capture_id = ? AND capture_state = 'pending'",
+                params![capture_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some();
+        if !exists {
+            return Ok(None);
+        }
+        if let Some(operation) = transaction
+            .query_row(
+                "SELECT * FROM operations WHERE capture_id = ? AND kind = 'finalization' AND state IN ('queued', 'running', 'finalized') ORDER BY created_at_unix_ms DESC LIMIT 1",
+                params![capture_id],
+                operation_from_row,
+            )
+            .optional()?
+        {
+            return Ok(Some((operation, true)));
+        }
+        let operation_id = format!("op-{}", uuid::Uuid::new_v4().simple());
+        transaction.execute(
+            "INSERT INTO operations (operation_id, kind, capture_id, state, attempt, created_at_unix_ms) VALUES (?, 'finalization', ?, 'queued', 0, ?)",
+            params![operation_id, capture_id, i64::try_from(now)?],
+        )?;
+        transaction.execute(
+            "UPDATE captures SET finalization_state = 'queued' WHERE capture_id = ?",
+            params![capture_id],
+        )?;
+        insert_event(
+            &transaction,
+            now,
+            "finalization_queued",
+            Some(capture_id),
+            Some(&operation_id),
+            "info",
+            "Finalization queued",
+        )?;
+        let operation = transaction.query_row(
+            "SELECT * FROM operations WHERE operation_id = ?",
+            params![operation_id],
+            operation_from_row,
+        )?;
+        transaction.commit()?;
+        Ok(Some((operation, false)))
+    }
+
+    pub fn claim_next_finalization(&self, now: u64) -> Result<Option<Operation>> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let transaction = connection.unchecked_transaction()?;
+        let operation_id = transaction
+            .query_row(
+                "SELECT operation_id FROM operations WHERE kind = 'finalization' AND state = 'queued' ORDER BY created_at_unix_ms LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(operation_id) = operation_id else {
+            return Ok(None);
+        };
+        transaction.execute(
+            "UPDATE operations SET state = 'running', attempt = attempt + 1, started_at_unix_ms = ?, completed_at_unix_ms = NULL, failure_code = NULL WHERE operation_id = ? AND state = 'queued'",
+            params![i64::try_from(now)?, operation_id],
+        )?;
+        transaction.execute(
+            "UPDATE captures SET finalization_state = 'running' WHERE capture_id = (SELECT capture_id FROM operations WHERE operation_id = ?)",
+            params![operation_id],
+        )?;
+        let operation = transaction.query_row(
+            "SELECT * FROM operations WHERE operation_id = ?",
+            params![operation_id],
+            operation_from_row,
+        )?;
+        insert_event(
+            &transaction,
+            now,
+            "finalization_started",
+            operation.capture_id.as_deref(),
+            Some(&operation.operation_id),
+            "info",
+            "Finalization started",
+        )?;
+        transaction.commit()?;
+        Ok(Some(operation))
+    }
+
+    pub fn finish_operation(&self, operation_id: &str, now: u64) -> Result<()> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE operations SET state = 'finalized', completed_at_unix_ms = ?, failure_code = NULL WHERE operation_id = ?",
+            params![i64::try_from(now)?, operation_id],
+        )?;
+        transaction.execute(
+            "UPDATE captures SET finalization_state = 'finalized' WHERE capture_id = (SELECT capture_id FROM operations WHERE operation_id = ?)",
+            params![operation_id],
+        )?;
+        let capture_id: Option<String> = transaction.query_row(
+            "SELECT capture_id FROM operations WHERE operation_id = ?",
+            params![operation_id],
+            |row| row.get(0),
+        )?;
+        insert_event(
+            &transaction,
+            now,
+            "finalization_completed",
+            capture_id.as_deref(),
+            Some(operation_id),
+            "success",
+            "Finalization completed",
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn fail_operation(&self, operation_id: &str, now: u64, failure_code: &str) -> Result<()> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let transaction = connection.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE operations SET state = 'failed', completed_at_unix_ms = ?, failure_code = ? WHERE operation_id = ?",
+            params![i64::try_from(now)?, failure_code, operation_id],
+        )?;
+        transaction.execute(
+            "UPDATE captures SET finalization_state = 'failed' WHERE capture_id = (SELECT capture_id FROM operations WHERE operation_id = ?)",
+            params![operation_id],
+        )?;
+        let capture_id: Option<String> = transaction.query_row(
+            "SELECT capture_id FROM operations WHERE operation_id = ?",
+            params![operation_id],
+            |row| row.get(0),
+        )?;
+        insert_event(
+            &transaction,
+            now,
+            "finalization_failed",
+            capture_id.as_deref(),
+            Some(operation_id),
+            "error",
+            "Finalization failed",
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn recover_operations(&self, now: u64) -> Result<usize> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let transaction = connection.unchecked_transaction()?;
+        let mut statement = transaction
+            .prepare("SELECT operation_id, capture_id FROM operations WHERE state = 'running'")?;
+        let interrupted = statement
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        drop(statement);
+        for (operation_id, capture_id) in &interrupted {
+            transaction.execute("UPDATE operations SET state = 'interrupted', completed_at_unix_ms = ?, failure_code = 'service_restarted' WHERE operation_id = ?", params![i64::try_from(now)?, operation_id])?;
+            transaction.execute(
+                "UPDATE captures SET finalization_state = 'interrupted' WHERE capture_id = ?",
+                params![capture_id],
+            )?;
+            insert_event(
+                &transaction,
+                now,
+                "finalization_interrupted",
+                capture_id.as_deref(),
+                Some(operation_id),
+                "warning",
+                "Finalization interrupted by service restart",
+            )?;
+        }
+        transaction.commit()?;
+        Ok(interrupted.len())
+    }
+
+    pub fn retry_operation(&self, operation_id: &str, now: u64) -> Result<Option<Operation>> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let transaction = connection.unchecked_transaction()?;
+        let changed = transaction.execute(
+            "UPDATE operations SET state = 'queued', started_at_unix_ms = NULL, completed_at_unix_ms = NULL, failure_code = NULL WHERE operation_id = ? AND state IN ('failed', 'interrupted')",
+            params![operation_id],
+        )?;
+        if changed == 0 {
+            return Ok(None);
+        }
+        transaction.execute("UPDATE captures SET finalization_state = 'queued' WHERE capture_id = (SELECT capture_id FROM operations WHERE operation_id = ?)", params![operation_id])?;
+        let operation = transaction.query_row(
+            "SELECT * FROM operations WHERE operation_id = ?",
+            params![operation_id],
+            operation_from_row,
+        )?;
+        insert_event(
+            &transaction,
+            now,
+            "finalization_retried",
+            operation.capture_id.as_deref(),
+            Some(operation_id),
+            "info",
+            "Finalization queued for retry",
+        )?;
+        transaction.commit()?;
+        Ok(Some(operation))
+    }
+
+    pub fn operation(&self, operation_id: &str) -> Result<Option<Operation>> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        connection
+            .query_row(
+                "SELECT * FROM operations WHERE operation_id = ?",
+                params![operation_id],
+                operation_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn operations(&self, limit: usize) -> Result<Vec<Operation>> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let mut statement = connection
+            .prepare("SELECT * FROM operations ORDER BY created_at_unix_ms DESC LIMIT ?")?;
+        let rows = statement.query_map(
+            params![i64::try_from(limit.clamp(1, 200))?],
+            operation_from_row,
+        )?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn events(&self, after: Option<u64>, limit: usize) -> Result<Vec<Event>> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let mut statement = connection
+            .prepare("SELECT * FROM events WHERE event_id > ? ORDER BY event_id DESC LIMIT ?")?;
+        let rows = statement.query_map(
+            params![
+                i64::try_from(after.unwrap_or(0))?,
+                i64::try_from(limit.clamp(1, 200))?
+            ],
+            event_from_row,
+        )?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
@@ -448,9 +834,36 @@ fn migrate(connection: &Connection) -> Result<()> {
                 output_preview
             );",
         )?;
-        connection.execute(
-            "INSERT INTO schema_migrations(version) VALUES (?)",
-            params![CATALOG_SCHEMA_VERSION],
+        connection.execute("INSERT INTO schema_migrations(version) VALUES (1)", [])?;
+    }
+    if version < 2 {
+        connection.execute_batch(
+            "CREATE TABLE operations (
+                operation_id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                capture_id TEXT REFERENCES captures(capture_id),
+                state TEXT NOT NULL,
+                attempt INTEGER NOT NULL DEFAULT 0,
+                created_at_unix_ms INTEGER NOT NULL,
+                started_at_unix_ms INTEGER,
+                completed_at_unix_ms INTEGER,
+                failure_code TEXT
+            );
+            CREATE UNIQUE INDEX one_active_finalization_per_capture
+                ON operations(capture_id, kind)
+                WHERE kind = 'finalization' AND state IN ('queued', 'running');
+            CREATE INDEX operations_created_at_idx ON operations(created_at_unix_ms DESC);
+            CREATE TABLE events (
+                event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at_unix_ms INTEGER NOT NULL,
+                event_type TEXT NOT NULL,
+                capture_id TEXT REFERENCES captures(capture_id),
+                operation_id TEXT REFERENCES operations(operation_id),
+                severity TEXT NOT NULL,
+                message TEXT NOT NULL
+            );
+            CREATE INDEX events_created_at_idx ON events(created_at_unix_ms DESC);
+            INSERT INTO schema_migrations(version) VALUES (2);",
         )?;
     }
     Ok(())
@@ -592,7 +1005,60 @@ fn capture_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureSummary>
         prompt_preview_truncated: row.get("prompt_preview_truncated")?,
         output_preview: row.get("output_preview")?,
         output_preview_truncated: row.get("output_preview_truncated")?,
+        failure_code: row.get("failure_code")?,
     })
+}
+
+fn operation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
+    Ok(Operation {
+        operation_id: row.get("operation_id")?,
+        kind: row.get("kind")?,
+        capture_id: row.get("capture_id")?,
+        state: row.get("state")?,
+        attempt: row.get::<_, i64>("attempt")?.try_into().unwrap_or(0),
+        created_at_unix_ms: row
+            .get::<_, i64>("created_at_unix_ms")?
+            .try_into()
+            .unwrap_or(0),
+        started_at_unix_ms: row
+            .get::<_, Option<i64>>("started_at_unix_ms")?
+            .and_then(|value| value.try_into().ok()),
+        completed_at_unix_ms: row
+            .get::<_, Option<i64>>("completed_at_unix_ms")?
+            .and_then(|value| value.try_into().ok()),
+        failure_code: row.get("failure_code")?,
+    })
+}
+
+fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
+    Ok(Event {
+        event_id: row.get::<_, i64>("event_id")?.try_into().unwrap_or(0),
+        created_at_unix_ms: row
+            .get::<_, i64>("created_at_unix_ms")?
+            .try_into()
+            .unwrap_or(0),
+        event_type: row.get("event_type")?,
+        capture_id: row.get("capture_id")?,
+        operation_id: row.get("operation_id")?,
+        severity: row.get("severity")?,
+        message: row.get("message")?,
+    })
+}
+
+fn insert_event(
+    transaction: &rusqlite::Transaction<'_>,
+    now: u64,
+    event_type: &str,
+    capture_id: Option<&str>,
+    operation_id: Option<&str>,
+    severity: &str,
+    message: &str,
+) -> Result<()> {
+    transaction.execute(
+        "INSERT INTO events (created_at_unix_ms, event_type, capture_id, operation_id, severity, message) VALUES (?, ?, ?, ?, ?, ?)",
+        params![i64::try_from(now)?, event_type, capture_id, operation_id, severity, message],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -703,5 +1169,42 @@ mod tests {
             catalog.capture("cap-1").unwrap().unwrap().capture_state,
             "failed"
         );
+    }
+
+    #[test]
+    fn finalization_operations_are_deduplicated_recovered_and_retryable() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("cap-1.llmbundle");
+        fs::write(&bundle, b"encrypted bundle fixture").unwrap();
+        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
+        catalog.begin_capture(&new_capture("cap-1")).unwrap();
+        catalog
+            .complete_capture("cap-1", 2, 1, 200, 10, None, "done", false, &bundle)
+            .unwrap();
+
+        let (queued, duplicate) = catalog.enqueue_finalization("cap-1", 3).unwrap().unwrap();
+        assert!(!duplicate);
+        let (same, duplicate) = catalog.enqueue_finalization("cap-1", 4).unwrap().unwrap();
+        assert!(duplicate);
+        assert_eq!(same.operation_id, queued.operation_id);
+
+        let running = catalog.claim_next_finalization(5).unwrap().unwrap();
+        assert_eq!(running.state, "running");
+        assert_eq!(running.attempt, 1);
+        assert_eq!(catalog.recover_operations(6).unwrap(), 1);
+        assert_eq!(
+            catalog
+                .operation(&running.operation_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            "interrupted"
+        );
+        let retried = catalog
+            .retry_operation(&running.operation_id, 7)
+            .unwrap()
+            .unwrap();
+        assert_eq!(retried.state, "queued");
+        assert_eq!(catalog.events(None, 20).unwrap().len(), 4);
     }
 }

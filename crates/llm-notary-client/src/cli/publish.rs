@@ -64,25 +64,43 @@ struct ApiErrorResponse {
 }
 
 #[derive(Debug, Serialize)]
-struct PublishOutput {
-    job_id: String,
-    state: String,
-    status_url: String,
+pub(crate) struct PublishOutput {
+    pub(crate) job_id: String,
+    pub(crate) state: String,
+    pub(crate) status_url: String,
 }
 
 pub async fn run(args: PublishArgs) -> Result<()> {
-    reject_bundle_path(&args.package)?;
+    let (output, capture_id, key_id) =
+        publish_package(&args.package, args.trusted_notary_key.as_deref()).await?;
+    if args.json {
+        println!("{}", serde_json::to_string(&output)?);
+    } else {
+        println!("submitted verified trace package: {capture_id}");
+        println!("trusted notary key: {key_id}");
+        println!("publication job: {}", output.job_id);
+        println!("state: {}", output.state);
+        println!("status: {}", output.status_url);
+    }
+    Ok(())
+}
+
+pub(crate) async fn publish_package(
+    package: &std::path::Path,
+    trusted_key: Option<&str>,
+) -> Result<(PublishOutput, String, String)> {
+    reject_bundle_path(package)?;
     // Snapshot the package before verification. Verification and upload then
     // operate on the same immutable archive bytes even if the source directory
     // changes concurrently.
-    let archive = build_trace_package_archive(&args.package)
+    let archive = build_trace_package_archive(package)
         .context("building deterministic publication archive; nothing was uploaded")?;
     let snapshot = tempfile::tempdir().context("creating private publication snapshot")?;
     let snapshot_path = snapshot.path().join("package");
     extract_trace_package_archive(&archive, &snapshot_path)
         .context("validating private publication snapshot")?;
     let embedded_key = trace_package_notary_key(&snapshot_path)?;
-    let (trusted_notary_key, key_id) = match args.trusted_notary_key.as_deref() {
+    let (trusted_notary_key, key_id) = match trusted_key {
         Some(value) => notary::explicit_key(value)?,
         None => {
             let created_at = trace_package_created_at_unix_ms(&snapshot_path)?;
@@ -115,19 +133,7 @@ pub async fn run(args: PublishArgs) -> Result<()> {
         state: job.state,
         status_url,
     };
-    if args.json {
-        println!("{}", serde_json::to_string(&output)?);
-    } else {
-        println!(
-            "submitted verified trace package: {}",
-            manifest.capture_id()
-        );
-        println!("trusted notary key: {key_id}");
-        println!("publication job: {}", output.job_id);
-        println!("state: {}", output.state);
-        println!("status: {}", output.status_url);
-    }
-    Ok(())
+    Ok((output, manifest.capture_id().to_owned(), key_id))
 }
 
 async fn submit_archive(

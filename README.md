@@ -33,7 +33,7 @@ TLS records.
 - At the end of each provider response, the proxy encrypts a client-held
   `.llmbundle`. The bundle contains the private transcript checkpoint and a
   notary-signed receipt, but does not perform the expensive private proof.
-- `llm-notary finalize` later reconnects to any notary instance holding the
+- The local service can later finalize a selected capture by reconnecting to any notary instance holding the
   same signing key, completes the proof, redacts sensitive authentication and
   session-header values, and emits one verified trace package. The notary
   stores no per-bundle state.
@@ -49,7 +49,7 @@ requires one short post-stream exchange with the notary. Finalization is the
 slow step and can happen in a later process after both sides have discarded
 the original live TLS session.
 
-## Install the CLI
+## Install the local service
 
 Releases include `llm-notary` for macOS and Linux, with a checksum-verified
 installer. The command below is the recommended two-step form so the script is
@@ -77,7 +77,10 @@ private deployments, where `finalize` and `verify-trace` receive it with
 `--trusted-notary-key` as the explicit trust anchor. Production clients
 discover and pin the public key.
 
-In another terminal, start the proxy. On first use it automatically writes an
+In another terminal, start `llm-notary`. The foreground process owns both the
+provider proxy at `127.0.0.1:8787` and the authenticated administration API at
+`127.0.0.1:8788`. A service manager can supervise that same foreground
+process. On first use it automatically writes an
 editable configuration file in the standard platform location: XDG config on
 Linux, `%APPDATA%` on Windows, and `~/Library/Application Support/llm-notary`
 on macOS. The generated configuration enables all built-in providers, writes
@@ -88,18 +91,26 @@ default the released client discovers the current public notary endpoint from
 `notary.endpoint = "tcp://127.0.0.1:7047"` in that file.
 
 ```bash
-llm-notary proxy start
-# Optionally edit the automatically created config.toml, then check it:
-llm-notary config validate
+llm-notary
+# Or choose a configuration explicitly:
+llm-notary --config /path/to/config.toml
 ```
+
+`GET http://127.0.0.1:8788/healthz` and `/openapi.json` are public on the
+loopback admin listener. Every `/v1` operation requires the bearer token stored
+in the private `admin.token_path` file. Read that value without printing it,
+send it only in `Authorization: Bearer ...`, and never put it in a URL. The
+provider proxy does not mount any admin route. Operational CLI subcommands
+have been removed; scripts and coding agents should fetch `/openapi.json` and
+use the versioned REST API.
 
 ### Configure the local client
 
-`config.toml` is the client’s durable, user-editable setup. The CLI writes it
+`config.toml` is the service’s durable, user-editable setup. The service writes it
 once and never replaces it, so it is the place to change a listener, storage
 location, enabled providers, or catalog behavior. To use a configuration file
-outside the standard location, pass `--config /path/to/config.toml` to
-`proxy start`, `config validate`, `captures`, or `finalize`.
+outside the standard location, pass `--config /path/to/config.toml` when
+starting the service.
 
 The generated file includes all defaults. This shorter, valid configuration
 shows the settings most installations change:
@@ -109,6 +120,10 @@ format = "llm-notary/agent-config/v1"
 
 [proxy]
 listen = "127.0.0.1:8787"
+
+[admin]
+listen = "127.0.0.1:8788"
+# token_path = "/platform/data/llm-notary/admin-token"
 
 [notary]
 # Set this only for a local or self-hosted notary.
@@ -156,40 +171,43 @@ Keep the API key in the SDK as usual. Each completed request writes an
 encrypted `.llmbundle` and records a local catalog entry. The catalog stores
 the provider, requested and response model when available, request/response
 size and status, plus short plain-text prompt and output previews. Its FTS5
-index searches those previews, so `llm-notary captures list --query pricing`
-can locate a capture without decrypting every bundle. The catalog deliberately
+index powers `GET /v1/captures?query=pricing`, which can locate a capture
+without decrypting every bundle. The catalog deliberately
 does not store HTTP header values, cookies, or credentials. Its previews are
 plain local text; set either `catalog.*_preview_chars` to `0` if that is not
-appropriate for a particular machine. On macOS and Windows, the default vault
+appropriate for a particular machine. Both listeners must remain on distinct
+loopback addresses. On macOS and Windows, the default vault
 key is stored in the OS credential store; on Linux it uses the desktop secret
 service. To use a passphrase instead
-(including an intentionally empty passphrase), initialize the vault before
-starting the proxy:
-
-```bash
-llm-notary vault init --passphrase
-```
+(including an intentionally empty passphrase), point
+`LLM_NOTARY_VAULT_PASSPHRASE_FILE` at a private file before the first service
+start. That startup choice initializes the passphrase-backed vault.
 
 Set `LLM_NOTARY_CONFIG_DIR` to use a non-default vault configuration directory,
 which is useful for isolated development and automation.
 
 For noninteractive automation, set `LLM_NOTARY_VAULT_PASSPHRASE_FILE` to a
-private (`0600`) UTF-8 file containing the vault passphrase. The CLI reads the
-file for both `vault init --passphrase` and later proxy/finalize operations;
+private (`0600`) UTF-8 file containing the vault passphrase. The service reads the
+file during service startup and later capture/finalization operations;
 it never prints the value. Use a CI secret file, not a command-line argument
 or environment variable containing the passphrase itself.
 
-## Finalize a bundle
+## Finalize and verify a capture
 
-Search the locally cataloged captures, then finalize one. The CLI fetches and
-caches the production directory key automatically. It uses the configured
-finalized-package directory and adds the retained package to the capture's
-catalog entry; it does not remove the encrypted source bundle:
+Use the admin API to find a capture by its identifier and queue finalization.
+The service fetches and caches the production directory key automatically,
+uses the configured finalized-package directory, and retains the encrypted
+source bundle. Finalization returns `202 Accepted` with a durable operation
+identifier; poll that operation until it reaches `finalized`, `failed`, or
+`interrupted`:
 
 ```bash
-llm-notary captures list --query pricing
-llm-notary captures show cap-....
-llm-notary finalize /path/to/bundles/cap-....llmbundle
+curl -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  'http://127.0.0.1:8788/v1/captures?query=pricing'
+curl -X POST -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  http://127.0.0.1:8788/v1/captures/cap-example/finalizations
+curl -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  http://127.0.0.1:8788/v1/operations/op-example
 ```
 
 The output directory is a single portable package:
@@ -203,11 +221,12 @@ traces/cap-.../
 └── trace.otlp.json
 ```
 
-Verify it offline by rechecking the TLSNotary presentation, every source-file
+Verify it locally by rechecking the TLSNotary presentation, every source-file
 hash, the provider adapter, and the exact canonical OTLP bytes:
 
 ```bash
-llm-notary verify-trace traces/cap-...
+curl -X POST -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  http://127.0.0.1:8788/v1/captures/cap-example/trace:verify
 ```
 
 The encrypted bundle is the most sensitive artifact: its deferred TLS
@@ -278,31 +297,27 @@ an `OPENROUTER_API_KEY`, wait for the encrypted bundle, then use `finalize` and
 `verify-trace` as described above. This is an opt-in network and billing check;
 the regular test suite uses deterministic fixtures.
 
-Verify a published trace and platform stamp without a capture:
+Verify a named Library publication without a private capture or local path:
 
 ```bash
-llm-notary verify-public trace.otlp.json stamp.json \
-  --trusted-platform-key <platform-public-key>
+curl -X POST -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  http://127.0.0.1:8788/v1/public-traces/3d3d727f-e0b1-432e-be3c-0b2e3ead35d1/verify
 ```
 
 The verifier hashes `trace.otlp.json`, checks the platform signature, and
 reports the provider, verification time, and normalizer version named in the
 stamp.
 
-Download a public Library publication, verify it before it is made visible in
-the output directory, and keep the two public artifacts together:
+Retrieve the canonical public trace and stamp as JSON through the admin API:
 
 ```bash
-llm-notary download 3d3d727f-e0b1-432e-be3c-0b2e3ead35d1 --verify
+curl -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  http://127.0.0.1:8788/v1/public-traces/3d3d727f-e0b1-432e-be3c-0b2e3ead35d1
 ```
 
-By default this creates `./3d3d727f-e0b1-432e-be3c-0b2e3ead35d1/` containing
-`trace.otlp.json` and `stamp.json`. Use `--output path/to/directory` to choose
-another directory, or `--overwrite` only when replacing an existing completed
-download is intended. The command resolves public artifact links through the
-API, rejects redirects and non-JSON responses, and leaves no completed output
-directory if transfer or verification fails. With `--verify`, it obtains the
-platform directory from the configured API origin and checks the canonical
+The service resolves public artifact links through the configured API, rejects
+redirects and non-JSON responses, and never accepts an arbitrary local output
+path. Verification obtains the platform directory and checks the canonical
 trace bytes, trace hash, public-stamp contract versions, platform key ID,
 stamp issuer, and ECDSA signature before reporting success. Use `--api` for a
 local loopback or HTTPS self-hosted API origin.
@@ -542,7 +557,7 @@ backend. Without an endpoint, tracing remains local JSON logging and metrics
 remain available for Prometheus scraping. These operational spans are separate
 from the cryptographically verifiable `trace.otlp.json` evidence artifacts.
 
-Authenticated CLI publication intake uses:
+Authenticated publication intake uses:
 
 - `POST /api/publish/jobs` with an `Idempotency-Key` header to create one
   short-lived finalized-package upload;
@@ -573,31 +588,29 @@ the private intake object is then purged. The consent and retention boundary,
 state machine, rejection codes, and public endpoints are documented in
 [`docs/publication-admission-v1.md`](docs/publication-admission-v1.md).
 
-### CLI publishing sign-in
+### Publication sign-in
 
-Before submitting a finalized trace package, authorize the installed CLI with
-your LLM Notary account:
+Before submitting a finalized trace, start the existing device authorization
+flow through the local API:
 
 ```bash
-llm-notary login
+curl -X POST -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  -H 'content-type: application/json' -d '{}' \
+  http://127.0.0.1:8788/v1/publication/auth
 ```
 
-The command prints a short code and a browser URL. Open that URL in any browser
-already signed in to your configured public LLM Notary site, inspect the requested CLI device
-name and code, and approve it. The CLI polls using a separate high-entropy
+The response contains a short code and browser URL. Open that URL in any browser
+already signed in to your configured public LLM Notary site, inspect the requested local device
+name and code, and approve it. The service polls using a separate high-entropy
 secret; the displayed code alone cannot approve or retrieve credentials.
 When using `--api` for a self-hosted site, use HTTPS; plain HTTP is accepted
 only for a loopback development origin.
 
-GitHub is used only by the website to identify the account. The CLI never
+GitHub is used only by the website to identify the account. The service never
 receives, logs, or persists a GitHub token. It stores only an LLM Notary
 rotating refresh credential, in the macOS Keychain when available or otherwise
-in a mode-`0600` configuration file. Check or revoke the local session with:
-
-```bash
-llm-notary whoami
-llm-notary logout
-```
+in a mode-`0600` configuration file. Check or revoke the local session through
+`GET` or `DELETE /v1/publication/auth`.
 
 Publish access credentials last 15 minutes. Refresh credentials expire after
 90 days, rotate on every use, and a replayed refresh credential revokes its
@@ -605,23 +618,24 @@ session.
 
 ### Publish a finalized package
 
-`publish` accepts exactly one directory produced by `llm-notary finalize`. It
+The publication operation accepts only a finalized capture identifier. It
 first snapshots that directory into the deterministic transport archive, then
 verifies the TLSNotary evidence, trusted notary key, authenticated HTTP
 disclosure, and deterministic OTLP mapping from that exact snapshot. Only
-after those checks pass does it refresh the CLI login and create an upload job:
+after those checks pass does it refresh the publication login and create an upload job:
 
 ```bash
-llm-notary publish verified-trace
+curl -X POST -H "Authorization: Bearer $LLM_NOTARY_ADMIN_TOKEN" \
+  http://127.0.0.1:8788/v1/captures/cap-example/publications
 ```
 
-The command creates a deterministic
+The service creates a deterministic
 `llmnotary.trace-package-archive/v1` object in memory, uploads it through the
 job-scoped presigned URL, completes the upload, and prints the durable job ID
 and status URL. Its idempotency key is derived from the archive hash, so
-repeating the command for identical bytes resumes the same job after an
-ambiguous network failure. Use `--json` for a single script-friendly object
-containing `job_id`, `state`, and `status_url`.
+repeating the operation for identical bytes resumes the same job after an
+ambiguous network failure. The response contains `job_id`, `state`, and
+`status_url`.
 
 Publishing is an explicit consent boundary: the current admission design may
 inspect the disclosed plaintext in the finalized package to reproduce and

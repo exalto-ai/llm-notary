@@ -3,7 +3,7 @@ name = "llm-notary-client"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "Local LLM Notary proxy and command-line client"
+description = "Local LLM Notary proxy and administration service"
 build = "build.rs"
 
 [[bin]]
@@ -30,8 +30,12 @@ tokio = { version = "1.45", features = ["full"] }
 tokio-stream = "0.1"
 toml = "0.8"
 tracing = "0.1"
+subtle = "2.6"
+tower-http = { version = "0.7", features = ["limit", "request-id", "sensitive-headers", "trace"] }
 url = "2.5"
+utoipa = { version = "5.5", features = ["axum_extras", "uuid"] }
 uuid = { version = "1.16", features = ["v4"] }
 
 [dev-dependencies]
 llm-notary-core = { path = "../llm-notary-core", features = ["test-utils"] }
+tower = { version = "0.5", features = ["util"] }

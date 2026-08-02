@@ -14,8 +14,8 @@ use uuid::Uuid;
 
 use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin, http_client_builder};
 use crate::public::{
-    PLATFORM_STAMP_FORMAT, PublicStamp, platform_key_id, validate_public_trace_bytes,
-    verify_public_trace_bytes,
+    PLATFORM_STAMP_FORMAT, PublicStamp, VerifiedPublicTrace, platform_key_id,
+    validate_public_trace_bytes, verify_public_trace_bytes,
 };
 
 const MAX_METADATA_BYTES: usize = 64 * 1024;
@@ -60,6 +60,86 @@ struct PlatformDirectory {
     issuer: String,
     key_id: String,
     public_key: String,
+}
+
+pub(crate) struct FetchedPublicTrace {
+    pub(crate) publication_id: String,
+    pub(crate) trace: serde_json::Value,
+    pub(crate) stamp: PublicStamp,
+    pub(crate) verification: Option<VerifiedPublicTrace>,
+}
+
+/// Fetches a named public artifact without allowing the caller to select a
+/// local path. The hosted artifact URLs remain pinned to the configured API
+/// origin by `artifact_url`.
+pub(crate) async fn fetch_public_trace(
+    publication_id: &str,
+    api: &str,
+    verify: bool,
+) -> Result<FetchedPublicTrace> {
+    let publication_id = validated_publication_id(publication_id)?;
+    let origin = ApiOrigin::parse(api)?;
+    let client = http_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("building public download client")?;
+    let metadata: PublicTraceMetadata = get_json(
+        &client,
+        origin.api_url(&format!("/api/public/traces/{publication_id}")),
+        "resolving publication",
+    )
+    .await?;
+    ensure!(
+        metadata.id == publication_id,
+        "publication API returned metadata for a different publication"
+    );
+    let trace_url = artifact_url(&origin, &metadata.trace_url, &publication_id, TRACE_FILE)?;
+    let stamp_url = artifact_url(&origin, &metadata.stamp_url, &publication_id, STAMP_FILE)?;
+    let trace_bytes = response_bytes(
+        client
+            .get(trace_url)
+            .send()
+            .await
+            .context("downloading public trace")?,
+        "downloading public trace",
+        MAX_ARTIFACT_BYTES,
+    )
+    .await?;
+    let stamp_bytes = response_bytes(
+        client
+            .get(stamp_url)
+            .send()
+            .await
+            .context("downloading platform stamp")?,
+        "downloading platform stamp",
+        MAX_METADATA_BYTES,
+    )
+    .await?;
+    validate_downloaded_artifacts(&trace_bytes, &stamp_bytes)?;
+    let verification = if verify {
+        let directory: PlatformDirectory = get_json(
+            &client,
+            origin.api_url("/api/platform"),
+            "retrieving platform signing key",
+        )
+        .await?;
+        Some(verify_with_platform_directory(
+            &trace_bytes,
+            &stamp_bytes,
+            directory,
+        )?)
+    } else {
+        None
+    };
+    if let Err(error) = record_download_event(&client, &origin, &publication_id).await {
+        tracing::debug!(%error, "recording Library download activity failed");
+    }
+    Ok(FetchedPublicTrace {
+        publication_id,
+        trace: serde_json::from_slice(&trace_bytes)?,
+        stamp: serde_json::from_slice(&stamp_bytes)?,
+        verification,
+    })
 }
 
 pub async fn run(args: DownloadArgs) -> Result<()> {

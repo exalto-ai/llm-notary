@@ -27,6 +27,8 @@ pub struct AgentConfig {
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
+    pub admin: AdminConfig,
+    #[serde(default)]
     pub notary: NotaryConfig,
     #[serde(default)]
     pub storage: StorageConfig,
@@ -34,6 +36,17 @@ pub struct AgentConfig {
     pub catalog: CatalogConfig,
     #[serde(default)]
     pub providers: ProvidersConfig,
+}
+
+/// Local administration listener. It is deliberately separate from the
+/// provider proxy so proxy callers cannot reach privileged routes.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AdminConfig {
+    #[serde(default = "default_admin_listen")]
+    pub listen: SocketAddr,
+    #[serde(default = "default_admin_token_path")]
+    pub token_path: PathBuf,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -112,10 +125,20 @@ impl Default for AgentConfig {
         Self {
             format: CONFIG_FORMAT.to_owned(),
             proxy: ProxyConfig::default(),
+            admin: AdminConfig::default(),
             notary: NotaryConfig::default(),
             storage: StorageConfig::default(),
             catalog: CatalogConfig::default(),
             providers: ProvidersConfig::default(),
+        }
+    }
+}
+
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            listen: default_admin_listen(),
+            token_path: default_admin_token_path(),
         }
     }
 }
@@ -249,6 +272,22 @@ impl AgentConfig {
             self.proxy.max_attestable_http_bytes > 0,
             "proxy.max_attestable_http_bytes must be non-zero"
         );
+        ensure!(
+            self.proxy.listen.ip().is_loopback(),
+            "proxy.listen must use a loopback address"
+        );
+        ensure!(
+            self.admin.listen.ip().is_loopback(),
+            "admin.listen must use a loopback address"
+        );
+        ensure!(
+            self.admin.listen != self.proxy.listen,
+            "admin.listen and proxy.listen must be different addresses"
+        );
+        ensure!(
+            !self.admin.token_path.as_os_str().is_empty(),
+            "admin.token_path must not be empty"
+        );
         if let Some(endpoint) = &self.notary.endpoint {
             endpoint
                 .parse::<NotaryEndpoint>()
@@ -365,6 +404,12 @@ fn default_listen() -> SocketAddr {
         .expect("valid default listen address")
 }
 
+fn default_admin_listen() -> SocketAddr {
+    "127.0.0.1:8788"
+        .parse()
+        .expect("valid default admin listen address")
+}
+
 fn default_max_attestable_http_bytes() -> usize {
     DEFAULT_MAX_ATTESTABLE_HTTP_BYTES
 }
@@ -410,6 +455,10 @@ fn default_catalog_path() -> PathBuf {
     default_data_dir().join("catalog.db")
 }
 
+fn default_admin_token_path() -> PathBuf {
+    default_data_dir().join("admin-token")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -424,6 +473,18 @@ mod tests {
         assert!(config.providers.openrouter.enabled);
         assert_eq!(config.catalog.prompt_preview_chars, 1_000);
         assert!(config.catalog.full_text_search);
+        assert_eq!(config.proxy.listen.to_string(), "127.0.0.1:8787");
+        assert_eq!(config.admin.listen.to_string(), "127.0.0.1:8788");
+    }
+
+    #[test]
+    fn non_loopback_or_shared_listeners_are_rejected() {
+        let mut config = AgentConfig::default();
+        config.admin.listen = "0.0.0.0:8788".parse().unwrap();
+        assert!(config.validate().is_err());
+
+        config.admin.listen = config.proxy.listen;
+        assert!(config.validate().is_err());
     }
 
     #[test]

@@ -43,6 +43,28 @@ struct AuthorizationStarted {
     poll_secret: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct PendingAuthorization {
+    pub(crate) request_id: String,
+    pub(crate) user_code: String,
+    pub(crate) verification_uri_complete: String,
+    pub(crate) expires_in: u64,
+    pub(crate) interval: u64,
+    poll_secret: String,
+    api_origin: ApiOrigin,
+}
+
+pub(crate) enum AuthorizationPoll {
+    Pending,
+    Complete,
+}
+
+pub(crate) struct PublicationAuthStatus {
+    pub(crate) signed_in: bool,
+    pub(crate) github_login: Option<String>,
+    pub(crate) device_name: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct AuthorizationComplete {
     access_token: String,
@@ -90,15 +112,43 @@ pub(crate) struct AuthenticatedApi {
 }
 
 pub async fn login(args: LoginArgs) -> Result<()> {
-    let api_origin = ApiOrigin::parse(&args.api)?;
+    let pending = start_authorization(&args.api, &args.device_name).await?;
+    println!("Open this URL in a browser and approve the request:");
+    println!("{}", pending.verification_uri_complete);
+    println!("\nCode: {}", pending.user_code);
+    println!(
+        "Waiting for approval (expires in {} minutes)…",
+        pending.expires_in / 60
+    );
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(pending.expires_in);
+    let interval = Duration::from_secs(pending.interval.clamp(1, 10));
+    loop {
+        if tokio::time::Instant::now() >= deadline {
+            bail!("authorization expired; start it again")
+        }
+        if matches!(
+            poll_authorization(&pending).await?,
+            AuthorizationPoll::Complete
+        ) {
+            println!("Signed in for publication.");
+            return Ok(());
+        }
+        tokio::time::sleep(interval).await;
+    }
+}
+
+pub(crate) async fn start_authorization(
+    api: &str,
+    device_name: &str,
+) -> Result<PendingAuthorization> {
+    let api_origin = ApiOrigin::parse(api)?;
     let client = http_client_builder()
         .build()
         .context("building API client")?;
     let started = client
         .post(api_origin.api_url("/api/cli/authorizations"))
-        .json(&StartAuthorization {
-            device_name: &args.device_name,
-        })
+        .json(&StartAuthorization { device_name })
         .send()
         .await
         .context("starting CLI authorization")?
@@ -107,58 +157,61 @@ pub async fn login(args: LoginArgs) -> Result<()> {
         .json::<AuthorizationStarted>()
         .await
         .context("reading CLI authorization response")?;
+    Ok(PendingAuthorization {
+        request_id: started.request_id,
+        user_code: started.user_code,
+        verification_uri_complete: started.verification_uri_complete,
+        expires_in: started.expires_in,
+        interval: started.interval,
+        poll_secret: started.poll_secret,
+        api_origin,
+    })
+}
 
-    println!("Open this URL in a browser and approve the request:");
-    println!("{}", started.verification_uri_complete);
-    println!("\nCode: {}", started.user_code);
-    println!(
-        "Waiting for approval (expires in {} minutes)…",
-        started.expires_in / 60
-    );
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(started.expires_in);
-    let interval = Duration::from_secs(started.interval.clamp(1, 10));
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            bail!("CLI authorization expired; run `llm-notary login` again")
-        }
-        let response = client
-            .post(api_origin.api_url(&format!(
-                "/api/cli/authorizations/{}/token",
-                started.request_id
-            )))
-            .header("X-LLM-Notary-Poll-Secret", &started.poll_secret)
-            .send()
-            .await
-            .context("polling CLI authorization")?;
-        if response.status() == StatusCode::PRECONDITION_REQUIRED {
-            tokio::time::sleep(interval).await;
-            continue;
-        }
-        if response.status() == StatusCode::GONE {
-            bail!("CLI authorization expired or was already used; run `llm-notary login` again")
-        }
-        let tokens = response
-            .error_for_status()
-            .context("completing CLI authorization")?
-            .json::<AuthorizationComplete>()
-            .await
-            .context("reading CLI credentials")?;
-        save_credentials(&FileCredentials {
-            api_origin: api_origin.clone(),
-            refresh_token: tokens.refresh_token,
-        })?;
-        // Deliberately do not retain or print the short-lived access token.
-        let _ = tokens.access_token;
-        println!(
-            "Signed in. Publish access expires in {} minutes and refreshes automatically.",
-            tokens.expires_in / 60
-        );
-        return Ok(());
+pub(crate) async fn poll_authorization(
+    pending: &PendingAuthorization,
+) -> Result<AuthorizationPoll> {
+    let response = http_client_builder()
+        .build()
+        .context("building API client")?
+        .post(pending.api_origin.api_url(&format!(
+            "/api/cli/authorizations/{}/token",
+            pending.request_id
+        )))
+        .header("X-LLM-Notary-Poll-Secret", &pending.poll_secret)
+        .send()
+        .await
+        .context("polling publication authorization")?;
+    if response.status() == StatusCode::PRECONDITION_REQUIRED {
+        return Ok(AuthorizationPoll::Pending);
     }
+    if response.status() == StatusCode::GONE {
+        bail!("publication authorization expired or was already used")
+    }
+    let tokens = response
+        .error_for_status()
+        .context("completing publication authorization")?
+        .json::<AuthorizationComplete>()
+        .await
+        .context("reading publication credentials")?;
+    save_credentials(&FileCredentials {
+        api_origin: pending.api_origin.clone(),
+        refresh_token: tokens.refresh_token,
+    })?;
+    let _ = (tokens.access_token, tokens.expires_in);
+    Ok(AuthorizationPoll::Complete)
 }
 
 pub async fn logout() -> Result<()> {
+    logout_for_service().await?;
+    println!("Signed out.");
+    Ok(())
+}
+
+pub(crate) async fn logout_for_service() -> Result<()> {
+    if !credentials_path()?.exists() {
+        return Ok(());
+    }
     let credentials = load_credentials()?;
     let client = http_client_builder()
         .build()
@@ -177,11 +230,27 @@ pub async fn logout() -> Result<()> {
             .context("revoking CLI session")?;
     }
     delete_credentials()?;
-    println!("Signed out.");
     Ok(())
 }
 
 pub async fn whoami() -> Result<()> {
+    let status = publication_auth_status().await?;
+    println!(
+        "{} ({})",
+        status.github_login.unwrap_or_default(),
+        status.device_name.unwrap_or_default()
+    );
+    Ok(())
+}
+
+pub(crate) async fn publication_auth_status() -> Result<PublicationAuthStatus> {
+    if !credentials_path()?.exists() {
+        return Ok(PublicationAuthStatus {
+            signed_in: false,
+            github_login: None,
+            device_name: None,
+        });
+    }
     let authenticated = authenticate().await?;
     let response = http_client_builder()
         .build()
@@ -196,11 +265,11 @@ pub async fn whoami() -> Result<()> {
         .json::<WhoamiResponse>()
         .await
         .context("reading CLI session")?;
-    println!(
-        "{} ({})",
-        response.user.github_login, response.session.device_name
-    );
-    Ok(())
+    Ok(PublicationAuthStatus {
+        signed_in: true,
+        github_login: Some(response.user.github_login),
+        device_name: Some(response.session.device_name),
+    })
 }
 
 pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
