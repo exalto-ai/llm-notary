@@ -33,7 +33,7 @@ pub struct ListArgs {
 
 #[derive(Args, Debug)]
 pub struct ShowArgs {
-    /// Capture ID from `llm-notary captures list`.
+    /// Capture ID returned by the local administration API.
     capture_id: String,
     /// Agent configuration file. Defaults to the standard path.
     #[arg(long)]

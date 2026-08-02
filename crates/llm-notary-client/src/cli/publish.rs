@@ -424,7 +424,9 @@ async fn api_json<T: DeserializeOwned>(response: Response, action: &str) -> Resu
                 .to_owned()
         });
     if status == StatusCode::UNAUTHORIZED {
-        bail!("{action} failed: {message}; run `llm-notary login` again");
+        bail!(
+            "{action} failed: {message}; authorize publication through the local dashboard or administration API"
+        );
     }
     bail!("{action} failed with HTTP {status}: {message}")
 }
@@ -449,7 +451,9 @@ fn reject_bundle_path(path: &std::path::Path) -> Result<()> {
         .extension()
         .is_some_and(|extension| extension == "llmbundle")
     {
-        bail!("encrypted .llmbundle files cannot be published; run `llm-notary finalize` first");
+        bail!(
+            "encrypted .llmbundle files cannot be published; finalize the capture through the local administration API first"
+        );
     }
     Ok(())
 }

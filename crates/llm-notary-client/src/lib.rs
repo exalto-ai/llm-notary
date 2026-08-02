@@ -1,4 +1,4 @@
-//! Local proxy and CLI workflow for LLM Notary.
+//! Long-running local proxy and administration service for LLM Notary.
 //!
 //! The hosted public origin remains a distribution default in this package.
 //! Evidence formats and Proxy-TLS protocol behavior are provided by
