@@ -164,8 +164,8 @@ export function createFixtureApi(): LocalApi {
       return operations.find((operation) => operation.operation_id === operationId)!;
     },
     events: async () => ({ items: fixtureEvents, next_cursor: 14 }),
-    trace: async () => fixtureTrace,
-    verify: async () => fixtureVerification,
+    trace: async (captureId) => ({ ...fixtureTrace, capture_id: captureId }),
+    verify: async (captureId) => ({ ...fixtureVerification, capture_id: captureId }),
     publicationAuth: async () => publicationAuth,
     startPublicationAuth: async () => ({ request_id: 'auth-docs-fixture', user_code: 'NOTARY-7K3',
       verification_uri_complete: 'https://llm-notary.example/activate?code=NOTARY-7K3', expires_in_seconds: 600,

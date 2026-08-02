@@ -441,10 +441,6 @@ export interface components {
             state: string;
             status_url: string;
         };
-        SessionRequest: {
-            /** @description The private value read from the configured admin token file. */
-            token: string;
-        };
         StatusResponse: {
             admin_listener: string;
             counts: components["schemas"]["CountsResponse"];
@@ -952,11 +948,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["SessionRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             /** @description HttpOnly dashboard session established */
             204: {

@@ -1,4 +1,4 @@
-import type { components } from './generated/api.generated';
+import type { components, paths } from './generated/api.generated';
 
 export type Status = components['schemas']['StatusResponse'];
 export type Capture = components['schemas']['CaptureResponse'];
@@ -10,6 +10,10 @@ export type Verification = components['schemas']['VerificationResponse'];
 export type PublicationAuth = components['schemas']['PublicationAuthResponse'];
 export type PublicationAuthStarted = components['schemas']['PublicationAuthStartedResponse'];
 export type Publication = components['schemas']['PublicationResponse'];
+type CaptureList = paths['/v1/captures']['get']['responses'][200]['content']['application/json'];
+type FinalizationResult = paths['/v1/captures/{capture_id}/finalizations']['post']['responses'][202]['content']['application/json'];
+type OperationList = paths['/v1/operations']['get']['responses'][200]['content']['application/json'];
+type EventList = paths['/v1/events']['get']['responses'][200]['content']['application/json'];
 
 export class LocalApiError extends Error {
   status: number;
@@ -25,6 +29,7 @@ export class LocalApiError extends Error {
 type RequestOptions = {
   method?: 'GET' | 'POST' | 'DELETE';
   body?: unknown;
+  bearerToken?: string;
 };
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
@@ -33,6 +38,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     credentials: 'same-origin',
     headers: {
       'x-llm-notary-request': 'dashboard',
+      ...(options.bearerToken ? { authorization: `Bearer ${options.bearerToken}` } : {}),
       ...(options.body === undefined ? {} : { 'content-type': 'application/json' })
     },
     body: options.body === undefined ? undefined : JSON.stringify(options.body)
@@ -61,24 +67,25 @@ function queryString(values: Record<string, string | number | undefined>) {
 }
 
 export const localApi = {
-  session: (token: string) => request<void>('/v1/session', { method: 'POST', body: { token } }),
+  session: (token: string) => request<void>('/v1/session', { method: 'POST', bearerToken: token }),
   endSession: () => request<void>('/v1/session', { method: 'DELETE' }),
   status: () => request<Status>('/v1/status'),
   captures: (filters: Record<string, string | number | undefined> = {}) =>
-    request<{ items: Capture[]; limit: number; offset: number }>(`/v1/captures${queryString(filters)}`),
+    request<CaptureList>(`/v1/captures${queryString(filters)}`),
   capture: (captureId: string) => request<CaptureDetail>(`/v1/captures/${encodeURIComponent(captureId)}`),
   startFinalization: (captureId: string) =>
-    request<{ operation: Operation; deduplicated: boolean }>(
+    request<FinalizationResult>(
       `/v1/captures/${encodeURIComponent(captureId)}/finalizations`,
       { method: 'POST' }
     ),
-  operations: () => request<{ items: Operation[] }>('/v1/operations'),
+  operations: () => request<OperationList>('/v1/operations'),
   operation: (operationId: string) => request<Operation>(`/v1/operations/${encodeURIComponent(operationId)}`),
   retry: (operationId: string) => request<Operation>(
     `/v1/operations/${encodeURIComponent(operationId)}/retry`,
     { method: 'POST' }
   ),
-  events: () => request<{ items: Event[]; next_cursor?: number }>('/v1/events'),
+  events: (filters: Record<string, string | number | undefined> = {}) =>
+    request<EventList>(`/v1/events${queryString(filters)}`),
   trace: (captureId: string) => request<Trace>(`/v1/captures/${encodeURIComponent(captureId)}/trace`),
   verify: (captureId: string) => request<Verification>(
     `/v1/captures/${encodeURIComponent(captureId)}/trace:verify`,

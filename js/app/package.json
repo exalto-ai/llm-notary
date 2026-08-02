@@ -7,9 +7,11 @@
     "dev": "vite --host 127.0.0.1",
     "dev:dashboard": "vite --mode local-dashboard --host 127.0.0.1",
     "generate:local-api": "node scripts/generate-local-api.mjs",
-    "build": "npm run build:site && npm run build:dashboard",
+    "check:local-api": "node scripts/generate-local-api.mjs --check",
+    "build": "npm run check:local-api && npm run build:site && npm run build:dashboard",
     "build:site": "vite build",
-    "build:dashboard": "vite build --mode local-dashboard",
+    "check:dashboard-types": "tsc -p tsconfig.dashboard.json",
+    "build:dashboard": "npm run check:dashboard-types && vite build --mode local-dashboard",
     "test:dashboard": "vitest run --config vitest.dashboard.config.js",
     "preview": "vite preview --host 127.0.0.1",
     "preview:dashboard": "vite preview --outDir ../../crates/llm-notary-client/dashboard --host 127.0.0.1"

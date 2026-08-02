@@ -766,16 +766,6 @@
           "local-admin"
         ],
         "operationId": "start_session",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SessionRequest"
-              }
-            }
-          },
-          "required": true
-        },
         "responses": {
           "204": {
             "description": "HttpOnly dashboard session established"
@@ -790,7 +780,12 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       },
       "delete": {
         "tags": [
@@ -1408,18 +1403,6 @@
           },
           "status_url": {
             "type": "string"
-          }
-        }
-      },
-      "SessionRequest": {
-        "type": "object",
-        "required": [
-          "token"
-        ],
-        "properties": {
-          "token": {
-            "type": "string",
-            "description": "The private value read from the configured admin token file."
           }
         }
       },

@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import {
   ActionIcon, AppShell, Badge, Box, Burger, Button, Center, Divider, Drawer, Group,
-  Loader, Menu, Modal, NavLink, Paper, PasswordInput, ScrollArea, Select, SimpleGrid,
+  Loader, Modal, NavLink, Paper, PasswordInput, ScrollArea, Select, SimpleGrid,
   Stack, Table, Tabs, Text, TextInput, ThemeIcon, Title, Tooltip, UnstyledButton,
   useMantineColorScheme
 } from '@mantine/core';
@@ -9,14 +9,13 @@ import { useDisclosure, useMediaQuery } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Activity, AlertTriangle, Archive, ArrowLeft, BookOpenCheck, Check, CheckCircle2, CodeXml,
+  Activity, Archive, ArrowLeft, BookOpenCheck, Check, CheckCircle2, CodeXml,
   ChevronRight, CircleDot, Clock3, Copy, Database, FileCheck2, FileJson2, Gauge,
-  KeyRound, ListChecks, Menu as MenuIcon, Moon, PanelLeft, Play, RefreshCw, Search,
+  KeyRound, ListChecks, Moon, PanelLeft, Play, RefreshCw, Search,
   Send, Settings, ShieldCheck, Sun, TerminalSquare, Unplug, XCircle
 } from 'lucide-react';
-import type {
-  Capture, CaptureDetail, Event, LocalApi, LocalApiError, Operation, Status, Verification
-} from './api';
+import { LocalApiError } from './api';
+import type { Capture, CaptureDetail, Event, LocalApi, Operation, PublicationAuthStarted, Status, Verification } from './api';
 
 export type DashboardView = 'overview' | 'captures' | 'finalizations' | 'traces' | 'publishing' | 'activity' | 'settings';
 
@@ -96,6 +95,26 @@ function ErrorState({ title = 'The local service is unavailable', onRetry }: { t
     {onRetry && <Button variant="outline" leftSection={<RefreshCw size={15} />} onClick={onRetry}>Try again</Button>}</Stack></Center>;
 }
 
+function QueryError({ error, title }: { error: unknown; title?: string }) {
+  const unauthorized = error instanceof LocalApiError && error.status === 401;
+  return <ErrorState title={unauthorized ? 'The dashboard session expired' : title} />;
+}
+
+function mutationError(title: string, error: unknown) {
+  const code = error instanceof LocalApiError ? error.code : 'request_failed';
+  notifications.show({ color: 'red', title, message: `The service returned ${code}. Review Activity for safe details.` });
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function withinTime(timestamp: number, range: string | null) {
+  if (!range) return true;
+  const milliseconds = range === 'hour' ? 60 * 60 * 1000 : range === 'day' ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
+  return timestamp >= Date.now() - milliseconds;
+}
+
 function LoadingState({ label = 'Loading local evidence' }: { label?: string }) {
   return <Center className="loading-state"><Stack align="center" gap="sm"><Loader size="sm" /><Text>{label}</Text></Stack></Center>;
 }
@@ -172,20 +191,21 @@ export function Dashboard({ api, fixture = false }: { api: LocalApi; fixture?: b
   if (statusQuery.error && (statusQuery.error as LocalApiError).status === 401) {
     return <AuthGate api={api} onAuthenticated={() => queryClient.invalidateQueries({ queryKey: ['status'] })} />;
   }
+  if (statusQuery.error) return <ErrorState onRetry={() => statusQuery.refetch()} />;
   if (!statusQuery.data) return <ErrorState onRetry={() => statusQuery.refetch()} />;
   const status = statusQuery.data;
   return <AppShell
-    header={{ height: 64 }} navbar={{ width: 248, breakpoint: 'sm', collapsed: { mobile: !navOpened } }}
+    header={{ height: 64 }} navbar={{ width: 248, breakpoint: 820, collapsed: { mobile: true } }}
     padding={0} className="dashboard-shell">
     <AppShell.Header className="dashboard-header">
       <Group h="100%" justify="space-between" wrap="nowrap">
-        <Group gap="sm" wrap="nowrap"><Burger opened={navOpened} onClick={openNav} hiddenFrom="sm" size="sm" aria-label="Open navigation" />
-          <Brand /><Divider orientation="vertical" visibleFrom="sm" /><Text className="header-context" visibleFrom="sm">Local evidence</Text></Group>
+        <Group gap="sm" wrap="nowrap"><Burger opened={navOpened} onClick={openNav} className="mobile-burger" size="sm" aria-label="Open navigation" />
+          <Brand /><Divider orientation="vertical" className="desktop-context" /><Text className="header-context desktop-context">Local evidence</Text></Group>
         <Group gap="md" wrap="nowrap"><div className="header-health"><StatusLabel state="online" /><span>{status.counts.active_operations ? `${status.counts.active_operations} active` : 'Idle'}</span></div><SchemeControl /></Group>
       </Group>
     </AppShell.Header>
     <AppShell.Navbar className="dashboard-navbar"><Sidebar route={route} status={status} onNavigate={navigate} fixture={fixture} /></AppShell.Navbar>
-    <Drawer opened={navOpened} onClose={closeNav} title={<Brand />} size="min(88vw, 340px)" hiddenFrom="sm" classNames={{ body: 'mobile-nav-body' }}>
+    <Drawer opened={navOpened} onClose={closeNav} title={<Brand />} size="min(88vw, 340px)" classNames={{ body: 'mobile-nav-body' }}>
       <Sidebar route={route} status={status} onNavigate={navigate} fixture={fixture} />
     </Drawer>
     <AppShell.Main className="dashboard-main"><View route={route} status={status} api={api} navigate={navigate} /></AppShell.Main>
@@ -205,7 +225,7 @@ function View({ route, status, api, navigate }: { route: Route; status: Status; 
 }
 
 function OverviewView({ api, status, navigate }: { api: LocalApi; status: Status; navigate: (route: Route) => void }) {
-  const events = useQuery({ queryKey: ['events'], queryFn: api.events });
+  const events = useQuery({ queryKey: ['events'], queryFn: () => api.events() });
   const stats = [
     ['Capturing', status.counts.capturing, 'active'], ['Pending', status.counts.pending, 'muted'],
     ['Finalizing', status.counts.active_operations, 'active'], ['Finalized', status.counts.finalized, 'ready'],
@@ -226,7 +246,7 @@ function OverviewView({ api, status, navigate }: { api: LocalApi; status: Status
         <Button onClick={() => navigate({ view: status.counts.pending ? 'captures' : 'settings' })}>{status.counts.pending ? 'Review captures' : 'View proxy routes'}</Button></Paper>
     </section>
     <section className="recent-section"><Group justify="space-between"><div><Text className="eyebrow">Recent activity</Text><Title order={2}>What changed</Title></div><Button variant="subtle" onClick={() => navigate({ view: 'activity' })}>All activity</Button></Group>
-      {events.isLoading ? <LoadingState /> : <EventList events={events.data?.items.slice(0, 4) ?? []} />}</section>
+      {events.isLoading ? <LoadingState /> : events.error ? <QueryError error={events.error} title="Recent activity is unavailable" /> : <EventList events={events.data?.items.slice(0, 4) ?? []} />}</section>
   </div>;
 }
 
@@ -236,21 +256,38 @@ function ServiceFact({ icon: Icon, label, value, detail, tone }: { icon: typeof 
 
 function CapturesView({ api, selectedId, navigate }: { api: LocalApi; selectedId?: string; navigate: (route: Route) => void }) {
   const [query, setQuery] = useState('');
+  const [model, setModel] = useState('');
   const [provider, setProvider] = useState<string | null>(null);
+  const [captureState, setCaptureState] = useState<string | null>(null);
   const [finalization, setFinalization] = useState<string | null>(null);
+  const [streaming, setStreaming] = useState<string | null>(null);
+  const [time, setTime] = useState<string | null>(null);
   const mobile = useMediaQuery('(max-width: 820px)');
-  const captures = useQuery({ queryKey: ['captures', query, provider, finalization], queryFn: () => api.captures({ query, provider: provider ?? undefined, finalization_state: finalization ?? undefined }) });
-  const activeId = selectedId ?? captures.data?.items[0]?.capture_id;
-  const active = captures.data?.items.find((capture) => capture.capture_id === activeId);
+  const captures = useQuery({
+    queryKey: ['captures', query, model, provider, captureState, finalization],
+    queryFn: () => api.captures({ query, model, provider: provider ?? undefined, capture_state: captureState ?? undefined, finalization_state: finalization ?? undefined })
+  });
+  const selectedDetail = useQuery({
+    queryKey: ['capture', selectedId], queryFn: () => api.capture(selectedId!), enabled: Boolean(selectedId)
+  });
+  const visible = useMemo(() => (captures.data?.items ?? []).filter((capture) =>
+    (!streaming || capture.streaming === (streaming === 'streaming')) && withinTime(capture.created_at_unix_ms, time)
+  ), [captures.data, streaming, time]);
+  const activeId = selectedId ?? visible[0]?.capture_id;
+  const active = visible.find((capture) => capture.capture_id === activeId) ?? selectedDetail.data?.capture;
   const showDetail = Boolean(mobile && selectedId);
   return <div className="view-page capture-page"><PageHeader eyebrow="Private evidence" title="Captures"
     copy="Search privacy-aware previews and move only selected captures into proof generation." />
-    {!showDetail && <div className="filter-bar"><TextInput aria-label="Search captures" placeholder="Search prompt and output previews" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
+    {!showDetail && <div className="filter-bar filter-bar--captures"><TextInput aria-label="Search captures" placeholder="Search prompt and output previews" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
+      <TextInput aria-label="Model filter" placeholder="All models" value={model} onChange={(event) => setModel(event.currentTarget.value)} />
       <Select aria-label="Provider filter" placeholder="All providers" clearable data={['openai', 'anthropic', 'deepseek', 'openrouter']} value={provider} onChange={setProvider} />
-      <Select aria-label="Finalization filter" placeholder="All finalization states" clearable data={['not_requested', 'queued', 'running', 'finalized', 'failed', 'interrupted']} value={finalization} onChange={setFinalization} /></div>}
-    {captures.isLoading ? <LoadingState /> : captures.error ? <ErrorState onRetry={() => captures.refetch()} /> : !captures.data?.items.length ? <EmptyState title="No captures match" copy="Clear a filter or send a new request through the provider proxy." />
+      <Select aria-label="Capture state filter" placeholder="All capture states" clearable data={['capturing', 'pending', 'failed']} value={captureState} onChange={setCaptureState} />
+      <Select aria-label="Finalization filter" placeholder="All finalization states" clearable data={['not_requested', 'queued', 'running', 'finalized', 'failed', 'interrupted']} value={finalization} onChange={setFinalization} />
+      <Select aria-label="Streaming filter" placeholder="Streaming or buffered" clearable data={[{ value: 'streaming', label: 'Streaming' }, { value: 'buffered', label: 'Buffered' }]} value={streaming} onChange={setStreaming} />
+      <Select aria-label="Capture time filter" placeholder="Any time" clearable data={[{ value: 'hour', label: 'Last hour' }, { value: 'day', label: 'Last 24 hours' }, { value: 'week', label: 'Last 7 days' }]} value={time} onChange={setTime} /></div>}
+    {captures.isLoading || (selectedId && selectedDetail.isLoading) ? <LoadingState /> : captures.error ? <QueryError error={captures.error} title="Captures are unavailable" /> : selectedDetail.error ? <QueryError error={selectedDetail.error} title="Capture detail is unavailable" /> : !visible.length && !active ? <EmptyState title="No captures match" copy="Clear a filter or send a new request through the provider proxy." />
       : <div className={`master-detail ${showDetail ? 'show-detail' : ''}`}>
-        <ScrollArea className="master-list" type="auto"><div className="capture-list" role="list" aria-label="Captures">{captures.data.items.map((capture) => <CaptureRow key={capture.capture_id} capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'captures', id: capture.capture_id })} />)}</div></ScrollArea>
+        <ScrollArea className="master-list" type="auto"><div className="capture-list" role="list" aria-label="Captures">{visible.map((capture) => <CaptureRow key={capture.capture_id} capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'captures', id: capture.capture_id })} />)}</div></ScrollArea>
         <div className="detail-panel">{active ? <CaptureInspector api={api} capture={active} mobile={Boolean(mobile)} onBack={() => navigate({ view: 'captures' })} navigate={navigate} /> : null}</div>
       </div>}
   </div>;
@@ -267,6 +304,12 @@ function CaptureRow({ capture, active, onClick }: { capture: Capture; active: bo
 function CaptureInspector({ api, capture, mobile, onBack, navigate }: { api: LocalApi; capture: Capture; mobile: boolean; onBack: () => void; navigate: (route: Route) => void }) {
   const queryClient = useQueryClient();
   const detail = useQuery({ queryKey: ['capture', capture.capture_id], queryFn: () => api.capture(capture.capture_id) });
+  const operations = useQuery({
+    queryKey: ['operations'], queryFn: api.operations,
+    enabled: ['failed', 'interrupted'].includes(capture.finalization_state)
+  });
+  const failedOperation = operations.data?.items.find((operation) => operation.capture_id === capture.capture_id
+    && ['failed', 'interrupted'].includes(operation.state));
   const finalize = useMutation({
     mutationFn: () => api.startFinalization(capture.capture_id),
     onSuccess: (result) => {
@@ -275,16 +318,29 @@ function CaptureInspector({ api, capture, mobile, onBack, navigate }: { api: Loc
       queryClient.invalidateQueries({ queryKey: ['operations'] });
       navigate({ view: 'finalizations', id: result.operation.operation_id });
     },
-    onError: () => notifications.show({ color: 'red', title: 'Could not finalize', message: 'The service returned a safe failure. Review Activity for the failure code.' })
+    onError: (error) => mutationError('Could not finalize', error)
+  });
+  const retry = useMutation({
+    mutationFn: () => api.retry(failedOperation!.operation_id),
+    onSuccess: (operation) => {
+      notifications.show({ title: 'Retry queued', message: 'The existing durable operation will make another attempt.' });
+      queryClient.invalidateQueries({ queryKey: ['captures'] });
+      queryClient.invalidateQueries({ queryKey: ['operations'] });
+      navigate({ view: 'finalizations', id: operation.operation_id });
+    },
+    onError: (error) => mutationError('Could not retry finalization', error)
   });
   if (detail.isLoading) return <LoadingState />;
+  if (detail.error) return <QueryError error={detail.error} title="Capture detail is unavailable" />;
   const value = detail.data;
   if (!value) return <ErrorState title="Capture detail is unavailable" onRetry={() => detail.refetch()} />;
-  const canFinalize = capture.capture_state === 'pending' && ['not_requested', 'failed', 'interrupted'].includes(capture.finalization_state);
+  const canFinalize = capture.capture_state === 'pending' && capture.finalization_state === 'not_requested';
+  const canRetry = capture.capture_state === 'pending' && Boolean(failedOperation);
   return <article className="inspector capture-inspector">
     {mobile && <Button variant="subtle" leftSection={<ArrowLeft size={15} />} onClick={onBack}>All captures</Button>}
     <div className="inspector-head"><div><Text className="eyebrow">Capture detail</Text><Title order={2}>{capture.requested_model ?? 'Unreported model'}</Title><Text className="mono-id">{capture.capture_id}</Text></div>
-      {canFinalize && <Button loading={finalize.isPending} leftSection={<Play size={15} />} onClick={() => finalize.mutate()}>Finalize</Button>}</div>
+      <Group>{canFinalize && <Button loading={finalize.isPending} leftSection={<Play size={15} />} onClick={() => finalize.mutate()}>Finalize</Button>}
+        {canRetry && <Button loading={retry.isPending} leftSection={<RefreshCw size={15} />} onClick={() => retry.mutate()}>Retry finalization</Button>}</Group></div>
     <Lifecycle capture={capture} />
     <InspectorSection title="Safe metadata"><dl className="metadata-grid"><Fact label="Provider" value={capture.provider} /><Fact label="Operation" value={capture.operation} /><Fact label="HTTP status" value={capture.http_status?.toString() ?? 'In progress'} /><Fact label="Streaming" value={capture.streaming ? 'Yes' : 'No'} /><Fact label="Request" value={formatBytes(capture.request_bytes)} /><Fact label="Response" value={formatBytes(capture.response_bytes)} /></dl></InspectorSection>
     <InspectorSection title="Privacy-aware previews"><div className="preview-block"><Text className="eyebrow">Prompt {capture.prompt_preview_truncated && '· truncated'}</Text><Text>{capture.prompt_preview || 'Preview storage is disabled.'}</Text></div><div className="preview-block"><Text className="eyebrow">Output {capture.output_preview_truncated && '· truncated'}</Text><Text>{capture.output_preview || 'No output preview is available yet.'}</Text></div></InspectorSection>
@@ -313,12 +369,16 @@ function ArtifactList({ detail }: { detail: CaptureDetail }) {
 
 function FinalizationsView({ api, selectedId, navigate }: { api: LocalApi; selectedId?: string; navigate: (route: Route) => void }) {
   const operations = useQuery({ queryKey: ['operations'], queryFn: api.operations, refetchInterval: 3_000 });
-  const active = operations.data?.items.find((item) => item.operation_id === selectedId) ?? operations.data?.items[0];
+  const selectedOperation = useQuery({
+    queryKey: ['operation', selectedId], queryFn: () => api.operation(selectedId!), enabled: Boolean(selectedId)
+  });
+  const active = operations.data?.items.find((item) => item.operation_id === selectedId)
+    ?? selectedOperation.data ?? operations.data?.items[0];
   return <div className="view-page"><PageHeader eyebrow="Background work" title="Finalizations" copy="Durable proof operations survive ambiguity: duplicates resolve to one active operation, and interruptions remain retryable." />
-    {operations.isLoading ? <LoadingState /> : !operations.data?.items.length ? <EmptyState icon={ListChecks} title="No finalizations yet" copy="Queue one from a pending capture." />
+    {operations.isLoading || (selectedId && selectedOperation.isLoading) ? <LoadingState /> : operations.error ? <QueryError error={operations.error} title="Finalizations are unavailable" /> : selectedOperation.error ? <QueryError error={selectedOperation.error} title="Finalization detail is unavailable" /> : !operations.data?.items.length && !active ? <EmptyState icon={ListChecks} title="No finalizations yet" copy="Queue one from a pending capture." />
       : <div className="operations-layout"><div className="operations-table"><Table.ScrollContainer minWidth={700}><Table highlightOnHover>
         <Table.Thead><Table.Tr><Table.Th>State</Table.Th><Table.Th>Capture</Table.Th><Table.Th>Attempt</Table.Th><Table.Th>Queued</Table.Th><Table.Th /></Table.Tr></Table.Thead>
-        <Table.Tbody>{operations.data.items.map((operation) => <Table.Tr key={operation.operation_id} className={active?.operation_id === operation.operation_id ? 'is-selected' : ''}>
+        <Table.Tbody>{(operations.data?.items ?? []).map((operation) => <Table.Tr key={operation.operation_id} className={active?.operation_id === operation.operation_id ? 'is-selected' : ''}>
           <Table.Td><StatusLabel state={operation.state} /></Table.Td><Table.Td><code>{operation.capture_id}</code></Table.Td><Table.Td>{operation.attempt}</Table.Td><Table.Td>{formatDate(operation.created_at_unix_ms)}</Table.Td><Table.Td><ActionIcon variant="subtle" aria-label={`Inspect ${operation.operation_id}`} onClick={() => navigate({ view: 'finalizations', id: operation.operation_id })}><ChevronRight size={16} /></ActionIcon></Table.Td>
         </Table.Tr>)}</Table.Tbody></Table></Table.ScrollContainer></div>{active && <OperationInspector api={api} operation={active} />}</div>}
   </div>;
@@ -329,7 +389,7 @@ function OperationInspector({ api, operation }: { api: LocalApi; operation: Oper
   const retry = useMutation({ mutationFn: () => api.retry(operation.operation_id), onSuccess: () => {
     notifications.show({ title: 'Retry queued', message: 'The same durable operation will make another attempt.' });
     queryClient.invalidateQueries({ queryKey: ['operations'] });
-  }});
+  }, onError: (error) => mutationError('Could not retry finalization', error) });
   const retryable = ['failed', 'interrupted'].includes(operation.state);
   return <Paper className="operation-inspector"><Text className="eyebrow">Selected operation</Text><Group justify="space-between" align="flex-start"><div><Title order={2}>{operation.state === 'running' ? 'Generating private proof' : operation.state.replaceAll('_', ' ')}</Title><Text className="mono-id">{operation.operation_id}</Text></div><StatusLabel state={operation.state} /></Group>
     <div className="operation-stage"><span className={['queued', 'running', 'finalized'].includes(operation.state) ? 'complete' : ''}>Queued</span><i /><span className={['running', 'finalized'].includes(operation.state) ? 'complete' : ''}>Proof generation</span><i /><span className={operation.state === 'finalized' ? 'complete' : ''}>Verified package</span></div>
@@ -340,29 +400,55 @@ function OperationInspector({ api, operation }: { api: LocalApi; operation: Oper
 }
 
 function TracesView({ api, selectedId, navigate }: { api: LocalApi; selectedId?: string; navigate: (route: Route) => void }) {
+  const [query, setQuery] = useState('');
+  const mobile = useMediaQuery('(max-width: 820px)');
   const captures = useQuery({ queryKey: ['captures', 'finalized'], queryFn: () => api.captures({ finalization_state: 'finalized' }) });
-  const activeId = selectedId ?? captures.data?.items[0]?.capture_id;
+  const visible = (captures.data?.items ?? []).filter((capture) => `${capture.capture_id} ${capture.provider} ${capture.requested_model ?? ''} ${capture.prompt_preview} ${capture.output_preview}`.toLowerCase().includes(query.toLowerCase()));
+  const activeId = selectedId ?? visible[0]?.capture_id;
+  const showDetail = Boolean(mobile && selectedId);
   return <div className="view-page"><PageHeader eyebrow="Portable evidence" title="Finalized traces" copy="Inspect the disclosed document, its evidence receipt, and a fresh independent verification result." />
-    {captures.isLoading ? <LoadingState /> : !captures.data?.items.length ? <EmptyState icon={FileCheck2} title="No finalized traces" copy="Finalize a pending capture to create one." />
-      : <div className="trace-layout"><div className="trace-list">{captures.data.items.map((capture) => <CaptureRow key={capture.capture_id} capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'traces', id: capture.capture_id })} />)}</div>{activeId && <TraceInspector api={api} captureId={activeId} />}</div>}
+    {!showDetail && <div className="filter-bar filter-bar--short"><TextInput aria-label="Search finalized traces" placeholder="Search finalized traces" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} /></div>}
+    {captures.isLoading ? <LoadingState /> : captures.error ? <QueryError error={captures.error} title="Finalized traces are unavailable" /> : !visible.length && !selectedId ? <EmptyState icon={FileCheck2} title="No finalized traces" copy="Finalize a pending capture or clear the search." />
+      : <div className={`trace-layout ${showDetail ? 'show-detail' : ''}`}>{!showDetail && <div className="trace-list">{visible.map((capture) => <CaptureRow key={capture.capture_id} capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'traces', id: capture.capture_id })} />)}</div>}{activeId && (!mobile || selectedId) && <TraceInspector api={api} captureId={activeId} mobile={Boolean(mobile)} onBack={() => navigate({ view: 'traces' })} />}</div>}
   </div>;
 }
 
-function TraceInspector({ api, captureId }: { api: LocalApi; captureId: string }) {
+function TraceInspector({ api, captureId, mobile, onBack }: { api: LocalApi; captureId: string; mobile: boolean; onBack: () => void }) {
   const trace = useQuery({ queryKey: ['trace', captureId], queryFn: () => api.trace(captureId) });
   const [verification, setVerification] = useState<Verification | null>(null);
-  const verify = useMutation({ mutationFn: () => api.verify(captureId), onSuccess: (result) => {
-    setVerification(result); notifications.show({ title: 'Trace verified', message: 'Evidence, disclosure, hashes, and canonical OTLP all match.' });
-  }});
+  const [activeTab, setActiveTab] = useState<string | null>('summary');
+  const currentCapture = useRef(captureId);
+  useEffect(() => {
+    currentCapture.current = captureId;
+    setVerification(null);
+    setActiveTab('summary');
+  }, [captureId]);
+  const verify = useMutation({
+    mutationFn: () => api.verify(captureId),
+    onSuccess: (result) => {
+      if (currentCapture.current !== result.capture_id) return;
+      setVerification(result);
+      setActiveTab('verification');
+      notifications.show({ title: 'Trace verified', message: 'Evidence, disclosure, hashes, and canonical OTLP all match.' });
+    },
+    onError: (error) => mutationError('Trace verification failed', error)
+  });
   if (trace.isLoading) return <LoadingState />;
+  if (trace.error) return <QueryError error={trace.error} title="Trace package is unavailable" />;
   if (!trace.data) return <ErrorState title="Trace package is unavailable" onRetry={() => trace.refetch()} />;
-  const manifest = trace.data.manifest as Record<string, unknown>;
-  return <article className="trace-inspector"><Group justify="space-between"><div><Text className="eyebrow">Verified trace package</Text><Title order={2}>{captureId}</Title></div><Button leftSection={<ShieldCheck size={15} />} loading={verify.isPending} onClick={() => verify.mutate()}>Verify now</Button></Group>
-    <Tabs defaultValue={verification ? 'verification' : 'summary'} keepMounted={false}>
+  const manifest = asRecord(trace.data.manifest);
+  const source = asRecord(manifest.source);
+  const provider = asRecord(source.provider);
+  const providerName = typeof provider.name === 'string' ? provider.name : null;
+  const providerHost = typeof provider.host === 'string' ? provider.host : null;
+  const providerLabel = [providerName, providerHost].filter(Boolean).join(' · ') || 'Not reported';
+  const traceDigest = typeof manifest.trace_sha256 === 'string' ? manifest.trace_sha256 : 'Not reported';
+  return <article className="trace-inspector">{mobile && <Button variant="subtle" leftSection={<ArrowLeft size={15} />} onClick={onBack}>All finalized traces</Button>}<Group justify="space-between"><div><Text className="eyebrow">Verified trace package</Text><Title order={2}>{captureId}</Title></div><Button leftSection={<ShieldCheck size={15} />} loading={verify.isPending} onClick={() => verify.mutate()}>Verify now</Button></Group>
+    <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
       <Tabs.List><Tabs.Tab value="summary">Summary</Tabs.Tab><Tabs.Tab value="evidence">Evidence</Tabs.Tab><Tabs.Tab value="trace">Trace</Tabs.Tab><Tabs.Tab value="verification">Verification</Tabs.Tab></Tabs.List>
-      <Tabs.Panel value="summary"><div className="document-panel"><Title order={3}>Authenticated inference</Title><Text>This portable package binds canonical OpenTelemetry output to the disclosed provider exchange and TLSNotary evidence.</Text><dl className="metadata-grid"><Fact label="Capture" value={captureId} /><Fact label="Format" value={String(manifest.format ?? 'verified trace')} /><Fact label="Normalizer" value={String(manifest.normalizer_version ?? 'v1')} /><Fact label="Files" value="5 authenticated artifacts" /></dl></div></Tabs.Panel>
+      <Tabs.Panel value="summary"><div className="document-panel"><Title order={3}>Authenticated inference</Title><Text>This portable package binds canonical OpenTelemetry output to the disclosed provider exchange and TLSNotary evidence.</Text><dl className="metadata-grid"><Fact label="Capture" value={captureId} /><Fact label="Format" value={typeof manifest.format === 'string' ? manifest.format : 'Not reported'} /><Fact label="Normalizer" value={typeof manifest.normalizer_version === 'string' ? manifest.normalizer_version : 'Not reported'} /><Fact label="Provider" value={providerLabel} /></dl></div></Tabs.Panel>
       <Tabs.Panel value="evidence"><Receipt title="Evidence receipt" fields={[
-        ['Trace SHA-256', String(manifest.trace_sha256 ?? '9a32d7c6…')], ['Provider', 'openrouter · openrouter.ai'], ['Disclosure', 'Credential values redacted'], ['TLS evidence', 'Included · independently verifiable']
+        ['Trace SHA-256', traceDigest], ['Provider', providerLabel], ['Source created', typeof source.created_at_unix_ms === 'number' ? formatDate(source.created_at_unix_ms) : 'Not reported'], ['Manifest format', typeof manifest.format === 'string' ? manifest.format : 'Not reported']
       ]} /></Tabs.Panel>
       <Tabs.Panel value="trace"><pre className="json-view">{JSON.stringify(trace.data.trace, null, 2)}</pre></Tabs.Panel>
       <Tabs.Panel value="verification">{verification ? <Receipt title="Verification passed" verified fields={[
@@ -382,32 +468,64 @@ function PublishingView({ api }: { api: LocalApi }) {
   const traces = useQuery({ queryKey: ['captures', 'publishing'], queryFn: () => api.captures({ finalization_state: 'finalized' }) });
   const [selected, setSelected] = useState<string | null>(null);
   const [confirm, setConfirm] = useState(false);
-  const [started, setStarted] = useState<{ request_id: string; verification_uri_complete: string; user_code: string } | null>(null);
-  const beginAuth = useMutation({ mutationFn: api.startPublicationAuth, onSuccess: setStarted });
-  const pollAuth = useMutation({ mutationFn: () => api.pollPublicationAuth(started!.request_id), onSuccess: () => {
-    queryClient.invalidateQueries({ queryKey: ['publication-auth'] }); setStarted(null);
-  }});
+  const [started, setStarted] = useState<{ flow: PublicationAuthStarted; nextPollAt: number } | null>(null);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!started) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [started]);
+  const schedule = (flow: PublicationAuthStarted) => setStarted({ flow, nextPollAt: Date.now() + flow.poll_interval_seconds * 1000 });
+  const beginAuth = useMutation({
+    mutationFn: api.startPublicationAuth,
+    onSuccess: schedule,
+    onError: (error) => mutationError('Could not begin authorization', error)
+  });
+  const pollAuth = useMutation({
+    mutationFn: () => api.pollPublicationAuth(started!.flow.request_id),
+    onSuccess: (result) => {
+      queryClient.setQueryData(['publication-auth'], result);
+      if (result.signed_in) setStarted(null);
+      else if (started) setStarted({ ...started, nextPollAt: Date.now() + started.flow.poll_interval_seconds * 1000 });
+    },
+    onError: (error) => mutationError('Could not check authorization', error)
+  });
   const publish = useMutation({ mutationFn: () => api.publish(selected!), onSuccess: (result) => {
     setConfirm(false); notifications.show({ title: 'Publication submitted', message: `Job ${result.job_id} is ${result.state}.` });
-  }});
+  }, onError: (error) => mutationError('Publication failed', error) });
   const eligible = traces.data?.items ?? [];
   const selectedId = selected ?? eligible[0]?.capture_id ?? null;
+  const pollReady = Boolean(started && now >= started.nextPollAt);
   return <div className="view-page"><PageHeader eyebrow="Explicit consent" title="Publishing" copy="Local finalization and public publication are separate decisions. Nothing is uploaded until you confirm a selected verified trace." />
     <div className="publishing-grid"><Paper className="publishing-auth"><Group justify="space-between"><Text className="eyebrow">Publication account</Text><KeyRound size={17} /></Group>
-      {auth.isLoading ? <Loader size="sm" /> : auth.data?.signed_in ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.device_name}</Text><StatusLabel state="ready" /></> : <><Title order={2}>Not authorized</Title><Text>Begin the device flow, then approve the recognizable local dashboard session in your browser.</Text><Button variant="outline" loading={beginAuth.isPending} onClick={() => beginAuth.mutate()}>Begin authorization</Button></>}
-      {started && <div className="authorization-code"><Text className="eyebrow">Approval code</Text><code>{started.user_code}</code><a href={started.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a><Button size="xs" variant="subtle" loading={pollAuth.isPending} onClick={() => pollAuth.mutate()}>I approved it</Button></div>}
-    </Paper><Paper className="publication-choice"><Text className="eyebrow">Eligible finalized trace</Text><Title order={2}>Choose what to publish</Title>{eligible.length ? <><Select label="Finalized trace" data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} /><div className="consent-copy"><ShieldCheck size={18} /><Text>The finalized disclosure is verified locally before upload. The encrypted source bundle is never a publication input.</Text></div><Button disabled={!auth.data?.signed_in || !selectedId} onClick={() => setConfirm(true)}>Review publication</Button></> : <EmptyState title="Nothing eligible" copy="Finalize a capture first." />}</Paper></div>
+      {auth.isLoading ? <Loader size="sm" /> : auth.error ? <QueryError error={auth.error} title="Publication authorization is unavailable" /> : auth.data?.signed_in ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.device_name}</Text><StatusLabel state="ready" /></> : <><Title order={2}>Not authorized</Title><Text>Begin the device flow, then approve the recognizable local dashboard session in your browser.</Text><Button variant="outline" loading={beginAuth.isPending} onClick={() => beginAuth.mutate()}>Begin authorization</Button></>}
+      {started && <div className="authorization-code"><Text className="eyebrow">Approval code</Text><code>{started.flow.user_code}</code><a href={started.flow.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a><Text>{pollReady ? 'Approval can now be checked.' : `Waiting ${Math.max(1, Math.ceil((started.nextPollAt - now) / 1000))}s before the next check.`}</Text><Button size="xs" variant="subtle" disabled={!pollReady} loading={pollAuth.isPending} onClick={() => pollAuth.mutate()}>Check approval</Button></div>}
+    </Paper><Paper className="publication-choice"><Text className="eyebrow">Eligible finalized trace</Text><Title order={2}>Choose what to publish</Title>{traces.error ? <QueryError error={traces.error} title="Eligible traces are unavailable" /> : traces.isLoading ? <Loader size="sm" /> : eligible.length ? <><Select label="Finalized trace" data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} /><div className="consent-copy"><ShieldCheck size={18} /><Text>The finalized disclosure is verified locally before upload. The encrypted source bundle is never a publication input.</Text></div><Button disabled={!auth.data?.signed_in || !selectedId} onClick={() => setConfirm(true)}>Review publication</Button></> : <EmptyState title="Nothing eligible" copy="Finalize a capture first." />}</Paper></div>
     <Modal opened={confirm} onClose={() => setConfirm(false)} title="Publish this finalized trace?" centered><Stack><Text>This creates a public admission job for <code>{selectedId}</code>. Public trace content may be visible to anyone.</Text><Group justify="flex-end"><Button variant="subtle" onClick={() => setConfirm(false)}>Keep private</Button><Button loading={publish.isPending} onClick={() => publish.mutate()}>Publish trace</Button></Group></Stack></Modal>
   </div>;
 }
 
 function ActivityView({ api }: { api: LocalApi }) {
-  const events = useQuery({ queryKey: ['events'], queryFn: api.events, refetchInterval: 5_000 });
-  const [filter, setFilter] = useState<string | null>(null);
-  const visible = events.data?.items.filter((event) => !filter || event.severity === filter) ?? [];
+  const events = useQuery({ queryKey: ['events'], queryFn: () => api.events(), refetchInterval: 5_000 });
+  const [severity, setSeverity] = useState<string | null>(null);
+  const [captureId, setCaptureId] = useState('');
+  const [operationId, setOperationId] = useState('');
+  const [eventType, setEventType] = useState('');
+  const [time, setTime] = useState<string | null>(null);
+  const visible = events.data?.items.filter((event) =>
+    (!severity || event.severity === severity)
+    && (!captureId || event.capture_id?.toLowerCase().includes(captureId.toLowerCase()))
+    && (!operationId || event.operation_id?.toLowerCase().includes(operationId.toLowerCase()))
+    && (!eventType || event.event_type.toLowerCase().includes(eventType.toLowerCase()))
+    && withinTime(event.created_at_unix_ms, time)
+  ) ?? [];
   return <div className="view-page"><PageHeader eyebrow="Redacted history" title="Activity" copy="Bounded service events use safe identifiers and failure codes—never credentials, raw headers, bundle plaintext, or arbitrary paths." action={<Button variant="outline" leftSection={<RefreshCw size={14} />} onClick={() => events.refetch()}>Refresh</Button>} />
-    <div className="filter-bar filter-bar--short"><Select aria-label="Activity severity" placeholder="All severities" clearable data={['info', 'success', 'warning', 'error']} value={filter} onChange={setFilter} /></div>
-    {events.isLoading ? <LoadingState /> : visible.length ? <EventList events={visible} /> : <EmptyState icon={Activity} title="No activity" copy="New capture and finalization events will appear here." />}</div>;
+    <div className="filter-bar filter-bar--activity"><Select aria-label="Activity severity" placeholder="All severities" clearable data={['info', 'success', 'warning', 'error']} value={severity} onChange={setSeverity} />
+      <TextInput aria-label="Activity capture ID" placeholder="Capture ID" value={captureId} onChange={(event) => setCaptureId(event.currentTarget.value)} />
+      <TextInput aria-label="Activity operation ID" placeholder="Operation ID" value={operationId} onChange={(event) => setOperationId(event.currentTarget.value)} />
+      <TextInput aria-label="Activity event type" placeholder="Event type" value={eventType} onChange={(event) => setEventType(event.currentTarget.value)} />
+      <Select aria-label="Activity time filter" placeholder="Any time" clearable data={[{ value: 'hour', label: 'Last hour' }, { value: 'day', label: 'Last 24 hours' }, { value: 'week', label: 'Last 7 days' }]} value={time} onChange={setTime} /></div>
+    {events.isLoading ? <LoadingState /> : events.error ? <QueryError error={events.error} title="Activity is unavailable" /> : visible.length ? <EventList events={visible} /> : <EmptyState icon={Activity} title="No activity" copy="New capture and finalization events will appear here." />}</div>;
 }
 
 function EventList({ events }: { events: Event[] }) {
