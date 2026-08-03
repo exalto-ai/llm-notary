@@ -1,7 +1,7 @@
 //! Deterministic transport archives for finalized trace packages.
 //!
 //! This module is shared by the publishing CLI and the admission service. It
-//! deliberately accepts only the five files emitted by `finalize`; a transport
+//! deliberately accepts only the six entries emitted by `finalize`; a transport
 //! archive is not a generic ZIP file.
 
 use std::{
@@ -17,15 +17,15 @@ use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter, write::SimpleFileO
 
 use crate::sha256_hex;
 
-pub const ARCHIVE_FORMAT: &str = "llmnotary.trace-package-archive/v1";
+pub const ARCHIVE_FORMAT: &str = "llmnotary.trace-package-archive/v2";
 pub const ARCHIVE_CONTENT_TYPE: &str = "application/vnd.llmnotary.trace-package+zip";
-pub const VERIFIED_TRACE_PACKAGE_FORMAT: &str = "llm-notary/verified-trace/v1";
+pub const VERIFIED_TRACE_PACKAGE_FORMAT: &str = "llm-notary/verified-trace-package/v2";
 pub const ARCHIVE_MANIFEST_PATH: &str = "archive-manifest.json";
 pub const PACKAGE_FILES: [&str; 5] = [
     "evidence.tlsn",
     "manifest.json",
     "request.disclosed.http",
-    "response.http",
+    "response.disclosed.http",
     "trace.otlp.json",
 ];
 pub const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 128 * 1024 * 1024;
@@ -46,6 +46,25 @@ pub struct TracePackageArchiveManifest {
     pub package_format: String,
     pub package_sha256: String,
     pub files: Vec<ArchiveFile>,
+}
+
+/// A canonical `.llmtrace` archive whose exact entry set, metadata, hashes,
+/// and byte-for-byte ZIP encoding have already been validated.
+pub struct ValidatedTracePackageArchive {
+    pub manifest: TracePackageArchiveManifest,
+    files: BTreeMap<String, Vec<u8>>,
+}
+
+impl ValidatedTracePackageArchive {
+    /// Returns one required package entry. Callers cannot address arbitrary
+    /// paths because validation has already restricted the archive to the
+    /// versioned entry set.
+    pub fn file(&self, name: &str) -> Result<&[u8]> {
+        self.files
+            .get(name)
+            .map(Vec::as_slice)
+            .ok_or_else(|| anyhow!("trace package entry is not part of the v2 contract: {name}"))
+    }
 }
 
 #[derive(Serialize)]
@@ -136,8 +155,13 @@ fn render_trace_package_archive(
 
 /// Validates a transport archive without writing any attacker-controlled path.
 pub fn validate_trace_package_archive(bytes: &[u8]) -> Result<TracePackageArchiveManifest> {
-    let (manifest, _) = read_validated_archive(bytes)?;
-    Ok(manifest)
+    Ok(read_trace_package_archive(bytes)?.manifest)
+}
+
+/// Parses and validates all `.llmtrace` entries in memory without creating an
+/// attacker-controlled path.
+pub fn read_trace_package_archive(bytes: &[u8]) -> Result<ValidatedTracePackageArchive> {
+    read_validated_archive(bytes)
 }
 
 /// Validates and extracts a transport archive for server-side admission.
@@ -148,7 +172,7 @@ pub fn extract_trace_package_archive(
     bytes: &[u8],
     output_dir: &Path,
 ) -> Result<TracePackageArchiveManifest> {
-    let (manifest, files) = read_validated_archive(bytes)?;
+    let validated = read_validated_archive(bytes)?;
     if output_dir.exists() {
         bail!(
             "refusing to overwrite extracted trace package: {}",
@@ -160,7 +184,8 @@ pub fn extract_trace_package_archive(
         for name in PACKAGE_FILES {
             fs::write(
                 staging.join(name),
-                files
+                validated
+                    .files
                     .get(name)
                     .expect("validated archive contains every package file"),
             )
@@ -173,7 +198,7 @@ pub fn extract_trace_package_archive(
         let _ = fs::remove_dir_all(&staging);
     }
     result?;
-    Ok(manifest)
+    Ok(validated.manifest)
 }
 
 /// Creates a unique staging directory beside an output directory.
@@ -196,7 +221,13 @@ pub(crate) fn create_staging_directory(output_dir: &Path) -> Result<PathBuf> {
             std::process::id(),
             rand::random::<u64>()
         ));
-        match fs::create_dir(&staging) {
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt as _;
+            builder.mode(0o700);
+        }
+        match builder.create(&staging) {
             Ok(()) => return Ok(staging),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => {
@@ -212,9 +243,7 @@ pub(crate) fn create_staging_directory(output_dir: &Path) -> Result<PathBuf> {
     )
 }
 
-fn read_validated_archive(
-    bytes: &[u8],
-) -> Result<(TracePackageArchiveManifest, BTreeMap<String, Vec<u8>>)> {
+fn read_validated_archive(bytes: &[u8]) -> Result<ValidatedTracePackageArchive> {
     let cursor = Cursor::new(bytes);
     let mut archive = ZipArchive::new(cursor).context("parsing trace package archive")?;
     let expected_count = PACKAGE_FILES.len() + 1;
@@ -322,7 +351,10 @@ fn read_validated_archive(
         bail!("archive ZIP container is not canonical");
     }
     entries.remove(ARCHIVE_MANIFEST_PATH);
-    Ok((manifest, entries))
+    Ok(ValidatedTracePackageArchive {
+        manifest,
+        files: entries,
+    })
 }
 
 fn require_plain_directory(package: &Path) -> Result<()> {
@@ -513,17 +545,28 @@ mod tests {
             assert!(validate_trace_package_archive(&rewrite_archive(entries)).is_err());
         }
 
+        // zip's writer refuses duplicate names, so mutate the equal-length
+        // local and central-directory names to model hostile input.
         let mut duplicate = valid.clone();
-        let old = b"response.http";
-        let new = b"manifest.json";
         let mut replacements = 0;
-        for offset in 0..=duplicate.len() - old.len() {
-            if duplicate[offset..].starts_with(old) {
-                duplicate[offset..offset + old.len()].copy_from_slice(new);
+        for index in 0..duplicate.len().saturating_sub(46) {
+            let name_start = if duplicate[index..].starts_with(b"PK\x03\x04") {
+                Some(index + 30)
+            } else if duplicate[index..].starts_with(b"PK\x01\x02") {
+                Some(index + 46)
+            } else {
+                None
+            };
+            if let Some(name_start) = name_start
+                && duplicate.get(name_start..name_start + b"evidence.tlsn".len())
+                    == Some(b"evidence.tlsn")
+            {
+                duplicate[name_start..name_start + b"manifest.json".len()]
+                    .copy_from_slice(b"manifest.json");
                 replacements += 1;
             }
         }
-        assert!(replacements >= 2, "patched local and central ZIP names");
+        assert_eq!(replacements, 2);
         assert!(validate_trace_package_archive(&duplicate).is_err());
 
         let mut symlink = archive_entries(&valid);

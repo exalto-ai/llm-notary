@@ -18,7 +18,7 @@
 
 ## Core trust boundary
 
-The local proxy handles plaintext and provider credentials. The remote notary participates in the authenticated provider TLS connection without receiving API-key values, prompts, or responses. A pending encrypted bundle is private retry state, not public proof. A finalized trace package is independently verifiable with the trusted notary public key.
+The local proxy handles plaintext and provider credentials. The remote notary participates in the authenticated provider TLS connection without receiving API-key values, prompts, or responses. A pending encrypted bundle is private retry state, not public proof. A finalized `.llmtrace` package is independently verifiable with the trusted notary public key. It hides every HTTP header value except the exact structural value `Transfer-Encoding: chunked`, but its authenticated request and response bodies remain disclosed.
 
 On first use, the client creates a user-editable `config.toml` at the standard platform configuration location. It enables the OpenAI, Anthropic, DeepSeek, and OpenRouter routes by default; keeps encrypted bundles and finalized packages under the platform data directory; and creates a local SQLite catalog. The catalog indexes short, plain-text prompt and output previews for search, along with provider, model, status, size, duration, and artifact metadata. It does not store header values, cookies, or credentials.
 
@@ -38,10 +38,11 @@ Open `http://127.0.0.1:8788` for the local dashboard. Use `llm-notary status`, `
 ## Package layout
 
 ```text
-verified-trace/
+<capture-id>.llmtrace (ZIP)
+├── archive-manifest.json
 ├── evidence.tlsn
 ├── manifest.json
 ├── request.disclosed.http
-├── response.http
+├── response.disclosed.http
 └── trace.otlp.json
 ```

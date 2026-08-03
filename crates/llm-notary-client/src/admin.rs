@@ -32,6 +32,7 @@ use utoipa::{Modify, OpenApi, ToSchema};
 
 use crate::{
     DeferredBundle,
+    archive::{ARCHIVE_CONTENT_TYPE, read_trace_package_archive},
     bundle::{
         finalize_bundle, finalize_bundle_admitted, trace_package_created_at_unix_ms,
         trace_package_notary_key, verify_trace_package,
@@ -96,6 +97,7 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
         .route("/v1/operations/{operation_id}", get(operation))
         .route("/v1/operations/{operation_id}/retry", post(retry_operation))
         .route("/v1/captures/{capture_id}/trace", get(trace))
+        .route("/v1/captures/{capture_id}/package", get(download_package))
         .route("/v1/captures/{capture_id}/trace:verify", post(verify_trace))
         .route("/v1/events", get(events))
         .route(
@@ -206,7 +208,7 @@ fn embedded_dashboard_response(path: &str) -> Response {
     paths(
         health, openapi, start_session, end_session, status, notaries, captures, capture,
         start_finalization, operations, operation, retry_operation, trace,
-        verify_trace, events, publication_auth_status, start_publication_auth,
+        download_package, verify_trace, events, publication_auth_status, start_publication_auth,
         end_publication_auth, poll_publication_auth, publish_capture,
         publication_status, download_public_trace, verify_public_trace
     ),
@@ -636,16 +638,54 @@ async fn trace(
     validate_id(&capture_id, "cap-")?;
     let path = finalized_path(&state.catalog, &capture_id).await?;
     let value = tokio::task::spawn_blocking(move || -> Result<TraceResponse> {
+        let bytes = fs::read(path)?;
+        let archive = read_trace_package_archive(&bytes)?;
         Ok(TraceResponse {
             capture_id,
-            manifest: serde_json::from_slice(&fs::read(path.join("manifest.json"))?)?,
-            trace: serde_json::from_slice(&fs::read(path.join("trace.otlp.json"))?)?,
+            manifest: serde_json::from_slice(archive.file("manifest.json")?)?,
+            trace: serde_json::from_slice(archive.file("trace.otlp.json")?)?,
         })
     })
     .await
     .map_err(|_| ApiError::internal("trace_task_failed"))?
     .map_err(|_| ApiError::internal("trace_decode_failed"))?;
     Ok(Json(value))
+}
+
+#[utoipa::path(get, path = "/v1/captures/{capture_id}/package", summary = "Download a finalized verified package", description = "Returns the exact stored canonical .llmtrace bytes as the primary portable verification artifact.", params(("capture_id" = String, Path)), responses((status = 200, body = Vec<u8>, content_type = "application/vnd.llmnotary.trace-package+zip"), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn download_package(
+    State(state): State<AdminState>,
+    Path(capture_id): Path<String>,
+) -> Result<Response, ApiError> {
+    validate_id(&capture_id, "cap-")?;
+    let path = finalized_path(&state.catalog, &capture_id).await?;
+    let bytes = tokio::task::spawn_blocking(move || fs::read(path))
+        .await
+        .map_err(|_| ApiError::internal("package_task_failed"))?
+        .map_err(|_| ApiError::not_found("finalized_trace_not_found"))?;
+    let content_disposition =
+        HeaderValue::from_str(&format!("attachment; filename=\"{capture_id}.llmtrace\""))
+            .map_err(|_| ApiError::internal("package_filename_invalid"))?;
+    Ok((
+        StatusCode::OK,
+        [
+            (
+                header::CONTENT_TYPE,
+                HeaderValue::from_static(ARCHIVE_CONTENT_TYPE),
+            ),
+            (header::CONTENT_DISPOSITION, content_disposition),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-store"),
+            ),
+            (
+                header::X_CONTENT_TYPE_OPTIONS,
+                HeaderValue::from_static("nosniff"),
+            ),
+        ],
+        bytes,
+    )
+        .into_response())
 }
 
 #[utoipa::path(post, path = "/v1/captures/{capture_id}/trace:verify", summary = "Verify a finalized trace", description = "Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.", params(("capture_id" = String, Path)), responses((status = 200, body = VerificationResponse), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
@@ -893,7 +933,7 @@ struct PublicTraceQuery {
     api_origin: Option<String>,
 }
 
-#[utoipa::path(get, path = "/v1/public-traces/{publication_id}", summary = "Get a public trace", description = "Fetches one public canonical trace and platform stamp through the configured publication API.", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/public-traces/{publication_id}", summary = "Get a public trace", description = "Fetches one public canonical trace and any legacy platform stamp through the configured publication API.", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn download_public_trace(
     Path(publication_id): Path<String>,
     query: Result<Query<PublicTraceQuery>, QueryRejection>,
@@ -941,7 +981,10 @@ async fn fetch_public_trace(
     Ok(Json(PublicTraceResponse {
         publication_id: value.publication_id,
         trace: value.trace,
-        stamp: serde_json::to_value(value.stamp)
+        stamp: value
+            .stamp
+            .map(serde_json::to_value)
+            .transpose()
             .map_err(|_| ApiError::internal("public_stamp_encode_failed"))?,
         verification,
     }))
@@ -1015,8 +1058,11 @@ async fn finalize_operation(
         .find(|artifact| artifact.kind == "deferred_bundle")
         .map(|artifact| artifact.path)
         .context("capture has no encrypted deferred bundle")?;
-    let output = config.storage.finalized_dir.join(capture_id);
-    if output.is_dir() {
+    let output = config
+        .storage
+        .finalized_dir
+        .join(format!("{capture_id}.llmtrace"));
+    if output.is_file() {
         let embedded_key = trace_package_notary_key(&output)?;
         let key = match config.notary_public_key()? {
             Some(key) => key,
@@ -1509,7 +1555,7 @@ struct PublicationStatusResponse {
 struct PublicTraceResponse {
     publication_id: String,
     trace: serde_json::Value,
-    stamp: serde_json::Value,
+    stamp: Option<serde_json::Value>,
     verification: Option<PublicTraceVerificationResponse>,
 }
 
@@ -1837,6 +1883,7 @@ mod tests {
             "/v1/operations/{operation_id}",
             "/v1/operations/{operation_id}/retry",
             "/v1/captures/{capture_id}/trace",
+            "/v1/captures/{capture_id}/package",
             "/v1/captures/{capture_id}/trace:verify",
             "/v1/events",
             "/v1/session",
@@ -1859,6 +1906,7 @@ mod tests {
             ("/v1/operations/{operation_id}", "get"),
             ("/v1/operations/{operation_id}/retry", "post"),
             ("/v1/captures/{capture_id}/trace", "get"),
+            ("/v1/captures/{capture_id}/package", "get"),
             ("/v1/captures/{capture_id}/trace:verify", "post"),
             ("/v1/events", "get"),
             ("/v1/publication/auth", "get"),
@@ -1902,7 +1950,60 @@ mod tests {
                 documented_operations += 1;
             }
         }
-        assert_eq!(documented_operations, 23);
+        assert_eq!(documented_operations, 24);
+    }
+
+    #[tokio::test]
+    async fn package_download_returns_the_exact_stored_llmtrace() {
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        let capture_id = "cap-download";
+        state
+            .catalog
+            .begin_capture(&crate::catalog::NewCapture {
+                capture_id: capture_id.to_owned(),
+                created_at_unix_ms: 1,
+                provider: "openai".to_owned(),
+                operation: "responses".to_owned(),
+                requested_model: Some("gpt-5".to_owned()),
+                streaming: false,
+                request_bytes: 1,
+                prompt_preview: String::new(),
+                prompt_preview_truncated: false,
+                config_fingerprint: "sha256:test".to_owned(),
+            })
+            .unwrap();
+        let package = directory.path().join("cap-download.llmtrace");
+        let expected = b"exact canonical archive bytes";
+        fs::write(&package, expected).unwrap();
+        state
+            .catalog
+            .record_finalized_package(capture_id, &package)
+            .unwrap();
+
+        let response = router(state)
+            .unwrap()
+            .oneshot(
+                Request::get(format!("/v1/captures/{capture_id}/package"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers().get(header::CONTENT_TYPE).unwrap(),
+            ARCHIVE_CONTENT_TYPE
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"cap-download.llmtrace\""
+        );
+        assert_eq!(
+            response.into_body().collect().await.unwrap().to_bytes(),
+            expected.as_slice()
+        );
     }
 
     #[test]

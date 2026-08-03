@@ -12,7 +12,14 @@ use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 use url::Url;
 
-use crate::config::{AgentConfig, default_config_path};
+use crate::{
+    bundle::{
+        trace_package_created_at_unix_ms_bytes, trace_package_notary_key_bytes,
+        verify_trace_package_bytes,
+    },
+    cli::notary,
+    config::{AgentConfig, default_config_path},
+};
 
 const API_VERSION: &str = "v1";
 const EXIT_ERROR: i32 = 1;
@@ -146,7 +153,17 @@ enum TracesCommand {
     /// Show the canonical trace and manifest for a finalized capture.
     Show(IdArgs),
     /// Verify a finalized capture against the daemon's trust source.
-    Verify(IdArgs),
+    Verify(TraceVerifyArgs),
+}
+
+#[derive(Args, Debug)]
+struct TraceVerifyArgs {
+    /// A capture identifier in the daemon, or a portable `.llmtrace` path.
+    target: String,
+
+    /// Hex-encoded notary public key for a path-based verification.
+    #[arg(long)]
+    trusted_notary_key: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -232,6 +249,22 @@ async fn run_parsed(
     stdout: &mut dyn io::Write,
     stderr: &mut dyn io::Write,
 ) -> Result<(), CliError> {
+    if let CliCommand::Traces {
+        command: TracesCommand::Verify(args),
+    } = &cli.command
+        && verify_target_is_file(&args.target)
+    {
+        let value = verify_trace_file(args)?;
+        let output = if cli.json {
+            serde_json::to_string_pretty(&value)
+                .map_err(|_| CliError::new(EXIT_ERROR, "could not encode command output"))?
+        } else {
+            human_output(&cli.command, &value)?
+        };
+        writeln!(stdout, "{output}")
+            .map_err(|_| CliError::new(EXIT_ERROR, "could not write command output"))?;
+        return Ok(());
+    }
     let config = load_config_for_cli(cli.config.as_deref())?;
     let mut client = AdminClient::new(config.admin.listen, None)?;
     client.verify_version().await?;
@@ -587,11 +620,16 @@ async fn execute(
                     .await
             }
             TracesCommand::Verify(args) => {
-                validate_identifier(&args.id, "cap-")?;
+                validate_identifier(&args.target, "cap-")?;
+                if args.trusted_notary_key.is_some() {
+                    return Err(CliError::invalid(
+                        "--trusted-notary-key is only valid when verifying a .llmtrace path",
+                    ));
+                }
                 client
                     .request(
                         Method::POST,
-                        &format!("/v1/captures/{}/trace:verify", args.id),
+                        &format!("/v1/captures/{}/trace:verify", args.target),
                         &[],
                     )
                     .await
@@ -630,6 +668,58 @@ async fn execute(
             Ok(json!({ "opened": client.origin.as_str() }))
         }
     }
+}
+
+fn verify_target_is_file(target: &str) -> bool {
+    Path::new(target).is_file() || validate_identifier(target, "cap-").is_err()
+}
+
+fn verify_trace_file(args: &TraceVerifyArgs) -> Result<Value, CliError> {
+    let path = Path::new(&args.target);
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "llmbundle")
+    {
+        return Err(CliError::new(
+            EXIT_ERROR,
+            "encrypted .llmbundle files are private retry state and cannot be verified as finalized packages",
+        ));
+    }
+    let metadata =
+        fs::symlink_metadata(path).map_err(|error| CliError::new(EXIT_ERROR, error.to_string()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CliError::new(
+            EXIT_ERROR,
+            "verified trace package must be one regular .llmtrace file",
+        ));
+    }
+    // Snapshot once so the key, authenticated timestamp, and full verifier
+    // cannot observe different packages if the source path changes.
+    let package = fs::read(path).map_err(|error| CliError::new(EXIT_ERROR, error.to_string()))?;
+    let embedded_key = trace_package_notary_key_bytes(&package)
+        .map_err(|error| CliError::new(EXIT_ERROR, error.to_string()))?;
+    let (trusted_key, notary_key_id, trust_source) = match args.trusted_notary_key.as_deref() {
+        Some(value) => {
+            let (key, key_id) = notary::explicit_key(value)
+                .map_err(|error| CliError::invalid(error.to_string()))?;
+            (key, key_id, "explicit_key".to_owned())
+        }
+        None => {
+            let created_at = trace_package_created_at_unix_ms_bytes(&package)
+                .map_err(|error| CliError::new(EXIT_ERROR, error.to_string()))?;
+            let (key_id, trust_source) = notary::cached_key_at(&embedded_key, created_at)
+                .map_err(|error| CliError::new(EXIT_ERROR, error.to_string()))?;
+            (embedded_key, key_id, trust_source)
+        }
+    };
+    let verified = verify_trace_package_bytes(&package, &trusted_key)
+        .map_err(|error| CliError::new(EXIT_ERROR, error.to_string()))?;
+    Ok(json!({
+        "capture_id": verified.manifest.capture_id(),
+        "verified": true,
+        "notary_key_id": notary_key_id,
+        "trust_source": trust_source,
+    }))
 }
 
 fn validate_identifier(value: &str, prefix: &str) -> Result<(), CliError> {
@@ -956,6 +1046,7 @@ mod tests {
             vec!["llm-notary", "operations", "retry", "op-example"],
             vec!["llm-notary", "traces", "show", "cap-example"],
             vec!["llm-notary", "traces", "verify", "cap-example"],
+            vec!["llm-notary", "traces", "verify", "capture.llmtrace"],
             vec!["llm-notary", "login"],
             vec!["llm-notary", "logout"],
             vec!["llm-notary", "whoami"],
@@ -966,6 +1057,23 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(arguments).is_ok());
         }
+    }
+
+    #[tokio::test]
+    async fn trace_file_verification_bypasses_the_daemon_and_rejects_private_bundles() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("capture.llmbundle");
+        fs::write(&bundle, b"encrypted private retry state").unwrap();
+        let cli = Cli::try_parse_from(["llm-notary", "traces", "verify", bundle.to_str().unwrap()])
+            .unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let error = run_parsed(cli, &mut stdout, &mut stderr).await.unwrap_err();
+
+        assert!(error.to_string().contains("private retry state"));
+        assert!(!error.to_string().contains("start the daemon"));
+        assert!(stdout.is_empty());
     }
 
     #[test]

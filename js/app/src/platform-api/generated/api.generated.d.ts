@@ -577,7 +577,7 @@ export interface components {
             /** Format: int64 */
             recent_downloads: number;
             span_count: number;
-            stamp_url: string;
+            stamp_url?: string | null;
             tags: string[];
             title: string;
             tool_use: boolean;
@@ -692,7 +692,7 @@ export interface components {
         };
         PublicTraceMetadata: {
             id: string;
-            stamp_url: string;
+            stamp_url?: string | null;
             trace_url: string;
         };
         PublicUser: {

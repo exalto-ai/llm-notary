@@ -28,7 +28,7 @@ pub struct DownloadArgs {
     /// The UUID shown for a public Library publication.
     publication_id: String,
 
-    /// Directory for the downloaded trace and stamp. Defaults to ./<publication-id>.
+    /// Directory for the trace and any legacy stamp. Defaults to ./<publication-id>.
     #[arg(long)]
     output: Option<PathBuf>,
 
@@ -36,7 +36,7 @@ pub struct DownloadArgs {
     #[arg(long)]
     overwrite: bool,
 
-    /// Verify the canonical trace and platform stamp before saving the download.
+    /// Verify a legacy platform stamp before saving. Requires a stamped publication.
     #[arg(long)]
     verify: bool,
 
@@ -50,7 +50,7 @@ pub struct DownloadArgs {
 struct PublicTraceMetadata {
     id: String,
     trace_url: String,
-    stamp_url: String,
+    stamp_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -65,7 +65,7 @@ struct PlatformDirectory {
 pub(crate) struct FetchedPublicTrace {
     pub(crate) publication_id: String,
     pub(crate) trace: serde_json::Value,
-    pub(crate) stamp: PublicStamp,
+    pub(crate) stamp: Option<PublicStamp>,
     pub(crate) verification: Option<VerifiedPublicTrace>,
 }
 
@@ -94,7 +94,11 @@ pub(crate) async fn fetch_public_trace(
         "publication API returned metadata for a different publication"
     );
     let trace_url = artifact_url(&origin, &metadata.trace_url, &publication_id, TRACE_FILE)?;
-    let stamp_url = artifact_url(&origin, &metadata.stamp_url, &publication_id, STAMP_FILE)?;
+    let stamp_url = metadata
+        .stamp_url
+        .as_deref()
+        .map(|value| artifact_url(&origin, value, &publication_id, STAMP_FILE))
+        .transpose()?;
     let trace_bytes = response_bytes(
         client
             .get(trace_url)
@@ -105,18 +109,31 @@ pub(crate) async fn fetch_public_trace(
         MAX_ARTIFACT_BYTES,
     )
     .await?;
-    let stamp_bytes = response_bytes(
-        client
-            .get(stamp_url)
-            .send()
-            .await
-            .context("downloading platform stamp")?,
-        "downloading platform stamp",
-        MAX_METADATA_BYTES,
-    )
-    .await?;
-    validate_downloaded_artifacts(&trace_bytes, &stamp_bytes)?;
+    let stamp_bytes = if let Some(stamp_url) = stamp_url {
+        Some(
+            response_bytes(
+                client
+                    .get(stamp_url)
+                    .send()
+                    .await
+                    .context("downloading platform stamp")?,
+                "downloading platform stamp",
+                MAX_METADATA_BYTES,
+            )
+            .await?,
+        )
+    } else {
+        None
+    };
+    validate_public_trace_bytes(&trace_bytes)
+        .context("downloaded trace is not a canonical public trace")?;
+    if let Some(stamp) = stamp_bytes.as_deref() {
+        validate_downloaded_artifacts(&trace_bytes, stamp)?;
+    }
     let verification = if verify {
+        let stamp = stamp_bytes
+            .as_deref()
+            .ok_or_else(|| anyhow!("this publication has no legacy platform stamp to verify"))?;
         let directory: PlatformDirectory = get_json(
             &client,
             origin.api_url("/api/platform"),
@@ -125,7 +142,7 @@ pub(crate) async fn fetch_public_trace(
         .await?;
         Some(verify_with_platform_directory(
             &trace_bytes,
-            &stamp_bytes,
+            stamp,
             directory,
         )?)
     } else {
@@ -137,7 +154,10 @@ pub(crate) async fn fetch_public_trace(
     Ok(FetchedPublicTrace {
         publication_id,
         trace: serde_json::from_slice(&trace_bytes)?,
-        stamp: serde_json::from_slice(&stamp_bytes)?,
+        stamp: stamp_bytes
+            .as_deref()
+            .map(serde_json::from_slice)
+            .transpose()?,
         verification,
     })
 }
@@ -160,7 +180,11 @@ pub async fn run(args: DownloadArgs) -> Result<()> {
         "publication API returned metadata for a different publication"
     );
     let trace_url = artifact_url(&origin, &metadata.trace_url, &publication_id, TRACE_FILE)?;
-    let stamp_url = artifact_url(&origin, &metadata.stamp_url, &publication_id, STAMP_FILE)?;
+    let stamp_url = metadata
+        .stamp_url
+        .as_deref()
+        .map(|value| artifact_url(&origin, value, &publication_id, STAMP_FILE))
+        .transpose()?;
 
     let parent = output_parent(&output)?;
     fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
@@ -176,25 +200,37 @@ pub async fn run(args: DownloadArgs) -> Result<()> {
     let trace_path = staging.path().join(TRACE_FILE);
     let stamp_path = staging.path().join(STAMP_FILE);
     download_artifact(&client, trace_url, &trace_path, "downloading public trace").await?;
-    download_artifact(
-        &client,
-        stamp_url,
-        &stamp_path,
-        "downloading platform stamp",
-    )
-    .await?;
+    if let Some(stamp_url) = stamp_url {
+        download_artifact(
+            &client,
+            stamp_url,
+            &stamp_path,
+            "downloading platform stamp",
+        )
+        .await?;
+    }
 
     let trace = fs::read(&trace_path).context("reading downloaded public trace")?;
-    let stamp = fs::read(&stamp_path).context("reading downloaded platform stamp")?;
-    validate_downloaded_artifacts(&trace, &stamp)?;
+    let stamp = stamp_path
+        .exists()
+        .then(|| fs::read(&stamp_path).context("reading downloaded platform stamp"))
+        .transpose()?;
+    validate_public_trace_bytes(&trace)
+        .context("downloaded trace is not a canonical public trace")?;
+    if let Some(stamp) = stamp.as_deref() {
+        validate_downloaded_artifacts(&trace, stamp)?;
+    }
     let verified = if args.verify {
+        let stamp = stamp
+            .as_deref()
+            .ok_or_else(|| anyhow!("this publication has no legacy platform stamp to verify"))?;
         let directory: PlatformDirectory = get_json(
             &client,
             origin.api_url("/api/platform"),
             "retrieving platform signing key",
         )
         .await?;
-        Some(verify_with_platform_directory(&trace, &stamp, directory)?)
+        Some(verify_with_platform_directory(&trace, stamp, directory)?)
     } else {
         None
     };
@@ -206,7 +242,9 @@ pub async fn run(args: DownloadArgs) -> Result<()> {
     }
 
     println!("trace: {}", output.join(TRACE_FILE).display());
-    println!("stamp: {}", output.join(STAMP_FILE).display());
+    if stamp.is_some() {
+        println!("stamp: {}", output.join(STAMP_FILE).display());
+    }
     if let Some(verified) = verified {
         println!("verification: passed");
         println!("trace sha256: {}", verified.trace_sha256);
@@ -528,6 +566,55 @@ mod tests {
         );
         assert!(ApiOrigin::parse("http://example.test").is_err());
         assert!(ApiOrigin::parse("http://127.0.0.1:8787").is_ok());
+    }
+
+    #[tokio::test]
+    async fn stamp_less_rollback_rows_keep_the_canonical_trace_available() {
+        async fn metadata() -> Json<serde_json::Value> {
+            Json(serde_json::json!({
+                "id": ID,
+                "trace_url": format!("/api/public/traces/{ID}/trace.otlp.json"),
+            }))
+        }
+        async fn trace() -> impl IntoResponse {
+            (
+                [(header::CONTENT_TYPE, "application/json; charset=utf-8")],
+                TRACE,
+            )
+        }
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new()
+            .route(
+                "/api/public/traces/3d3d727f-e0b1-432e-be3c-0b2e3ead35d1",
+                get(metadata),
+            )
+            .route(
+                "/api/public/traces/3d3d727f-e0b1-432e-be3c-0b2e3ead35d1/trace.otlp.json",
+                get(trace),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let fetched = fetch_public_trace(ID, &origin, false).await.unwrap();
+        assert!(fetched.stamp.is_none());
+        assert!(fetched.verification.is_none());
+        assert!(fetch_public_trace(ID, &origin, true).await.is_err());
+
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("download");
+        run(DownloadArgs {
+            publication_id: ID.to_owned(),
+            output: Some(output.clone()),
+            overwrite: false,
+            verify: false,
+            api: origin,
+        })
+        .await
+        .unwrap();
+        assert_eq!(fs::read(output.join(TRACE_FILE)).unwrap(), TRACE);
+        assert!(!output.join(STAMP_FILE).exists());
     }
 
     #[tokio::test]

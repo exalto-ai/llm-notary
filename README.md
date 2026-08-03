@@ -25,8 +25,9 @@ TLS records.
   `.llmbundle`. The bundle contains the private transcript checkpoint and a
   notary-signed receipt, but does not perform the expensive private proof.
 - The local service can later finalize a selected capture by reconnecting to any notary instance holding the
-  same signing key, completes the proof, redacts sensitive authentication and
-  session-header values, and emits one verified trace package. The notary
+  same signing key, completes the proof, redacts every HTTP header value except
+  the exact `Transfer-Encoding: chunked` framing value, and emits one portable
+  `<capture-id>.llmtrace` package. The notary
   stores no per-bundle state.
 - Finalized packages contain the canonical `trace.otlp.json`, the TLSNotary
   evidence and disclosed HTTP artifacts, and a `manifest.json` binding the
@@ -248,14 +249,16 @@ cannot change that response schema.
 For optional authentication, exact state transitions, deduplication, restart
 recovery, and retry behavior, follow the [local service guide](docs/local-service.md).
 
-The output directory is a single portable package:
+Finalization atomically creates one deterministic, portable
+`traces/<capture-id>.llmtrace` ZIP. It contains exactly:
 
 ```text
-traces/cap-.../
+cap-....llmtrace (ZIP)
+├── archive-manifest.json
 ├── evidence.tlsn
 ├── manifest.json
 ├── request.disclosed.http
-├── response.http
+├── response.disclosed.http
 └── trace.otlp.json
 ```
 
@@ -265,14 +268,24 @@ hash, the provider adapter, and the exact canonical OTLP bytes:
 ```bash
 curl -X POST \
   http://127.0.0.1:8788/v1/captures/cap-example/trace:verify
+
+curl --output cap-example.llmtrace \
+  http://127.0.0.1:8788/v1/captures/cap-example/package
+
+llm-notary traces verify ./cap-example.llmtrace
 ```
 
 The encrypted bundle is the most sensitive artifact: its deferred TLS
 checkpoint can reconstruct the complete original request, including
 `Authorization` or `x-api-key` values. Keep the vault protected and do not
-share `.llmbundle` files. Finalized packages reveal only the authenticated
-header names—not values—for `Authorization`, `Proxy-Authorization`, `Cookie`,
-`x-api-key`, and response `Set-Cookie`. The finalized trace retains normalized
+share or upload `.llmbundle` files. They are never finalized evidence.
+Finalized `.llmtrace` packages reveal authenticated header names and structural
+bytes but hide every request and response header value except
+`Transfer-Encoding: chunked`, which the normalizer needs to remove HTTP chunk
+framing. Request IDs, organization/project metadata, rate-limit values,
+cookies, and content types therefore remain hidden. The complete request and
+response bodies remain disclosed so the verifier can reproduce the normalized
+trace. The finalized trace retains normalized
 system context, messages, model-emitted tool calls and results, usage, and
 finish reasons when the provider supplies them. A provider trace proves the
 model exchange; it does not claim that a local runtime actually executed a
@@ -326,9 +339,9 @@ curl http://127.0.0.1:8787/openrouter/api/v1/chat/completions \
 The verified provider is always **OpenRouter** at `openrouter.ai`. A model slug
 such as `openai/gpt-4o` or `anthropic/claude-sonnet-4.5` is authenticated model
 metadata; it does not prove a direct TLS connection to OpenAI, Anthropic, or
-another upstream model vendor. `Authorization` is redacted from finalized
-captures. Optional `HTTP-Referer` and `X-Title` attribution headers are safe
-metadata and retain their header names and values in the private capture.
+another upstream model vendor. Finalized `.llmtrace` packages retain the
+authenticated `Authorization`, `HTTP-Referer`, and `X-Title` header names but
+hide all three values.
 
 To exercise a real streamed request deliberately, run the command above with
 an `OPENROUTER_API_KEY`, wait for the encrypted bundle, find its identifier
@@ -609,7 +622,7 @@ Authenticated publication intake uses:
 - `GET /api/publish/jobs/{id}` to poll status.
 
 The create body declares `archive_format`, `size_bytes`, and `sha256`. The
-current format identifier is `llmnotary.trace-package-archive/v1`, with media
+current format identifier is `llmnotary.trace-package-archive/v2`, with media
 type `application/vnd.llmnotary.trace-package+zip`. The API checks object size
 and signed upload metadata before queueing, but the declared hash remains
 untrusted until the admission worker downloads and hashes the actual bytes.
@@ -662,7 +675,7 @@ session.
 ### Publish a finalized package
 
 The publication operation accepts only a finalized capture identifier. It
-first snapshots that directory into the deterministic transport archive, then
+snapshots the cataloged `.llmtrace` file, then
 verifies the TLSNotary evidence, trusted notary key, authenticated HTTP
 disclosure, and deterministic OTLP mapping from that exact snapshot. Only
 after those checks pass does it refresh the publication login and create an upload job:
@@ -672,8 +685,9 @@ curl -X POST \
   http://127.0.0.1:8788/v1/captures/cap-example/publications
 ```
 
-The service creates a deterministic
-`llmnotary.trace-package-archive/v1` object in memory, uploads it through the
+The service validates the deterministic
+`llmnotary.trace-package-archive/v2` snapshot in memory, then uploads those
+exact `.llmtrace` bytes through the
 job-scoped presigned URL, completes the upload, and returns the durable job ID
 and local status URL. Its idempotency key is derived from the archive hash, so
 repeating the operation for identical bytes resumes the same job after an

@@ -1,11 +1,11 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use crate::{
-    archive::{
-        ARCHIVE_CONTENT_TYPE, ARCHIVE_FORMAT, build_trace_package_archive,
-        extract_trace_package_archive,
+    archive::{ARCHIVE_CONTENT_TYPE, ARCHIVE_FORMAT},
+    bundle::{
+        trace_package_created_at_unix_ms_bytes, trace_package_notary_key_bytes,
+        verify_trace_package_bytes,
     },
-    bundle::{trace_package_created_at_unix_ms, trace_package_notary_key, verify_trace_package},
     cli::{
         api_origin::ApiOrigin, auth, http_client_builder, notary,
         proxy::refresh_notary_directory_from,
@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[derive(Args, Debug)]
 pub struct PublishArgs {
-    /// One finalized trace package directory produced by `llm-notary finalize`.
+    /// One finalized `.llmtrace` package produced by LLM Notary.
     package: PathBuf,
 
     /// Hex-encoded secp256k1 key used to verify the package's notary evidence.
@@ -109,27 +109,27 @@ pub(crate) async fn publish_package(
     trusted_key: Option<&str>,
 ) -> Result<(PublishOutput, String, String)> {
     reject_bundle_path(package)?;
-    // Snapshot the package before verification. Verification and upload then
-    // operate on the same immutable archive bytes even if the source directory
+    // Snapshot the finalized package before verification. Verification and
+    // upload operate on these exact immutable bytes even if the source file
     // changes concurrently.
-    let archive = build_trace_package_archive(package)
-        .context("building deterministic publication archive; nothing was uploaded")?;
-    let snapshot = tempfile::tempdir().context("creating private publication snapshot")?;
-    let snapshot_path = snapshot.path().join("package");
-    extract_trace_package_archive(&archive, &snapshot_path)
-        .context("validating private publication snapshot")?;
-    let embedded_key = trace_package_notary_key(&snapshot_path)?;
+    let archive = fs::read(package).with_context(|| {
+        format!(
+            "reading finalized package {}; nothing was uploaded",
+            package.display()
+        )
+    })?;
+    let embedded_key = trace_package_notary_key_bytes(&archive)
+        .context("validating finalized .llmtrace; nothing was uploaded")?;
     let (trusted_notary_key, key_id) = match trusted_key {
         Some(value) => notary::explicit_key(value)?,
         None => {
-            let created_at = trace_package_created_at_unix_ms(&snapshot_path)?;
+            let created_at = trace_package_created_at_unix_ms_bytes(&archive)?;
             let (key_id, _) = notary::cached_key_at(&embedded_key, created_at)?;
             (embedded_key, key_id)
         }
     };
-    let manifest = verify_trace_package(&snapshot_path, &trusted_notary_key)
+    let verified = verify_trace_package_bytes(&archive, &trusted_notary_key)
         .context("local trace package verification failed; nothing was uploaded")?;
-    drop(snapshot);
     let archive_sha256 = sha256_hex(&archive);
 
     // Everything above is intentionally local so malformed packages never
@@ -137,7 +137,7 @@ pub(crate) async fn publish_package(
     // API origin, then refresh that origin's directory before any upload.
     let authenticated = auth::authenticate().await?;
     refresh_notary_directory_from(&authenticated.origin).await?;
-    notary::cached_key_at(&trusted_notary_key, manifest.created_at_unix_ms())
+    notary::cached_key_at(&trusted_notary_key, verified.manifest.created_at_unix_ms())
         .context("the package notary is no longer trusted; nothing was uploaded")?;
     let job = submit_archive(
         &authenticated,
@@ -152,7 +152,7 @@ pub(crate) async fn publish_package(
         state: job.state,
         status_url,
     };
-    Ok((output, manifest.capture_id().to_owned(), key_id))
+    Ok((output, verified.manifest.capture_id().to_owned(), key_id))
 }
 
 pub(crate) async fn publication_status(
