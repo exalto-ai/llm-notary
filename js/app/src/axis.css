@@ -152,6 +152,30 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dashboard-trace-actions a { color: var(--action-dark); border-color: currentColor; font-weight: 600; }
 .dashboard-session-list button { border-color: var(--line); font-weight: 600; }
 .dashboard-card { margin: 34px 0; border-color: var(--line); background: var(--white); }
+.cli-approval-shell { display: grid; min-height: calc(100svh - 112px); align-items: center; padding: clamp(40px, 8vh, 88px) 16px; }
+.cli-approval-workspace { display: grid; width: 100%; grid-template-columns: minmax(0, 1.45fr) minmax(340px, .72fr); border: 1px solid var(--line); background: var(--paper); }
+.cli-approval-primary { display: flex; min-height: 390px; align-items: flex-start; justify-content: center; flex-direction: column; padding: clamp(34px, 5vw, 72px); }
+.cli-approval-primary h1 { max-width: 700px; margin: 12px 0 18px; font-family: 'Space Grotesk', Arial, sans-serif; font-size: clamp(42px, 5vw, 64px); font-weight: 600; line-height: .96; letter-spacing: -.055em; }
+.cli-approval-description { max-width: 580px; color: var(--body-copy); font-size: 15px; line-height: 1.6; }
+.cli-approval-description p { margin: 0; }
+.cli-approval-action { margin-top: 28px; }
+.cli-approval-action .button { min-height: 40px; padding-inline: 16px; }
+.cli-approval-context { display: flex; min-width: 0; flex-direction: column; border-left: 1px solid var(--line); background: var(--section-muted); }
+.cli-approval-context > header { padding: 23px 22px 24px; border-bottom: 1px solid var(--line); }
+.cli-approval-path { display: grid; grid-template-columns: auto minmax(28px, 1fr) auto; align-items: center; gap: 10px; margin-top: 19px; color: var(--ink); font: 500 10px/1.35 'DM Mono', monospace; }
+.cli-approval-path > span { display: inline-flex; min-width: 0; align-items: center; gap: 7px; }
+.cli-approval-path > span:last-child { justify-content: flex-end; text-align: right; }
+.cli-approval-path i { width: 8px; height: 8px; flex: none; border: 1px solid var(--muted); background: var(--paper); }
+.cli-approval-path b { position: relative; display: block; height: 1px; background: var(--line); }
+.cli-approval-path b::after { position: absolute; top: -3px; right: 0; width: 6px; height: 6px; border-top: 1px solid var(--muted); border-right: 1px solid var(--muted); content: ''; transform: rotate(45deg); }
+.cli-approval-context dl { display: grid; margin: auto 0 0; }
+.cli-approval-context dl > div { display: grid; min-height: 60px; grid-template-columns: minmax(112px, .72fr) minmax(0, 1fr); align-items: center; gap: 16px; padding: 12px 22px; border-top: 1px solid var(--line); }
+.cli-approval-context dl > div:first-child { border-top: 0; }
+.cli-approval-context dt { color: var(--muted); font: 500 9px/1.35 'DM Mono', monospace; letter-spacing: .04em; text-transform: uppercase; }
+.cli-approval-context dd { min-width: 0; margin: 0; overflow-wrap: anywhere; color: var(--ink); font-size: 12px; font-weight: 600; line-height: 1.4; }
+.cli-approval-shell--ready .cli-approval-path span:last-child i, .cli-approval-shell--success .cli-approval-path span:last-child i { border-color: var(--action-dark); background: var(--action); }
+.cli-approval-shell--success .cli-approval-context dl > div:last-child dd { color: var(--action-dark); }
+.cli-approval-shell--attention .cli-approval-path span:last-child i { border-color: var(--attention); }
 .dashboard-empty { border-color: var(--line); }
 .dashboard-empty--traces { padding: 34px 0 38px; }
 .dashboard-empty--traces > .eyebrow { display: block; margin-bottom: 10px; }
@@ -230,6 +254,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .dashboard-sidebar nav a { min-height: 42px; }
   .dashboard-sidebar nav a.active { box-shadow: inset 0 -3px 0 var(--action); }
   .dashboard-page { padding: 28px 16px 48px; }
+  .cli-approval-shell { min-height: calc(100svh - 140px); align-items: start; padding: 24px 12px; }
+  .cli-approval-workspace { grid-template-columns: 1fr; }
+  .cli-approval-primary { min-height: 310px; padding: 32px 20px 36px; }
+  .cli-approval-primary h1 { margin-top: 10px; font-size: clamp(38px, 12vw, 52px); }
+  .cli-approval-context { border-top: 1px solid var(--line); border-left: 0; }
+  .cli-approval-context > header { padding-inline: 20px; }
+  .cli-approval-context dl > div { grid-template-columns: 108px minmax(0, 1fr); padding-inline: 20px; }
   .dashboard-summary { grid-template-columns: 1fr 1fr; margin-top: 22px; }
   .dashboard-summary div { padding-inline: 12px; }
   .dashboard-summary div:first-child { grid-column: 1 / -1; }

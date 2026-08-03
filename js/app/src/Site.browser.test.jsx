@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { ApiKeysPanel, HostedNotaryRecord, Library, SharePage, VerificationPage } from './main';
+import { ApiKeysPanel, CliApproval, Header, HostedNotaryRecord, Library, SharePage, VerificationPage } from './main';
 
 afterEach(async () => {
   cleanup();
@@ -29,6 +29,44 @@ const loadLibraryTrace = async (id) => ({
 });
 
 describe('hosted site', () => {
+  test('makes local service authorization a clear two-step decision', async () => {
+    window.location.hash = '#/authorize?request_id=request-123&approval_secret=secret-456';
+    render(<>
+      <Header user={null} hideSignIn theme="light" onThemeChange={() => {}} />
+      <CliApproval route="authorize?request_id=request-123&approval_secret=secret-456" user={null} />
+    </>);
+
+    await expect.element(page.getByRole('heading', { name: 'Sign in to continue' })).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Continue with GitHub' })).toBeVisible();
+    await expect.element(page.getByText('Repository access')).toBeVisible();
+    await expect.element(page.getByText('Not requested')).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
+  });
+
+  test('shows the device, account, and code before approval', async () => {
+    const loadApproval = async () => ({
+      device_name: 'Research MacBook',
+      user_code: 'NOTARY-7K3',
+      expires_at: 1_786_000_000,
+    });
+    let approved;
+    render(<CliApproval
+      route="authorize?request_id=request-123&approval_secret=secret-456"
+      user={{ github_login: 'fixture-user' }}
+      loadApproval={loadApproval}
+      approveRequest={async (...args) => { approved = args; }}
+    />);
+
+    await expect.element(page.getByRole('heading', { name: 'Approve this local service?' })).toBeVisible();
+    await expect.element(page.getByText('Research MacBook')).toBeVisible();
+    await expect.element(page.getByText('fixture-user')).toBeVisible();
+    await expect.element(page.getByText('NOTARY-7K3')).toBeVisible();
+    await page.getByRole('button', { name: 'Approve service' }).click();
+
+    expect(approved).toEqual(['request-123', 'secret-456']);
+    await expect.element(page.getByRole('heading', { name: 'Local service approved' })).toBeVisible();
+  });
+
   test('shows a new API key once and revokes it from the account list', async () => {
     const secret = `llmn_v1_${'a'.repeat(32)}_${'b'.repeat(64)}`;
     let createRequest;
