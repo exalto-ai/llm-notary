@@ -163,6 +163,12 @@ local trace. The fixture Vite server also serves the generated contract at
 `/openapi.json`, matching the real admin listener. No fixture action contacts a
 provider, notary, publication platform, or account service.
 
+Finalization advances deterministically from queued to running to finalized as
+the operation is polled. The fixture does not add the capture to Finalized
+traces until that last transition. Its capture, operation, package, provider,
+model, disclosed content, verification, and publication all retain the same
+synthetic identity.
+
 When opened normally, fixture timestamps are generated relative to the current
 time. A visible note identifies operation states as simulations rather than
 real background workers. Screenshot generation supplies an explicit fixed

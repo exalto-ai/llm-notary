@@ -1,3 +1,4 @@
+import { LocalApiError } from './api';
 import type {
   Capture, CaptureDetail, Event, LocalApi, Notaries, Operation, PublicationAuth, Status, Trace, Verification
 } from './api';
@@ -34,6 +35,17 @@ export const fixtureCaptures: Capture[] = [
     capture_state: 'pending', finalization_state: 'finalized', finalization_eligible: true,
     prompt_preview: 'Choose a reproducibility baseline from two sanitized evaluation runs and explain the limits of the evidence.',
     prompt_preview_truncated: false, output_preview: 'Use Run 15 as the baseline; its settings were recorded and all 20 reruns matched.',
+    output_preview_truncated: false
+  },
+  {
+    capture_id: 'cap-20260726-direct-link', created_at_unix_ms: fixtureNow - hour * 31,
+    completed_at_unix_ms: fixtureNow - hour * 31 + 1288, provider: 'anthropic', operation: '/v1/messages',
+    requested_model: 'claude-sonnet-4-6', response_model: 'claude-sonnet-4-6', http_status: 200,
+    streaming: false, request_bytes: 1540, response_bytes: 7290, duration_ms: 1288,
+    capture_state: 'pending', finalization_state: 'finalized', finalization_eligible: true,
+    prompt_preview: 'Check whether the direct-link fixture keeps its provider and model identity.',
+    prompt_preview_truncated: false,
+    output_preview: 'The fixture identity remains Anthropic / claude-sonnet-4-6 in every view.',
     output_preview_truncated: false
   },
   {
@@ -94,6 +106,14 @@ export const fixtureOperations: Operation[] = [
     retryable: false,
     attempt_history: [{ attempt: 1, state: 'finalized', started_at_unix_ms: fixtureNow - hour * 17 + 1_000,
       completed_at_unix_ms: fixtureNow - hour * 17 + 184_000 }]
+  },
+  {
+    operation_id: 'op-finalize-direct-link', kind: 'finalization',
+    capture_id: 'cap-20260726-direct-link', state: 'finalized', attempt: 1,
+    created_at_unix_ms: fixtureNow - hour * 30, started_at_unix_ms: fixtureNow - hour * 30 + 1_000,
+    completed_at_unix_ms: fixtureNow - hour * 30 + 161_000, retryable: false,
+    attempt_history: [{ attempt: 1, state: 'finalized', started_at_unix_ms: fixtureNow - hour * 30 + 1_000,
+      completed_at_unix_ms: fixtureNow - hour * 30 + 161_000 }]
   }
 ];
 
@@ -106,13 +126,16 @@ export const fixtureEvents: Event[] = [
     severity: 'error', message: 'Finalization failed' },
   { event_id: 12, created_at_unix_ms: fixtureNow - hour * 17, event_type: 'finalization_completed',
     capture_id: 'cap-20260727-research-brief', operation_id: 'op-finalize-research-brief',
+    severity: 'success', message: 'Finalization completed' },
+  { event_id: 11, created_at_unix_ms: fixtureNow - hour * 30, event_type: 'finalization_completed',
+    capture_id: 'cap-20260726-direct-link', operation_id: 'op-finalize-direct-link',
     severity: 'success', message: 'Finalization completed' }
 ];
 
 export const fixtureStatus: Status = {
   version: '0.1.0', proxy_listener: '127.0.0.1:8787', admin_listener: '127.0.0.1:8788',
   vault: 'OS vault', notary: 'directory', preview_chars: 1000,
-  counts: { total_captures: 6, capturing: 1, pending: 2, finalized: 1, failed: 1, active_operations: 1 }
+  counts: { total_captures: 7, capturing: 1, pending: 2, finalized: 2, failed: 1, active_operations: 1 }
 };
 
 export const fixtureNotaries: Notaries = {
@@ -182,13 +205,14 @@ const fixtureVerification: Verification = {
 };
 
 function detail(captureId: string, captures: Capture[], operations: Operation[]): CaptureDetail {
-  const capture = captures.find((item) => item.capture_id === captureId) ?? captures[0];
+  const capture = captures.find((item) => item.capture_id === captureId);
+  if (!capture) throw new LocalApiError(404, 'capture_not_found', 'Capture not found');
   return {
     capture,
     artifacts: [
-      { kind: 'deferred_bundle', size_bytes: 189_442, sha256: '20e24d8f7e9c375e9bea72bb15b02e0d6a2e2a18023a5606799f001a84cff7b1' },
+      { kind: 'deferred_bundle', size_bytes: 189_442, sha256: deterministicHex(`${capture.capture_id}:bundle`, 64) },
       ...(capture.finalization_state === 'finalized'
-        ? [{ kind: 'finalized_package', size_bytes: 482_013, sha256: '9a32d7c66a7e4fdd525ea6c803355273ade0f46e7c8dc4973343399731585b26' }]
+        ? [{ kind: 'finalized_package', size_bytes: 482_013, sha256: deterministicHex(`${capture.capture_id}:package`, 64) }]
         : [])
     ],
     finalizations: operations.filter((operation) => operation.capture_id === capture.capture_id)
@@ -217,11 +241,58 @@ function shiftOperation(operation: Operation, offset: number): Operation {
   };
 }
 
-function shiftedTrace(captureId: string, offset: number): Trace {
+const providerHosts: Record<string, string> = {
+  anthropic: 'api.anthropic.com', deepseek: 'api.deepseek.com', openai: 'api.openai.com', openrouter: 'openrouter.ai'
+};
+
+function deterministicHex(value: string, length: number) {
+  let state = 2_166_136_261;
+  let output = '';
+  while (output.length < length) {
+    for (const character of value) {
+      state ^= character.charCodeAt(0);
+      state = Math.imul(state, 16_777_619);
+    }
+    output += (state >>> 0).toString(16).padStart(8, '0');
+    state ^= output.length;
+  }
+  return output.slice(0, length);
+}
+
+function traceForCapture(capture: Capture): Trace {
   const trace = structuredClone(fixtureTrace);
-  const manifest = trace.manifest as { source?: { created_at_unix_ms?: number } };
-  if (typeof manifest.source?.created_at_unix_ms === 'number') manifest.source.created_at_unix_ms += offset;
-  return { ...trace, capture_id: captureId };
+  const manifest = trace.manifest as {
+    trace_sha256?: string; source?: { provider?: { name?: string; host?: string }; created_at_unix_ms?: number }
+  };
+  manifest.trace_sha256 = deterministicHex(`${capture.capture_id}:trace-bytes`, 64);
+  if (manifest.source) {
+    manifest.source.provider = { name: capture.provider, host: providerHosts[capture.provider] ?? `${capture.provider}.example` };
+    manifest.source.created_at_unix_ms = capture.created_at_unix_ms;
+  }
+  const span = (trace.trace as { resourceSpans?: Array<{ scopeSpans?: Array<{ spans?: Array<{
+    traceId?: string; spanId?: string; attributes?: Array<{ key: string; value: { stringValue?: string } }>
+  }> }> }> }).resourceSpans?.[0]?.scopeSpans?.[0]?.spans?.[0];
+  if (span) {
+    span.traceId = deterministicHex(`${capture.capture_id}:trace`, 32);
+    span.spanId = deterministicHex(`${capture.capture_id}:span`, 16);
+    const values: Record<string, string> = {
+      'gen_ai.provider.name': capture.provider,
+      'gen_ai.operation.name': capture.operation,
+      'gen_ai.request.model': capture.requested_model ?? 'Model not reported',
+      'gen_ai.response.model': capture.response_model ?? capture.requested_model ?? 'Model not reported',
+      'server.address': providerHosts[capture.provider] ?? `${capture.provider}.example`,
+      'gen_ai.input.messages': JSON.stringify([{ role: 'user', parts: [{ type: 'text', content: capture.prompt_preview || 'Fixture prompt preview is disabled.' }] }]),
+      'gen_ai.output.messages': JSON.stringify([{ role: 'assistant', finish_reason: 'stop', parts: [{ type: 'text', content: capture.output_preview || 'Fixture response preview is disabled.' }] }])
+    };
+    const preserveDetailedTranscript = capture.capture_id === fixtureTrace.capture_id;
+    for (const attribute of span.attributes ?? []) {
+      if (attribute.key in values
+        && (!preserveDetailedTranscript || !['gen_ai.input.messages', 'gen_ai.output.messages'].includes(attribute.key))) {
+        attribute.value.stringValue = values[attribute.key];
+      }
+    }
+  }
+  return { ...trace, capture_id: capture.capture_id };
 }
 
 export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: number } = {}): LocalApi {
@@ -230,10 +301,13 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
   let captures = fixtureCaptures.map((capture) => shiftCapture(structuredClone(capture), offset));
   let operations = fixtureOperations.map((operation) => shiftOperation(structuredClone(operation), offset));
   let events = fixtureEvents.map((event) => ({ ...structuredClone(event), created_at_unix_ms: event.created_at_unix_ms + offset }));
+  const traces = new Map(captures.filter((capture) => capture.finalization_state === 'finalized')
+    .map((capture) => [capture.capture_id, traceForCapture(capture)]));
   let publicationAuth: PublicationAuth = { signed_in: false };
   let nextEventId = Math.max(...events.map((event) => event.event_id)) + 1;
   let nextActionTime = clock;
   const progressingOperations = new Set<string>();
+  const operationPolls = new Map<string, number>();
   const publicationJobs = new Map<string, { captureId: string; state: string }>();
   const actionTimestamp = () => {
     nextActionTime += 1000;
@@ -248,35 +322,40 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     captures = captures.map((capture) => capture.capture_id === captureId
       ? { ...capture, finalization_state: finalizationState } : capture);
   };
-  const advanceDemoOperations = () => {
-    for (const operationId of progressingOperations) {
-      const operation = operations.find((item) => item.operation_id === operationId);
-      if (!operation?.capture_id) {
-        progressingOperations.delete(operationId);
-        continue;
-      }
-      if (operation.state === 'queued') {
-        const attempt = operation.attempt + 1;
-        const startedAt = actionTimestamp();
-        operations = operations.map((item) => item.operation_id === operationId ? {
-          ...item, state: 'running', attempt, started_at_unix_ms: startedAt, completed_at_unix_ms: null,
-          retryable: false,
-          attempt_history: [{ attempt, state: 'running', started_at_unix_ms: startedAt }, ...item.attempt_history]
-        } : item);
-        setCaptureFinalization(operation.capture_id, 'running');
-        recordEvent('finalization_started', 'Finalization started', 'info', operation.capture_id, operationId);
-      } else if (operation.state === 'running') {
-        const completedAt = actionTimestamp();
-        operations = operations.map((item) => item.operation_id === operationId ? {
-          ...item, state: 'finalized', completed_at_unix_ms: completedAt,
-          retryable: false,
-          attempt_history: item.attempt_history.map((attempt, index) => index === 0
-            ? { ...attempt, state: 'finalized', completed_at_unix_ms: completedAt } : attempt)
-        } : item);
-        setCaptureFinalization(operation.capture_id, 'finalized');
-        recordEvent('finalization_completed', 'Finalization completed', 'success', operation.capture_id, operationId);
-        progressingOperations.delete(operationId);
-      }
+  const advanceDemoOperation = (operationId: string) => {
+    if (!progressingOperations.has(operationId)) return;
+    const polls = operationPolls.get(operationId) ?? 0;
+    operationPolls.set(operationId, polls + 1);
+    if (polls === 0) return;
+    const operation = operations.find((item) => item.operation_id === operationId);
+    if (!operation?.capture_id) {
+      progressingOperations.delete(operationId);
+      return;
+    }
+    if (operation.state === 'queued') {
+      const attempt = operation.attempt + 1;
+      const startedAt = actionTimestamp();
+      operations = operations.map((item) => item.operation_id === operationId ? {
+        ...item, state: 'running', attempt, started_at_unix_ms: startedAt, completed_at_unix_ms: null,
+        retryable: false,
+        attempt_history: [{ attempt, state: 'running', started_at_unix_ms: startedAt }, ...item.attempt_history]
+      } : item);
+      setCaptureFinalization(operation.capture_id, 'running');
+      recordEvent('finalization_started', 'Finalization started', 'info', operation.capture_id, operationId);
+    } else if (operation.state === 'running') {
+      const completedAt = actionTimestamp();
+      operations = operations.map((item) => item.operation_id === operationId ? {
+        ...item, state: 'finalized', completed_at_unix_ms: completedAt,
+        retryable: false,
+        attempt_history: item.attempt_history.map((attempt, index) => index === 0
+          ? { ...attempt, state: 'finalized', completed_at_unix_ms: completedAt } : attempt)
+      } : item);
+      setCaptureFinalization(operation.capture_id, 'finalized');
+      const capture = captures.find((item) => item.capture_id === operation.capture_id);
+      if (capture) traces.set(capture.capture_id, traceForCapture(capture));
+      recordEvent('finalization_completed', 'Finalization completed', 'success', operation.capture_id, operationId);
+      progressingOperations.delete(operationId);
+      operationPolls.delete(operationId);
     }
   };
   const status = (): Status => ({
@@ -317,8 +396,12 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     allCaptures: async (filters = {}) => ({ items: filteredCaptures(filters), limit: 200, offset: 0 }),
     capture: async (captureId) => detail(captureId, captures, operations),
     startFinalization: async (captureId) => {
-      const existing = operations.find((operation) => operation.capture_id === captureId
-        && ['queued', 'running', 'finalized'].includes(operation.state));
+      const capture = captures.find((item) => item.capture_id === captureId);
+      if (!capture) throw new LocalApiError(404, 'pending_capture_not_found', 'Capture not found');
+      if (!capture.finalization_eligible) {
+        throw new LocalApiError(409, capture.finalization_ineligibility_code ?? 'capture_not_eligible', 'Capture is not eligible for finalization');
+      }
+      const existing = operations.find((operation) => operation.capture_id === captureId);
       if (existing) return { operation: existing, deduplicated: true };
       const operation: Operation = { operation_id: 'op-finalize-queued-fixture', kind: 'finalization',
         capture_id: captureId, state: 'queued', attempt: 0, created_at_unix_ms: actionTimestamp(), retryable: false, attempt_history: [] };
@@ -334,16 +417,23 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
         (!filters.state || operation.state === filters.state)
         && (!filters.kind || operation.kind === filters.kind)
         && (!filters.capture_id || operation.capture_id === filters.capture_id)).slice(0, limit));
-      advanceDemoOperations();
       return { items };
     },
-    operation: async (operationId) => operations.find((item) => item.operation_id === operationId) ?? operations[0],
+    operation: async (operationId) => {
+      const operation = operations.find((item) => item.operation_id === operationId);
+      if (!operation) throw new LocalApiError(404, 'operation_not_found', 'Operation not found');
+      advanceDemoOperation(operationId);
+      return structuredClone(operations.find((item) => item.operation_id === operationId)!);
+    },
     retry: async (operationId) => {
+      const existing = operations.find((operation) => operation.operation_id === operationId);
+      if (!existing?.retryable) throw new LocalApiError(409, 'operation_not_retryable', 'Operation is not retryable');
       operations = operations.map((operation) => operation.operation_id === operationId
         ? { ...operation, state: 'queued', failure_code: null, completed_at_unix_ms: null, retryable: false } : operation);
       const operation = operations.find((item) => item.operation_id === operationId)!;
       if (operation.capture_id) {
         setCaptureFinalization(operation.capture_id, 'queued');
+        operationPolls.delete(operationId);
         progressingOperations.add(operationId);
         recordEvent('finalization_queued', 'Finalization retry queued', 'info', operation.capture_id, operationId);
       }
@@ -362,8 +452,15 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
         && (!createdAfter || event.created_at_unix_ms >= createdAfter)).slice(0, limit);
       return { items, next_cursor: events[0]?.event_id };
     },
-    trace: async (captureId) => shiftedTrace(captureId, offset),
-    verify: async (captureId) => ({ ...fixtureVerification, capture_id: captureId, verified_at_unix_ms: fixtureVerification.verified_at_unix_ms + offset }),
+    trace: async (captureId) => {
+      const trace = traces.get(captureId);
+      if (!trace) throw new LocalApiError(404, 'finalized_trace_not_found', 'Finalized trace not found');
+      return structuredClone(trace);
+    },
+    verify: async (captureId) => {
+      if (!traces.has(captureId)) throw new LocalApiError(422, 'trace_verification_failed', 'Trace verification failed');
+      return { ...fixtureVerification, capture_id: captureId, verified_at_unix_ms: fixtureVerification.verified_at_unix_ms + offset };
+    },
     publicationAuth: async () => publicationAuth,
     startPublicationAuth: async () => ({ request_id: 'auth-docs-fixture', user_code: 'NOTARY-7K3',
       verification_uri_complete: '#/publishing', expires_in_seconds: 600,
@@ -373,6 +470,7 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       return publicationAuth;
     },
     publish: async (captureId) => {
+      if (!traces.has(captureId)) throw new LocalApiError(404, 'finalized_trace_not_found', 'Finalized trace not found');
       const jobId = 'pub-job-fixture';
       publicationJobs.set(jobId, { captureId, state: 'queued' });
       return { capture_id: captureId, job_id: jobId, state: 'queued', status_url: `/v1/publications/${jobId}` };

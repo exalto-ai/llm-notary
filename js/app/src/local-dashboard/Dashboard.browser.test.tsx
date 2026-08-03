@@ -133,8 +133,9 @@ describe('local evidence dashboard', () => {
     renderDashboard('/traces/cap-20260727-research-brief');
     await page.getByRole('button', { name: 'Verify now' }).click();
     await expect.element(page.getByText('Verification passed')).toBeVisible();
-    window.location.hash = '/traces/cap-direct-link';
-    await expect.element(page.getByRole('heading', { name: 'cap-direct-link' })).toBeVisible();
+    window.location.hash = '/traces/cap-20260726-direct-link';
+    await expect.element(page.getByRole('heading', { name: 'cap-20260726-direct-link' })).toBeVisible();
+    await expect.element(page.getByText('anthropic · api.anthropic.com')).toBeVisible();
     await page.getByRole('tab', { name: 'Verification' }).click();
     await expect.element(page.getByRole('heading', { name: 'Run an independent check' })).toBeVisible();
   });
@@ -166,14 +167,47 @@ describe('local evidence dashboard', () => {
 
   test('advances a fixture finalization and keeps related state consistent', async () => {
     const api = createFixtureApi();
+    const captureId = 'cap-20260728-knowledge-eval';
     const queued = await api.startFinalization('cap-20260728-knowledge-eval');
     expect(queued.operation.state).toBe('queued');
     expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('queued');
+    expect((await api.allCaptures({ finalization_state: 'finalized' })).items.some((item) => item.capture_id === captureId)).toBe(false);
+    await expect(api.trace(captureId)).rejects.toMatchObject({ code: 'finalized_trace_not_found' });
+    expect((await api.operation(queued.operation.operation_id)).state).toBe('queued');
+    expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('queued');
+    expect((await api.operation(queued.operation.operation_id)).state).toBe('running');
     expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('running');
+    expect((await api.capture(captureId)).capture.finalization_state).toBe('running');
+    expect((await api.allCaptures({ finalization_state: 'finalized' })).items.some((item) => item.capture_id === captureId)).toBe(false);
+    expect((await api.operation(queued.operation.operation_id)).state).toBe('finalized');
     expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('finalized');
-    expect((await api.capture('cap-20260728-knowledge-eval')).capture.finalization_state).toBe('finalized');
+    const capture = (await api.capture(captureId)).capture;
+    expect(capture.finalization_state).toBe('finalized');
+    expect((await api.allCaptures({ finalization_state: 'finalized' })).items.some((item) => item.capture_id === captureId)).toBe(true);
     expect((await api.events()).items.some((event) => event.event_type === 'finalization_completed'
-      && event.capture_id === 'cap-20260728-knowledge-eval')).toBe(true);
+      && event.capture_id === captureId && event.operation_id === queued.operation.operation_id)).toBe(true);
+
+    const trace = await api.trace(captureId);
+    const traceJson = JSON.stringify(trace.trace);
+    expect(trace.capture_id).toBe(captureId);
+    expect(trace.manifest).toMatchObject({ source: { provider: { name: capture.provider, host: 'api.openai.com' } } });
+    expect(traceJson).toContain(capture.requested_model);
+    expect(traceJson).toContain(capture.prompt_preview);
+    expect(traceJson).toContain(capture.output_preview);
+    expect((await api.verify(captureId)).capture_id).toBe(captureId);
+    expect((await api.publish(captureId)).capture_id).toBe(captureId);
+    const initialPublication = await api.publicationStatus('pub-job-fixture');
+    expect(initialPublication.state).toBe('queued');
+    expect((await api.publicationStatus('pub-job-fixture')).state).toBe('verifying');
+    const admitted = await api.publicationStatus('pub-job-fixture');
+    expect(admitted.state).toBe('admitted');
+    expect(admitted.trace_url).toContain(captureId);
+
+    renderDashboard(`/traces/${captureId}`, api);
+    await expect.element(page.getByRole('heading', { name: captureId })).toBeVisible();
+    await expect.element(page.getByText('openai · api.openai.com')).toBeVisible();
+    await expect.element(page.getByText(capture.prompt_preview)).toBeVisible();
+    await expect.element(page.getByText(capture.output_preview)).toBeVisible();
   });
 
   test('keeps a pending publication authorization visible until approval', async () => {
@@ -285,16 +319,16 @@ describe('local evidence dashboard', () => {
     renderDashboard('/activity', filteredApi);
     await page.getByLabelText('Activity event type').fill('finalization_completed');
     await expect.poll(() => receivedFilters.event_type).toBe('finalization_completed');
-    await expect.element(page.getByText('Finalization completed')).toBeVisible();
+    await expect.element(page.getByText('Finalization completed').first()).toBeVisible();
     await expect.element(page.getByText('Finalization failed')).not.toBeInTheDocument();
   });
 
   test('uses separate trace list and detail views on mobile', async () => {
     await page.viewport(390, 760);
     renderDashboard('/traces');
-    await expect.element(page.getByRole('listitem')).toBeVisible();
+    await expect.element(page.getByRole('listitem').first()).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Verify now' })).not.toBeInTheDocument();
-    await page.getByRole('list', { name: 'Finalized traces' }).getByRole('button').click();
+    await page.getByRole('list', { name: 'Finalized traces' }).getByRole('button').first().click();
     await expect.element(page.getByRole('button', { name: 'All finalized traces' })).toBeVisible();
     await expect.element(page.getByRole('listitem')).not.toBeInTheDocument();
   });
