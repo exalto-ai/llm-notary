@@ -782,8 +782,8 @@ export function Collections({ selectedId, loadCollection = getTraceCollection, l
     if (!mobile) return undefined;
     if (selectedId && active) {
       const frame = window.requestAnimationFrame(() => {
-        inspectorHeading.current?.focus();
-        inspectorHeading.current?.scrollIntoView({ block: 'start' });
+        window.scrollTo({ top: 0, behavior: 'instant' });
+        inspectorHeading.current?.focus({ preventScroll: true });
       });
       return () => window.cancelAnimationFrame(frame);
     }

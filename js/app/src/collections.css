@@ -287,6 +287,11 @@
   display: none;
 }
 
+.collection-inspector h2:focus {
+  outline: 2px solid var(--action);
+  outline-offset: 3px;
+}
+
 .inspector-facts {
   display: grid;
   grid-template-columns: 1fr 1fr;

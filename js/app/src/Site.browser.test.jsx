@@ -73,6 +73,11 @@ describe('hosted site', () => {
     await expect.element(page.getByLabelText('Browse traces')).not.toBeInTheDocument();
     await expect.element(page.getByRole('button', { name: /Trace 01/ })).not.toBeInTheDocument();
     await expect.poll(() => document.activeElement?.textContent).toBe('Trace 12');
+    await expect.poll(() => {
+      const bounds = document.querySelector('.library-back')?.getBoundingClientRect();
+      return Boolean(bounds && bounds.top >= 0 && bounds.bottom <= window.innerHeight);
+    }).toBe(true);
+    expect(getComputedStyle(document.activeElement).outlineStyle).not.toBe('none');
 
     await page.getByRole('button', { name: '← Back to all traces' }).click();
     await expect.element(page.getByLabelText('Browse traces')).toBeVisible();
