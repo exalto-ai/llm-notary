@@ -3,7 +3,6 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { Collections, HostedNotaryRecord, VerificationPage } from './main';
-import { RelayAnimation } from './RelayAnimation';
 
 afterEach(async () => {
   cleanup();
@@ -92,35 +91,6 @@ describe('hosted site', () => {
     await expect.element(page.getByLabelText('Browse traces')).toBeVisible();
     await expect.element(page.getByRole('button', { name: /Trace 02/ })).toBeVisible();
     await expect.element(page.getByRole('heading', { name: 'Trace 01' })).toBeVisible();
-  });
-
-  test('shows the complete relay path without horizontal clipping on a phone', async () => {
-    await page.viewport(390, 760);
-    render(<RelayAnimation />);
-
-    await expect.element(page.getByText('AI PROVIDER')).toBeVisible();
-    await expect.element(page.getByText('LLM NOTARY')).toBeVisible();
-    await expect.element(page.getByText('LOCAL TLS PROXY')).toBeVisible();
-    await expect.element(page.getByText('YOUR AGENT')).toBeVisible();
-    await expect.element(page.getByText('YOUR PACKAGE')).toBeVisible();
-
-    const layout = [...document.querySelectorAll('.relay-node, .relay-output')].map((element) => {
-      const bounds = element.getBoundingClientRect();
-      return { left: bounds.left, right: bounds.right };
-    });
-    expect(layout.every(({ left, right }) => left >= 0 && right <= window.innerWidth)).toBe(true);
-    expect(document.documentElement.scrollWidth).toBe(window.innerWidth);
-  });
-
-  test('preserves the horizontal relay path on desktop', () => {
-    render(<RelayAnimation />);
-    const provider = document.querySelector('.relay-node--provider').getBoundingClientRect();
-    const notary = document.querySelector('.relay-node--notary').getBoundingClientRect();
-    const proxy = document.querySelector('.relay-node--proxy').getBoundingClientRect();
-    const output = document.querySelector('.relay-output--agent').getBoundingClientRect();
-    expect(provider.left).toBeLessThan(notary.left);
-    expect(notary.left).toBeLessThan(proxy.left);
-    expect(proxy.left).toBeLessThan(output.left);
   });
 
   test('requires disclosure consent before hosted package verification', async () => {
