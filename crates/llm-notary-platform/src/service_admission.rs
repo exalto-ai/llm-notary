@@ -2504,7 +2504,7 @@ mod tests {
         assert_eq!(testing_grant, (1, ACCOUNT_TESTING_GRANT_AMOUNT_BYTES));
         let repeated_access = account_access(&state, "user-1").await.unwrap();
         assert_eq!(repeated_access.total_remaining_bytes, 640 << 20);
-        let removed_columns: i64 = sqlx::query_scalar(
+        let compatibility_columns: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM information_schema.columns
              WHERE table_schema = current_schema()
                AND ((table_name = 'users' AND column_name = 'service_plan')
@@ -2514,13 +2514,22 @@ mod tests {
         .fetch_one(&state.database)
         .await
         .unwrap();
-        assert_eq!(removed_columns, 0);
+        assert_eq!(compatibility_columns, 2);
+        let compatibility_plan: String =
+            sqlx::query_scalar("SELECT service_plan FROM users WHERE id = 'user-1'")
+                .fetch_one(&state.database)
+                .await
+                .unwrap();
+        assert_eq!(compatibility_plan, "free");
         let legacy_ledger: Option<String> =
             sqlx::query_scalar("SELECT to_regclass('notary_finalization_credit_ledger')::TEXT")
                 .fetch_one(&state.database)
                 .await
                 .unwrap();
-        assert!(legacy_ledger.is_none());
+        assert_eq!(
+            legacy_ledger.as_deref(),
+            Some("notary_finalization_credit_ledger")
+        );
 
         let now = unix_timestamp().unwrap();
         sqlx::query(
