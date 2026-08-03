@@ -22,6 +22,7 @@ import './docs.css';
 import './legal.css';
 import './relay-animation.css';
 import './landing.css';
+import './notaries.css';
 import './axis.css';
 import { RelayAnimation } from './RelayAnimation';
 import {
@@ -29,12 +30,14 @@ import {
   getCliApproval,
   getCliSessions,
   getCurrentUser,
+  getNotaryDirectory,
   getPublishedTrace,
   getPublishJobs,
   getTraceCollection,
   logoutBrowser,
   revokeCliSession,
 } from './platform-api/client';
+import { abbreviatedKeyId, notaryLifecycle, orderNotaries } from './notaryLifecycle';
 
 const publicOrigin = __PUBLIC_ORIGIN__;
 const installCommand = `curl -fsSLO ${publicOrigin}/install.sh && sh install.sh`;
@@ -88,7 +91,7 @@ function AccountMenu({ user, onLogout, theme, onThemeChange }) {
 }
 
 function Header({ user, onLogout, theme, onThemeChange }) {
-  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/docs">Docs</a><a href="#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
+  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/docs">Docs</a><a href="#/library">Library</a><a href="#/notaries">Notaries</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
 }
 
 function Footer() {
@@ -932,6 +935,98 @@ function CliApproval({ route, user }) {
   return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Approve this service?</h1>{error ? <p>{error}</p> : details ? <><p>Allow <b>{details.device_name}</b> to publish through LLM Notary as <b>{user.github_login}</b>?</p><div className="dashboard-card"><span>Authorization code</span><b>{details.user_code}</b><span>Expires {sessionDate(details.expires_at)}</span><button className="button button-dark" onClick={approve}>Approve service</button></div></> : <p>Checking this authorization request…</p>}</main>;
 }
 
+const hostedNotaryStatuses = new Set(['active', 'retiring', 'retired', 'revoked']);
+
+function normalizeHostedDirectory(payload) {
+  if (!payload || typeof payload !== 'object' || payload.format !== 'llm-notary/notary-directory/v3'
+    || !Array.isArray(payload.notaries)
+    || !Number.isSafeInteger(payload.generation) || payload.generation < 0
+    || typeof payload.active_key_id !== 'string') {
+    throw new Error('malformed');
+  }
+  if (!payload.notaries.length) {
+    if (payload.active_key_id) throw new Error('malformed');
+    return { ...payload, notaries: [] };
+  }
+  const notaries = payload.notaries.map((record) => {
+    if (!record || typeof record !== 'object' || typeof record.host !== 'string' || !record.host
+      || !Number.isInteger(record.port) || record.port < 1 || record.port > 65535
+      || !['tcp', 'tls'].includes(record.transport) || typeof record.key_id !== 'string' || !record.key_id
+      || !hostedNotaryStatuses.has(record.status) || !Number.isSafeInteger(record.valid_from_unix_ms)
+      || record.valid_from_unix_ms < 0
+      || ![record.valid_until_unix_ms, record.finalize_until_unix_ms]
+        .every((value) => value === null || value === undefined || (Number.isSafeInteger(value) && value >= record.valid_from_unix_ms))) {
+      throw new Error('malformed');
+    }
+    return record;
+  });
+  const active = notaries.find((record) => record.key_id === payload.active_key_id);
+  if (!active || active.status !== 'active') throw new Error('malformed');
+  return { ...payload, notaries: orderNotaries(notaries, payload.active_key_id) };
+}
+
+function notaryEndpoint(record) {
+  const host = record.host.includes(':') ? `[${record.host}]` : record.host;
+  return `${record.transport}://${host}:${record.port}`;
+}
+
+function notaryDate(value) {
+  if (value === null || value === undefined) return 'No cutoff configured';
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium', timeStyle: 'short'
+  }).format(new Date(value));
+}
+
+function HostedNotaryRecord({ record, activeKeyId, copiedKeyId, onCopy, compact = false }) {
+  const lifecycle = notaryLifecycle(record.status);
+  return <article className={`notary-record notary-record--${record.status}${compact ? ' notary-record--compact' : ''}`}>
+    <header><span className={`notary-state notary-state--${record.status}`}><i aria-hidden="true" />{record.status}</span>{record.key_id === activeKeyId && <span className="notary-selected">Selected by active_key_id</span>}</header>
+    <h3>{lifecycle.label}</h3>
+    <p>{lifecycle.description}</p>
+    <dl>
+      <div><dt>Endpoint</dt><dd><code>{notaryEndpoint(record)}</code></dd></div>
+      <div><dt>Transport</dt><dd>{record.transport.toUpperCase()}</dd></div>
+      <div className="notary-key-row"><dt>Key ID / fingerprint</dt><dd><code title={record.key_id}>{abbreviatedKeyId(record.key_id)}</code><button type="button" onClick={() => onCopy(record.key_id)}>{copiedKeyId === record.key_id ? 'Copied' : 'Copy full key ID'}</button></dd></div>
+      {!compact && <><div><dt>Valid from</dt><dd>{notaryDate(record.valid_from_unix_ms)}</dd></div><div><dt>Capture cutoff</dt><dd>{notaryDate(record.valid_until_unix_ms)}</dd></div><div><dt>Finalization cutoff</dt><dd>{notaryDate(record.finalize_until_unix_ms)}</dd></div></>}
+    </dl>
+  </article>;
+}
+
+function NotariesPage() {
+  const [directory, setDirectory] = useState(null);
+  const [error, setError] = useState(null);
+  const [reload, setReload] = useState(0);
+  const [copiedKeyId, setCopiedKeyId] = useState(null);
+  useEffect(() => {
+    let cancelled = false;
+    setDirectory(null);
+    setError(null);
+    getNotaryDirectory()
+      .then((payload) => {
+        if (cancelled) return;
+        try {
+          setDirectory(normalizeHostedDirectory(payload));
+        } catch {
+          setError('malformed');
+        }
+      })
+      .catch(() => { if (!cancelled) setError('unavailable'); });
+    return () => { cancelled = true; };
+  }, [reload]);
+  const copyKeyId = async (keyId) => {
+    await navigator.clipboard.writeText(keyId);
+    setCopiedKeyId(keyId);
+  };
+  const available = directory?.notaries.filter((record) => record.key_id === directory.active_key_id || record.status === 'retiring') || [];
+  return <main className="notaries-shell">
+    <header className="notaries-intro"><span className="eyebrow">Public trust metadata</span><h1>Notaries and trust</h1><p>This is the signing-key lifecycle directory used by verification. It describes permitted protocol work and retained trust records; it does not report endpoint health, uptime, or capacity.</p></header>
+    {directory === null && !error ? <div className="notary-loading" role="status" aria-label="Loading notary directory"><i /><i /><i /></div> : error ? <section className="notary-page-state" role="alert"><h2>{error === 'malformed' ? 'The notary directory is malformed' : 'The notary directory is unavailable'}</h2><p>{error === 'malformed' ? 'The response could not be read as a valid signing-key lifecycle directory. No notary is presented as usable.' : 'The public trust metadata could not be loaded. No endpoint status can be inferred from this failure.'}</p><button type="button" onClick={() => setReload((value) => value + 1)}>Try again</button></section> : directory.notaries.length === 0 ? <section className="notary-page-state"><h2>No notary records are published</h2><p>The directory contains no trust records. No capture or finalization endpoint is presented as available.</p></section> : <>
+      <section className="notary-section" aria-labelledby="available-notaries"><div className="notary-section-heading"><div><span className="eyebrow">Protocol lifecycle</span><h2 id="available-notaries">Available for protocol work</h2></div><span>Generation {directory.generation}</span></div><p className="notary-section-note">These records describe allowed work within configured time windows. They are not a live availability check.</p><div className="notary-records notary-records--available">{available.length ? available.map((record) => <HostedNotaryRecord key={record.key_id} record={record} activeKeyId={directory.active_key_id} copiedKeyId={copiedKeyId} onCopy={copyKeyId} compact />) : <p>No records are designated for new captures or compatible finalizations.</p>}</div></section>
+      <section className="notary-section notary-history" aria-labelledby="notary-history"><div className="notary-section-heading"><div><span className="eyebrow">Pinned signing keys</span><h2 id="notary-history">Trust history</h2></div><span>{directory.notaries.length} {directory.notaries.length === 1 ? 'record' : 'records'}</span></div><div className="notary-records">{directory.notaries.map((record) => <HostedNotaryRecord key={record.key_id} record={record} activeKeyId={directory.active_key_id} copiedKeyId={copiedKeyId} onCopy={copyKeyId} />)}</div></section>
+    </>}
+  </main>;
+}
+
 function App() {
   const [route, setRoute] = useState(window.location.hash || '#/');
   const [user, setUser] = useState(null);
@@ -949,7 +1044,7 @@ function App() {
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);

@@ -134,6 +134,7 @@ which workflow owns each operation:
 | Workflow | Operations |
 | --- | --- |
 | Session and status | `POST /v1/session`, `DELETE /v1/session`, `GET /v1/status` |
+| Notary trust | `GET /v1/notaries` |
 | Captures | `GET /v1/captures`, `GET /v1/captures/{capture_id}` |
 | Finalization | `POST /v1/captures/{capture_id}/finalizations`, `GET /v1/operations`, `GET /v1/operations/{operation_id}`, `POST /v1/operations/{operation_id}/retry` |
 | Finalized trace | `GET /v1/captures/{capture_id}/trace`, `POST /v1/captures/{capture_id}/trace:verify` |
@@ -141,6 +142,11 @@ which workflow owns each operation:
 | Publication account | `GET /v1/publication/auth`, `POST /v1/publication/auth`, `GET /v1/publication/auth/{request_id}`, `DELETE /v1/publication/auth` |
 | Publication | `POST /v1/captures/{capture_id}/publications`, `GET /v1/publications/{job_id}` |
 | Public trace | `GET /v1/public-traces/{publication_id}`, `POST /v1/public-traces/{publication_id}/verify` |
+
+`GET /v1/notaries` returns a safe read-only view of the locally pinned notary
+directory and trust history, or the explicitly configured self-hosted endpoint
+and key. Its lifecycle records describe allowed protocol use; they are not an
+endpoint health check.
 
 For example, search the plain-text preview index and fetch one capture by its
 identifier:

@@ -184,6 +184,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/notaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get configured notary trust
+         * @description Returns a safe read-only projection of the pinned notary trust history or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.
+         */
+        get: operations["notaries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/operations": {
         parameters: {
             query?: never;
@@ -488,6 +508,36 @@ export interface components {
             api_version: string;
             service: string;
             status: string;
+        };
+        NotariesResponse: {
+            /**
+             * @description Selected active directory key. Explicit configuration has no directory
+             *     lifecycle selection and therefore leaves this field unset.
+             */
+            active_key_id?: string | null;
+            /** @description Public URL from which the current pinned directory generation came. */
+            directory_source?: string | null;
+            /** Format: int64 */
+            generation?: number | null;
+            notaries: components["schemas"]["NotaryResponse"][];
+            /**
+             * @description `directory` for the locally pinned trust store or
+             *     `explicit_configuration` for a self-hosted endpoint and key.
+             */
+            source: string;
+        };
+        NotaryResponse: {
+            endpoint: string;
+            /** Format: int64 */
+            finalize_until_unix_ms?: number | null;
+            key_id: string;
+            /** @description One of `active`, `retiring`, `retired`, `revoked`, or `configured`. */
+            status: string;
+            transport: string;
+            /** Format: int64 */
+            valid_from_unix_ms?: number | null;
+            /** Format: int64 */
+            valid_until_unix_ms?: number | null;
         };
         OperationAttemptResponse: {
             /** Format: int32 */
@@ -894,6 +944,41 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    notaries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotariesResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

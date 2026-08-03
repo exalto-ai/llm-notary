@@ -25,7 +25,8 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from '@/components/ui/select';
 import { LocalApiError } from './api';
-import type { Capture, CaptureDetail, Event, LocalApi, Operation, Publication, PublicationAuthStarted, Status, Verification } from './api';
+import type { Capture, CaptureDetail, Event, LocalApi, Notary, Operation, Publication, PublicationAuthStarted, Status, Verification } from './api';
+import { abbreviatedKeyId, notaryLifecycle, orderNotaries } from '../notaryLifecycle';
 
 const logoUrl = new URL('../../public/notary-mark.svg', import.meta.url).href;
 
@@ -409,7 +410,7 @@ function View({ route, status, api, navigate, fixture }: { route: Route; status:
     case 'traces': return <TracesView api={api} selectedId={route.id} navigate={navigate} />;
     case 'publishing': return <PublishingView api={api} fixture={fixture} navigate={navigate} />;
     case 'activity': return <ActivityView api={api} />;
-    case 'settings': return <SettingsView status={status} />;
+    case 'settings': return <SettingsView status={status} api={api} />;
     default: return <OverviewView api={api} status={status} navigate={navigate} />;
   }
 }
@@ -885,7 +886,53 @@ function EventList({ events }: { events: Event[] }) {
   return <div className="event-list">{events.map((event) => <div key={event.event_id} className="event-row"><ThemeIcon variant="transparent" className={`event-icon event-icon--${stateTone(event.severity)}`}>{event.severity === 'error' ? <XCircle size={17} /> : event.severity === 'success' ? <Check size={17} /> : <CircleDot size={17} />}</ThemeIcon><div><Group gap="xs"><b>{event.message}</b><StatusLabel state={event.severity} /></Group><Text>{event.capture_id ?? event.operation_id ?? event.event_type}</Text></div><time>{formatDate(event.created_at_unix_ms)}</time></div>)}</div>;
 }
 
-function SettingsView({ status }: { status: Status }) {
+function formatNotaryTime(value?: number | null) {
+  if (value === undefined || value === null) return 'No cutoff configured';
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'
+  }).format(new Date(value));
+}
+
+function LocalNotaryRecord({ record, activeKeyId }: { record: Notary; activeKeyId?: string | null }) {
+  const lifecycle = notaryLifecycle(record.status);
+  const copyKey = async () => {
+    await navigator.clipboard.writeText(record.key_id);
+    notifications.show({ title: 'Notary key ID copied', message: 'The complete key ID is on the clipboard.' });
+  };
+  return <article className={`local-notary-record local-notary-record--${record.status}`}>
+    <header><span className={`local-notary-state local-notary-state--${record.status}`}><i aria-hidden="true" />{record.status}</span>
+      {record.key_id === activeKeyId && <span className="local-notary-selected">Selected active key</span>}</header>
+    <Title order={3}>{lifecycle.label}</Title>
+    <Text>{lifecycle.description}</Text>
+    <dl className="local-notary-facts">
+      <Fact label="Endpoint" value={record.endpoint} />
+      <Fact label="Transport" value={record.transport.toUpperCase()} />
+      <Fact label="Valid from" value={record.valid_from_unix_ms == null ? 'Not defined by explicit configuration' : formatNotaryTime(record.valid_from_unix_ms)} />
+      <Fact label="Capture cutoff" value={formatNotaryTime(record.valid_until_unix_ms)} />
+      <Fact label="Finalization cutoff" value={formatNotaryTime(record.finalize_until_unix_ms)} />
+    </dl>
+    <div className="local-notary-key"><span>Key ID / fingerprint</span><code title={record.key_id}>{abbreviatedKeyId(record.key_id)}</code><ActionIcon variant="subtle" onClick={copyKey} aria-label={`Copy full key ID ${record.key_id}`}><Copy size={15} /></ActionIcon></div>
+  </article>;
+}
+
+function SettingsNotaries({ api }: { api: LocalApi }) {
+  const notaries = useQuery({ queryKey: ['notaries'], queryFn: api.notaries, retry: false });
+  const errorCode = notaries.error instanceof LocalApiError ? notaries.error.code : null;
+  const records = orderNotaries(notaries.data?.notaries ?? [], notaries.data?.active_key_id);
+  return <Paper className="settings-panel settings-notaries">
+    <div className="settings-notaries-heading"><div><Text className="eyebrow">Notaries</Text><Title order={2}>Configured trust</Title></div>{notaries.data?.generation != null && <Text>Directory generation {notaries.data.generation}</Text>}</div>
+    <Text className="settings-notaries-note">This is the trust state used by the local service. It describes key lifecycle and permitted work, not endpoint health or availability.</Text>
+    {notaries.isLoading ? <div className="local-notary-loading" role="status" aria-label="Loading local notary trust"><i /><i /><i /></div>
+      : notaries.error ? <div className="local-notary-state-panel" role="alert"><b>{errorCode === 'notary_trust_state_invalid' ? 'Pinned trust state is malformed' : 'Local notary trust is unavailable'}</b><span>{errorCode === 'notary_trust_state_invalid' ? 'The cached directory could not be validated. No notary is presented as usable.' : 'The local service could not return its configured trust metadata. No endpoint status can be inferred.'}</span><Button variant="outline" onClick={() => notaries.refetch()}>Try again</Button></div>
+        : !records.length ? <div className="local-notary-state-panel"><b>No pinned notary records</b><span>The local service has not retained a directory generation. No notary is presented as available.</span></div>
+          : <><dl className="settings-notary-source"><Fact label="Trust source" value={notaries.data?.source === 'explicit_configuration' ? 'Explicit self-hosted configuration' : 'Pinned directory'} />
+            {notaries.data?.directory_source && <Fact label="Directory source" value={notaries.data.directory_source} />}</dl>
+            {notaries.data?.source === 'explicit_configuration' && <Text className="explicit-notary-note">This endpoint and key come from local configuration and are not members of the hosted directory.</Text>}
+            <div className="local-notary-list">{records.map((record) => <LocalNotaryRecord key={record.key_id} record={record} activeKeyId={notaries.data?.active_key_id} />)}</div></>}
+  </Paper>;
+}
+
+function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
   const openApiUrl = `${window.location.origin}/openapi.json`;
   const copyOpenApi = async () => {
     await navigator.clipboard.writeText(openApiUrl);
@@ -900,6 +947,7 @@ function SettingsView({ status }: { status: Status }) {
       <SchemeControl />
     </Paper>
     <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg">
+      <SettingsNotaries api={api} />
       <Paper className="settings-panel">
         <Text className="eyebrow">Listeners</Text>
         <Title order={2}>Listener addresses</Title>

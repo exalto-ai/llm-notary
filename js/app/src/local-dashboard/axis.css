@@ -67,6 +67,41 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline-color:
 
 .publishing-grid { grid-template-columns: minmax(300px, .7fr) minmax(0, 1.3fr); gap: 0; margin: 0 -16px; border-bottom: 1px solid var(--rule); }.publishing-auth, .publication-choice, .settings-panel { min-height: 0; padding: 17px 20px 28px; border: 0; border-right: 1px solid var(--rule); background: transparent; }.publication-choice, .settings-panel:last-child { border-right: 0; }.publishing-grid h2, .settings-panel h2 { margin: 20px 0 7px; font-family: 'Space Grotesk', Arial, sans-serif; font-size: 22px; font-weight: 600; }.authorization-code, .publication-result { border-color: var(--rule); }.fixture-flow-note { padding: 10px 0; border-top: 1px solid var(--rule); border-left: 0; background: transparent; }.event-list { margin-top: 0; border: 0; border-bottom: 1px solid var(--rule); background: transparent; }.event-row { min-height: 57px; padding: 9px 12px; border-color: var(--rule); }.appearance-setting { margin: 0 -16px; padding: 10px 16px; border: 0; border-bottom: 1px solid var(--rule); background: transparent; }.settings-panel { min-height: 0; border-bottom: 1px solid var(--rule); }.api-link { border-color: var(--rule); background: var(--subtle); }.settings-panel.inverse { border-color: var(--rule); background: var(--inverse); }.settings-panel.inverse .eyebrow, .settings-panel.inverse > p { color: var(--inverse-muted); }.settings-panel.inverse code { color: var(--inverse-accent); }
 
+.settings-notaries { grid-column: 1 / -1; border-right: 0; }
+.settings-notaries-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
+.settings-notaries-heading > div h2 { margin-top: 6px; }
+.settings-notaries-heading > p { color: var(--muted); font: 500 10px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .05em; }
+.settings-notaries-note { max-width: 720px; margin: 12px 0 20px; }
+.settings-notary-source { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; border-top: 1px solid var(--rule); border-left: 1px solid var(--rule); }
+.settings-notary-source > div { min-width: 0; padding: 10px 12px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.settings-notary-source dt, .local-notary-facts dt { color: var(--muted); font: 500 9px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .045em; }
+.settings-notary-source dd, .local-notary-facts dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: 12px; }
+.explicit-notary-note { margin: 0; padding: 10px 12px; border: 1px solid var(--rule); border-top: 0; color: var(--muted); }
+.local-notary-list { margin-top: 20px; border: 1px solid var(--rule); }
+.local-notary-record { padding: 16px 18px 20px; border-bottom: 1px solid var(--rule); }
+.local-notary-record:last-child { border-bottom: 0; }
+.local-notary-record > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.local-notary-record h3 { margin: 18px 0 6px; font-family: 'Space Grotesk', Arial, sans-serif; font-size: 18px; font-weight: 600; letter-spacing: -.035em; }
+.local-notary-record > p { max-width: 760px; margin: 0 0 16px; color: var(--muted); font-size: 12px; }
+.local-notary-state, .local-notary-selected { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font: 500 9px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .045em; }
+.local-notary-state i { width: 8px; height: 8px; border: 1px solid currentColor; }
+.local-notary-state--active { color: var(--accent-ink); }
+.local-notary-state--active i { border-color: var(--accent); background: var(--accent); }
+.local-notary-state--revoked { color: var(--danger); }
+.local-notary-state--revoked i { background: var(--danger); }
+.local-notary-facts { display: grid; grid-template-columns: 2fr .55fr repeat(3, 1fr); margin: 0; border-top: 1px solid var(--rule); border-left: 1px solid var(--rule); }
+.local-notary-facts > div { min-width: 0; padding: 9px 10px; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+.local-notary-key { display: grid; grid-template-columns: 150px minmax(0, 1fr) 34px; min-height: 36px; align-items: center; margin-top: -1px; border: 1px solid var(--rule); }
+.local-notary-key > span { padding-left: 10px; color: var(--muted); font: 500 9px 'DM Mono', monospace; text-transform: uppercase; letter-spacing: .045em; }
+.local-notary-key code { min-width: 0; overflow: hidden; color: var(--ink); font: 500 11px 'DM Mono', monospace; text-overflow: ellipsis; white-space: nowrap; }
+.local-notary-key .mantine-ActionIcon-root { color: var(--ink); }
+.local-notary-loading { display: grid; border: 1px solid var(--rule); }
+.local-notary-loading i { height: 70px; border-bottom: 1px solid var(--rule); background: var(--subtle); }
+.local-notary-loading i:last-child { border-bottom: 0; }
+.local-notary-state-panel { display: grid; justify-items: start; gap: 7px; min-height: 130px; padding: 20px 0; border-top: 1px solid var(--rule); }
+.local-notary-state-panel span { max-width: 620px; color: var(--muted); font-size: 12px; }
+.local-notary-state-panel .mantine-Button-root { margin-top: 7px; }
+
 .loading-state, .error-state, .empty-state { min-height: 260px; padding: 40px 16px; text-align: left; }.auth-shell { background: var(--surface); }.auth-document { border-color: var(--rule); }.auth-document h1 { font-family: 'Space Grotesk', Arial, sans-serif; font-weight: 600; }.trust-note { border-color: var(--rule); }
 
 @media (max-width: 820px) {
@@ -74,6 +109,14 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline-color:
 }
 
 @media (max-width: 520px) { .service-grid { grid-template-columns: 1fr !important; }.service-fact { border-right: 0; border-bottom: 1px solid var(--rule); }.metadata-grid > div { grid-template-columns: 105px 1fr; }.filter-bar, .filter-bar--captures { grid-template-columns: 1fr; }.filter-bar > :first-child { grid-column: auto; }.trace-message > header { border-right: 0; border-bottom: 1px solid var(--rule); }.trace-message { grid-template-columns: 1fr; } }
+
+@media (max-width: 820px) {
+  .settings-notary-source, .local-notary-facts { grid-template-columns: 1fr; }
+  .local-notary-record { padding-inline: 12px; }
+  .local-notary-key { grid-template-columns: 1fr 34px; padding-left: 10px; }
+  .local-notary-key > span { grid-column: 1 / -1; padding: 8px 0 2px; }
+  .local-notary-record > header { align-items: start; flex-direction: column; }
+}
 
 /* Capture rows deliberately expose only the values used to choose a record. */
 .capture-row { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; min-height: 57px; align-items: center; gap: 9px; padding: 9px 14px; }

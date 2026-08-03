@@ -1,6 +1,8 @@
 import type { components, paths } from './generated/api.generated';
 
 export type Status = components['schemas']['StatusResponse'];
+export type Notaries = components['schemas']['NotariesResponse'];
+export type Notary = components['schemas']['NotaryResponse'];
 export type Capture = components['schemas']['CaptureResponse'];
 export type CaptureDetail = components['schemas']['CaptureDetailResponse'];
 export type Operation = components['schemas']['OperationResponse'];
@@ -80,6 +82,7 @@ export const localApi = {
   }),
   endSession: () => request<void>('/v1/session', { method: 'DELETE' }),
   status: () => request<Status>('/v1/status'),
+  notaries: () => request<Notaries>('/v1/notaries'),
   captures: (filters: Record<string, string | number | undefined> = {}) =>
     request<CaptureList>(`/v1/captures${queryString(filters)}`),
   allCaptures: async (filters: Record<string, string | number | undefined> = {}) => {

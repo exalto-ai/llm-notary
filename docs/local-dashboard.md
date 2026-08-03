@@ -29,9 +29,10 @@ Use the sidebar to move between these parts of the local workflow:
 - **Publishing** keeps optional public publication separate from local proof
   creation and requires confirmation.
 - **Activity** shows a bounded redacted event stream.
-- **Settings** reports safe listener, vault, notary, and preview-policy
-  state, contains the color-scheme control, and links to the live OpenAPI
-  contract.
+- **Settings** reports safe listener, vault, preview-policy, and notary trust
+  state from `GET /v1/notaries`, contains the color-scheme control, and links
+  to the live OpenAPI contract. The notary records show configured trust and
+  lifecycle windows, not endpoint health.
 
 ## Inspect a capture
 
