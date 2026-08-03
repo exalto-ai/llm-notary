@@ -389,7 +389,7 @@ impl AdminClient {
 
     async fn verify_version(&self) -> Result<(), CliError> {
         let health = self
-            .request_with_auth(Method::GET, "/healthz", &[], false)
+            .request_with_auth(Method::GET, "/healthz", &[], false, None)
             .await?;
         let service = health
             .get("service")
@@ -420,7 +420,19 @@ impl AdminClient {
         path: &str,
         query: &[(String, String)],
     ) -> Result<Value, CliError> {
-        self.request_with_auth(method, path, query, true).await
+        self.request_with_auth(method, path, query, true, None)
+            .await
+    }
+
+    async fn request_json(
+        &self,
+        method: Method,
+        path: &str,
+        query: &[(String, String)],
+        body: &Value,
+    ) -> Result<Value, CliError> {
+        self.request_with_auth(method, path, query, true, Some(body))
+            .await
     }
 
     async fn request_with_auth(
@@ -429,11 +441,15 @@ impl AdminClient {
         path: &str,
         query: &[(String, String)],
         include_credentials: bool,
+        body: Option<&Value>,
     ) -> Result<Value, CliError> {
         let url = self.url(path, query)?;
         let mut request = self.client.request(method, url);
         if include_credentials && let Some(credentials) = &self.credentials {
             request = request.basic_auth(&credentials.username, Some(&credentials.password));
+        }
+        if let Some(body) = body {
+            request = request.json(body);
         }
         let response = request.send().await.map_err(|_| {
             CliError::unavailable(format!(
@@ -633,7 +649,7 @@ fn validate_identifier(value: &str, prefix: &str) -> Result<(), CliError> {
 
 async fn login(client: &AdminClient, stderr: &mut dyn io::Write) -> Result<Value, CliError> {
     let started = client
-        .request(Method::POST, "/v1/publication/auth", &[])
+        .request_json(Method::POST, "/v1/publication/auth", &[], &json!({}))
         .await?;
     let request_id = required_string(&started, "/request_id")?;
     let verification_url = required_string(&started, "/verification_uri_complete")?;
@@ -919,7 +935,11 @@ fn open_dashboard(url: &str) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{Json, Router, http::StatusCode as AxumStatus, routing::get};
+    use axum::{
+        Json, Router,
+        http::StatusCode as AxumStatus,
+        routing::{get, post},
+    };
     use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
     use std::sync::Arc;
 
@@ -1098,6 +1118,25 @@ mod tests {
             .request(Method::GET, "/v1/status", &[])
             .await
             .unwrap();
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn json_requests_send_the_body_and_content_type() {
+        let router = Router::new().route(
+            "/v1/publication/auth",
+            post(|Json(body): Json<Value>| async move {
+                assert_eq!(body, json!({}));
+                (AxumStatus::ACCEPTED, Json(json!({ "state": "pending" })))
+            }),
+        );
+        let (address, server) = serve(router).await;
+        let client = AdminClient::new(address, None).unwrap();
+        let response = client
+            .request_json(Method::POST, "/v1/publication/auth", &[], &json!({}))
+            .await
+            .unwrap();
+        assert_eq!(response["state"], "pending");
         server.abort();
     }
 
