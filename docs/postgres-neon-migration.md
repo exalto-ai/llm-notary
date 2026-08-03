@@ -49,6 +49,14 @@ starts API replicas. SQLx takes an advisory migration lock. The migrator uses a
 consuming the entire deploy timeout; a migration failure stops the new API
 replicas from starting.
 
+Production rollback restores the previous API image without rerunning that
+older image's release command. Every migration must therefore leave the
+immediately previous API usable. Add new tables, columns, or indexes before
+requiring them; stop old code from using obsolete schema in a later release;
+and remove obsolete schema only after at least one further successful release.
+A migration that cannot meet this expand/contract sequence needs a separately
+reviewed, staged rollout and recovery procedure before it is merged.
+
 1. Preserve the platform signing key and notary directory as rollback evidence.
    Do not generate new signing material.
 2. Confirm both staged secrets exist, then merge the release. The normal Fly
