@@ -783,16 +783,16 @@ function PublishingView({ api, fixture, navigate }: { api: LocalApi; fixture: bo
 
   return <div className="view-page"><div className="publishing-grid">
       <Paper className="publishing-auth">
-        <Group justify="space-between"><Text className="eyebrow">Publication account</Text><KeyRound size={17} /></Group>
+        <Group justify="space-between"><Text className="eyebrow">LLM Notary account</Text><KeyRound size={17} /></Group>
         {auth.isLoading
           ? <Loader size="sm" />
           : auth.error
-            ? <QueryError error={auth.error} title="Publication authorization is unavailable" />
+            ? <QueryError error={auth.error} title="Account connection is unavailable" />
             : auth.data?.signed_in
               ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.device_name}</Text><StatusLabel state="ready" /></>
               : <>
                 <Title order={2}>Not authorized</Title>
-                <Text>{fixture ? 'Use the simulated approval below to test publication.' : 'Begin the device flow, then approve this dashboard session in your browser.'}</Text>
+                <Text>{fixture ? 'Use the simulated approval below to test the account connection.' : 'Connect an account for hosted tier access and publication, then approve this local service in your browser.'}</Text>
                 <Button variant="outline" loading={beginAuth.isPending} onClick={() => beginAuth.mutate()}>Begin authorization</Button>
               </>}
         {started && <div className="authorization-code">

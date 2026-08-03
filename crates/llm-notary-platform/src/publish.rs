@@ -818,6 +818,7 @@ mod tests {
             notary_directory: super::super::tests::directory_key(),
             publish: PublishService::mock(storage.clone()),
             library_metadata: super::super::admission::MetadataService::disabled(),
+            admission: std::sync::Arc::new(super::super::config::AdmissionConfig::for_test()),
         };
         (
             state,

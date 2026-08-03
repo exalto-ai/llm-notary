@@ -9,6 +9,9 @@ kill_timeout = "30s"
 
 [env]
   LLM_NOTARY_METRICS_LISTEN = "0.0.0.0:9090"
+  LLM_NOTARY_ADMISSION_API_ORIGIN = "http://llm-notary-prod-api.flycast"
+  LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE = "/run/secrets/admission_service_token"
+  LLM_NOTARY_NOTARY_DIRECTORY_GENERATION = "3"
 
 [processes]
 # This emits operational resource measurements only; it never logs transcripts,
@@ -45,6 +48,10 @@ app = "--profile-sessions"
 [[files]]
   guest_path = "/run/secrets/notary_signing_key"
   secret_name = "NOTARY_SIGNING_KEY_B64"
+
+[[files]]
+  guest_path = "/run/secrets/admission_service_token"
+  secret_name = "ADMISSION_SERVICE_TOKEN_B64"
 
 [[vm]]
   # Fly requires at least 2 GB for a performance VM.

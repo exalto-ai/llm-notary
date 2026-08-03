@@ -99,45 +99,9 @@ jobs:
             echo "web=$(current_image llm-notary-prod-web "$WEB_TOKEN")"
           } >> "$GITHUB_OUTPUT"
 
-      # The order keeps each intermediate state supported: a new notary must
-      # serve old clients, a new API must work through the old web gateway,
-      # and only then is the gateway replaced.
-      - name: Deploy notary image
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
-          NOTARY_IMAGE: ${{ steps.notary-image.outputs.ref }}
-        run: |
-          touch "$RUNNER_TEMP/notary-rollout-attempted"
-          flyctl deploy --image "$NOTARY_IMAGE" --ha=false --strategy rolling \
-            --config deploy/fly/notary.fly.toml
-      - name: Verify TLS notary admission
-        run: |
-          python3 - <<'PY'
-          import socket
-          import ssl
-          import time
-
-          hostname = "llm-notary-prod-notary.fly.dev"
-          target = (hostname, 443)
-          prelude = b"LLMN\x00\x00\x00\x02\x02"
-          last_error = None
-          for _ in range(5):
-              try:
-                  with socket.create_connection(target, timeout=15) as connection:
-                      with ssl.create_default_context().wrap_socket(
-                          connection, server_hostname=hostname
-                      ) as tls_connection:
-                          tls_connection.settimeout(15)
-                          tls_connection.sendall(prelude)
-                          if tls_connection.recv(1) != b"\x01":
-                              raise RuntimeError("notary did not admit the control prelude")
-                  break
-              except OSError as error:
-                  last_error = error
-                  time.sleep(3)
-          else:
-              raise last_error or RuntimeError("notary did not become ready")
-          PY
+      # Deploy the admission API before the notary that calls it. The new API
+      # remains compatible with the existing gateway and notary; the new
+      # notary intentionally requires v3 admission tickets.
       - name: Deploy API image
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_DEPLOY_TOKEN }}
@@ -150,6 +114,64 @@ jobs:
         run: >-
           curl --fail --retry 5 --retry-all-errors --retry-delay 2
           --max-time 20 https://llm-notary.exalto.ai/api/readyz
+      - name: Deploy notary image
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
+          NOTARY_IMAGE: ${{ steps.notary-image.outputs.ref }}
+        run: |
+          touch "$RUNNER_TEMP/notary-rollout-attempted"
+          flyctl deploy --image "$NOTARY_IMAGE" --ha=false --strategy rolling \
+            --config deploy/fly/notary.fly.toml
+      - name: Verify v3 TLS notary admission
+        run: |
+          python3 - <<'PY'
+          import json
+          import socket
+          import ssl
+          import time
+          import urllib.error
+          import urllib.request
+
+          api_url = "https://llm-notary.exalto.ai/api/notary/admissions"
+          hostname = "llm-notary-prod-notary.fly.dev"
+          target = (hostname, 443)
+          last_error = None
+          for _ in range(5):
+              try:
+                  request = urllib.request.Request(
+                      api_url,
+                      data=json.dumps({"mode": "capture"}).encode(),
+                      headers={"Content-Type": "application/json"},
+                      method="POST",
+                  )
+                  with urllib.request.urlopen(request, timeout=20) as response:
+                      admission = json.load(response)
+                  ticket = admission.get("ticket")
+                  if not isinstance(ticket, str) or not 0 < len(ticket.encode()) <= 512:
+                      raise RuntimeError("admission API returned an invalid ticket")
+
+                  encoded_ticket = ticket.encode()
+                  prelude = (
+                      b"LLMN\x00\x00\x00\x03\x02"
+                      + len(encoded_ticket).to_bytes(2, "big")
+                      + encoded_ticket
+                  )
+                  with socket.create_connection(target, timeout=15) as connection:
+                      with ssl.create_default_context().wrap_socket(
+                          connection, server_hostname=hostname
+                      ) as tls_connection:
+                          tls_connection.settimeout(15)
+                          tls_connection.sendall(prelude)
+                          status = tls_connection.recv(1)
+                          if status != b"\x01":
+                              raise RuntimeError("notary rejected a fresh admission ticket")
+                  break
+              except (OSError, ValueError, RuntimeError, urllib.error.URLError) as error:
+                  last_error = error
+                  time.sleep(3)
+          else:
+              raise last_error or RuntimeError("notary did not become ready")
+          PY
       - name: Deploy web gateway image
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_WEB_DEPLOY_TOKEN }}

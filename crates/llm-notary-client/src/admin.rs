@@ -33,8 +33,8 @@ use utoipa::{Modify, OpenApi, ToSchema};
 use crate::{
     DeferredBundle,
     bundle::{
-        finalize_bundle, trace_package_created_at_unix_ms, trace_package_notary_key,
-        verify_trace_package,
+        finalize_bundle, finalize_bundle_admitted, trace_package_created_at_unix_ms,
+        trace_package_notary_key, verify_trace_package,
     },
     catalog::{
         CaptureFilters, CaptureSummary, Catalog, Event, EventFilters, Operation, OperationAttempt,
@@ -214,8 +214,8 @@ fn embedded_dashboard_response(path: &str) -> Response {
         HealthResponse, StatusResponse, CountsResponse, NotariesResponse, NotaryResponse,
         CaptureResponse, CaptureDetailResponse, ArtifactResponse, CaptureListResponse,
         OperationResponse, OperationAttemptResponse, OperationListResponse, FinalizationResponse, EventResponse,
-        EventListResponse, TraceResponse, VerificationResponse, PublicationAuthResponse,
-        PublicationAuthRequest, PublicationAuthStartedResponse, PublicationResponse, PublicationStatusResponse,
+        EventListResponse, TraceResponse, VerificationResponse, AccountConnectionResponse,
+        AccountConnectionRequest, AccountConnectionStartedResponse, PublicationResponse, PublicationStatusResponse,
         PublicTraceResponse, PublicTraceVerificationResponse, ErrorBody, ErrorEnvelope
     )),
     modifiers(&SecurityAddon),
@@ -716,19 +716,19 @@ async fn events(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/publication/auth", summary = "Get publication authorization", description = "Reports whether this local service has an active publication account session.", responses((status = 200, body = PublicationAuthResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/publication/auth", summary = "Get the LLM Notary account connection", description = "Reports whether this local service has an account connection used for hosted tier admission and trace publication.", responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn publication_auth_status(
     State(state): State<AdminState>,
-) -> Result<Json<PublicationAuthResponse>, ApiError> {
+) -> Result<Json<AccountConnectionResponse>, ApiError> {
     let _credentials = state.publication_credentials.lock().await;
     load_publication_auth_status().await
 }
 
-async fn load_publication_auth_status() -> Result<Json<PublicationAuthResponse>, ApiError> {
-    let status = auth::publication_auth_status()
+async fn load_publication_auth_status() -> Result<Json<AccountConnectionResponse>, ApiError> {
+    let status = auth::account_connection_status()
         .await
         .map_err(|_| ApiError::internal("publication_auth_status_failed"))?;
-    Ok(Json(PublicationAuthResponse {
+    Ok(Json(AccountConnectionResponse {
         signed_in: status.signed_in,
         github_login: status.github_login,
         device_name: status.device_name,
@@ -736,7 +736,7 @@ async fn load_publication_auth_status() -> Result<Json<PublicationAuthResponse>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
-struct PublicationAuthRequest {
+struct AccountConnectionRequest {
     #[serde(default = "default_public_origin")]
     api_origin: String,
     #[serde(default = "default_device_name")]
@@ -751,15 +751,15 @@ fn default_device_name() -> String {
     auth::DEFAULT_DEVICE_NAME.to_owned()
 }
 
-#[utoipa::path(post, path = "/v1/publication/auth", summary = "Start publication authorization", description = "Starts the browser approval flow used to authorize this local service to publish traces.", request_body = PublicationAuthRequest, responses((status = 202, body = PublicationAuthStartedResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/publication/auth", summary = "Connect an LLM Notary account", description = "Starts browser approval for an account connection used for hosted tier admission and trace publication.", request_body = AccountConnectionRequest, responses((status = 202, body = AccountConnectionStartedResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_publication_auth(
     State(state): State<AdminState>,
-    Json(body): Json<PublicationAuthRequest>,
-) -> Result<(StatusCode, Json<PublicationAuthStartedResponse>), ApiError> {
+    Json(body): Json<AccountConnectionRequest>,
+) -> Result<(StatusCode, Json<AccountConnectionStartedResponse>), ApiError> {
     let pending = auth::start_authorization(&body.api_origin, &body.device_name)
         .await
         .map_err(|_| ApiError::internal("publication_auth_start_failed"))?;
-    let response = PublicationAuthStartedResponse {
+    let response = AccountConnectionStartedResponse {
         request_id: pending.request_id.clone(),
         user_code: pending.user_code.clone(),
         verification_uri_complete: pending.verification_uri_complete.clone(),
@@ -775,11 +775,11 @@ async fn start_publication_auth(
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
-#[utoipa::path(get, path = "/v1/publication/auth/{request_id}", summary = "Poll publication authorization", description = "Checks a pending browser approval request after its required polling interval.", params(("request_id" = String, Path)), responses((status = 200, body = PublicationAuthResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/publication/auth/{request_id}", summary = "Poll account authorization", description = "Checks a pending LLM Notary account approval after its required polling interval.", params(("request_id" = String, Path)), responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn poll_publication_auth(
     State(state): State<AdminState>,
     Path(request_id): Path<String>,
-) -> Result<Json<PublicationAuthResponse>, ApiError> {
+) -> Result<Json<AccountConnectionResponse>, ApiError> {
     if request_id.is_empty()
         || request_id.len() > 256
         || !request_id
@@ -800,7 +800,7 @@ async fn poll_publication_auth(
         .await
         .map_err(|_| ApiError::internal("publication_auth_poll_failed"))?
     {
-        auth::AuthorizationPoll::Pending => Ok(Json(PublicationAuthResponse {
+        auth::AuthorizationPoll::Pending => Ok(Json(AccountConnectionResponse {
             signed_in: false,
             github_login: None,
             device_name: None,
@@ -816,7 +816,7 @@ async fn poll_publication_auth(
     }
 }
 
-#[utoipa::path(delete, path = "/v1/publication/auth", summary = "Revoke publication authorization", description = "Removes the local publication credentials so a new browser approval is required.", responses((status = 204, description = "Publication credentials revoked"), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/publication/auth", summary = "Disconnect the LLM Notary account", description = "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed.", responses((status = 204, description = "Account disconnected; hosted sessions return to public access"), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn end_publication_auth(State(state): State<AdminState>) -> Result<StatusCode, ApiError> {
     let _credentials = state.publication_credentials.lock().await;
     auth::logout_for_service()
@@ -1020,6 +1020,7 @@ async fn finalize_operation(
         return Ok(());
     }
     let bundle = DeferredBundle::load(&bundle_path, vault)?;
+    let hosted_admission = config.notary.endpoint.is_none();
     let (key, endpoint) = match (config.notary_public_key()?, config.notary_endpoint()?) {
         (Some(key), Some(endpoint)) => {
             bundle.verify_notary_key(&key)?;
@@ -1033,16 +1034,39 @@ async fn finalize_operation(
         }
         _ => anyhow::bail!("notary endpoint and public key configuration are inconsistent"),
     };
-    let path = finalize_bundle(
-        &bundle_path,
-        &output,
-        &key,
-        vault,
-        &endpoint,
-        config.proxy.max_attestable_http_bytes,
-        config.notary.max_frame_bytes,
-    )
-    .await?;
+    let path = if hosted_admission {
+        let allowance = bundle.finalization_allowance_bytes()?;
+        if allowance > config.proxy.max_attestable_http_bytes {
+            anyhow::bail!("bundle exceeds the current local finalization byte limit");
+        }
+        let admission =
+            auth::issue_finalization_admission(&bundle.record_digest_hex(), allowance).await?;
+        finalize_bundle_admitted(
+            &bundle_path,
+            &output,
+            &key,
+            vault,
+            &endpoint,
+            config
+                .proxy
+                .max_attestable_http_bytes
+                .min(admission.max_attestable_http_bytes),
+            config.notary.max_frame_bytes.min(admission.max_frame_bytes),
+            &admission.ticket,
+        )
+        .await?
+    } else {
+        finalize_bundle(
+            &bundle_path,
+            &output,
+            &key,
+            vault,
+            &endpoint,
+            config.proxy.max_attestable_http_bytes,
+            config.notary.max_frame_bytes,
+        )
+        .await?
+    };
     catalog.record_finalized_package(capture_id, &path)?;
     Ok(())
 }
@@ -1407,14 +1431,14 @@ struct VerificationResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct PublicationAuthResponse {
+struct AccountConnectionResponse {
     signed_in: bool,
     github_login: Option<String>,
     device_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct PublicationAuthStartedResponse {
+struct AccountConnectionStartedResponse {
     request_id: String,
     user_code: String,
     verification_uri_complete: String,
@@ -1514,7 +1538,7 @@ impl ApiError {
         Self {
             status: StatusCode::CONFLICT,
             code: "publication_authentication_required",
-            message: "Publication authorization must be renewed",
+            message: "LLM Notary account connection must be renewed",
         }
     }
     fn service_unavailable(code: &'static str) -> Self {

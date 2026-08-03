@@ -2,6 +2,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::Command,
+    sync::OnceLock,
     time::Duration,
 };
 
@@ -18,6 +19,7 @@ use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin, http_client_builder, s
 const KEYCHAIN_SERVICE: &str = "llm-notary";
 const KEYCHAIN_ACCOUNT: &str = "publish-refresh-token";
 pub(crate) const DEFAULT_DEVICE_NAME: &str = "llm-notary cli";
+static CREDENTIAL_REFRESH: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
@@ -60,7 +62,7 @@ pub(crate) enum AuthorizationPoll {
     Complete,
 }
 
-pub(crate) struct PublicationAuthStatus {
+pub(crate) struct AccountConnectionStatus {
     pub(crate) signed_in: bool,
     pub(crate) github_login: Option<String>,
     pub(crate) device_name: Option<String>,
@@ -112,6 +114,40 @@ pub(crate) struct AuthenticatedApi {
     pub(crate) access_token: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "snake_case")]
+enum AdmissionMode {
+    Capture,
+    Finalize,
+}
+
+#[derive(Serialize)]
+struct AdmissionRequest<'a> {
+    mode: AdmissionMode,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    record_digest: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    requested_allowance_bytes: Option<usize>,
+}
+
+#[derive(Deserialize)]
+struct AdmissionResponse {
+    ticket: String,
+    entitlements: AdmissionEntitlements,
+}
+
+#[derive(Deserialize)]
+struct AdmissionEntitlements {
+    max_attestable_http_bytes: usize,
+    max_frame_bytes: usize,
+}
+
+pub(crate) struct AdmissionTicket {
+    pub(crate) ticket: String,
+    pub(crate) max_attestable_http_bytes: usize,
+    pub(crate) max_frame_bytes: usize,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum PublicationAuthenticationError {
     Required,
@@ -138,7 +174,7 @@ pub async fn login(args: LoginArgs) -> Result<()> {
             poll_authorization(&pending).await?,
             AuthorizationPoll::Complete
         ) {
-            println!("Signed in for publication.");
+            println!("Signed in to your LLM Notary account.");
             return Ok(());
         }
         tokio::time::sleep(interval).await;
@@ -188,19 +224,23 @@ pub(crate) async fn poll_authorization(
         .header("X-LLM-Notary-Poll-Secret", &pending.poll_secret)
         .send()
         .await
-        .context("polling publication authorization")?;
+        .context("polling LLM Notary account authorization")?;
     if response.status() == StatusCode::PRECONDITION_REQUIRED {
         return Ok(AuthorizationPoll::Pending);
     }
     if response.status() == StatusCode::GONE {
-        bail!("publication authorization expired or was already used")
+        bail!("LLM Notary account authorization expired or was already used")
     }
     let tokens = response
         .error_for_status()
-        .context("completing publication authorization")?
+        .context("completing LLM Notary account authorization")?
         .json::<AuthorizationComplete>()
         .await
-        .context("reading publication credentials")?;
+        .context("reading LLM Notary account credentials")?;
+    let _refresh = CREDENTIAL_REFRESH
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
     save_credentials(&FileCredentials {
         api_origin: pending.api_origin.clone(),
         refresh_token: tokens.refresh_token,
@@ -211,11 +251,15 @@ pub(crate) async fn poll_authorization(
 
 pub async fn logout() -> Result<()> {
     logout_for_service().await?;
-    println!("Signed out.");
+    println!("Signed out. Hosted sessions will use public access.");
     Ok(())
 }
 
 pub(crate) async fn logout_for_service() -> Result<()> {
+    let _refresh = CREDENTIAL_REFRESH
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
     if !credentials_path()?.exists() {
         return Ok(());
     }
@@ -241,7 +285,7 @@ pub(crate) async fn logout_for_service() -> Result<()> {
 }
 
 pub async fn whoami() -> Result<()> {
-    let status = publication_auth_status().await?;
+    let status = account_connection_status().await?;
     println!(
         "{} ({})",
         status.github_login.unwrap_or_default(),
@@ -250,9 +294,9 @@ pub async fn whoami() -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn publication_auth_status() -> Result<PublicationAuthStatus> {
+pub(crate) async fn account_connection_status() -> Result<AccountConnectionStatus> {
     if !credentials_path()?.exists() {
-        return Ok(PublicationAuthStatus {
+        return Ok(AccountConnectionStatus {
             signed_in: false,
             github_login: None,
             device_name: None,
@@ -272,7 +316,7 @@ pub(crate) async fn publication_auth_status() -> Result<PublicationAuthStatus> {
         .json::<WhoamiResponse>()
         .await
         .context("reading CLI session")?;
-    Ok(PublicationAuthStatus {
+    Ok(AccountConnectionStatus {
         signed_in: true,
         github_login: Some(response.user.github_login),
         device_name: Some(response.session.device_name),
@@ -280,8 +324,12 @@ pub(crate) async fn publication_auth_status() -> Result<PublicationAuthStatus> {
 }
 
 pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
-    let mut credentials = load_credentials()
-        .context("publication authorization is required through the local admin API")?;
+    let _refresh = CREDENTIAL_REFRESH
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    let mut credentials =
+        load_credentials().context("an LLM Notary account connection is required")?;
     let (access_token, rotated_refresh_token) = refresh(&credentials).await?;
     credentials.refresh_token = rotated_refresh_token;
     save_credentials(&credentials)?;
@@ -291,8 +339,83 @@ pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
     })
 }
 
+pub(crate) async fn issue_capture_admission() -> Result<AdmissionTicket> {
+    issue_admission(AdmissionMode::Capture, None, None).await
+}
+
+pub(crate) async fn issue_finalization_admission(
+    record_digest: &str,
+    requested_allowance_bytes: usize,
+) -> Result<AdmissionTicket> {
+    issue_admission(
+        AdmissionMode::Finalize,
+        Some(record_digest),
+        Some(requested_allowance_bytes),
+    )
+    .await
+}
+
+async fn issue_admission(
+    mode: AdmissionMode,
+    record_digest: Option<&str>,
+    requested_allowance_bytes: Option<usize>,
+) -> Result<AdmissionTicket> {
+    let authenticated = if credentials_path()?.exists() {
+        Some(authenticate().await.context(
+            "the connected LLM Notary account could not be refreshed; reconnect it or explicitly sign out to use public access",
+        )?)
+    } else {
+        None
+    };
+    let origin = authenticated
+        .as_ref()
+        .map(|authenticated| authenticated.origin.clone())
+        .unwrap_or_else(ApiOrigin::default_public);
+    let client = http_client_builder()
+        .build()
+        .context("building admission API client")?;
+    let mut request =
+        client
+            .post(origin.api_url("/api/notary/admissions"))
+            .json(&AdmissionRequest {
+                mode,
+                record_digest,
+                requested_allowance_bytes,
+            });
+    if let Some(authenticated) = authenticated {
+        request = request.bearer_auth(authenticated.access_token);
+    }
+    let response = request
+        .send()
+        .await
+        .context("requesting hosted notary admission")?
+        .error_for_status()
+        .context("requesting hosted notary admission")?
+        .json::<AdmissionResponse>()
+        .await
+        .context("reading hosted notary admission")?;
+    if response.ticket.is_empty() || response.max_values_invalid() {
+        bail!("hosted admission API returned invalid limits");
+    }
+    Ok(AdmissionTicket {
+        ticket: response.ticket,
+        max_attestable_http_bytes: response.entitlements.max_attestable_http_bytes,
+        max_frame_bytes: response.entitlements.max_frame_bytes,
+    })
+}
+
+impl AdmissionResponse {
+    fn max_values_invalid(&self) -> bool {
+        self.entitlements.max_attestable_http_bytes == 0 || self.entitlements.max_frame_bytes == 0
+    }
+}
+
 pub(crate) async fn authenticate_for_publication_status()
 -> std::result::Result<AuthenticatedApi, PublicationAuthenticationError> {
+    let _refresh = CREDENTIAL_REFRESH
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
     let mut credentials = load_credentials_for_publication_status()?;
     let (access_token, rotated_refresh_token) =
         refresh_for_publication_status(&credentials).await?;
@@ -377,7 +500,9 @@ fn load_credentials() -> Result<FileCredentials> {
         serde_json::from_slice(&data).context("parse CLI credentials")?;
     if credentials.refresh_token.is_empty() {
         credentials.refresh_token = keychain_load()?.ok_or_else(|| {
-            anyhow!("publication credentials are missing; authorize through the local admin API")
+            anyhow!(
+                "LLM Notary account credentials are missing; reconnect through the local admin API"
+            )
         })?;
     }
     Ok(credentials)

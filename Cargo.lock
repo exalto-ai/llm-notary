@@ -3413,8 +3413,11 @@ dependencies = [
  "k256",
  "llm-notary-core",
  "metrics",
+ "reqwest 0.12.28",
+ "serde",
  "tokio",
  "tracing",
+ "url",
 ]
 
 [[package]]

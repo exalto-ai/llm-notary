@@ -960,8 +960,8 @@
         "tags": [
           "local-admin"
         ],
-        "summary": "Get publication authorization",
-        "description": "Reports whether this local service has an active publication account session.",
+        "summary": "Get the LLM Notary account connection",
+        "description": "Reports whether this local service has an account connection used for hosted tier admission and trace publication.",
         "operationId": "publication_auth_status",
         "responses": {
           "200": {
@@ -969,7 +969,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PublicationAuthResponse"
+                  "$ref": "#/components/schemas/AccountConnectionResponse"
                 }
               }
             }
@@ -996,14 +996,14 @@
         "tags": [
           "local-admin"
         ],
-        "summary": "Start publication authorization",
-        "description": "Starts the browser approval flow used to authorize this local service to publish traces.",
+        "summary": "Connect an LLM Notary account",
+        "description": "Starts browser approval for an account connection used for hosted tier admission and trace publication.",
         "operationId": "start_publication_auth",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/PublicationAuthRequest"
+                "$ref": "#/components/schemas/AccountConnectionRequest"
               }
             }
           },
@@ -1015,7 +1015,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PublicationAuthStartedResponse"
+                  "$ref": "#/components/schemas/AccountConnectionStartedResponse"
                 }
               }
             }
@@ -1042,12 +1042,12 @@
         "tags": [
           "local-admin"
         ],
-        "summary": "Revoke publication authorization",
-        "description": "Removes the local publication credentials so a new browser approval is required.",
+        "summary": "Disconnect the LLM Notary account",
+        "description": "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed.",
         "operationId": "end_publication_auth",
         "responses": {
           "204": {
-            "description": "Publication credentials revoked"
+            "description": "Account disconnected; hosted sessions return to public access"
           },
           "401": {
             "description": "",
@@ -1073,8 +1073,8 @@
         "tags": [
           "local-admin"
         ],
-        "summary": "Poll publication authorization",
-        "description": "Checks a pending browser approval request after its required polling interval.",
+        "summary": "Poll account authorization",
+        "description": "Checks a pending LLM Notary account approval after its required polling interval.",
         "operationId": "poll_publication_auth",
         "parameters": [
           {
@@ -1092,7 +1092,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PublicationAuthResponse"
+                  "$ref": "#/components/schemas/AccountConnectionResponse"
                 }
               }
             }
@@ -1305,6 +1305,75 @@
   },
   "components": {
     "schemas": {
+      "AccountConnectionRequest": {
+        "type": "object",
+        "properties": {
+          "api_origin": {
+            "type": "string"
+          },
+          "device_name": {
+            "type": "string"
+          }
+        }
+      },
+      "AccountConnectionResponse": {
+        "type": "object",
+        "required": [
+          "signed_in"
+        ],
+        "properties": {
+          "device_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "github_login": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "signed_in": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AccountConnectionStartedResponse": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "user_code",
+          "verification_uri_complete",
+          "expires_in_seconds",
+          "poll_interval_seconds",
+          "state"
+        ],
+        "properties": {
+          "expires_in_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "poll_interval_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "user_code": {
+            "type": "string"
+          },
+          "verification_uri_complete": {
+            "type": "string"
+          }
+        }
+      },
       "ArtifactResponse": {
         "type": "object",
         "required": [
@@ -1909,75 +1978,6 @@
           },
           "verified": {
             "type": "boolean"
-          }
-        }
-      },
-      "PublicationAuthRequest": {
-        "type": "object",
-        "properties": {
-          "api_origin": {
-            "type": "string"
-          },
-          "device_name": {
-            "type": "string"
-          }
-        }
-      },
-      "PublicationAuthResponse": {
-        "type": "object",
-        "required": [
-          "signed_in"
-        ],
-        "properties": {
-          "device_name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "github_login": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "signed_in": {
-            "type": "boolean"
-          }
-        }
-      },
-      "PublicationAuthStartedResponse": {
-        "type": "object",
-        "required": [
-          "request_id",
-          "user_code",
-          "verification_uri_complete",
-          "expires_in_seconds",
-          "poll_interval_seconds",
-          "state"
-        ],
-        "properties": {
-          "expires_in_seconds": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "poll_interval_seconds": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "request_id": {
-            "type": "string"
-          },
-          "state": {
-            "type": "string"
-          },
-          "user_code": {
-            "type": "string"
-          },
-          "verification_uri_complete": {
-            "type": "string"
           }
         }
       },

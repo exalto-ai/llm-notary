@@ -10,14 +10,15 @@ use tlsn::attestation::CryptoProvider;
 
 use crate::{
     Capture, CaptureManifest,
-    archive::{VERIFIED_TRACE_PACKAGE_FORMAT, create_staging_directory},
+    archive::VERIFIED_TRACE_PACKAGE_FORMAT,
     normalize::{render_public_trace, verified_inference_from_capture},
     public::NORMALIZER_VERSION,
     sha256_hex, verify_capture_value_with_provider,
 };
 #[cfg(feature = "cli")]
 use crate::{
-    DeferredBundle, finalize_deferred_bundle_to, make_capture, notary_directory::NotaryEndpoint,
+    DeferredBundle, archive::create_staging_directory, finalize_deferred_bundle_to,
+    finalize_deferred_bundle_to_admitted, make_capture, notary_directory::NotaryEndpoint,
     vault::Vault,
 };
 
@@ -89,6 +90,37 @@ pub async fn finalize_bundle(
         trusted_notary_key,
         max_attestable_http_bytes,
         max_frame_bytes,
+    )
+    .await?;
+    let capture = make_capture(
+        &proof,
+        bundle.capture_id().to_owned(),
+        bundle.provider_name().to_owned(),
+    )?;
+    write_trace_package(&capture, output_dir, trusted_notary_key)
+}
+
+/// Completes a hosted finalization with a one-time coordinator ticket.
+#[cfg(feature = "cli")]
+#[allow(clippy::too_many_arguments)]
+pub async fn finalize_bundle_admitted(
+    bundle_path: &Path,
+    output_dir: &Path,
+    trusted_notary_key: &[u8],
+    vault: &Vault,
+    notary: &NotaryEndpoint,
+    max_attestable_http_bytes: usize,
+    max_frame_bytes: usize,
+    admission_ticket: &str,
+) -> Result<PathBuf> {
+    let bundle = DeferredBundle::load(bundle_path, vault)?;
+    let proof = finalize_deferred_bundle_to_admitted(
+        notary,
+        &bundle,
+        trusted_notary_key,
+        max_attestable_http_bytes,
+        max_frame_bytes,
+        admission_ticket,
     )
     .await?;
     let capture = make_capture(

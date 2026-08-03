@@ -1,5 +1,8 @@
 use std::{
-    sync::atomic::{AtomicUsize, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -38,10 +41,11 @@ mod config;
 mod intake;
 pub mod migrate;
 mod publish;
+mod service_admission;
 
 pub use config::{
-    AuthConfig, DatabaseConfig, MetadataConfig, NotaryDirectoryConfig, PlatformConfig,
-    S3StorageConfig, StorageConfig,
+    AdmissionConfig, AuthConfig, DatabaseConfig, MetadataConfig, NotaryDirectoryConfig,
+    PlatformConfig, S3StorageConfig, StorageConfig, TierPolicy,
 };
 
 const SESSION_COOKIE: &str = "llm_notary_session";
@@ -72,6 +76,7 @@ struct AppState {
     notary_directory: NotaryDirectory,
     publish: publish::PublishService,
     library_metadata: admission::MetadataService,
+    admission: Arc<AdmissionConfig>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -113,6 +118,8 @@ struct PublicUser {
 #[derive(Serialize, ToSchema)]
 struct MeResponse {
     user: PublicUser,
+    plan: service_admission::ServicePlan,
+    entitlements: service_admission::EffectiveEntitlements,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -298,6 +305,20 @@ impl ApiError {
         }
     }
 
+    fn payment_required(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::PAYMENT_REQUIRED,
+            message,
+        }
+    }
+
+    fn too_many_requests(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message,
+        }
+    }
+
     fn service_unavailable(message: &'static str) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
@@ -354,6 +375,7 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
         (name = "health", description = "Hosted API health and discovery"),
         (name = "browser-auth", description = "GitHub-backed browser sessions"),
         (name = "cli-auth", description = "Local service authorization and CLI sessions"),
+        (name = "notary-admission", description = "Hosted notary tickets and distributed leases"),
         (name = "publication", description = "Authenticated publication intake"),
         (name = "library", description = "Public admitted traces and metadata")
     )
@@ -393,6 +415,16 @@ impl Modify for SecurityAddon {
                     "One-time secret returned when CLI authorization starts",
                 ))),
             );
+            components.add_security_scheme(
+                "serviceBearer",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("opaque")
+                        .description(Some("Dedicated notary-to-platform service credential"))
+                        .build(),
+                ),
+            );
         }
     }
 }
@@ -416,6 +448,7 @@ fn hosted_router() -> OpenApiRouter<AppState> {
         .routes(routes!(cli_me))
         .merge(publish::router())
         .merge(admission::router())
+        .merge(service_admission::router())
 }
 
 /// Returns the deterministic public hosted-platform contract.
@@ -610,6 +643,7 @@ impl AppState {
             notary_directory: config.notary_directory.directory.clone(),
             publish,
             library_metadata: admission::MetadataService::from_config(config.metadata.as_ref()),
+            admission: Arc::new(config.admission.clone()),
         })
     }
 
@@ -838,12 +872,15 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
     .await
     .map_err(database_error)?
     .ok_or_else(ApiError::unauthorized)?;
+    let (plan, entitlements) = service_admission::account_plan(&state, &user.0).await?;
     Ok(Json(MeResponse {
         user: PublicUser {
             id: user.0,
             github_login: user.1,
             avatar_url: user.2,
         },
+        plan,
+        entitlements,
     }))
 }
 
@@ -1314,7 +1351,7 @@ async fn cli_me(
     }))
 }
 
-async fn authenticated_web_user(
+pub(crate) async fn authenticated_web_user(
     state: &AppState,
     jar: &CookieJar,
 ) -> ApiResult<(String, String, Option<String>)> {
@@ -1639,6 +1676,11 @@ mod tests {
             "POST /api/public/traces/{trace_id}/events/download",
             "POST /api/publish/jobs",
             "POST /api/publish/jobs/{job_id}/complete",
+            "POST /api/internal/notary/admissions/redeem",
+            "POST /api/internal/notary/leases/release",
+            "POST /api/internal/notary/leases/renew",
+            "POST /api/notary/admissions",
+            "PUT /api/me/plan",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -1704,6 +1746,7 @@ mod tests {
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
             library_metadata: admission::MetadataService::disabled(),
+            admission: Arc::new(AdmissionConfig::for_test()),
         };
         let url = state
             .authorization_url("state-token")
@@ -1768,6 +1811,7 @@ mod tests {
                 notary_directory: directory_key(),
                 publish: publish::PublishService::disabled_for_test(),
                 library_metadata: admission::MetadataService::disabled(),
+                admission: Arc::new(AdmissionConfig::for_test()),
             }),
             Json(RefreshRequest {
                 refresh_token: tokens.refresh_token,
@@ -1840,6 +1884,7 @@ mod tests {
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
             library_metadata: admission::MetadataService::disabled(),
+            admission: Arc::new(AdmissionConfig::for_test()),
         };
         let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
 

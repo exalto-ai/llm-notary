@@ -312,19 +312,19 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get publication authorization
-         * @description Reports whether this local service has an active publication account session.
+         * Get the LLM Notary account connection
+         * @description Reports whether this local service has an account connection used for hosted tier admission and trace publication.
          */
         get: operations["publication_auth_status"];
         put?: never;
         /**
-         * Start publication authorization
-         * @description Starts the browser approval flow used to authorize this local service to publish traces.
+         * Connect an LLM Notary account
+         * @description Starts browser approval for an account connection used for hosted tier admission and trace publication.
          */
         post: operations["start_publication_auth"];
         /**
-         * Revoke publication authorization
-         * @description Removes the local publication credentials so a new browser approval is required.
+         * Disconnect the LLM Notary account
+         * @description Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed.
          */
         delete: operations["end_publication_auth"];
         options?: never;
@@ -340,8 +340,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Poll publication authorization
-         * @description Checks a pending browser approval request after its required polling interval.
+         * Poll account authorization
+         * @description Checks a pending LLM Notary account approval after its required polling interval.
          */
         get: operations["poll_publication_auth"];
         put?: never;
@@ -420,6 +420,25 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AccountConnectionRequest: {
+            api_origin?: string;
+            device_name?: string;
+        };
+        AccountConnectionResponse: {
+            device_name?: string | null;
+            github_login?: string | null;
+            signed_in: boolean;
+        };
+        AccountConnectionStartedResponse: {
+            /** Format: int64 */
+            expires_in_seconds: number;
+            /** Format: int64 */
+            poll_interval_seconds: number;
+            request_id: string;
+            state: string;
+            user_code: string;
+            verification_uri_complete: string;
+        };
         ArtifactResponse: {
             kind: string;
             sha256: string;
@@ -581,25 +600,6 @@ export interface components {
             provider: string;
             trace_sha256: string;
             verified: boolean;
-        };
-        PublicationAuthRequest: {
-            api_origin?: string;
-            device_name?: string;
-        };
-        PublicationAuthResponse: {
-            device_name?: string | null;
-            github_login?: string | null;
-            signed_in: boolean;
-        };
-        PublicationAuthStartedResponse: {
-            /** Format: int64 */
-            expires_in_seconds: number;
-            /** Format: int64 */
-            poll_interval_seconds: number;
-            request_id: string;
-            state: string;
-            user_code: string;
-            verification_uri_complete: string;
         };
         PublicationResponse: {
             capture_id: string;
@@ -1210,7 +1210,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PublicationAuthResponse"];
+                    "application/json": components["schemas"]["AccountConnectionResponse"];
                 };
             };
             401: {
@@ -1232,7 +1232,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["PublicationAuthRequest"];
+                "application/json": components["schemas"]["AccountConnectionRequest"];
             };
         };
         responses: {
@@ -1241,7 +1241,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PublicationAuthStartedResponse"];
+                    "application/json": components["schemas"]["AccountConnectionStartedResponse"];
                 };
             };
             401: {
@@ -1263,7 +1263,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Publication credentials revoked */
+            /** @description Account disconnected; hosted sessions return to public access */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -1296,7 +1296,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PublicationAuthResponse"];
+                    "application/json": components["schemas"]["AccountConnectionResponse"];
                 };
             };
             401: {

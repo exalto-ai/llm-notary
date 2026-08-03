@@ -1579,6 +1579,7 @@ mod tests {
                 notary_directory: super::super::tests::directory_key(),
                 publish: PublishService::mock(storage.clone()),
                 library_metadata: MetadataService::disabled(),
+                admission: std::sync::Arc::new(crate::AdmissionConfig::for_test()),
             },
             storage,
         )

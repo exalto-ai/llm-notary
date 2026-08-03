@@ -27,6 +27,7 @@ import './axis.css';
 import { RelayAnimation } from './RelayAnimation';
 import {
   approveCli,
+  changeServicePlan,
   getCliApproval,
   getCliSessions,
   getCurrentUser,
@@ -803,7 +804,7 @@ function publishState(state) {
   return { label: state, tone: 'neutral' };
 }
 
-function Dashboard({ user, view }) {
+function Dashboard({ user, view, onPlanChange }) {
   const [sessions, setSessions] = useState(null);
   const [sessionError, setSessionError] = useState(null);
   const [revoking, setRevoking] = useState(null);
@@ -811,6 +812,10 @@ function Dashboard({ user, view }) {
   const [jobs, setJobs] = useState(null);
   const [jobError, setJobError] = useState(null);
   const [publicationById, setPublicationById] = useState({});
+  const [plan, setPlan] = useState(user.plan);
+  const [entitlements, setEntitlements] = useState(user.entitlements);
+  const [planChanging, setPlanChanging] = useState(false);
+  const [planError, setPlanError] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -856,6 +861,21 @@ function Dashboard({ user, view }) {
     }
   };
 
+  const changePlan = async (nextPlan) => {
+    setPlanChanging(true);
+    setPlanError(null);
+    try {
+      const response = await changeServicePlan(nextPlan);
+      setPlan(response.plan);
+      setEntitlements(response.entitlements);
+      onPlanChange(response);
+    } catch (reason) {
+      setPlanError(reason.message);
+    } finally {
+      setPlanChanging(false);
+    }
+  };
+
   const verifiedCount = jobs?.filter((job) => job.state === 'admitted').length || 0;
   const activeCount = jobs?.filter((job) => ['uploading', 'queued', 'verifying'].includes(job.state)).length || 0;
   const activeView = view === 'traces' ? 'traces' : 'account';
@@ -871,12 +891,19 @@ function Dashboard({ user, view }) {
       </aside>
       <div className="dashboard-page">
         {activeView === 'account' ? <>
-          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Account</h1><p>Manage your publishing identity and the local services connected to it.</p></header>
+          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Account</h1><p>Manage hosted service access and the local services connected to your account.</p></header>
           <div className="dashboard-summary">
             <div><span>GitHub account</span><b>{user.github_login}</b></div>
             <div><span>Verified traces</span><b>{jobs === null ? '—' : verifiedCount}</b></div>
             <div><span>In progress</span><b>{jobs === null ? '—' : activeCount}</b></div>
           </div>
+          <section className="dashboard-plan" aria-labelledby="service-plan-title">
+            <header><div><span className="eyebrow">Hosted notary access</span><h2 id="service-plan-title">{plan === 'paid_preview' ? 'Paid preview' : 'Free'} plan</h2></div><span className="dashboard-plan-badge">{plan === 'paid_preview' ? 'No charge' : 'Included'}</span></header>
+            <p>{plan === 'paid_preview' ? 'Paid preview unlocks the higher hosted-service limits while billing is still disabled. It creates no charge or payment obligation.' : 'Upgrade to the paid preview to try the higher hosted-service limits. Billing is not enabled and no payment method is required.'}</p>
+            {entitlements && <dl><div><dt>Concurrent sessions</dt><dd>{entitlements.account_concurrency ?? 'Shared public pool'}</dd></div><div><dt>Session timeout</dt><dd>{Math.round(entitlements.session_timeout_secs / 60)} min</dd></div><div><dt>Maximum capture</dt><dd>{fileSize(entitlements.max_attestable_http_bytes)}</dd></div><div><dt>Proof credits left</dt><dd>{fileSize(entitlements.remaining_finalization_bytes)}</dd></div><div><dt>Starts per minute</dt><dd>{entitlements.starts_per_minute}</dd></div></dl>}
+            {planError && <p className="dashboard-session-error" role="alert">{planError}</p>}
+            <button type="button" onClick={() => changePlan(plan === 'paid_preview' ? 'free' : 'paid_preview')} disabled={planChanging}>{planChanging ? 'Updating…' : plan === 'paid_preview' ? 'Return to free' : 'Upgrade to paid preview'}</button>
+          </section>
           <section className="dashboard-sessions" aria-labelledby="publishing-sessions-title"><header><div><span className="eyebrow">Local service access</span><h2 id="publishing-sessions-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
         </> : <>
           <header className="dashboard-page-header"><span className="eyebrow">Traces</span><h1>Your traces</h1><p>Review publication status and download the public evidence attached to your account.</p></header>
@@ -902,7 +929,7 @@ function Dashboard({ user, view }) {
         </>}
       </div>
     </div>
-    <AlertDialog open={Boolean(revokeTarget)} onOpenChange={(nextOpen) => { if (!nextOpen && !revoking) setRevokeTarget(null); }}><AlertDialogContent className="axis-alert-dialog"><AlertDialogHeader><AlertDialogTitle>Revoke {revokeTarget?.device_name}?</AlertDialogTitle><AlertDialogDescription>This local service will need a new browser approval before it can publish again.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={Boolean(revoking)}>Keep authorization</AlertDialogCancel><AlertDialogAction disabled={Boolean(revoking)} onClick={() => revokeTarget && revoke(revokeTarget)}>{revoking ? 'Revoking…' : 'Revoke device'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    <AlertDialog open={Boolean(revokeTarget)} onOpenChange={(nextOpen) => { if (!nextOpen && !revoking) setRevokeTarget(null); }}><AlertDialogContent className="axis-alert-dialog"><AlertDialogHeader><AlertDialogTitle>Revoke {revokeTarget?.device_name}?</AlertDialogTitle><AlertDialogDescription>This local service will return to public hosted limits and need a new browser approval for account access or publication.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={Boolean(revoking)}>Keep authorization</AlertDialogCancel><AlertDialogAction disabled={Boolean(revoking)} onClick={() => revokeTarget && revoke(revokeTarget)}>{revoking ? 'Revoking…' : 'Revoke device'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </main>;
 }
 
@@ -931,9 +958,9 @@ function CliApproval({ route, user }) {
     }
   };
   if (!requestId || !approvalSecret) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Invalid authorization link.</h1><p>Return to the local dashboard and begin authorization again.</p></main>;
-  if (!user) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Sign in to approve.</h1><p>This browser must be signed in to the LLM Notary account that should own the local publishing session.</p><a className="button button-dark" href={`/api/auth/github?return_to=${encodeURIComponent(window.location.hash)}`}>Sign in with GitHub</a></main>;
+  if (!user) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Sign in to approve.</h1><p>This browser must be signed in to the LLM Notary account that should own the local service connection.</p><a className="button button-dark" href={`/api/auth/github?return_to=${encodeURIComponent(window.location.hash)}`}>Sign in with GitHub</a></main>;
   if (approved) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Service approved.</h1><p>Your local dashboard will finish authorization shortly. You can close this page.</p></main>;
-  return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Approve this service?</h1>{error ? <p>{error}</p> : details ? <><p>Allow <b>{details.device_name}</b> to publish through LLM Notary as <b>{user.github_login}</b>?</p><div className="dashboard-card"><span>Authorization code</span><b>{details.user_code}</b><span>Expires {sessionDate(details.expires_at)}</span><button className="button button-dark" onClick={approve}>Approve service</button></div></> : <p>Checking this authorization request…</p>}</main>;
+  return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Approve this service?</h1>{error ? <p>{error}</p> : details ? <><p>Connect <b>{details.device_name}</b> to LLM Notary as <b>{user.github_login}</b> for hosted access and publication?</p><div className="dashboard-card"><span>Authorization code</span><b>{details.user_code}</b><span>Expires {sessionDate(details.expires_at)}</span><button className="button button-dark" onClick={approve}>Approve service</button></div></> : <p>Checking this authorization request…</p>}</main>;
 }
 
 const hostedNotaryStatuses = new Set(['active', 'retiring', 'retired', 'revoked']);
@@ -1045,7 +1072,8 @@ function App() {
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  const updatePlan = (response) => setUser((current) => current ? { ...current, plan: response.plan, entitlements: response.entitlements } : current);
+  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} onPlanChange={updatePlan} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);

@@ -29,15 +29,26 @@ the API; the service accepts the standard `AWS_*` and `BUCKET_NAME` variables
 that `fly storage create` sets, as well as the portable `LLM_NOTARY_S3_*`
 variables used by self-hosted container deployments.
 
-Two base64-encoded file secrets are required:
+Three base64-encoded file secrets are required:
 
 - `PLATFORM_SIGNING_KEY_B64` on the API;
 - `NOTARY_SIGNING_KEY_B64` on the notary.
+- `ADMISSION_SERVICE_TOKEN_B64` on both the API and notary. Use the same
+  random value in both apps; it authenticates only the notary's narrow lease
+  coordinator calls and is never sent to local clients.
 
 The API also needs its normal GitHub OAuth credentials, the notary public key,
 and its signing-key directory. The production endpoint is
 `https://llm-notary.exalto.ai`; keep the GitHub OAuth App callback at
 `https://llm-notary.exalto.ai/api/auth/github/callback`.
+
+Every hosted protocol connection first carries a short-lived one-time ticket
+obtained from the public API. The notary redeems it through the private
+`llm-notary-prod-api.flycast` origin and renews the returned PostgreSQL-backed
+lease while the session is active. New sessions fail closed if that control
+plane is unavailable. Public, free-account, and paid-preview sessions share
+this path; only their configured policy differs. The reusable browser/CLI
+credential stays between the local daemon and API.
 
 Never create a new platform signing key during a migration. Preserve the
 existing key and notary directory so published stamps and historic proofs
