@@ -18,6 +18,8 @@
     "capture:dashboard-docs": "node scripts/capture-dashboard-docs.mjs",
     "check:local-docs": "node scripts/check-local-docs.mjs",
     "test:dashboard": "vitest run --config vitest.dashboard.config.js",
+    "test:site": "vitest run --config vitest.site.config.js",
+    "test:unit": "vitest run --environment node src/notaryLifecycle.test.ts",
     "preview": "vite preview --host 127.0.0.1",
     "preview:dashboard": "vite preview --outDir ../../crates/llm-notary-client/dashboard --host 127.0.0.1"
   },

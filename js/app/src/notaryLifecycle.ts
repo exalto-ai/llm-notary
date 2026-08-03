@@ -65,3 +65,26 @@ export function orderNotaries<T extends NotaryLifecycleRecord>(records: T[], act
 export function abbreviatedKeyId(keyId: string) {
   return keyId.length > 28 ? `${keyId.slice(0, 18)}…${keyId.slice(-8)}` : keyId;
 }
+
+export function formatNotaryBoundary(
+  value: number | null | undefined,
+  {
+    kind = 'cutoff',
+    missingLabel,
+    locales,
+    timeZone
+  }: {
+    kind?: 'lower' | 'cutoff';
+    missingLabel?: string;
+    locales?: Intl.LocalesArgument;
+    timeZone?: string;
+  } = {}
+) {
+  if (kind === 'lower' && value === 0) return 'No lower bound configured';
+  if (value === undefined || value === null) {
+    return missingLabel ?? (kind === 'lower' ? 'No lower bound configured' : 'No cutoff configured');
+  }
+  return new Intl.DateTimeFormat(locales, {
+    dateStyle: 'medium', timeStyle: 'short', timeZone
+  }).format(new Date(value));
+}
