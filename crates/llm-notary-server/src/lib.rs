@@ -261,11 +261,7 @@ impl AdmissionCoordinator {
                 .json()
                 .await
                 .map_err(|error| CoordinatorRejection::Unavailable(error.into())),
-            reqwest::StatusCode::TOO_MANY_REQUESTS => Err(CoordinatorRejection::Capacity),
-            status if status.is_client_error() => Err(CoordinatorRejection::Denied),
-            status => Err(CoordinatorRejection::Unavailable(anyhow::anyhow!(
-                "admission coordinator returned {status}"
-            ))),
+            status => Err(coordinator_rejection(status)),
         }
     }
 
@@ -296,6 +292,21 @@ impl AdmissionCoordinator {
             .await?
             .error_for_status()?;
         Ok(())
+    }
+}
+
+fn coordinator_rejection(status: reqwest::StatusCode) -> CoordinatorRejection {
+    match status {
+        reqwest::StatusCode::TOO_MANY_REQUESTS => CoordinatorRejection::Capacity,
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+            CoordinatorRejection::Unavailable(anyhow::anyhow!(
+                "admission coordinator rejected service authentication"
+            ))
+        }
+        status if status.is_client_error() => CoordinatorRejection::Denied,
+        status => CoordinatorRejection::Unavailable(anyhow::anyhow!(
+            "admission coordinator returned {status}"
+        )),
     }
 }
 
@@ -1295,6 +1306,26 @@ mod tests {
                 .redeem("opaque-ticket", NotarySessionMode::Capture)
                 .await,
             Err(CoordinatorRejection::Unavailable(_))
+        ));
+    }
+
+    #[test]
+    fn coordinator_authentication_failure_is_not_a_user_denial() {
+        assert!(matches!(
+            coordinator_rejection(reqwest::StatusCode::UNAUTHORIZED),
+            CoordinatorRejection::Unavailable(_)
+        ));
+        assert!(matches!(
+            coordinator_rejection(reqwest::StatusCode::FORBIDDEN),
+            CoordinatorRejection::Unavailable(_)
+        ));
+        assert!(matches!(
+            coordinator_rejection(reqwest::StatusCode::CONFLICT),
+            CoordinatorRejection::Denied
+        ));
+        assert!(matches!(
+            coordinator_rejection(reqwest::StatusCode::TOO_MANY_REQUESTS),
+            CoordinatorRejection::Capacity
         ));
     }
 

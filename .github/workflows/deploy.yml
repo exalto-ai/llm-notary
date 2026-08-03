@@ -122,7 +122,10 @@ jobs:
           touch "$RUNNER_TEMP/notary-rollout-attempted"
           flyctl deploy --image "$NOTARY_IMAGE" --ha=false --strategy rolling \
             --config deploy/fly/notary.fly.toml
-      - name: Verify v3 TLS notary admission
+      # Deliberately present a capture ticket as a finalization. The notary
+      # must reach the authenticated coordinator and return admission_denied,
+      # but it must not acquire a lease or consume production capacity.
+      - name: Verify v3 TLS notary admission control
         run: |
           python3 - <<'PY'
           import json
@@ -152,7 +155,7 @@ jobs:
 
                   encoded_ticket = ticket.encode()
                   prelude = (
-                      b"LLMN\x00\x00\x00\x03\x02"
+                      b"LLMN\x00\x00\x00\x03\x03"
                       + len(encoded_ticket).to_bytes(2, "big")
                       + encoded_ticket
                   )
@@ -162,9 +165,16 @@ jobs:
                       ) as tls_connection:
                           tls_connection.settimeout(15)
                           tls_connection.sendall(prelude)
-                          status = tls_connection.recv(1)
-                          if status != b"\x01":
-                              raise RuntimeError("notary rejected a fresh admission ticket")
+                          response = b""
+                          while len(response) < 6:
+                              chunk = tls_connection.recv(6 - len(response))
+                              if not chunk:
+                                  raise RuntimeError("notary closed the admission response")
+                              response += chunk
+                          if response[:2] != b"\x02\x04":
+                              raise RuntimeError(
+                                  "notary did not return the expected admission denial"
+                              )
                   break
               except (OSError, ValueError, RuntimeError, urllib.error.URLError) as error:
                   last_error = error
