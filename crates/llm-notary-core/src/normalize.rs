@@ -273,7 +273,11 @@ fn decode_chunked_http_body(body: &str, name: &str) -> Result<String> {
     let bytes = body.as_bytes();
     let mut offset = 0;
     let mut decoded = Vec::new();
+    let allow_eof_after_complete_chunk = name == "response";
     loop {
+        if allow_eof_after_complete_chunk && offset == bytes.len() {
+            break;
+        }
         let remainder = &bytes[offset..];
         let line_end = remainder
             .windows(2)
@@ -290,6 +294,7 @@ fn decode_chunked_http_body(body: &str, name: &str) -> Result<String> {
         };
         offset += line_end + ending_len;
         if size == 0 {
+            validate_chunked_trailer(&bytes[offset..], name)?;
             break;
         }
         let end = offset
@@ -304,11 +309,47 @@ fn decode_chunked_http_body(body: &str, name: &str) -> Result<String> {
             offset += 2;
         } else if bytes.get(offset) == Some(&b'\n') {
             offset += 1;
+        } else if allow_eof_after_complete_chunk && offset == bytes.len() {
+            break;
         } else {
             bail!("chunked {name} body is missing a chunk terminator");
         }
     }
     String::from_utf8(decoded).context("chunked provider body is not UTF-8")
+}
+
+fn validate_chunked_trailer(bytes: &[u8], name: &str) -> Result<()> {
+    let mut offset = 0;
+    loop {
+        let remainder = &bytes[offset..];
+        let line_end = remainder
+            .windows(2)
+            .position(|window| window == b"\r\n")
+            .or_else(|| remainder.iter().position(|byte| *byte == b'\n'))
+            .ok_or_else(|| anyhow!("chunked {name} body has no terminal blank line"))?;
+        let ending_len = if remainder.get(line_end..line_end + 2) == Some(b"\r\n") {
+            2
+        } else {
+            1
+        };
+        let line = &remainder[..line_end];
+        offset += line_end + ending_len;
+        if line.is_empty() {
+            ensure!(
+                offset == bytes.len(),
+                "chunked {name} body has bytes after its terminal chunk"
+            );
+            return Ok(());
+        }
+        let trailer = std::str::from_utf8(line).context("chunked trailer is not UTF-8")?;
+        let (header, _) = trailer
+            .split_once(':')
+            .ok_or_else(|| anyhow!("chunked {name} body has an invalid trailer field"))?;
+        ensure!(
+            !header.trim().is_empty(),
+            "chunked {name} body has an invalid trailer field"
+        );
+    }
 }
 
 fn provider_response_json<F>(body: &str, sse: F) -> Result<Value>
@@ -565,6 +606,12 @@ fn openai_responses_input(request: &Value) -> Result<Value> {
             Some("message") => messages.push(responses_message(item)?),
             Some("function_call_output") => messages.push(message("tool", vec![json!({"type":"tool_call_response","id":item.get("call_id").and_then(Value::as_str).unwrap_or(""),"result":item.get("output").cloned().unwrap_or(Value::Null)})], None)),
             Some("function_call") => messages.push(message("assistant", vec![tool_call_part(item)?], None)),
+            None if item.get("type").is_none()
+                && item.get("role").and_then(Value::as_str).is_some()
+                && item.get("content").is_some() =>
+            {
+                messages.push(responses_message(item)?)
+            }
             _ => {}
         }
     }
@@ -904,6 +951,24 @@ mod tests {
     }
 
     #[test]
+    fn responses_input_accepts_message_objects_without_an_explicit_type() {
+        let inference = verified_inference_from_capture(
+            &manifest("openai"),
+            &http(
+                r#"{"model":"gpt-4.1","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}"#,
+            ),
+            &response(
+                r#"{"model":"gpt-4.1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}]}]}"#,
+            ),
+        )
+        .expect("untyped Responses message input");
+
+        assert_eq!(inference.input_messages.as_array().unwrap().len(), 1);
+        assert_eq!(inference.input_messages[0]["role"], "user");
+        assert_eq!(inference.input_messages[0]["parts"][0]["content"], "hello");
+    }
+
+    #[test]
     fn multi_turn_trace_is_canonical_and_deterministic() {
         let request =
             http(r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}"#);
@@ -1067,5 +1132,81 @@ mod tests {
         let inference = verified_inference_from_capture(&manifest("deepseek"), &request, &response)
             .expect("chunked response");
         assert_eq!(inference.output_messages[0]["parts"][0]["content"], "hello");
+    }
+
+    #[test]
+    fn chunked_provider_responses_accept_eof_after_complete_chunks() {
+        let request =
+            http(r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}"#);
+        let json = r#"{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}"#;
+        let (first, last) = json.split_at(json.len() / 2);
+        for ending in ["", "\r\n"] {
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n{:x}\r\n{}{}",
+                first.len(),
+                first,
+                last.len(),
+                last,
+                ending
+            );
+            let inference =
+                verified_inference_from_capture(&manifest("deepseek"), &request, &response)
+                    .expect("complete response chunks followed by EOF");
+            assert_eq!(inference.output_messages[0]["parts"][0]["content"], "hello");
+        }
+    }
+
+    #[test]
+    fn chunked_provider_responses_reject_an_incomplete_chunk() {
+        let request =
+            http(r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}"#);
+        let response = "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n10\r\nshort";
+
+        let error = verified_inference_from_capture(&manifest("deepseek"), &request, response)
+            .expect_err("incomplete response chunk");
+        assert!(
+            error
+                .to_string()
+                .contains("chunked response body ends inside a chunk")
+        );
+    }
+
+    #[test]
+    fn chunked_provider_requests_still_require_a_terminal_chunk() {
+        let json = r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}"#;
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}",
+            json.len(),
+            json
+        );
+        let response = response(
+            r#"{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}"#,
+        );
+
+        let error = verified_inference_from_capture(&manifest("deepseek"), &request, &response)
+            .expect_err("unterminated chunked request");
+        assert!(
+            error
+                .to_string()
+                .contains("chunked request body is missing a chunk terminator")
+        );
+    }
+
+    #[test]
+    fn chunked_terminal_chunk_requires_complete_framing_and_no_trailing_bytes() {
+        let json = r#"{"model":"deepseek-chat","messages":[{"role":"user","content":"hi"}]}"#;
+        let response = response(
+            r#"{"model":"deepseek-chat","choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}"#,
+        );
+        for ending in ["0\r\n", "0\r\n\r\nunexpected"] {
+            let request = format!(
+                "POST /v1/chat/completions HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{}\r\n{}",
+                json.len(),
+                json,
+                ending
+            );
+            verified_inference_from_capture(&manifest("deepseek"), &request, &response)
+                .expect_err("invalid terminal chunk framing");
+        }
     }
 }
