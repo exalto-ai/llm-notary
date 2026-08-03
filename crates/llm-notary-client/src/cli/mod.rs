@@ -15,8 +15,7 @@ pub mod vault;
 /// with `LLM_NOTARY_PUBLIC_ORIGIN` when producing a self-hosted distribution.
 pub const DEFAULT_PUBLIC_ORIGIN: &str = env!("LLM_NOTARY_PUBLIC_ORIGIN");
 
-pub(crate) const CLI_USER_AGENT: &str =
-    concat!("llm-notary-local-service/", env!("CARGO_PKG_VERSION"));
+pub(crate) const CLI_USER_AGENT: &str = concat!("llm-notaryd/", env!("CARGO_PKG_VERSION"));
 
 pub(crate) fn http_client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder().user_agent(CLI_USER_AGENT)

@@ -240,7 +240,7 @@ impl Modify for SecurityAddon {
 #[utoipa::path(get, path = "/healthz", summary = "Check service health", description = "Returns the local service health and API version without requiring authentication.", responses((status = 200, body = HealthResponse)), tag = "local-admin")]
 async fn health() -> Json<HealthResponse> {
     Json(HealthResponse {
-        service: "llm-notary".into(),
+        service: "llm-notaryd".into(),
         status: "ok".into(),
         api_version: API_VERSION.into(),
     })

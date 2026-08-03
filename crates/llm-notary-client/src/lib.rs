@@ -1,4 +1,4 @@
-//! Long-running local proxy and administration service for LLM Notary.
+//! Local LLM Notary daemon and its REST-backed command client.
 //!
 //! The hosted public origin remains a distribution default in this package.
 //! Evidence formats and Proxy-TLS protocol behavior are provided by
@@ -15,14 +15,15 @@ pub mod admin;
 pub mod catalog;
 pub mod cli;
 pub mod config;
+mod local_cli;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "llm-notary",
-    about = "Capture and verify provider-origin LLM traces",
+    name = "llm-notaryd",
+    about = "Run the local LLM Notary proxy and administration daemon",
     version
 )]
-struct Cli {
+struct DaemonCli {
     /// Versioned local service configuration file. Defaults to the standard
     /// user configuration path and is created on first start.
     #[arg(long)]
@@ -30,10 +31,15 @@ struct Cli {
 }
 
 /// Runs the client command line using process arguments.
-pub async fn run() -> Result<()> {
-    let _telemetry = telemetry::init("llm-notary-local-service")?;
-    let cli = Cli::parse();
+pub async fn run_daemon() -> Result<()> {
+    let _telemetry = telemetry::init("llm-notaryd")?;
+    let cli = DaemonCli::parse();
     cli::proxy::run(cli::proxy::ProxyArgs { config: cli.config }).await
+}
+
+/// Runs the short-lived REST-backed command line client.
+pub async fn run_cli() -> std::result::Result<(), local_cli::CliError> {
+    local_cli::run().await
 }
 
 #[cfg(test)]
@@ -41,10 +47,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn operational_subcommands_are_no_longer_accepted() {
-        assert!(Cli::try_parse_from(["llm-notary"]).is_ok());
-        for removed in ["proxy", "captures", "finalize", "verify-trace", "publish"] {
-            assert!(Cli::try_parse_from(["llm-notary", removed]).is_err());
-        }
+    fn daemon_accepts_only_configuration() {
+        assert!(DaemonCli::try_parse_from(["llm-notaryd"]).is_ok());
+        assert!(DaemonCli::try_parse_from(["llm-notaryd", "captures"]).is_err());
     }
 }

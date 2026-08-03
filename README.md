@@ -42,9 +42,11 @@ the original live TLS session.
 
 ## Install the local service
 
-Releases include `llm-notary` for macOS and Linux, with a checksum-verified
-installer. The command below is the recommended two-step form so the script is
-available for inspection before it runs:
+Releases include `llm-notaryd` and `llm-notary` for macOS and Linux, with a
+checksum-verified installer. `llm-notaryd` is the long-running local service;
+`llm-notary` is its short-lived REST-backed command client. The command below
+is the recommended two-step form so the script is available for inspection
+before it runs:
 
 ```bash
 export LLM_NOTARY_PUBLIC_ORIGIN=https://your-notary.example
@@ -68,7 +70,7 @@ that value as `notary.public_key` alongside its explicit endpoint and reports
 its key identifier during finalized-trace verification. Production clients
 discover and pin the public key through the signed directory.
 
-In another terminal, start `llm-notary`. The foreground process owns both the
+In another terminal, start `llm-notaryd`. The foreground daemon owns both the
 provider proxy at `127.0.0.1:8787` and the administration API at
 `127.0.0.1:8788`. A service manager can supervise that same foreground
 process. On first use it automatically writes an
@@ -83,16 +85,28 @@ default the released client discovers the current public notary endpoint from
 `notary.public_key` in that file.
 
 ```bash
-llm-notary
+llm-notaryd
 # Or choose a configuration explicitly:
-llm-notary --config /path/to/config.toml
+llm-notaryd --config /path/to/config.toml
 ```
 
 The loopback admin listener is available without credentials by default. Set
 `admin.auth` to require a username and an Argon2id password hash. The provider
-proxy does not mount any admin route. Operational CLI subcommands have been
-removed; scripts and coding agents should fetch `/openapi.json` and use the
-versioned REST API.
+proxy does not mount any admin route. `llm-notary` verifies `/healthz` and uses
+only the versioned REST API; it never opens the catalog, vault, or artifacts
+directly. Use `--json` for stable automation output:
+
+```bash
+llm-notary status
+llm-notary captures list --provider openai --limit 20
+llm-notary finalize cap-example
+llm-notary operations show op-example --json
+llm-notary open
+```
+
+If admin authentication is enabled, the CLI prompts without echoing the
+password. Automation can pass `--admin-password-file /private/path`, whose
+file must be private on Unix; the password is never accepted as an argument.
 
 Open [http://127.0.0.1:8788](http://127.0.0.1:8788) for the local evidence
 dashboard. It opens directly under the default configuration. When
@@ -102,9 +116,10 @@ verification, activity, and publication workflow. See the [local service and RES
 [dashboard guide](docs/local-dashboard.md), and [coding-agent
 playbook](docs/agent-playbook.md) for the complete flow.
 
-> **Migration:** the old local operational subcommands have been removed.
-> Start the foreground service with `llm-notary`; use the dashboard or the
-> code-generated REST API for every local operation.
+> **Breaking rename:** `llm-notary` no longer starts the local service. Start
+> the foreground daemon with `llm-notaryd`; use `llm-notary`, the dashboard,
+> or the code-generated REST API for local operations. There is no compatibility
+> shim for the former `llm-notary --config ...` daemon invocation.
 
 ### Configure the local client
 
@@ -112,7 +127,7 @@ playbook](docs/agent-playbook.md) for the complete flow.
 once and never replaces it, so it is the place to change a listener, storage
 location, enabled providers, or catalog behavior. To use a configuration file
 outside the standard location, pass `--config /path/to/config.toml` when
-starting the service.
+starting `llm-notaryd`, and pass the same option to `llm-notary` commands.
 
 The generated file includes all defaults. This shorter, valid configuration
 shows the settings most installations change:
