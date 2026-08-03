@@ -2,16 +2,17 @@ use std::{collections::BTreeMap, path::Path as StdPath, sync::Arc, time::Duratio
 
 use anyhow::Context;
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use axum_extra::extract::cookie::CookieJar;
 use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
+use utoipa::ToSchema;
+use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use super::{
@@ -37,7 +38,7 @@ pub struct PublishService {
     pub(super) stamp_issuer: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CreatePublishJob {
     archive_format: String,
@@ -45,18 +46,18 @@ pub struct CreatePublishJob {
     sha256: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct CreatePublishJobResponse {
     job: PublishJobResponse,
     upload: Option<UploadInstructions>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct WebPublishJobsResponse {
     jobs: Vec<PublishJobResponse>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct UploadInstructions {
     method: String,
     url: String,
@@ -64,7 +65,7 @@ struct UploadInstructions {
     expires_at: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct PublishJobResponse {
     id: String,
     state: String,
@@ -171,15 +172,12 @@ fn load_platform_signing_key(path: &StdPath) -> anyhow::Result<SigningKey> {
     SigningKey::from_slice(&bytes).context("platform signing key is invalid")
 }
 
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/publish/jobs", post(create_publish_job))
-        .route("/api/publish/jobs/{job_id}", get(get_publish_job))
-        .route("/api/me/publish-jobs", get(list_web_publish_jobs))
-        .route(
-            "/api/publish/jobs/{job_id}/complete",
-            post(complete_publish_job),
-        )
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(create_publish_job))
+        .routes(routes!(get_publish_job))
+        .routes(routes!(list_web_publish_jobs))
+        .routes(routes!(complete_publish_job))
 }
 
 pub fn spawn_cleanup(state: AppState) {
@@ -221,6 +219,24 @@ pub async fn has_pending_cleanup(state: &AppState) -> ApiResult<bool> {
     Ok(pending)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/publish/jobs",
+    summary = "Create or resume a publication job",
+    params(("Idempotency-Key" = String, Header, description = "Stable key for this publication attempt")),
+    request_body = CreatePublishJob,
+    responses(
+        (status = 200, body = CreatePublishJobResponse, description = "Existing publication job"),
+        (status = 201, body = CreatePublishJobResponse, description = "New or reopened publication job"),
+        (status = 400, body = super::ErrorResponse),
+        (status = 401, body = super::ErrorResponse),
+        (status = 409, body = super::ErrorResponse),
+        (status = 500, body = super::ErrorResponse),
+        (status = 503, body = super::ErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tag = "publication"
+)]
 async fn create_publish_job(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -350,6 +366,21 @@ async fn create_publish_job(
         .into_response())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/publish/jobs/{job_id}",
+    summary = "Get a publication job",
+    params(("job_id" = String, Path)),
+    responses(
+        (status = 200, body = PublishJobResponse),
+        (status = 401, body = super::ErrorResponse),
+        (status = 404, body = super::ErrorResponse),
+        (status = 500, body = super::ErrorResponse),
+        (status = 503, body = super::ErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tag = "publication"
+)]
 async fn get_publish_job(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -366,6 +397,18 @@ async fn get_publish_job(
     Ok(Json(job_response(&job)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/me/publish-jobs",
+    summary = "List the browser user's publication jobs",
+    responses(
+        (status = 200, body = WebPublishJobsResponse),
+        (status = 401, body = super::ErrorResponse),
+        (status = 500, body = super::ErrorResponse)
+    ),
+    security(("browserSession" = [])),
+    tag = "publication"
+)]
 async fn list_web_publish_jobs(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -387,6 +430,23 @@ async fn list_web_publish_jobs(
     Ok(Json(WebPublishJobsResponse { jobs }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/publish/jobs/{job_id}/complete",
+    summary = "Complete the upload for a publication job",
+    params(("job_id" = String, Path)),
+    responses(
+        (status = 200, body = PublishJobResponse),
+        (status = 401, body = super::ErrorResponse),
+        (status = 404, body = super::ErrorResponse),
+        (status = 409, body = super::ErrorResponse),
+        (status = 410, body = super::ErrorResponse),
+        (status = 500, body = super::ErrorResponse),
+        (status = 503, body = super::ErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tag = "publication"
+)]
 async fn complete_publish_job(
     State(state): State<AppState>,
     headers: HeaderMap,

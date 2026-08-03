@@ -24,6 +24,17 @@ import './relay-animation.css';
 import './landing.css';
 import './axis.css';
 import { RelayAnimation } from './RelayAnimation';
+import {
+  approveCli,
+  getCliApproval,
+  getCliSessions,
+  getCurrentUser,
+  getPublishedTrace,
+  getPublishJobs,
+  getTraceCollection,
+  logoutBrowser,
+  revokeCliSession,
+} from './platform-api/client';
 
 const publicOrigin = __PUBLIC_ORIGIN__;
 const installCommand = `curl -fsSLO ${publicOrigin}/install.sh && sh install.sh`;
@@ -138,8 +149,7 @@ function CollectionPreview() {
   const [tracePreview, setTracePreview] = useState(null);
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/public/collections/traces')
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Could not load verified traces.')))
+    getTraceCollection()
       .then((payload) => {
         if (!cancelled) {
           setCollection(payload);
@@ -159,8 +169,7 @@ function CollectionPreview() {
     }
     let cancelled = false;
     setTracePreview(null);
-    fetch(active.trace_url)
-      .then((response) => response.ok ? response.json() : Promise.reject(new Error('Could not load trace.')))
+    getPublishedTrace(active.id)
       .then((trace) => { if (!cancelled) setTracePreview(parsePublishedTrace(trace)); })
       .catch(() => { if (!cancelled) setTracePreview([]); });
     return () => { cancelled = true; };
@@ -190,7 +199,7 @@ function Landing() {
     <CollectionPreview />
     <section className="section verify" id="verify">
       <div><span className="eyebrow">Independent verification</span><h2>Proof of origin.</h2><p>LLM Notary verifies the provider-authenticated exchange, then signs the exact trace hash. Anyone can check the signature and confirm the published trace has not been altered.</p><div className="verify-points"><span>OTLP JSON</span><span>Signed hash</span><span>Independently verifiable</span></div><div className="button-row"><a className="button button-dark" href="#/docs/trace-packages">Verify with the local API</a></div></div>
-      <div className="receipt"><header><PenMark inverse /><b>Publication stamp</b></header><h3>Verified</h3><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Artifact</dt><dd>trace.otlp.json</dd></div><div><dt>Trace hash</dt><dd>9b44f8…c21d</dd></div></dl><div className="receipt-contents"><span>Input messages <i>•••</i></span><span>Assistant responses <i>•••</i></span><span>Tool calls + results <i>•••</i></span></div><footer>LLM NOTARY / STAMP v1</footer></div>
+      <div className="receipt"><header><PenMark /><b>Publication stamp</b></header><h3>Verified</h3><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Artifact</dt><dd>trace.otlp.json</dd></div><div><dt>Trace hash</dt><dd>9b44f8…c21d</dd></div></dl><div className="receipt-contents"><span>Input messages <i>•••</i></span><span>Assistant responses <i>•••</i></span><span>Tool calls + results <i>•••</i></span></div><footer>LLM NOTARY / STAMP v1</footer></div>
     </section>
   </main>;
 }
@@ -497,7 +506,7 @@ function DocsBlock({ block, pageKey }) {
   return <section id={slug} className={`docs-section docs-section--level-${docHeadingLevel(pageKey, block)}`}><div className="docs-heading-row"><Heading>{block.heading}</Heading><button type="button" className="docs-copy-button docs-anchor" onClick={() => copy(headingLink)} aria-label={`${copied ? 'Copied link to' : 'Copy link to'} ${block.heading}`} title={copied ? 'Copied' : 'Copy link'}>{copied ? <CheckIcon /> : <LinkIcon />}</button></div>{block.body && <p><DocsInlineText>{block.body}</DocsInlineText></p>}{block.code && <div className="docs-code"><button type="button" className="docs-copy-button" onClick={() => copy(block.code)} aria-label={`Copy code for ${block.heading}`}>{copied ? 'Copied' : 'Copy'}</button><pre><code>{block.code}</code></pre></div>}{block.note && <aside className="docs-note"><DocsInlineText>{block.note}</DocsInlineText></aside>}{block.items && <ul className="docs-list">{block.items.map((item) => <li key={item}><DocsInlineText>{item}</DocsInlineText></li>)}</ul>}{block.steps && <ol className="docs-flow">{block.steps.map((step, index) => <li key={step.title}><span>{String(index + 1).padStart(2, '0')}</span><div><b>{step.title}</b><p><DocsInlineText>{step.body}</DocsInlineText></p></div></li>)}</ol>}{block.cards && <div className="docs-card-grid">{block.cards.map((card) => <article key={`${card.meta}-${card.title}`}><span>{card.meta}</span><h3>{card.title}</h3><p><DocsInlineText>{card.body}</DocsInlineText></p></article>)}</div>}{block.columns && <div className="docs-boundary-grid">{block.columns.map((column) => <article key={column.title}><h3>{column.title}</h3><ul>{column.items.map((item) => <li key={item}><DocsInlineText>{item}</DocsInlineText></li>)}</ul></article>)}</div>}{block.definitions && <dl className="docs-definitions">{block.definitions.map((item) => <div key={item.term}><dt>{item.term}</dt><dd><DocsInlineText>{item.description}</DocsInlineText></dd></div>)}</dl>}</section>;
 }
 
-function DocsOutline({ page, pageKey, section, onNavigate }) {
+function DocsOutline({ page, pageKey, section, onNavigate = undefined }) {
   const linkFor = (block) => docHref(pageKey, docSlug(block.heading));
   return <ol className="docs-toc-list">{getDocOutline(pageKey, page.blocks).map(({ block, children }) => <li key={block.heading}><a className={section === docSlug(block.heading) ? 'active' : ''} href={linkFor(block)} onClick={onNavigate} aria-current={section === docSlug(block.heading) ? 'location' : undefined}>{block.heading}</a>{children.length > 0 && <ol>{children.map((child) => <li key={child.heading}><a className={section === docSlug(child.heading) ? 'active' : ''} href={linkFor(child)} onClick={onNavigate} aria-current={section === docSlug(child.heading) ? 'location' : undefined}>{child.heading}</a></li>)}</ol>}</li>)}</ol>;
 }
@@ -706,8 +715,7 @@ function Collections() {
   const [traceError, setTraceError] = useState('');
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/public/collections/traces')
-      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error('Could not load the collection.')))
+    getTraceCollection()
       .then((payload) => { if (!cancelled) { setCollection(payload); setActiveId(payload.publications[0]?.id || null); } })
       .catch((error) => { if (!cancelled) setLoadError(error.message); });
     return () => { cancelled = true; };
@@ -737,8 +745,7 @@ function Collections() {
     let cancelled = false;
     setTracePreview(null);
     setTraceError('');
-    fetch(active.trace_url)
-      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error('Could not load this trace preview.')))
+    getPublishedTrace(active.id)
       .then((trace) => { if (!cancelled) setTracePreview(parsePublishedTrace(trace)); })
       .catch((error) => { if (!cancelled) setTraceError(error.message); });
     return () => { cancelled = true; };
@@ -803,9 +810,8 @@ function Dashboard({ user, view }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/cli/sessions', { credentials: 'same-origin' })
-      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error((await response.json().catch(() => ({}))).error || 'Could not load publishing sessions.')))
-      .then((payload) => { if (!cancelled) setSessions(payload.sessions); })
+    getCliSessions()
+      .then((sessions) => { if (!cancelled) setSessions(sessions); })
       .catch((reason) => { if (!cancelled) setSessionError(reason.message); });
     return () => { cancelled = true; };
   }, []);
@@ -819,12 +825,10 @@ function Dashboard({ user, view }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch('/api/me/publish-jobs', { credentials: 'same-origin' })
-      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error((await response.json().catch(() => ({}))).error || 'Could not load your traces.')))
-      .then((payload) => { if (!cancelled) setJobs(payload.jobs); })
+    getPublishJobs()
+      .then((jobs) => { if (!cancelled) setJobs(jobs); })
       .catch((reason) => { if (!cancelled) setJobError(reason.message); });
-    fetch('/api/public/collections/traces')
-      .then((response) => response.ok ? response.json() : null)
+    getTraceCollection()
       .then((payload) => {
         if (!cancelled && payload?.publications) {
           setPublicationById(Object.fromEntries(payload.publications.map((publication) => [publication.id, publication])));
@@ -838,8 +842,7 @@ function Dashboard({ user, view }) {
     setRevoking(session.id);
     setSessionError(null);
     try {
-      const response = await fetch(`/api/cli/sessions/${encodeURIComponent(session.id)}`, { method: 'DELETE', credentials: 'same-origin' });
-      if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Could not revoke this publishing session.');
+      await revokeCliSession(session.id);
       setSessions((current) => current?.filter((item) => item.id !== session.id) || []);
     } catch (reason) {
       setSessionError(reason.message);
@@ -909,17 +912,19 @@ function CliApproval({ route, user }) {
   useEffect(() => {
     if (!requestId || !approvalSecret || !user) return;
     let cancelled = false;
-    fetch(`/api/cli/authorizations/${encodeURIComponent(requestId)}/approval?approval_secret=${encodeURIComponent(approvalSecret)}`, { credentials: 'same-origin' })
-      .then(async (response) => response.ok ? response.json() : Promise.reject(new Error((await response.json().catch(() => ({}))).error || 'This authorization request is unavailable.')))
+    getCliApproval(requestId, approvalSecret)
       .then((payload) => { if (!cancelled) setDetails(payload); })
       .catch((reason) => { if (!cancelled) setError(reason.message); });
     return () => { cancelled = true; };
   }, [requestId, approvalSecret, user]);
   const approve = async () => {
     setError(null);
-    const response = await fetch(`/api/cli/authorizations/${encodeURIComponent(requestId)}/approval?approval_secret=${encodeURIComponent(approvalSecret)}`, { method: 'POST', credentials: 'same-origin' });
-    if (response.ok) setApproved(true);
-    else setError((await response.json().catch(() => ({}))).error || 'Could not approve this local service request.');
+    try {
+      await approveCli(requestId, approvalSecret);
+      setApproved(true);
+    } catch (reason) {
+      setError(reason.message);
+    }
   };
   if (!requestId || !approvalSecret) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Invalid authorization link.</h1><p>Return to the local dashboard and begin authorization again.</p></main>;
   if (!user) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Sign in to approve.</h1><p>This browser must be signed in to the LLM Notary account that should own the local publishing session.</p><a className="button button-dark" href={`/api/auth/github?return_to=${encodeURIComponent(window.location.hash)}`}>Sign in with GitHub</a></main>;
@@ -937,8 +942,8 @@ function App() {
     const nextSection = route.replace(/^#\/?/, '').split(/[/?]/)[0];
     if (nextSection !== 'docs') window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'instant' }));
   }, [route]);
-  useEffect(() => { let cancelled = false; fetch('/api/me', { credentials: 'same-origin' }).then((response) => response.ok ? response.json() : null).then((payload) => { if (!cancelled) setUser(payload?.user || null); }).catch(() => { if (!cancelled) setUser(null); }); return () => { cancelled = true; }; }, []);
-  const logout = async () => { const response = await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }); if (response.ok) { setUser(null); if (window.location.hash === '#/dashboard') window.location.hash = '#/'; } };
+  useEffect(() => { let cancelled = false; getCurrentUser().then((user) => { if (!cancelled) setUser(user); }).catch(() => { if (!cancelled) setUser(null); }); return () => { cancelled = true; }; }, []);
+  const logout = async () => { await logoutBrowser(); setUser(null); if (window.location.hash === '#/dashboard') window.location.hash = '#/'; };
   const path = route.replace(/^#\/?/, '');
   const routePath = path.split('?')[0];
   const [section, page] = routePath.split('/');

@@ -6,16 +6,17 @@ use std::{
 
 use anyhow::{Result, bail};
 use axum::{
-    Json, Router,
+    Json,
     body::Body,
     extract::{Path as AxumPath, State},
     http::{StatusCode, header},
     response::{IntoResponse, Response},
-    routing::{get, post},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use tracing::Span;
+use utoipa::ToSchema;
+use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use super::{
@@ -74,14 +75,14 @@ struct PublicArtifactRow {
     public_stamp_sha256: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct PublicTraceMetadata {
     id: String,
     trace_url: String,
     stamp_url: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct PlatformDirectory {
     format: &'static str,
     issuer: String,
@@ -104,7 +105,7 @@ struct LibraryRow {
     recent_downloads: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct CollectionResponse {
     format: &'static str,
     slug: String,
@@ -114,7 +115,7 @@ struct CollectionResponse {
     publications: Vec<CollectionPublication>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct CollectionPublication {
     id: String,
     title: String,
@@ -181,7 +182,7 @@ struct ChatMessage {
     content: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 struct ActivityRequest {
     subject: String,
@@ -386,25 +387,26 @@ struct StoredPublicArtifacts {
     stamp_sha256: String,
 }
 
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/platform", get(platform_directory))
-        .route("/api/public/collections/traces", get(traces_collection))
-        .route(
-            "/api/public/traces/{trace_id}/events/download",
-            post(record_download_event),
-        )
-        .route("/api/public/traces/{trace_id}", get(public_trace_metadata))
-        .route(
-            "/api/public/traces/{trace_id}/trace.otlp.json",
-            get(public_trace),
-        )
-        .route(
-            "/api/public/traces/{trace_id}/stamp.json",
-            get(public_stamp),
-        )
+pub fn router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::new()
+        .routes(routes!(platform_directory))
+        .routes(routes!(traces_collection))
+        .routes(routes!(record_download_event))
+        .routes(routes!(public_trace_metadata))
+        .routes(routes!(public_trace))
+        .routes(routes!(public_stamp))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/public/collections/traces",
+    summary = "List admitted public traces",
+    responses(
+        (status = 200, body = CollectionResponse),
+        (status = 500, body = super::ErrorResponse)
+    ),
+    tag = "library"
+)]
 async fn traces_collection(State(state): State<AppState>) -> ApiResult<Json<CollectionResponse>> {
     let now = unix_timestamp()?;
     let rows: Vec<LibraryRow> = sqlx::query_as(
@@ -567,6 +569,20 @@ fn validate_generated_metadata(metadata: &GeneratedMetadata) -> Result<()> {
     Ok(())
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/public/traces/{trace_id}/events/download",
+    summary = "Record a privacy-preserving trace download event",
+    params(("trace_id" = String, Path)),
+    request_body = ActivityRequest,
+    responses(
+        (status = 204, description = "Download event recorded"),
+        (status = 400, body = super::ErrorResponse),
+        (status = 404, body = super::ErrorResponse),
+        (status = 500, body = super::ErrorResponse)
+    ),
+    tag = "library"
+)]
 async fn record_download_event(
     State(state): State<AppState>,
     AxumPath(trace_id): AxumPath<String>,
@@ -593,6 +609,16 @@ async fn record_download_event(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/platform",
+    summary = "Get the platform stamp verification key",
+    responses(
+        (status = 200, body = PlatformDirectory),
+        (status = 503, body = super::ErrorResponse)
+    ),
+    tag = "health"
+)]
 async fn platform_directory(State(state): State<AppState>) -> ApiResult<Json<PlatformDirectory>> {
     let key =
         state.publish.platform_signing_key.as_ref().ok_or_else(|| {
@@ -1374,6 +1400,18 @@ async fn load_public_artifact_optional(
     .map_err(database_error)
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/public/traces/{trace_id}",
+    summary = "Get public artifact links for an admitted trace",
+    params(("trace_id" = String, Path)),
+    responses(
+        (status = 200, body = PublicTraceMetadata),
+        (status = 404, body = super::ErrorResponse),
+        (status = 500, body = super::ErrorResponse)
+    ),
+    tag = "library"
+)]
 async fn public_trace_metadata(
     State(state): State<AppState>,
     AxumPath(trace_id): AxumPath<String>,
@@ -1386,6 +1424,19 @@ async fn public_trace_metadata(
     }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/public/traces/{trace_id}/trace.otlp.json",
+    summary = "Download an admitted canonical OpenTelemetry trace",
+    params(("trace_id" = String, Path)),
+    responses(
+        (status = 200, body = serde_json::Value, content_type = "application/json"),
+        (status = 404, body = super::ErrorResponse),
+        (status = 500, body = super::ErrorResponse),
+        (status = 503, body = super::ErrorResponse)
+    ),
+    tag = "library"
+)]
 async fn public_trace(
     State(state): State<AppState>,
     AxumPath(trace_id): AxumPath<String>,
@@ -1401,6 +1452,19 @@ async fn public_trace(
     Ok(public_bytes(bytes, "application/json; charset=utf-8"))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/public/traces/{trace_id}/stamp.json",
+    summary = "Download an admitted platform stamp",
+    params(("trace_id" = String, Path)),
+    responses(
+        (status = 200, body = serde_json::Value, content_type = "application/json"),
+        (status = 404, body = super::ErrorResponse),
+        (status = 500, body = super::ErrorResponse),
+        (status = 503, body = super::ErrorResponse)
+    ),
+    tag = "library"
+)]
 async fn public_stamp(
     State(state): State<AppState>,
     AxumPath(trace_id): AxumPath<String>,
