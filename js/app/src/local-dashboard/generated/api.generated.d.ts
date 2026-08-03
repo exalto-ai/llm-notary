@@ -284,46 +284,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/public-traces/{publication_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get a public trace
-         * @description Fetches one public canonical trace and any legacy platform stamp through the configured publication API.
-         */
-        get: operations["download_public_trace"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/public-traces/{publication_id}/verify": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Verify a public trace
-         * @description Fetches a public trace and verifies its canonical bytes, contract versions, hash, issuer, key, and signature.
-         */
-        post: operations["verify_public_trace"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/publication/auth": {
         parameters: {
             query?: never;
@@ -610,20 +570,6 @@ export interface components {
             started_at_unix_ms?: number | null;
             state: string;
         };
-        PublicTraceResponse: {
-            publication_id: string;
-            stamp?: unknown;
-            trace: unknown;
-            verification?: null | components["schemas"]["PublicTraceVerificationResponse"];
-        };
-        PublicTraceVerificationResponse: {
-            /** Format: int64 */
-            issued_at_unix_ms: number;
-            issuer: string;
-            provider: string;
-            trace_sha256: string;
-            verified: boolean;
-        };
         PublicationResponse: {
             capture_id: string;
             job_id: string;
@@ -633,7 +579,6 @@ export interface components {
         PublicationStatusResponse: {
             failure_code?: string | null;
             job_id: string;
-            stamp_url?: string | null;
             state: string;
             trace_url?: string | null;
         };
@@ -1161,100 +1106,6 @@ export interface operations {
                 };
             };
             409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    download_public_trace: {
-        parameters: {
-            query?: {
-                api_origin?: string;
-            };
-            header?: never;
-            path: {
-                publication_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PublicTraceResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    verify_public_trace: {
-        parameters: {
-            query?: {
-                api_origin?: string;
-            };
-            header?: never;
-            path: {
-                publication_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PublicTraceResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            422: {
                 headers: {
                     [name: string]: unknown;
                 };

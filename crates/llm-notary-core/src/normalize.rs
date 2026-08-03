@@ -51,7 +51,7 @@ pub fn verified_inference_from_capture(
             parse_openai_compatible(manifest, request_line, request, &response_body)
         }
         "anthropic" => parse_anthropic(manifest, request, &response_body),
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-utils"))]
         "test-server.io" => {
             parse_openai_compatible(manifest, request_line, request, &response_body)
         }

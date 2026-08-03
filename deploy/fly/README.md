@@ -29,9 +29,10 @@ the API; the service accepts the standard `AWS_*` and `BUCKET_NAME` variables
 that `fly storage create` sets, as well as the portable `LLM_NOTARY_S3_*`
 variables used by self-hosted container deployments.
 
-Three base64-encoded file secrets are required:
+Three base64-encoded file secrets remain mounted during the expand release:
 
-- `PLATFORM_SIGNING_KEY_B64` on the API;
+- `PLATFORM_SIGNING_KEY_B64` on the API is retained only so the previous API
+  image remains rollback-safe; the current API does not read it;
 - `NOTARY_SIGNING_KEY_B64` on the notary.
 - `ADMISSION_SERVICE_TOKEN_B64` on both the API and notary. Use the same
   random value in both apps; it authenticates only the notary's narrow lease
@@ -50,9 +51,8 @@ plane is unavailable. Public, free-account, and paid-preview sessions share
 this path; only their configured policy differs. The reusable browser/CLI
 credential stays between the local daemon and API.
 
-Never create a new platform signing key during a migration. Preserve the
-existing key and notary directory so published stamps and historic proofs
-remain valid. Ongoing PostgreSQL/Neon migration operations are documented in
+Preserve the existing notary directory so finalized packages continue to use
+the same timestamp-scoped trust history. Ongoing PostgreSQL/Neon migration operations are documented in
 [`docs/postgres-neon-migration.md`](../../docs/postgres-neon-migration.md).
 
 Clients cache the signed notary directory by its generation. When moving its

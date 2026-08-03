@@ -2,6 +2,7 @@
 	route {
 		handle /api/* {
 			reverse_proxy api:8080 {
+				header_up X-LLM-Notary-Client-IP {http.request.header.CF-Connecting-IP}
 				lb_try_duration 8s
 				lb_try_interval 250ms
 			}

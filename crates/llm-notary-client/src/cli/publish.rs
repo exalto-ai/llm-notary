@@ -51,7 +51,6 @@ struct PublishJob {
     status_url: String,
     failure_code: Option<String>,
     trace_url: Option<String>,
-    stamp_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -79,7 +78,6 @@ pub(crate) struct PublicationStatus {
     pub(crate) state: String,
     pub(crate) failure_code: Option<String>,
     pub(crate) trace_url: Option<String>,
-    pub(crate) stamp_url: Option<String>,
 }
 
 #[derive(Debug)]
@@ -198,18 +196,11 @@ pub(crate) async fn publication_status(
         .map(|value| absolute_same_origin_url(&authenticated.origin, value))
         .transpose()
         .map_err(|_| PublicationStatusError::Unavailable)?;
-    let stamp_url = job
-        .stamp_url
-        .as_deref()
-        .map(|value| absolute_same_origin_url(&authenticated.origin, value))
-        .transpose()
-        .map_err(|_| PublicationStatusError::Unavailable)?;
     Ok(PublicationStatus {
         job_id: job.id,
         state: job.state,
         failure_code: job.failure_code,
         trace_url,
-        stamp_url,
     })
 }
 

@@ -345,23 +345,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/platform": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get the platform stamp verification key */
-        get: operations["platform_directory"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/public/collections/traces": {
         parameters: {
             query?: never;
@@ -407,23 +390,6 @@ export interface paths {
         put?: never;
         /** Record a privacy-preserving trace download event */
         post: operations["record_download_event"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/public/traces/{trace_id}/stamp.json": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Download an admitted platform stamp */
-        get: operations["public_stamp"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -515,6 +481,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify a portable .llmtrace package */
+        post: operations["verify"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -577,7 +560,6 @@ export interface components {
             /** Format: int64 */
             recent_downloads: number;
             span_count: number;
-            stamp_url?: string | null;
             tags: string[];
             title: string;
             tool_use: boolean;
@@ -684,16 +666,22 @@ export interface components {
             entitlements: components["schemas"]["EffectiveEntitlements"];
             plan: components["schemas"]["ServicePlan"];
         };
-        PlatformDirectory: {
-            format: string;
-            issuer: string;
-            key_id: string;
-            public_key: string;
-        };
         PublicTraceMetadata: {
+            /** Format: int64 */
+            authenticated_at_unix_ms?: number | null;
+            /** Format: int64 */
+            directory_generation?: number | null;
+            host: string;
             id: string;
-            stamp_url?: string | null;
+            notary_key_id?: string | null;
+            platform_verified_source: boolean;
+            provider: string;
+            source_package_sha256?: string | null;
+            trace_sha256: string;
             trace_url: string;
+            trust_source?: string | null;
+            /** Format: int64 */
+            verified_at?: number | null;
         };
         PublicUser: {
             avatar_url?: string | null;
@@ -715,7 +703,6 @@ export interface components {
             sha256: string;
             /** Format: int64 */
             size_bytes: number;
-            stamp_url?: string | null;
             state: string;
             status_url: string;
             trace_url?: string | null;
@@ -755,6 +742,8 @@ export interface components {
         };
         /** @enum {string} */
         ServicePlan: "free" | "paid_preview";
+        /** Format: binary */
+        TracePackageBody: string;
         UploadInstructions: {
             /** Format: int64 */
             expires_at: number;
@@ -763,6 +752,21 @@ export interface components {
             };
             method: string;
             url: string;
+        };
+        VerificationResponse: {
+            /** Format: int64 */
+            authenticated_at_unix_ms: number;
+            capture_id: string;
+            /** Format: int64 */
+            directory_generation: number;
+            host: string;
+            notary_key_id: string;
+            package_sha256: string;
+            provider: string;
+            trace: unknown;
+            trace_sha256: string;
+            trust_source: string;
+            verified: boolean;
         };
         WebCliSession: {
             /** Format: int64 */
@@ -1621,33 +1625,6 @@ export interface operations {
             };
         };
     };
-    platform_directory: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PlatformDirectory"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
     traces_collection: {
         parameters: {
             query?: never;
@@ -1751,51 +1728,6 @@ export interface operations {
                 };
             };
             500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    public_stamp: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                trace_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2066,6 +1998,77 @@ export interface operations {
                 };
             };
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    verify: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/vnd.llmnotary.trace-package+zip": components["schemas"]["TracePackageBody"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerificationResponse"];
+                };
+            };
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

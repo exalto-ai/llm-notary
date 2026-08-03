@@ -5,6 +5,13 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 description = "Hosted publication and library platform for LLM Notary"
 
+[features]
+test-utils = [
+    "llm-notary-core/test-utils",
+    "dep:tls-server-fixture",
+    "dep:tlsn",
+]
+
 [[bin]]
 name = "llm-notary-api"
 path = "src/bin/llm-notary-api.rs"
@@ -12,6 +19,11 @@ path = "src/bin/llm-notary-api.rs"
 [[bin]]
 name = "llm-notary-api-migrate"
 path = "src/bin/llm-notary-api-migrate.rs"
+
+[[bin]]
+name = "llm-notary-verification-fixture-worker"
+path = "src/bin/llm-notary-verification-fixture-worker.rs"
+required-features = ["test-utils"]
 
 [dependencies]
 anyhow = "1.0"
@@ -43,6 +55,9 @@ utoipa = { version = "5.5", features = ["axum_extras", "uuid"] }
 utoipa-axum = "0.2"
 url = "2.5"
 uuid = { version = "1.16", features = ["v4"] }
+tls-server-fixture = { path = "../../vendor/tlsn/crates/tls-server-fixture", optional = true }
+tlsn = { path = "../../vendor/tlsn/crates/tlsn", features = ["mozilla-certs"], optional = true }
 
 [dev-dependencies]
+base64 = "0.22"
 testcontainers-modules = { version = "0.15", default-features = false, features = ["postgres"] }

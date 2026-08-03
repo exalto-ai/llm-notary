@@ -312,7 +312,13 @@ pub fn verify_trace_package_bytes(
     bytes: &[u8],
     trusted_notary_key: &[u8],
 ) -> Result<VerifiedTracePackage> {
-    verify_trace_package_bytes_with_provider(bytes, trusted_notary_key, &CryptoProvider::default())
+    let archive = read_trace_package_archive(bytes)?;
+    verify_trace_package_archive_with_provider(
+        archive,
+        sha256_hex(bytes),
+        trusted_notary_key,
+        &CryptoProvider::default(),
+    )
 }
 
 fn verify_trace_package_bytes_with_provider(
@@ -321,28 +327,85 @@ fn verify_trace_package_bytes_with_provider(
     crypto_provider: &CryptoProvider,
 ) -> Result<VerifiedTracePackage> {
     let archive = read_trace_package_archive(bytes)?;
+    verify_trace_package_archive_with_provider(
+        archive,
+        sha256_hex(bytes),
+        trusted_notary_key,
+        crypto_provider,
+    )
+}
+
+/// Fully verifies one already validated in-memory archive without parsing or
+/// retaining a second copy of its ZIP entries.
+pub fn verify_trace_package_archive(
+    archive: ValidatedTracePackageArchive,
+    package_sha256: String,
+    trusted_notary_key: &[u8],
+) -> Result<VerifiedTracePackage> {
+    verify_trace_package_archive_with_provider(
+        archive,
+        package_sha256,
+        trusted_notary_key,
+        &CryptoProvider::default(),
+    )
+}
+
+fn verify_trace_package_archive_with_provider(
+    archive: ValidatedTracePackageArchive,
+    package_sha256: String,
+    trusted_notary_key: &[u8],
+    crypto_provider: &CryptoProvider,
+) -> Result<VerifiedTracePackage> {
     let manifest = trace_manifest_from_archive(&archive)?;
+    let mut files = archive.into_files();
     let capture = Capture {
         manifest: manifest.source.clone(),
-        evidence: archive.file("evidence.tlsn")?.to_vec(),
-        request_disclosed: archive.file("request.disclosed.http")?.to_vec(),
-        response: archive.file("response.disclosed.http")?.to_vec(),
+        evidence: files
+            .remove("evidence.tlsn")
+            .expect("validated archive contains evidence"),
+        request_disclosed: files
+            .remove("request.disclosed.http")
+            .expect("validated archive contains request disclosure"),
+        response: files
+            .remove("response.disclosed.http")
+            .expect("validated archive contains response disclosure"),
     };
     let (source, request, response) =
         verify_capture_value_with_provider(&capture, trusted_notary_key, crypto_provider)?;
     let inference = verified_inference_from_capture(&source, &request, &response)?;
     let expected = render_public_trace(&[inference])?;
-    let actual = archive.file("trace.otlp.json")?.to_vec();
+    let actual = files
+        .remove("trace.otlp.json")
+        .expect("validated archive contains canonical trace");
     if manifest.trace_sha256 != sha256_hex(&actual) || actual != expected {
         bail!("OTLP trace does not match the authenticated source bundle");
     }
     let trace_sha256 = sha256_hex(&actual);
     Ok(VerifiedTracePackage {
         manifest,
-        package_sha256: sha256_hex(bytes),
+        package_sha256,
         trace_sha256,
         trace: actual,
     })
+}
+
+/// Test-only entry point for exercising the complete package verifier with a
+/// private certificate authority fixture. Production callers must use the
+/// default public-root verifier above.
+#[cfg(feature = "test-utils")]
+#[doc(hidden)]
+pub fn verify_trace_package_archive_with_provider_for_test(
+    archive: ValidatedTracePackageArchive,
+    package_sha256: String,
+    trusted_notary_key: &[u8],
+    crypto_provider: &CryptoProvider,
+) -> Result<VerifiedTracePackage> {
+    verify_trace_package_archive_with_provider(
+        archive,
+        package_sha256,
+        trusted_notary_key,
+        crypto_provider,
+    )
 }
 
 fn read_trace_manifest(path: &Path) -> Result<VerifiedTraceManifest> {
@@ -351,7 +414,10 @@ fn read_trace_manifest(path: &Path) -> Result<VerifiedTraceManifest> {
     trace_manifest_from_archive(&archive)
 }
 
-fn trace_manifest_from_archive(
+/// Parses and version-checks the source manifest from a canonical archive
+/// that has already passed entry, size, metadata, and hash validation.
+/// Its fields remain untrusted until the complete package verifier succeeds.
+pub fn trace_manifest_from_archive(
     archive: &ValidatedTracePackageArchive,
 ) -> Result<VerifiedTraceManifest> {
     let manifest: VerifiedTraceManifest = serde_json::from_slice(archive.file("manifest.json")?)

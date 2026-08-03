@@ -975,7 +975,6 @@ function Dashboard({ user, view, onPlanChange }) {
                 </div>
                 <div className="dashboard-trace-actions">
                   {job.trace_url && <a href={job.trace_url} target="_blank" rel="noreferrer">Trace</a>}
-                  {job.stamp_url && <a href={job.stamp_url} target="_blank" rel="noreferrer">Stamp</a>}
                 </div>
               </article>;
             })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No publications</span><b>Publish your first trace.</b><p>Finalize a capture in the local dashboard, then publish its evidence to make it independently verifiable.</p><a href="#/docs/publish">Open the publishing guide</a></div>}

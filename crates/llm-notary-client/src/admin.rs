@@ -41,7 +41,7 @@ use crate::{
         CaptureFilters, CaptureSummary, Catalog, Event, EventFilters, Operation, OperationAttempt,
         OperationFilters,
     },
-    cli::{DEFAULT_PUBLIC_ORIGIN, auth, download, notary, proxy, publish},
+    cli::{DEFAULT_PUBLIC_ORIGIN, auth, notary, proxy, publish},
     config::AgentConfig,
     notary_directory::{NotaryDirectoryRecord, NotaryKeyStatus, key_id},
     vault::Vault,
@@ -115,14 +115,6 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
             post(publish_capture),
         )
         .route("/v1/publications/{job_id}", get(publication_status))
-        .route(
-            "/v1/public-traces/{publication_id}",
-            get(download_public_trace),
-        )
-        .route(
-            "/v1/public-traces/{publication_id}/verify",
-            post(verify_public_trace),
-        )
         .route("/v1/session", delete(end_session))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
     Ok(Router::new()
@@ -210,7 +202,7 @@ fn embedded_dashboard_response(path: &str) -> Response {
         start_finalization, operations, operation, retry_operation, trace,
         download_package, verify_trace, events, publication_auth_status, start_publication_auth,
         end_publication_auth, poll_publication_auth, publish_capture,
-        publication_status, download_public_trace, verify_public_trace
+        publication_status
     ),
     components(schemas(
         HealthResponse, StatusResponse, CountsResponse, NotariesResponse, NotaryResponse,
@@ -218,7 +210,7 @@ fn embedded_dashboard_response(path: &str) -> Response {
         OperationResponse, OperationAttemptResponse, OperationListResponse, FinalizationResponse, EventResponse,
         EventListResponse, TraceResponse, VerificationResponse, AccountConnectionResponse,
         AccountConnectionRequest, AccountConnectionStartedResponse, PublicationResponse, PublicationStatusResponse,
-        PublicTraceResponse, PublicTraceVerificationResponse, ErrorBody, ErrorEnvelope
+        ErrorBody, ErrorEnvelope
     )),
     modifiers(&SecurityAddon),
     tags((name = "local-admin", description = "Loopback-only administration"))
@@ -924,69 +916,6 @@ async fn publication_status(
         state: status.state,
         failure_code: status.failure_code,
         trace_url: status.trace_url,
-        stamp_url: status.stamp_url,
-    }))
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct PublicTraceQuery {
-    api_origin: Option<String>,
-}
-
-#[utoipa::path(get, path = "/v1/public-traces/{publication_id}", summary = "Get a public trace", description = "Fetches one public canonical trace and any legacy platform stamp through the configured publication API.", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn download_public_trace(
-    Path(publication_id): Path<String>,
-    query: Result<Query<PublicTraceQuery>, QueryRejection>,
-) -> Result<Json<PublicTraceResponse>, ApiError> {
-    let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
-    fetch_public_trace(publication_id, query.api_origin, false).await
-}
-
-#[utoipa::path(post, path = "/v1/public-traces/{publication_id}/verify", summary = "Verify a public trace", description = "Fetches a public trace and verifies its canonical bytes, contract versions, hash, issuer, key, and signature.", params(("publication_id" = String, Path), ("api_origin" = Option<String>, Query)), responses((status = 200, body = PublicTraceResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn verify_public_trace(
-    Path(publication_id): Path<String>,
-    query: Result<Query<PublicTraceQuery>, QueryRejection>,
-) -> Result<Json<PublicTraceResponse>, ApiError> {
-    let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
-    fetch_public_trace(publication_id, query.api_origin, true).await
-}
-
-async fn fetch_public_trace(
-    publication_id: String,
-    api_origin: Option<String>,
-    verify: bool,
-) -> Result<Json<PublicTraceResponse>, ApiError> {
-    let value = download::fetch_public_trace(
-        &publication_id,
-        api_origin.as_deref().unwrap_or(DEFAULT_PUBLIC_ORIGIN),
-        verify,
-    )
-    .await
-    .map_err(|_| {
-        if verify {
-            ApiError::unprocessable("public_trace_verification_failed")
-        } else {
-            ApiError::not_found("public_trace_not_found")
-        }
-    })?;
-    let verification = value
-        .verification
-        .map(|verified| PublicTraceVerificationResponse {
-            verified: true,
-            trace_sha256: verified.trace_sha256,
-            issuer: verified.stamp.issuer,
-            provider: verified.stamp.provider.name,
-            issued_at_unix_ms: verified.stamp.issued_at_unix_ms,
-        });
-    Ok(Json(PublicTraceResponse {
-        publication_id: value.publication_id,
-        trace: value.trace,
-        stamp: value
-            .stamp
-            .map(serde_json::to_value)
-            .transpose()
-            .map_err(|_| ApiError::internal("public_stamp_encode_failed"))?,
-        verification,
     }))
 }
 
@@ -1548,24 +1477,6 @@ struct PublicationStatusResponse {
     state: String,
     failure_code: Option<String>,
     trace_url: Option<String>,
-    stamp_url: Option<String>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-struct PublicTraceResponse {
-    publication_id: String,
-    trace: serde_json::Value,
-    stamp: Option<serde_json::Value>,
-    verification: Option<PublicTraceVerificationResponse>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-struct PublicTraceVerificationResponse {
-    verified: bool,
-    trace_sha256: String,
-    issuer: String,
-    provider: String,
-    issued_at_unix_ms: u64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1891,8 +1802,6 @@ mod tests {
             "/v1/publication/auth/{request_id}",
             "/v1/captures/{capture_id}/publications",
             "/v1/publications/{job_id}",
-            "/v1/public-traces/{publication_id}",
-            "/v1/public-traces/{publication_id}/verify",
         ] {
             assert!(body["paths"].get(path).is_some(), "OpenAPI missing {path}");
         }
@@ -1915,8 +1824,6 @@ mod tests {
             ("/v1/publication/auth/{request_id}", "get"),
             ("/v1/captures/{capture_id}/publications", "post"),
             ("/v1/publications/{job_id}", "get"),
-            ("/v1/public-traces/{publication_id}", "get"),
-            ("/v1/public-traces/{publication_id}/verify", "post"),
             ("/v1/session", "delete"),
         ] {
             assert!(
@@ -1950,7 +1857,7 @@ mod tests {
                 documented_operations += 1;
             }
         }
-        assert_eq!(documented_operations, 24);
+        assert_eq!(documented_operations, 22);
     }
 
     #[tokio::test]
