@@ -114,6 +114,12 @@ fly deploy js/app --image "registry.fly.io/llm-notary-prod-web:$label" \
   --ha=false -c "$PWD/deploy/fly/web.fly.toml"
 ```
 
+Fly's registry can briefly return `not found` after a successful manifest
+push. CI waits for each labeled image to become visible, validates its digest,
+and only then records the digest-pinned references used for rollout. If a
+digest never becomes visible within the bounded retry window, the deployment
+stops before changing any Machine.
+
 The web and notary apps suspend when idle. The API's configured
 `LLM_NOTARY_IDLE_SHUTDOWN_SECS=45` makes API Machines exit after 45 seconds
 with no application request or currently-due durable work; Flycast autostarts
