@@ -26,7 +26,7 @@ import {
 } from '@/components/ui/select';
 import { LocalApiError } from './api';
 import type { Capture, CaptureDetail, Event, LocalApi, Notary, Operation, Publication, PublicationAuthStarted, Status, Verification } from './api';
-import { abbreviatedKeyId, notaryLifecycle, orderNotaries } from '../notaryLifecycle';
+import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries } from '../notaryLifecycle';
 
 const logoUrl = new URL('../../public/notary-mark.svg', import.meta.url).href;
 
@@ -891,13 +891,6 @@ function EventList({ events }: { events: Event[] }) {
   return <div className="event-list">{events.map((event) => <div key={event.event_id} className="event-row"><ThemeIcon variant="transparent" className={`event-icon event-icon--${stateTone(event.severity)}`}>{event.severity === 'error' ? <XCircle size={17} /> : event.severity === 'success' ? <Check size={17} /> : <CircleDot size={17} />}</ThemeIcon><div><Group gap="xs"><b>{event.message}</b><StatusLabel state={event.severity} /></Group><Text>{event.capture_id ?? event.operation_id ?? event.event_type}</Text></div><time>{formatDate(event.created_at_unix_ms)}</time></div>)}</div>;
 }
 
-function formatNotaryTime(value?: number | null) {
-  if (value === undefined || value === null) return 'No cutoff configured';
-  return new Intl.DateTimeFormat(undefined, {
-    month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit'
-  }).format(new Date(value));
-}
-
 function LocalNotaryRecord({ record, activeKeyId }: { record: Notary; activeKeyId?: string | null }) {
   const lifecycle = notaryLifecycle(record.status);
   const copyKey = async () => {
@@ -912,9 +905,9 @@ function LocalNotaryRecord({ record, activeKeyId }: { record: Notary; activeKeyI
     <dl className="local-notary-facts">
       <Fact label="Endpoint" value={record.endpoint} />
       <Fact label="Transport" value={record.transport.toUpperCase()} />
-      <Fact label="Valid from" value={record.valid_from_unix_ms == null ? 'Not defined by explicit configuration' : formatNotaryTime(record.valid_from_unix_ms)} />
-      <Fact label="Capture cutoff" value={formatNotaryTime(record.valid_until_unix_ms)} />
-      <Fact label="Finalization cutoff" value={formatNotaryTime(record.finalize_until_unix_ms)} />
+      <Fact label="Valid from" value={formatNotaryBoundary(record.valid_from_unix_ms, { kind: 'lower', missingLabel: 'Not defined by explicit configuration' })} />
+      <Fact label="Capture cutoff" value={formatNotaryBoundary(record.valid_until_unix_ms)} />
+      <Fact label="Finalization cutoff" value={formatNotaryBoundary(record.finalize_until_unix_ms)} />
     </dl>
     <div className="local-notary-key"><span>Key ID / fingerprint</span><code title={record.key_id}>{abbreviatedKeyId(record.key_id)}</code><ActionIcon variant="subtle" onClick={copyKey} aria-label={`Copy full key ID ${record.key_id}`}><Copy size={15} /></ActionIcon></div>
   </article>;

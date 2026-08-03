@@ -38,7 +38,7 @@ import {
   logoutBrowser,
   revokeCliSession,
 } from './platform-api/client';
-import { abbreviatedKeyId, notaryLifecycle, orderNotaries } from './notaryLifecycle';
+import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries } from './notaryLifecycle';
 
 const publicOrigin = __PUBLIC_ORIGIN__;
 const installCommand = `curl -fsSLO ${publicOrigin}/install.sh && sh install.sh`;
@@ -998,14 +998,7 @@ function notaryEndpoint(record) {
   return `${record.transport}://${host}:${record.port}`;
 }
 
-function notaryDate(value) {
-  if (value === null || value === undefined) return 'No cutoff configured';
-  return new Intl.DateTimeFormat(undefined, {
-    dateStyle: 'medium', timeStyle: 'short'
-  }).format(new Date(value));
-}
-
-function HostedNotaryRecord({ record, activeKeyId, copiedKeyId, onCopy, compact = false }) {
+export function HostedNotaryRecord({ record, activeKeyId, copiedKeyId, onCopy, compact = false }) {
   const lifecycle = notaryLifecycle(record.status);
   return <article className={`notary-record notary-record--${record.status}${compact ? ' notary-record--compact' : ''}`}>
     <header><span className={`notary-state notary-state--${record.status}`}><i aria-hidden="true" />{record.status}</span>{record.key_id === activeKeyId && <span className="notary-selected">Selected by active_key_id</span>}</header>
@@ -1015,7 +1008,7 @@ function HostedNotaryRecord({ record, activeKeyId, copiedKeyId, onCopy, compact 
       <div><dt>Endpoint</dt><dd><code>{notaryEndpoint(record)}</code></dd></div>
       <div><dt>Transport</dt><dd>{record.transport.toUpperCase()}</dd></div>
       <div className="notary-key-row"><dt>Key ID / fingerprint</dt><dd><code title={record.key_id}>{abbreviatedKeyId(record.key_id)}</code><button type="button" onClick={() => onCopy(record.key_id)}>{copiedKeyId === record.key_id ? 'Copied' : 'Copy full key ID'}</button></dd></div>
-      {!compact && <><div><dt>Valid from</dt><dd>{notaryDate(record.valid_from_unix_ms)}</dd></div><div><dt>Capture cutoff</dt><dd>{notaryDate(record.valid_until_unix_ms)}</dd></div><div><dt>Finalization cutoff</dt><dd>{notaryDate(record.finalize_until_unix_ms)}</dd></div></>}
+      {!compact && <><div><dt>Valid from</dt><dd>{formatNotaryBoundary(record.valid_from_unix_ms, { kind: 'lower' })}</dd></div><div><dt>Capture cutoff</dt><dd>{formatNotaryBoundary(record.valid_until_unix_ms)}</dd></div><div><dt>Finalization cutoff</dt><dd>{formatNotaryBoundary(record.finalize_until_unix_ms)}</dd></div></>}
     </dl>
   </article>;
 }
@@ -1076,4 +1069,5 @@ function App() {
   return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} onPlanChange={updatePlan} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
-createRoot(document.getElementById('root')).render(<App />);
+const applicationRoot = document.getElementById('root');
+if (applicationRoot) createRoot(applicationRoot).render(<App />);

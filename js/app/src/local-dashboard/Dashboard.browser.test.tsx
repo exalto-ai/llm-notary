@@ -82,6 +82,14 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('Directory generation', { exact: false })).not.toBeInTheDocument();
   });
 
+  test('renders a zero notary lower bound as an unbounded interval in settings', async () => {
+    const notaries = structuredClone(fixtureNotaries);
+    notaries.notaries[0].valid_from_unix_ms = 0;
+    renderDashboard('/settings', { ...createFixtureApi(), notaries: async () => notaries });
+    await expect.element(page.getByText('No lower bound configured')).toBeVisible();
+    await expect.element(page.getByText(/1969|1970/)).not.toBeInTheDocument();
+  });
+
   test('handles empty, malformed, and unavailable local notary trust without a false status', async () => {
     const empty: Notaries = { source: 'directory', directory_source: null, generation: null, active_key_id: null, notaries: [] };
     const view = renderDashboard('/settings', { ...createFixtureApi(), notaries: async () => empty });
