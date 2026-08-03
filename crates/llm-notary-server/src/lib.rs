@@ -53,7 +53,6 @@ struct RedeemRequest<'a> {
 struct RedeemedLease {
     lease_id: String,
     lease_expires_at: i64,
-    session_timeout_secs: i64,
     max_attestable_http_bytes: i64,
     max_frame_bytes: i64,
     max_private_chunk_bytes: i64,
@@ -73,9 +72,15 @@ struct LeaseRenewed {
     lease_expires_at: i64,
 }
 
+#[derive(Deserialize)]
+struct CoordinatorErrorResponse {
+    error: String,
+}
+
 enum CoordinatorRejection {
     Capacity,
     Denied,
+    FinalizationCreditsExhausted,
     Unavailable(anyhow::Error),
 }
 
@@ -261,7 +266,14 @@ impl AdmissionCoordinator {
                 .json()
                 .await
                 .map_err(|error| CoordinatorRejection::Unavailable(error.into())),
-            status => Err(coordinator_rejection(status)),
+            status => {
+                let error_code = response
+                    .json::<CoordinatorErrorResponse>()
+                    .await
+                    .ok()
+                    .map(|error| error.error);
+                Err(coordinator_rejection(status, error_code.as_deref()))
+            }
         }
     }
 
@@ -295,9 +307,17 @@ impl AdmissionCoordinator {
     }
 }
 
-fn coordinator_rejection(status: reqwest::StatusCode) -> CoordinatorRejection {
+fn coordinator_rejection(
+    status: reqwest::StatusCode,
+    error_code: Option<&str>,
+) -> CoordinatorRejection {
     match status {
         reqwest::StatusCode::TOO_MANY_REQUESTS => CoordinatorRejection::Capacity,
+        reqwest::StatusCode::PAYMENT_REQUIRED
+            if error_code == Some("finalization_credits_exhausted") =>
+        {
+            CoordinatorRejection::FinalizationCreditsExhausted
+        }
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
             CoordinatorRejection::Unavailable(anyhow::anyhow!(
                 "admission coordinator rejected service authentication"
@@ -926,6 +946,9 @@ pub async fn run() -> Result<()> {
                             }
                         },
                         CoordinatorRejection::Denied => NotaryAdmissionRejection::AdmissionDenied,
+                        CoordinatorRejection::FinalizationCreditsExhausted => {
+                            NotaryAdmissionRejection::FinalizationCreditsExhausted
+                        }
                         CoordinatorRejection::Unavailable(error) => {
                             tracing::error!(%error, "admission coordinator request failed");
                             NotaryAdmissionRejection::CoordinatorUnavailable
@@ -1093,11 +1116,7 @@ fn effective_hosted_limits(
         expected_record_digest,
         expected_transcript_bytes: (mode == NotarySessionMode::Finalize)
             .then_some(authorized_allowance),
-        session_timeout: Duration::from_secs(positive(
-            "session_timeout_secs",
-            lease.session_timeout_secs,
-        )? as u64)
-        .min(local_session_timeout),
+        session_timeout: local_session_timeout,
         max_private_chunk_bytes,
         max_total_private_chunk_bytes: authorized_allowance
             .min(policy_attestable)
@@ -1213,11 +1232,10 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_policy_can_only_reduce_local_hard_limits() {
-        let mut lease = RedeemedLease {
+    fn coordinator_policy_can_only_reduce_local_size_limits() {
+        let lease = RedeemedLease {
             lease_id: "lease".into(),
             lease_expires_at: 1,
-            session_timeout_secs: 3_600,
             max_attestable_http_bytes: 8 << 20,
             max_frame_bytes: 64 << 20,
             max_private_chunk_bytes: 256 << 10,
@@ -1242,19 +1260,6 @@ mod tests {
         assert_eq!(limits.expected_record_digest, Some([0xab; 32]));
         assert_eq!(limits.expected_transcript_bytes, Some(8 << 20));
         assert_eq!(limits.session_timeout, Duration::from_secs(30));
-
-        lease.session_timeout_secs = 5;
-        let reduced = effective_hosted_limits(
-            NotarySessionMode::Finalize,
-            &lease,
-            Duration::from_secs(30),
-            128 << 10,
-            4 << 20,
-            64,
-            32 << 20,
-        )
-        .expect("coordinator can reduce the timeout");
-        assert_eq!(reduced.session_timeout, Duration::from_secs(5));
     }
 
     #[test]
@@ -1262,7 +1267,6 @@ mod tests {
         let lease = RedeemedLease {
             lease_id: "lease".into(),
             lease_expires_at: 1,
-            session_timeout_secs: 30,
             max_attestable_http_bytes: 1024,
             max_frame_bytes: 1024,
             max_private_chunk_bytes: 1024,
@@ -1312,20 +1316,34 @@ mod tests {
     #[test]
     fn coordinator_authentication_failure_is_not_a_user_denial() {
         assert!(matches!(
-            coordinator_rejection(reqwest::StatusCode::UNAUTHORIZED),
+            coordinator_rejection(reqwest::StatusCode::UNAUTHORIZED, None),
             CoordinatorRejection::Unavailable(_)
         ));
         assert!(matches!(
-            coordinator_rejection(reqwest::StatusCode::FORBIDDEN),
+            coordinator_rejection(reqwest::StatusCode::FORBIDDEN, None),
             CoordinatorRejection::Unavailable(_)
         ));
         assert!(matches!(
-            coordinator_rejection(reqwest::StatusCode::CONFLICT),
+            coordinator_rejection(reqwest::StatusCode::CONFLICT, None),
             CoordinatorRejection::Denied
         ));
         assert!(matches!(
-            coordinator_rejection(reqwest::StatusCode::TOO_MANY_REQUESTS),
+            coordinator_rejection(reqwest::StatusCode::TOO_MANY_REQUESTS, None),
             CoordinatorRejection::Capacity
+        ));
+        assert!(matches!(
+            coordinator_rejection(
+                reqwest::StatusCode::TOO_MANY_REQUESTS,
+                Some("service_capacity"),
+            ),
+            CoordinatorRejection::Capacity
+        ));
+        assert!(matches!(
+            coordinator_rejection(
+                reqwest::StatusCode::PAYMENT_REQUIRED,
+                Some("finalization_credits_exhausted"),
+            ),
+            CoordinatorRejection::FinalizationCreditsExhausted
         ));
     }
 

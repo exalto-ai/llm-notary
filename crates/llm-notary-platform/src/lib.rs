@@ -48,8 +48,8 @@ mod service_admission;
 mod verify;
 
 pub use config::{
-    AdmissionConfig, AuthConfig, DatabaseConfig, NotaryDirectoryConfig, PlatformConfig,
-    S3StorageConfig, StorageConfig, TierPolicy,
+    AdmissionConfig, AdmissionPolicy, AuthConfig, DatabaseConfig, NotaryDirectoryConfig,
+    PlatformConfig, S3StorageConfig, StorageConfig,
 };
 
 const SESSION_COOKIE: &str = "llm_notary_session";
@@ -121,8 +121,7 @@ struct PublicUser {
 #[derive(Serialize, ToSchema)]
 struct MeResponse {
     user: PublicUser,
-    plan: service_admission::ServicePlan,
-    entitlements: service_admission::EffectiveEntitlements,
+    credits: service_admission::CreditSummary,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -195,11 +194,13 @@ struct CliMeResponse {
     user: PublicUser,
     credential: CliCredentialResponse,
     session: Option<CliSessionResponse>,
+    credits: service_admission::CreditSummary,
 }
 
 #[derive(Serialize, ToSchema)]
 struct ErrorResponse {
     error: &'static str,
+    message: &'static str,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -277,6 +278,7 @@ impl From<NotaryDirectoryRecord> for NotaryDirectoryRecordResponse {
 #[derive(Debug)]
 struct ApiError {
     status: StatusCode,
+    code: &'static str,
     message: &'static str,
 }
 
@@ -284,6 +286,7 @@ impl ApiError {
     fn bad_request(message: &'static str) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
+            code: message,
             message,
         }
     }
@@ -291,6 +294,7 @@ impl ApiError {
     fn unauthorized() -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
+            code: "authentication required",
             message: "authentication required",
         }
     }
@@ -298,6 +302,7 @@ impl ApiError {
     fn forbidden() -> Self {
         Self {
             status: StatusCode::FORBIDDEN,
+            code: "insufficient_scope",
             message: "credential does not have the required scope",
         }
     }
@@ -305,6 +310,7 @@ impl ApiError {
     fn not_found(message: &'static str) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
+            code: message,
             message,
         }
     }
@@ -312,6 +318,7 @@ impl ApiError {
     fn gone(message: &'static str) -> Self {
         Self {
             status: StatusCode::GONE,
+            code: message,
             message,
         }
     }
@@ -319,13 +326,7 @@ impl ApiError {
     fn conflict(message: &'static str) -> Self {
         Self {
             status: StatusCode::CONFLICT,
-            message,
-        }
-    }
-
-    fn payment_required(message: &'static str) -> Self {
-        Self {
-            status: StatusCode::PAYMENT_REQUIRED,
+            code: message,
             message,
         }
     }
@@ -333,6 +334,7 @@ impl ApiError {
     fn too_many_requests(message: &'static str) -> Self {
         Self {
             status: StatusCode::TOO_MANY_REQUESTS,
+            code: message,
             message,
         }
     }
@@ -340,6 +342,7 @@ impl ApiError {
     fn service_unavailable(message: &'static str) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
+            code: message,
             message,
         }
     }
@@ -347,6 +350,7 @@ impl ApiError {
     fn pending() -> Self {
         Self {
             status: StatusCode::PRECONDITION_REQUIRED,
+            code: "authorization pending",
             message: "authorization pending",
         }
     }
@@ -354,6 +358,7 @@ impl ApiError {
     fn upstream() -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
+            code: "GitHub sign-in failed",
             message: "GitHub sign-in failed",
         }
     }
@@ -362,7 +367,16 @@ impl ApiError {
         tracing::error!(%error, "API request failed");
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            code: "internal server error",
             message: "internal server error",
+        }
+    }
+
+    fn coded(status: StatusCode, code: &'static str, message: &'static str) -> Self {
+        Self {
+            status,
+            code,
+            message,
         }
     }
 }
@@ -372,7 +386,8 @@ impl IntoResponse for ApiError {
         (
             self.status,
             Json(ErrorResponse {
-                error: self.message,
+                error: self.code,
+                message: self.message,
             }),
         )
             .into_response()
@@ -516,16 +531,19 @@ pub async fn run_api() -> Result<()> {
         .into();
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "LLM Notary API listening");
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            match shutdown_rx {
-                Some(mut shutdown_rx) => {
-                    let _ = shutdown_rx.changed().await;
-                }
-                None => std::future::pending().await,
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
+        match shutdown_rx {
+            Some(mut shutdown_rx) => {
+                let _ = shutdown_rx.changed().await;
             }
-        })
-        .await?;
+            None => std::future::pending().await,
+        }
+    })
+    .await?;
     Ok(())
 }
 
@@ -907,15 +925,14 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
     .await
     .map_err(database_error)?
     .ok_or_else(ApiError::unauthorized)?;
-    let (plan, entitlements) = service_admission::account_plan(&state, &user.0).await?;
+    let credits = service_admission::account_access(&state, &user.0).await?;
     Ok(Json(MeResponse {
         user: PublicUser {
             id: user.0,
             github_login: user.1,
             avatar_url: user.2,
         },
-        plan,
-        entitlements,
+        credits,
     }))
 }
 
@@ -1373,6 +1390,7 @@ async fn cli_me(
             device_name: principal.credential_name.clone(),
         }
     });
+    let credits = service_admission::account_access(&state, &principal.user_id).await?;
     Ok(Json(CliMeResponse {
         user: PublicUser {
             id: user.0,
@@ -1385,6 +1403,7 @@ async fn cli_me(
             name: principal.credential_name,
         },
         session,
+        credits,
     }))
 }
 
@@ -1703,6 +1722,7 @@ mod tests {
             "GET /api/me",
             "GET /api/me/api-keys",
             "GET /api/me/shares",
+            "GET /api/me/credit-offers",
             "GET /api/notary",
             "GET /api/public/shares",
             "GET /api/public/shares/{share_id}",
@@ -1724,8 +1744,8 @@ mod tests {
             "POST /api/internal/notary/admissions/redeem",
             "POST /api/internal/notary/leases/release",
             "POST /api/internal/notary/leases/renew",
+            "POST /api/me/credit-offers/{offer_id}/claim",
             "POST /api/notary/admissions",
-            "PUT /api/me/plan",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -1771,6 +1791,24 @@ mod tests {
             "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
              VALUES ('legacy-user', 1, 'legacy', 1, 1)",
         )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let period_start: i64 =
+            sqlx::query_scalar("SELECT EXTRACT(EPOCH FROM date_trunc('month', now()))::BIGINT")
+                .fetch_one(&database.pool)
+                .await
+                .unwrap();
+        sqlx::query(
+            "INSERT INTO notary_finalization_credit_ledger
+             (budget_subject, account_id, record_digest, allowance_bytes, period_start, created_at)
+             VALUES
+             ('user:legacy-user', 'legacy-user', $1, 1048576, $3, $3),
+             ('public', NULL, $2, 2048, $3, $3)",
+        )
+        .bind("d".repeat(64))
+        .bind("e".repeat(64))
+        .bind(period_start)
         .execute(&database.pool)
         .await
         .unwrap();
@@ -1917,6 +1955,37 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(removed_columns, 0);
+
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0009_credit_grants_and_ip_subjects.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let accounting: (i64, i64, i64) = sqlx::query_as(
+            "SELECT
+                 (SELECT COALESCE(SUM(amount_bytes), 0)::BIGINT
+                  FROM notary_credit_grants WHERE credit_subject = 'user:legacy-user'),
+                 (SELECT COALESCE(SUM(allowance_bytes), 0)::BIGINT
+                  FROM notary_credit_debits WHERE credit_subject = 'user:legacy-user'),
+                 (SELECT COALESCE(SUM(allocations.amount_bytes), 0)::BIGINT
+                  FROM notary_credit_debit_allocations AS allocations
+                  JOIN notary_credit_debits AS debits ON debits.id = allocations.debit_id
+                  WHERE debits.credit_subject = 'user:legacy-user')",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(accounting, (640 << 20, 1 << 20, 1 << 20));
+        let public: (i64, i64) = sqlx::query_as(
+            "SELECT
+                 (SELECT COUNT(*) FROM notary_credit_grants WHERE credit_subject = 'public'),
+                 (SELECT COUNT(*) FROM notary_credit_grants WHERE credit_subject LIKE 'public:v%')",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(public, (1, 0));
     }
 
     #[test]

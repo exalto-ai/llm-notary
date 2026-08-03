@@ -757,6 +757,16 @@
               }
             }
           },
+          "402": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
             "description": "",
             "content": {
@@ -1135,35 +1145,101 @@
         ]
       }
     },
-    "/api/me/plan": {
-      "put": {
+    "/api/me/credit-offers": {
+      "get": {
         "tags": [
           "browser-auth"
         ],
-        "summary": "Switch the signed-in account between free and paid preview",
-        "operationId": "change_plan",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ChangePlanRequest"
-              }
-            }
-          },
-          "required": true
-        },
+        "summary": "List promotional credit offers eligible for the signed-in account",
+        "operationId": "eligible_credit_offers",
         "responses": {
           "200": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PlanResponse"
+                  "$ref": "#/components/schemas/CreditOffersResponse"
                 }
               }
             }
           },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/me/credit-offers/{offer_id}/claim": {
+      "post": {
+        "tags": [
+          "browser-auth"
+        ],
+        "summary": "Claim one server-defined promotional credit offer",
+        "operationId": "claim_credit_offer",
+        "parameters": [
+          {
+            "name": "offer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaimCreditOfferResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
             "description": "",
             "content": {
               "application/json": {
@@ -1306,7 +1382,27 @@
               }
             }
           },
+          "402": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
             "description": "",
             "content": {
               "application/json": {
@@ -2084,9 +2180,35 @@
         "type": "string",
         "enum": [
           "public",
-          "free",
-          "paid_preview"
+          "free"
         ]
+      },
+      "AdmissionLimits": {
+        "type": "object",
+        "required": [
+          "max_attestable_http_bytes",
+          "max_frame_bytes",
+          "max_private_chunk_bytes",
+          "max_private_chunk_commitments"
+        ],
+        "properties": {
+          "max_attestable_http_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_frame_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_private_chunk_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_private_chunk_commitments": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
       },
       "AdmissionMode": {
         "type": "string",
@@ -2101,7 +2223,7 @@
           "ticket",
           "expires_at",
           "directory_generation",
-          "entitlements"
+          "limits"
         ],
         "properties": {
           "directory_generation": {
@@ -2109,12 +2231,12 @@
             "format": "int64",
             "minimum": 0
           },
-          "entitlements": {
-            "$ref": "#/components/schemas/EffectiveEntitlements"
-          },
           "expires_at": {
             "type": "integer",
             "format": "int64"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/AdmissionLimits"
           },
           "ticket": {
             "type": "string"
@@ -2216,14 +2338,18 @@
           }
         }
       },
-      "ChangePlanRequest": {
+      "ClaimCreditOfferResponse": {
         "type": "object",
         "required": [
-          "plan"
+          "offer_id",
+          "credits"
         ],
         "properties": {
-          "plan": {
-            "$ref": "#/components/schemas/ServicePlan"
+          "credits": {
+            "$ref": "#/components/schemas/CreditSummary"
+          },
+          "offer_id": {
+            "type": "string"
           }
         }
       },
@@ -2283,11 +2409,15 @@
         "type": "object",
         "required": [
           "user",
-          "credential"
+          "credential",
+          "credits"
         ],
         "properties": {
           "credential": {
             "$ref": "#/components/schemas/CliCredentialResponse"
+          },
+          "credits": {
+            "$ref": "#/components/schemas/CreditSummary"
           },
           "session": {
             "oneOf": [
@@ -2440,69 +2570,139 @@
           "api_key"
         ]
       },
-      "EffectiveEntitlements": {
+      "CreditHistoryEntry": {
         "type": "object",
         "required": [
-          "access_pool",
-          "capture_concurrency",
-          "finalize_concurrency",
-          "starts_per_minute",
-          "session_timeout_secs",
-          "max_attestable_http_bytes",
-          "max_frame_bytes",
-          "max_private_chunk_bytes",
-          "max_private_chunk_commitments",
-          "monthly_finalization_bytes",
-          "remaining_finalization_bytes"
+          "id",
+          "kind",
+          "amount_bytes",
+          "display_label",
+          "created_at"
         ],
         "properties": {
-          "access_pool": {
-            "$ref": "#/components/schemas/AccessPool"
+          "amount_bytes": {
+            "type": "integer",
+            "format": "int64"
           },
-          "account_concurrency": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "display_label": {
+            "type": "string"
+          },
+          "expires_at": {
             "type": [
               "integer",
               "null"
             ],
             "format": "int64"
           },
-          "capture_concurrency": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CreditHistoryKind"
+          },
+          "source_kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreditHistoryKind": {
+        "type": "string",
+        "enum": [
+          "grant",
+          "debit"
+        ]
+      },
+      "CreditOffer": {
+        "type": "object",
+        "required": [
+          "id",
+          "title",
+          "description",
+          "amount_bytes",
+          "claim_expires_at",
+          "credit_expires_at"
+        ],
+        "properties": {
+          "amount_bytes": {
             "type": "integer",
             "format": "int64"
           },
-          "finalize_concurrency": {
+          "claim_expires_at": {
             "type": "integer",
             "format": "int64"
           },
-          "max_attestable_http_bytes": {
+          "credit_expires_at": {
             "type": "integer",
             "format": "int64"
           },
-          "max_frame_bytes": {
+          "description": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "CreditOffersResponse": {
+        "type": "object",
+        "required": [
+          "offers"
+        ],
+        "properties": {
+          "offers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditOffer"
+            }
+          }
+        }
+      },
+      "CreditSummary": {
+        "type": "object",
+        "required": [
+          "total_remaining_bytes",
+          "included_monthly_remaining_bytes",
+          "supplemental_remaining_bytes",
+          "reset_at",
+          "history"
+        ],
+        "properties": {
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditHistoryEntry"
+            }
+          },
+          "included_monthly_remaining_bytes": {
             "type": "integer",
             "format": "int64"
           },
-          "max_private_chunk_bytes": {
+          "next_grant_expiration": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "reset_at": {
             "type": "integer",
             "format": "int64"
           },
-          "max_private_chunk_commitments": {
+          "supplemental_remaining_bytes": {
             "type": "integer",
             "format": "int64"
           },
-          "monthly_finalization_bytes": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "remaining_finalization_bytes": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "session_timeout_secs": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "starts_per_minute": {
+          "total_remaining_bytes": {
             "type": "integer",
             "format": "int64"
           }
@@ -2511,10 +2711,14 @@
       "ErrorResponse": {
         "type": "object",
         "required": [
-          "error"
+          "error",
+          "message"
         ],
         "properties": {
           "error": {
+            "type": "string"
+          },
+          "message": {
             "type": "string"
           }
         }
@@ -2633,15 +2837,11 @@
         "type": "object",
         "required": [
           "user",
-          "plan",
-          "entitlements"
+          "credits"
         ],
         "properties": {
-          "entitlements": {
-            "$ref": "#/components/schemas/EffectiveEntitlements"
-          },
-          "plan": {
-            "$ref": "#/components/schemas/ServicePlan"
+          "credits": {
+            "$ref": "#/components/schemas/CreditSummary"
           },
           "user": {
             "$ref": "#/components/schemas/PublicUser"
@@ -2746,21 +2946,6 @@
           "tcp",
           "tls"
         ]
-      },
-      "PlanResponse": {
-        "type": "object",
-        "required": [
-          "plan",
-          "entitlements"
-        ],
-        "properties": {
-          "entitlements": {
-            "$ref": "#/components/schemas/EffectiveEntitlements"
-          },
-          "plan": {
-            "$ref": "#/components/schemas/ServicePlan"
-          }
-        }
       },
       "PublicShareDetail": {
         "type": "object",
@@ -2928,7 +3113,6 @@
           "lease_id",
           "lease_expires_at",
           "access_pool",
-          "session_timeout_secs",
           "max_attestable_http_bytes",
           "max_frame_bytes",
           "max_private_chunk_bytes",
@@ -2971,10 +3155,6 @@
               "string",
               "null"
             ]
-          },
-          "session_timeout_secs": {
-            "type": "integer",
-            "format": "int64"
           }
         }
       },
@@ -2988,13 +3168,6 @@
             "type": "string"
           }
         }
-      },
-      "ServicePlan": {
-        "type": "string",
-        "enum": [
-          "free",
-          "paid_preview"
-        ]
       },
       "ShareResponse": {
         "type": "object",

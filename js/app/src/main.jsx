@@ -30,12 +30,13 @@ import './sharing.css';
 import { RelayAnimation } from './RelayAnimation';
 import {
   approveCli,
-  changeServicePlan,
   createApiKey,
   getApiKeys,
+  claimCreditOffer,
   getCliApproval,
   getCliSessions,
   getCurrentUser,
+  getCreditOffers,
   getNotaryDirectory,
   getListedShares,
   getMyShares,
@@ -413,6 +414,18 @@ const docPages = {
       { heading: 'Stopping and retrying', body: 'Once the end-of-stream bundle is sealed, stopping the proxy does not invalidate it. Finalization can happen later. If finalization is interrupted, the unchanged bundle can be retried, although the interrupted proof computation starts over.' },
     ],
   },
+  'hosted-credits': {
+    title: 'Hosted finalization credits',
+    lead: 'Every signed-in account is Free. Included monthly credits and additional purchased or promotional credits pay for hosted finalization.',
+    blocks: [
+      { heading: 'One Free account', body: 'There is no paid plan or account tier. A signed-in account receives an included monthly grant and can add credits through purchases, promotions, or manual adjustments. Capturing locally, retrying an unchanged finalization, verifying a package, and publishing an already-finalized package do not spend credits.' },
+      { heading: 'Monthly and additional grants', body: 'Anonymous Public use receives 64 MiB each UTC month and a signed-in Free account receives 512 MiB. During prototype testing, every Free account also receives one automatic, non-expiring 128 MiB testing grant. Purchased and promotional credits remain separate grants, and finalization spends the grant that expires soonest before non-expiring credit.' },
+      { heading: 'Anonymous allowances are scoped by network address', body: 'Public hosted use derives a rotating, keyed subject from the connection address: one IPv4 address or one IPv6 /64 prefix. Only explicitly trusted reverse proxies may supply the client address. The raw address is not stored in admission records or sent to a notary worker.' },
+      { heading: 'An abuse control, not an identity claim', note: 'Network-address scoping is only a coarse abuse control. People behind the same NAT, corporate gateway, or VPN can share an allowance, while one person may appear under different addresses. The derived subject does not identify a person and is not a privacy guarantee.' },
+      { heading: 'Account summary', body: 'The hosted dashboard shows included and additional balances, the monthly reset, the next expiration, available offers, and a bounded recent history. A connected local service can retrieve the same credit summary with `llm-notary whoami --json`.' },
+      { heading: 'Evidence is unchanged', body: 'Admission and credit bookkeeping do not change TLSNotary evidence, trace-package verification, local bundle retention, or the trust claim. Self-hosted notaries do not need the hosted credit ledger unless their operator deliberately adopts it.' },
+    ],
+  },
   'trace-packages': {
     title: 'Finalize and verify.',
     lead: 'Turn one encrypted bundle into a portable evidence package, inspect its canonical OpenTelemetry trace, and verify the entire package offline.',
@@ -522,6 +535,13 @@ const docSubheadings = {
     'Offline trust',
     'Tool-use boundary',
   ]),
+  'hosted-credits': new Set([
+    'Monthly and supplemental grants',
+    'Anonymous allowances are scoped by network address',
+    'An abuse control, not an identity claim',
+    'Account summary',
+    'Evidence is unchanged',
+  ]),
   share: new Set([
     'Choose visibility',
     'Submit one finalized package',
@@ -535,7 +555,7 @@ const docSubheadings = {
 
 const docNavigation = [
   { label: 'Start', pages: [['overview', 'Overview'], ['getting-started', 'Install and capture']] },
-  { label: 'Understand', pages: [['how-it-works', 'Trust model'], ['trace-packages', 'Trace packages']] },
+  { label: 'Understand', pages: [['how-it-works', 'Trust model'], ['hosted-credits', 'Hosted credits'], ['trace-packages', 'Trace packages']] },
   { label: 'Share', pages: [['share', 'Share a session']] },
 ];
 const docOrder = docNavigation.flatMap((group) => group.pages.map(([key]) => key));
@@ -545,6 +565,8 @@ const docAliases = {
   bundles: 'getting-started',
   captures: 'getting-started',
   providers: 'getting-started',
+  credits: 'hosted-credits',
+  plans: 'hosted-credits',
   harnesses: 'getting-started',
   finalize: 'trace-packages',
   artifacts: 'trace-packages',
@@ -879,6 +901,7 @@ function sessionDate(unixSeconds) {
 function fileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
@@ -987,23 +1010,31 @@ export function ApiKeysPanel({ loadKeys = getApiKeys, createKey = createApiKey, 
   </section>;
 }
 
-function Dashboard({ user, view, onPlanChange }) {
+function Dashboard({ user, view }) {
   const [sessions, setSessions] = useState(null);
   const [sessionError, setSessionError] = useState(null);
   const [revoking, setRevoking] = useState(null);
   const [revokeTarget, setRevokeTarget] = useState(null);
   const [shares, setShares] = useState(null);
   const [shareError, setShareError] = useState(null);
-  const [plan, setPlan] = useState(user.plan);
-  const [entitlements, setEntitlements] = useState(user.entitlements);
-  const [planChanging, setPlanChanging] = useState(false);
-  const [planError, setPlanError] = useState(null);
+  const [credits, setCredits] = useState(user.credits);
+  const [creditOffers, setCreditOffers] = useState(null);
+  const [creditError, setCreditError] = useState(null);
+  const [claimingOffer, setClaimingOffer] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
     getCliSessions()
       .then((sessions) => { if (!cancelled) setSessions(sessions); })
       .catch((reason) => { if (!cancelled) setSessionError(reason.message); });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    getCreditOffers()
+      .then((offers) => { if (!cancelled) setCreditOffers(offers); })
+      .catch((reason) => { if (!cancelled) setCreditError(reason.message); });
     return () => { cancelled = true; };
   }, []);
 
@@ -1036,18 +1067,17 @@ function Dashboard({ user, view, onPlanChange }) {
     }
   };
 
-  const changePlan = async (nextPlan) => {
-    setPlanChanging(true);
-    setPlanError(null);
+  const claimOffer = async (offer) => {
+    setClaimingOffer(offer.id);
+    setCreditError(null);
     try {
-      const response = await changeServicePlan(nextPlan);
-      setPlan(response.plan);
-      setEntitlements(response.entitlements);
-      onPlanChange(response);
+      const response = await claimCreditOffer(offer.id);
+      setCredits(response.credits);
+      setCreditOffers((current) => current?.filter((item) => item.id !== offer.id) || []);
     } catch (reason) {
-      setPlanError(reason.message);
+      setCreditError(reason.message);
     } finally {
-      setPlanChanging(false);
+      setClaimingOffer(null);
     }
   };
 
@@ -1066,19 +1096,20 @@ function Dashboard({ user, view, onPlanChange }) {
       </aside>
       <div className="dashboard-page">
         {activeView === 'account' ? <>
-          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Account</h1><p>Manage hosted service access and the local services connected to your account.</p></header>
+          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Account</h1><p>Manage hosted finalization credits and the local services connected to your Free account.</p></header>
           <div className="dashboard-summary">
             <div><span>GitHub account</span><b>{user.github_login}</b></div>
             <div><span>Admitted shares</span><b>{shares === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>
-          <section className="dashboard-plan" aria-labelledby="service-plan-title">
-            <header><div><span className="eyebrow">Hosted notary access</span><h2 id="service-plan-title">{plan === 'paid_preview' ? 'Paid preview' : 'Free'} plan</h2></div><span className="dashboard-plan-badge">{plan === 'paid_preview' ? 'No charge' : 'Included'}</span></header>
-            <p>{plan === 'paid_preview' ? 'Paid preview raises the hosted-service limits while billing is disabled. It creates no charge or payment obligation.' : 'Upgrade to the paid preview to use the higher hosted-service limits. Billing is not enabled and no payment method is required.'}</p>
-            {entitlements && <dl><div><dt>Concurrent sessions</dt><dd>{entitlements.account_concurrency ?? 'Shared public pool'}</dd></div><div><dt>Session timeout</dt><dd>{Math.round(entitlements.session_timeout_secs / 60)} min</dd></div><div><dt>Maximum capture</dt><dd>{fileSize(entitlements.max_attestable_http_bytes)}</dd></div><div><dt>Proof credits left</dt><dd>{fileSize(entitlements.remaining_finalization_bytes)}</dd></div><div><dt>Starts per minute</dt><dd>{entitlements.starts_per_minute}</dd></div></dl>}
-            {planError && <p className="dashboard-session-error" role="alert">{planError}</p>}
-            <button type="button" onClick={() => changePlan(plan === 'paid_preview' ? 'free' : 'paid_preview')} disabled={planChanging}>{planChanging ? 'Updating…' : plan === 'paid_preview' ? 'Return to free' : 'Upgrade to paid preview'}</button>
-          </section>
+          {credits && <section className="dashboard-credits" aria-labelledby="credit-balance-title">
+            <header><div><span className="eyebrow">Hosted finalization credits</span><h2 id="credit-balance-title">{fileSize(credits.total_remaining_bytes)} available</h2></div><div className="dashboard-credit-meta"><span className="dashboard-account-badge">Free account</span><span>Resets {sessionDate(credits.reset_at)}</span></div></header>
+            <p className="dashboard-credit-note">Included credits reset monthly. Credits you purchase or receive are added separately and keep their own expiration.</p>
+            <div className="dashboard-credit-ledger" aria-label="Credit balance breakdown"><div><span>Included this month</span><b>{fileSize(credits.included_monthly_remaining_bytes)}</b></div><div><span>Additional credits</span><b>{fileSize(credits.supplemental_remaining_bytes)}</b></div><div><span>Next expiration</span><b>{credits.next_grant_expiration ? sessionDate(credits.next_grant_expiration) : 'None'}</b></div></div>
+            {creditError && <p className="dashboard-session-error" role="alert">{creditError}</p>}
+            {creditOffers?.map((offer) => <article className="dashboard-credit-offer" key={offer.id}><div><span className="eyebrow">Available offer</span><b>{offer.title}</b><p>{offer.description} Claim by {sessionDate(offer.claim_expires_at)}.</p></div><button type="button" onClick={() => claimOffer(offer)} disabled={claimingOffer === offer.id}>{claimingOffer === offer.id ? 'Claiming…' : `Claim ${fileSize(offer.amount_bytes)}`}</button></article>)}
+            {credits.history.length > 0 && <div className="dashboard-credit-history"><h3>Recent credit activity</h3>{credits.history.slice(0, 6).map((entry) => <div key={`${entry.kind}-${entry.id}`}><span className={`dashboard-credit-sign dashboard-credit-sign--${entry.kind}`}>{entry.kind === 'grant' ? '+' : '−'}{fileSize(entry.amount_bytes)}</span><span>{entry.display_label}</span><time>{sessionDate(entry.created_at)}</time></div>)}</div>}
+          </section>}
           <section className="dashboard-sessions" aria-labelledby="connected-services-title"><header><div><span className="eyebrow">Local service access</span><h2 id="connected-services-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
           <ApiKeysPanel />
         </> : <>
@@ -1242,8 +1273,7 @@ function App() {
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  const updatePlan = (response) => setUser((current) => current ? { ...current, plan: response.plan, entitlements: response.entitlements } : current);
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} onPlanChange={updatePlan} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 const applicationRoot = document.getElementById('root');

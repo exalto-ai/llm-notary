@@ -53,7 +53,7 @@
           "local-admin"
         ],
         "summary": "Get the LLM Notary account connection",
-        "description": "Reports whether this local service has an account connection used for hosted tier admission and sharing.",
+        "description": "Reports whether this local service has an account connection used for hosted admission, credits, and sharing.",
         "operationId": "account_status",
         "responses": {
           "200": {
@@ -89,7 +89,7 @@
           "local-admin"
         ],
         "summary": "Connect an LLM Notary account",
-        "description": "Starts browser approval for an account connection used for hosted tier admission and sharing. Browser approval is unavailable while the daemon uses an injected API key.",
+        "description": "Starts browser approval for an account connection used for hosted admission, credits, and sharing. Browser approval is unavailable while the daemon uses an injected API key.",
         "operationId": "start_account_connection",
         "requestBody": {
           "content": {
@@ -1285,6 +1285,16 @@
               "null"
             ]
           },
+          "credits": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CreditSummary"
+              }
+            ]
+          },
           "device_name": {
             "type": [
               "string",
@@ -1580,6 +1590,89 @@
           }
         },
         "additionalProperties": false
+      },
+      "CreditHistoryEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "amount_bytes",
+          "display_label",
+          "created_at"
+        ],
+        "properties": {
+          "amount_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "display_label": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "source_kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "CreditSummary": {
+        "type": "object",
+        "required": [
+          "total_remaining_bytes",
+          "included_monthly_remaining_bytes",
+          "supplemental_remaining_bytes",
+          "reset_at",
+          "history"
+        ],
+        "properties": {
+          "history": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CreditHistoryEntry"
+            }
+          },
+          "included_monthly_remaining_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "next_grant_expiration": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "reset_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "supplemental_remaining_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total_remaining_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
       },
       "ErrorBody": {
         "type": "object",

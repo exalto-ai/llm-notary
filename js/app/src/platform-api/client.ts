@@ -11,6 +11,9 @@ export class PlatformApiError extends Error {
 }
 
 function errorMessage(error: unknown, fallback: string): string {
+  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+    return error.message;
+  }
   if (error && typeof error === 'object' && 'error' in error && typeof error.error === 'string') {
     return error.error;
   }
@@ -135,15 +138,23 @@ export async function getCurrentUser() {
   if (!response.ok || !data) {
     throw new PlatformApiError(errorMessage(error, 'Could not load the current account.'), response.status);
   }
-  return { ...data.user, plan: data.plan, entitlements: data.entitlements };
+  return { ...data.user, credits: data.credits };
 }
 
-export async function changeServicePlan(plan: 'free' | 'paid_preview') {
-  const { data, error, response } = await client.PUT('/api/me/plan', {
-    body: { plan },
+export async function getCreditOffers() {
+  const { data, error, response } = await client.GET('/api/me/credit-offers');
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not load available credit offers.'), response.status);
+  }
+  return data.offers;
+}
+
+export async function claimCreditOffer(offerId: string) {
+  const { data, error, response } = await client.POST('/api/me/credit-offers/{offer_id}/claim', {
+    params: { path: { offer_id: offerId } },
   });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not change the service plan.'), response.status);
+    throw new PlatformApiError(errorMessage(error, 'Could not claim this credit offer.'), response.status);
   }
   return data;
 }

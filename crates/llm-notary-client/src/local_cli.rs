@@ -938,12 +938,21 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
             {
-                Ok(format!(
+                let mut output = format!(
                     "Connected to LLM Notary as {} ({}: {})",
                     value_string(value, "/github_login"),
                     value_string(value, "/credential_kind"),
                     value_string(value, "/credential_name"),
-                ))
+                );
+                if let Some(credits) = value.get("credits") {
+                    output.push_str(&format!(
+                        "\ncredits {} available ({} included, {} additional)",
+                        format_bytes(value_i64(credits, "/total_remaining_bytes")),
+                        format_bytes(value_i64(credits, "/included_monthly_remaining_bytes")),
+                        format_bytes(value_i64(credits, "/supplemental_remaining_bytes")),
+                    ));
+                }
+                Ok(output)
             } else {
                 Ok("No LLM Notary account is connected.".to_owned())
             }
@@ -976,6 +985,24 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             )
         }),
         CliCommand::Open => Ok(format!("Opened {}", value_string(value, "/opened"))),
+    }
+}
+
+fn value_i64(value: &Value, pointer: &str) -> i64 {
+    value.pointer(pointer).and_then(Value::as_i64).unwrap_or(0)
+}
+
+fn format_bytes(bytes: i64) -> String {
+    const MIB: f64 = (1 << 20) as f64;
+    const GIB: f64 = (1 << 30) as f64;
+    if bytes >= 1 << 30 {
+        format!("{:.1} GiB", bytes as f64 / GIB)
+    } else if bytes >= 1 << 20 {
+        format!("{:.1} MiB", bytes as f64 / MIB)
+    } else if bytes >= 1 << 10 {
+        format!("{:.1} KiB", bytes as f64 / (1 << 10) as f64)
+    } else {
+        format!("{bytes} B")
     }
 }
 
