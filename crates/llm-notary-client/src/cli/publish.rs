@@ -36,11 +36,12 @@ struct CreatePublishJob<'a> {
     archive_format: &'a str,
     size_bytes: u64,
     sha256: &'a str,
+    visibility: &'static str,
 }
 
 #[derive(Deserialize)]
 struct CreatePublishJobResponse {
-    job: PublishJob,
+    share: PublishJob,
     upload: Option<UploadInstructions>,
 }
 
@@ -50,7 +51,7 @@ struct PublishJob {
     state: String,
     status_url: String,
     failure_code: Option<String>,
-    trace_url: Option<String>,
+    share_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -174,7 +175,7 @@ pub(crate) async fn publication_status(
         .get(
             authenticated
                 .origin
-                .api_url(&format!("/api/publish/jobs/{job_id}")),
+                .api_url(&format!("/api/shares/{job_id}")),
         )
         .bearer_auth(&authenticated.access_token)
         .send()
@@ -191,7 +192,7 @@ pub(crate) async fn publication_status(
         return Err(PublicationStatusError::Unavailable);
     }
     let trace_url = job
-        .trace_url
+        .share_url
         .as_deref()
         .map(|value| absolute_same_origin_url(&authenticated.origin, value))
         .transpose()
@@ -225,13 +226,14 @@ async fn submit_archive(
         .context("building publication client")?;
     let created = api_json::<CreatePublishJobResponse>(
         client
-            .post(authenticated.origin.api_url("/api/publish/jobs"))
+            .post(authenticated.origin.api_url("/api/shares"))
             .bearer_auth(&authenticated.access_token)
             .header("Idempotency-Key", idempotency_key)
             .json(&CreatePublishJob {
                 archive_format: ARCHIVE_FORMAT,
                 size_bytes: archive.len() as u64,
                 sha256: archive_sha256,
+                visibility: "unlisted",
             })
             .send()
             .await
@@ -240,7 +242,7 @@ async fn submit_archive(
     )
     .await?;
 
-    if created.job.state == "uploading" {
+    if created.share.state == "uploading" {
         let upload = created
             .upload
             .ok_or_else(|| anyhow!("publication API omitted upload instructions"))?;
@@ -250,7 +252,7 @@ async fn submit_archive(
                 .post(
                     authenticated
                         .origin
-                        .api_url(&format!("/api/publish/jobs/{}/complete", created.job.id)),
+                        .api_url(&format!("/api/shares/{}/complete", created.share.id)),
                 )
                 .bearer_auth(&authenticated.access_token)
                 .send()
@@ -268,7 +270,7 @@ async fn submit_archive(
             .get(
                 authenticated
                     .origin
-                    .api_url(&format!("/api/publish/jobs/{}", created.job.id)),
+                    .api_url(&format!("/api/shares/{}", created.share.id)),
             )
             .bearer_auth(&authenticated.access_token)
             .send()
@@ -280,7 +282,7 @@ async fn submit_archive(
     .with_context(|| {
         format!(
             "publication job {} was uploaded and completed, but status polling failed",
-            created.job.id
+            created.share.id
         )
     })
 }
@@ -477,11 +479,12 @@ mod tests {
         ) -> (StatusCode, Json<serde_json::Value>) {
             assert!(headers.contains_key("authorization"));
             assert!(headers.contains_key("idempotency-key"));
+            assert_eq!(request["visibility"], "unlisted");
             let size = request["size_bytes"].as_u64().unwrap();
             (
                 StatusCode::CREATED,
                 Json(serde_json::json!({
-                    "job": {"id":"job-1","state":"uploading","status_url":"/api/publish/jobs/job-1"},
+                    "share": {"id":"job-1","state":"uploading","status_url":"/api/shares/job-1"},
                     "upload": {
                         "method":"PUT",
                         "url":format!("{origin}/upload"),
@@ -500,13 +503,13 @@ mod tests {
         async fn complete(Path(job_id): Path<String>) -> Json<serde_json::Value> {
             assert_eq!(job_id, "job-1");
             Json(serde_json::json!({
-                "id":"job-1","state":"queued","status_url":"/api/publish/jobs/job-1"
+                "id":"job-1","state":"queued","status_url":"/api/shares/job-1"
             }))
         }
         async fn status(Path(job_id): Path<String>) -> Json<serde_json::Value> {
             assert_eq!(job_id, "job-1");
             Json(serde_json::json!({
-                "id":"job-1","state":"queued","status_url":"/api/publish/jobs/job-1"
+                "id":"job-1","state":"queued","status_url":"/api/shares/job-1"
             }))
         }
 
@@ -515,14 +518,14 @@ mod tests {
         let uploads = MockState::default();
         let app = Router::new()
             .route(
-                "/api/publish/jobs",
+                "/api/shares",
                 post({
                     let origin = origin.clone();
                     move |headers, body| create(State(origin.clone()), headers, body)
                 }),
             )
-            .route("/api/publish/jobs/{job_id}/complete", post(complete))
-            .route("/api/publish/jobs/{job_id}", get(status))
+            .route("/api/shares/{job_id}/complete", post(complete))
+            .route("/api/shares/{job_id}", get(status))
             .route("/upload", put(upload))
             .with_state(uploads.clone());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });

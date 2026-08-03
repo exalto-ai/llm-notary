@@ -4,26 +4,24 @@ use anyhow::{Result, bail};
 use axum::{
     Json,
     body::Body,
-    extract::{Path as AxumPath, State},
-    http::{StatusCode, header},
+    extract::{Path, State},
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sqlx::FromRow;
 use tracing::Span;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
+use llm_notary_core::{
+    public_safety::{PUBLIC_PACKAGE_SAFETY_VERSION, validate_public_trace_package},
+    sha256_hex,
+};
+
 use super::{
-    ApiError, ApiResult, AppState, DatabasePool,
-    config::{
-        DEFAULT_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN,
-        DEFAULT_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN, DEFAULT_METADATA_INPUT_NANOUSD_PER_TOKEN,
-        DEFAULT_METADATA_MODEL, DEFAULT_METADATA_OUTPUT_NANOUSD_PER_TOKEN,
-        DEFAULT_METADATA_WEEKLY_BUDGET_CENTS, MetadataConfig, NANOUSD_PER_CENT,
-    },
-    database_error,
+    ApiError, ApiResult, AppState, database_error,
     hosted_verifier::{
         HostedVerificationError, HostedVerifiedPackage, TRUST_SOURCE,
         acquire_verification_capacity, verify_package,
@@ -31,632 +29,308 @@ use super::{
     publish::PublishJobRow,
     unix_timestamp,
 };
-use llm_notary_core::sha256_hex;
 
 const ADMISSION_INTERVAL_SECS: u64 = 2;
-const METADATA_INTERVAL_SECS: u64 = 10;
 const CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
 const MAX_JOBS_PER_TICK: usize = 4;
-const MAX_METADATA_PER_TICK: usize = 4;
-const METADATA_RETRY_SECS: i64 = 60 * 60;
-const METADATA_CLAIM_TIMEOUT_SECS: i64 = 5 * 60;
-const RECENT_DOWNLOAD_WINDOW_SECS: i64 = 28 * 24 * 60 * 60;
-const METADATA_MODEL: &str = DEFAULT_METADATA_MODEL;
-const METADATA_PROMPT_VERSION: &str = "library-metadata/v1";
-const MAX_METADATA_PROMPT_TOKENS: i64 = 32_000;
-const MAX_METADATA_COMPLETION_TOKENS: i64 = 256;
-const SECS_PER_WEEK: i64 = 7 * 24 * 60 * 60;
-const ALLOWED_TAGS: &[&str] = &[
-    "agent",
-    "classification",
-    "coding",
-    "direct-api",
-    "streaming",
-    "structured-output",
-    "summarization",
-    "tests",
-    "tool-call",
-    "tool-result",
-];
 
 #[derive(FromRow)]
-struct PublicArtifactRow {
+struct PublicShareRow {
     id: String,
-    public_trace_object_key: String,
-    public_trace_size_bytes: i64,
-    public_trace_sha256: String,
-    library_provider: String,
-    library_host: String,
+    visibility: String,
+    github_login: String,
+    admitted_at: i64,
+    provider: String,
+    provider_host: String,
+    model: String,
     authenticated_provider_connection_unix_ms: Option<i64>,
     verified_at: Option<i64>,
     verified_notary_key_id: Option<String>,
     verified_directory_generation: Option<i64>,
     verified_trust_source: Option<String>,
-    source_package_sha256: Option<String>,
-}
-
-#[derive(FromRow)]
-struct PublicTraceObjectRow {
-    id: String,
     public_trace_object_key: String,
     public_trace_size_bytes: i64,
     public_trace_sha256: String,
+    package_object_key: Option<String>,
+    package_size_bytes: Option<i64>,
+    package_sha256: Option<String>,
+    public_package_safety_version: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
-struct PublicTraceMetadata {
+struct ListedSharesResponse {
+    shares: Vec<ListedShareSummary>,
+}
+
+#[derive(Serialize, ToSchema)]
+struct ListedShareSummary {
     id: String,
-    trace_url: String,
-    platform_verified_source: bool,
+    provider: String,
+    model: String,
+    publisher: String,
+    authenticated_at_unix_ms: Option<i64>,
+    share_url: String,
+}
+
+#[derive(Serialize, ToSchema)]
+struct PublicShareDetail {
+    id: String,
+    visibility: String,
+    publisher: String,
+    admitted_at: i64,
     authenticated_at_unix_ms: Option<i64>,
     verified_at: Option<i64>,
     provider: String,
     host: String,
+    model: String,
+    verification_state: &'static str,
     notary_key_id: Option<String>,
     directory_generation: Option<i64>,
     trust_source: Option<String>,
-    source_package_sha256: Option<String>,
     trace_sha256: String,
-}
-
-#[derive(FromRow)]
-struct LibraryRow {
-    id: String,
-    github_login: String,
-    admitted_at: i64,
-    library_provider: String,
-    library_host: String,
-    library_model: String,
-    library_span_count: i64,
-    library_tool_use: bool,
-    title: Option<String>,
-    tags_json: Option<String>,
-    recent_downloads: i64,
-}
-
-#[derive(Serialize, ToSchema)]
-struct CollectionResponse {
-    format: &'static str,
-    slug: String,
-    title: String,
-    description: String,
-    consent_label: &'static str,
-    publications: Vec<CollectionPublication>,
-}
-
-#[derive(Serialize, ToSchema)]
-struct CollectionPublication {
-    id: String,
-    title: String,
-    tool_use: bool,
-    tags: Vec<String>,
-    author: String,
-    admitted_at: i64,
-    provider: String,
-    host: String,
-    model: String,
-    span_count: usize,
-    recent_downloads: i64,
+    package_available: bool,
+    package_size_bytes: Option<i64>,
+    package_sha256: Option<String>,
+    public_package_safety_version: Option<String>,
     trace_url: String,
-}
-
-#[derive(Clone)]
-pub struct MetadataService {
-    api_key: Option<String>,
-    model: String,
-    weekly_budget_nanousd: i64,
-    input_nanousd_per_token: i64,
-    cached_input_nanousd_per_token: i64,
-    cache_write_nanousd_per_token: i64,
-    output_nanousd_per_token: i64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct GeneratedMetadata {
-    title: String,
-    tags: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct ChatCompletionResponse {
-    choices: Vec<ChatChoice>,
-    usage: ChatUsage,
-}
-
-#[derive(Deserialize)]
-struct ChatUsage {
-    prompt_tokens: i64,
-    #[serde(default)]
-    prompt_tokens_details: ChatPromptTokenDetails,
-    completion_tokens: i64,
-}
-
-#[derive(Default, Deserialize)]
-struct ChatPromptTokenDetails {
-    #[serde(default)]
-    cached_tokens: i64,
-    #[serde(default)]
-    cache_write_tokens: i64,
-}
-
-#[derive(Deserialize)]
-struct ChatChoice {
-    message: ChatMessage,
-}
-
-#[derive(Deserialize)]
-struct ChatMessage {
-    content: Option<String>,
-}
-
-#[derive(Deserialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-struct ActivityRequest {
-    subject: String,
-}
-
-impl MetadataService {
-    pub fn from_config(config: Option<&MetadataConfig>) -> Self {
-        let Some(config) = config else {
-            return Self::disabled();
-        };
-        Self {
-            api_key: Some(config.api_key.clone()),
-            model: config.model.clone(),
-            weekly_budget_nanousd: config.weekly_budget_nanousd,
-            input_nanousd_per_token: config.input_nanousd_per_token,
-            cached_input_nanousd_per_token: config.cached_input_nanousd_per_token,
-            cache_write_nanousd_per_token: config.cache_write_nanousd_per_token,
-            output_nanousd_per_token: config.output_nanousd_per_token,
-        }
-    }
-
-    pub(crate) fn disabled() -> Self {
-        Self {
-            api_key: None,
-            model: METADATA_MODEL.to_owned(),
-            weekly_budget_nanousd: DEFAULT_METADATA_WEEKLY_BUDGET_CENTS
-                .saturating_mul(NANOUSD_PER_CENT),
-            input_nanousd_per_token: DEFAULT_METADATA_INPUT_NANOUSD_PER_TOKEN,
-            cached_input_nanousd_per_token: DEFAULT_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN,
-            cache_write_nanousd_per_token: DEFAULT_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN,
-            output_nanousd_per_token: DEFAULT_METADATA_OUTPUT_NANOUSD_PER_TOKEN,
-        }
-    }
-
-    async fn generate(
-        &self,
-        http: &reqwest::Client,
-        database: &DatabasePool,
-        trace: &[u8],
-    ) -> Result<Option<GeneratedMetadata>> {
-        let Some(api_key) = &self.api_key else {
-            return Ok(None);
-        };
-        let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-        let period_start = weekly_period_start(now);
-        let spent: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(estimated_cost_nanousd), 0)
-             FROM library_metadata_usage WHERE period_start = $1",
-        )
-        .bind(period_start)
-        .fetch_one(database)
-        .await?;
-        if spent.saturating_add(self.max_request_nanousd()) > self.weekly_budget_nanousd {
-            tracing::warn!(
-                spent_nanousd = spent,
-                weekly_budget_nanousd = self.weekly_budget_nanousd,
-                "Library metadata weekly budget is exhausted"
-            );
-            return Ok(None);
-        }
-        let trace_excerpt: String = String::from_utf8_lossy(trace)
-            .chars()
-            .take(24_000)
-            .collect();
-        let body = serde_json::json!({
-            "model": self.model,
-            "max_completion_tokens": MAX_METADATA_COMPLETION_TOKENS,
-            "store": false,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {
-                    "name": "library_metadata",
-                    "strict": true,
-                    "schema": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": ["title", "tags"],
-                        "properties": {
-                            "title": {"type": "string", "minLength": 1, "maxLength": 96},
-                            "tags": {
-                                "type": "array",
-                                "maxItems": 4,
-                                "items": {"type": "string", "enum": ALLOWED_TAGS}
-                            }
-                        }
-                    }
-                }
-            },
-            "messages": [
-                {"role": "system", "content": "Create terse Library metadata for a published LLM trace. Title: 3 to 8 words, sentence case, simple present tense, active voice, and starts with the actor (for example, Agent, Model, or API). Avoid gerunds, noun phrases, and task-specific subject matter; describe the interaction method only. Tags: choose zero to four schema tags directly supported by the trace. Use exactly one origin tag: agent for an agent workflow, direct-api for a direct provider API workflow; never use both, and do not infer direct-api merely because a provider request occurs. Use tool-call when the model requests a tool and tool-result when a tool result is supplied; use both only when both events appear. Do not quote, paraphrase, or expose prompt/response content, names, credentials, personal data, or secrets."},
-                {"role": "user", "content": format!("Public trace excerpt ({}):\n{}", METADATA_PROMPT_VERSION, trace_excerpt)}
-            ]
-        });
-        let response = http
-            .post("https://api.openai.com/v1/chat/completions")
-            .bearer_auth(api_key)
-            .json(&body)
-            .timeout(Duration::from_secs(20))
-            .send()
-            .await?
-            .error_for_status()?;
-        let response: ChatCompletionResponse = response.json().await?;
-        let estimated_cost_nanousd = self.estimated_cost_nanousd(&response.usage)?;
-        sqlx::query(
-            "INSERT INTO library_metadata_usage
-                 (period_start, model, prompt_tokens, cached_prompt_tokens,
-                  cache_write_tokens, completion_tokens,
-                  estimated_cost_nanousd, created_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
-        )
-        .bind(period_start)
-        .bind(&self.model)
-        .bind(response.usage.prompt_tokens)
-        .bind(response.usage.prompt_tokens_details.cached_tokens)
-        .bind(response.usage.prompt_tokens_details.cache_write_tokens)
-        .bind(response.usage.completion_tokens)
-        .bind(estimated_cost_nanousd)
-        .bind(now)
-        .execute(database)
-        .await?;
-        let content = response
-            .choices
-            .into_iter()
-            .next()
-            .and_then(|choice| choice.message.content)
-            .ok_or_else(|| anyhow::anyhow!("metadata model returned no message content"))?;
-        let metadata: GeneratedMetadata = serde_json::from_str(&content)?;
-        validate_generated_metadata(&metadata)?;
-        Ok(Some(metadata))
-    }
-
-    fn max_request_nanousd(&self) -> i64 {
-        MAX_METADATA_PROMPT_TOKENS
-            .saturating_mul(self.input_nanousd_per_token)
-            .saturating_add(
-                MAX_METADATA_COMPLETION_TOKENS.saturating_mul(self.output_nanousd_per_token),
-            )
-    }
-
-    fn estimated_cost_nanousd(&self, usage: &ChatUsage) -> Result<i64> {
-        if usage.prompt_tokens < 0
-            || usage.prompt_tokens_details.cached_tokens < 0
-            || usage.prompt_tokens_details.cache_write_tokens < 0
-            || usage.completion_tokens < 0
-            || usage.prompt_tokens_details.cached_tokens
-                + usage.prompt_tokens_details.cache_write_tokens
-                > usage.prompt_tokens
-        {
-            bail!("metadata model returned negative token usage");
-        }
-        let uncached_input_tokens = usage.prompt_tokens
-            - usage.prompt_tokens_details.cached_tokens
-            - usage.prompt_tokens_details.cache_write_tokens;
-        Ok(usage
-            .prompt_tokens_details
-            .cached_tokens
-            .saturating_mul(self.cached_input_nanousd_per_token)
-            .saturating_add(
-                usage
-                    .prompt_tokens_details
-                    .cache_write_tokens
-                    .saturating_mul(self.cache_write_nanousd_per_token),
-            )
-            .saturating_add(uncached_input_tokens.saturating_mul(self.input_nanousd_per_token))
-            .saturating_add(
-                usage
-                    .completion_tokens
-                    .saturating_mul(self.output_nanousd_per_token),
-            ))
-    }
-}
-
-fn weekly_period_start(timestamp: i64) -> i64 {
-    timestamp - timestamp.rem_euclid(SECS_PER_WEEK)
-}
-
-enum AdmissionFailure {
-    Reject(&'static str, anyhow::Error),
-    Retry(anyhow::Error),
+    package_url: Option<String>,
+    share_url: String,
 }
 
 struct AdmittedArtifacts {
     verified: HostedVerifiedPackage,
-    card: LibraryCardFacts,
-}
-
-struct LibraryCardFacts {
-    provider: String,
-    host: String,
+    archive: Vec<u8>,
     model: String,
-    span_count: i64,
-    tool_use: bool,
 }
 
 struct StoredPublicArtifacts {
     trace_object_key: String,
     trace_size_bytes: i64,
     trace_sha256: String,
+    package_object_key: String,
+    package_size_bytes: i64,
+    package_sha256: String,
+}
+
+enum AdmissionFailure {
+    Reject(String, anyhow::Error),
+    Retry(anyhow::Error),
 }
 
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
-        .routes(routes!(traces_collection))
-        .routes(routes!(record_download_event))
-        .routes(routes!(public_trace_metadata))
-        .routes(routes!(public_trace))
+        .routes(routes!(listed_shares))
+        .routes(routes!(public_share_detail))
+        .routes(routes!(public_share_trace))
+        .routes(routes!(public_share_package))
 }
 
 #[utoipa::path(
     get,
-    path = "/api/public/collections/traces",
-    summary = "List admitted public traces",
+    path = "/api/public/shares",
+    summary = "List Listed verified-session shares",
     responses(
-        (status = 200, body = CollectionResponse),
+        (status = 200, body = ListedSharesResponse),
         (status = 500, body = super::ErrorResponse)
     ),
     tag = "library"
 )]
-async fn traces_collection(State(state): State<AppState>) -> ApiResult<Json<CollectionResponse>> {
-    let now = unix_timestamp()?;
-    let rows: Vec<LibraryRow> = sqlx::query_as(
-        "SELECT publish_jobs.id, users.github_login, publish_jobs.admitted_at,
-                publish_jobs.library_provider, publish_jobs.library_host,
-                publish_jobs.library_model, publish_jobs.library_span_count,
-                publish_jobs.library_tool_use,
-                publication_metadata.title, publication_metadata.tags_json,
-                COUNT(publication_activity_events.id) AS recent_downloads
+async fn listed_shares(State(state): State<AppState>) -> ApiResult<Json<ListedSharesResponse>> {
+    let rows: Vec<PublicShareRow> = sqlx::query_as(
+        "SELECT publish_jobs.id, publish_jobs.visibility, users.github_login,
+                publish_jobs.admitted_at, publish_jobs.provider,
+                publish_jobs.provider_host, publish_jobs.model,
+                publish_jobs.authenticated_provider_connection_unix_ms,
+                publish_jobs.verified_at, publish_jobs.verified_notary_key_id,
+                publish_jobs.verified_directory_generation,
+                publish_jobs.verified_trust_source,
+                publish_jobs.public_trace_object_key,
+                publish_jobs.public_trace_size_bytes,
+                publish_jobs.public_trace_sha256,
+                publish_jobs.package_object_key, publish_jobs.package_size_bytes,
+                publish_jobs.package_sha256,
+                publish_jobs.public_package_safety_version
          FROM publish_jobs
          JOIN users ON users.id = publish_jobs.user_id
-         LEFT JOIN publication_metadata ON publication_metadata.publication_id = publish_jobs.id
-         LEFT JOIN publication_activity_events ON publication_activity_events.publication_id = publish_jobs.id
-             AND publication_activity_events.event_type = 'download'
-             AND publication_activity_events.occurred_at >= $1
          WHERE publish_jobs.state = 'admitted'
+           AND publish_jobs.visibility = 'listed'
            AND publish_jobs.public_trace_object_key IS NOT NULL
-         GROUP BY publish_jobs.id, users.github_login,
-                  publish_jobs.library_provider, publish_jobs.library_host,
-                  publish_jobs.library_model, publish_jobs.library_span_count,
-                  publish_jobs.library_tool_use,
-                  publication_metadata.title, publication_metadata.tags_json
-         ORDER BY recent_downloads DESC, publish_jobs.admitted_at DESC, publish_jobs.id DESC",
+         ORDER BY publish_jobs.authenticated_provider_connection_unix_ms DESC NULLS LAST,
+                  publish_jobs.id DESC",
     )
-    .bind(now - RECENT_DOWNLOAD_WINDOW_SECS)
     .fetch_all(&state.database)
     .await
     .map_err(database_error)?;
-    let publications = rows
+    let shares = rows
         .into_iter()
-        .map(collection_publication)
-        .collect::<ApiResult<Vec<_>>>()?;
-    Ok(Json(CollectionResponse {
-        format: "llm-notary/public-collection/v1",
-        slug: "llm-notary-library".to_owned(),
-        title: "LLM Notary Library".to_owned(),
-        description: "Platform-hosted traces from source packages verified during admission. A bare trace is not portable evidence.".to_owned(),
-        consent_label: "Consent-based publication",
-        publications,
-    }))
-}
-
-fn collection_publication(artifact: LibraryRow) -> ApiResult<CollectionPublication> {
-    let tags = artifact
-        .tags_json
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .map_err(|error| ApiError::internal(error.into()))?
-        .unwrap_or_default();
-    Ok(CollectionPublication {
-        id: artifact.id.clone(),
-        title: artifact
-            .title
-            .unwrap_or_else(|| fallback_title(&artifact.library_provider, &artifact.library_model)),
-        tool_use: artifact.library_tool_use,
-        tags,
-        author: artifact.github_login,
-        admitted_at: artifact.admitted_at,
-        provider: artifact.library_provider,
-        host: artifact.library_host,
-        model: artifact.library_model,
-        span_count: usize::try_from(artifact.library_span_count)
-            .map_err(|error| ApiError::internal(anyhow::Error::from(error)))?,
-        recent_downloads: artifact.recent_downloads,
-        trace_url: format!("/api/public/traces/{}/trace.otlp.json", artifact.id),
-    })
-}
-
-fn trace_facts(trace: &[u8]) -> Result<(String, usize, bool)> {
-    let value: serde_json::Value = serde_json::from_slice(trace)?;
-    let spans = value
-        .pointer("/resourceSpans/0/scopeSpans/0/spans")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("public trace has no span array"))?;
-    let first = spans
-        .first()
-        .and_then(|span| span.get("attributes"))
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("public trace has no span attributes"))?;
-    let model = first
-        .iter()
-        .find(|attribute| {
-            attribute.get("key").and_then(serde_json::Value::as_str) == Some("gen_ai.request.model")
+        .map(|share| ListedShareSummary {
+            share_url: canonical_share_url(&state, &share.id),
+            id: share.id,
+            provider: share.provider,
+            model: share.model,
+            publisher: share.github_login,
+            authenticated_at_unix_ms: share.authenticated_provider_connection_unix_ms,
         })
-        .and_then(|attribute| attribute.pointer("/value/stringValue"))
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| anyhow::anyhow!("public trace has no request model"))?;
-    let tool_use = spans.iter().try_fold(false, |found, span| {
-        let attributes = span
-            .get("attributes")
-            .and_then(serde_json::Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("public trace span has no attributes"))?;
-        attributes
-            .iter()
-            .filter(|attribute| {
-                matches!(
-                    attribute.get("key").and_then(serde_json::Value::as_str),
-                    Some("gen_ai.input.messages" | "gen_ai.output.messages")
-                )
-            })
-            .try_fold(found, |found, attribute| {
-                let messages = attribute
-                    .pointer("/value/stringValue")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("public trace message attribute is not a string")
-                    })?;
-                let messages: serde_json::Value = serde_json::from_str(messages)?;
-                Ok::<_, anyhow::Error>(found || contains_tool_part(&messages))
-            })
-    })?;
-    Ok((model.to_owned(), spans.len(), tool_use))
-}
-
-fn contains_tool_part(value: &serde_json::Value) -> bool {
-    match value {
-        serde_json::Value::Array(values) => values.iter().any(contains_tool_part),
-        serde_json::Value::Object(values) => {
-            matches!(
-                values.get("type").and_then(serde_json::Value::as_str),
-                Some("tool_call" | "tool_call_response")
-            ) || values.values().any(contains_tool_part)
-        }
-        _ => false,
-    }
-}
-
-fn fallback_title(provider: &str, model: &str) -> String {
-    format!("{provider} {model} trace")
-}
-
-fn validate_generated_metadata(metadata: &GeneratedMetadata) -> Result<()> {
-    let title = metadata.title.trim();
-    if title.is_empty()
-        || title.chars().count() > 96
-        || title.chars().any(char::is_control)
-        || metadata.tags.len() > 4
-        || metadata
-            .tags
-            .iter()
-            .any(|tag| !ALLOWED_TAGS.contains(&tag.as_str()))
-    {
-        bail!("metadata model returned invalid Library metadata");
-    }
-    if metadata.tags.iter().any(|tag| tag == "agent")
-        && metadata.tags.iter().any(|tag| tag == "direct-api")
-    {
-        bail!("metadata model returned conflicting origin tags");
-    }
-    let unique = metadata
-        .tags
-        .iter()
-        .collect::<std::collections::BTreeSet<_>>();
-    if unique.len() != metadata.tags.len() {
-        bail!("metadata model returned duplicate Library tags");
-    }
-    Ok(())
+        .collect();
+    Ok(Json(ListedSharesResponse { shares }))
 }
 
 #[utoipa::path(
-    post,
-    path = "/api/public/traces/{trace_id}/events/download",
-    summary = "Record a privacy-preserving trace download event",
-    params(("trace_id" = String, Path)),
-    request_body = ActivityRequest,
+    get,
+    path = "/api/public/shares/{share_id}",
+    summary = "Get one verified-session share by its stable ID",
+    params(("share_id" = String, Path)),
     responses(
-        (status = 204, description = "Download event recorded"),
-        (status = 400, body = super::ErrorResponse),
+        (status = 200, body = PublicShareDetail),
         (status = 404, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse)
     ),
-    tag = "library"
+    tag = "sharing"
 )]
-async fn record_download_event(
+async fn public_share_detail(
     State(state): State<AppState>,
-    AxumPath(trace_id): AxumPath<String>,
-    Json(request): Json<ActivityRequest>,
-) -> ApiResult<StatusCode> {
-    let subject = Uuid::parse_str(&request.subject)
-        .ok()
-        .filter(|parsed| parsed.hyphenated().to_string() == request.subject)
-        .ok_or_else(|| ApiError::bad_request("activity subject must be a lowercase UUID"))?;
-    load_public_artifact(&state, &trace_id).await?;
-    let now = unix_timestamp()?;
-    sqlx::query(
-        "INSERT INTO publication_activity_events
-             (publication_id, event_type, subject_key_sha256, occurred_at)
-         VALUES ($1, 'download', $2, $3)
-         ON CONFLICT (publication_id, event_type, subject_key_sha256) DO NOTHING",
+    Path(share_id): Path<String>,
+) -> ApiResult<Response> {
+    let share = load_public_share(&state, &share_id).await?;
+    let detail = PublicShareDetail {
+        id: share.id.clone(),
+        visibility: share.visibility.clone(),
+        publisher: share.github_login,
+        admitted_at: share.admitted_at,
+        authenticated_at_unix_ms: share.authenticated_provider_connection_unix_ms,
+        verified_at: share.verified_at,
+        provider: share.provider,
+        host: share.provider_host,
+        model: share.model,
+        verification_state: "verified",
+        notary_key_id: share.verified_notary_key_id,
+        directory_generation: share.verified_directory_generation,
+        trust_source: share.verified_trust_source,
+        trace_sha256: share.public_trace_sha256,
+        package_available: share.package_object_key.is_some(),
+        package_size_bytes: share.package_size_bytes,
+        package_sha256: share.package_sha256,
+        public_package_safety_version: share.public_package_safety_version,
+        trace_url: format!("/api/public/shares/{}/trace.otlp.json", share.id),
+        package_url: share
+            .package_object_key
+            .as_ref()
+            .map(|_| format!("/api/public/shares/{}/package.llmtrace", share.id)),
+        share_url: canonical_share_url(&state, &share.id),
+    };
+    let mut response = Json(detail).into_response();
+    add_discovery_headers(&mut response, &share.visibility);
+    Ok(response)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/public/shares/{share_id}/trace.otlp.json",
+    summary = "Download the admitted canonical OpenTelemetry trace",
+    params(("share_id" = String, Path)),
+    responses(
+        (status = 200, body = serde_json::Value, content_type = "application/json"),
+        (status = 404, body = super::ErrorResponse),
+        (status = 500, body = super::ErrorResponse),
+        (status = 503, body = super::ErrorResponse)
+    ),
+    tag = "sharing"
+)]
+async fn public_share_trace(
+    State(state): State<AppState>,
+    Path(share_id): Path<String>,
+) -> ApiResult<Response> {
+    let share = load_public_share(&state, &share_id).await?;
+    let bytes = load_public_bytes(
+        &state,
+        &share.public_trace_object_key,
+        share.public_trace_size_bytes,
+        &share.public_trace_sha256,
     )
-    .bind(trace_id)
-    .bind(sha256_hex(subject.to_string().as_bytes()))
-    .bind(now)
-    .execute(&state.database)
-    .await
-    .map_err(database_error)?;
-    Ok(StatusCode::NO_CONTENT)
+    .await?;
+    Ok(public_bytes(
+        bytes,
+        "application/json; charset=utf-8",
+        &share.public_trace_sha256,
+        None,
+        &share.visibility,
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/public/shares/{share_id}/package.llmtrace",
+    summary = "Download the exact admitted portable proof package",
+    params(("share_id" = String, Path)),
+    responses(
+        (status = 200, body = Vec<u8>, content_type = "application/vnd.llmnotary.trace-package+zip"),
+        (status = 404, body = super::ErrorResponse),
+        (status = 410, body = super::ErrorResponse),
+        (status = 500, body = super::ErrorResponse),
+        (status = 503, body = super::ErrorResponse)
+    ),
+    tag = "sharing"
+)]
+async fn public_share_package(
+    State(state): State<AppState>,
+    Path(share_id): Path<String>,
+) -> ApiResult<Response> {
+    let share = load_public_share(&state, &share_id).await?;
+    let (object_key, size_bytes, sha256) = match (
+        share.package_object_key,
+        share.package_size_bytes,
+        share.package_sha256,
+    ) {
+        (Some(key), Some(size), Some(sha256)) => (key, size, sha256),
+        _ => {
+            return Err(ApiError::gone(
+                "the source package was not retained for this legacy share",
+            ));
+        }
+    };
+    let bytes = load_public_bytes(&state, &object_key, size_bytes, &sha256).await?;
+    Ok(public_bytes(
+        bytes,
+        super::intake::ARCHIVE_CONTENT_TYPE,
+        &sha256,
+        Some(&format!("llm-notary-{share_id}.llmtrace")),
+        &share.visibility,
+    ))
 }
 
 pub fn spawn(state: AppState) {
     if !state.publish.enabled() {
         return;
     }
-    let metadata_state = state.clone();
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(METADATA_INTERVAL_SECS));
-        loop {
-            interval.tick().await;
-            if let Err(error) = backfill_library_metadata(&metadata_state).await {
-                tracing::error!(%error, "backfilling Library metadata failed");
-            }
-        }
-    });
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(ADMISSION_INTERVAL_SECS));
         loop {
             interval.tick().await;
             if let Err(error) = recover_stale_claims(&state).await {
-                tracing::error!(%error, "recovering stale publication claims failed");
-                continue;
-            }
-            if let Err(error) = purge_admitted_private_objects(&state).await {
-                tracing::error!(%error, "purging admitted private objects failed");
-            }
-            if let Err(error) = update_queue_metrics(&state).await {
-                tracing::error!(%error, "updating publication admission metrics failed");
+                tracing::error!(%error, "recovering stale share admissions failed");
             }
             for _ in 0..MAX_JOBS_PER_TICK {
                 match claim_next_job(&state).await {
                     Ok(Some((job, claim))) => process_claim(&state, job, claim).await,
                     Ok(None) => break,
                     Err(error) => {
-                        tracing::error!(%error, "claiming publication job failed");
+                        tracing::error!(%error, "claiming a share admission failed");
                         break;
                     }
                 }
+            }
+            if let Err(error) = purge_admitted_private_objects(&state).await {
+                tracing::error!(%error, "purging admitted share intake objects failed");
+            }
+            if let Err(error) = update_queue_metrics(&state).await {
+                tracing::error!(%error, "updating share admission metrics failed");
             }
         }
     });
 }
 
-/// Returns whether admission, private-artifact purging, or active/currently-due
-/// Library metadata generation still needs an API Machine to remain running.
-/// Future metadata retries are intentionally demand-driven: a later API
-/// request wakes a Machine and resumes the normal retry loop.
 pub async fn has_pending_work(state: &AppState) -> Result<bool> {
-    let job_work: bool = sqlx::query_scalar(
+    let pending: bool = sqlx::query_scalar(
         "SELECT EXISTS(
              SELECT 1 FROM publish_jobs
              WHERE state IN ('queued', 'verifying')
@@ -666,182 +340,19 @@ pub async fn has_pending_work(state: &AppState) -> Result<bool> {
     )
     .fetch_one(&state.database)
     .await?;
-    if job_work || state.library_metadata.api_key.is_none() {
-        return Ok(job_work);
-    }
-
-    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    let metadata_work: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-             SELECT 1
-             FROM publish_jobs
-             LEFT JOIN publication_metadata
-               ON publication_metadata.publication_id = publish_jobs.id
-             WHERE publish_jobs.state = 'admitted'
-               AND publish_jobs.public_trace_object_key IS NOT NULL
-               AND (publication_metadata.publication_id IS NULL
-                    OR (publication_metadata.title_source = 'fallback'
-                        AND (
-                             (publication_metadata.generation_claim IS NOT NULL
-                              AND publication_metadata.generation_claimed_at >= $1)
-                             OR (
-                                  COALESCE(publication_metadata.last_generation_attempt_at, 0) <= $2
-                                  AND (publication_metadata.generation_claim IS NULL
-                                       OR publication_metadata.generation_claimed_at < $1)
-                             )
-                        )))
-             LIMIT 1
-         )",
-    )
-    .bind(now - METADATA_CLAIM_TIMEOUT_SECS)
-    .bind(now - METADATA_RETRY_SECS)
-    .fetch_one(&state.database)
-    .await?;
-    Ok(metadata_work)
+    Ok(pending)
 }
 
 async fn update_queue_metrics(state: &AppState) -> Result<()> {
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    let (count, oldest): (i64, Option<i64>) =
+    let (depth, oldest): (i64, Option<i64>) =
         sqlx::query_as("SELECT COUNT(*), MIN(queued_at) FROM publish_jobs WHERE state = 'queued'")
             .fetch_one(&state.database)
             .await?;
-    metrics::gauge!("llm_notary_admission_queue_depth").set(count as f64);
-    metrics::gauge!("llm_notary_admission_oldest_queued_seconds").set(
-        oldest
-            .map(|queued_at| now.saturating_sub(queued_at) as f64)
-            .unwrap_or(0.0),
-    );
+    metrics::gauge!("llm_notary_admission_queue_depth").set(depth as f64);
+    metrics::gauge!("llm_notary_admission_oldest_queued_seconds")
+        .set(oldest.map_or(0, |queued| now.saturating_sub(queued)) as f64);
     Ok(())
-}
-
-async fn backfill_library_metadata(state: &AppState) -> Result<()> {
-    if state.library_metadata.api_key.is_none() {
-        return Ok(());
-    }
-    for _ in 0..MAX_METADATA_PER_TICK {
-        let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-        let Some((artifact, claim)) = claim_next_metadata_artifact(state, now).await? else {
-            break;
-        };
-        let trace = load_public_bytes(
-            state,
-            &artifact.public_trace_object_key,
-            artifact.public_trace_size_bytes,
-            &artifact.public_trace_sha256,
-        )
-        .await
-        .map_err(|error| anyhow::anyhow!(error.message))?;
-        let fallback = trace_facts(&trace)
-            .ok()
-            .map(|(model, _, _)| fallback_title("Verified", &model))
-            .unwrap_or_else(|| "Verified LLM trace".to_owned());
-        let generated = match state
-            .library_metadata
-            .generate(&state.http, &state.database, &trace)
-            .await
-        {
-            Ok(Some(metadata)) => Some(metadata),
-            Ok(None) => None,
-            Err(error) => {
-                tracing::warn!(job_id = %artifact.id, %error, "Library metadata generation failed");
-                None
-            }
-        };
-        let (title, tags, source, generator_model, generated_at) = match generated {
-            Some(metadata) => (
-                metadata.title.trim().to_owned(),
-                metadata.tags,
-                "generated",
-                Some(state.library_metadata.model.clone()),
-                Some(now),
-            ),
-            None => (fallback, Vec::new(), "fallback", None, None),
-        };
-        let updated = sqlx::query(
-            "UPDATE publication_metadata
-             SET title = $1, tags_json = $2, title_source = $3, generator_model = $4,
-                 generator_prompt_version = $5, generated_at = $6,
-                 last_generation_attempt_at = $7, updated_at = $8,
-                 generation_claim = NULL, generation_claimed_at = NULL
-             WHERE publication_id = $9 AND generation_claim = $10",
-        )
-        .bind(title)
-        .bind(serde_json::to_string(&tags)?)
-        .bind(source)
-        .bind(generator_model)
-        .bind(METADATA_PROMPT_VERSION)
-        .bind(generated_at)
-        .bind(now)
-        .bind(now)
-        .bind(&artifact.id)
-        .bind(&claim)
-        .execute(&state.database)
-        .await?;
-        if updated.rows_affected() != 1 {
-            tracing::warn!(job_id = %artifact.id, "Library metadata claim was lost before completion");
-        }
-    }
-    Ok(())
-}
-
-async fn claim_next_metadata_artifact(
-    state: &AppState,
-    now: i64,
-) -> Result<Option<(PublicTraceObjectRow, String)>> {
-    let claim = Uuid::new_v4().to_string();
-    let artifact = sqlx::query_as::<_, PublicTraceObjectRow>(
-        "WITH candidate AS (
-                 SELECT jobs.id
-                 FROM publish_jobs AS jobs
-                 LEFT JOIN publication_metadata AS metadata
-                   ON metadata.publication_id = jobs.id
-                 WHERE jobs.state = 'admitted'
-                   AND jobs.public_trace_object_key IS NOT NULL
-                   AND (
-                        metadata.publication_id IS NULL
-                        OR (
-                            metadata.title_source = 'fallback'
-                            AND COALESCE(metadata.last_generation_attempt_at, 0) <= $1
-                            AND (
-                                metadata.generation_claim IS NULL
-                                OR metadata.generation_claimed_at < $2
-                            )
-                        )
-                   )
-                 ORDER BY jobs.admitted_at ASC
-                 FOR UPDATE OF jobs SKIP LOCKED
-                 LIMIT 1
-             ), claimed AS (
-                 INSERT INTO publication_metadata
-                     (publication_id, title, tags_json, title_source, generator_model,
-                      generator_prompt_version, generated_at, last_generation_attempt_at,
-                      updated_at, generation_claim, generation_claimed_at)
-                 SELECT candidate.id, 'Verified LLM trace', '[]', 'fallback', NULL, NULL,
-                        NULL, $3, $3, $4, $3
-                 FROM candidate
-                 ON CONFLICT (publication_id) DO UPDATE
-                    SET generation_claim = EXCLUDED.generation_claim,
-                        generation_claimed_at = EXCLUDED.generation_claimed_at
-                  WHERE publication_metadata.title_source = 'fallback'
-                    AND (
-                        publication_metadata.generation_claim IS NULL
-                        OR publication_metadata.generation_claimed_at < $2
-                    )
-                 RETURNING publication_id
-             )
-             SELECT jobs.id, jobs.public_trace_object_key, jobs.public_trace_size_bytes,
-                    jobs.public_trace_sha256
-             FROM claimed
-             JOIN publish_jobs AS jobs ON jobs.id = claimed.publication_id",
-    )
-    .bind(now - METADATA_RETRY_SECS)
-    .bind(now - METADATA_CLAIM_TIMEOUT_SECS)
-    .bind(now)
-    .bind(&claim)
-    .fetch_optional(&state.database)
-    .await?;
-    Ok(artifact.map(|artifact| (artifact, claim)))
 }
 
 async fn claim_next_job(state: &AppState) -> Result<Option<(PublishJobRow, String)>> {
@@ -871,9 +382,9 @@ async fn claim_next_job(state: &AppState) -> Result<Option<(PublishJobRow, Strin
 }
 
 #[tracing::instrument(
-    name = "publication.admission",
+    name = "share.admission",
     skip_all,
-    fields(publication.job_id = %job.id, archive.size_bytes = tracing::field::Empty)
+    fields(share.id = %job.id, archive.size_bytes = tracing::field::Empty)
 )]
 async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
     let started = Instant::now();
@@ -949,12 +460,12 @@ async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
             }
         }
         Ok(Err(AdmissionFailure::Reject(code, error))) => {
-            tracing::info!(job_id = %job.id, failure_code = code, %error, "publication rejected");
+            tracing::info!(share_id = %job.id, failure_code = %code, %error, "share rejected");
             reject_claim(
                 state,
                 &job,
                 &claim,
-                code,
+                &code,
                 Some((actual_size, actual_sha256)),
             )
             .await;
@@ -981,33 +492,48 @@ fn verify_for_admission(
     archive: Vec<u8>,
     directory: &llm_notary_core::notary_directory::NotaryDirectory,
 ) -> std::result::Result<AdmittedArtifacts, AdmissionFailure> {
-    let verified = verify_package(archive, directory).map_err(|error| match error {
+    validate_public_trace_package(&archive).map_err(|error| {
+        AdmissionFailure::Reject(error.admission_code(), anyhow::anyhow!(error))
+    })?;
+    let verified = verify_package(&archive, directory).map_err(|error| match error {
         HostedVerificationError::Service(error) => AdmissionFailure::Retry(error),
         error => AdmissionFailure::Reject(
             error
                 .admission_code()
-                .expect("non-service errors have an admission code"),
+                .expect("non-service errors have an admission code")
+                .to_owned(),
             anyhow::anyhow!(error.public_code()),
         ),
     })?;
-    let card = library_card_facts(
-        verified.provider_name.clone(),
-        verified.provider_host.clone(),
-        &verified.trace,
-    )
-    .map_err(|error| AdmissionFailure::Reject("package_invalid", error))?;
-    Ok(AdmittedArtifacts { verified, card })
+    let model = trace_model(&verified.trace)
+        .map_err(|error| AdmissionFailure::Reject("package_invalid".to_owned(), error))?;
+    Ok(AdmittedArtifacts {
+        verified,
+        archive,
+        model,
+    })
 }
 
-fn library_card_facts(provider: String, host: String, trace: &[u8]) -> Result<LibraryCardFacts> {
-    let (model, span_count, tool_use) = trace_facts(trace)?;
-    Ok(LibraryCardFacts {
-        provider,
-        host,
-        model,
-        span_count: i64::try_from(span_count)?,
-        tool_use,
-    })
+fn trace_model(trace: &[u8]) -> Result<String> {
+    let value: serde_json::Value = serde_json::from_slice(trace)?;
+    let spans = value
+        .pointer("/resourceSpans/0/scopeSpans/0/spans")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("public trace has no span array"))?;
+    let attributes = spans
+        .first()
+        .and_then(|span| span.get("attributes"))
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("public trace has no span attributes"))?;
+    attributes
+        .iter()
+        .find(|attribute| {
+            attribute.get("key").and_then(serde_json::Value::as_str) == Some("gen_ai.request.model")
+        })
+        .and_then(|attribute| attribute.pointer("/value/stringValue"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow::anyhow!("public trace has no request model"))
 }
 
 async fn admit_claim(
@@ -1028,16 +554,16 @@ async fn admit_claim(
          SET state = 'admitted', actual_size_bytes = $1, actual_sha256 = $2,
              admitted_at = $3, updated_at = $4,
              public_trace_object_key = $5, public_trace_size_bytes = $6,
-             public_trace_sha256 = $7,
-             library_provider = $8, library_host = $9, library_model = $10,
-             library_span_count = $11, library_tool_use = $12,
-             authenticated_provider_connection_unix_ms = $13,
-             verified_at = $14, verified_notary_key_id = $15,
-             verified_directory_generation = $16, verified_trust_source = $17,
-             source_package_sha256 = $18,
+             public_trace_sha256 = $7, package_object_key = $8,
+             package_size_bytes = $9, package_sha256 = $10,
+             public_package_safety_version = $11,
+             provider = $12, provider_host = $13, model = $14,
+             authenticated_provider_connection_unix_ms = $15,
+             verified_at = $16, verified_notary_key_id = $17,
+             verified_directory_generation = $18, verified_trust_source = $19,
              verification_claim = NULL
-         WHERE id = $19 AND state = 'verifying' AND verification_claim = $20
-           AND public_trace_object_key IS NULL",
+         WHERE id = $20 AND state = 'verifying' AND verification_claim = $21
+           AND public_trace_object_key IS NULL AND package_object_key IS NULL",
     )
     .bind(actual_size)
     .bind(actual_sha256)
@@ -1046,17 +572,18 @@ async fn admit_claim(
     .bind(&stored.trace_object_key)
     .bind(stored.trace_size_bytes)
     .bind(&stored.trace_sha256)
-    .bind(&artifacts.card.provider)
-    .bind(&artifacts.card.host)
-    .bind(&artifacts.card.model)
-    .bind(artifacts.card.span_count)
-    .bind(artifacts.card.tool_use)
+    .bind(&stored.package_object_key)
+    .bind(stored.package_size_bytes)
+    .bind(&stored.package_sha256)
+    .bind(PUBLIC_PACKAGE_SAFETY_VERSION)
+    .bind(&artifacts.verified.provider_name)
+    .bind(&artifacts.verified.provider_host)
+    .bind(&artifacts.model)
     .bind(i64::try_from(artifacts.verified.authenticated_at_unix_ms)?)
     .bind(now)
     .bind(&artifacts.verified.notary_key_id)
     .bind(i64::try_from(artifacts.verified.directory_generation)?)
     .bind(TRUST_SOURCE)
-    .bind(&artifacts.verified.package_sha256)
     .bind(&job.id)
     .bind(claim)
     .execute(&state.database)
@@ -1064,21 +591,19 @@ async fn admit_claim(
     match update {
         Ok(result) if result.rows_affected() == 1 => {}
         Ok(_) => {
-            let current = load_public_artifact(state, &job.id).await.ok();
+            let current = load_public_share_optional(state, &job.id)
+                .await
+                .ok()
+                .flatten();
             if !current
                 .as_ref()
                 .is_some_and(|current| current.matches(&stored))
             {
                 delete_public_artifacts(state, &stored).await;
-                bail!("publication claim was lost before admission");
+                bail!("share claim was lost before admission");
             }
         }
-        Err(error) => {
-            // A database error can make commit status ambiguous. Retain the
-            // content-addressed candidates so a successful commit never points
-            // at deleted objects; a later retry overwrites the same bytes.
-            return Err(error.into());
-        }
+        Err(error) => return Err(error.into()),
     }
     purge_private_object(state, job).await;
     Ok(())
@@ -1086,31 +611,84 @@ async fn admit_claim(
 
 async fn store_public_artifacts(
     state: &AppState,
-    trace_id: &str,
+    share_id: &str,
     artifacts: &AdmittedArtifacts,
 ) -> Result<StoredPublicArtifacts> {
     let trace_sha256 = sha256_hex(&artifacts.verified.trace);
-    if trace_sha256 != artifacts.verified.trace_sha256 {
-        bail!("verified trace hash changed before public storage");
+    let package_sha256 = sha256_hex(&artifacts.archive);
+    if trace_sha256 != artifacts.verified.trace_sha256
+        || package_sha256 != artifacts.verified.package_sha256
+    {
+        bail!("verified artifacts changed before public storage");
     }
     let stored = StoredPublicArtifacts {
         trace_object_key: state.publish.storage.public_artifact_key(
-            trace_id,
+            share_id,
             "trace",
             &trace_sha256,
         )?,
         trace_size_bytes: artifacts.verified.trace.len().try_into()?,
         trace_sha256,
+        package_object_key: state.publish.storage.public_artifact_key(
+            share_id,
+            "package",
+            &package_sha256,
+        )?,
+        package_size_bytes: artifacts.archive.len().try_into()?,
+        package_sha256,
     };
-    if let Err(error) = write_public_artifact(
-        state,
-        &stored.trace_object_key,
-        "trace",
-        &stored.trace_sha256,
-        &artifacts.verified.trace,
-    )
-    .await
-    {
+    let result = async {
+        write_public_artifact(
+            state,
+            &stored.trace_object_key,
+            "trace",
+            &stored.trace_sha256,
+            &artifacts.verified.trace,
+        )
+        .await?;
+        write_public_artifact(
+            state,
+            &stored.package_object_key,
+            "package",
+            &stored.package_sha256,
+            &artifacts.archive,
+        )
+        .await?;
+
+        // Read through the same storage path used by recipients, then repeat
+        // size/hash, safety, and cryptographic verification before the row can
+        // atomically become reachable.
+        let downloaded = state
+            .publish
+            .storage
+            .get_object(&stored.package_object_key, artifacts.archive.len())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("stored package disappeared before admission"))?;
+        if downloaded.len() as i64 != stored.package_size_bytes
+            || sha256_hex(&downloaded) != stored.package_sha256
+            || downloaded != artifacts.archive
+        {
+            bail!("stored package failed its pre-admission integrity check");
+        }
+        let directory = state.notary_directory.clone();
+        let expected_trace = stored.trace_sha256.clone();
+        let expected_package = stored.package_sha256.clone();
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            validate_public_trace_package(&downloaded).map_err(|error| anyhow::anyhow!(error))?;
+            let verified = verify_package(&downloaded, &directory)
+                .map_err(|_| anyhow::anyhow!("stored package failed cryptographic verification"))?;
+            if verified.trace_sha256 != expected_trace
+                || verified.package_sha256 != expected_package
+            {
+                bail!("stored package verification metadata changed");
+            }
+            Ok(())
+        })
+        .await??;
+        Ok::<(), anyhow::Error>(())
+    }
+    .await;
+    if let Err(error) = result {
         delete_public_artifacts(state, &stored).await;
         return Err(error);
     }
@@ -1147,21 +725,21 @@ async fn write_public_artifact(
 }
 
 async fn delete_public_artifacts(state: &AppState, artifacts: &StoredPublicArtifacts) {
-    if let Err(error) = state
-        .publish
-        .storage
-        .delete_object(&artifacts.trace_object_key)
-        .await
-    {
-        tracing::error!(%error, "deleting uncommitted public trace failed");
+    for object_key in [&artifacts.trace_object_key, &artifacts.package_object_key] {
+        if let Err(error) = state.publish.storage.delete_object(object_key).await {
+            tracing::error!(%error, "deleting an uncommitted public share artifact failed");
+        }
     }
 }
 
-impl PublicArtifactRow {
+impl PublicShareRow {
     fn matches(&self, stored: &StoredPublicArtifacts) -> bool {
         self.public_trace_object_key == stored.trace_object_key
             && self.public_trace_size_bytes == stored.trace_size_bytes
             && self.public_trace_sha256 == stored.trace_sha256
+            && self.package_object_key.as_deref() == Some(stored.package_object_key.as_str())
+            && self.package_size_bytes == Some(stored.package_size_bytes)
+            && self.package_sha256.as_deref() == Some(stored.package_sha256.as_str())
     }
 }
 
@@ -1169,7 +747,7 @@ async fn reject_claim(
     state: &AppState,
     job: &PublishJobRow,
     claim: &str,
-    code: &'static str,
+    code: &str,
     actual: Option<(i64, String)>,
 ) {
     let now = unix_timestamp().unwrap_or(job.updated_at);
@@ -1192,13 +770,13 @@ async fn reject_claim(
     .await
     {
         Ok(result) if result.rows_affected() == 1 => purge_private_object(state, job).await,
-        Ok(_) => tracing::warn!(job_id = %job.id, "publication rejection lost its claim"),
-        Err(error) => tracing::error!(job_id = %job.id, %error, "recording rejection failed"),
+        Ok(_) => tracing::warn!(share_id = %job.id, "share rejection lost its claim"),
+        Err(error) => tracing::error!(share_id = %job.id, %error, "recording rejection failed"),
     }
 }
 
 async fn retry_claim(state: &AppState, job: &PublishJobRow, claim: &str, error: anyhow::Error) {
-    tracing::error!(job_id = %job.id, %error, "publication admission will retry");
+    tracing::error!(share_id = %job.id, %error, "share admission will retry");
     let now = unix_timestamp().unwrap_or(job.updated_at);
     if let Err(update_error) = sqlx::query(
         "UPDATE publish_jobs
@@ -1212,7 +790,7 @@ async fn retry_claim(state: &AppState, job: &PublishJobRow, claim: &str, error: 
     .execute(&state.database)
     .await
     {
-        tracing::error!(job_id = %job.id, %update_error, "requeueing publication failed");
+        tracing::error!(share_id = %job.id, %update_error, "requeueing share failed");
     }
 }
 
@@ -1230,13 +808,11 @@ async fn purge_private_object(state: &AppState, job: &PublishJobRow) {
             .execute(&state.database)
             .await
             {
-                tracing::error!(job_id = %job.id, %error, "recording private purge failed");
+                tracing::error!(share_id = %job.id, %error, "recording private purge failed");
             }
         }
-        Ok(false) => {
-            tracing::warn!(job_id = %job.id, "private object purge remains queued");
-        }
-        Err(error) => tracing::error!(job_id = %job.id, %error, "private object purge failed"),
+        Ok(false) => tracing::warn!(share_id = %job.id, "private object purge remains queued"),
+        Err(error) => tracing::error!(share_id = %job.id, %error, "private object purge failed"),
     }
 }
 
@@ -1256,110 +832,53 @@ async fn purge_admitted_private_objects(state: &AppState) -> Result<()> {
 
 async fn recover_stale_claims(state: &AppState) -> Result<()> {
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    let cutoff = now - CLAIM_TIMEOUT_SECS;
     sqlx::query(
         "UPDATE publish_jobs
          SET state = 'queued', verification_claim = NULL,
              verification_started_at = NULL, updated_at = $1
          WHERE state = 'verifying' AND verification_started_at < $2
-           AND public_trace_object_key IS NULL",
+           AND public_trace_object_key IS NULL AND package_object_key IS NULL",
     )
     .bind(now)
-    .bind(cutoff)
+    .bind(now - CLAIM_TIMEOUT_SECS)
     .execute(&state.database)
     .await?;
     Ok(())
 }
 
-async fn load_public_artifact(state: &AppState, trace_id: &str) -> ApiResult<PublicArtifactRow> {
-    load_public_artifact_optional(state, trace_id)
+async fn load_public_share(state: &AppState, share_id: &str) -> ApiResult<PublicShareRow> {
+    load_public_share_optional(state, share_id)
         .await?
-        .ok_or_else(|| ApiError::not_found("public trace was not found"))
+        .ok_or_else(|| ApiError::not_found("share was not found"))
 }
 
-async fn load_public_artifact_optional(
+async fn load_public_share_optional(
     state: &AppState,
-    trace_id: &str,
-) -> ApiResult<Option<PublicArtifactRow>> {
+    share_id: &str,
+) -> ApiResult<Option<PublicShareRow>> {
     sqlx::query_as(
-        "SELECT publish_jobs.id, publish_jobs.public_trace_object_key,
-                publish_jobs.public_trace_size_bytes,
-                publish_jobs.public_trace_sha256,
-                publish_jobs.library_provider, publish_jobs.library_host,
+        "SELECT publish_jobs.id, publish_jobs.visibility, users.github_login,
+                publish_jobs.admitted_at, publish_jobs.provider,
+                publish_jobs.provider_host, publish_jobs.model,
                 publish_jobs.authenticated_provider_connection_unix_ms,
                 publish_jobs.verified_at, publish_jobs.verified_notary_key_id,
                 publish_jobs.verified_directory_generation,
                 publish_jobs.verified_trust_source,
-                publish_jobs.source_package_sha256
+                publish_jobs.public_trace_object_key,
+                publish_jobs.public_trace_size_bytes,
+                publish_jobs.public_trace_sha256,
+                publish_jobs.package_object_key, publish_jobs.package_size_bytes,
+                publish_jobs.package_sha256,
+                publish_jobs.public_package_safety_version
          FROM publish_jobs
+         JOIN users ON users.id = publish_jobs.user_id
          WHERE publish_jobs.id = $1 AND publish_jobs.state = 'admitted'
            AND publish_jobs.public_trace_object_key IS NOT NULL",
     )
-    .bind(trace_id)
+    .bind(share_id)
     .fetch_optional(&state.database)
     .await
     .map_err(database_error)
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/public/traces/{trace_id}",
-    summary = "Get public artifact links for an admitted trace",
-    params(("trace_id" = String, Path)),
-    responses(
-        (status = 200, body = PublicTraceMetadata),
-        (status = 404, body = super::ErrorResponse),
-        (status = 500, body = super::ErrorResponse)
-    ),
-    tag = "library"
-)]
-async fn public_trace_metadata(
-    State(state): State<AppState>,
-    AxumPath(trace_id): AxumPath<String>,
-) -> ApiResult<Json<PublicTraceMetadata>> {
-    let artifact = load_public_artifact(&state, &trace_id).await?;
-    Ok(Json(PublicTraceMetadata {
-        id: artifact.id.clone(),
-        trace_url: format!("/api/public/traces/{}/trace.otlp.json", artifact.id),
-        platform_verified_source: true,
-        authenticated_at_unix_ms: artifact.authenticated_provider_connection_unix_ms,
-        verified_at: artifact.verified_at,
-        provider: artifact.library_provider,
-        host: artifact.library_host,
-        notary_key_id: artifact.verified_notary_key_id,
-        directory_generation: artifact.verified_directory_generation,
-        trust_source: artifact.verified_trust_source,
-        source_package_sha256: artifact.source_package_sha256,
-        trace_sha256: artifact.public_trace_sha256,
-    }))
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/public/traces/{trace_id}/trace.otlp.json",
-    summary = "Download an admitted canonical OpenTelemetry trace",
-    params(("trace_id" = String, Path)),
-    responses(
-        (status = 200, body = serde_json::Value, content_type = "application/json"),
-        (status = 404, body = super::ErrorResponse),
-        (status = 500, body = super::ErrorResponse),
-        (status = 503, body = super::ErrorResponse)
-    ),
-    tag = "library"
-)]
-async fn public_trace(
-    State(state): State<AppState>,
-    AxumPath(trace_id): AxumPath<String>,
-) -> ApiResult<Response> {
-    let artifact = load_public_artifact(&state, &trace_id).await?;
-    let bytes = load_public_bytes(
-        &state,
-        &artifact.public_trace_object_key,
-        artifact.public_trace_size_bytes,
-        &artifact.public_trace_sha256,
-    )
-    .await?;
-    Ok(public_bytes(bytes, "application/json; charset=utf-8"))
 }
 
 async fn load_public_bytes(
@@ -1388,511 +907,101 @@ async fn load_public_bytes(
     Ok(bytes)
 }
 
-fn public_bytes(bytes: Vec<u8>, content_type: &'static str) -> Response {
-    (
-        StatusCode::OK,
-        [
-            (header::CONTENT_TYPE, content_type),
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
-            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
-        ],
-        Body::from(bytes),
-    )
-        .into_response()
+fn canonical_share_url(state: &AppState, share_id: &str) -> String {
+    state
+        .app_url
+        .join(&format!("/s/{share_id}"))
+        .expect("share path is a valid same-origin URL")
+        .to_string()
+}
+
+fn add_discovery_headers(response: &mut Response, visibility: &str) {
+    response.headers_mut().insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    if visibility == "unlisted" {
+        response.headers_mut().insert(
+            "x-robots-tag",
+            HeaderValue::from_static("noindex, nofollow, noarchive"),
+        );
+    }
+}
+
+fn public_bytes(
+    bytes: Vec<u8>,
+    content_type: &'static str,
+    sha256: &str,
+    filename: Option<&str>,
+    visibility: &str,
+) -> Response {
+    let mut response = (StatusCode::OK, Body::from(bytes)).into_response();
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("public, max-age=31536000, immutable"),
+    );
+    response.headers_mut().insert(
+        "x-content-sha256",
+        HeaderValue::from_str(sha256).expect("SHA-256 is a valid header value"),
+    );
+    if let Some(filename) = filename {
+        response.headers_mut().insert(
+            header::CONTENT_DISPOSITION,
+            HeaderValue::from_str(&format!("attachment; filename=\"{filename}\""))
+                .expect("safe share ID makes a valid filename"),
+        );
+    }
+    add_discovery_headers(&mut response, visibility);
+    response
 }
 
 #[cfg(test)]
 mod tests {
-    use url::Url;
-
-    use super::super::intake::MockIntakeStorage;
-    use super::super::publish::PublishService;
     use super::*;
 
-    async fn test_state() -> (AppState, MockIntakeStorage) {
-        let database = super::super::fresh_database().await;
-        sqlx::query(
-            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
-             VALUES ('user-1', 1, 'publisher', 1, 1)",
-        )
-        .execute(&database.pool)
-        .await
+    #[test]
+    fn extracts_the_model_without_materialized_library_fields() {
+        let trace = serde_json::to_vec(&serde_json::json!({
+            "resourceSpans": [{"scopeSpans": [{"spans": [{"attributes": [
+                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-test"}}
+            ]}]}]}]
+        }))
         .unwrap();
-        let storage = MockIntakeStorage::new();
-        (
-            AppState {
-                database: database.pool.clone(),
-                _test_database: Some(database),
-                http: reqwest::Client::new(),
-                github_client_id: "client-id".to_owned(),
-                github_client_secret: "secret".to_owned(),
-                callback_url: Url::parse("https://example.com/callback").unwrap(),
-                app_url: Url::parse("https://example.com").unwrap(),
-                secure_cookies: true,
-                notary_directory: super::super::tests::directory_key(),
-                publish: PublishService::mock(storage.clone()),
-                library_metadata: MetadataService::disabled(),
-                admission: std::sync::Arc::new(crate::AdmissionConfig::for_test()),
-            },
-            storage,
-        )
-    }
-
-    async fn queued_job(state: &AppState, bytes: &[u8], sha256: &str) -> PublishJobRow {
-        sqlx::query(
-            "INSERT INTO publish_jobs
-             (id, user_id, idempotency_key, state, archive_format,
-              declared_size_bytes, declared_sha256, upload_object_key,
-              intake_object_key, upload_expires_at, created_at, updated_at, queued_at)
-             VALUES ('job-1', 'user-1', 'idempotency-key-0001', 'queued', $1,
-                     $2, $3, 'upload-key', 'intake-key', 1000, 1, 1, 1)",
-        )
-        .bind(llm_notary_core::archive::ARCHIVE_FORMAT)
-        .bind(bytes.len() as i64)
-        .bind(sha256)
-        .execute(&state.database)
-        .await
-        .unwrap();
-        sqlx::query_as("SELECT * FROM publish_jobs WHERE id = 'job-1'")
-            .fetch_one(&state.database)
-            .await
-            .unwrap()
-    }
-
-    fn admitted_artifacts(
-        trace: &[u8],
-        package_sha256: &str,
-        provider: &str,
-        host: &str,
-        model: &str,
-    ) -> AdmittedArtifacts {
-        AdmittedArtifacts {
-            verified: HostedVerifiedPackage {
-                capture_id: "cap-test".to_owned(),
-                authenticated_at_unix_ms: 1_700_000_000_000,
-                provider_name: provider.to_owned(),
-                provider_host: host.to_owned(),
-                notary_key_id: "sha256:test-notary".to_owned(),
-                directory_generation: 7,
-                package_sha256: package_sha256.to_owned(),
-                trace_sha256: sha256_hex(trace),
-                trace: trace.to_vec(),
-            },
-            card: LibraryCardFacts {
-                provider: provider.to_owned(),
-                host: host.to_owned(),
-                model: model.to_owned(),
-                span_count: 2,
-                tool_use: true,
-            },
-        }
-    }
-
-    #[tokio::test]
-    async fn atomic_claim_allows_only_one_worker() {
-        let (state, _) = test_state().await;
-        queued_job(&state, b"archive", &sha256_hex(b"archive")).await;
-        assert!(claim_next_job(&state).await.unwrap().is_some());
-        assert!(claim_next_job(&state).await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn queued_admission_work_prevents_idle_shutdown() {
-        let (state, _) = test_state().await;
-        assert!(!has_pending_work(&state).await.unwrap());
-
-        queued_job(&state, b"archive", &sha256_hex(b"archive")).await;
-        assert!(has_pending_work(&state).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn active_metadata_generation_prevents_idle_shutdown() {
-        let (mut state, _) = test_state().await;
-        let sha256 = sha256_hex(b"archive");
-        queued_job(&state, b"archive", &sha256).await;
-        let now = unix_timestamp().unwrap();
-        sqlx::query(
-            "UPDATE publish_jobs
-             SET state = 'admitted', admitted_at = $1, private_purged_at = $1,
-                 public_trace_object_key = 'trace-key', public_trace_size_bytes = 1,
-                 public_trace_sha256 = $2,
-                 library_provider = 'OpenAI', library_host = 'api.openai.com',
-                 library_model = 'gpt-test', library_span_count = 1,
-                 library_tool_use = FALSE
-             WHERE id = 'job-1'",
-        )
-        .bind(now)
-        .bind(&sha256)
-        .execute(&state.database)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO publication_metadata
-             (publication_id, title, tags_json, title_source, last_generation_attempt_at,
-              updated_at, generation_claim, generation_claimed_at)
-             VALUES ('job-1', 'Verified LLM trace', '[]', 'fallback', $1, $1, 'claim-1', $1)",
-        )
-        .bind(now)
-        .execute(&state.database)
-        .await
-        .unwrap();
-        state.library_metadata.api_key = Some("test-key".to_owned());
-
-        assert!(has_pending_work(&state).await.unwrap());
-    }
-
-    #[tokio::test]
-    async fn library_lists_all_admitted_records_without_a_source_allowlist() {
-        let (state, _) = test_state().await;
-        let response = traces_collection(State(state.clone())).await.unwrap().0;
-        assert_eq!(response.slug, "llm-notary-library");
-        assert!(response.publications.is_empty());
-    }
-
-    #[tokio::test]
-    async fn admitted_records_require_materialized_library_card_facts() {
-        let (state, _) = test_state().await;
-        queued_job(&state, b"archive", &sha256_hex(b"archive")).await;
-
-        assert!(
-            sqlx::query("UPDATE publish_jobs SET state = 'admitted' WHERE id = 'job-1'")
-                .execute(&state.database)
-                .await
-                .is_err()
-        );
-    }
-
-    #[tokio::test]
-    async fn library_uses_materialized_card_facts_without_loading_artifacts() {
-        let (state, storage) = test_state().await;
-        let sha256 = sha256_hex(b"archive");
-        queued_job(&state, b"archive", &sha256).await;
-        sqlx::query(
-            "UPDATE publish_jobs
-             SET state = 'admitted', admitted_at = 100, private_purged_at = 100,
-                 public_trace_object_key = 'trace-key', public_trace_size_bytes = 1,
-                 public_trace_sha256 = $1,
-                 library_provider = 'OpenAI', library_host = 'api.openai.com',
-                 library_model = 'gpt-test', library_span_count = 2,
-                 library_tool_use = TRUE
-             WHERE id = 'job-1'",
-        )
-        .bind(&sha256)
-        .execute(&state.database)
-        .await
-        .unwrap();
-
-        let response = traces_collection(State(state.clone())).await.unwrap().0;
-        assert_eq!(response.publications.len(), 1);
-        let publication = &response.publications[0];
-        assert_eq!(publication.title, "OpenAI gpt-test trace");
-        assert_eq!(publication.provider, "OpenAI");
-        assert_eq!(publication.host, "api.openai.com");
-        assert_eq!(publication.model, "gpt-test");
-        assert_eq!(publication.span_count, 2);
-        assert!(publication.tool_use);
-        assert!(storage.bodies.lock().unwrap().is_empty());
-        let metadata = public_trace_metadata(State(state), AxumPath("job-1".to_owned()))
-            .await
-            .unwrap()
-            .0;
-        assert!(metadata.platform_verified_source);
-        assert!(metadata.notary_key_id.is_none());
-        assert!(metadata.source_package_sha256.is_none());
+        assert_eq!(trace_model(&trace).unwrap(), "gpt-test");
     }
 
     #[test]
-    fn collection_tool_use_comes_from_authenticated_trace_messages() {
-        let trace = serde_json::json!({
-            "resourceSpans": [{
-                "scopeSpans": [{
-                    "spans": [{
-                        "attributes": [
-                            {"key": "gen_ai.request.model", "value": {"stringValue": "model-1"}},
-                            {"key": "gen_ai.input.messages", "value": {"stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"hello\"}]}]"}},
-                            {"key": "gen_ai.output.messages", "value": {"stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"call-1\",\"name\":\"lookup\",\"arguments\":{}}]}]"}}
-                        ]
-                    }]
-                }]
-            }]
-        });
-
+    fn unlisted_artifacts_are_noindex_but_still_downloadable() {
+        let response = public_bytes(
+            b"package".to_vec(),
+            super::super::intake::ARCHIVE_CONTENT_TYPE,
+            &"a".repeat(64),
+            Some("llm-notary-share.llmtrace"),
+            "unlisted",
+        );
+        assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            trace_facts(&serde_json::to_vec(&trace).unwrap()).unwrap(),
-            ("model-1".to_owned(), 1, true)
+            response.headers().get("x-robots-tag").unwrap(),
+            "noindex, nofollow, noarchive"
+        );
+        assert_eq!(
+            response.headers().get(header::CONTENT_DISPOSITION).unwrap(),
+            "attachment; filename=\"llm-notary-share.llmtrace\""
         );
     }
 
     #[test]
-    fn collection_trace_without_tool_parts_is_not_labeled_as_tool_use() {
-        let trace = serde_json::json!({
-            "resourceSpans": [{
-                "scopeSpans": [{
-                    "spans": [{
-                        "attributes": [
-                            {"key": "gen_ai.request.model", "value": {"stringValue": "model-1"}},
-                            {"key": "gen_ai.input.messages", "value": {"stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"hello\"}]}]"}},
-                            {"key": "gen_ai.output.messages", "value": {"stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"hi\"}]}]"}}
-                        ]
-                    }]
-                }]
-            }]
-        });
-
-        assert_eq!(
-            trace_facts(&serde_json::to_vec(&trace).unwrap()).unwrap(),
-            ("model-1".to_owned(), 1, false)
+    fn listed_artifacts_do_not_receive_a_noindex_header() {
+        let response = public_bytes(
+            b"trace".to_vec(),
+            "application/json; charset=utf-8",
+            &"b".repeat(64),
+            None,
+            "listed",
         );
-    }
-
-    #[test]
-    fn generated_metadata_is_limited_to_the_public_taxonomy() {
-        assert!(
-            validate_generated_metadata(&GeneratedMetadata {
-                title: "Tool-call trace".to_owned(),
-                tags: vec!["tool-call".to_owned(), "agent".to_owned()],
-            })
-            .is_ok()
-        );
-        assert!(
-            validate_generated_metadata(&GeneratedMetadata {
-                title: "Trace".to_owned(),
-                tags: vec!["invented-tag".to_owned()],
-            })
-            .is_err()
-        );
-        assert!(
-            validate_generated_metadata(&GeneratedMetadata {
-                title: "Trace".to_owned(),
-                tags: vec!["agent".to_owned(), "agent".to_owned()],
-            })
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn metadata_costing_uses_configured_token_rates_and_utc_weeks() {
-        let service = MetadataService {
-            api_key: None,
-            model: METADATA_MODEL.to_owned(),
-            weekly_budget_nanousd: 10_000_000_000,
-            input_nanousd_per_token: 200,
-            cached_input_nanousd_per_token: 20,
-            cache_write_nanousd_per_token: 250,
-            output_nanousd_per_token: 1_200,
-        };
-        assert_eq!(
-            service
-                .estimated_cost_nanousd(&ChatUsage {
-                    prompt_tokens: 2_000,
-                    prompt_tokens_details: ChatPromptTokenDetails {
-                        cached_tokens: 1_000,
-                        cache_write_tokens: 100,
-                    },
-                    completion_tokens: 100,
-                })
-                .unwrap(),
-            345_000
-        );
-        assert_eq!(weekly_period_start(SECS_PER_WEEK + 42), SECS_PER_WEEK);
-        assert_eq!(service.max_request_nanousd(), 6_707_200);
-    }
-
-    #[tokio::test]
-    async fn invalid_archive_is_rejected_with_stable_code_and_purged() {
-        let (state, storage) = test_state().await;
-        let bytes = b"not a ZIP archive".to_vec();
-        let sha256 = sha256_hex(&bytes);
-        queued_job(&state, &bytes, &sha256).await;
-        storage.object_bytes("intake-key", bytes);
-        let (job, claim) = claim_next_job(&state).await.unwrap().unwrap();
-        process_claim(&state, job, claim).await;
-        let row: (String, Option<String>, Option<i64>) = sqlx::query_as(
-            "SELECT state, failure_code, private_purged_at
-             FROM publish_jobs WHERE id = 'job-1'",
-        )
-        .fetch_one(&state.database)
-        .await
-        .unwrap();
-        assert_eq!(row.0, "rejected");
-        assert_eq!(row.1.as_deref(), Some("archive_invalid"));
-        assert!(row.2.is_some());
-        assert!(!storage.bodies.lock().unwrap().contains_key("intake-key"));
-    }
-
-    #[tokio::test]
-    async fn private_purge_timestamp_waits_for_all_retryable_deletions() {
-        let (state, storage) = test_state().await;
-        let bytes = b"not a ZIP archive".to_vec();
-        let sha256 = sha256_hex(&bytes);
-        queued_job(&state, &bytes, &sha256).await;
-        storage.object_bytes("upload-key", bytes.clone());
-        storage.object_bytes("intake-key", bytes);
-        storage.fail_delete("upload-key");
-        storage.fail_delete("intake-key");
-
-        let (job, claim) = claim_next_job(&state).await.unwrap().unwrap();
-        process_claim(&state, job, claim).await;
-        let purged_at: Option<i64> =
-            sqlx::query_scalar("SELECT private_purged_at FROM publish_jobs WHERE id = 'job-1'")
-                .fetch_one(&state.database)
-                .await
-                .unwrap();
-        assert!(purged_at.is_none());
-        let pending: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM publication_object_cleanup
-             WHERE publication_id = 'job-1' AND artifact_kind IN ('upload', 'intake')",
-        )
-        .fetch_one(&state.database)
-        .await
-        .unwrap();
-        assert_eq!(pending, 2);
-
-        storage.delete_failures.lock().unwrap().clear();
-        purge_admitted_private_objects(&state).await.unwrap();
-        let purged_at: Option<i64> =
-            sqlx::query_scalar("SELECT private_purged_at FROM publish_jobs WHERE id = 'job-1'")
-                .fetch_one(&state.database)
-                .await
-                .unwrap();
-        assert!(purged_at.is_some());
-        assert!(!storage.bodies.lock().unwrap().contains_key("upload-key"));
-        assert!(!storage.bodies.lock().unwrap().contains_key("intake-key"));
-    }
-
-    #[tokio::test]
-    async fn downloaded_bytes_must_match_the_declared_sha256() {
-        let (state, storage) = test_state().await;
-        let bytes = b"same length".to_vec();
-        queued_job(&state, &bytes, &"0".repeat(64)).await;
-        storage.object_bytes("intake-key", bytes);
-        let (job, claim) = claim_next_job(&state).await.unwrap().unwrap();
-        process_claim(&state, job, claim).await;
-        let row: (String, Option<String>, Option<String>) = sqlx::query_as(
-            "SELECT state, failure_code, actual_sha256
-             FROM publish_jobs WHERE id = 'job-1'",
-        )
-        .fetch_one(&state.database)
-        .await
-        .unwrap();
-        assert_eq!(row.0, "rejected");
-        assert_eq!(row.1.as_deref(), Some("object_sha256_mismatch"));
-        assert_eq!(row.2.as_deref(), Some(sha256_hex(b"same length").as_str()));
-    }
-
-    #[tokio::test]
-    async fn admission_writes_exactly_one_immutable_public_trace() {
-        let (state, storage) = test_state().await;
-        let bytes = b"archive".to_vec();
-        let sha256 = sha256_hex(&bytes);
-        queued_job(&state, &bytes, &sha256).await;
-        storage.object_bytes("intake-key", bytes);
-        let (job, claim) = claim_next_job(&state).await.unwrap().unwrap();
-        admit_claim(
-            &state,
-            &job,
-            &claim,
-            7,
-            &sha256,
-            admitted_artifacts(
-                b"{\"trace\":1}\n",
-                &sha256,
-                "OpenAI",
-                "api.openai.com",
-                "gpt-test",
-            ),
-        )
-        .await
-        .unwrap();
-        assert!(
-            admit_claim(
-                &state,
-                &job,
-                &claim,
-                7,
-                &sha256,
-                admitted_artifacts(
-                    b"{\"different\":true}\n",
-                    &sha256,
-                    "Other",
-                    "example.com",
-                    "other-model",
-                ),
-            )
-            .await
-            .is_err()
-        );
-        let row: (
-            String,
-            String,
-            String,
-            String,
-            String,
-            i64,
-            bool,
-            String,
-            i64,
-        ) = sqlx::query_as(
-            "SELECT state, public_trace_object_key,
-                    library_provider, library_host, library_model,
-                    library_span_count, library_tool_use,
-                    verified_notary_key_id, verified_directory_generation
-             FROM publish_jobs WHERE id = 'job-1'",
-        )
-        .fetch_one(&state.database)
-        .await
-        .unwrap();
-        assert_eq!(row.0, "admitted");
-        assert_eq!(row.2, "OpenAI");
-        assert_eq!(row.3, "api.openai.com");
-        assert_eq!(row.4, "gpt-test");
-        assert_eq!(row.5, 2);
-        assert!(row.6);
-        assert_eq!(row.7, "sha256:test-notary");
-        assert_eq!(row.8, 7);
-        assert_eq!(
-            storage.bodies.lock().unwrap().get(&row.1).unwrap(),
-            b"{\"trace\":1}\n"
-        );
-        let public = load_public_artifact(&state, "job-1").await.unwrap();
-        assert_eq!(public.id, "job-1");
-        assert_eq!(public.public_trace_object_key, row.1);
-        assert_eq!(
-            load_public_bytes(
-                &state,
-                &public.public_trace_object_key,
-                public.public_trace_size_bytes,
-                &public.public_trace_sha256,
-            )
-            .await
-            .unwrap(),
-            b"{\"trace\":1}\n"
-        );
-        assert_eq!(storage.bodies.lock().unwrap().len(), 1);
-        storage
-            .bodies
-            .lock()
-            .unwrap()
-            .insert(row.1.clone(), b"tampered\n".to_vec());
-        assert!(
-            load_public_bytes(
-                &state,
-                &public.public_trace_object_key,
-                public.public_trace_size_bytes,
-                &public.public_trace_sha256,
-            )
-            .await
-            .is_err()
-        );
-        assert!(load_public_artifact(&state, "job-1").await.is_ok());
-        let metadata = public_trace_metadata(State(state), AxumPath("job-1".to_owned()))
-            .await
-            .unwrap()
-            .0;
-        assert!(metadata.platform_verified_source);
-        assert_eq!(
-            metadata.notary_key_id.as_deref(),
-            Some("sha256:test-notary")
-        );
+        assert!(!response.headers().contains_key("x-robots-tag"));
     }
 }

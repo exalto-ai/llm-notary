@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "LLM Notary hosted platform API",
-    "description": "Public website, account, CLI authorization, publication, and Library API for the hosted LLM Notary platform. This contract is separate from the loopback local administration API.",
+    "description": "Public website, account, CLI authorization, verified-session sharing, and Listed-share catalog API for the hosted LLM Notary platform. This contract is separate from the loopback local administration API.",
     "license": {
       "name": "MIT OR Apache-2.0",
       "identifier": "MIT OR Apache-2.0"
@@ -1191,12 +1191,12 @@
         ]
       }
     },
-    "/api/me/publish-jobs": {
+    "/api/me/shares": {
       "get": {
         "tags": [
-          "publication"
+          "sharing"
         ],
-        "summary": "List the browser user's publication jobs",
+        "summary": "List the browser user's shares",
         "operationId": "list_web_publish_jobs",
         "responses": {
           "200": {
@@ -1204,7 +1204,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WebPublishJobsResponse"
+                  "$ref": "#/components/schemas/WebSharesResponse"
                 }
               }
             }
@@ -1345,20 +1345,20 @@
         ]
       }
     },
-    "/api/public/collections/traces": {
+    "/api/public/shares": {
       "get": {
         "tags": [
           "library"
         ],
-        "summary": "List admitted public traces",
-        "operationId": "traces_collection",
+        "summary": "List Listed verified-session shares",
+        "operationId": "listed_shares",
         "responses": {
           "200": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CollectionResponse"
+                  "$ref": "#/components/schemas/ListedSharesResponse"
                 }
               }
             }
@@ -1376,16 +1376,16 @@
         }
       }
     },
-    "/api/public/traces/{trace_id}": {
+    "/api/public/shares/{share_id}": {
       "get": {
         "tags": [
-          "library"
+          "sharing"
         ],
-        "summary": "Get public artifact links for an admitted trace",
-        "operationId": "public_trace_metadata",
+        "summary": "Get one verified-session share by its stable ID",
+        "operationId": "public_share_detail",
         "parameters": [
           {
-            "name": "trace_id",
+            "name": "share_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -1399,7 +1399,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PublicTraceMetadata"
+                  "$ref": "#/components/schemas/PublicShareDetail"
                 }
               }
             }
@@ -1427,16 +1427,16 @@
         }
       }
     },
-    "/api/public/traces/{trace_id}/events/download": {
-      "post": {
+    "/api/public/shares/{share_id}/package.llmtrace": {
+      "get": {
         "tags": [
-          "library"
+          "sharing"
         ],
-        "summary": "Record a privacy-preserving trace download event",
-        "operationId": "record_download_event",
+        "summary": "Download the exact admitted portable proof package",
+        "operationId": "public_share_package",
         "parameters": [
           {
-            "name": "trace_id",
+            "name": "share_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -1444,21 +1444,23 @@
             }
           }
         ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ActivityRequest"
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/vnd.llmnotary.trace-package+zip": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
               }
             }
           },
-          "required": true
-        },
-        "responses": {
-          "204": {
-            "description": "Download event recorded"
-          },
-          "400": {
+          "404": {
             "description": "",
             "content": {
               "application/json": {
@@ -1468,7 +1470,7 @@
               }
             }
           },
-          "404": {
+          "410": {
             "description": "",
             "content": {
               "application/json": {
@@ -1487,20 +1489,30 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
     },
-    "/api/public/traces/{trace_id}/trace.otlp.json": {
+    "/api/public/shares/{share_id}/trace.otlp.json": {
       "get": {
         "tags": [
-          "library"
+          "sharing"
         ],
-        "summary": "Download an admitted canonical OpenTelemetry trace",
-        "operationId": "public_trace",
+        "summary": "Download the admitted canonical OpenTelemetry trace",
+        "operationId": "public_share_trace",
         "parameters": [
           {
-            "name": "trace_id",
+            "name": "share_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -1550,18 +1562,49 @@
         }
       }
     },
-    "/api/publish/jobs": {
+    "/api/readyz": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "Check database readiness",
+        "operationId": "readiness",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/shares": {
       "post": {
         "tags": [
-          "publication"
+          "sharing"
         ],
-        "summary": "Create or resume a publication job",
+        "summary": "Create or resume a share",
         "operationId": "create_publish_job",
         "parameters": [
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "Stable key for this publication attempt",
+            "description": "Stable key for this share attempt",
             "required": true,
             "schema": {
               "type": "string"
@@ -1580,21 +1623,21 @@
         },
         "responses": {
           "200": {
-            "description": "Existing publication job",
+            "description": "Existing share",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CreatePublishJobResponse"
+                  "$ref": "#/components/schemas/CreateShareResponse"
                 }
               }
             }
           },
           "201": {
-            "description": "New or reopened publication job",
+            "description": "New or reopened share",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CreatePublishJobResponse"
+                  "$ref": "#/components/schemas/CreateShareResponse"
                 }
               }
             }
@@ -1667,16 +1710,16 @@
         ]
       }
     },
-    "/api/publish/jobs/{job_id}": {
+    "/api/shares/{share_id}": {
       "get": {
         "tags": [
-          "publication"
+          "sharing"
         ],
-        "summary": "Get a publication job",
+        "summary": "Get a share's admission state",
         "operationId": "get_publish_job",
         "parameters": [
           {
-            "name": "job_id",
+            "name": "share_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -1690,7 +1733,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PublishJobResponse"
+                  "$ref": "#/components/schemas/ShareResponse"
                 }
               }
             }
@@ -1751,18 +1794,102 @@
             "bearerAuth": []
           }
         ]
+      },
+      "patch": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Explicitly change a share's visibility",
+        "operationId": "update_share_visibility",
+        "parameters": [
+          {
+            "name": "share_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateShareVisibility"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
-    "/api/publish/jobs/{job_id}/complete": {
+    "/api/shares/{share_id}/complete": {
       "post": {
         "tags": [
-          "publication"
+          "sharing"
         ],
-        "summary": "Complete the upload for a publication job",
+        "summary": "Complete the upload for a share",
         "operationId": "complete_publish_job",
         "parameters": [
           {
-            "name": "job_id",
+            "name": "share_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -1776,7 +1903,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PublishJobResponse"
+                  "$ref": "#/components/schemas/ShareResponse"
                 }
               }
             }
@@ -1857,37 +1984,6 @@
             "bearerAuth": []
           }
         ]
-      }
-    },
-    "/api/readyz": {
-      "get": {
-        "tags": [
-          "health"
-        ],
-        "summary": "Check database readiness",
-        "operationId": "readiness",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Health"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/verify": {
@@ -1991,18 +2087,6 @@
           "free",
           "paid_preview"
         ]
-      },
-      "ActivityRequest": {
-        "type": "object",
-        "required": [
-          "subject"
-        ],
-        "properties": {
-          "subject": {
-            "type": "string"
-          }
-        },
-        "additionalProperties": false
       },
       "AdmissionMode": {
         "type": "string",
@@ -2251,101 +2335,6 @@
           }
         }
       },
-      "CollectionPublication": {
-        "type": "object",
-        "required": [
-          "id",
-          "title",
-          "tool_use",
-          "tags",
-          "author",
-          "admitted_at",
-          "provider",
-          "host",
-          "model",
-          "span_count",
-          "recent_downloads",
-          "trace_url"
-        ],
-        "properties": {
-          "admitted_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "author": {
-            "type": "string"
-          },
-          "host": {
-            "type": "string"
-          },
-          "id": {
-            "type": "string"
-          },
-          "model": {
-            "type": "string"
-          },
-          "provider": {
-            "type": "string"
-          },
-          "recent_downloads": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "span_count": {
-            "type": "integer",
-            "minimum": 0
-          },
-          "tags": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "title": {
-            "type": "string"
-          },
-          "tool_use": {
-            "type": "boolean"
-          },
-          "trace_url": {
-            "type": "string"
-          }
-        }
-      },
-      "CollectionResponse": {
-        "type": "object",
-        "required": [
-          "format",
-          "slug",
-          "title",
-          "description",
-          "consent_label",
-          "publications"
-        ],
-        "properties": {
-          "consent_label": {
-            "type": "string"
-          },
-          "description": {
-            "type": "string"
-          },
-          "format": {
-            "type": "string"
-          },
-          "publications": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/CollectionPublication"
-            }
-          },
-          "slug": {
-            "type": "string"
-          },
-          "title": {
-            "type": "string"
-          }
-        }
-      },
       "CreateApiKeyRequest": {
         "type": "object",
         "required": [
@@ -2403,7 +2392,8 @@
         "required": [
           "archive_format",
           "size_bytes",
-          "sha256"
+          "sha256",
+          "visibility"
         ],
         "properties": {
           "archive_format": {
@@ -2415,18 +2405,21 @@
           "size_bytes": {
             "type": "integer",
             "format": "int64"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/ShareVisibility"
           }
         },
         "additionalProperties": false
       },
-      "CreatePublishJobResponse": {
+      "CreateShareResponse": {
         "type": "object",
         "required": [
-          "job"
+          "share"
         ],
         "properties": {
-          "job": {
-            "$ref": "#/components/schemas/PublishJobResponse"
+          "share": {
+            "$ref": "#/components/schemas/ShareResponse"
           },
           "upload": {
             "oneOf": [
@@ -2588,6 +2581,54 @@
           }
         }
       },
+      "ListedShareSummary": {
+        "type": "object",
+        "required": [
+          "id",
+          "provider",
+          "model",
+          "publisher",
+          "share_url"
+        ],
+        "properties": {
+          "authenticated_at_unix_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "publisher": {
+            "type": "string"
+          },
+          "share_url": {
+            "type": "string"
+          }
+        }
+      },
+      "ListedSharesResponse": {
+        "type": "object",
+        "required": [
+          "shares"
+        ],
+        "properties": {
+          "shares": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ListedShareSummary"
+            }
+          }
+        }
+      },
       "MeResponse": {
         "type": "object",
         "required": [
@@ -2721,17 +2762,27 @@
           }
         }
       },
-      "PublicTraceMetadata": {
+      "PublicShareDetail": {
         "type": "object",
         "required": [
           "id",
-          "trace_url",
-          "platform_verified_source",
+          "visibility",
+          "publisher",
+          "admitted_at",
           "provider",
           "host",
-          "trace_sha256"
+          "model",
+          "verification_state",
+          "trace_sha256",
+          "package_available",
+          "trace_url",
+          "share_url"
         ],
         "properties": {
+          "admitted_at": {
+            "type": "integer",
+            "format": "int64"
+          },
           "authenticated_at_unix_ms": {
             "type": [
               "integer",
@@ -2752,23 +2803,51 @@
           "id": {
             "type": "string"
           },
+          "model": {
+            "type": "string"
+          },
           "notary_key_id": {
             "type": [
               "string",
               "null"
             ]
           },
-          "platform_verified_source": {
+          "package_available": {
             "type": "boolean"
           },
-          "provider": {
-            "type": "string"
-          },
-          "source_package_sha256": {
+          "package_sha256": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "package_size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "package_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "provider": {
+            "type": "string"
+          },
+          "public_package_safety_version": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "publisher": {
+            "type": "string"
+          },
+          "share_url": {
+            "type": "string"
           },
           "trace_sha256": {
             "type": "string"
@@ -2782,12 +2861,18 @@
               "null"
             ]
           },
+          "verification_state": {
+            "type": "string"
+          },
           "verified_at": {
             "type": [
               "integer",
               "null"
             ],
             "format": "int64"
+          },
+          "visibility": {
+            "type": "string"
           }
         }
       },
@@ -2809,86 +2894,6 @@
           },
           "id": {
             "type": "string"
-          }
-        }
-      },
-      "PublishJobResponse": {
-        "type": "object",
-        "required": [
-          "id",
-          "state",
-          "archive_format",
-          "size_bytes",
-          "sha256",
-          "created_at",
-          "updated_at",
-          "upload_expires_at",
-          "status_url"
-        ],
-        "properties": {
-          "admitted_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "archive_format": {
-            "type": "string"
-          },
-          "created_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "failure_code": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
-          "private_purged_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "queued_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "sha256": {
-            "type": "string"
-          },
-          "size_bytes": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "state": {
-            "type": "string"
-          },
-          "status_url": {
-            "type": "string"
-          },
-          "trace_url": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "updated_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "upload_expires_at": {
-            "type": "integer",
-            "format": "int64"
           }
         }
       },
@@ -2991,9 +2996,86 @@
           "paid_preview"
         ]
       },
+      "ShareResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "state",
+          "visibility",
+          "created_at",
+          "updated_at",
+          "status_url"
+        ],
+        "properties": {
+          "admitted_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "failure_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "package_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "share_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "status_url": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/ShareVisibility"
+          }
+        }
+      },
+      "ShareVisibility": {
+        "type": "string",
+        "enum": [
+          "unlisted",
+          "listed"
+        ]
+      },
       "TracePackageBody": {
         "type": "string",
         "format": "binary"
+      },
+      "UpdateShareVisibility": {
+        "type": "object",
+        "required": [
+          "visibility"
+        ],
+        "properties": {
+          "visibility": {
+            "$ref": "#/components/schemas/ShareVisibility"
+          }
+        },
+        "additionalProperties": false
       },
       "UploadInstructions": {
         "type": "object",
@@ -3122,16 +3204,16 @@
           }
         }
       },
-      "WebPublishJobsResponse": {
+      "WebSharesResponse": {
         "type": "object",
         "required": [
-          "jobs"
+          "shares"
         ],
         "properties": {
-          "jobs": {
+          "shares": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/PublishJobResponse"
+              "$ref": "#/components/schemas/ShareResponse"
             }
           }
         }
@@ -3186,12 +3268,12 @@
       "description": "Anonymous, retention-free portable package verification"
     },
     {
-      "name": "publication",
-      "description": "Authenticated publication intake"
+      "name": "sharing",
+      "description": "Authenticated share intake and stable direct links"
     },
     {
       "name": "library",
-      "description": "Public admitted traces and metadata"
+      "description": "Small catalog of Listed shares"
     }
   ]
 }

@@ -110,12 +110,11 @@ impl HostedVerificationError {
 }
 
 pub(super) fn verify_package(
-    archive: Vec<u8>,
+    archive: &[u8],
     directory: &NotaryDirectory,
 ) -> Result<HostedVerifiedPackage, HostedVerificationError> {
-    let package_sha256 = llm_notary_core::sha256_hex(&archive);
-    let prepared = prepare_package(&archive, directory)?;
-    drop(archive);
+    let package_sha256 = llm_notary_core::sha256_hex(archive);
+    let prepared = prepare_package(archive, directory)?;
     let verified =
         verify_trace_package_archive(prepared.validated, package_sha256, &prepared.trusted_key)
             .map_err(classify_package_error)?;
@@ -134,13 +133,12 @@ pub(super) fn verify_package(
 
 #[cfg(feature = "test-utils")]
 fn verify_fixture_package(
-    archive: Vec<u8>,
+    archive: &[u8],
     directory: &NotaryDirectory,
     crypto_provider: &CryptoProvider,
 ) -> Result<HostedVerifiedPackage, HostedVerificationError> {
-    let package_sha256 = llm_notary_core::sha256_hex(&archive);
-    let prepared = prepare_package(&archive, directory)?;
-    drop(archive);
+    let package_sha256 = llm_notary_core::sha256_hex(archive);
+    let prepared = prepare_package(archive, directory)?;
     let verified = llm_notary_core::bundle::verify_trace_package_archive_with_provider_for_test(
         prepared.validated,
         package_sha256,
@@ -199,7 +197,7 @@ pub(crate) fn run_worker() -> anyhow::Result<()> {
 
 fn run_worker_with<F>(verify: F) -> anyhow::Result<()>
 where
-    F: FnOnce(Vec<u8>, &NotaryDirectory) -> Result<HostedVerifiedPackage, HostedVerificationError>,
+    F: FnOnce(&[u8], &NotaryDirectory) -> Result<HostedVerifiedPackage, HostedVerificationError>,
 {
     const MAX_DIRECTORY_BYTES: u64 = 1024 * 1024;
     let mut stdin = std::io::stdin().lock();
@@ -225,7 +223,7 @@ where
     anyhow::ensure!(stdin.read(&mut trailing)? == 0, "unexpected worker input");
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
-    match verify(archive, &directory) {
+    match verify(&archive, &directory) {
         Ok(package) => write_verified_response(&mut stdout, &package)?,
         Err(error) => {
             write_worker_frame(&mut stdout, WORKER_REJECTED, error.public_code().as_bytes())?;

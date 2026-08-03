@@ -26,6 +26,7 @@ import './landing.css';
 import './notaries.css';
 import './axis.css';
 import './verification.css';
+import './sharing.css';
 import { RelayAnimation } from './RelayAnimation';
 import {
   approveCli,
@@ -36,9 +37,10 @@ import {
   getCliSessions,
   getCurrentUser,
   getNotaryDirectory,
-  getPublishedTrace,
-  getPublishJobs,
-  getTraceCollection,
+  getListedShares,
+  getMyShares,
+  getPublicShare,
+  getSharedTrace,
   logoutBrowser,
   revokeApiKey,
   revokeCliSession,
@@ -93,15 +95,15 @@ function AccountMenu({ user, onLogout, theme, onThemeChange }) {
     return () => { document.removeEventListener('mousedown', close); window.removeEventListener('keydown', close); };
   }, []);
   const nextTheme = theme === 'dark' ? 'light' : 'dark';
-  return <div className="account-menu" ref={menuRef}><button type="button" className="account-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="menu" aria-label={`Account menu for ${user.github_login}`}>{user.avatar_url ? <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" /> : <span>{initials}</span>}</button>{open && <div className="account-popover" role="menu"><div className="account-identity"><div><b>{user.github_login}</b><span>Signed in with GitHub</span></div><button type="button" className="account-theme" role="menuitemcheckbox" aria-checked={theme === 'dark'} aria-label={`Use ${nextTheme} theme`} title={`Use ${nextTheme} theme`} onClick={() => onThemeChange(nextTheme)}>{theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</button></div><div className="account-actions"><a href="#/dashboard" role="menuitem" onClick={() => setOpen(false)}>Dashboard</a><button type="button" role="menuitem" onClick={() => { setOpen(false); onLogout(); }}>Log out</button></div></div>}</div>;
+  return <div className="account-menu" ref={menuRef}><button type="button" className="account-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="menu" aria-label={`Account menu for ${user.github_login}`}>{user.avatar_url ? <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" /> : <span>{initials}</span>}</button>{open && <div className="account-popover" role="menu"><div className="account-identity"><div><b>{user.github_login}</b><span>Signed in with GitHub</span></div><button type="button" className="account-theme" role="menuitemcheckbox" aria-checked={theme === 'dark'} aria-label={`Use ${nextTheme} theme`} title={`Use ${nextTheme} theme`} onClick={() => onThemeChange(nextTheme)}>{theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</button></div><div className="account-actions"><a href="/#/dashboard" role="menuitem" onClick={() => setOpen(false)}>Dashboard</a><button type="button" role="menuitem" onClick={() => { setOpen(false); onLogout(); }}>Log out</button></div></div>}</div>;
 }
 
 function Header({ user, onLogout, theme, onThemeChange }) {
-  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/docs">Docs</a><a href="#/verify">Verify</a><a href="#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
+  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
 }
 
 function Footer() {
-  return <footer className="site-footer"><span className="footer-copyright">© 2026 LLM Notary</span><nav aria-label="Footer"><a href="#/notaries">Notaries</a><a href="#/privacy">Privacy</a><a href="#/terms">Terms</a></nav></footer>;
+  return <footer className="site-footer"><span className="footer-copyright">© 2026 LLM Notary</span><nav aria-label="Footer"><a href="/#/notaries">Notaries</a><a href="/#/privacy">Privacy</a><a href="/#/terms">Terms</a></nav></footer>;
 }
 
 const legalPages = {
@@ -152,39 +154,17 @@ function PublishingArchitecture() {
 }
 
 function CollectionPreview() {
-  const [collection, setCollection] = useState(null);
+  const [shares, setShares] = useState(null);
   const [loadError, setLoadError] = useState(false);
-  const [activeId, setActiveId] = useState(null);
-  const [tracePreview, setTracePreview] = useState(null);
   useEffect(() => {
     let cancelled = false;
-    getTraceCollection()
-      .then((payload) => {
-        if (!cancelled) {
-          setCollection(payload);
-          setActiveId(payload.publications[0]?.id || null);
-        }
-      })
+    getListedShares()
+      .then((payload) => { if (!cancelled) setShares(payload); })
       .catch(() => { if (!cancelled) setLoadError(true); });
     return () => { cancelled = true; };
   }, []);
-  const publications = collection?.publications || [];
-  const visible = publications.slice(0, 5);
-  const active = visible.find((publication) => publication.id === activeId) || visible[0];
-  useEffect(() => {
-    if (!active) {
-      setTracePreview(null);
-      return;
-    }
-    let cancelled = false;
-    setTracePreview(null);
-    getPublishedTrace(active.id)
-      .then((trace) => { if (!cancelled) setTracePreview(parsePublishedTrace(trace)); })
-      .catch(() => { if (!cancelled) setTracePreview([]); });
-    return () => { cancelled = true; };
-  }, [active]);
-  const snippets = traceSnippets(tracePreview || []);
-  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Library</span><h2>Featured traces.</h2></div></div>{collection === null && !loadError ? <div className="collection-pending" role="status"><b>Loading published traces…</b><span>Retrieving public publications.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library is temporarily unavailable.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-workspace"><div className="preview-records" aria-label="Featured traces">{visible.map((publication) => <button type="button" className={publication.id === active?.id ? 'active' : ''} onClick={() => setActiveId(publication.id)} aria-pressed={publication.id === active?.id} key={publication.id}><i aria-hidden="true" /><span><b>{publication.title}</b><small>{publication.provider} · {publication.model}</small></span><em>{publication.tags[0] || 'trace'}</em></button>)}</div>{active && <article className="preview-inspector"><header><span className="eyebrow">Selected trace</span></header><h3>{active.title}</h3><p>{active.provider} · {active.model}</p><div className="preview-contents">{snippets.length ? snippets.map((snippet) => <span key={snippet.label}><b>{snippet.label}</b><small>{snippet.text}</small></span>) : <span><b>Trace contents</b><small>Loading preview…</small></span>}</div></article>}</div> : <div className="collection-pending"><b>No published traces yet.</b><span>New publications will appear here after they are published.</span></div>}<a className="button button-dark" href="#/library">Open Library</a></section>;
+  const visible = (shares || []).slice(0, 5);
+  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Listed sessions</span><h2>Open the conversation first.</h2></div></div>{shares === null && !loadError ? <div className="collection-pending" role="status"><b>Loading shared sessions…</b><span>Retrieving the public Listed index.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library is temporarily unavailable.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-share-list" aria-label="Featured shared sessions">{visible.map((share) => <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><i aria-hidden="true" /><span><b>{share.model}</b><small>{share.provider} · shared by {share.publisher}</small></span><em>Verified</em></a>)}</div> : <div className="collection-pending"><b>No Listed sessions yet.</b><span>Unlisted links remain accessible without appearing here.</span></div>}<a className="button button-dark" href="#/library">Open Library</a></section>;
 }
 
 const MAX_VERIFY_FILE_BYTES = 128 * 1024 * 1024 + 64 * 1024 + 16 * 1024;
@@ -790,157 +770,99 @@ function traceSnippets(spans) {
 }
 
 function LibraryLoading() {
-  return <main className="library-shell library-shell--loading" aria-busy="true">
-    <section className="library-controls library-loading-controls" aria-hidden="true">
-      <i className="library-loading-control library-loading-control--search" />
-      <i className="library-loading-control" />
-      <i className="library-loading-control" />
-      <i className="library-loading-control" />
-    </section>
-    <div className="library-browse-meta library-loading-meta"><span role="status">Loading library</span></div>
-    <section className="library-results library-loading-results" aria-hidden="true">
-      <div className="collection-workspace">
-        <div className="collection-list">
-          <div className="library-grid">{Array.from({ length: 5 }, (_, index) => <div className={`model-card library-loading-row${index === 0 ? ' is-current' : ''}`} key={index}><i /><span><b /><small /></span></div>)}</div>
-        </div>
-        <article className="collection-inspector library-loading-inspector">
-          <header><i /><i /></header>
-          <h2 />
-          <div className="library-loading-facts">{Array.from({ length: 4 }, (_, index) => <i key={index} />)}</div>
-          <div className="library-loading-document"><i /><i /><i /></div>
-        </article>
-      </div>
-    </section>
-  </main>;
+  return <main className="share-library share-library--loading" aria-busy="true"><header><span className="eyebrow">Library</span><h1>Listed verified sessions.</h1></header><div className="share-library-skeleton" role="status"><i /><i /><i /><span>Loading Listed shares…</span></div></main>;
 }
 
-function useMediaMatch(query) {
-  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
-  useEffect(() => {
-    const media = window.matchMedia(query);
-    const update = () => setMatches(media.matches);
-    update();
-    media.addEventListener('change', update);
-    return () => media.removeEventListener('change', update);
-  }, [query]);
-  return matches;
-}
-
-export function Collections({ selectedId, loadCollection = getTraceCollection, loadTrace = getPublishedTrace }) {
-  const [collection, setCollection] = useState(null);
+export function Collections({ loadShares = getListedShares }) {
+  const [shares, setShares] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [query, setQuery] = useState('');
   const [provider, setProvider] = useState('All');
-  const [model, setModel] = useState('All');
-  const [tag, setTag] = useState(null);
-  const [sort, setSort] = useState('Newest');
-  const [activeId, setActiveId] = useState(null);
-  const [tracePreview, setTracePreview] = useState(null);
-  const [traceError, setTraceError] = useState('');
-  const mobile = useMediaMatch('(max-width: 820px)');
-  const listScroll = useRef(0);
-  const listButtons = useRef(new Map());
-  const inspectorHeading = useRef(null);
-  const previousSelectedId = useRef(selectedId);
-  const openedFromList = useRef(false);
   useEffect(() => {
     let cancelled = false;
-    loadCollection()
-      .then((payload) => { if (!cancelled) { setCollection(payload); setActiveId(payload.publications.find((item) => item.id === selectedId)?.id || payload.publications[0]?.id || null); } })
+    loadShares()
+      .then((payload) => { if (!cancelled) setShares(payload); })
       .catch((error) => { if (!cancelled) setLoadError(error.message); });
     return () => { cancelled = true; };
-  }, [loadCollection]);
-  const publications = collection?.publications || [];
-  const providers = ['All', ...new Set(publications.map((item) => item.provider))];
-  const models = ['All', ...new Set(publications.map((item) => item.model))];
-  const tags = [...new Set(publications.flatMap((item) => item.tags))];
-  const filtered = useMemo(() => publications.filter((item) => {
-    const searchable = `${item.title} ${item.provider} ${item.model} ${item.tags.join(' ')}`.toLowerCase();
-    return searchable.includes(query.toLowerCase()) && (provider === 'All' || item.provider === provider) && (model === 'All' || item.model === model) && (!tag || item.tags.includes(tag));
-  }).sort((left, right) => sort === 'Newest' ? right.admitted_at - left.admitted_at : sort === 'Downloads' ? right.recent_downloads - left.recent_downloads || right.admitted_at - left.admitted_at : left.title.localeCompare(right.title)), [publications, query, provider, model, tag, sort]);
+  }, [loadShares]);
+  const providers = ['All', ...new Set((shares || []).map((share) => share.provider))];
+  const filtered = useMemo(() => (shares || []).filter((share) => {
+    const searchable = `${share.provider} ${share.model} ${share.publisher}`.toLowerCase();
+    return searchable.includes(query.toLowerCase()) && (provider === 'All' || share.provider === provider);
+  }), [provider, query, shares]);
+  if (shares === null && !loadError) return <LibraryLoading />;
+  return <main className="share-library">
+    <header><span className="eyebrow">Library · Listed only</span><h1>Verified sessions, without the catalog machinery.</h1><p>The Library is a small index of shares people chose to list. Every row opens the stable conversation page; Unlisted shares remain accessible only by their link.</p></header>
+    <section className="share-library-controls" aria-label="Browse Listed shares">
+      <label><span>Search</span><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Model, provider, or publisher" /></label>
+      <Select value={provider} onValueChange={setProvider}><SelectTrigger aria-label="Provider"><SelectValue /></SelectTrigger><SelectContent>{providers.map((value) => <SelectItem value={value} key={value}>{value}</SelectItem>)}</SelectContent></Select>
+      <span>{filtered.length} {filtered.length === 1 ? 'session' : 'sessions'}</span>
+    </section>
+    {loadError ? <section className="collection-empty" role="alert">{loadError}</section> : filtered.length ? <section className="share-index" aria-label="Listed verified sessions">{filtered.map((share, index) => <a className="share-index-row" href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><span className="share-index-number">{String(index + 1).padStart(2, '0')}</span><span><b>{share.model}</b><small>{share.provider}</small></span><span><small>Shared by</small>{share.publisher}</span><span className="share-index-state"><i aria-hidden="true" />Verified</span><span aria-hidden="true">↗</span></a>)}</section> : <section className="collection-empty"><b>No Listed sessions match.</b><p>Try a broader search. Unlisted shares never appear in this index.</p></section>}
+  </main>;
+}
+
+function SharedPart({ part }) {
+  if (part.type === 'tool_call' || part.type === 'tool_call_response') {
+    const call = part.type === 'tool_call';
+    return <details className="tool-attachment"><summary><span>{call ? 'Tool call' : 'Tool result'}</span><b>{call ? part.name || 'Unnamed tool' : part.id || 'Returned value'}</b><em>Open</em></summary><div>{part.id && <TraceField label="call ID" value={part.id} />}{call && <TraceField label="arguments" value={part.arguments} />}{!call && <TraceField label="result" value={part.result} />}</div></details>;
+  }
+  return <div className="shared-message-text"><ReactMarkdown>{String(part.content ?? '')}</ReactMarkdown></div>;
+}
+
+function SharedConversation({ spans }) {
+  const turns = spans.flatMap((span, spanIndex) => [
+    ...(span.messages?.input || []).map((message, messageIndex) => ({ ...message, key: `${spanIndex}-input-${messageIndex}` })),
+    ...(span.messages?.output || []).map((message, messageIndex) => ({ ...message, key: `${spanIndex}-output-${messageIndex}` })),
+  ]);
+  if (!turns.length) return <p className="share-page-state">This verified trace contains no disclosed messages.</p>;
+  return <div className="shared-conversation">{turns.map((message, index) => <article className={`shared-message shared-message--${message.role || 'unknown'}`} key={message.key}><aside><span>{String(index + 1).padStart(2, '0')}</span><b>{message.role || 'message'}</b></aside><div>{(message.parts || []).map((part, partIndex) => <SharedPart part={part} key={`${part.type}-${partIndex}`} />)}{message.finishReason && <small className="finish-reason">finish_reason: {message.finishReason}</small>}</div></article>)}</div>;
+}
+
+export function SharePage({ shareId, loadShare = getPublicShare, loadTrace = getSharedTrace }) {
+  const [share, setShare] = useState(null);
+  const [spans, setSpans] = useState(null);
+  const [loadError, setLoadError] = useState('');
   useEffect(() => {
-    if (!filtered.length) {
-      if (activeId !== null) setActiveId(null);
-      return;
-    }
-    if (!filtered.some((item) => item.id === activeId)) setActiveId(filtered[0].id);
-  }, [filtered, activeId]);
-  useEffect(() => {
-    if (selectedId && filtered.some((item) => item.id === selectedId)) setActiveId(selectedId);
-  }, [filtered, selectedId]);
-  const active = filtered.find((item) => item.id === activeId) || null;
-  useEffect(() => {
-    if (!active) {
-      setTracePreview(null);
-      setTraceError('');
-      return;
-    }
     let cancelled = false;
-    setTracePreview(null);
-    setTraceError('');
-    loadTrace(active.id)
-      .then((trace) => { if (!cancelled) setTracePreview(parsePublishedTrace(trace)); })
-      .catch((error) => { if (!cancelled) setTraceError(error.message); });
+    setShare(null);
+    setSpans(null);
+    setLoadError('');
+    Promise.all([loadShare(shareId), loadTrace(shareId)])
+      .then(([detail, trace]) => {
+        if (!cancelled) {
+          setShare(detail);
+          setSpans(parsePublishedTrace(trace));
+        }
+      })
+      .catch((error) => { if (!cancelled) setLoadError(error.message); });
     return () => { cancelled = true; };
-  }, [active, loadTrace]);
+  }, [loadShare, loadTrace, shareId]);
   useEffect(() => {
-    const previous = previousSelectedId.current;
-    previousSelectedId.current = selectedId;
-    if (!mobile) return undefined;
-    if (selectedId && active) {
-      const frame = window.requestAnimationFrame(() => {
-        window.scrollTo({ top: 0, behavior: 'instant' });
-        inspectorHeading.current?.focus({ preventScroll: true });
-      });
-      return () => window.cancelAnimationFrame(frame);
+    if (!share) return undefined;
+    document.title = `${share.model} · Verified session · LLM Notary`;
+    const existingRobots = document.head.querySelector('meta[name="robots"][data-share-page]');
+    const robots = existingRobots instanceof HTMLMetaElement ? existingRobots : document.createElement('meta');
+    if (!(existingRobots instanceof HTMLMetaElement)) {
+      robots.name = 'robots';
+      robots.dataset.sharePage = 'true';
+      document.head.appendChild(robots);
     }
-    if (!selectedId && previous) {
-      const timer = window.setTimeout(() => {
-        window.scrollTo({ top: listScroll.current, behavior: 'instant' });
-        listButtons.current.get(previous)?.focus();
-        openedFromList.current = false;
-      }, 0);
-      return () => window.clearTimeout(timer);
-    }
-    return undefined;
-  }, [active, mobile, selectedId]);
-  const selectTrace = (id) => {
-    setActiveId(id);
-    if (mobile) listScroll.current = window.scrollY;
-    openedFromList.current = true;
-    window.location.hash = `/library/${encodeURIComponent(id)}`;
-  };
-  const returnToLibrary = () => {
-    if (openedFromList.current) window.history.back();
-    else window.location.hash = '/library';
-  };
-  const showMobileDetail = Boolean(mobile && selectedId && active?.id === selectedId);
-  if (collection === null && !loadError) return <LibraryLoading />;
-  return <main className={`library-shell${showMobileDetail ? ' library-shell--detail' : ''}`}>
-    {loadError ? <section className="collection-empty" role="alert">{loadError}</section>
-      : collection === null ? null
-        : <>
-          {!showMobileDetail && <><section className="library-controls" aria-label="Browse traces">
-            <label className="library-search"><span>Search traces</span><Input className="axis-library-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by model, provider, or topic" /></label>
-            <Select value={provider} onValueChange={setProvider}><SelectTrigger className="axis-select-trigger" aria-label="Provider"><SelectValue /></SelectTrigger><SelectContent className="axis-select-content">{providers.map((value) => <SelectItem value={value} key={value}>{value}</SelectItem>)}</SelectContent></Select>
-            <Select value={model} onValueChange={setModel}><SelectTrigger className="axis-select-trigger" aria-label="Model"><SelectValue /></SelectTrigger><SelectContent className="axis-select-content">{models.map((value) => <SelectItem value={value} key={value}>{value}</SelectItem>)}</SelectContent></Select>
-            <Select value={sort} onValueChange={setSort}><SelectTrigger className="axis-select-trigger" aria-label="Sort"><SelectValue /></SelectTrigger><SelectContent className="axis-select-content"><SelectItem value="Newest">Newest</SelectItem><SelectItem value="Downloads">Downloads</SelectItem><SelectItem value="Title">Title</SelectItem></SelectContent></Select>
-          </section>
-          <div className="library-browse-meta"><nav className="topic-filter" aria-label="Filter by topic">{tags.map((value) => <button key={value} className={tag === value ? 'active' : ''} aria-pressed={tag === value} onClick={() => setTag((current) => current === value ? null : value)}>{value}</button>)}</nav><span className="library-count">{filtered.length} {filtered.length === 1 ? 'trace' : 'traces'}</span></div>
-          </>}
-          {publications.length === 0
-            ? <section className="collection-empty"><b>Production examples are being prepared.</b><p>This page lists only admitted publications. No illustrative record is labeled verified.</p></section>
-            : filtered.length === 0
-              ? <section className="collection-empty"><b>No publications match these filters.</b><p>Clear a filter or try a broader search.</p></section>
-              : <section className="library-results">
-                <div className="collection-workspace">
-                  {!showMobileDetail && <div className="collection-list">
-                    <div className="library-grid">{filtered.map((item) => <button ref={(node) => { if (node) listButtons.current.set(item.id, node); else listButtons.current.delete(item.id); }} className={`model-card${activeId === item.id ? ' active' : ''}`} onClick={() => selectTrace(item.id)} aria-pressed={activeId === item.id} key={item.id}><span className="model-card-title">{item.title}</span><span className="model-card-model">{item.provider} · {item.model}<time>{new Date(item.admitted_at * 1000).toLocaleDateString()}</time></span>{item.tool_use && <span className="model-card-summary">tool use</span>}<span className="model-card-facts"><span><b>Publisher</b>{item.author}</span></span><span className="tag-list">{item.tags.map((value) => <span key={value}>{value}</span>)}</span></button>)}</div>
-                  </div>}
-                  {active && (!mobile || showMobileDetail) && <article className="collection-inspector">{showMobileDetail && <button type="button" className="library-back" onClick={returnToLibrary}>← Back to all traces</button>}<header><span className="eyebrow">Selected trace</span></header><h2 ref={inspectorHeading} tabIndex={-1}>{active.title}</h2><dl className="inspector-facts"><div><dt>Provider</dt><dd>{active.host}</dd></div><div><dt>Model</dt><dd>{active.model}</dd></div><div><dt>Publisher</dt><dd>{active.author}</dd></div><div><dt>Published</dt><dd>{new Date(active.admitted_at * 1000).toLocaleDateString()}</dd></div></dl><div className="trace-download"><span>Portable verification</span><a href="#/verify">Verify the source .llmtrace package</a><small>This public trace was admitted from a verified package, but the bare trace is not independently verifiable.</small></div><section className="span-panel"><div className="span-panel-head"><span>Trace contents</span><small>{active.span_count} {active.span_count === 1 ? 'span' : 'spans'}</small></div><div className="trace-legend"><span><i className="source" /> Fields derived from an admitted package</span></div>{traceError ? <p className="trace-preview-state">{traceError}</p> : tracePreview === null ? <p className="trace-preview-state">Loading messages…</p> : <SpanTree spans={tracePreview} />}</section></article>}
-                </div>
-              </section>}
-        </>}
+    robots.content = share.visibility === 'unlisted' ? 'noindex, nofollow, noarchive' : 'index, follow';
+    return () => { robots?.remove(); document.title = 'LLM Notary'; };
+  }, [share]);
+  if (loadError) return <main className="share-page share-page-state" role="alert"><span className="eyebrow">Shared session</span><h1>This share could not be opened.</h1><p>{loadError}</p><a href="#/library">Browse Listed sessions</a></main>;
+  if (!share || spans === null) return <main className="share-page share-page-state" aria-busy="true"><span className="eyebrow">Shared session</span><h1>Opening verified conversation…</h1><p>Loading the public trace and its verification record.</p></main>;
+  const authenticated = share.authenticated_at_unix_ms ? new Date(share.authenticated_at_unix_ms).toLocaleString() : 'Not recorded';
+  return <main className="share-page">
+    <header className="share-page-header"><div><span className="eyebrow">Verified session · {share.visibility}</span><h1>{share.model}</h1><p>Shared by <b>{share.publisher}</b> · authenticated with {share.provider}</p></div><div className="share-verification-mark"><i aria-hidden="true" /><span><b>Provider session verified</b><small>Cryptographic package admitted</small></span></div></header>
+    <div className="share-page-layout">
+      <section className="share-transcript" aria-labelledby="shared-conversation-title"><header><div><span className="eyebrow">Conversation</span><h2 id="shared-conversation-title">Disclosed transcript</h2></div><span>{spans.length} {spans.length === 1 ? 'verified span' : 'verified spans'}</span></header><SharedConversation spans={spans} /></section>
+      <aside className="share-evidence-rail"><span className="eyebrow">Evidence</span><dl><div><dt>Provider</dt><dd>{share.provider}</dd></div><div><dt>Host</dt><dd>{share.host}</dd></div><div><dt>Authenticated</dt><dd>{authenticated}</dd></div><div><dt>Visibility</dt><dd>{share.visibility}</dd></div></dl>
+        {share.package_url ? <a className="share-package-download" href={share.package_url}><span>Portable proof</span><b>Download exact .llmtrace</b><small>{fileSize(share.package_size_bytes || 0)} · independently verifiable</small></a> : <p className="share-legacy-package">The original package predates package retention and is unavailable.</p>}
+        <details className="share-technical"><summary>Technical verification details</summary><dl><div><dt>Trace SHA-256</dt><dd><code>{share.trace_sha256}</code></dd></div>{share.package_sha256 && <div><dt>Package SHA-256</dt><dd><code>{share.package_sha256}</code></dd></div>}<div><dt>Notary key</dt><dd><code>{share.notary_key_id || 'Not recorded'}</code></dd></div><div><dt>Directory generation</dt><dd>{share.directory_generation ?? 'Not recorded'}</dd></div><div><dt>Safety contract</dt><dd><code>{share.public_package_safety_version || 'Legacy'}</code></dd></div></dl></details>
+      </aside>
+    </div>
   </main>;
 }
 
@@ -1064,9 +986,8 @@ function Dashboard({ user, view, onPlanChange }) {
   const [sessionError, setSessionError] = useState(null);
   const [revoking, setRevoking] = useState(null);
   const [revokeTarget, setRevokeTarget] = useState(null);
-  const [jobs, setJobs] = useState(null);
-  const [jobError, setJobError] = useState(null);
-  const [publicationById, setPublicationById] = useState({});
+  const [shares, setShares] = useState(null);
+  const [shareError, setShareError] = useState(null);
   const [plan, setPlan] = useState(user.plan);
   const [entitlements, setEntitlements] = useState(user.entitlements);
   const [planChanging, setPlanChanging] = useState(false);
@@ -1089,16 +1010,9 @@ function Dashboard({ user, view, onPlanChange }) {
 
   useEffect(() => {
     let cancelled = false;
-    getPublishJobs()
-      .then((jobs) => { if (!cancelled) setJobs(jobs); })
-      .catch((reason) => { if (!cancelled) setJobError(reason.message); });
-    getTraceCollection()
-      .then((payload) => {
-        if (!cancelled && payload?.publications) {
-          setPublicationById(Object.fromEntries(payload.publications.map((publication) => [publication.id, publication])));
-        }
-      })
-      .catch(() => {});
+    getMyShares()
+      .then((payload) => { if (!cancelled) setShares(payload); })
+      .catch((reason) => { if (!cancelled) setShareError(reason.message); });
     return () => { cancelled = true; };
   }, []);
 
@@ -1131,9 +1045,9 @@ function Dashboard({ user, view, onPlanChange }) {
     }
   };
 
-  const admittedCount = jobs?.filter((job) => job.state === 'admitted').length || 0;
-  const activeCount = jobs?.filter((job) => ['uploading', 'queued', 'verifying'].includes(job.state)).length || 0;
-  const activeView = view === 'traces' ? 'traces' : 'account';
+  const admittedCount = shares?.filter((share) => share.state === 'admitted').length || 0;
+  const activeCount = shares?.filter((share) => ['uploading', 'queued', 'verifying'].includes(share.state)).length || 0;
+  const activeView = view === 'shares' ? 'shares' : 'account';
 
   return <main className="dashboard-shell dashboard-shell--account">
     <div className="dashboard-layout">
@@ -1141,7 +1055,7 @@ function Dashboard({ user, view, onPlanChange }) {
         <span className="eyebrow">Dashboard</span>
         <nav>
           <a className={activeView === 'account' ? 'active' : ''} href="#/dashboard" aria-current={activeView === 'account' ? 'page' : undefined}><span>Account</span></a>
-          <a className={activeView === 'traces' ? 'active' : ''} href="#/dashboard/traces" aria-current={activeView === 'traces' ? 'page' : undefined}><span>Traces</span><small>{jobs === null ? '—' : jobs.length}</small></a>
+          <a className={activeView === 'shares' ? 'active' : ''} href="#/dashboard/shares" aria-current={activeView === 'shares' ? 'page' : undefined}><span>Shares</span><small>{shares === null ? '—' : shares.length}</small></a>
         </nav>
       </aside>
       <div className="dashboard-page">
@@ -1149,8 +1063,8 @@ function Dashboard({ user, view, onPlanChange }) {
           <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Account</h1><p>Manage hosted service access and the local services connected to your account.</p></header>
           <div className="dashboard-summary">
             <div><span>GitHub account</span><b>{user.github_login}</b></div>
-            <div><span>Admitted traces</span><b>{jobs === null ? '—' : admittedCount}</b></div>
-            <div><span>In progress</span><b>{jobs === null ? '—' : activeCount}</b></div>
+            <div><span>Admitted shares</span><b>{shares === null ? '—' : admittedCount}</b></div>
+            <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>
           <section className="dashboard-plan" aria-labelledby="service-plan-title">
             <header><div><span className="eyebrow">Hosted notary access</span><h2 id="service-plan-title">{plan === 'paid_preview' ? 'Paid preview' : 'Free'} plan</h2></div><span className="dashboard-plan-badge">{plan === 'paid_preview' ? 'No charge' : 'Included'}</span></header>
@@ -1162,24 +1076,24 @@ function Dashboard({ user, view, onPlanChange }) {
           <section className="dashboard-sessions" aria-labelledby="publishing-sessions-title"><header><div><span className="eyebrow">Local service access</span><h2 id="publishing-sessions-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
           <ApiKeysPanel />
         </> : <>
-          <header className="dashboard-page-header"><span className="eyebrow">Traces</span><h1>Your traces</h1><p>Review publication status and open the public traces attached to your account.</p></header>
-          <section className="dashboard-traces" aria-label="Your traces">
-            {jobError && <p className="dashboard-session-error" role="alert">{jobError}</p>}
-            {jobs === null && !jobError ? <p className="dashboard-session-empty">Loading your traces…</p> : jobs?.length ? <div className="dashboard-trace-list">{jobs.map((job) => {
-              const publication = publicationById[job.id];
-              const status = publishState(job.state);
-              return <article key={job.id}>
+          <header className="dashboard-page-header"><span className="eyebrow">Shares</span><h1>Your shares</h1><p>Review admission state, visibility, and the stable links created by your local service.</p></header>
+          <section className="dashboard-traces" aria-label="Your shares">
+            {shareError && <p className="dashboard-session-error" role="alert">{shareError}</p>}
+            {shares === null && !shareError ? <p className="dashboard-session-empty">Loading your shares…</p> : shares?.length ? <div className="dashboard-trace-list">{shares.map((share) => {
+              const status = publishState(share.state);
+              return <article key={share.id}>
                 <div className="dashboard-trace-copy">
-                  <div><span className={`dashboard-trace-state dashboard-trace-state--${status.tone}`}><i aria-hidden="true" />{status.label}</span><time>{sessionDate(job.admitted_at || job.updated_at)}</time></div>
-                  <h3>{publication?.title || `Trace ${job.id.slice(0, 8)}`}</h3>
-                  <p>{publication ? `${publication.provider} · ${publication.model}` : `${fileSize(job.size_bytes)} · ${job.id}`}</p>
-                  {job.failure_code && <p className="dashboard-trace-failure">Reason: {job.failure_code.replaceAll('_', ' ')}</p>}
+                  <div><span className={`dashboard-trace-state dashboard-trace-state--${status.tone}`}><i aria-hidden="true" />{status.label}</span><time>{sessionDate(share.admitted_at || share.updated_at)}</time></div>
+                  <h3>Share {share.id.slice(0, 8)}</h3>
+                  <p>{share.visibility} · <code>{share.id}</code></p>
+                  {share.failure_code && <p className="dashboard-trace-failure">Reason: {share.failure_code.replaceAll('_', ' ')}</p>}
                 </div>
                 <div className="dashboard-trace-actions">
-                  {job.trace_url && <a href={job.trace_url} target="_blank" rel="noreferrer">Trace</a>}
+                  {share.share_url && <a href={share.share_url} target="_blank" rel="noreferrer">Open share</a>}
+                  {share.package_url && <a href={share.package_url}>Package</a>}
                 </div>
               </article>;
-            })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No publications</span><b>Publish your first trace.</b><p>Finalize a capture in the local dashboard, then publish its normalized trace for public inspection. Keep the source package for portable verification.</p><a href="#/docs/publish">Open the publishing guide</a></div>}
+            })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No shares</span><b>Share your first verified session.</b><p>Finalize a capture in the local dashboard, preview its disclosed conversation, then create an Unlisted or Listed link.</p><a href="#/docs/publish">Open the sharing guide</a></div>}
           </section>
         </>}
       </div>
@@ -1316,12 +1230,14 @@ function App() {
   useEffect(() => { let cancelled = false; getCurrentUser().then((user) => { if (!cancelled) setUser(user); }).catch(() => { if (!cancelled) setUser(null); }); return () => { cancelled = true; }; }, []);
   const logout = async () => { await logoutBrowser(); setUser(null); if (window.location.hash === '#/dashboard') window.location.hash = '#/'; };
   const path = route.replace(/^#\/?/, '');
+  const directShare = window.location.pathname.match(/^\/s\/([^/]+)\/?$/);
+  const directShareId = directShare ? decodeURIComponent(directShare[1]) : null;
   const routePath = path.split('?')[0];
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
   const updatePlan = (response) => setUser((current) => current ? { ...current, plan: response.plan, entitlements: response.entitlements } : current);
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections selectedId={page} /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} onPlanChange={updatePlan} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} onPlanChange={updatePlan} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 const applicationRoot = document.getElementById('root');

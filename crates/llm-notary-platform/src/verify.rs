@@ -475,7 +475,7 @@ fn error_response(status: StatusCode, code: &'static str) -> Response {
 mod tests {
     use url::Url;
 
-    use super::super::{admission::MetadataService, publish::PublishService};
+    use super::super::publish::PublishService;
     use super::*;
 
     static TEST_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -493,7 +493,6 @@ mod tests {
             secure_cookies: true,
             notary_directory: super::super::tests::directory_key(),
             publish: PublishService::disabled_for_test(),
-            library_metadata: MetadataService::disabled(),
             admission: std::sync::Arc::new(super::super::config::AdmissionConfig::for_test()),
         }
     }
@@ -678,16 +677,10 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(body["capture_id"], "cap-sanitized");
 
-        let retained: i64 = sqlx::query_scalar(
-            "SELECT
-                 (SELECT COUNT(*) FROM publish_jobs) +
-                 (SELECT COUNT(*) FROM publication_metadata) +
-                 (SELECT COUNT(*) FROM publication_activity_events) +
-                 (SELECT COUNT(*) FROM library_metadata_usage)",
-        )
-        .fetch_one(&database)
-        .await
-        .unwrap();
+        let retained: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM publish_jobs")
+            .fetch_one(&database)
+            .await
+            .unwrap();
         assert_eq!(retained, 0);
         let leases: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM anonymous_verification_leases")
             .fetch_one(&database)

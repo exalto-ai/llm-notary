@@ -48,8 +48,8 @@ mod service_admission;
 mod verify;
 
 pub use config::{
-    AdmissionConfig, AuthConfig, DatabaseConfig, MetadataConfig, NotaryDirectoryConfig,
-    PlatformConfig, S3StorageConfig, StorageConfig, TierPolicy,
+    AdmissionConfig, AuthConfig, DatabaseConfig, NotaryDirectoryConfig, PlatformConfig,
+    S3StorageConfig, StorageConfig, TierPolicy,
 };
 
 const SESSION_COOKIE: &str = "llm_notary_session";
@@ -79,7 +79,6 @@ struct AppState {
     secure_cookies: bool,
     notary_directory: NotaryDirectory,
     publish: publish::PublishService,
-    library_metadata: admission::MetadataService,
     admission: Arc<AdmissionConfig>,
 }
 
@@ -387,7 +386,7 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
     info(
         title = "LLM Notary hosted platform API",
         version = "1.0.0",
-        description = "Public website, account, CLI authorization, publication, and Library API for the hosted LLM Notary platform. This contract is separate from the loopback local administration API."
+        description = "Public website, account, CLI authorization, verified-session sharing, and Listed-share catalog API for the hosted LLM Notary platform. This contract is separate from the loopback local administration API."
     ),
     modifiers(&SecurityAddon),
     tags(
@@ -396,8 +395,8 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
         (name = "cli-auth", description = "Local service authorization and CLI sessions"),
         (name = "notary-admission", description = "Hosted notary tickets and distributed leases"),
         (name = "verification", description = "Anonymous, retention-free portable package verification"),
-        (name = "publication", description = "Authenticated publication intake"),
-        (name = "library", description = "Public admitted traces and metadata")
+        (name = "sharing", description = "Authenticated share intake and stable direct links"),
+        (name = "library", description = "Small catalog of Listed shares")
     )
 )]
 struct HostedApiDoc;
@@ -679,7 +678,6 @@ impl AppState {
             app_url: config.auth.app_url.clone(),
             notary_directory: config.notary_directory.directory.clone(),
             publish,
-            library_metadata: admission::MetadataService::from_config(config.metadata.as_ref()),
             admission: Arc::new(config.admission.clone()),
         })
     }
@@ -1704,12 +1702,14 @@ mod tests {
             "GET /api/healthz",
             "GET /api/me",
             "GET /api/me/api-keys",
-            "GET /api/me/publish-jobs",
+            "GET /api/me/shares",
             "GET /api/notary",
-            "GET /api/public/collections/traces",
-            "GET /api/public/traces/{trace_id}",
-            "GET /api/public/traces/{trace_id}/trace.otlp.json",
-            "GET /api/publish/jobs/{job_id}",
+            "GET /api/public/shares",
+            "GET /api/public/shares/{share_id}",
+            "GET /api/public/shares/{share_id}/package.llmtrace",
+            "GET /api/public/shares/{share_id}/trace.otlp.json",
+            "GET /api/shares/{share_id}",
+            "PATCH /api/shares/{share_id}",
             "GET /api/readyz",
             "POST /api/auth/logout",
             "POST /api/cli/authorizations",
@@ -1718,10 +1718,9 @@ mod tests {
             "POST /api/cli/logout",
             "POST /api/cli/token",
             "POST /api/me/api-keys",
-            "POST /api/public/traces/{trace_id}/events/download",
             "POST /api/verify",
-            "POST /api/publish/jobs",
-            "POST /api/publish/jobs/{job_id}/complete",
+            "POST /api/shares",
+            "POST /api/shares/{share_id}/complete",
             "POST /api/internal/notary/admissions/redeem",
             "POST /api/internal/notary/leases/release",
             "POST /api/internal/notary/leases/renew",
@@ -1755,7 +1754,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_from_0004_queues_legacy_objects_and_preserves_traces() {
+    async fn forward_migration_preserves_legacy_shares_and_drops_library_wrappers() {
         let database = super::test_database::blank_database().await;
         for migration in [
             include_str!("../../../migrations-postgres/0001_initial.sql"),
@@ -1862,6 +1861,62 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(legacy_columns, 0);
+
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0008_share_visibility_and_packages.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let legacy_share: (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT visibility, provider, provider_host, model,
+                    package_object_key, package_size_bytes, package_sha256
+             FROM publish_jobs WHERE id = 'legacy-job'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(legacy_share.0, "listed");
+        assert_eq!(legacy_share.1, "OpenAI");
+        assert_eq!(legacy_share.2, "api.openai.com");
+        assert_eq!(legacy_share.3, "gpt-test");
+        assert_eq!(legacy_share.4, None);
+        assert_eq!(legacy_share.5, None);
+        assert_eq!(legacy_share.6, None);
+        let removed_contracts: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.tables
+             WHERE table_schema = current_schema()
+               AND table_name IN (
+                   'publication_metadata',
+                   'publication_activity_events',
+                   'library_metadata_usage'
+               )",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(removed_contracts, 0);
+        let removed_columns: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'publish_jobs'
+               AND column_name IN (
+                   'library_provider', 'library_host', 'library_model',
+                   'library_span_count', 'library_tool_use', 'source_package_sha256'
+               )",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(removed_columns, 0);
     }
 
     #[test]
@@ -1910,7 +1965,6 @@ mod tests {
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
-            library_metadata: admission::MetadataService::disabled(),
             admission: Arc::new(AdmissionConfig::for_test()),
         };
         let url = state
@@ -1975,7 +2029,6 @@ mod tests {
                 secure_cookies: true,
                 notary_directory: directory_key(),
                 publish: publish::PublishService::disabled_for_test(),
-                library_metadata: admission::MetadataService::disabled(),
                 admission: Arc::new(AdmissionConfig::for_test()),
             }),
             Json(RefreshRequest {
@@ -2048,7 +2101,6 @@ mod tests {
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
-            library_metadata: admission::MetadataService::disabled(),
             admission: Arc::new(AdmissionConfig::for_test()),
         };
         let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));

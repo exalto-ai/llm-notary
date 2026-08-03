@@ -14,13 +14,6 @@ const MAX_DATABASE_CONNECTIONS: u32 = 64;
 pub(crate) const DEFAULT_MAX_ARCHIVE_BYTES: i64 =
     llm_notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64;
 pub(crate) const DEFAULT_UPLOAD_TTL_SECS: i64 = 15 * 60;
-pub(crate) const DEFAULT_METADATA_MODEL: &str = "gpt-5.6-luna";
-pub(crate) const DEFAULT_METADATA_WEEKLY_BUDGET_CENTS: i64 = 1_000;
-pub(crate) const DEFAULT_METADATA_INPUT_NANOUSD_PER_TOKEN: i64 = 200;
-pub(crate) const DEFAULT_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN: i64 = 20;
-pub(crate) const DEFAULT_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN: i64 = 250;
-pub(crate) const DEFAULT_METADATA_OUTPUT_NANOUSD_PER_TOKEN: i64 = 1_200;
-pub(crate) const NANOUSD_PER_CENT: i64 = 10_000_000;
 pub(crate) const DEFAULT_ADMISSION_TICKET_TTL_SECS: i64 = 45;
 pub(crate) const DEFAULT_ADMISSION_LEASE_TTL_SECS: i64 = 30;
 
@@ -35,7 +28,6 @@ pub struct PlatformConfig {
     pub database: DatabaseConfig,
     pub notary_directory: NotaryDirectoryConfig,
     pub storage: StorageConfig,
-    pub metadata: Option<MetadataConfig>,
     pub admission: AdmissionConfig,
 }
 
@@ -103,17 +95,6 @@ pub struct S3StorageConfig {
     pub force_path_style: bool,
 }
 
-/// Optional OpenAI configuration for generating Library metadata.
-pub struct MetadataConfig {
-    pub api_key: String,
-    pub model: String,
-    pub weekly_budget_nanousd: i64,
-    pub input_nanousd_per_token: i64,
-    pub cached_input_nanousd_per_token: i64,
-    pub cache_write_nanousd_per_token: i64,
-    pub output_nanousd_per_token: i64,
-}
-
 impl PlatformConfig {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
@@ -123,7 +104,6 @@ impl PlatformConfig {
             database: DatabaseConfig::from_env()?,
             notary_directory: NotaryDirectoryConfig::from_env()?,
             storage: StorageConfig::from_env()?,
-            metadata: MetadataConfig::from_env()?,
             admission: AdmissionConfig::from_env()?,
         })
     }
@@ -406,48 +386,6 @@ fn validate_max_archive_bytes(value: i64) -> Result<()> {
     Ok(())
 }
 
-impl MetadataConfig {
-    fn from_env() -> Result<Option<Self>> {
-        let model = env_or_default("LLM_NOTARY_LIBRARY_METADATA_MODEL", DEFAULT_METADATA_MODEL)?;
-        if model.trim().is_empty() {
-            bail!("LLM_NOTARY_LIBRARY_METADATA_MODEL must not be empty");
-        }
-        let weekly_budget_nanousd = positive_integer_or_default(
-            "LLM_NOTARY_LIBRARY_METADATA_WEEKLY_BUDGET_CENTS",
-            DEFAULT_METADATA_WEEKLY_BUDGET_CENTS,
-        )?
-        .saturating_mul(NANOUSD_PER_CENT);
-        let input_nanousd_per_token = positive_integer_or_default(
-            "LLM_NOTARY_LIBRARY_METADATA_INPUT_NANOUSD_PER_TOKEN",
-            DEFAULT_METADATA_INPUT_NANOUSD_PER_TOKEN,
-        )?;
-        let cached_input_nanousd_per_token = positive_integer_or_default(
-            "LLM_NOTARY_LIBRARY_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN",
-            DEFAULT_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN,
-        )?;
-        let cache_write_nanousd_per_token = positive_integer_or_default(
-            "LLM_NOTARY_LIBRARY_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN",
-            DEFAULT_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN,
-        )?;
-        let output_nanousd_per_token = positive_integer_or_default(
-            "LLM_NOTARY_LIBRARY_METADATA_OUTPUT_NANOUSD_PER_TOKEN",
-            DEFAULT_METADATA_OUTPUT_NANOUSD_PER_TOKEN,
-        )?;
-        let Some(api_key) = optional_env("OPENAI_API_KEY")? else {
-            return Ok(None);
-        };
-        Ok(Some(Self {
-            api_key,
-            model,
-            weekly_budget_nanousd,
-            input_nanousd_per_token,
-            cached_input_nanousd_per_token,
-            cache_write_nanousd_per_token,
-            output_nanousd_per_token,
-        }))
-    }
-}
-
 fn required_env(name: &str) -> Result<String> {
     let value = env::var(name).with_context(|| format!("{name} must be set"))?;
     if value.is_empty() {
@@ -605,26 +543,6 @@ fn validate_prefix(prefix: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn metadata_numbers_must_be_positive_integers() {
-        assert_eq!(
-            parse_positive_integer("LLM_NOTARY_LIBRARY_METADATA_WEEKLY_BUDGET_CENTS", "5")
-                .expect("positive number"),
-            5
-        );
-        assert!(
-            parse_positive_integer("LLM_NOTARY_LIBRARY_METADATA_WEEKLY_BUDGET_CENTS", "0").is_err()
-        );
-        assert!(
-            parse_positive_integer("LLM_NOTARY_LIBRARY_METADATA_WEEKLY_BUDGET_CENTS", "-1")
-                .is_err()
-        );
-        assert!(
-            parse_positive_integer("LLM_NOTARY_LIBRARY_METADATA_WEEKLY_BUDGET_CENTS", "nope")
-                .is_err()
-        );
-    }
 
     #[test]
     fn idle_shutdown_seconds_must_be_a_positive_integer() {
