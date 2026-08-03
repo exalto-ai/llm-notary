@@ -219,7 +219,7 @@
           "local-admin"
         ],
         "summary": "Queue capture finalization",
-        "description": "Queues durable proof generation for a pending capture or returns its existing finalization operation.",
+        "description": "Queues durable proof generation for an eligible pending capture or returns its existing finalization operation. Captures with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.",
         "operationId": "start_finalization",
         "parameters": [
           {
@@ -253,6 +253,16 @@
             }
           },
           "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
             "description": "",
             "content": {
               "application/json": {
@@ -1455,6 +1465,7 @@
           "request_bytes",
           "capture_state",
           "finalization_state",
+          "finalization_eligible",
           "prompt_preview",
           "prompt_preview_truncated",
           "output_preview",
@@ -1489,6 +1500,15 @@
             "minimum": 0
           },
           "failure_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "finalization_eligible": {
+            "type": "boolean"
+          },
+          "finalization_ineligibility_code": {
             "type": [
               "string",
               "null"
@@ -1869,6 +1889,7 @@
           "state",
           "attempt",
           "created_at_unix_ms",
+          "retryable",
           "attempt_history"
         ],
         "properties": {
@@ -1913,6 +1934,9 @@
           },
           "operation_id": {
             "type": "string"
+          },
+          "retryable": {
+            "type": "boolean"
           },
           "started_at_unix_ms": {
             "type": [

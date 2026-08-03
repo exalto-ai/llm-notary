@@ -239,6 +239,12 @@ curl -X POST \
 curl http://127.0.0.1:8788/v1/operations/op-example
 ```
 
+Finalization currently accepts only captures whose provider response has a
+`2xx` HTTP status. A captured provider error remains encrypted local evidence,
+but the service rejects finalization before proof generation with `409` and
+the stable code `unsupported_provider_http_status`; retrying the same capture
+cannot change that response schema.
+
 For optional authentication, exact state transitions, deduplication, restart
 recovery, and retry behavior, follow the [local service guide](docs/local-service.md).
 

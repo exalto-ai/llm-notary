@@ -95,7 +95,7 @@ export interface paths {
         put?: never;
         /**
          * Queue capture finalization
-         * @description Queues durable proof generation for a pending capture or returns its existing finalization operation.
+         * @description Queues durable proof generation for an eligible pending capture or returns its existing finalization operation. Captures with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.
          */
         post: operations["start_finalization"];
         delete?: never;
@@ -465,6 +465,8 @@ export interface components {
             /** Format: int64 */
             duration_ms?: number | null;
             failure_code?: string | null;
+            finalization_eligible: boolean;
+            finalization_ineligibility_code?: string | null;
             finalization_state: string;
             /** Format: int32 */
             http_status?: number | null;
@@ -583,6 +585,7 @@ export interface components {
             failure_code?: string | null;
             kind: string;
             operation_id: string;
+            retryable: boolean;
             /** Format: int64 */
             started_at_unix_ms?: number | null;
             state: string;
@@ -790,6 +793,14 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

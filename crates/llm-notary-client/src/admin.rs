@@ -513,12 +513,23 @@ async fn capture(
     }))
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/finalizations", summary = "Queue capture finalization", description = "Queues durable proof generation for a pending capture or returns its existing finalization operation.", params(("capture_id" = String, Path)), responses((status = 202, body = FinalizationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/finalizations", summary = "Queue capture finalization", description = "Queues durable proof generation for an eligible pending capture or returns its existing finalization operation. Captures with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.", params(("capture_id" = String, Path)), responses((status = 202, body = FinalizationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_finalization(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
 ) -> Result<(StatusCode, Json<FinalizationResponse>), ApiError> {
     validate_id(&capture_id, "cap-")?;
+    let catalog = state.catalog.clone();
+    let capture_id_for_eligibility = capture_id.clone();
+    let capture = tokio::task::spawn_blocking(move || catalog.capture(&capture_id_for_eligibility))
+        .await
+        .map_err(|_| ApiError::internal("catalog_task_failed"))?
+        .map_err(|_| ApiError::internal("catalog_query_failed"))?
+        .filter(|capture| capture.capture_state == "pending")
+        .ok_or_else(|| ApiError::not_found("pending_capture_not_found"))?;
+    if finalization_ineligibility_code(&capture).is_some() {
+        return Err(ApiError::finalization_ineligible());
+    }
     let catalog = state.catalog.clone();
     let queued =
         tokio::task::spawn_blocking(move || -> Result<Option<(OperationResponse, bool)>> {
@@ -1263,6 +1274,8 @@ struct CaptureResponse {
     duration_ms: Option<u64>,
     capture_state: String,
     finalization_state: String,
+    finalization_eligible: bool,
+    finalization_ineligibility_code: Option<String>,
     prompt_preview: String,
     prompt_preview_truncated: bool,
     output_preview: String,
@@ -1272,6 +1285,8 @@ struct CaptureResponse {
 
 impl From<CaptureSummary> for CaptureResponse {
     fn from(value: CaptureSummary) -> Self {
+        let finalization_eligible = finalization_eligible(&value);
+        let finalization_ineligibility_code = finalization_ineligibility_code(&value);
         Self {
             capture_id: value.capture_id,
             created_at_unix_ms: value.created_at_unix_ms,
@@ -1287,6 +1302,8 @@ impl From<CaptureSummary> for CaptureResponse {
             duration_ms: value.duration_ms,
             capture_state: value.capture_state,
             finalization_state: value.finalization_state,
+            finalization_eligible,
+            finalization_ineligibility_code: finalization_ineligibility_code.map(str::to_owned),
             prompt_preview: value.prompt_preview,
             prompt_preview_truncated: value.prompt_preview_truncated,
             output_preview: value.output_preview,
@@ -1328,6 +1345,7 @@ struct OperationResponse {
     started_at_unix_ms: Option<u64>,
     completed_at_unix_ms: Option<u64>,
     failure_code: Option<String>,
+    retryable: bool,
     attempt_history: Vec<OperationAttemptResponse>,
 }
 
@@ -1337,6 +1355,13 @@ fn operation_response(catalog: &Catalog, value: Operation) -> Result<OperationRe
         .into_iter()
         .map(Into::into)
         .collect();
+    let eligible_capture = match value.capture_id.as_deref() {
+        Some(capture_id) => catalog
+            .capture(capture_id)?
+            .is_some_and(|capture| finalization_eligible(&capture)),
+        None => false,
+    };
+    let retryable = ["failed", "interrupted"].contains(&value.state.as_str()) && eligible_capture;
     Ok(OperationResponse {
         operation_id: value.operation_id,
         kind: value.kind,
@@ -1347,8 +1372,24 @@ fn operation_response(catalog: &Catalog, value: Operation) -> Result<OperationRe
         started_at_unix_ms: value.started_at_unix_ms,
         completed_at_unix_ms: value.completed_at_unix_ms,
         failure_code: value.failure_code,
+        retryable,
         attempt_history,
     })
+}
+
+const UNSUPPORTED_PROVIDER_HTTP_STATUS: &str = "unsupported_provider_http_status";
+
+fn finalization_eligible(capture: &CaptureSummary) -> bool {
+    capture
+        .http_status
+        .is_some_and(|status| (200..=299).contains(&status))
+}
+
+fn finalization_ineligibility_code(capture: &CaptureSummary) -> Option<&'static str> {
+    capture
+        .http_status
+        .is_some_and(|status| !(200..=299).contains(&status))
+        .then_some(UNSUPPORTED_PROVIDER_HTTP_STATUS)
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1525,6 +1566,13 @@ impl ApiError {
             status: StatusCode::CONFLICT,
             code,
             message: "The operation is not retryable",
+        }
+    }
+    fn finalization_ineligible() -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: UNSUPPORTED_PROVIDER_HTTP_STATUS,
+            message: "Finalization supports successful provider responses only",
         }
     }
     fn unprocessable(code: &'static str) -> Self {
@@ -1938,6 +1986,76 @@ mod tests {
                     .unwrap();
             assert_eq!(body["error"]["code"], "invalid_query_parameter");
         }
+    }
+
+    #[tokio::test]
+    async fn provider_authentication_error_is_visible_but_ineligible_for_finalization() {
+        use crate::catalog::NewCapture;
+
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        let bundle = directory.path().join("bundles/cap-auth-error.llmbundle");
+        fs::create_dir_all(bundle.parent().unwrap()).unwrap();
+        fs::write(&bundle, b"encrypted provider authentication error").unwrap();
+        state
+            .catalog
+            .begin_capture(&NewCapture {
+                capture_id: "cap-auth-error".into(),
+                created_at_unix_ms: 1,
+                provider: "openai".into(),
+                operation: "/v1/responses".into(),
+                requested_model: Some("gpt-5.2".into()),
+                streaming: true,
+                request_bytes: 128,
+                prompt_preview: String::new(),
+                prompt_preview_truncated: false,
+                config_fingerprint: "sha256:test".into(),
+            })
+            .unwrap();
+        state
+            .catalog
+            .complete_capture("cap-auth-error", 2, 1, 401, 96, None, "", false, &bundle)
+            .unwrap();
+        let app = router(state).unwrap();
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/captures/cap-auth-error")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["capture"]["http_status"], 401);
+        assert_eq!(body["capture"]["finalization_eligible"], false);
+        assert_eq!(
+            body["capture"]["finalization_ineligibility_code"],
+            UNSUPPORTED_PROVIDER_HTTP_STATUS
+        );
+        assert_eq!(body["finalizations"], serde_json::json!([]));
+
+        let response = app
+            .oneshot(
+                Request::post("/v1/captures/cap-auth-error/finalizations")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["error"]["code"], UNSUPPORTED_PROVIDER_HTTP_STATUS);
+        assert_eq!(
+            body["error"]["message"],
+            "Finalization supports successful provider responses only"
+        );
     }
 
     #[tokio::test]
