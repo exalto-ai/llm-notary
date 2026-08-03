@@ -93,20 +93,20 @@ function AgentCard() {
   </section>;
 }
 
-function CertificateCard() {
-  return <section className="relay-output relay-output--certificate">
-    <header><b>YOUR CERTIFICATE</b><span className="certificate-seal">CERTIFIED</span></header>
+function PackageCard() {
+  return <section className="relay-output relay-output--package">
+    <header><b>YOUR PACKAGE</b><span className="package-ready">PORTABLE</span></header>
     <dl>
       <div><dt>Provider</dt><dd>api.openai.com</dd></div>
       <div><dt>Model</dt><dd>gpt-4.1</dd></div>
       <div><dt>Stream</dt><dd>complete</dd></div>
     </dl>
-    <footer><i aria-hidden="true" /> notary evidence attached</footer>
+    <footer><i aria-hidden="true" /> notary evidence included</footer>
   </section>;
 }
 
 export function RelayAnimation() {
-  return <section className="relay-animation" aria-label="A provider completion travels as encrypted traffic through LLM Notary to a local TLS proxy. The proxy produces plaintext output for your agent and proof for your certificate.">
+  return <section className="relay-animation" aria-label="A provider completion travels as encrypted traffic through LLM Notary to a local TLS proxy. The proxy produces plaintext output for your agent and a portable evidence package.">
     <div className="relay-animation__viewport">
       <div className="relay-animation__flow">
         <ProviderCard />
@@ -124,7 +124,7 @@ export function RelayAnimation() {
           <span className="relay-packet relay-packet--proof" aria-label="Proof packet" />
         </div>
         <AgentCard />
-        <CertificateCard />
+        <PackageCard />
       </div>
     </div>
   </section>;

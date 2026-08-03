@@ -224,7 +224,7 @@ which workflow owns each operation:
 | Activity | `GET /v1/events` |
 | Publication account | `GET /v1/publication/auth`, `POST /v1/publication/auth`, `GET /v1/publication/auth/{request_id}`, `DELETE /v1/publication/auth` |
 | Publication | `POST /v1/captures/{capture_id}/publications`, `GET /v1/publications/{job_id}` |
-| Public trace | `GET /v1/public-traces/{publication_id}`, `POST /v1/public-traces/{publication_id}/verify` |
+| Public trace | `GET /v1/public-traces/{publication_id}` |
 
 `GET /v1/notaries` returns a safe read-only view of the locally pinned notary
 directory and trust history, or the explicitly configured self-hosted endpoint
@@ -353,10 +353,10 @@ listener. The service uses the vault-held publication credential
 to fetch admission state; agents and the dashboard never receive that
 credential. A missing job returns `404`; missing or expired publication
 authorization returns `409`; a temporary platform or network failure returns
-`503` rather than pretending the job disappeared. Public Library traces can be inspected through
-`GET /v1/public-traces/{publication_id}` or independently checked through
-`POST /v1/public-traces/{publication_id}/verify` without accepting an output
-path.
+`503` rather than pretending the job disappeared. Public Library traces can be
+inspected through `GET /v1/public-traces/{publication_id}`. A bare Library trace
+does not carry the cryptographic evidence; use the source `.llmtrace` package
+with `llm-notary traces verify` for independent verification.
 
 ## Local trust boundary
 

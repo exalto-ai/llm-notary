@@ -1,5 +1,5 @@
 import createClient from 'openapi-fetch';
-import type { paths } from './generated/api.generated';
+import type { components, paths } from './generated/api.generated';
 
 const client = createClient<paths>({ credentials: 'same-origin' });
 
@@ -111,4 +111,29 @@ export async function logoutBrowser() {
   if (!response.ok) {
     throw new PlatformApiError(errorMessage(error, 'Could not end the browser session.'), response.status);
   }
+}
+
+export type HostedVerificationResult = components['schemas']['VerificationResponse'];
+
+export async function verifyTracePackage(file: File): Promise<HostedVerificationResult> {
+  const response = await fetch('/api/verify', {
+    method: 'POST',
+    credentials: 'omit',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/vnd.llmnotary.trace-package+zip' },
+    body: file,
+  });
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new PlatformApiError('verification_unavailable', response.status);
+  }
+  if (!response.ok) {
+    throw new PlatformApiError(errorMessage(payload, 'verification_unavailable'), response.status);
+  }
+  if (!payload || typeof payload !== 'object' || !('verified' in payload) || payload.verified !== true) {
+    throw new PlatformApiError('verification_unavailable', response.status);
+  }
+  return payload as HostedVerificationResult;
 }

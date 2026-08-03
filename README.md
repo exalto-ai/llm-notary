@@ -5,8 +5,8 @@ LLM Notary is available under either the [MIT license](LICENSE-MIT) or the
 [third-party notices](THIRD-PARTY-NOTICES.md) for distributed dependencies.
 
 LLM Notary captures provider-origin model behavior and turns selected calls
-into independently verifiable OpenTelemetry traces. A local proxy receives an
-ordinary API request and performs a real TLSNotary Proxy-TLS session with a
+into independently verifiable OpenTelemetry trace packages. A local proxy
+receives an ordinary API request and performs a real TLSNotary Proxy-TLS session with a
 remote notary. The API key and application plaintext stay on the local
 machine; the notary resolves the provider and relays authenticated encrypted
 TLS records.
@@ -350,39 +350,44 @@ with `GET /v1/captures`, queue `POST
 call `POST /v1/captures/{capture_id}/trace:verify`. This is an opt-in network
 and billing check; the regular test suite uses deterministic fixtures.
 
-Verify a named Library publication without a private capture or local path:
+Verify a portable package through the anonymous hosted endpoint:
 
 ```bash
-curl -X POST \
-  http://127.0.0.1:8788/v1/public-traces/3d3d727f-e0b1-432e-be3c-0b2e3ead35d1/verify
+curl --fail-with-body \
+  -H 'Content-Type: application/vnd.llmnotary.trace-package+zip' \
+  --data-binary @capture.llmtrace \
+  https://llm-notary.exalto.ai/api/verify
 ```
 
-The verifier hashes `trace.otlp.json`, checks the platform signature, and
-reports the provider, verification time, and normalizer version named in the
-stamp.
+The service checks the canonical archive, TLSNotary evidence, authenticated
+provider exchange, package hashes, privacy-minimized disclosure, and exact
+normalized trace. It returns the verified facts and canonical OTLP JSON. The
+uploaded bytes are processed without retention, and the live response is not a
+signed receipt. The package may disclose request and response bodies, so review
+it before uploading. Use `llm-notary traces verify ./capture.llmtrace` when the
+package should remain local.
 
-Retrieve the canonical public trace and stamp as JSON through the admin API:
+Retrieve an admitted canonical public trace for inspection through the local
+admin API:
 
 ```bash
 curl http://127.0.0.1:8788/v1/public-traces/3d3d727f-e0b1-432e-be3c-0b2e3ead35d1
 ```
 
-The service resolves public artifact links through the configured API, rejects
-redirects and non-JSON responses, and never accepts an arbitrary local output
-path. Verification obtains the platform directory and checks the canonical
-trace bytes, trace hash, public-stamp contract versions, platform key ID,
-stamp issuer, and ECDSA signature before reporting success. For a self-hosted
-site, pass its loopback or HTTPS origin as the documented `api_origin` query
-parameter on the public-trace REST operation.
+The service resolves the public artifact link through the configured API,
+rejects redirects and non-JSON responses, and never accepts an arbitrary local
+output path. A Library trace was admitted only after the platform verified its
+source package, but the bare JSON does not carry the cryptographic evidence and
+is not independently verifiable. Retain and share the source `.llmtrace` when a
+recipient needs portable verification.
 
-### Public trace and stamp contract
+### Canonical public trace contract
 
 `trace.otlp.json` is UTF-8 canonical JSON: object keys are sorted by UTF-8
 byte order, arrays retain their order, scalar values use compact JSON encoding,
-and the file ends in exactly one LF. The SHA-256 in `stamp.json` is over those
-exact bytes, including that LF. A verifier rejects valid JSON that is not in
-this byte form, so reformatting a trace changes the artifact and invalidates
-its stamp.
+and the file ends in exactly one LF. Admission reproduces and compares those
+exact bytes from the verified source package. Reformatting the public JSON
+changes the artifact and must fail its stored integrity check.
 
 The trace is a minimal OTLP JSON `resourceSpans` payload with one or more
 ordered `gen_ai.inference` client spans. Its resource attributes are
@@ -407,23 +412,11 @@ deliberately excludes runtime-reported agent and tool-execution spans: a model
 requesting a tool is recorded as a message part; no claim is made that a local
 runtime actually executed it.
 
-`stamp.json` has format `llm-notary/platform-stamp/v1` and includes the issuer,
-SHA-256-derived platform key ID, issue time in Unix milliseconds, trace
-SHA-256, capture format, normalizer version, OpenTelemetry semantic-convention
-version, canonicalization ID, and provider provenance (`name`, `host`, and
-`tlsnotary-presentation/v1`). Its `signature` is a compact, low-S secp256k1
-ECDSA signature over the SHA-256 of the canonical JSON encoding of every stamp
-field except `signature`; the signing payload has the same lexicographic JSON
-rule but no trailing LF. `POST /v1/public-traces/{publication_id}/verify`
-checks every version and provenance claim against the trace before it verifies
-the signature.
-
-The stamp says that the LLM Notary platform admitted this exact normalized
-trace after checking private source evidence. It does **not** include or replace
-the private TLSNotary presentation, and it does not make the public trace a
-direct cryptographic proof of provider behavior. Verifiers trust the platform
-key for that admission assertion; they need neither a source capture nor a
-network connection.
+The public API integrity-checks the stored trace against its admitted size and
+SHA-256 before serving it. That protects the platform's stored object; it does
+not turn a downloaded bare trace into portable evidence. Independent
+verification always starts from the `.llmtrace` source package and the trusted
+notary key history.
 
 ## Codex CLI
 
@@ -582,8 +575,8 @@ retiring notary process must run with `--finalize-only`. The
 Compose health check compares the advertised active key with the running
 notary key. The lifecycle and operator rotation procedure are documented in
 [`docs/notary-key-lifecycle-v2.md`](docs/notary-key-lifecycle-v2.md). GitHub
-sign-in authorizes publication; the platform signing key is the trust root for
-published stamps.
+sign-in authorizes publication. The trusted notary key history remains the
+cryptographic trust source for package verification.
 
 To use an explicit endpoint, set `notary.endpoint` in the local agent
 configuration to `tls://host:443` for a public-CA TLS endpoint or `host:7047`
@@ -611,7 +604,8 @@ Set standard OTLP environment variables such as
 `OTEL_SERVICE_NAME` to export operational spans directly to a compatible
 backend. Without an endpoint, tracing remains local JSON logging and metrics
 remain available for Prometheus scraping. These operational spans are separate
-from the cryptographically verifiable `trace.otlp.json` evidence artifacts.
+from the canonical `trace.otlp.json` artifacts carried inside cryptographically
+verifiable `.llmtrace` packages.
 
 Authenticated publication intake uses:
 
@@ -635,12 +629,11 @@ replica. PostgreSQL claims a queued job with row locking and `SKIP LOCKED`, so
 only one replica verifies a job; Library metadata has the same lease pattern.
 The worker downloads and hashes the actual private object, validates the
 transport archive, verifies the notary evidence and authenticated provider,
-reproduces the exact canonical trace, enforces credential-header redaction,
-and issues the platform stamp. Immutable public bodies live under a distinct
-private Spaces `public/` prefix while PostgreSQL retains their object keys,
-sizes, and hashes. Public trace and stamp files are available under
-`/api/public/traces/{id}` only after the pair is committed atomically;
-the private intake object is then purged. The consent and retention boundary,
+reproduces the exact canonical trace, and enforces credential-header redaction.
+The immutable public trace lives under a distinct private Spaces `public/`
+prefix while PostgreSQL retains its object key, size, and hash. It is available
+under `/api/public/traces/{id}` only after admission is committed; the private
+intake object is then purged. The consent and retention boundary,
 state machine, rejection codes, and public endpoints are documented in
 [`docs/publication-admission-v1.md`](docs/publication-admission-v1.md).
 
@@ -704,13 +697,13 @@ curl --fail-with-body \
 ```
 
 `GET /v1/publications/{job_id}` returns the current state, a bounded failure
-code when applicable, and public trace and stamp URLs only after admission.
+code when applicable, and the public trace URL only after admission.
 
 Publishing is an explicit consent boundary: the current admission design may
 inspect the disclosed plaintext in the finalized package to reproduce and
-verify the public trace. Provider credentials and cookie values remain
-redacted. The encrypted `.llmbundle` is private retry state and is never a
-valid input to the publication endpoint.
+validate the public trace against the source package. Provider credentials and
+cookie values remain redacted. The encrypted `.llmbundle` is private retry
+state and is never a valid input to the publication endpoint.
 
 ## Important trust statement
 

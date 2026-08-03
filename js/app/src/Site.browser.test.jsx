@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
-import { cleanup, render } from '@testing-library/react';
-import { Collections, HostedNotaryRecord } from './main';
+import { cleanup, fireEvent, render } from '@testing-library/react';
+import { Collections, HostedNotaryRecord, VerificationPage } from './main';
 import { RelayAnimation } from './RelayAnimation';
 
 afterEach(async () => {
@@ -102,7 +102,7 @@ describe('hosted site', () => {
     await expect.element(page.getByText('LLM NOTARY')).toBeVisible();
     await expect.element(page.getByText('LOCAL TLS PROXY')).toBeVisible();
     await expect.element(page.getByText('YOUR AGENT')).toBeVisible();
-    await expect.element(page.getByText('YOUR CERTIFICATE')).toBeVisible();
+    await expect.element(page.getByText('YOUR PACKAGE')).toBeVisible();
 
     const layout = [...document.querySelectorAll('.relay-node, .relay-output')].map((element) => {
       const bounds = element.getBoundingClientRect();
@@ -121,5 +121,70 @@ describe('hosted site', () => {
     expect(provider.left).toBeLessThan(notary.left);
     expect(notary.left).toBeLessThan(proxy.left);
     expect(proxy.left).toBeLessThan(output.left);
+  });
+
+  test('requires disclosure consent before hosted package verification', async () => {
+    const verified = {
+      verified: true,
+      capture_id: 'sanitized-capture',
+      provider: 'openai',
+      host: 'api.openai.com',
+      authenticated_at_unix_ms: 1_786_000_000_000,
+      notary_key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      trust_source: 'production_directory',
+      directory_generation: 42,
+      trace_sha256: 'b'.repeat(64),
+      package_sha256: 'c'.repeat(64),
+      trace: await loadLibraryTrace('verified')
+    };
+    let calls = 0;
+    render(<VerificationPage verifyFile={async () => { calls += 1; return verified; }} />);
+    const input = document.querySelector('input[type="file"]');
+    const file = new File(['sanitized fixture'], 'sanitized.llmtrace', { type: 'application/vnd.llmnotary.trace-package+zip' });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await expect.element(page.getByText('The package discloses its request and response bodies.')).toBeVisible();
+    expect(calls).toBe(0);
+    const submit = page.getByRole('button', { name: 'Verify package' });
+    await expect.element(submit).toBeDisabled();
+    await page.getByRole('checkbox').click();
+    await expect.element(submit).toBeEnabled();
+    await submit.click();
+
+    await expect.element(page.getByRole('heading', { name: 'Verification passed.' })).toBeVisible();
+    await expect.element(page.getByText('api.openai.com')).toBeVisible();
+    await expect.element(page.getByText('Prompt for verified')).toBeVisible();
+    expect(calls).toBe(1);
+  });
+
+  test('rejects an oversized or mislabeled upload before sending it', async () => {
+    let calls = 0;
+    render(<VerificationPage verifyFile={async () => { calls += 1; }} />);
+    const input = document.querySelector('input[type="file"]');
+    fireEvent.change(input, { target: { files: [new File(['not a package'], 'notes.zip')] } });
+
+    await expect.element(page.getByRole('heading', { name: 'File type is unsupported' })).toBeVisible();
+    expect(calls).toBe(0);
+  });
+
+  test('ignores an in-flight verification result after the selected file changes', async () => {
+    let resolveVerification;
+    const pendingVerification = new Promise((resolve) => { resolveVerification = resolve; });
+    render(<VerificationPage verifyFile={() => pendingVerification} />);
+    const input = document.querySelector('input[type="file"]');
+    fireEvent.change(input, { target: { files: [new File(['first'], 'first.llmtrace')] } });
+    await page.getByRole('checkbox').click();
+    await page.getByRole('button', { name: 'Verify package' }).click();
+
+    fireEvent.change(input, { target: { files: [new File(['second'], 'second.llmtrace')] } });
+    await expect.element(page.getByText('second.llmtrace')).toBeVisible();
+    resolveVerification({
+      verified: true,
+      trace: { resourceSpans: [] }
+    });
+    await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+
+    expect(document.body.textContent).not.toContain('Verification passed.');
+    await expect.element(page.getByText('second.llmtrace')).toBeVisible();
   });
 });
