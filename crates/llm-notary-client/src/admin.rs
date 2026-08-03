@@ -677,7 +677,7 @@ fn default_public_origin() -> String {
 }
 
 fn default_device_name() -> String {
-    "LLM Notary local dashboard".to_owned()
+    auth::DEFAULT_DEVICE_NAME.to_owned()
 }
 
 #[utoipa::path(post, path = "/v1/publication/auth", summary = "Start publication authorization", description = "Starts the browser approval flow used to authorize this local service to publish traces.", request_body = PublicationAuthRequest, responses((status = 202, body = PublicationAuthStartedResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
