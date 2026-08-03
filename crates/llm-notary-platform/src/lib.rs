@@ -10,7 +10,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Redirect, Response},
-    routing::{get, post},
+    routing::get,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use rand::RngCore;
@@ -22,12 +22,16 @@ use tracing::Instrument as _;
 use url::Url;
 use uuid::Uuid;
 
-use llm_notary_core::notary_directory::NotaryDirectory;
+use llm_notary_core::notary_directory::{
+    NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, NotaryTransport,
+};
 use llm_notary_core::sha256_hex;
 use llm_notary_core::telemetry;
 use opentelemetry::global;
 use opentelemetry_http::HeaderExtractor;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
+use utoipa::{Modify, OpenApi, ToSchema};
+use utoipa_axum::{router::OpenApiRouter, routes};
 
 mod admission;
 mod config;
@@ -70,14 +74,14 @@ struct AppState {
     library_metadata: admission::MetadataService,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct GitHubCallback {
     code: Option<String>,
     state: Option<String>,
     error: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct GitHubLoginQuery {
     return_to: Option<String>,
 }
@@ -94,24 +98,24 @@ struct GitHubUser {
     avatar_url: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct Health {
     status: &'static str,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct PublicUser {
     id: String,
     github_login: String,
     avatar_url: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct MeResponse {
     user: PublicUser,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct WebCliSession {
     id: String,
     device_name: String,
@@ -120,17 +124,17 @@ struct WebCliSession {
     expires_at: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct WebCliSessionsResponse {
     sessions: Vec<WebCliSession>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct CreateCliAuthorization {
     device_name: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct CliAuthorizationStarted {
     request_id: String,
     user_code: String,
@@ -140,44 +144,116 @@ struct CliAuthorizationStarted {
     poll_secret: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct ApprovalQuery {
     approval_secret: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct ApprovalDetails {
     user_code: String,
     device_name: String,
     expires_at: i64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct CliTokens {
     access_token: String,
     refresh_token: String,
     expires_in: i64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 struct RefreshRequest {
     refresh_token: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct CliSessionResponse {
     device_name: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct CliMeResponse {
     user: PublicUser,
     session: CliSessionResponse,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 struct ErrorResponse {
     error: &'static str,
+}
+
+#[derive(Serialize, ToSchema)]
+struct NotaryDirectoryResponse {
+    format: String,
+    generation: u64,
+    active_key_id: String,
+    notaries: Vec<NotaryDirectoryRecordResponse>,
+}
+
+#[derive(Serialize, ToSchema)]
+struct NotaryDirectoryRecordResponse {
+    host: String,
+    port: u16,
+    transport: NotaryTransportResponse,
+    key_id: String,
+    public_key: String,
+    status: NotaryKeyStatusResponse,
+    valid_from_unix_ms: u64,
+    valid_until_unix_ms: Option<u64>,
+    finalize_until_unix_ms: Option<u64>,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+enum NotaryTransportResponse {
+    Tcp,
+    Tls,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+enum NotaryKeyStatusResponse {
+    Active,
+    Retiring,
+    Retired,
+    Revoked,
+}
+
+impl From<NotaryDirectory> for NotaryDirectoryResponse {
+    fn from(directory: NotaryDirectory) -> Self {
+        Self {
+            format: directory.format,
+            generation: directory.generation,
+            active_key_id: directory.active_key_id,
+            notaries: directory.notaries.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<NotaryDirectoryRecord> for NotaryDirectoryRecordResponse {
+    fn from(record: NotaryDirectoryRecord) -> Self {
+        Self {
+            host: record.host,
+            port: record.port,
+            transport: match record.transport {
+                NotaryTransport::Tcp => NotaryTransportResponse::Tcp,
+                NotaryTransport::Tls => NotaryTransportResponse::Tls,
+            },
+            key_id: record.key_id,
+            public_key: record.public_key,
+            status: match record.status {
+                NotaryKeyStatus::Active => NotaryKeyStatusResponse::Active,
+                NotaryKeyStatus::Retiring => NotaryKeyStatusResponse::Retiring,
+                NotaryKeyStatus::Retired => NotaryKeyStatusResponse::Retired,
+                NotaryKeyStatus::Revoked => NotaryKeyStatusResponse::Revoked,
+            },
+            valid_from_unix_ms: record.valid_from_unix_ms,
+            valid_until_unix_ms: record.valid_until_unix_ms,
+            finalize_until_unix_ms: record.finalize_until_unix_ms,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -266,6 +342,87 @@ impl IntoResponse for ApiError {
 
 type ApiResult<T> = std::result::Result<T, ApiError>;
 
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "LLM Notary hosted platform API",
+        version = "1.0.0",
+        description = "Public website, account, CLI authorization, publication, and Library API for the hosted LLM Notary platform. This contract is separate from the loopback local administration API."
+    ),
+    modifiers(&SecurityAddon),
+    tags(
+        (name = "health", description = "Hosted API health and discovery"),
+        (name = "browser-auth", description = "GitHub-backed browser sessions"),
+        (name = "cli-auth", description = "Local service authorization and CLI sessions"),
+        (name = "publication", description = "Authenticated publication intake"),
+        (name = "library", description = "Public admitted traces and metadata")
+    )
+)]
+struct HostedApiDoc;
+
+struct SecurityAddon;
+
+impl Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        use utoipa::openapi::security::{
+            ApiKey, ApiKeyValue, HttpAuthScheme, HttpBuilder, SecurityScheme,
+        };
+
+        if let Some(components) = openapi.components.as_mut() {
+            components.add_security_scheme(
+                "browserSession",
+                SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::with_description(
+                    SESSION_COOKIE,
+                    "HttpOnly hosted browser session cookie",
+                ))),
+            );
+            components.add_security_scheme(
+                "bearerAuth",
+                SecurityScheme::Http(
+                    HttpBuilder::new()
+                        .scheme(HttpAuthScheme::Bearer)
+                        .bearer_format("opaque")
+                        .description(Some("Short-lived CLI access token"))
+                        .build(),
+                ),
+            );
+            components.add_security_scheme(
+                "pollSecret",
+                SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
+                    "X-LLM-Notary-Poll-Secret",
+                    "One-time secret returned when CLI authorization starts",
+                ))),
+            );
+        }
+    }
+}
+
+fn hosted_router() -> OpenApiRouter<AppState> {
+    OpenApiRouter::with_openapi(HostedApiDoc::openapi())
+        .routes(routes!(health))
+        .routes(routes!(readiness))
+        .routes(routes!(notary))
+        .routes(routes!(start_github_login))
+        .routes(routes!(finish_github_login))
+        .routes(routes!(logout))
+        .routes(routes!(me))
+        .routes(routes!(list_cli_sessions))
+        .routes(routes!(revoke_web_cli_session))
+        .routes(routes!(start_cli_authorization))
+        .routes(routes!(cli_approval_details, approve_cli_authorization))
+        .routes(routes!(complete_cli_authorization))
+        .routes(routes!(refresh_cli_tokens))
+        .routes(routes!(logout_cli_session))
+        .routes(routes!(cli_me))
+        .merge(publish::router())
+        .merge(admission::router())
+}
+
+/// Returns the deterministic public hosted-platform contract.
+pub fn openapi_document() -> utoipa::openapi::OpenApi {
+    hosted_router().into_openapi()
+}
+
 /// Runs the hosted LLM Notary platform API.
 pub async fn run_api() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -280,36 +437,11 @@ pub async fn run_api() -> Result<()> {
         spawn_idle_shutdown(state.clone(), idle_shutdown_secs, shutdown_tx);
         shutdown_rx
     });
-    let app = Router::new()
+    let app: Router = hosted_router()
         .route("/metrics", get(metrics))
-        .route("/api/healthz", get(health))
-        .route("/api/readyz", get(readiness))
-        .route("/api/notary", get(notary))
-        .route("/api/auth/github", get(start_github_login))
-        .route("/api/auth/github/callback", get(finish_github_login))
-        .route("/api/auth/logout", post(logout))
-        .route("/api/me", get(me))
-        .route("/api/cli/sessions", get(list_cli_sessions))
-        .route(
-            "/api/cli/sessions/{session_id}",
-            axum::routing::delete(revoke_web_cli_session),
-        )
-        .route("/api/cli/authorizations", post(start_cli_authorization))
-        .route(
-            "/api/cli/authorizations/{request_id}/approval",
-            get(cli_approval_details).post(approve_cli_authorization),
-        )
-        .route(
-            "/api/cli/authorizations/{request_id}/token",
-            post(complete_cli_authorization),
-        )
-        .route("/api/cli/token", post(refresh_cli_tokens))
-        .route("/api/cli/logout", post(logout_cli_session))
-        .route("/api/cli/me", get(cli_me))
-        .merge(publish::router())
-        .merge(admission::router())
         .layer(middleware::from_fn(observe_http_request))
-        .with_state(state);
+        .with_state(state)
+        .into();
     let listener = tokio::net::TcpListener::bind(listen).await?;
     tracing::info!(%listen, "LLM Notary API listening");
     axum::serve(listener, app)
@@ -505,14 +637,38 @@ impl AppState {
     }
 }
 
-async fn notary(State(state): State<AppState>) -> Json<NotaryDirectory> {
-    Json(state.notary_directory)
+#[utoipa::path(
+    get,
+    path = "/api/notary",
+    summary = "Get the signed notary directory",
+    responses((status = 200, body = NotaryDirectoryResponse)),
+    tag = "health"
+)]
+async fn notary(State(state): State<AppState>) -> Json<NotaryDirectoryResponse> {
+    Json(state.notary_directory.into())
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/healthz",
+    summary = "Check API process health",
+    responses((status = 200, body = Health)),
+    tag = "health"
+)]
 async fn health() -> Json<Health> {
     Json(Health { status: "ok" })
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/readyz",
+    summary = "Check database readiness",
+    responses(
+        (status = 200, body = Health),
+        (status = 500, body = ErrorResponse)
+    ),
+    tag = "health"
+)]
 async fn readiness(State(state): State<AppState>) -> ApiResult<Json<Health>> {
     sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM _sqlx_migrations")
         .fetch_one(&state.database)
@@ -521,6 +677,17 @@ async fn readiness(State(state): State<AppState>) -> ApiResult<Json<Health>> {
     Ok(Json(Health { status: "ok" }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/auth/github",
+    summary = "Start GitHub browser sign-in",
+    params(("return_to" = Option<String>, Query, description = "Allowed in-app hash route after sign-in")),
+    responses(
+        (status = 307, description = "Temporary redirect to GitHub", headers(("Location" = String), ("Set-Cookie" = String))),
+        (status = 500, body = ErrorResponse)
+    ),
+    tag = "browser-auth"
+)]
 async fn start_github_login(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -554,6 +721,23 @@ async fn start_github_login(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/auth/github/callback",
+    summary = "Finish GitHub browser sign-in",
+    params(
+        ("code" = Option<String>, Query),
+        ("state" = Option<String>, Query),
+        ("error" = Option<String>, Query)
+    ),
+    responses(
+        (status = 303, description = "Redirect to the hosted application", headers(("Location" = String), ("Set-Cookie" = String))),
+        (status = 400, body = ErrorResponse),
+        (status = 502, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    tag = "browser-auth"
+)]
 async fn finish_github_login(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -628,6 +812,18 @@ async fn finish_github_login(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/me",
+    summary = "Get the signed-in browser user",
+    responses(
+        (status = 200, body = MeResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    security(("browserSession" = [])),
+    tag = "browser-auth"
+)]
 async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeResponse>> {
     let session_token = session_token(&jar)?;
     let now = unix_timestamp()?;
@@ -651,6 +847,17 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/logout",
+    summary = "End the browser session",
+    responses(
+        (status = 204, description = "Browser session ended", headers(("Set-Cookie" = String))),
+        (status = 500, body = ErrorResponse)
+    ),
+    security((), ("browserSession" = [])),
+    tag = "browser-auth"
+)]
 async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -668,6 +875,18 @@ async fn logout(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/cli/sessions",
+    summary = "List the browser user's active CLI sessions",
+    responses(
+        (status = 200, body = WebCliSessionsResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    security(("browserSession" = [])),
+    tag = "cli-auth"
+)]
 async fn list_cli_sessions(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -697,6 +916,20 @@ async fn list_cli_sessions(
     Ok(Json(WebCliSessionsResponse { sessions }))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/api/cli/sessions/{session_id}",
+    summary = "Revoke one of the browser user's CLI sessions",
+    params(("session_id" = String, Path)),
+    responses(
+        (status = 204, description = "CLI session revoked"),
+        (status = 401, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    security(("browserSession" = [])),
+    tag = "cli-auth"
+)]
 async fn revoke_web_cli_session(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -721,6 +954,18 @@ async fn revoke_web_cli_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/cli/authorizations",
+    summary = "Start CLI device authorization",
+    request_body = CreateCliAuthorization,
+    responses(
+        (status = 200, body = CliAuthorizationStarted),
+        (status = 400, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    tag = "cli-auth"
+)]
 async fn start_cli_authorization(
     State(state): State<AppState>,
     Json(request): Json<CreateCliAuthorization>,
@@ -782,6 +1027,21 @@ async fn start_cli_authorization(
     )))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/cli/authorizations/{request_id}/approval",
+    summary = "Get browser approval details",
+    params(("request_id" = String, Path), ("approval_secret" = String, Query)),
+    responses(
+        (status = 200, body = ApprovalDetails),
+        (status = 401, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
+        (status = 410, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    security(("browserSession" = [])),
+    tag = "cli-auth"
+)]
 async fn cli_approval_details(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -797,6 +1057,20 @@ async fn cli_approval_details(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/cli/authorizations/{request_id}/approval",
+    summary = "Approve a CLI device authorization",
+    params(("request_id" = String, Path), ("approval_secret" = String, Query)),
+    responses(
+        (status = 204, description = "CLI device authorized"),
+        (status = 401, body = ErrorResponse),
+        (status = 410, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    security(("browserSession" = [])),
+    tag = "cli-auth"
+)]
 async fn approve_cli_authorization(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -827,6 +1101,21 @@ async fn approve_cli_authorization(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/cli/authorizations/{request_id}/token",
+    summary = "Complete CLI device authorization",
+    params(("request_id" = String, Path)),
+    responses(
+        (status = 200, body = CliTokens),
+        (status = 401, body = ErrorResponse),
+        (status = 410, body = ErrorResponse),
+        (status = 428, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    security(("pollSecret" = [])),
+    tag = "cli-auth"
+)]
 async fn complete_cli_authorization(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -872,6 +1161,18 @@ async fn complete_cli_authorization(
     Ok(Json(tokens))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/cli/token",
+    summary = "Rotate CLI access and refresh tokens",
+    request_body = RefreshRequest,
+    responses(
+        (status = 200, body = CliTokens),
+        (status = 401, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    tag = "cli-auth"
+)]
 async fn refresh_cli_tokens(
     State(state): State<AppState>,
     Json(request): Json<RefreshRequest>,
@@ -944,6 +1245,17 @@ async fn refresh_cli_tokens(
     }))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/cli/logout",
+    summary = "Revoke a CLI session by refresh token",
+    request_body = RefreshRequest,
+    responses(
+        (status = 204, description = "CLI session revoked"),
+        (status = 500, body = ErrorResponse)
+    ),
+    tag = "cli-auth"
+)]
 async fn logout_cli_session(
     State(state): State<AppState>,
     Json(request): Json<RefreshRequest>,
@@ -958,6 +1270,18 @@ async fn logout_cli_session(
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/cli/me",
+    summary = "Get the CLI access-token identity",
+    responses(
+        (status = 200, body = CliMeResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tag = "cli-auth"
+)]
 async fn cli_me(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -1284,6 +1608,53 @@ mod tests {
         assert!(!counts_as_request_activity("/api/healthz"));
         assert!(!counts_as_request_activity("/api/readyz"));
         assert!(counts_as_request_activity("/api/notary"));
+    }
+
+    #[test]
+    fn public_routes_and_openapi_are_registered_together() {
+        let expected = [
+            "DELETE /api/cli/sessions/{session_id}",
+            "GET /api/auth/github",
+            "GET /api/auth/github/callback",
+            "GET /api/cli/authorizations/{request_id}/approval",
+            "GET /api/cli/me",
+            "GET /api/cli/sessions",
+            "GET /api/healthz",
+            "GET /api/me",
+            "GET /api/me/publish-jobs",
+            "GET /api/notary",
+            "GET /api/platform",
+            "GET /api/public/collections/traces",
+            "GET /api/public/traces/{trace_id}",
+            "GET /api/public/traces/{trace_id}/stamp.json",
+            "GET /api/public/traces/{trace_id}/trace.otlp.json",
+            "GET /api/publish/jobs/{job_id}",
+            "GET /api/readyz",
+            "POST /api/auth/logout",
+            "POST /api/cli/authorizations",
+            "POST /api/cli/authorizations/{request_id}/approval",
+            "POST /api/cli/authorizations/{request_id}/token",
+            "POST /api/cli/logout",
+            "POST /api/cli/token",
+            "POST /api/public/traces/{trace_id}/events/download",
+            "POST /api/publish/jobs",
+            "POST /api/publish/jobs/{job_id}/complete",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>();
+        let document = serde_json::to_value(openapi_document()).expect("serialize OpenAPI");
+        let paths = document["paths"].as_object().expect("OpenAPI paths");
+        let mut actual = std::collections::BTreeSet::new();
+        for (path, item) in paths {
+            for method in ["get", "post", "put", "patch", "delete"] {
+                if item.get(method).is_some() {
+                    actual.insert(format!("{} {path}", method.to_uppercase()));
+                }
+            }
+        }
+        assert_eq!(actual, expected);
+        assert!(!paths.contains_key("/metrics"));
     }
 
     #[test]

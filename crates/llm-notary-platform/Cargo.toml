@@ -39,6 +39,8 @@ time = "0.3"
 tokio = { version = "1.45", features = ["full"] }
 tracing = "0.1"
 tracing-opentelemetry = "0.33.0"
+utoipa = { version = "5.5", features = ["axum_extras", "uuid"] }
+utoipa-axum = "0.2"
 url = "2.5"
 uuid = { version = "1.16", features = ["v4"] }
 
