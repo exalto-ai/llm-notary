@@ -283,6 +283,15 @@
   line-height: 1;
 }
 
+.library-back {
+  display: none;
+}
+
+.collection-inspector h2:focus {
+  outline: 2px solid var(--action);
+  outline-offset: 3px;
+}
+
 .inspector-facts {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -637,7 +646,11 @@
   .library-results { overflow: visible; }
   .collection-workspace { display: flex; flex-direction: column; gap: 28px; }
   .collection-list { padding-right: 0; overflow: visible; }
-  .collection-inspector { position: static; height: auto; order: -1; overflow: visible; }
+  .collection-inspector { position: static; height: auto; overflow: visible; }
+  .library-shell--detail { padding-top: 12px; }
+  .library-shell--detail .library-results { min-height: 0; }
+  .library-back { display: block; width: 100%; min-height: 42px; margin: 0 0 20px; border: 0; border-bottom: 1px solid var(--line); background: transparent; color: var(--ink); font: 500 11px 'DM Mono', monospace; text-align: left; }
+  .library-back:hover { background: var(--soft); }
   .inspector-facts { grid-template-columns: 1fr; }
   .inspector-facts div:nth-child(odd) { padding-right: 0; border-right: 0; }
   .inspector-facts div:nth-child(even) { padding-left: 0; }

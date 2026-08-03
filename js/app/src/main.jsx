@@ -707,7 +707,19 @@ function LibraryLoading() {
   </main>;
 }
 
-function Collections() {
+function useMediaMatch(query) {
+  const [matches, setMatches] = useState(() => window.matchMedia(query).matches);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    const update = () => setMatches(media.matches);
+    update();
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, [query]);
+  return matches;
+}
+
+export function Collections({ selectedId, loadCollection = getTraceCollection, loadTrace = getPublishedTrace }) {
   const [collection, setCollection] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [query, setQuery] = useState('');
@@ -718,13 +730,19 @@ function Collections() {
   const [activeId, setActiveId] = useState(null);
   const [tracePreview, setTracePreview] = useState(null);
   const [traceError, setTraceError] = useState('');
+  const mobile = useMediaMatch('(max-width: 820px)');
+  const listScroll = useRef(0);
+  const listButtons = useRef(new Map());
+  const inspectorHeading = useRef(null);
+  const previousSelectedId = useRef(selectedId);
+  const openedFromList = useRef(false);
   useEffect(() => {
     let cancelled = false;
-    getTraceCollection()
-      .then((payload) => { if (!cancelled) { setCollection(payload); setActiveId(payload.publications[0]?.id || null); } })
+    loadCollection()
+      .then((payload) => { if (!cancelled) { setCollection(payload); setActiveId(payload.publications.find((item) => item.id === selectedId)?.id || payload.publications[0]?.id || null); } })
       .catch((error) => { if (!cancelled) setLoadError(error.message); });
     return () => { cancelled = true; };
-  }, []);
+  }, [loadCollection]);
   const publications = collection?.publications || [];
   const providers = ['All', ...new Set(publications.map((item) => item.provider))];
   const models = ['All', ...new Set(publications.map((item) => item.model))];
@@ -740,6 +758,9 @@ function Collections() {
     }
     if (!filtered.some((item) => item.id === activeId)) setActiveId(filtered[0].id);
   }, [filtered, activeId]);
+  useEffect(() => {
+    if (selectedId && filtered.some((item) => item.id === selectedId)) setActiveId(selectedId);
+  }, [filtered, selectedId]);
   const active = filtered.find((item) => item.id === activeId) || null;
   useEffect(() => {
     if (!active) {
@@ -750,33 +771,66 @@ function Collections() {
     let cancelled = false;
     setTracePreview(null);
     setTraceError('');
-    getPublishedTrace(active.id)
+    loadTrace(active.id)
       .then((trace) => { if (!cancelled) setTracePreview(parsePublishedTrace(trace)); })
       .catch((error) => { if (!cancelled) setTraceError(error.message); });
     return () => { cancelled = true; };
-  }, [active]);
+  }, [active, loadTrace]);
+  useEffect(() => {
+    const previous = previousSelectedId.current;
+    previousSelectedId.current = selectedId;
+    if (!mobile) return undefined;
+    if (selectedId && active) {
+      const frame = window.requestAnimationFrame(() => {
+        window.scrollTo({ top: 0, behavior: 'instant' });
+        inspectorHeading.current?.focus({ preventScroll: true });
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+    if (!selectedId && previous) {
+      const timer = window.setTimeout(() => {
+        window.scrollTo({ top: listScroll.current, behavior: 'instant' });
+        listButtons.current.get(previous)?.focus();
+        openedFromList.current = false;
+      }, 0);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [active, mobile, selectedId]);
+  const selectTrace = (id) => {
+    setActiveId(id);
+    if (mobile) listScroll.current = window.scrollY;
+    openedFromList.current = true;
+    window.location.hash = `/library/${encodeURIComponent(id)}`;
+  };
+  const returnToLibrary = () => {
+    if (openedFromList.current) window.history.back();
+    else window.location.hash = '/library';
+  };
+  const showMobileDetail = Boolean(mobile && selectedId && active?.id === selectedId);
   if (collection === null && !loadError) return <LibraryLoading />;
-  return <main className="library-shell">
+  return <main className={`library-shell${showMobileDetail ? ' library-shell--detail' : ''}`}>
     {loadError ? <section className="collection-empty" role="alert">{loadError}</section>
       : collection === null ? null
         : <>
-          <section className="library-controls" aria-label="Browse traces">
+          {!showMobileDetail && <><section className="library-controls" aria-label="Browse traces">
             <label className="library-search"><span>Search traces</span><Input className="axis-library-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search by model, provider, or topic" /></label>
             <Select value={provider} onValueChange={setProvider}><SelectTrigger className="axis-select-trigger" aria-label="Provider"><SelectValue /></SelectTrigger><SelectContent className="axis-select-content">{providers.map((value) => <SelectItem value={value} key={value}>{value}</SelectItem>)}</SelectContent></Select>
             <Select value={model} onValueChange={setModel}><SelectTrigger className="axis-select-trigger" aria-label="Model"><SelectValue /></SelectTrigger><SelectContent className="axis-select-content">{models.map((value) => <SelectItem value={value} key={value}>{value}</SelectItem>)}</SelectContent></Select>
             <Select value={sort} onValueChange={setSort}><SelectTrigger className="axis-select-trigger" aria-label="Sort"><SelectValue /></SelectTrigger><SelectContent className="axis-select-content"><SelectItem value="Newest">Newest</SelectItem><SelectItem value="Downloads">Downloads</SelectItem><SelectItem value="Title">Title</SelectItem></SelectContent></Select>
           </section>
           <div className="library-browse-meta"><nav className="topic-filter" aria-label="Filter by topic">{tags.map((value) => <button key={value} className={tag === value ? 'active' : ''} aria-pressed={tag === value} onClick={() => setTag((current) => current === value ? null : value)}>{value}</button>)}</nav><span className="library-count">{filtered.length} {filtered.length === 1 ? 'trace' : 'traces'}</span></div>
+          </>}
           {publications.length === 0
             ? <section className="collection-empty"><b>Production examples are being prepared.</b><p>This page lists only admitted publications. No illustrative record is labeled verified.</p></section>
             : filtered.length === 0
               ? <section className="collection-empty"><b>No publications match these filters.</b><p>Clear a filter or try a broader search.</p></section>
               : <section className="library-results">
                 <div className="collection-workspace">
-                  <div className="collection-list">
-                    <div className="library-grid">{filtered.map((item) => <button className={`model-card${activeId === item.id ? ' active' : ''}`} onClick={() => setActiveId(item.id)} aria-pressed={activeId === item.id} key={item.id}><span className="model-card-title">{item.title}</span><span className="model-card-model">{item.provider} · {item.model}<time>{new Date(item.admitted_at * 1000).toLocaleDateString()}</time></span>{item.tool_use && <span className="model-card-summary">tool use</span>}<span className="model-card-facts"><span><b>Publisher</b>{item.author}</span></span><span className="tag-list">{item.tags.map((value) => <span key={value}>{value}</span>)}</span></button>)}</div>
-                  </div>
-                  {active && <article className="collection-inspector"><header><span className="eyebrow">Selected trace</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h2>{active.title}</h2><dl className="inspector-facts"><div><dt>Provider</dt><dd>{active.host}</dd></div><div><dt>Model</dt><dd>{active.model}</dd></div><div><dt>Publisher</dt><dd>{active.author}</dd></div><div><dt>Published</dt><dd>{new Date(active.admitted_at * 1000).toLocaleDateString()}</dd></div></dl><div className="trace-download"><span>Local verification</span><code>POST /v1/public-traces/{active.id}/verify</code><small>Use the local service to fetch the trace and verify its platform stamp.</small></div><section className="span-panel"><div className="span-panel-head"><span>Trace contents</span><small>{active.span_count} {active.span_count === 1 ? 'span' : 'spans'}</small></div><div className="trace-legend"><span><i className="source" /> Fields derived from verified provider exchanges</span></div>{traceError ? <p className="trace-preview-state">{traceError}</p> : tracePreview === null ? <p className="trace-preview-state">Loading messages…</p> : <SpanTree spans={tracePreview} />}</section></article>}
+                  {!showMobileDetail && <div className="collection-list">
+                    <div className="library-grid">{filtered.map((item) => <button ref={(node) => { if (node) listButtons.current.set(item.id, node); else listButtons.current.delete(item.id); }} className={`model-card${activeId === item.id ? ' active' : ''}`} onClick={() => selectTrace(item.id)} aria-pressed={activeId === item.id} key={item.id}><span className="model-card-title">{item.title}</span><span className="model-card-model">{item.provider} · {item.model}<time>{new Date(item.admitted_at * 1000).toLocaleDateString()}</time></span>{item.tool_use && <span className="model-card-summary">tool use</span>}<span className="model-card-facts"><span><b>Publisher</b>{item.author}</span></span><span className="tag-list">{item.tags.map((value) => <span key={value}>{value}</span>)}</span></button>)}</div>
+                  </div>}
+                  {active && (!mobile || showMobileDetail) && <article className="collection-inspector">{showMobileDetail && <button type="button" className="library-back" onClick={returnToLibrary}>← Back to all traces</button>}<header><span className="eyebrow">Selected trace</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h2 ref={inspectorHeading} tabIndex={-1}>{active.title}</h2><dl className="inspector-facts"><div><dt>Provider</dt><dd>{active.host}</dd></div><div><dt>Model</dt><dd>{active.model}</dd></div><div><dt>Publisher</dt><dd>{active.author}</dd></div><div><dt>Published</dt><dd>{new Date(active.admitted_at * 1000).toLocaleDateString()}</dd></div></dl><div className="trace-download"><span>Local verification</span><code>POST /v1/public-traces/{active.id}/verify</code><small>Use the local service to fetch the trace and verify its platform stamp.</small></div><section className="span-panel"><div className="span-panel-head"><span>Trace contents</span><small>{active.span_count} {active.span_count === 1 ? 'span' : 'spans'}</small></div><div className="trace-legend"><span><i className="source" /> Fields derived from verified provider exchanges</span></div>{traceError ? <p className="trace-preview-state">{traceError}</p> : tracePreview === null ? <p className="trace-preview-state">Loading messages…</p> : <SpanTree spans={tracePreview} />}</section></article>}
                 </div>
               </section>}
         </>}
@@ -1066,7 +1120,7 @@ function App() {
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
   const updatePlan = (response) => setUser((current) => current ? { ...current, plan: response.plan, entitlements: response.entitlements } : current);
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} onPlanChange={updatePlan} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections selectedId={page} /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} onPlanChange={updatePlan} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 const applicationRoot = document.getElementById('root');
