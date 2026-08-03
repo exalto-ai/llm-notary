@@ -104,6 +104,15 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('queued', { exact: true }).first()).toBeVisible();
   });
 
+  test('explains why a provider authentication error cannot be finalized', async () => {
+    renderDashboard('/captures/cap-20260728-auth-error');
+    await expect.element(page.getByText('Provider response cannot be finalized')).toBeVisible();
+    await expect.element(page.getByText('The provider returned HTTP 401.', { exact: false })).toBeVisible();
+    await expect.element(page.getByText('unsupported_provider_http_status')).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Finalize', exact: true })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Retry finalization' })).not.toBeInTheDocument();
+  });
+
   test('shows independent trace verification feedback', async () => {
     renderDashboard('/traces/cap-20260727-research-brief');
     await page.getByRole('button', { name: 'Verify now' }).click();

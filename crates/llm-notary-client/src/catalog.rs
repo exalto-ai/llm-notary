@@ -576,7 +576,9 @@ impl Catalog {
         let transaction = connection.unchecked_transaction()?;
         let exists = transaction
             .query_row(
-                "SELECT 1 FROM captures WHERE capture_id = ? AND capture_state = 'pending'",
+                "SELECT 1 FROM captures
+                 WHERE capture_id = ? AND capture_state = 'pending'
+                   AND http_status BETWEEN 200 AND 299",
                 params![capture_id],
                 |_| Ok(()),
             )
@@ -767,7 +769,15 @@ impl Catalog {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let transaction = connection.unchecked_transaction()?;
         let changed = transaction.execute(
-            "UPDATE operations SET state = 'queued', started_at_unix_ms = NULL, completed_at_unix_ms = NULL, failure_code = NULL WHERE operation_id = ? AND state IN ('failed', 'interrupted')",
+            "UPDATE operations
+             SET state = 'queued', started_at_unix_ms = NULL,
+                 completed_at_unix_ms = NULL, failure_code = NULL
+             WHERE operation_id = ? AND state IN ('failed', 'interrupted')
+               AND EXISTS (
+                   SELECT 1 FROM captures
+                   WHERE captures.capture_id = operations.capture_id
+                     AND captures.http_status BETWEEN 200 AND 299
+               )",
             params![operation_id],
         )?;
         if changed == 0 {
@@ -1519,6 +1529,41 @@ mod tests {
             ]
         );
         assert_eq!(catalog.events(None, 20).unwrap().len(), 6);
+    }
+
+    #[test]
+    fn provider_error_capture_is_not_queued_or_retried_for_finalization() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("cap-auth-error.llmbundle");
+        fs::write(&bundle, b"encrypted provider error fixture").unwrap();
+        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
+        catalog
+            .begin_capture(&new_capture("cap-auth-error"))
+            .unwrap();
+        catalog
+            .complete_capture("cap-auth-error", 2, 1, 401, 48, None, "", false, &bundle)
+            .unwrap();
+
+        assert!(
+            catalog
+                .enqueue_finalization("cap-auth-error", 3)
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(
+            catalog
+                .capture("cap-auth-error")
+                .unwrap()
+                .unwrap()
+                .finalization_state,
+            "not_requested"
+        );
+        assert!(
+            catalog
+                .operations_for_capture("cap-auth-error")
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

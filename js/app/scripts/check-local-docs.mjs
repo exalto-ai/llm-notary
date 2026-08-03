@@ -21,7 +21,7 @@ const expectedOperations = {
   '/v1/notaries': { get: ['200', '401', '500'] },
   '/v1/captures': { get: ['200', '400', '401'] },
   '/v1/captures/{capture_id}': { get: ['200', '401', '404'] },
-  '/v1/captures/{capture_id}/finalizations': { post: ['202', '401', '404'] },
+  '/v1/captures/{capture_id}/finalizations': { post: ['202', '401', '404', '409'] },
   '/v1/operations': { get: ['200', '400', '401'] },
   '/v1/operations/{operation_id}': { get: ['200', '401', '404'] },
   '/v1/operations/{operation_id}/retry': { post: ['202', '401', '409'] },
@@ -84,7 +84,7 @@ for (const [operation, expected] of Object.entries(expectedParameters)) {
 const expectedRequiredFields = {
   CaptureListResponse: ['items', 'limit', 'offset'],
   CaptureDetailResponse: ['artifacts', 'capture', 'finalizations'],
-  CaptureResponse: ['capture_id', 'created_at_unix_ms', 'provider', 'operation', 'streaming', 'request_bytes', 'capture_state', 'finalization_state', 'prompt_preview', 'prompt_preview_truncated', 'output_preview', 'output_preview_truncated'],
+  CaptureResponse: ['capture_id', 'created_at_unix_ms', 'provider', 'operation', 'streaming', 'request_bytes', 'capture_state', 'finalization_state', 'finalization_eligible', 'prompt_preview', 'prompt_preview_truncated', 'output_preview', 'output_preview_truncated'],
   ErrorBody: ['code', 'message'],
   ErrorEnvelope: ['error'],
   EventResponse: ['event_id', 'created_at_unix_ms', 'event_type', 'severity', 'message'],
@@ -92,7 +92,7 @@ const expectedRequiredFields = {
   NotariesResponse: ['source', 'notaries'],
   NotaryResponse: ['endpoint', 'transport', 'key_id', 'status'],
   OperationAttemptResponse: ['attempt', 'state', 'started_at_unix_ms'],
-  OperationResponse: ['operation_id', 'kind', 'state', 'attempt', 'attempt_history', 'created_at_unix_ms'],
+  OperationResponse: ['operation_id', 'kind', 'state', 'attempt', 'attempt_history', 'created_at_unix_ms', 'retryable'],
   AccountConnectionStartedResponse: ['request_id', 'user_code', 'verification_uri_complete', 'expires_in_seconds', 'poll_interval_seconds', 'state'],
   PublicationResponse: ['capture_id', 'job_id', 'state', 'status_url'],
   PublicationStatusResponse: ['job_id', 'state'],
@@ -106,7 +106,7 @@ for (const [schema, expected] of Object.entries(expectedRequiredFields)) {
   }
 }
 
-for (const term of ['202 Accepted', 'deduplicated', 'attempt_history', 'next_cursor', 'poll_interval_seconds', 'notary_key_id', 'trust_source']) {
+for (const term of ['202 Accepted', 'deduplicated', 'attempt_history', 'finalization_eligible', 'retryable', 'next_cursor', 'poll_interval_seconds', 'notary_key_id', 'trust_source']) {
   if (!workflowContent.includes(term)) throw new Error(`Workflow documentation is missing contract term: ${term}`);
 }
 

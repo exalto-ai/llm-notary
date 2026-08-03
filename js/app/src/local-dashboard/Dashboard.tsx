@@ -521,14 +521,19 @@ function CaptureInspector({ api, capture, mobile, onBack, navigate }: { api: Loc
   if (detail.error) return <QueryError error={detail.error} title="Capture detail is unavailable" />;
   const value = detail.data;
   if (!value) return <ErrorState title="Capture detail is unavailable" onRetry={() => detail.refetch()} />;
-  const canFinalize = capture.capture_state === 'pending' && capture.finalization_state === 'not_requested';
-  const canRetry = capture.capture_state === 'pending' && Boolean(failedOperation);
+  const incompatibleProviderResponse = capture.capture_state === 'pending'
+    && capture.finalization_ineligibility_code === 'unsupported_provider_http_status';
+  const canFinalize = capture.capture_state === 'pending' && capture.finalization_state === 'not_requested'
+    && capture.finalization_eligible;
+  const canRetry = capture.capture_state === 'pending' && capture.finalization_eligible
+    && Boolean(failedOperation?.retryable);
   return <article className="inspector capture-inspector">
     {mobile && <Button variant="subtle" leftSection={<ArrowLeft size={15} />} onClick={onBack}>All captures</Button>}
     <div className="inspector-head"><div><Text className="eyebrow">Capture detail</Text><Title order={2}>{capture.requested_model ?? 'Unreported model'}</Title><Text className="mono-id">{capture.capture_id}</Text></div>
       <Group>{canFinalize && <Button loading={finalize.isPending} leftSection={<Play size={15} />} onClick={() => finalize.mutate()}>Finalize</Button>}
         {canRetry && <Button loading={retry.isPending} leftSection={<RefreshCw size={15} />} onClick={() => retry.mutate()}>Retry finalization</Button>}</Group></div>
     <Lifecycle capture={capture} />
+    {incompatibleProviderResponse && <div className="finalization-ineligible-note" role="status"><XCircle size={18} aria-hidden="true" /><div><b>Provider response cannot be finalized</b><Text>The provider returned HTTP {capture.http_status}. Finalization currently supports successful provider responses only.</Text><code>{capture.finalization_ineligibility_code}</code></div></div>}
     <InspectorSection title="Safe metadata"><dl className="metadata-grid"><Fact label="Provider" value={capture.provider} /><Fact label="Operation" value={capture.operation} /><Fact label="HTTP status" value={capture.http_status?.toString() ?? 'In progress'} /><Fact label="Streaming" value={capture.streaming ? 'Yes' : 'No'} /><Fact label="Request" value={formatBytes(capture.request_bytes)} /><Fact label="Response" value={formatBytes(capture.response_bytes)} /></dl></InspectorSection>
     <InspectorSection title="Privacy-aware previews"><div className="preview-block"><Text className="eyebrow">Prompt {capture.prompt_preview_truncated && '· truncated'}</Text><Text>{capture.prompt_preview || 'Preview storage is disabled.'}</Text></div><div className="preview-block"><Text className="eyebrow">Output {capture.output_preview_truncated && '· truncated'}</Text><Text>{capture.output_preview || 'No output preview is available yet.'}</Text></div></InspectorSection>
     <InspectorSection title="Retained artifacts"><ArtifactList detail={value} /></InspectorSection>
@@ -598,7 +603,7 @@ function OperationInspector({ api, operation, fixture }: { api: LocalApi; operat
     queryClient.invalidateQueries({ queryKey: ['status'] });
     queryClient.invalidateQueries({ queryKey: ['events'] });
   }, onError: (error) => mutationError('Could not retry finalization', error) });
-  const retryable = ['failed', 'interrupted'].includes(operation.state);
+  const retryable = operation.retryable;
   return <Paper className="operation-inspector"><Text className="eyebrow">Selected operation</Text><Group justify="space-between" align="flex-start"><div><Title order={2}>{operation.state === 'running' ? fixture ? 'Simulated proof generation' : 'Generating private proof' : operation.state.replaceAll('_', ' ')}</Title><Text className="mono-id">{operation.operation_id}</Text></div><StatusLabel state={operation.state} /></Group>
     {fixture && <div className="fixture-flow-note operation-fixture-note"><Database size={16} aria-hidden="true" /><Text><b>Simulation only.</b> No proof worker is running. Times are relative to when this preview was opened.</Text></div>}
     <div className="operation-stage"><span className={['queued', 'running', 'finalized'].includes(operation.state) ? 'complete' : ''}>Queued</span><i /><span className={['running', 'finalized'].includes(operation.state) ? 'complete' : ''}>Proof generation</span><i /><span className={operation.state === 'finalized' ? 'complete' : ''}>Verified package</span></div>

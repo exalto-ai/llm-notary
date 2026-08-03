@@ -51,6 +51,11 @@ durable operation, and the dashboard moves to its finalization view. Repeating
 the action resolves to the already-active operation and is labeled as
 deduplicated; it does not create parallel work.
 
+If the provider returned a non-success HTTP status, the capture stays visible
+but the dashboard replaces **Finalize** with the provider status and the stable
+`unsupported_provider_http_status` explanation. It does not offer a retry for
+that deterministic incompatibility.
+
 ## Monitor and retry finalization
 
 The operation queue shows state, capture identifier, attempt, and enqueue time.
@@ -59,8 +64,9 @@ one durable record for each worker attempt. Proof generation may take minutes.
 The dashboard does not show a percentage because the service does not report
 one.
 
-Failed and restart-interrupted operations show only a safe failure code and a
-**Retry finalization** action. Retry requeues the same durable operation.
+Failed and restart-interrupted operations show only a safe failure code.
+**Retry finalization** appears only when the service marks the operation
+`retryable`; retry requeues the same durable operation.
 
 ![Finalizations view with a failed benchmark operation selected, its attempt and safe notary-capacity failure code visible, and a Retry finalization action.](images/local-dashboard/finalization-retry.png)
 

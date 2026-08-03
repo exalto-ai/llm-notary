@@ -264,6 +264,14 @@ bundle becomes `pending`; a capture failure becomes `failed`. Its finalization
 state moves independently through `not_requested`, `queued`, `running`, and
 `finalized`, or ends in `failed` or `interrupted`.
 
+The current provider normalizers support successful response schemas only.
+When capture completes with a non-`2xx` provider status, capture detail sets
+`finalization_eligible` to `false` and reports
+`finalization_ineligibility_code: unsupported_provider_http_status`. Starting
+finalization returns `409` with the same code before any proof work is queued.
+The encrypted bundle remains local and unchanged; retry is not offered because
+the recorded provider response cannot become successful on a later attempt.
+
 Queue finalization with `POST /v1/captures/{capture_id}/finalizations` and save
 the durable operation identifier from the 202 response. Poll it with
 `GET /v1/operations/{operation_id}`:
@@ -287,7 +295,7 @@ stage, not a made-up percentage.
 
 After a restart, work that was `running` is recorded as `interrupted` with the
 safe code `service_restarted`. Queued work remains durable. Retry only a
-`failed` or `interrupted` operation with
+`failed` or `interrupted` operation whose response says `retryable: true` with
 `POST /v1/operations/{operation_id}/retry`; retrying requeues the same
 operation and increments its attempt when the worker claims it:
 
@@ -297,9 +305,9 @@ curl --fail-with-body -X POST \
 ```
 
 Capture detail includes its `finalizations` history. Every operation response
-includes `attempt_history`, so an agent can distinguish earlier interrupted or
-failed attempts from the current aggregate state without searching a bounded
-event page.
+includes `retryable` and `attempt_history`, so an agent can avoid deterministic
+rejections and distinguish earlier interrupted or failed attempts from the
+current aggregate state without searching a bounded event page.
 
 ## Validation, verification, and publication
 

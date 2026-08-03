@@ -11,7 +11,8 @@ export const fixtureCaptures: Capture[] = [
     completed_at_unix_ms: fixtureNow - hour * 2 + 1842, provider: 'openai', operation: '/v1/responses',
     requested_model: 'gpt-5.2', response_model: 'gpt-5.2', http_status: 200, streaming: true,
     request_bytes: 1842, response_bytes: 9421, duration_ms: 1842, capture_state: 'pending',
-    finalization_state: 'not_requested', prompt_preview: 'Compare two sanitized evaluation strategies and identify the stronger evidence trail.',
+    finalization_state: 'not_requested', finalization_eligible: true,
+    prompt_preview: 'Compare two sanitized evaluation strategies and identify the stronger evidence trail.',
     prompt_preview_truncated: false, output_preview: 'The second strategy preserves a clearer chain of independently checkable claims…',
     output_preview_truncated: true
   },
@@ -20,7 +21,8 @@ export const fixtureCaptures: Capture[] = [
     completed_at_unix_ms: fixtureNow - hour * 4 + 967, provider: 'anthropic', operation: '/v1/messages',
     requested_model: 'claude-sonnet-4-6', response_model: 'claude-sonnet-4-6', http_status: 200,
     streaming: false, request_bytes: 1210, response_bytes: 5110, duration_ms: 967,
-    capture_state: 'pending', finalization_state: 'running', prompt_preview: 'Review a synthetic policy response for unsupported claims.',
+    capture_state: 'pending', finalization_state: 'running', finalization_eligible: true,
+    prompt_preview: 'Review a synthetic policy response for unsupported claims.',
     prompt_preview_truncated: false, output_preview: 'Three claims require either a citation or more qualified language.',
     output_preview_truncated: false
   },
@@ -29,7 +31,8 @@ export const fixtureCaptures: Capture[] = [
     completed_at_unix_ms: fixtureNow - hour * 18 + 2312, provider: 'openrouter', operation: '/api/v1/chat/completions',
     requested_model: 'openai/gpt-5-mini', response_model: 'openai/gpt-5-mini', http_status: 200,
     streaming: true, request_bytes: 2208, response_bytes: 14392, duration_ms: 2312,
-    capture_state: 'pending', finalization_state: 'finalized', prompt_preview: 'Choose a reproducibility baseline from two sanitized evaluation runs and explain the limits of the evidence.',
+    capture_state: 'pending', finalization_state: 'finalized', finalization_eligible: true,
+    prompt_preview: 'Choose a reproducibility baseline from two sanitized evaluation runs and explain the limits of the evidence.',
     prompt_preview_truncated: false, output_preview: 'Use Run 15 as the baseline; its settings were recorded and all 20 reruns matched.',
     output_preview_truncated: false
   },
@@ -38,14 +41,25 @@ export const fixtureCaptures: Capture[] = [
     completed_at_unix_ms: fixtureNow - hour * 25 + 1400, provider: 'deepseek', operation: '/chat/completions',
     requested_model: 'deepseek-v4-flash', response_model: 'deepseek-v4-flash', http_status: 200,
     streaming: false, request_bytes: 3101, response_bytes: 8802, duration_ms: 1400,
-    capture_state: 'pending', finalization_state: 'failed', prompt_preview: 'Run the deterministic benchmark fixture.',
+    capture_state: 'pending', finalization_state: 'failed', finalization_eligible: true,
+    prompt_preview: 'Run the deterministic benchmark fixture.',
     prompt_preview_truncated: false, output_preview: 'Benchmark fixture complete.', output_preview_truncated: false,
     failure_code: 'notary_capacity'
   },
   {
+    capture_id: 'cap-20260728-auth-error', created_at_unix_ms: fixtureNow - hour * 6,
+    completed_at_unix_ms: fixtureNow - hour * 6 + 412, provider: 'openai', operation: '/v1/responses',
+    requested_model: 'gpt-5.2', response_model: null, http_status: 401, streaming: true,
+    request_bytes: 988, response_bytes: 214, duration_ms: 412, capture_state: 'pending',
+    finalization_state: 'not_requested', finalization_eligible: false,
+    finalization_ineligibility_code: 'unsupported_provider_http_status',
+    prompt_preview: 'Summarize the sanitized authentication-error fixture.', prompt_preview_truncated: false,
+    output_preview: '', output_preview_truncated: false
+  },
+  {
     capture_id: 'cap-20260728-active', created_at_unix_ms: fixtureNow - 42_000,
     provider: 'openai', operation: '/v1/responses', requested_model: 'gpt-5.2-mini', streaming: true,
-    request_bytes: 720, capture_state: 'capturing', finalization_state: 'not_requested',
+    request_bytes: 720, capture_state: 'capturing', finalization_state: 'not_requested', finalization_eligible: false,
     prompt_preview: 'Create a sanitized fixture summary.', prompt_preview_truncated: false,
     output_preview: '', output_preview_truncated: false
   }
@@ -56,6 +70,7 @@ export const fixtureOperations: Operation[] = [
     operation_id: 'op-finalize-safety-review', kind: 'finalization',
     capture_id: 'cap-20260728-safety-review', state: 'running', attempt: 1,
     created_at_unix_ms: fixtureNow - 112_000, started_at_unix_ms: fixtureNow - 108_000,
+    retryable: false,
     attempt_history: [{ attempt: 1, state: 'running', started_at_unix_ms: fixtureNow - 108_000 }]
   },
   {
@@ -63,6 +78,7 @@ export const fixtureOperations: Operation[] = [
     capture_id: 'cap-20260727-benchmark', state: 'failed', attempt: 2,
     created_at_unix_ms: fixtureNow - hour, started_at_unix_ms: fixtureNow - hour + 2_000,
     completed_at_unix_ms: fixtureNow - hour + 18_000, failure_code: 'notary_capacity',
+    retryable: true,
     attempt_history: [
       { attempt: 2, state: 'failed', started_at_unix_ms: fixtureNow - hour + 2_000,
         completed_at_unix_ms: fixtureNow - hour + 18_000, failure_code: 'notary_capacity' },
@@ -75,6 +91,7 @@ export const fixtureOperations: Operation[] = [
     capture_id: 'cap-20260727-research-brief', state: 'finalized', attempt: 1,
     created_at_unix_ms: fixtureNow - hour * 17, started_at_unix_ms: fixtureNow - hour * 17 + 1_000,
     completed_at_unix_ms: fixtureNow - hour * 17 + 184_000,
+    retryable: false,
     attempt_history: [{ attempt: 1, state: 'finalized', started_at_unix_ms: fixtureNow - hour * 17 + 1_000,
       completed_at_unix_ms: fixtureNow - hour * 17 + 184_000 }]
   }
@@ -95,7 +112,7 @@ export const fixtureEvents: Event[] = [
 export const fixtureStatus: Status = {
   version: '0.1.0', proxy_listener: '127.0.0.1:8787', admin_listener: '127.0.0.1:8788',
   vault: 'OS vault', notary: 'directory', preview_chars: 1000,
-  counts: { total_captures: 5, capturing: 1, pending: 1, finalized: 1, failed: 1, active_operations: 1 }
+  counts: { total_captures: 6, capturing: 1, pending: 2, finalized: 1, failed: 1, active_operations: 1 }
 };
 
 export const fixtureNotaries: Notaries = {
@@ -243,6 +260,7 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
         const startedAt = actionTimestamp();
         operations = operations.map((item) => item.operation_id === operationId ? {
           ...item, state: 'running', attempt, started_at_unix_ms: startedAt, completed_at_unix_ms: null,
+          retryable: false,
           attempt_history: [{ attempt, state: 'running', started_at_unix_ms: startedAt }, ...item.attempt_history]
         } : item);
         setCaptureFinalization(operation.capture_id, 'running');
@@ -251,6 +269,7 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
         const completedAt = actionTimestamp();
         operations = operations.map((item) => item.operation_id === operationId ? {
           ...item, state: 'finalized', completed_at_unix_ms: completedAt,
+          retryable: false,
           attempt_history: item.attempt_history.map((attempt, index) => index === 0
             ? { ...attempt, state: 'finalized', completed_at_unix_ms: completedAt } : attempt)
         } : item);
@@ -302,7 +321,7 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
         && ['queued', 'running', 'finalized'].includes(operation.state));
       if (existing) return { operation: existing, deduplicated: true };
       const operation: Operation = { operation_id: 'op-finalize-queued-fixture', kind: 'finalization',
-        capture_id: captureId, state: 'queued', attempt: 0, created_at_unix_ms: actionTimestamp(), attempt_history: [] };
+        capture_id: captureId, state: 'queued', attempt: 0, created_at_unix_ms: actionTimestamp(), retryable: false, attempt_history: [] };
       operations = [operation, ...operations];
       setCaptureFinalization(captureId, 'queued');
       progressingOperations.add(operation.operation_id);
@@ -321,7 +340,7 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     operation: async (operationId) => operations.find((item) => item.operation_id === operationId) ?? operations[0],
     retry: async (operationId) => {
       operations = operations.map((operation) => operation.operation_id === operationId
-        ? { ...operation, state: 'queued', failure_code: null, completed_at_unix_ms: null } : operation);
+        ? { ...operation, state: 'queued', failure_code: null, completed_at_unix_ms: null, retryable: false } : operation);
       const operation = operations.find((item) => item.operation_id === operationId)!;
       if (operation.capture_id) {
         setCaptureFinalization(operation.capture_id, 'queued');
