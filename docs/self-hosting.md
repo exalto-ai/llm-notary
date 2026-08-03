@@ -84,15 +84,17 @@ Prepare:
    `<LLM_NOTARY_PUBLIC_ORIGIN>/api/auth/github/callback`.
 4. A named Cloudflare Tunnel targeting the stable `web` service, or an
    equivalent private ingress arrangement if Compose is adapted.
-5. A notary signing key and a separate random admission service token shared
-   only by the API and notary.
+5. A notary signing key, a separate random admission service token shared only
+   by the API and notary, and a distinct API-only HMAC key for opaque anonymous
+   credit subjects.
 
-Generate the two file secrets outside the repository:
+Generate the three file secrets outside the repository:
 
 ```bash
 install -d -m 0700 /secure/llm-notary
 openssl rand -hex 32 > /secure/llm-notary/notary-signing-key
 openssl rand -hex 32 > /secure/llm-notary/admission-service-token
+openssl rand -hex 32 > /secure/llm-notary/anonymous-subject-hmac-key
 chmod 0600 /secure/llm-notary/*
 ```
 
@@ -112,6 +114,7 @@ least:
 ```dotenv
 NOTARY_SIGNING_KEY_FILE=/secure/llm-notary/notary-signing-key
 ADMISSION_SERVICE_TOKEN_FILE=/secure/llm-notary/admission-service-token
+ANONYMOUS_SUBJECT_HMAC_KEY_FILE=/secure/llm-notary/anonymous-subject-hmac-key
 LLM_NOTARY_NOTARY_PUBLIC_KEY=02...
 LLM_NOTARY_NOTARY_HOST=notary.example.com
 LLM_NOTARY_NOTARY_TRANSPORT=tls
@@ -191,15 +194,29 @@ The shared admission service token authenticates only the notary's internal
 redeem, renew, and release calls. It is never sent to local clients and is
 unrelated to provider credentials or session-sharing access tokens.
 
+Anonymous hosted allowances use a period-scoped HMAC of the canonical client
+address. The API trusts `X-LLM-Notary-Client-IP` only when the socket peer is in
+`LLM_NOTARY_TRUSTED_PROXY_CIDRS`; otherwise it uses the socket peer and ignores
+forwarding headers. Compose defaults this list to its private bridge range
+because the API is reachable only through the stable `web` gateway. If you
+change the network topology, replace that range with the exact proxy networks;
+never trust all public peers. Rotate the HMAC key only together with an
+incremented `LLM_NOTARY_ANONYMOUS_SUBJECT_HMAC_KEY_VERSION`, knowing that a new
+version starts new anonymous subjects for the current period.
+
+See [Hosted finalization credits](hosted-credits.md) for the Free-account,
+supplemental-credit, and address-scoping model.
+
 ## Storage and database operations
 
 The private bucket has distinct staging, intake, and admitted-trace prefixes.
 Keep it private; public reads pass through the API after integrity checks.
 
-Use forward-only expand/contract database migrations so the immediately
-previous API image stays usable after a rollback. See [Database
-operations](database-operations.md) and [Share admission
-v1](share-admission-v1.md).
+Use forward-only database migrations. Migration `0009` deliberately removes
+the test-only paid-preview and account-session policy columns, so deploy the
+matching API and notary images together rather than rolling back to the
+previous admission binary. See [Database operations](database-operations.md)
+and [Share admission v1](share-admission-v1.md).
 
 ## Observability
 

@@ -1,6 +1,7 @@
 use std::{env, net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result, anyhow, bail};
+use ipnet::IpNet;
 use sqlx::postgres::PgConnectOptions;
 use url::Url;
 
@@ -35,22 +36,21 @@ pub struct PlatformConfig {
 #[derive(Clone)]
 pub struct AdmissionConfig {
     pub service_token: String,
+    pub anonymous_subject_hmac_key: Vec<u8>,
+    pub anonymous_subject_key_version: u32,
+    pub trusted_proxy_cidrs: Vec<IpNet>,
     pub ticket_ttl_secs: i64,
     pub lease_ttl_secs: i64,
     pub global_capture_concurrency: i64,
     pub global_finalize_concurrency: i64,
-    pub public: TierPolicy,
-    pub free: TierPolicy,
-    pub paid_preview: TierPolicy,
+    pub public: AdmissionPolicy,
+    pub free: AdmissionPolicy,
 }
 
 #[derive(Clone, Debug)]
-pub struct TierPolicy {
+pub struct AdmissionPolicy {
     pub capture_concurrency: i64,
     pub finalize_concurrency: i64,
-    pub account_concurrency: Option<i64>,
-    pub starts_per_minute: i64,
-    pub session_timeout_secs: i64,
     pub max_attestable_http_bytes: i64,
     pub max_frame_bytes: i64,
     pub max_private_chunk_bytes: i64,
@@ -120,6 +120,24 @@ impl AdmissionConfig {
         if service_token.len() < 32 || service_token.len() > 512 {
             bail!("admission service token must contain between 32 and 512 bytes");
         }
+        let subject_key_file =
+            PathBuf::from(required_env("LLM_NOTARY_ANONYMOUS_SUBJECT_HMAC_KEY_FILE")?);
+        let anonymous_subject_hmac_key = std::fs::read(&subject_key_file)
+            .with_context(|| format!("reading {}", subject_key_file.display()))?;
+        if anonymous_subject_hmac_key.len() < 32 || anonymous_subject_hmac_key.len() > 512 {
+            bail!("anonymous subject HMAC key must contain between 32 and 512 bytes");
+        }
+        let anonymous_subject_key_version =
+            env_or_default("LLM_NOTARY_ANONYMOUS_SUBJECT_HMAC_KEY_VERSION", "1")?
+                .parse::<u32>()
+                .context(
+                    "LLM_NOTARY_ANONYMOUS_SUBJECT_HMAC_KEY_VERSION must be a positive integer",
+                )?;
+        if anonymous_subject_key_version == 0 {
+            bail!("LLM_NOTARY_ANONYMOUS_SUBJECT_HMAC_KEY_VERSION must be positive");
+        }
+        let trusted_proxy_cidrs =
+            parse_trusted_proxy_cidrs(optional_env("LLM_NOTARY_TRUSTED_PROXY_CIDRS")?.as_deref())?;
         let ticket_ttl_secs = positive_integer_or_default(
             "LLM_NOTARY_ADMISSION_TICKET_TTL_SECS",
             DEFAULT_ADMISSION_TICKET_TTL_SECS,
@@ -136,6 +154,9 @@ impl AdmissionConfig {
         }
         Ok(Self {
             service_token,
+            anonymous_subject_hmac_key,
+            anonymous_subject_key_version,
+            trusted_proxy_cidrs,
             ticket_ttl_secs,
             lease_ttl_secs,
             global_capture_concurrency: positive_integer_or_default(
@@ -146,9 +167,8 @@ impl AdmissionConfig {
                 "LLM_NOTARY_ADMISSION_GLOBAL_FINALIZE_CONCURRENCY",
                 4,
             )?,
-            public: TierPolicy::from_env("PUBLIC", TierPolicy::public())?,
-            free: TierPolicy::from_env("FREE", TierPolicy::free())?,
-            paid_preview: TierPolicy::from_env("PAID_PREVIEW", TierPolicy::paid_preview())?,
+            public: AdmissionPolicy::from_env("PUBLIC", AdmissionPolicy::public())?,
+            free: AdmissionPolicy::from_env("FREE", AdmissionPolicy::free())?,
         })
     }
 
@@ -156,25 +176,24 @@ impl AdmissionConfig {
     pub(crate) fn for_test() -> Self {
         Self {
             service_token: "test-service-token-that-is-long-enough".to_owned(),
+            anonymous_subject_hmac_key: b"test-anonymous-subject-key-that-is-long-enough".to_vec(),
+            anonymous_subject_key_version: 1,
+            trusted_proxy_cidrs: vec!["127.0.0.0/8".parse().expect("test CIDR")],
             ticket_ttl_secs: DEFAULT_ADMISSION_TICKET_TTL_SECS,
             lease_ttl_secs: DEFAULT_ADMISSION_LEASE_TTL_SECS,
             global_capture_concurrency: 2,
             global_finalize_concurrency: 2,
-            public: TierPolicy::public(),
-            free: TierPolicy::free(),
-            paid_preview: TierPolicy::paid_preview(),
+            public: AdmissionPolicy::public(),
+            free: AdmissionPolicy::free(),
         }
     }
 }
 
-impl TierPolicy {
+impl AdmissionPolicy {
     pub(crate) fn public() -> Self {
         Self {
             capture_concurrency: 1,
             finalize_concurrency: 1,
-            account_concurrency: None,
-            starts_per_minute: 12,
-            session_timeout_secs: 5 * 60,
             max_attestable_http_bytes: 1 << 20,
             max_frame_bytes: 16 << 20,
             max_private_chunk_bytes: 64 << 10,
@@ -187,9 +206,6 @@ impl TierPolicy {
         Self {
             capture_concurrency: 4,
             finalize_concurrency: 2,
-            account_concurrency: Some(2),
-            starts_per_minute: 60,
-            session_timeout_secs: 15 * 60,
             max_attestable_http_bytes: 8 << 20,
             max_frame_bytes: 64 << 20,
             max_private_chunk_bytes: 128 << 10,
@@ -198,35 +214,13 @@ impl TierPolicy {
         }
     }
 
-    pub(crate) fn paid_preview() -> Self {
-        Self {
-            capture_concurrency: 12,
-            finalize_concurrency: 4,
-            account_concurrency: Some(4),
-            starts_per_minute: 240,
-            session_timeout_secs: 30 * 60,
-            max_attestable_http_bytes: 15 << 20,
-            max_frame_bytes: 128 << 20,
-            max_private_chunk_bytes: 128 << 10,
-            max_private_chunk_commitments: 128,
-            monthly_finalization_bytes: 5_i64 << 30,
-        }
-    }
-
     fn from_env(prefix: &str, defaults: Self) -> Result<Self> {
         let value = |suffix: &str, default: i64| {
             positive_integer_or_default(&format!("LLM_NOTARY_ADMISSION_{prefix}_{suffix}"), default)
         };
-        let account_concurrency = defaults
-            .account_concurrency
-            .map(|default| value("ACCOUNT_CONCURRENCY", default))
-            .transpose()?;
         Ok(Self {
             capture_concurrency: value("CAPTURE_CONCURRENCY", defaults.capture_concurrency)?,
             finalize_concurrency: value("FINALIZE_CONCURRENCY", defaults.finalize_concurrency)?,
-            account_concurrency,
-            starts_per_minute: value("STARTS_PER_MINUTE", defaults.starts_per_minute)?,
-            session_timeout_secs: value("SESSION_TIMEOUT_SECS", defaults.session_timeout_secs)?,
             max_attestable_http_bytes: value(
                 "MAX_ATTESTABLE_HTTP_BYTES",
                 defaults.max_attestable_http_bytes,
@@ -440,6 +434,20 @@ fn optional_idle_shutdown_secs() -> Result<Option<u64>> {
         .transpose()
 }
 
+fn parse_trusted_proxy_cidrs(value: Option<&str>) -> Result<Vec<IpNet>> {
+    value
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .parse::<IpNet>()
+                .with_context(|| format!("invalid trusted proxy CIDR {value}"))
+        })
+        .collect()
+}
+
 fn parse_idle_shutdown_secs(value: &str) -> Result<u64> {
     let seconds = value
         .parse::<u64>()
@@ -558,5 +566,13 @@ mod tests {
         assert!(validate_max_archive_bytes(DEFAULT_MAX_ARCHIVE_BYTES).is_ok());
         assert!(validate_max_archive_bytes(0).is_err());
         assert!(validate_max_archive_bytes(DEFAULT_MAX_ARCHIVE_BYTES + 1).is_err());
+    }
+
+    #[test]
+    fn trusted_proxy_cidrs_are_explicit_and_validated() {
+        assert!(parse_trusted_proxy_cidrs(None).unwrap().is_empty());
+        let parsed = parse_trusted_proxy_cidrs(Some("127.0.0.0/8, fdaa::/16")).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert!(parse_trusted_proxy_cidrs(Some("not-a-network")).is_err());
     }
 }

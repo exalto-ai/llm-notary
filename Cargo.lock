@@ -3381,6 +3381,8 @@ dependencies = [
  "base64 0.22.1",
  "dotenvy",
  "hex",
+ "hmac 0.12.1",
+ "ipnet",
  "k256",
  "llm-notary-core",
  "metrics",

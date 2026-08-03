@@ -29,12 +29,15 @@ Tigris bucket for the API; the service accepts the standard `AWS_*` and
 `BUCKET_NAME` variables that `fly storage create` sets, as well as the portable
 `LLM_NOTARY_S3_*` variables used by self-hosted container deployments.
 
-Two base64-encoded file secrets are required:
+Three base64-encoded file secrets are required:
 
 - `NOTARY_SIGNING_KEY_B64` on the notary.
 - `ADMISSION_SERVICE_TOKEN_B64` on both the API and notary. Use the same
   random value in both apps; it authenticates only the notary's narrow lease
   coordinator calls and is never sent to local clients.
+- `ANONYMOUS_SUBJECT_HMAC_KEY_B64` on the API only. It derives period-scoped
+  opaque Public credit subjects and must be independent of the admission and
+  signing keys. Increment the configured key version when rotating it.
 
 The API also needs its normal GitHub OAuth credentials, the notary public key,
 and its signing-key directory. The production endpoint is

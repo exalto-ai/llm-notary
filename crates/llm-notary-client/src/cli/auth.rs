@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    env, fmt, fs,
     path::{Path, PathBuf},
     process::Command,
     sync::OnceLock,
@@ -13,6 +13,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use clap::Args;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
 use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin, http_client_builder, storage};
 
@@ -72,6 +73,28 @@ pub(crate) struct AccountConnectionStatus {
     pub(crate) device_name: Option<String>,
     pub(crate) credential_kind: Option<String>,
     pub(crate) credential_name: Option<String>,
+    pub(crate) credits: Option<CreditSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub(crate) struct CreditHistoryEntry {
+    pub(crate) id: String,
+    pub(crate) kind: String,
+    pub(crate) amount_bytes: i64,
+    pub(crate) source_kind: Option<String>,
+    pub(crate) display_label: String,
+    pub(crate) created_at: i64,
+    pub(crate) expires_at: Option<i64>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub(crate) struct CreditSummary {
+    pub(crate) total_remaining_bytes: i64,
+    pub(crate) included_monthly_remaining_bytes: i64,
+    pub(crate) supplemental_remaining_bytes: i64,
+    pub(crate) reset_at: i64,
+    pub(crate) next_grant_expiration: Option<i64>,
+    pub(crate) history: Vec<CreditHistoryEntry>,
 }
 
 #[derive(Deserialize)]
@@ -98,6 +121,7 @@ struct WhoamiResponse {
     user: CliUser,
     credential: CliCredential,
     session: Option<CliSession>,
+    credits: CreditSummary,
 }
 
 #[derive(Deserialize)]
@@ -152,11 +176,69 @@ struct AdmissionRequest<'a> {
 #[derive(Deserialize)]
 struct AdmissionResponse {
     ticket: String,
-    entitlements: AdmissionEntitlements,
+    limits: AdmissionLimits,
 }
 
 #[derive(Deserialize)]
-struct AdmissionEntitlements {
+struct AdmissionErrorResponse {
+    error: String,
+}
+
+#[derive(Debug)]
+pub(crate) struct HostedAdmissionError {
+    status: StatusCode,
+    code: String,
+    message: String,
+}
+
+impl HostedAdmissionError {
+    pub(crate) fn status(&self) -> StatusCode {
+        self.status
+    }
+
+    pub(crate) fn code(&self) -> &str {
+        &self.code
+    }
+
+    pub(crate) fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+impl fmt::Display for HostedAdmissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for HostedAdmissionError {}
+
+pub(crate) fn hosted_admission_error(error: &anyhow::Error) -> Option<&HostedAdmissionError> {
+    error.downcast_ref()
+}
+
+pub(crate) fn hosted_admission_denial(code: &str) -> HostedAdmissionError {
+    let (status, code, message) = match code {
+        "finalization_credits_exhausted" => (
+            StatusCode::PAYMENT_REQUIRED,
+            "finalization_credits_exhausted",
+            "Hosted finalization credits are exhausted. Wait for the monthly reset or claim an eligible credit offer.",
+        ),
+        _ => (
+            StatusCode::BAD_GATEWAY,
+            "hosted_admission_denied",
+            "Hosted admission was denied. Retry shortly or connect an account.",
+        ),
+    };
+    HostedAdmissionError {
+        status,
+        code: code.to_owned(),
+        message: message.to_owned(),
+    }
+}
+
+#[derive(Deserialize)]
+struct AdmissionLimits {
     max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
 }
@@ -331,6 +413,7 @@ pub(crate) async fn account_connection_status() -> Result<AccountConnectionStatu
                 device_name: None,
                 credential_kind: None,
                 credential_name: None,
+                credits: None,
             });
         }
         CredentialConfiguration::ApiKey(authenticated) => authenticated,
@@ -355,6 +438,7 @@ pub(crate) async fn account_connection_status() -> Result<AccountConnectionStatu
         device_name: response.session.map(|session| session.device_name),
         credential_kind: Some(response.credential.kind),
         credential_name: Some(response.credential.name),
+        credits: Some(response.credits),
     })
 }
 
@@ -440,9 +524,15 @@ async fn issue_admission(
     let response = request
         .send()
         .await
-        .context("requesting hosted notary admission")?
-        .error_for_status()
-        .context("requesting hosted notary admission")?
+        .context("requesting hosted notary admission")?;
+    if !response.status().is_success() {
+        let error = response
+            .json::<AdmissionErrorResponse>()
+            .await
+            .context("reading hosted notary admission error")?;
+        return Err(hosted_admission_denial(&error.error).into());
+    }
+    let response = response
         .json::<AdmissionResponse>()
         .await
         .context("reading hosted notary admission")?;
@@ -451,14 +541,14 @@ async fn issue_admission(
     }
     Ok(AdmissionTicket {
         ticket: response.ticket,
-        max_attestable_http_bytes: response.entitlements.max_attestable_http_bytes,
-        max_frame_bytes: response.entitlements.max_frame_bytes,
+        max_attestable_http_bytes: response.limits.max_attestable_http_bytes,
+        max_frame_bytes: response.limits.max_frame_bytes,
     })
 }
 
 impl AdmissionResponse {
     fn max_values_invalid(&self) -> bool {
-        self.entitlements.max_attestable_http_bytes == 0 || self.entitlements.max_frame_bytes == 0
+        self.limits.max_attestable_http_bytes == 0 || self.limits.max_frame_bytes == 0
     }
 }
 
@@ -1040,6 +1130,19 @@ mod tests {
             .unwrap();
 
         assert_eq!(authenticated.access_token, key);
+    }
+
+    #[test]
+    fn hosted_admission_errors_are_stable_and_server_values_are_not_echoed() {
+        let exhausted = hosted_admission_denial("finalization_credits_exhausted");
+        assert_eq!(exhausted.status(), StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(exhausted.code(), "finalization_credits_exhausted");
+        assert!(exhausted.message().contains("monthly reset"));
+
+        let unknown = hosted_admission_denial("secret-value-from-an-upstream-error");
+        assert_eq!(unknown.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(unknown.code(), "hosted_admission_denied");
+        assert!(!unknown.to_string().contains("secret-value"));
     }
 
     #[tokio::test]

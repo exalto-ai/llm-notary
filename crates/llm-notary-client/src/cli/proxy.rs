@@ -269,7 +269,9 @@ async fn proxy(State(state): State<AppState>, request: Request) -> Response {
         Ok(response) => response,
         Err(error) => {
             tracing::warn!(
-                kind = if notary_admission_error(&error).is_some() {
+                kind = if auth::hosted_admission_error(&error).is_some() {
+                    "hosted_admission"
+                } else if notary_admission_error(&error).is_some() {
                     "notary_capacity"
                 } else {
                     "proxy_error"
@@ -282,6 +284,21 @@ async fn proxy(State(state): State<AppState>, request: Request) -> Response {
 }
 
 fn proxy_error_response(error: &anyhow::Error) -> Response {
+    if let Some(admission) = auth::hosted_admission_error(error) {
+        let body = serde_json::json!({
+            "error": {
+                "type": "hosted_admission",
+                "code": admission.code(),
+                "message": admission.message(),
+            }
+        });
+        return (
+            admission.status(),
+            [("content-type", "application/json")],
+            body.to_string(),
+        )
+            .into_response();
+    }
     let Some(admission) = notary_admission_error(error) else {
         return (
             StatusCode::BAD_GATEWAY,
@@ -290,6 +307,21 @@ fn proxy_error_response(error: &anyhow::Error) -> Response {
         )
             .into_response();
     };
+    if admission.rejection() == crate::NotaryAdmissionRejection::FinalizationCreditsExhausted {
+        let body = serde_json::json!({
+            "error": {
+                "type": "hosted_admission",
+                "code": "finalization_credits_exhausted",
+                "message": "Hosted finalization credits are exhausted. Wait for the monthly reset or claim an eligible credit offer.",
+            }
+        });
+        return (
+            StatusCode::PAYMENT_REQUIRED,
+            [("content-type", "application/json")],
+            body.to_string(),
+        )
+            .into_response();
+    }
     let retry_after_seconds = admission.retry_after().as_secs().max(1);
     let message = match admission.rejection() {
         crate::NotaryAdmissionRejection::CaptureAtCapacity => {
@@ -306,6 +338,9 @@ fn proxy_error_response(error: &anyhow::Error) -> Response {
         }
         crate::NotaryAdmissionRejection::CoordinatorUnavailable => {
             "LLM Notary admission is temporarily unavailable. Retry shortly."
+        }
+        crate::NotaryAdmissionRejection::FinalizationCreditsExhausted => {
+            unreachable!("credit exhaustion is handled before capacity responses")
         }
     };
     let body = serde_json::json!({

@@ -176,10 +176,16 @@ credential vault or finalized artifact:
 ```bash
 llm-notary login
 llm-notary whoami
+llm-notary whoami --json
 llm-notary share cap-example                         # Unlisted by default
 llm-notary share cap-example --visibility listed
 llm-notary logout
 ```
+
+When connected, account inspection includes the same total, monthly,
+additional, reset, expiration, and bounded credit history returned by the
+hosted account API. These fields affect hosted finalization only; they do not
+enter local captures or finalized evidence.
 
 Exit code `2` is invalid input, `3` means the daemon is unavailable, `4` is an
 authentication failure, `5` is not found, `6` is a state conflict, `7` is a

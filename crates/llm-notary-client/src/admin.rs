@@ -754,7 +754,7 @@ async fn events(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/account", summary = "Get the LLM Notary account connection", description = "Reports whether this local service has an account connection used for hosted tier admission and sharing.", responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/account", summary = "Get the LLM Notary account connection", description = "Reports whether this local service has an account connection used for hosted admission, credits, and sharing.", responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn account_status(
     State(state): State<AdminState>,
 ) -> Result<Json<AccountConnectionResponse>, ApiError> {
@@ -772,6 +772,7 @@ async fn load_account_status() -> Result<Json<AccountConnectionResponse>, ApiErr
         device_name: status.device_name,
         credential_kind: status.credential_kind,
         credential_name: status.credential_name,
+        credits: status.credits,
     }))
 }
 
@@ -791,7 +792,7 @@ fn default_device_name() -> String {
     auth::DEFAULT_DEVICE_NAME.to_owned()
 }
 
-#[utoipa::path(post, path = "/v1/account", summary = "Connect an LLM Notary account", description = "Starts browser approval for an account connection used for hosted tier admission and sharing. Browser approval is unavailable while the daemon uses an injected API key.", request_body = AccountConnectionRequest, responses((status = 202, body = AccountConnectionStartedResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/account", summary = "Connect an LLM Notary account", description = "Starts browser approval for an account connection used for hosted admission, credits, and sharing. Browser approval is unavailable while the daemon uses an injected API key.", request_body = AccountConnectionRequest, responses((status = 202, body = AccountConnectionStartedResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_account_connection(
     State(state): State<AdminState>,
     Json(body): Json<AccountConnectionRequest>,
@@ -851,6 +852,7 @@ async fn poll_account_connection(
             device_name: None,
             credential_kind: None,
             credential_name: None,
+            credits: None,
         })),
         auth::AuthorizationPoll::Complete => {
             state
@@ -1002,8 +1004,21 @@ pub(crate) fn spawn_finalization_worker(
                 let code = result
                     .as_ref()
                     .err()
-                    .and_then(|error| crate::notary_admission_error(error))
-                    .map(|_| "notary_capacity")
+                    .and_then(|error| {
+                        auth::hosted_admission_error(error)
+                            .map(|error| error.code())
+                            .or_else(|| {
+                                crate::notary_admission_error(error).map(|error| {
+                                    if error.rejection()
+                                        == crate::NotaryAdmissionRejection::FinalizationCreditsExhausted
+                                    {
+                                        "finalization_credits_exhausted"
+                                    } else {
+                                        "notary_capacity"
+                                    }
+                                })
+                            })
+                    })
                     .unwrap_or("finalization_error");
                 catalog.fail_operation(&operation.operation_id, now, code)?;
                 tracing::warn!(operation_id = %operation.operation_id, failure_code = code, "finalization operation failed");
@@ -1494,6 +1509,7 @@ struct AccountConnectionResponse {
     device_name: Option<String>,
     credential_kind: Option<String>,
     credential_name: Option<String>,
+    credits: Option<auth::CreditSummary>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

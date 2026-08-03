@@ -53,13 +53,13 @@ export interface paths {
         };
         /**
          * Get the LLM Notary account connection
-         * @description Reports whether this local service has an account connection used for hosted tier admission and sharing.
+         * @description Reports whether this local service has an account connection used for hosted admission, credits, and sharing.
          */
         get: operations["account_status"];
         put?: never;
         /**
          * Connect an LLM Notary account
-         * @description Starts browser approval for an account connection used for hosted tier admission and sharing. Browser approval is unavailable while the daemon uses an injected API key.
+         * @description Starts browser approval for an account connection used for hosted admission, credits, and sharing. Browser approval is unavailable while the daemon uses an injected API key.
          */
         post: operations["start_account_connection"];
         /**
@@ -407,6 +407,7 @@ export interface components {
         AccountConnectionResponse: {
             credential_kind?: string | null;
             credential_name?: string | null;
+            credits?: null | components["schemas"]["CreditSummary"];
             device_name?: string | null;
             github_login?: string | null;
             signed_in: boolean;
@@ -482,6 +483,31 @@ export interface components {
         };
         CreateShareRequest: {
             visibility: components["schemas"]["ShareVisibility"];
+        };
+        CreditHistoryEntry: {
+            /** Format: int64 */
+            amount_bytes: number;
+            /** Format: int64 */
+            created_at: number;
+            display_label: string;
+            /** Format: int64 */
+            expires_at?: number | null;
+            id: string;
+            kind: string;
+            source_kind?: string | null;
+        };
+        CreditSummary: {
+            history: components["schemas"]["CreditHistoryEntry"][];
+            /** Format: int64 */
+            included_monthly_remaining_bytes: number;
+            /** Format: int64 */
+            next_grant_expiration?: number | null;
+            /** Format: int64 */
+            reset_at: number;
+            /** Format: int64 */
+            supplemental_remaining_bytes: number;
+            /** Format: int64 */
+            total_remaining_bytes: number;
         };
         ErrorBody: {
             code: string;

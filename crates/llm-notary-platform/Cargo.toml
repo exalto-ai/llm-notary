@@ -36,6 +36,8 @@ axum = { version = "0.8", features = ["macros"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
 dotenvy = "0.15"
 hex = "0.4"
+hmac = "0.12"
+ipnet = "2.12"
 k256 = { version = "0.13", features = ["ecdsa"] }
 llm-notary-core = { path = "../llm-notary-core" }
 metrics = { version = "0.24.6", default-features = false }

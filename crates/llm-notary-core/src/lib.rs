@@ -112,6 +112,7 @@ const NOTARY_REJECTION_FINALIZE_AT_CAPACITY: u8 = 2;
 const NOTARY_REJECTION_CAPTURE_DISABLED: u8 = 3;
 const NOTARY_REJECTION_ADMISSION_DENIED: u8 = 4;
 const NOTARY_REJECTION_COORDINATOR_UNAVAILABLE: u8 = 5;
+const NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED: u8 = 6;
 pub const NOTARY_CAPACITY_RETRY_AFTER_SECS: u64 = 5;
 
 trait NotaryStream: AsyncRead + AsyncWrite + Send + Unpin {}
@@ -136,6 +137,7 @@ pub enum NotaryAdmissionRejection {
     CaptureDisabled,
     AdmissionDenied,
     CoordinatorUnavailable,
+    FinalizationCreditsExhausted,
 }
 
 impl NotaryAdmissionRejection {
@@ -146,6 +148,7 @@ impl NotaryAdmissionRejection {
             Self::CaptureDisabled => "capture_disabled",
             Self::AdmissionDenied => "admission_denied",
             Self::CoordinatorUnavailable => "coordinator_unavailable",
+            Self::FinalizationCreditsExhausted => "finalization_credits_exhausted",
         }
     }
 
@@ -156,6 +159,9 @@ impl NotaryAdmissionRejection {
             NOTARY_REJECTION_CAPTURE_DISABLED => Ok(Self::CaptureDisabled),
             NOTARY_REJECTION_ADMISSION_DENIED => Ok(Self::AdmissionDenied),
             NOTARY_REJECTION_COORDINATOR_UNAVAILABLE => Ok(Self::CoordinatorUnavailable),
+            NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED => {
+                Ok(Self::FinalizationCreditsExhausted)
+            }
             _ => bail!("unknown notary admission rejection code"),
         }
     }
@@ -167,13 +173,14 @@ impl NotaryAdmissionRejection {
             Self::CaptureDisabled => NOTARY_REJECTION_CAPTURE_DISABLED,
             Self::AdmissionDenied => NOTARY_REJECTION_ADMISSION_DENIED,
             Self::CoordinatorUnavailable => NOTARY_REJECTION_COORDINATOR_UNAVAILABLE,
+            Self::FinalizationCreditsExhausted => NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED,
         }
     }
 }
 
-/// A typed, retryable error returned by a v2 notary before session work
-/// begins. It deliberately contains no information about other clients or
-/// server capacity.
+/// A typed service error returned by a v2 notary before session work begins.
+/// It deliberately contains no information about other clients or server
+/// capacity. `retry_after` applies to transient rejection variants.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NotaryAdmissionError {
     rejection: NotaryAdmissionRejection,
@@ -229,6 +236,10 @@ impl fmt::Display for NotaryAdmissionError {
                     "notary admission service is temporarily unavailable"
                 )
             }
+            NotaryAdmissionRejection::FinalizationCreditsExhausted => write!(
+                formatter,
+                "hosted finalization credits are exhausted; wait for the monthly reset or claim an eligible credit offer"
+            ),
         }
     }
 }
@@ -2184,6 +2195,16 @@ mod tests {
             std::time::Duration::from_secs(NOTARY_CAPACITY_RETRY_AFTER_SECS)
         );
         server.await.unwrap();
+    }
+
+    #[test]
+    fn hosted_policy_rejections_have_stable_wire_codes() {
+        let rejection = NotaryAdmissionRejection::FinalizationCreditsExhausted;
+        assert_eq!(rejection.code(), "finalization_credits_exhausted");
+        assert_eq!(
+            NotaryAdmissionRejection::from_wire(rejection.wire_code()).unwrap(),
+            rejection
+        );
     }
 
     #[tokio::test]

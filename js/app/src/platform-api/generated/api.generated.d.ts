@@ -312,7 +312,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/me/plan": {
+    "/api/me/credit-offers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List promotional credit offers eligible for the signed-in account */
+        get: operations["eligible_credit_offers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/credit-offers/{offer_id}/claim": {
         parameters: {
             query?: never;
             header?: never;
@@ -320,9 +337,9 @@ export interface paths {
             cookie?: never;
         };
         get?: never;
-        /** Switch the signed-in account between free and paid preview */
-        put: operations["change_plan"];
-        post?: never;
+        put?: never;
+        /** Claim one server-defined promotional credit offer */
+        post: operations["claim_credit_offer"];
         delete?: never;
         options?: never;
         head?: never;
@@ -539,15 +556,25 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /** @enum {string} */
-        AccessPool: "public" | "free" | "paid_preview";
+        AccessPool: "public" | "free";
+        AdmissionLimits: {
+            /** Format: int64 */
+            max_attestable_http_bytes: number;
+            /** Format: int64 */
+            max_frame_bytes: number;
+            /** Format: int64 */
+            max_private_chunk_bytes: number;
+            /** Format: int64 */
+            max_private_chunk_commitments: number;
+        };
         /** @enum {string} */
         AdmissionMode: "capture" | "finalize";
         AdmissionTicketResponse: {
             /** Format: int64 */
             directory_generation: number;
-            entitlements: components["schemas"]["EffectiveEntitlements"];
             /** Format: int64 */
             expires_at: number;
+            limits: components["schemas"]["AdmissionLimits"];
             ticket: string;
         };
         ApiKeyResponse: {
@@ -575,8 +602,9 @@ export interface components {
             expires_at: number;
             user_code: string;
         };
-        ChangePlanRequest: {
-            plan: components["schemas"]["ServicePlan"];
+        ClaimCreditOfferResponse: {
+            credits: components["schemas"]["CreditSummary"];
+            offer_id: string;
         };
         CliAuthorizationStarted: {
             /** Format: int64 */
@@ -595,6 +623,7 @@ export interface components {
         };
         CliMeResponse: {
             credential: components["schemas"]["CliCredentialResponse"];
+            credits: components["schemas"]["CreditSummary"];
             session?: null | components["schemas"]["CliSessionResponse"];
             user: components["schemas"]["PublicUser"];
         };
@@ -633,33 +662,50 @@ export interface components {
         };
         /** @enum {string} */
         CredentialKind: "cli_session" | "api_key";
-        EffectiveEntitlements: {
-            access_pool: components["schemas"]["AccessPool"];
+        CreditHistoryEntry: {
             /** Format: int64 */
-            account_concurrency?: number | null;
+            amount_bytes: number;
             /** Format: int64 */
-            capture_concurrency: number;
+            created_at: number;
+            display_label: string;
             /** Format: int64 */
-            finalize_concurrency: number;
+            expires_at?: number | null;
+            id: string;
+            kind: components["schemas"]["CreditHistoryKind"];
+            source_kind?: string | null;
+        };
+        /** @enum {string} */
+        CreditHistoryKind: "grant" | "debit";
+        CreditOffer: {
             /** Format: int64 */
-            max_attestable_http_bytes: number;
+            amount_bytes: number;
             /** Format: int64 */
-            max_frame_bytes: number;
+            claim_expires_at: number;
             /** Format: int64 */
-            max_private_chunk_bytes: number;
+            credit_expires_at: number;
+            description: string;
+            id: string;
+            title: string;
+        };
+        CreditOffersResponse: {
+            offers: components["schemas"]["CreditOffer"][];
+        };
+        CreditSummary: {
+            history: components["schemas"]["CreditHistoryEntry"][];
             /** Format: int64 */
-            max_private_chunk_commitments: number;
+            included_monthly_remaining_bytes: number;
             /** Format: int64 */
-            monthly_finalization_bytes: number;
+            next_grant_expiration?: number | null;
             /** Format: int64 */
-            remaining_finalization_bytes: number;
+            reset_at: number;
             /** Format: int64 */
-            session_timeout_secs: number;
+            supplemental_remaining_bytes: number;
             /** Format: int64 */
-            starts_per_minute: number;
+            total_remaining_bytes: number;
         };
         ErrorResponse: {
             error: string;
+            message: string;
         };
         Health: {
             status: string;
@@ -691,8 +737,7 @@ export interface components {
             shares: components["schemas"]["ListedShareSummary"][];
         };
         MeResponse: {
-            entitlements: components["schemas"]["EffectiveEntitlements"];
-            plan: components["schemas"]["ServicePlan"];
+            credits: components["schemas"]["CreditSummary"];
             user: components["schemas"]["PublicUser"];
         };
         NotaryDirectoryRecordResponse: {
@@ -721,10 +766,6 @@ export interface components {
         NotaryKeyStatusResponse: "active" | "retiring" | "retired" | "revoked";
         /** @enum {string} */
         NotaryTransportResponse: "tcp" | "tls";
-        PlanResponse: {
-            entitlements: components["schemas"]["EffectiveEntitlements"];
-            plan: components["schemas"]["ServicePlan"];
-        };
         PublicShareDetail: {
             /** Format: int64 */
             admitted_at: number;
@@ -781,14 +822,10 @@ export interface components {
             /** Format: int64 */
             max_private_chunk_commitments: number;
             record_digest?: string | null;
-            /** Format: int64 */
-            session_timeout_secs: number;
         };
         RefreshRequest: {
             refresh_token: string;
         };
-        /** @enum {string} */
-        ServicePlan: "free" | "paid_preview";
         ShareResponse: {
             /** Format: int64 */
             admitted_at?: number | null;
@@ -1398,6 +1435,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1678,28 +1723,77 @@ export interface operations {
             };
         };
     };
-    change_plan: {
+    eligible_credit_offers: {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ChangePlanRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PlanResponse"];
+                    "application/json": components["schemas"]["CreditOffersResponse"];
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    claim_credit_offer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                offer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ClaimCreditOfferResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1808,7 +1902,23 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

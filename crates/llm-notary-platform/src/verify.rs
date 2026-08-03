@@ -466,7 +466,10 @@ fn error_response(status: StatusCode, code: &'static str) -> Response {
     (
         status,
         [(header::CACHE_CONTROL, "no-store")],
-        axum::Json(ErrorResponse { error: code }),
+        axum::Json(ErrorResponse {
+            error: code,
+            message: code,
+        }),
     )
         .into_response()
 }
