@@ -71,9 +71,9 @@ reviewed, staged rollout and recovery procedure before it is merged.
    curl --fail https://llm-notary.exalto.ai/api/readyz
    ```
 
-4. Exercise GitHub sign-in, publication-device refresh-token rotation, and one complete
-   publication/admission cycle. Confirm the public object keys, sizes, and
-   SHA-256 values match their private objects.
+4. Exercise GitHub sign-in, local-service refresh-token rotation, and one complete
+   share-admission cycle. Confirm the admitted trace and exact-package object keys,
+   sizes, and SHA-256 values match their private objects.
 
 For source development, run the same migrator before starting the API:
 
@@ -84,7 +84,7 @@ cargo run -p llm-notary-platform --bin llm-notary-api-migrate
 
 ## Scale and monitor
 
-Every API replica serves HTTP and runs cleanup, admission, and metadata work.
+Every API replica serves HTTP and runs cleanup and admission work.
 PostgreSQL coordinates claims with row locking and `SKIP LOCKED`, so replicas
 do not process a claimed job concurrently.
 

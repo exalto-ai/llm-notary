@@ -47,6 +47,197 @@
         }
       }
     },
+    "/v1/account": {
+      "get": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Get the LLM Notary account connection",
+        "description": "Reports whether this local service has an account connection used for hosted tier admission and sharing.",
+        "operationId": "account_status",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountConnectionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Connect an LLM Notary account",
+        "description": "Starts browser approval for an account connection used for hosted tier admission and sharing. Browser approval is unavailable while the daemon uses an injected API key.",
+        "operationId": "start_account_connection",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AccountConnectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountConnectionStartedResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Disconnect the LLM Notary account",
+        "description": "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.",
+        "operationId": "end_account_connection",
+        "responses": {
+          "204": {
+            "description": "Account disconnected; hosted sessions return to public access"
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/account/{request_id}": {
+      "get": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Poll account authorization",
+        "description": "Checks a pending LLM Notary account approval after its required polling interval.",
+        "operationId": "poll_account_connection",
+        "parameters": [
+          {
+            "name": "request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountConnectionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
     "/v1/captures": {
       "get": {
         "tags": [
@@ -344,14 +535,14 @@
         ]
       }
     },
-    "/v1/captures/{capture_id}/publications": {
+    "/v1/captures/{capture_id}/shares": {
       "post": {
         "tags": [
           "local-admin"
         ],
-        "summary": "Publish a finalized trace",
-        "description": "Verifies one finalized capture locally, uploads only its publication archive, and returns the durable publication job.",
-        "operationId": "publish_capture",
+        "summary": "Share a finalized verified session",
+        "description": "Verifies one finalized capture locally, uploads the exact safe public package, and returns a durable share.",
+        "operationId": "share_capture",
         "parameters": [
           {
             "name": "capture_id",
@@ -362,13 +553,23 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateShareRequest"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "202": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PublicationResponse"
+                  "$ref": "#/components/schemas/ShareResponse"
                 }
               }
             }
@@ -876,275 +1077,6 @@
         ]
       }
     },
-    "/v1/publication/auth": {
-      "get": {
-        "tags": [
-          "local-admin"
-        ],
-        "summary": "Get the LLM Notary account connection",
-        "description": "Reports whether this local service has an account connection used for hosted tier admission and trace publication.",
-        "operationId": "publication_auth_status",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountConnectionResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {},
-          {
-            "basicAuth": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "local-admin"
-        ],
-        "summary": "Connect an LLM Notary account",
-        "description": "Starts browser approval for an account connection used for hosted tier admission and trace publication. Browser approval is unavailable while the daemon uses an injected API key.",
-        "operationId": "start_publication_auth",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AccountConnectionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountConnectionStartedResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {},
-          {
-            "basicAuth": []
-          }
-        ]
-      },
-      "delete": {
-        "tags": [
-          "local-admin"
-        ],
-        "summary": "Disconnect the LLM Notary account",
-        "description": "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.",
-        "operationId": "end_publication_auth",
-        "responses": {
-          "204": {
-            "description": "Account disconnected; hosted sessions return to public access"
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {},
-          {
-            "basicAuth": []
-          }
-        ]
-      }
-    },
-    "/v1/publication/auth/{request_id}": {
-      "get": {
-        "tags": [
-          "local-admin"
-        ],
-        "summary": "Poll account authorization",
-        "description": "Checks a pending LLM Notary account approval after its required polling interval.",
-        "operationId": "poll_publication_auth",
-        "parameters": [
-          {
-            "name": "request_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AccountConnectionResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {},
-          {
-            "basicAuth": []
-          }
-        ]
-      }
-    },
-    "/v1/publications/{job_id}": {
-      "get": {
-        "tags": [
-          "local-admin"
-        ],
-        "summary": "Get publication status",
-        "description": "Returns the latest admission state and public artifact links for a publication job.",
-        "operationId": "publication_status",
-        "parameters": [
-          {
-            "name": "job_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PublicationStatusResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {},
-          {
-            "basicAuth": []
-          }
-        ]
-      }
-    },
     "/v1/session": {
       "post": {
         "tags": [
@@ -1187,6 +1119,84 @@
             "description": "Dashboard session ended"
           },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/shares/{share_id}": {
+      "get": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Get share status",
+        "description": "Returns the latest admission state and stable links for a share.",
+        "operationId": "share_status",
+        "parameters": [
+          {
+            "name": "share_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareStatusResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
             "description": "",
             "content": {
               "application/json": {
@@ -1559,6 +1569,18 @@
           }
         }
       },
+      "CreateShareRequest": {
+        "type": "object",
+        "required": [
+          "visibility"
+        ],
+        "properties": {
+          "visibility": {
+            "$ref": "#/components/schemas/ShareVisibility"
+          }
+        },
+        "additionalProperties": false
+      },
       "ErrorBody": {
         "type": "object",
         "required": [
@@ -1894,34 +1916,51 @@
           }
         }
       },
-      "PublicationResponse": {
+      "ShareResponse": {
         "type": "object",
         "required": [
           "capture_id",
-          "job_id",
+          "share_id",
           "state",
+          "visibility",
           "status_url"
         ],
         "properties": {
           "capture_id": {
             "type": "string"
           },
-          "job_id": {
+          "package_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "share_id": {
             "type": "string"
+          },
+          "share_url": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "state": {
             "type": "string"
           },
           "status_url": {
             "type": "string"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/ShareVisibility"
           }
         }
       },
-      "PublicationStatusResponse": {
+      "ShareStatusResponse": {
         "type": "object",
         "required": [
-          "job_id",
-          "state"
+          "share_id",
+          "state",
+          "visibility"
         ],
         "properties": {
           "failure_code": {
@@ -1930,19 +1969,35 @@
               "null"
             ]
           },
-          "job_id": {
-            "type": "string"
-          },
-          "state": {
-            "type": "string"
-          },
-          "trace_url": {
+          "package_url": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "share_id": {
+            "type": "string"
+          },
+          "share_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "type": "string"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/ShareVisibility"
           }
         }
+      },
+      "ShareVisibility": {
+        "type": "string",
+        "enum": [
+          "unlisted",
+          "listed"
+        ]
       },
       "StatusResponse": {
         "type": "object",

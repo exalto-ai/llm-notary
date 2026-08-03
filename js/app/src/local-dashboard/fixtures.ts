@@ -1,6 +1,7 @@
 import { LocalApiError } from './api';
 import type {
-  Capture, CaptureDetail, Event, LocalApi, Notaries, Operation, PublicationAuth, Status, Trace, Verification
+  AccountConnection, Capture, CaptureDetail, Event, LocalApi, Notaries, Operation,
+  ShareVisibility, Status, Trace, Verification
 } from './api';
 
 const hour = 60 * 60 * 1000;
@@ -303,12 +304,15 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
   let events = fixtureEvents.map((event) => ({ ...structuredClone(event), created_at_unix_ms: event.created_at_unix_ms + offset }));
   const traces = new Map(captures.filter((capture) => capture.finalization_state === 'finalized')
     .map((capture) => [capture.capture_id, traceForCapture(capture)]));
-  let publicationAuth: PublicationAuth = { signed_in: false };
+  let account: AccountConnection = {
+    signed_in: true, github_login: 'sample-user', device_name: 'Local dashboard',
+    credential_kind: 'cli_session', credential_name: 'Local dashboard'
+  };
   let nextEventId = Math.max(...events.map((event) => event.event_id)) + 1;
   let nextActionTime = clock;
   const progressingOperations = new Set<string>();
   const operationPolls = new Map<string, number>();
-  const publicationJobs = new Map<string, { captureId: string; state: string }>();
+  const shares = new Map<string, { captureId: string; state: string; visibility: ShareVisibility }>();
   const actionTimestamp = () => {
     nextActionTime += 1000;
     return nextActionTime;
@@ -322,7 +326,7 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     captures = captures.map((capture) => capture.capture_id === captureId
       ? { ...capture, finalization_state: finalizationState } : capture);
   };
-  const advanceDemoOperation = (operationId: string) => {
+  const advanceFixtureOperation = (operationId: string) => {
     if (!progressingOperations.has(operationId)) return;
     const polls = operationPolls.get(operationId) ?? 0;
     operationPolls.set(operationId, polls + 1);
@@ -422,7 +426,7 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     operation: async (operationId) => {
       const operation = operations.find((item) => item.operation_id === operationId);
       if (!operation) throw new LocalApiError(404, 'operation_not_found', 'Operation not found');
-      advanceDemoOperation(operationId);
+      advanceFixtureOperation(operationId);
       return structuredClone(operations.find((item) => item.operation_id === operationId)!);
     },
     retry: async (operationId) => {
@@ -465,36 +469,36 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       if (!traces.has(captureId)) throw new LocalApiError(422, 'trace_verification_failed', 'Trace verification failed');
       return { ...fixtureVerification, capture_id: captureId, verified_at_unix_ms: fixtureVerification.verified_at_unix_ms + offset };
     },
-    publicationAuth: async () => publicationAuth,
-    startPublicationAuth: async () => ({ request_id: 'auth-docs-fixture', user_code: 'NOTARY-7K3',
-      verification_uri_complete: '#/publishing', expires_in_seconds: 600,
+    account: async () => account,
+    startAccountConnection: async () => ({ request_id: 'auth-docs-fixture', user_code: 'NOTARY-7K3',
+      verification_uri_complete: '#/sharing', expires_in_seconds: 600,
       poll_interval_seconds: 0, state: 'pending' }),
-    pollPublicationAuth: async () => {
-      publicationAuth = {
-        signed_in: true,
-        github_login: 'fixture-user',
-        device_name: 'Local dashboard',
-        credential_kind: 'cli_session',
-        credential_name: 'Local dashboard'
+    pollAccountConnection: async () => {
+      account = {
+        signed_in: true, github_login: 'sample-user', device_name: 'Local dashboard',
+        credential_kind: 'cli_session', credential_name: 'Local dashboard'
       };
-      return publicationAuth;
+      return account;
     },
-    publish: async (captureId) => {
+    share: async (captureId, visibility) => {
       if (!traces.has(captureId)) throw new LocalApiError(404, 'finalized_trace_not_found', 'Finalized trace not found');
-      const jobId = 'pub-job-fixture';
-      publicationJobs.set(jobId, { captureId, state: 'queued' });
-      return { capture_id: captureId, job_id: jobId, state: 'queued', status_url: `/v1/publications/${jobId}` };
+      const shareId = 'share-fixture';
+      shares.set(shareId, { captureId, state: 'queued', visibility });
+      return { capture_id: captureId, share_id: shareId, state: 'queued', visibility, status_url: `/v1/shares/${shareId}`, share_url: null, package_url: null };
     },
-    publicationStatus: async (jobId) => {
-      const job = publicationJobs.get(jobId);
-      if (!job) return { job_id: jobId, state: 'queued' };
-      const state = job.state;
-      if (state === 'queued') job.state = 'verifying';
-      else if (state === 'verifying') job.state = 'admitted';
+    shareStatus: async (shareId) => {
+      const share = shares.get(shareId);
+      if (!share) throw new LocalApiError(404, 'share_not_found', 'Share not found');
+      const state = share.state;
+      if (state === 'queued') share.state = 'verifying';
+      else if (state === 'verifying') share.state = 'admitted';
       return {
-        job_id: jobId,
+        share_id: shareId,
         state,
-        ...(state === 'admitted' ? { trace_url: `/local.html?fixture=docs#/traces/${job.captureId}` } : {})
+        visibility: share.visibility,
+        failure_code: null,
+        share_url: state === 'admitted' ? `https://llm-notary.example/s/${shareId}` : null,
+        package_url: state === 'admitted' ? `https://llm-notary.example/api/public/shares/${shareId}/package.llmtrace` : null,
       };
     }
   };

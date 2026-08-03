@@ -18,7 +18,7 @@ import './trust-grid.css';
 import './commons.css';
 import './branding.css';
 import './account.css';
-import './collections.css';
+import './trace.css';
 import './docs.css';
 import './legal.css';
 import './relay-animation.css';
@@ -110,26 +110,26 @@ const legalPages = {
   privacy: {
     eyebrow: 'Legal · Privacy',
     title: 'Privacy Policy',
-    intro: 'This policy explains the information handled by the LLM Notary website, publishing service, and local tooling.',
+    intro: 'This policy explains the information handled by the LLM Notary website, session-sharing service, and local tooling.',
     sections: [
       ['Local capture stays local', 'The local proxy handles application plaintext and provider credentials. Within the protocol, the remote notary witnesses encrypted traffic and protocol metadata; it does not receive your API key, prompt, or response plaintext.'],
       ['Account information', 'If you sign in with GitHub, we use the identity information required to operate your account, including your GitHub login and account identifier. The GitHub authorization flow is limited to identity and does not request repository, organization, or email access.'],
-      ['Published traces', 'Publishing is an explicit action. The service verifies a submitted .llmtrace package before admission, then makes its bare OpenTelemetry trace and related metadata public. Header values are hidden by the package’s default disclosure policy, but request and response bodies—including prompts, responses, tool definitions, and tool results—may be public. Do not publish content you are not permitted to share.'],
-      ['Service processing', 'The verification service processes an uploaded package without retaining it. Publication intake objects are removed after admission or rejection; public trace artifacts remain available as part of the collection.'],
-      ['Your choices', 'You choose whether to publish a finalized package. Keep private capture bundles and credentials under your control, and avoid uploading them to public collections. For privacy questions or requests, contact the LLM Notary operator through the project’s published support channel.'],
+      ['Shared sessions', 'Sharing is an explicit action. The service verifies and safety-scans a submitted .llmtrace package before admission, then makes the disclosed conversation and exact admitted package public. Header values are hidden by the package’s default disclosure policy, but request and response bodies—including prompts, responses, tool definitions, and tool results—may be public. Do not share content you are not permitted to disclose.'],
+      ['Service processing', 'One-off verification does not retain an uploaded package. Sharing retains the exact admitted package and its normalized trace so visitors can inspect the session and independently verify the original bytes. Temporary intake objects are removed after admission or rejection.'],
+      ['Your choices', 'You choose whether a shared session is Unlisted or Listed. Both are public to anyone with the link; Unlisted only keeps it out of the Library. Keep private capture bundles and credentials under your control. For privacy questions or requests, contact the LLM Notary operator through the project’s support channel.'],
       ['Updates', 'We may revise this policy as the service evolves. The current version will always be available on this page.'],
     ],
   },
   terms: {
     eyebrow: 'Legal · Terms',
     title: 'Terms of Service',
-    intro: 'These terms govern your use of the LLM Notary website, local tooling, and publishing service.',
+    intro: 'These terms govern your use of the LLM Notary website, local tooling, and session-sharing service.',
     sections: [
       ['Using the service', 'Use LLM Notary lawfully and only with content, credentials, and provider accounts you are authorized to use. Do not interfere with the service, bypass access controls, or submit material that infringes the rights of others.'],
-      ['Your publications', 'You are responsible for every package you choose to submit. Publishing is an explicit consent boundary: once a submission is admitted, its public trace and related metadata can be accessed by others. Keep the source .llmtrace package when others need portable cryptographic verification.'],
-      ['What verification means', 'A full .llmtrace package can be checked against its cryptographic and protocol evidence. A bare Library trace was admitted from a verified source package, but does not carry that evidence and is not independently verifiable. Neither result establishes that a model output or user interpretation is true, complete, safe, or suitable for a particular purpose.'],
+      ['Your shared sessions', 'You are responsible for every package you choose to submit. Sharing is an explicit consent boundary: once admitted, its disclosed conversation and exact package can be accessed by anyone with the link. Unlisted is not private; it only keeps the session out of the Library.'],
+      ['What verification means', 'The retained .llmtrace package can be checked against its cryptographic and protocol evidence. The readable conversation is derived from that admitted package, and the download preserves its exact bytes. Neither result establishes that a model output or user interpretation is true, complete, safe, or suitable for a particular purpose.'],
       ['Availability', 'The service is provided on an “as available” basis and may change, be suspended, or be discontinued. Preserve the local materials you need; do not rely on the service as your only record or backup.'],
-      ['Your responsibilities', 'You are responsible for maintaining the security of your devices, local captures, API credentials, and account. Do not publish confidential, personal, or otherwise protected information unless you have a clear right to do so.'],
+      ['Your responsibilities', 'You are responsible for maintaining the security of your devices, local captures, API credentials, and account. Do not share confidential, personal, or otherwise protected information unless you have a clear right to do so.'],
       ['Changes to these terms', 'We may update these terms as the product develops. Continued use after an updated version is posted means you accept the revised terms.'],
     ],
   },
@@ -149,11 +149,11 @@ function TrustColumns() {
   return <div className="trust-columns" aria-label="How the trust model works">{boundaries.map(([number, actor, title, copy]) => <article key={actor}><span>{number}</span><b>{actor}</b><h3>{title}</h3><p>{copy}</p></article>)}</div>;
 }
 
-function PublishingArchitecture() {
+function VerificationArchitecture() {
   return <section className="section architecture" id="how-it-works"><div className="section-head"><span className="eyebrow">How it works</span><h2>Don’t trust. Verify.</h2></div><TrustColumns /><div className="section-link"><a href="#/docs/how-it-works">Learn more about the trust model</a></div></section>;
 }
 
-function CollectionPreview() {
+function ListedSharesPreview() {
   const [shares, setShares] = useState(null);
   const [loadError, setLoadError] = useState(false);
   useEffect(() => {
@@ -216,7 +216,7 @@ export function VerificationPage({ verifyFile = verifyTracePackage }) {
   const [status, setStatus] = useState('idle');
   const [errorCode, setErrorCode] = useState(null);
   const [result, setResult] = useState(null);
-  const trace = result ? parsePublishedTrace(result.trace) : [];
+  const trace = result ? parseSharedTrace(result.trace) : [];
   const chooseFile = (nextFile) => {
     requestGeneration.current += 1;
     setConsent(false);
@@ -282,12 +282,12 @@ function Landing() {
       <div className="hero-actions"><a className="button button-dark" href="#/docs/getting-started">Get started</a><a className="button button-plain" href="#/library">Browse Library</a></div>
     </section>
     <MotionStudies />
-    <PublishingArchitecture />
+    <VerificationArchitecture />
     <section className="section install capture">
       <div><span className="eyebrow">Local capture</span><h2>Capture locally.</h2><p>Point your existing tools at the local proxy. Provider calls keep streaming normally while encrypted bundles stay on your machine.</p></div>
       <div className="terminal"><div><i /><i /><i /></div><pre><code><b>$</b> {installCommand}{'\n\n'}<b>$</b> llm-notaryd{'\n\n'}proxy  <em>127.0.0.1:8787</em>{'\n'}admin  <em>127.0.0.1:8788</em></code></pre><a href="#/docs/getting-started">Installation and setup</a></div>
     </section>
-    <CollectionPreview />
+    <ListedSharesPreview />
     <section className="section verify" id="verify">
       <div><span className="eyebrow">Independent verification</span><h2>Proof travels with the package.</h2><p>A finalized .llmtrace contains the notary-signed TLS evidence, disclosed exchange, canonical trace, and hashes needed for portable verification.</p><div className="verify-points"><span>Notary evidence</span><span>Canonical OTLP</span><span>Portable package</span></div><div className="button-row"><a className="button button-dark" href="#/verify">Verify a package</a></div></div>
       <div className="receipt"><header><PenMark /><b>Portable package</b></header><h3>Verified</h3><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Artifact</dt><dd>capture.llmtrace</dd></div><div><dt>Trace hash</dt><dd>9b44f8…c21d</dd></div></dl><div className="receipt-contents"><span>Notary evidence <i>•••</i></span><span>Disclosed exchange <i>•••</i></span><span>Canonical trace <i>•••</i></span></div><footer>VERIFIED FROM SOURCE PACKAGE</footer></div>
@@ -304,17 +304,17 @@ const docPages = {
         heading: 'The workflow',
         steps: [
           { title: 'Capture', body: 'Point an SDK or agent at the local proxy. Requests and streamed responses continue normally while each completed provider call becomes an encrypted local bundle.' },
-          { title: 'Choose', body: 'Bundles wait on your disk. Nothing is published automatically, and interactive model use does not wait for the expensive proof step.' },
+          { title: 'Choose', body: 'Bundles wait on your disk. Nothing is shared automatically, and interactive model use does not wait for the expensive proof step.' },
           { title: 'Finalize', body: 'Turn a selected bundle into authenticated TLS evidence and a deterministic OTel GenAI trace. This can happen long after the original model call.' },
-          { title: 'Verify or publish', body: 'Check the package locally, keep it private, or deliberately publish its normalized trace for other people to inspect.' },
+          { title: 'Verify or share', body: 'Check the package locally, keep it private, or deliberately share its disclosed conversation and portable proof through a stable link.' },
         ],
       },
       {
-        heading: 'Three artifacts, three jobs',
+        heading: 'Three states, three jobs',
         cards: [
           { meta: 'Private', title: 'Encrypted bundle', body: 'A sensitive local checkpoint that can be finalized later. It is not yet evidence another person can verify.' },
           { meta: 'Portable', title: 'Trace package', body: 'TLSNotary evidence, disclosed authenticated HTTP, canonical OTLP, and a manifest binding the files together.' },
-          { meta: 'Public', title: 'Published trace', body: 'Canonical OTLP and public metadata admitted after the platform verifies the source package. Retain the package for portable verification.' },
+          { meta: 'Public', title: 'Shared session', body: 'A readable conversation plus the exact admitted .llmtrace package. Unlisted stays out of the Library; Listed opts into discovery.' },
         ],
       },
       {
@@ -381,7 +381,7 @@ const docPages = {
       { heading: 'Build from source', body: 'LLM Notary is a pre-release prototype and has no published binary release yet. Build the two local programs from a source checkout with Rust 1.95.0; the repository toolchain file selects that version.', code: installCommand },
       { heading: 'Programs', body: '`llm-notaryd` is the long-running local service. `llm-notary` is its short-lived REST client. The checked-in installer becomes usable only after a version tag publishes matching release assets.' },
       { heading: 'Start the service', code: 'llm-notaryd' },
-      { heading: 'Open the local dashboard', body: 'Visit `http://127.0.0.1:8788` and use the tabs for captures, finalizations, trace verification, publishing, activity, and settings. The default loopback configuration opens directly. If `admin.auth` is enabled, sign in with its configured username and password; the dashboard exchanges them for an `HttpOnly` session and does not store the password.' },
+      { heading: 'Open the local dashboard', body: 'Visit `http://127.0.0.1:8788` and use the tabs for captures, finalizations, trace verification, sharing, activity, and settings. The default loopback configuration opens directly. If `admin.auth` is enabled, sign in with its configured username and password; the dashboard exchanges them for an `HttpOnly` session and does not store the password.' },
       { heading: 'Configuration file', body: 'The first service start creates an editable `config.toml` at the standard user location: `~/.config/llm-notary/config.toml` on Linux, `%APPDATA%\\llm-notary\\config.toml` on Windows, and `~/Library/Application Support/llm-notary/config.toml` on macOS. It is written once and never replaced. Start with an explicit file when needed:', code: 'llm-notaryd --config /path/to/config.toml' },
       { heading: 'Use the command client', body: '`llm-notary` is a short-lived client for the daemon\'s versioned loopback API. It checks daemon health and never opens the catalog or vault directly. Add `--json` for automation.', code: 'llm-notary status\nllm-notary captures list --provider openai\nllm-notary operations list --state failed --json\nllm-notary open' },
       { heading: 'What it controls', body: '`config.toml` holds the listener address, optional admin authentication, an optional local or self-hosted notary endpoint, bundle and trace directories, the SQLite catalog path and preview limits, and the enabled provider routes. All built-in providers start enabled. The hostname and API behavior of each provider remain fixed; configuration cannot direct the proxy to an arbitrary upstream host.' },
@@ -434,7 +434,7 @@ const docPages = {
           { term: 'manifest.json', description: 'The versioned source metadata and trace hash. The cryptographic signature lives in evidence.tlsn, not in this JSON file.' },
         ],
       },
-      { heading: 'Package versus publication', body: 'The finalized `.llmtrace` source package carries all cryptographic evidence and is independently verifiable. A later public `trace.otlp.json` is an inspectable normalized trace admitted from a verified package, but the bare JSON does not carry that proof.' },
+      { heading: 'Package versus shared view', body: 'The finalized `.llmtrace` package carries all cryptographic evidence and is independently verifiable. A shared session presents a readable view derived from that package and retains the exact admitted bytes for download and independent verification.' },
       { heading: 'Verify a portable package', code: 'llm-notary traces verify ./capture.llmtrace\nPOST /api/verify', body: 'Use the local CLI for offline verification against pinned trust history, or explicitly upload the package on the public Verify page. The hosted service does not retain the package and its live result is not a signed receipt.' },
       { heading: 'Complete context is intentional', body: 'A `.llmtrace` can include system context, tool definitions, session metadata, prompts, responses, and tool results. All HTTP header values are hidden by default, but request and response bodies remain disclosed. Inspect it before sharing; the encrypted `.llmbundle` is private retry state and must stay local.' },
       { heading: 'Download or verify locally', code: 'GET /v1/captures/{capture_id}/package\nPOST /v1/captures/{capture_id}/trace:verify\nllm-notary traces verify ./capture.llmtrace' },
@@ -452,13 +452,14 @@ const docPages = {
       { heading: 'Tool-use boundary', note: 'Verification proves that the model emitted a tool call and, on a later request, that the client sent a particular tool result. It does not prove the local tool actually executed.' },
     ],
   },
-  publish: {
-    title: 'Publish a trace package',
-    lead: 'Publishing is a deliberate upload of one already-finalized package. The local service verifies it before it contacts LLM Notary.',
+  share: {
+    title: 'Share a verified session',
+    lead: 'Sharing is a deliberate upload of one already-finalized package. The local service verifies it and shows the full disclosed conversation before it contacts LLM Notary.',
     blocks: [
-      { heading: 'Authorize publication', body: 'Use the dashboard Publishing view, or begin the documented `POST /v1/publication/auth` device flow and poll its returned request identifier at the required interval.' },
-      { heading: 'Submit one finalized package', code: 'POST /v1/captures/{capture_id}/publications' },
-      { heading: 'Script-friendly output', body: 'The status URL stays on the loopback administration API so the browser or agent never receives the vault-held hosted credential.', code: '{"capture_id":"cap-…","job_id":"…","state":"queued","status_url":"/v1/publications/…"}' },
+      { heading: 'Connect the local service', body: 'Use the dashboard Share view, or begin the documented `POST /v1/account` device flow and poll its returned request identifier at the required interval.' },
+      { heading: 'Choose visibility', body: 'Unlisted is recommended and stays out of the Library. Listed appears in the Library. Both are public to anyone with the stable link; neither is private access.' },
+      { heading: 'Submit one finalized package', code: 'POST /v1/captures/{capture_id}/shares\n{"visibility":"unlisted"}' },
+      { heading: 'Script-friendly output', body: 'The status URL stays on the loopback administration API so the browser or agent never receives the vault-held hosted credential.', code: '{"capture_id":"cap-…","share_id":"…","state":"queued","visibility":"unlisted","status_url":"/v1/shares/…"}' },
       {
         heading: 'The upload boundary',
         columns: [
@@ -482,9 +483,10 @@ const docPages = {
           },
         ],
       },
-      { heading: 'Local checks before upload', body: 'The service snapshots the exact `.llmtrace` bytes, validates the deterministic versioned archive, and rejects extra entries, malformed manifests, untrusted evidence, visible non-structural header values, or non-canonical trace bytes before it creates an upload job.' },
-      { heading: 'Current consent boundary', body: 'The admission service may inspect disclosed request and response bodies, system context, and tool data to verify and reproduce the public trace. Every HTTP header value is hidden except the exact structural value Transfer-Encoding: chunked.' },
-      { heading: 'Retry behavior', body: 'An upload or API failure does not change or delete the local package. Submitting the same capture again reuses the archive-derived idempotency key and resumes the retry-safe publication job.' },
+      { heading: 'Admission checks', body: 'The local service and hosted admission service validate the deterministic archive, verify its evidence, require hidden header values, and scan every archive entry and nested disclosed body for credential patterns and high-entropy secrets. After storage, admission downloads the exact public bytes and repeats validation, scanning, and verification before exposing the link.' },
+      { heading: 'Current consent boundary', body: 'The admission service inspects disclosed request and response bodies, system context, and tool data to verify and reproduce the shared view. Every HTTP header value is hidden except the exact structural value Transfer-Encoding: chunked.' },
+      { heading: 'Exact package retention', body: 'An admitted session keeps the exact verified `.llmtrace` bytes, size, and SHA-256 digest. The session page makes that package available for independent verification; the encrypted `.llmbundle` never leaves the local vault.' },
+      { heading: 'Retry behavior', body: 'An upload or API failure does not change or delete the local package. Submitting the same capture with the same visibility reuses the archive-derived idempotency key and resumes the retry-safe share job.' },
     ],
   },
 };
@@ -514,17 +516,19 @@ const docSubheadings = {
     'Expect this step to take time',
     'Interruption behavior',
     'Artifact responsibilities',
-    'Package versus publication',
+    'Package versus shared view',
     'Complete context is intentional',
     'What verification checks',
     'Offline trust',
     'Tool-use boundary',
   ]),
-  publish: new Set([
+  share: new Set([
+    'Choose visibility',
     'Submit one finalized package',
     'Script-friendly output',
-    'Local checks before upload',
+    'Admission checks',
     'Current consent boundary',
+    'Exact package retention',
     'Retry behavior',
   ]),
 };
@@ -532,7 +536,7 @@ const docSubheadings = {
 const docNavigation = [
   { label: 'Start', pages: [['overview', 'Overview'], ['getting-started', 'Install and capture']] },
   { label: 'Understand', pages: [['how-it-works', 'Trust model'], ['trace-packages', 'Trace packages']] },
-  { label: 'Share', pages: [['publish', 'Publish']] },
+  { label: 'Share', pages: [['share', 'Share a session']] },
 ];
 const docOrder = docNavigation.flatMap((group) => group.pages.map(([key]) => key));
 const docAliases = {
@@ -545,6 +549,7 @@ const docAliases = {
   finalize: 'trace-packages',
   artifacts: 'trace-packages',
   verify: 'trace-packages',
+  publish: 'share',
 };
 
 function docHref(key, section) {
@@ -613,7 +618,7 @@ function DocsSearch({ open, onClose }) {
   }, [entries, query]);
   useEffect(() => { if (open) setQuery(''); }, [open]);
   const choose = (result) => { window.location.hash = docHref(result.key); onClose(); };
-  return <CommandDialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen) onClose(); }} title="Search documentation" description="Search setup, captures, providers, and publishing." className="docs-command-dialog"><Command shouldFilter={false} className="docs-command"><CommandInput value={query} onValueChange={setQuery} placeholder="Search setup, captures, providers…" /><CommandList><CommandEmpty>No documentation matches “{query}”.</CommandEmpty>{results.map((result) => <CommandItem value={result.key} onSelect={() => choose(result)} key={result.key}><span className="docs-command-copy"><b>{result.title}</b><small>{result.lead}</small></span></CommandItem>)}</CommandList><div className="docs-command-footer"><span>↑↓ navigate</span><span>↵ open</span><span>esc close</span></div></Command></CommandDialog>;
+  return <CommandDialog open={open} onOpenChange={(nextOpen) => { if (!nextOpen) onClose(); }} title="Search documentation" description="Search setup, captures, providers, and sharing." className="docs-command-dialog"><Command shouldFilter={false} className="docs-command"><CommandInput value={query} onValueChange={setQuery} placeholder="Search setup, captures, providers…" /><CommandList><CommandEmpty>No documentation matches “{query}”.</CommandEmpty>{results.map((result) => <CommandItem value={result.key} onSelect={() => choose(result)} key={result.key}><span className="docs-command-copy"><b>{result.title}</b><small>{result.lead}</small></span></CommandItem>)}</CommandList><div className="docs-command-footer"><span>↑↓ navigate</span><span>↵ open</span><span>esc close</span></div></Command></CommandDialog>;
 }
 
 function DocsMobileToolbar({ currentKey, page, section, onSearch }) {
@@ -731,7 +736,7 @@ function parseTraceMessages(value) {
   }
 }
 
-function parsePublishedTrace(trace) {
+function parseSharedTrace(trace) {
   const spans = (trace?.resourceSpans || []).flatMap((resource) => (resource.scopeSpans || []).flatMap((scope) => scope.spans || []));
   return spans.map((span, index) => {
     const attributes = (span.attributes || []).map((attribute) => [attribute.key, otlpAttributeValue(attribute.value)]);
@@ -770,10 +775,10 @@ function traceSnippets(spans) {
 }
 
 function LibraryLoading() {
-  return <main className="share-library share-library--loading" aria-busy="true"><header><span className="eyebrow">Library</span><h1>Listed verified sessions.</h1></header><div className="share-library-skeleton" role="status"><i /><i /><i /><span>Loading Listed shares…</span></div></main>;
+  return <main className="share-library share-library--loading" aria-busy="true"><header className="share-library-titlebar"><h1>Library</h1><span>Listed shares</span></header><div className="share-library-skeleton" role="status"><i /><i /><i /><span>Loading shares</span></div></main>;
 }
 
-export function Collections({ loadShares = getListedShares }) {
+export function Library({ loadShares = getListedShares }) {
   const [shares, setShares] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [query, setQuery] = useState('');
@@ -792,20 +797,20 @@ export function Collections({ loadShares = getListedShares }) {
   }), [provider, query, shares]);
   if (shares === null && !loadError) return <LibraryLoading />;
   return <main className="share-library">
-    <header><span className="eyebrow">Library · Listed only</span><h1>Verified sessions, without the catalog machinery.</h1><p>The Library is a small index of shares people chose to list. Every row opens the stable conversation page; Unlisted shares remain accessible only by their link.</p></header>
+    <header className="share-library-titlebar"><h1>Library</h1><span>Listed shares</span></header>
     <section className="share-library-controls" aria-label="Browse Listed shares">
       <label><span>Search</span><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Model, provider, or publisher" /></label>
       <Select value={provider} onValueChange={setProvider}><SelectTrigger aria-label="Provider"><SelectValue /></SelectTrigger><SelectContent>{providers.map((value) => <SelectItem value={value} key={value}>{value}</SelectItem>)}</SelectContent></Select>
       <span>{filtered.length} {filtered.length === 1 ? 'session' : 'sessions'}</span>
     </section>
-    {loadError ? <section className="collection-empty" role="alert">{loadError}</section> : filtered.length ? <section className="share-index" aria-label="Listed verified sessions">{filtered.map((share, index) => <a className="share-index-row" href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><span className="share-index-number">{String(index + 1).padStart(2, '0')}</span><span><b>{share.model}</b><small>{share.provider}</small></span><span><small>Shared by</small>{share.publisher}</span><span className="share-index-state"><i aria-hidden="true" />Verified</span><span aria-hidden="true">↗</span></a>)}</section> : <section className="collection-empty"><b>No Listed sessions match.</b><p>Try a broader search. Unlisted shares never appear in this index.</p></section>}
+    {loadError ? <section className="collection-empty" role="alert">{loadError}</section> : filtered.length ? <section className="share-index" aria-label="Listed shares">{filtered.map((share) => <a className="share-index-row" href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><span><b>{share.model}</b><small>{share.provider}</small></span><span><small>Publisher</small>{share.publisher}</span><span className="share-index-state"><i aria-hidden="true" />Verified</span><span aria-hidden="true">↗</span></a>)}</section> : <section className="collection-empty"><b>No matches</b><p>Clear the search or choose another provider.</p></section>}
   </main>;
 }
 
 function SharedPart({ part }) {
   if (part.type === 'tool_call' || part.type === 'tool_call_response') {
     const call = part.type === 'tool_call';
-    return <details className="tool-attachment"><summary><span>{call ? 'Tool call' : 'Tool result'}</span><b>{call ? part.name || 'Unnamed tool' : part.id || 'Returned value'}</b><em>Open</em></summary><div>{part.id && <TraceField label="call ID" value={part.id} />}{call && <TraceField label="arguments" value={part.arguments} />}{!call && <TraceField label="result" value={part.result} />}</div></details>;
+    return <details className="tool-attachment"><summary><span>{call ? 'Tool call' : 'Tool result'}</span><b>{call ? part.name || 'Unnamed tool' : part.id || 'Returned value'}</b><em>Show</em></summary><div>{part.id && <TraceField label="call ID" value={part.id} />}{call && <TraceField label="arguments" value={part.arguments} />}{!call && <TraceField label="result" value={part.result} />}</div></details>;
   }
   return <div className="shared-message-text"><ReactMarkdown>{String(part.content ?? '')}</ReactMarkdown></div>;
 }
@@ -815,7 +820,7 @@ function SharedConversation({ spans }) {
     ...(span.messages?.input || []).map((message, messageIndex) => ({ ...message, key: `${spanIndex}-input-${messageIndex}` })),
     ...(span.messages?.output || []).map((message, messageIndex) => ({ ...message, key: `${spanIndex}-output-${messageIndex}` })),
   ]);
-  if (!turns.length) return <p className="share-page-state">This verified trace contains no disclosed messages.</p>;
+  if (!turns.length) return <p className="share-page-state">No messages were disclosed.</p>;
   return <div className="shared-conversation">{turns.map((message, index) => <article className={`shared-message shared-message--${message.role || 'unknown'}`} key={message.key}><aside><span>{String(index + 1).padStart(2, '0')}</span><b>{message.role || 'message'}</b></aside><div>{(message.parts || []).map((part, partIndex) => <SharedPart part={part} key={`${part.type}-${partIndex}`} />)}{message.finishReason && <small className="finish-reason">finish_reason: {message.finishReason}</small>}</div></article>)}</div>;
 }
 
@@ -832,7 +837,7 @@ export function SharePage({ shareId, loadShare = getPublicShare, loadTrace = get
       .then(([detail, trace]) => {
         if (!cancelled) {
           setShare(detail);
-          setSpans(parsePublishedTrace(trace));
+          setSpans(parseSharedTrace(trace));
         }
       })
       .catch((error) => { if (!cancelled) setLoadError(error.message); });
@@ -840,7 +845,7 @@ export function SharePage({ shareId, loadShare = getPublicShare, loadTrace = get
   }, [loadShare, loadTrace, shareId]);
   useEffect(() => {
     if (!share) return undefined;
-    document.title = `${share.model} · Verified session · LLM Notary`;
+    document.title = `${share.model} · LLM Notary`;
     const existingRobots = document.head.querySelector('meta[name="robots"][data-share-page]');
     const robots = existingRobots instanceof HTMLMetaElement ? existingRobots : document.createElement('meta');
     if (!(existingRobots instanceof HTMLMetaElement)) {
@@ -851,16 +856,17 @@ export function SharePage({ shareId, loadShare = getPublicShare, loadTrace = get
     robots.content = share.visibility === 'unlisted' ? 'noindex, nofollow, noarchive' : 'index, follow';
     return () => { robots?.remove(); document.title = 'LLM Notary'; };
   }, [share]);
-  if (loadError) return <main className="share-page share-page-state" role="alert"><span className="eyebrow">Shared session</span><h1>This share could not be opened.</h1><p>{loadError}</p><a href="#/library">Browse Listed sessions</a></main>;
-  if (!share || spans === null) return <main className="share-page share-page-state" aria-busy="true"><span className="eyebrow">Shared session</span><h1>Opening verified conversation…</h1><p>Loading the public trace and its verification record.</p></main>;
+  if (loadError) return <main className="share-page share-page-state" role="alert"><h1>Share unavailable</h1><p>{loadError}</p><a href="#/library">Open Library</a></main>;
+  if (!share || spans === null) return <main className="share-page share-page-state" aria-busy="true"><h1>Loading share</h1></main>;
   const authenticated = share.authenticated_at_unix_ms ? new Date(share.authenticated_at_unix_ms).toLocaleString() : 'Not recorded';
+  const messageCount = spans.reduce((count, span) => count + (span.messages?.input?.length || 0) + (span.messages?.output?.length || 0), 0);
   return <main className="share-page">
-    <header className="share-page-header"><div><span className="eyebrow">Verified session · {share.visibility}</span><h1>{share.model}</h1><p>Shared by <b>{share.publisher}</b> · authenticated with {share.provider}</p></div><div className="share-verification-mark"><i aria-hidden="true" /><span><b>Provider session verified</b><small>Cryptographic package admitted</small></span></div></header>
+    <header className="share-page-header"><div><h1>{share.model}</h1><p><b>{share.publisher}</b><span>{share.provider}</span><span>{share.visibility}</span></p></div><div className="share-verification-mark"><i aria-hidden="true" /><span><b>Verified</b><small>Provider session</small></span></div></header>
     <div className="share-page-layout">
-      <section className="share-transcript" aria-labelledby="shared-conversation-title"><header><div><span className="eyebrow">Conversation</span><h2 id="shared-conversation-title">Disclosed transcript</h2></div><span>{spans.length} {spans.length === 1 ? 'verified span' : 'verified spans'}</span></header><SharedConversation spans={spans} /></section>
-      <aside className="share-evidence-rail"><span className="eyebrow">Evidence</span><dl><div><dt>Provider</dt><dd>{share.provider}</dd></div><div><dt>Host</dt><dd>{share.host}</dd></div><div><dt>Authenticated</dt><dd>{authenticated}</dd></div><div><dt>Visibility</dt><dd>{share.visibility}</dd></div></dl>
-        {share.package_url ? <a className="share-package-download" href={share.package_url}><span>Portable proof</span><b>Download exact .llmtrace</b><small>{fileSize(share.package_size_bytes || 0)} · independently verifiable</small></a> : <p className="share-legacy-package">The original package predates package retention and is unavailable.</p>}
-        <details className="share-technical"><summary>Technical verification details</summary><dl><div><dt>Trace SHA-256</dt><dd><code>{share.trace_sha256}</code></dd></div>{share.package_sha256 && <div><dt>Package SHA-256</dt><dd><code>{share.package_sha256}</code></dd></div>}<div><dt>Notary key</dt><dd><code>{share.notary_key_id || 'Not recorded'}</code></dd></div><div><dt>Directory generation</dt><dd>{share.directory_generation ?? 'Not recorded'}</dd></div><div><dt>Safety contract</dt><dd><code>{share.public_package_safety_version || 'Legacy'}</code></dd></div></dl></details>
+      <section className="share-transcript" aria-labelledby="shared-conversation-title"><header><h2 id="shared-conversation-title">Conversation</h2><span>{messageCount} {messageCount === 1 ? 'message' : 'messages'}</span></header><SharedConversation spans={spans} /></section>
+      <aside className="share-evidence-rail"><span className="eyebrow">Verification</span><dl><div><dt>Provider</dt><dd>{share.provider}</dd></div><div><dt>Host</dt><dd>{share.host}</dd></div><div><dt>Authenticated</dt><dd>{authenticated}</dd></div><div><dt>Visibility</dt><dd>{share.visibility}</dd></div></dl>
+        {share.package_url ? <a className="share-package-download" href={share.package_url}><span>Package</span><b>Download .llmtrace</b><small>{fileSize(share.package_size_bytes || 0)} · SHA-256 included</small></a> : <p className="share-legacy-package">Exact package unavailable for this older share.</p>}
+        <details className="share-technical"><summary>Hashes and notary</summary><dl><div><dt>Trace SHA-256</dt><dd><code>{share.trace_sha256}</code></dd></div>{share.package_sha256 && <div><dt>Package SHA-256</dt><dd><code>{share.package_sha256}</code></dd></div>}<div><dt>Notary key</dt><dd><code>{share.notary_key_id || 'Not recorded'}</code></dd></div><div><dt>Directory generation</dt><dd>{share.directory_generation ?? 'Not recorded'}</dd></div><div><dt>Safety contract</dt><dd><code>{share.public_package_safety_version || 'Legacy'}</code></dd></div></dl></details>
       </aside>
     </div>
   </main>;
@@ -876,7 +882,7 @@ function fileSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function publishState(state) {
+function shareStateLabel(state) {
   if (state === 'admitted') return { label: 'Admitted', tone: 'verified' };
   if (state === 'queued') return { label: 'Queued', tone: 'pending' };
   if (state === 'verifying') return { label: 'Verifying', tone: 'pending' };
@@ -1068,19 +1074,19 @@ function Dashboard({ user, view, onPlanChange }) {
           </div>
           <section className="dashboard-plan" aria-labelledby="service-plan-title">
             <header><div><span className="eyebrow">Hosted notary access</span><h2 id="service-plan-title">{plan === 'paid_preview' ? 'Paid preview' : 'Free'} plan</h2></div><span className="dashboard-plan-badge">{plan === 'paid_preview' ? 'No charge' : 'Included'}</span></header>
-            <p>{plan === 'paid_preview' ? 'Paid preview unlocks the higher hosted-service limits while billing is still disabled. It creates no charge or payment obligation.' : 'Upgrade to the paid preview to try the higher hosted-service limits. Billing is not enabled and no payment method is required.'}</p>
+            <p>{plan === 'paid_preview' ? 'Paid preview raises the hosted-service limits while billing is disabled. It creates no charge or payment obligation.' : 'Upgrade to the paid preview to use the higher hosted-service limits. Billing is not enabled and no payment method is required.'}</p>
             {entitlements && <dl><div><dt>Concurrent sessions</dt><dd>{entitlements.account_concurrency ?? 'Shared public pool'}</dd></div><div><dt>Session timeout</dt><dd>{Math.round(entitlements.session_timeout_secs / 60)} min</dd></div><div><dt>Maximum capture</dt><dd>{fileSize(entitlements.max_attestable_http_bytes)}</dd></div><div><dt>Proof credits left</dt><dd>{fileSize(entitlements.remaining_finalization_bytes)}</dd></div><div><dt>Starts per minute</dt><dd>{entitlements.starts_per_minute}</dd></div></dl>}
             {planError && <p className="dashboard-session-error" role="alert">{planError}</p>}
             <button type="button" onClick={() => changePlan(plan === 'paid_preview' ? 'free' : 'paid_preview')} disabled={planChanging}>{planChanging ? 'Updating…' : plan === 'paid_preview' ? 'Return to free' : 'Upgrade to paid preview'}</button>
           </section>
-          <section className="dashboard-sessions" aria-labelledby="publishing-sessions-title"><header><div><span className="eyebrow">Local service access</span><h2 id="publishing-sessions-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
+          <section className="dashboard-sessions" aria-labelledby="connected-services-title"><header><div><span className="eyebrow">Local service access</span><h2 id="connected-services-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
           <ApiKeysPanel />
         </> : <>
           <header className="dashboard-page-header"><span className="eyebrow">Shares</span><h1>Your shares</h1><p>Review admission state, visibility, and the stable links created by your local service.</p></header>
           <section className="dashboard-traces" aria-label="Your shares">
             {shareError && <p className="dashboard-session-error" role="alert">{shareError}</p>}
             {shares === null && !shareError ? <p className="dashboard-session-empty">Loading your shares…</p> : shares?.length ? <div className="dashboard-trace-list">{shares.map((share) => {
-              const status = publishState(share.state);
+              const status = shareStateLabel(share.state);
               return <article key={share.id}>
                 <div className="dashboard-trace-copy">
                   <div><span className={`dashboard-trace-state dashboard-trace-state--${status.tone}`}><i aria-hidden="true" />{status.label}</span><time>{sessionDate(share.admitted_at || share.updated_at)}</time></div>
@@ -1093,12 +1099,12 @@ function Dashboard({ user, view, onPlanChange }) {
                   {share.package_url && <a href={share.package_url}>Package</a>}
                 </div>
               </article>;
-            })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No shares</span><b>Share your first verified session.</b><p>Finalize a capture in the local dashboard, preview its disclosed conversation, then create an Unlisted or Listed link.</p><a href="#/docs/publish">Open the sharing guide</a></div>}
+            })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No shares</span><b>Share your first verified session.</b><p>Finalize a capture in the local dashboard, preview its disclosed conversation, then create an Unlisted or Listed link.</p><a href="#/docs/share">Open the sharing guide</a></div>}
           </section>
         </>}
       </div>
     </div>
-    <AlertDialog open={Boolean(revokeTarget)} onOpenChange={(nextOpen) => { if (!nextOpen && !revoking) setRevokeTarget(null); }}><AlertDialogContent className="axis-alert-dialog"><AlertDialogHeader><AlertDialogTitle>Revoke {revokeTarget?.device_name}?</AlertDialogTitle><AlertDialogDescription>This local service will return to public hosted limits and need a new browser approval for account access or publication.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={Boolean(revoking)}>Keep authorization</AlertDialogCancel><AlertDialogAction disabled={Boolean(revoking)} onClick={() => revokeTarget && revoke(revokeTarget)}>{revoking ? 'Revoking…' : 'Revoke device'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    <AlertDialog open={Boolean(revokeTarget)} onOpenChange={(nextOpen) => { if (!nextOpen && !revoking) setRevokeTarget(null); }}><AlertDialogContent className="axis-alert-dialog"><AlertDialogHeader><AlertDialogTitle>Revoke {revokeTarget?.device_name}?</AlertDialogTitle><AlertDialogDescription>This local service will return to public hosted limits and need a new browser approval for account access or sharing.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={Boolean(revoking)}>Keep authorization</AlertDialogCancel><AlertDialogAction disabled={Boolean(revoking)} onClick={() => revokeTarget && revoke(revokeTarget)}>{revoking ? 'Revoking…' : 'Revoke device'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </main>;
 }
 
@@ -1129,7 +1135,7 @@ function CliApproval({ route, user }) {
   if (!requestId || !approvalSecret) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Invalid authorization link.</h1><p>Return to the local dashboard and begin authorization again.</p></main>;
   if (!user) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Sign in to approve.</h1><p>This browser must be signed in to the LLM Notary account that should own the local service connection.</p><a className="button button-dark" href={`/api/auth/github?return_to=${encodeURIComponent(window.location.hash)}`}>Sign in with GitHub</a></main>;
   if (approved) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Service approved.</h1><p>Your local dashboard will finish authorization shortly. You can close this page.</p></main>;
-  return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Approve this service?</h1>{error ? <p>{error}</p> : details ? <><p>Connect <b>{details.device_name}</b> to LLM Notary as <b>{user.github_login}</b> for hosted access and publication?</p><div className="dashboard-card"><span>Authorization code</span><b>{details.user_code}</b><span>Expires {sessionDate(details.expires_at)}</span><button className="button button-dark" onClick={approve}>Approve service</button></div></> : <p>Checking this authorization request…</p>}</main>;
+  return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Approve this service?</h1>{error ? <p>{error}</p> : details ? <><p>Connect <b>{details.device_name}</b> to LLM Notary as <b>{user.github_login}</b> for hosted access and sharing?</p><div className="dashboard-card"><span>Authorization code</span><b>{details.user_code}</b><span>Expires {sessionDate(details.expires_at)}</span><button className="button button-dark" onClick={approve}>Approve service</button></div></> : <p>Checking this authorization request…</p>}</main>;
 }
 
 const hostedNotaryStatuses = new Set(['active', 'retiring', 'retired', 'revoked']);
@@ -1237,7 +1243,7 @@ function App() {
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
   const updatePlan = (response) => setUser((current) => current ? { ...current, plan: response.plan, entitlements: response.entitlements } : current);
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} onPlanChange={updatePlan} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} onPlanChange={updatePlan} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 const applicationRoot = document.getElementById('root');

@@ -99,6 +99,30 @@ try {
       }
     });
     await capture(browser, {
+      file: 'share-preview.png', scheme: 'light', viewport: desktop,
+      route: 'view=sharing'
+    });
+    await capture(browser, {
+      file: 'share-confirmation.png', scheme: 'light', viewport: desktop,
+      route: 'view=sharing',
+      prepare: async (page) => {
+        await page.getByText('sample-user').waitFor();
+        await page.getByRole('button', { name: 'Share trace' }).click();
+        await page.getByRole('alertdialog').waitFor();
+      }
+    });
+    await capture(browser, {
+      file: 'share-admitted.png', scheme: 'dark', viewport: desktop,
+      route: 'view=sharing',
+      prepare: async (page) => {
+        await page.getByText('sample-user').waitFor();
+        await page.getByRole('button', { name: 'Share trace' }).click();
+        await page.getByRole('button', { name: 'Create share' }).click();
+        await page.getByRole('button', { name: 'Copy URL' }).waitFor({ timeout: 12_000 });
+        await page.getByRole('heading', { name: 'Share ready' }).scrollIntoViewIfNeeded();
+      }
+    });
+    await capture(browser, {
       file: 'mobile-navigation.png', scheme: 'light', viewport: { width: 390, height: 844 },
       route: 'view=captures&id=cap-20260728-knowledge-eval',
       prepare: async (page) => {
@@ -112,6 +136,17 @@ try {
       prepare: async (page) => {
         await page.getByRole('button', { name: 'All captures' }).waitFor();
         await page.getByRole('heading', { name: 'gpt-5.2' }).waitFor();
+      }
+    });
+    await capture(browser, {
+      file: 'mobile-share-choice.png', scheme: 'light', viewport: { width: 390, height: 844 },
+      route: 'view=sharing'
+    });
+    await capture(browser, {
+      file: 'mobile-share-preview.png', scheme: 'light', viewport: { width: 390, height: 844 },
+      route: 'view=sharing',
+      prepare: async (page) => {
+        await page.getByRole('heading', { name: 'Prompt and response' }).scrollIntoViewIfNeeded();
       }
     });
   } finally {

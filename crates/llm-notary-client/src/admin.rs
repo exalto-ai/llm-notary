@@ -62,7 +62,7 @@ pub(crate) struct AdminState {
     config: Arc<AgentConfig>,
     sessions: Arc<Mutex<HashMap<String, u64>>>,
     pending_authorizations: Arc<Mutex<HashMap<String, auth::PendingAuthorization>>>,
-    publication_credentials: Arc<Mutex<()>>,
+    account_credentials: Arc<Mutex<()>>,
     pub(crate) work_available: Arc<Notify>,
 }
 
@@ -77,7 +77,7 @@ impl AdminState {
             config,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             pending_authorizations: Arc::new(Mutex::new(HashMap::new())),
-            publication_credentials: Arc::new(Mutex::new(())),
+            account_credentials: Arc::new(Mutex::new(())),
             work_available: Arc::new(Notify::new()),
         })
     }
@@ -101,20 +101,14 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
         .route("/v1/captures/{capture_id}/trace:verify", post(verify_trace))
         .route("/v1/events", get(events))
         .route(
-            "/v1/publication/auth",
-            get(publication_auth_status)
-                .post(start_publication_auth)
-                .delete(end_publication_auth),
+            "/v1/account",
+            get(account_status)
+                .post(start_account_connection)
+                .delete(end_account_connection),
         )
-        .route(
-            "/v1/publication/auth/{request_id}",
-            get(poll_publication_auth),
-        )
-        .route(
-            "/v1/captures/{capture_id}/publications",
-            post(publish_capture),
-        )
-        .route("/v1/publications/{job_id}", get(publication_status))
+        .route("/v1/account/{request_id}", get(poll_account_connection))
+        .route("/v1/captures/{capture_id}/shares", post(share_capture))
+        .route("/v1/shares/{share_id}", get(share_status))
         .route("/v1/session", delete(end_session))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
     Ok(Router::new()
@@ -200,16 +194,17 @@ fn embedded_dashboard_response(path: &str) -> Response {
     paths(
         health, openapi, start_session, end_session, status, notaries, captures, capture,
         start_finalization, operations, operation, retry_operation, trace,
-        download_package, verify_trace, events, publication_auth_status, start_publication_auth,
-        end_publication_auth, poll_publication_auth, publish_capture,
-        publication_status
+        download_package, verify_trace, events, account_status, start_account_connection,
+        end_account_connection, poll_account_connection, share_capture,
+        share_status
     ),
     components(schemas(
         HealthResponse, StatusResponse, CountsResponse, NotariesResponse, NotaryResponse,
         CaptureResponse, CaptureDetailResponse, ArtifactResponse, CaptureListResponse,
         OperationResponse, OperationAttemptResponse, OperationListResponse, FinalizationResponse, EventResponse,
         EventListResponse, TraceResponse, VerificationResponse, AccountConnectionResponse,
-        AccountConnectionRequest, AccountConnectionStartedResponse, PublicationResponse, PublicationStatusResponse,
+        AccountConnectionRequest, AccountConnectionStartedResponse, CreateShareRequest,
+        ShareVisibility, ShareResponse, ShareStatusResponse,
         ErrorBody, ErrorEnvelope
     )),
     modifiers(&SecurityAddon),
@@ -759,18 +754,18 @@ async fn events(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/publication/auth", summary = "Get the LLM Notary account connection", description = "Reports whether this local service has an account connection used for hosted tier admission and trace publication.", responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn publication_auth_status(
+#[utoipa::path(get, path = "/v1/account", summary = "Get the LLM Notary account connection", description = "Reports whether this local service has an account connection used for hosted tier admission and sharing.", responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn account_status(
     State(state): State<AdminState>,
 ) -> Result<Json<AccountConnectionResponse>, ApiError> {
-    let _credentials = state.publication_credentials.lock().await;
-    load_publication_auth_status().await
+    let _credentials = state.account_credentials.lock().await;
+    load_account_status().await
 }
 
-async fn load_publication_auth_status() -> Result<Json<AccountConnectionResponse>, ApiError> {
+async fn load_account_status() -> Result<Json<AccountConnectionResponse>, ApiError> {
     let status = auth::account_connection_status()
         .await
-        .map_err(|_| ApiError::internal("publication_auth_status_failed"))?;
+        .map_err(|_| ApiError::internal("account_status_failed"))?;
     Ok(Json(AccountConnectionResponse {
         signed_in: status.signed_in,
         github_login: status.github_login,
@@ -796,19 +791,19 @@ fn default_device_name() -> String {
     auth::DEFAULT_DEVICE_NAME.to_owned()
 }
 
-#[utoipa::path(post, path = "/v1/publication/auth", summary = "Connect an LLM Notary account", description = "Starts browser approval for an account connection used for hosted tier admission and trace publication. Browser approval is unavailable while the daemon uses an injected API key.", request_body = AccountConnectionRequest, responses((status = 202, body = AccountConnectionStartedResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn start_publication_auth(
+#[utoipa::path(post, path = "/v1/account", summary = "Connect an LLM Notary account", description = "Starts browser approval for an account connection used for hosted tier admission and sharing. Browser approval is unavailable while the daemon uses an injected API key.", request_body = AccountConnectionRequest, responses((status = 202, body = AccountConnectionStartedResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn start_account_connection(
     State(state): State<AdminState>,
     Json(body): Json<AccountConnectionRequest>,
 ) -> Result<(StatusCode, Json<AccountConnectionStartedResponse>), ApiError> {
     if auth::api_key_mode_active()
-        .map_err(|_| ApiError::internal("publication_auth_configuration_failed"))?
+        .map_err(|_| ApiError::internal("account_connection_configuration_failed"))?
     {
         return Err(ApiError::api_key_mode());
     }
     let pending = auth::start_authorization(&body.api_origin, &body.device_name)
         .await
-        .map_err(|_| ApiError::internal("publication_auth_start_failed"))?;
+        .map_err(|_| ApiError::internal("account_connection_start_failed"))?;
     let response = AccountConnectionStartedResponse {
         request_id: pending.request_id.clone(),
         user_code: pending.user_code.clone(),
@@ -825,8 +820,8 @@ async fn start_publication_auth(
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
-#[utoipa::path(get, path = "/v1/publication/auth/{request_id}", summary = "Poll account authorization", description = "Checks a pending LLM Notary account approval after its required polling interval.", params(("request_id" = String, Path)), responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn poll_publication_auth(
+#[utoipa::path(get, path = "/v1/account/{request_id}", summary = "Poll account authorization", description = "Checks a pending LLM Notary account approval after its required polling interval.", params(("request_id" = String, Path)), responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn poll_account_connection(
     State(state): State<AdminState>,
     Path(request_id): Path<String>,
 ) -> Result<Json<AccountConnectionResponse>, ApiError> {
@@ -845,10 +840,10 @@ async fn poll_publication_auth(
         .get(&request_id)
         .cloned()
         .ok_or_else(|| ApiError::not_found("authorization_not_found"))?;
-    let _credentials = state.publication_credentials.lock().await;
+    let _credentials = state.account_credentials.lock().await;
     match auth::poll_authorization(&pending)
         .await
-        .map_err(|_| ApiError::internal("publication_auth_poll_failed"))?
+        .map_err(|_| ApiError::internal("account_connection_poll_failed"))?
     {
         auth::AuthorizationPoll::Pending => Ok(Json(AccountConnectionResponse {
             signed_in: false,
@@ -863,68 +858,105 @@ async fn poll_publication_auth(
                 .lock()
                 .await
                 .remove(&request_id);
-            load_publication_auth_status().await
+            load_account_status().await
         }
     }
 }
 
-#[utoipa::path(delete, path = "/v1/publication/auth", summary = "Disconnect the LLM Notary account", description = "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.", responses((status = 204, description = "Account disconnected; hosted sessions return to public access"), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn end_publication_auth(State(state): State<AdminState>) -> Result<StatusCode, ApiError> {
-    let _credentials = state.publication_credentials.lock().await;
+#[utoipa::path(delete, path = "/v1/account", summary = "Disconnect the LLM Notary account", description = "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.", responses((status = 204, description = "Account disconnected; hosted sessions return to public access"), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn end_account_connection(State(state): State<AdminState>) -> Result<StatusCode, ApiError> {
+    let _credentials = state.account_credentials.lock().await;
+    if auth::api_key_mode_active()
+        .map_err(|_| ApiError::internal("account_connection_configuration_failed"))?
+    {
+        return Err(ApiError::api_key_mode());
+    }
     auth::logout_for_service()
         .await
-        .map_err(|_| ApiError::internal("publication_logout_failed"))?;
+        .map_err(|_| ApiError::internal("account_disconnect_failed"))?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/publications", summary = "Publish a finalized trace", description = "Verifies one finalized capture locally, uploads only its publication archive, and returns the durable publication job.", params(("capture_id" = String, Path)), responses((status = 202, body = PublicationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn publish_capture(
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+enum ShareVisibility {
+    Unlisted,
+    Listed,
+}
+
+impl From<ShareVisibility> for publish::ShareVisibility {
+    fn from(value: ShareVisibility) -> Self {
+        match value {
+            ShareVisibility::Unlisted => Self::Unlisted,
+            ShareVisibility::Listed => Self::Listed,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct CreateShareRequest {
+    visibility: ShareVisibility,
+}
+
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/shares", summary = "Share a finalized verified session", description = "Verifies one finalized capture locally, uploads the exact safe public package, and returns a durable share.", params(("capture_id" = String, Path)), request_body = CreateShareRequest, responses((status = 202, body = ShareResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn share_capture(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
-) -> Result<(StatusCode, Json<PublicationResponse>), ApiError> {
+    Json(body): Json<CreateShareRequest>,
+) -> Result<(StatusCode, Json<ShareResponse>), ApiError> {
     validate_id(&capture_id, "cap-")?;
     let path = finalized_path(&state.catalog, &capture_id).await?;
-    let _credentials = state.publication_credentials.lock().await;
-    let (publication, verified_capture_id, _) =
-        publish::publish_package(&path, state.config.notary.public_key.as_deref())
-            .await
-            .map_err(|_| ApiError::internal("publication_failed"))?;
+    let _credentials = state.account_credentials.lock().await;
+    let (share, verified_capture_id, _) = publish::share_package(
+        &path,
+        state.config.notary.public_key.as_deref(),
+        body.visibility.into(),
+    )
+    .await
+    .map_err(|_| ApiError::internal("share_failed"))?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(PublicationResponse {
+        Json(ShareResponse {
             capture_id: verified_capture_id,
-            status_url: format!("/v1/publications/{}", publication.job_id),
-            job_id: publication.job_id,
-            state: publication.state,
+            status_url: format!("/v1/shares/{}", share.share_id),
+            share_id: share.share_id,
+            state: share.state,
+            visibility: body.visibility,
+            share_url: share.share_url,
+            package_url: share.package_url,
         }),
     ))
 }
 
-#[utoipa::path(get, path = "/v1/publications/{job_id}", summary = "Get publication status", description = "Returns the latest admission state and public artifact links for a publication job.", params(("job_id" = String, Path)), responses((status = 200, body = PublicationStatusResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn publication_status(
+#[utoipa::path(get, path = "/v1/shares/{share_id}", summary = "Get share status", description = "Returns the latest admission state and stable links for a share.", params(("share_id" = String, Path)), responses((status = 200, body = ShareStatusResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn share_status(
     State(state): State<AdminState>,
-    Path(job_id): Path<String>,
-) -> Result<Json<PublicationStatusResponse>, ApiError> {
-    validate_id(&job_id, "")?;
-    let _credentials = state.publication_credentials.lock().await;
-    let status = publish::publication_status(&job_id)
+    Path(share_id): Path<String>,
+) -> Result<Json<ShareStatusResponse>, ApiError> {
+    validate_id(&share_id, "")?;
+    let _credentials = state.account_credentials.lock().await;
+    let status = publish::share_status(&share_id)
         .await
         .map_err(|error| match error {
-            publish::PublicationStatusError::Authentication => {
-                ApiError::publication_authentication_required()
+            publish::ShareStatusError::Authentication => {
+                ApiError::account_authentication_required()
             }
-            publish::PublicationStatusError::NotFound => {
-                ApiError::not_found("publication_not_found")
-            }
-            publish::PublicationStatusError::Unavailable => {
-                ApiError::service_unavailable("publication_status_unavailable")
+            publish::ShareStatusError::NotFound => ApiError::not_found("share_not_found"),
+            publish::ShareStatusError::Unavailable => {
+                ApiError::service_unavailable("share_status_unavailable")
             }
         })?;
-    Ok(Json(PublicationStatusResponse {
-        job_id: status.job_id,
+    Ok(Json(ShareStatusResponse {
+        share_id: status.share_id,
         state: status.state,
         failure_code: status.failure_code,
-        trace_url: status.trace_url,
+        visibility: match status.visibility {
+            publish::ShareVisibility::Unlisted => ShareVisibility::Unlisted,
+            publish::ShareVisibility::Listed => ShareVisibility::Listed,
+        },
+        share_url: status.share_url,
+        package_url: status.package_url,
     }))
 }
 
@@ -1475,19 +1507,24 @@ struct AccountConnectionStartedResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct PublicationResponse {
+struct ShareResponse {
     capture_id: String,
-    job_id: String,
+    share_id: String,
     state: String,
+    visibility: ShareVisibility,
     status_url: String,
+    share_url: Option<String>,
+    package_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct PublicationStatusResponse {
-    job_id: String,
+struct ShareStatusResponse {
+    share_id: String,
     state: String,
     failure_code: Option<String>,
-    trace_url: Option<String>,
+    visibility: ShareVisibility,
+    share_url: Option<String>,
+    package_url: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1557,10 +1594,10 @@ impl ApiError {
             message: "The finalized trace did not verify",
         }
     }
-    fn publication_authentication_required() -> Self {
+    fn account_authentication_required() -> Self {
         Self {
             status: StatusCode::CONFLICT,
-            code: "publication_authentication_required",
+            code: "account_authentication_required",
             message: "LLM Notary account connection must be renewed",
         }
     }
@@ -1568,7 +1605,7 @@ impl ApiError {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
             code,
-            message: "The publication service is temporarily unavailable",
+            message: "The sharing service is temporarily unavailable",
         }
     }
     fn internal(code: &'static str) -> Self {
@@ -1816,10 +1853,10 @@ mod tests {
             "/v1/captures/{capture_id}/trace:verify",
             "/v1/events",
             "/v1/session",
-            "/v1/publication/auth",
-            "/v1/publication/auth/{request_id}",
-            "/v1/captures/{capture_id}/publications",
-            "/v1/publications/{job_id}",
+            "/v1/account",
+            "/v1/account/{request_id}",
+            "/v1/captures/{capture_id}/shares",
+            "/v1/shares/{share_id}",
         ] {
             assert!(body["paths"].get(path).is_some(), "OpenAPI missing {path}");
         }
@@ -1836,12 +1873,12 @@ mod tests {
             ("/v1/captures/{capture_id}/package", "get"),
             ("/v1/captures/{capture_id}/trace:verify", "post"),
             ("/v1/events", "get"),
-            ("/v1/publication/auth", "get"),
-            ("/v1/publication/auth", "post"),
-            ("/v1/publication/auth", "delete"),
-            ("/v1/publication/auth/{request_id}", "get"),
-            ("/v1/captures/{capture_id}/publications", "post"),
-            ("/v1/publications/{job_id}", "get"),
+            ("/v1/account", "get"),
+            ("/v1/account", "post"),
+            ("/v1/account", "delete"),
+            ("/v1/account/{request_id}", "get"),
+            ("/v1/captures/{capture_id}/shares", "post"),
+            ("/v1/shares/{share_id}", "get"),
             ("/v1/session", "delete"),
         ] {
             assert!(

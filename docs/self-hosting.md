@@ -189,7 +189,7 @@ closed if the coordinator is unavailable.
 
 The shared admission service token authenticates only the notary's internal
 redeem, renew, and release calls. It is never sent to local clients and is
-unrelated to provider credentials or publication access tokens.
+unrelated to provider credentials or session-sharing access tokens.
 
 ## Storage and database operations
 
@@ -198,8 +198,8 @@ Keep it private; public reads pass through the API after integrity checks.
 
 Use forward-only expand/contract database migrations so the immediately
 previous API image stays usable after a rollback. See [Database
-operations](database-operations.md) and [Publication admission
-v1](publication-admission-v1.md).
+operations](database-operations.md) and [Share admission
+v1](share-admission-v1.md).
 
 ## Observability
 

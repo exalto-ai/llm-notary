@@ -204,13 +204,13 @@ describe('local evidence dashboard', () => {
     expect(traceJson).toContain(capture.prompt_preview);
     expect(traceJson).toContain(capture.output_preview);
     expect((await api.verify(captureId)).capture_id).toBe(captureId);
-    expect((await api.publish(captureId)).capture_id).toBe(captureId);
-    const initialPublication = await api.publicationStatus('pub-job-fixture');
-    expect(initialPublication.state).toBe('queued');
-    expect((await api.publicationStatus('pub-job-fixture')).state).toBe('verifying');
-    const admitted = await api.publicationStatus('pub-job-fixture');
+    expect((await api.share(captureId, 'unlisted')).capture_id).toBe(captureId);
+    const initialShare = await api.shareStatus('share-fixture');
+    expect(initialShare.state).toBe('queued');
+    expect((await api.shareStatus('share-fixture')).state).toBe('verifying');
+    const admitted = await api.shareStatus('share-fixture');
     expect(admitted.state).toBe('admitted');
-    expect(admitted.trace_url).toContain(captureId);
+    expect(admitted.share_url).toContain('/s/share-fixture');
 
     renderDashboard(`/traces/${captureId}`, api);
     await expect.element(page.getByRole('heading', { name: captureId })).toBeVisible();
@@ -219,48 +219,51 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText(capture.output_preview)).toBeVisible();
   });
 
-  test('keeps a pending publication authorization visible until approval', async () => {
+  test('keeps a pending account authorization visible until approval and defaults to Unlisted', async () => {
     const api = createFixtureApi();
     let polls = 0;
-    let publishedCapture: string | null = null;
-    const publicationApi: LocalApi = {
+    let sharedCapture: string | null = null;
+    let chosenVisibility: string | null = null;
+    const sharingApi: LocalApi = {
       ...api,
-      startPublicationAuth: async () => ({
-        request_id: 'auth-test', user_code: 'TEST-123', verification_uri_complete: '#/publishing',
+      account: async () => ({ signed_in: false }),
+      startAccountConnection: async () => ({
+        request_id: 'auth-test', user_code: 'TEST-123', verification_uri_complete: '#/sharing',
         expires_in_seconds: 600, poll_interval_seconds: 0, state: 'pending'
       }),
-      pollPublicationAuth: async () => ++polls === 1
+      pollAccountConnection: async () => ++polls === 1
         ? { signed_in: false }
         : {
             signed_in: true, github_login: 'approved-user', device_name: 'Local dashboard',
             credential_kind: 'cli_session', credential_name: 'Local dashboard'
           },
-      publish: async (captureId) => {
-        publishedCapture = captureId;
-        return { capture_id: captureId, job_id: 'pub-job-fixture', state: 'queued', status_url: '/v1/publications/pub-job-fixture' };
+      share: async (captureId, visibility) => {
+        sharedCapture = captureId;
+        chosenVisibility = visibility;
+        return { capture_id: captureId, share_id: 'share-fixture', state: 'queued', visibility, status_url: '/v1/shares/share-fixture', share_url: null, package_url: null };
       }
     };
-    renderDashboard('/publishing', publicationApi);
-    await page.getByRole('button', { name: 'Begin authorization' }).click();
+    renderDashboard('/sharing', sharingApi);
+    await page.getByRole('button', { name: 'Connect account' }).click();
     await expect.element(page.getByText('TEST-123')).toBeVisible();
     await expect.element(page.getByRole('link', { name: 'Open approval page' })).not.toBeInTheDocument();
-    await expect.element(page.getByRole('button', { name: 'Approve demo session' })).toBeEnabled();
-    await page.getByRole('button', { name: 'Approve demo session' }).click();
+    await expect.element(page.getByRole('button', { name: 'Check approval' })).toBeEnabled();
+    await page.getByRole('button', { name: 'Check approval' }).click();
     await expect.element(page.getByText('TEST-123')).toBeVisible();
-    await page.getByRole('button', { name: 'Approve demo session' }).click();
-    await expect.element(page.getByRole('heading', { name: 'approved-user' })).toBeVisible();
-    await page.getByRole('button', { name: 'Review publication' }).click();
-    await page.getByRole('button', { name: 'Publish trace' }).click();
-    await expect.element(page.getByText('pub-job-fixture')).toBeVisible();
-    await expect.element(page.getByText('cap-20260727-research-brief')).toBeVisible();
+    await page.getByRole('button', { name: 'Check approval' }).click();
+    await expect.element(page.getByText('approved-user')).toBeVisible();
+    await page.getByRole('button', { name: 'Share trace' }).click();
+    await page.getByRole('button', { name: 'Create share' }).click();
+    await expect.element(page.getByText('share-fixture')).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Refresh status' })).toBeVisible();
-    expect(publishedCapture).toBe('cap-20260727-research-brief');
+    expect(sharedCapture).toBe('cap-20260727-research-brief');
+    expect(chosenVisibility).toBe('unlisted');
   });
 
   test('identifies API-key mode without offering browser authorization', async () => {
     const api: LocalApi = {
       ...createFixtureApi(),
-      publicationAuth: async () => ({
+      account: async () => ({
         signed_in: true,
         github_login: 'automation-user',
         credential_kind: 'api_key',
@@ -268,28 +271,30 @@ describe('local evidence dashboard', () => {
       })
     };
 
-    renderDashboard('/publishing', api);
-    await expect.element(page.getByRole('heading', { name: 'automation-user' })).toBeVisible();
+    renderDashboard('/sharing', api);
+    await expect.element(page.getByText('automation-user')).toBeVisible();
     await expect.element(page.getByText('Nightly CI')).toBeVisible();
     await expect.element(page.getByText('API key', { exact: true })).toBeVisible();
-    await expect.element(page.getByRole('button', { name: 'Begin authorization' })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Connect account' })).not.toBeInTheDocument();
   });
 
-  test('completes the documentation publication flow without external services', async () => {
-    renderDashboard('/publishing');
-    await page.getByRole('button', { name: 'Begin authorization' }).click();
-    await expect.element(page.getByText('This fixture stays in the browser and does not contact GitHub.')).toBeVisible();
-    await page.getByRole('button', { name: 'Approve demo session' }).click();
-    await expect.element(page.getByRole('heading', { name: 'fixture-user' })).toBeVisible();
-    await page.getByRole('button', { name: 'Review publication' }).click();
-    await page.getByRole('button', { name: 'Publish trace' }).click();
+  test('completes the documentation sharing flow without external services', async () => {
+    renderDashboard('/sharing');
+    await expect.element(page.getByText('Sample data')).toBeVisible();
+    await expect.element(page.getByText('sample-user')).toBeVisible();
+    await expect.element(page.getByText(/demo account/i)).not.toBeInTheDocument();
+    await expect.element(page.getByRole('heading', { name: 'Prompt and response' })).toBeVisible();
+    await page.getByRole('button', { name: 'Share trace' }).click();
+    await expect.element(page.getByText('Anyone with the URL can read', { exact: false })).toBeVisible();
+    await page.getByRole('button', { name: 'Create share' }).click();
     await expect.element(page.getByText('queued', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Refresh status' }).click();
     await expect.element(page.getByText('verifying', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Refresh status' }).click();
     await expect.element(page.getByText('admitted', { exact: true })).toBeVisible();
-    await expect.element(page.getByText('It did not upload data.', { exact: false })).toBeVisible();
-    await page.getByRole('button', { name: 'Inspect admitted fixture' }).click();
+    await expect.element(page.getByRole('heading', { name: 'Share ready' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Copy URL' })).toBeVisible();
+    await page.getByRole('button', { name: 'Open local trace' }).click();
     await expect.element(page.getByRole('heading', { name: 'Prompt and response' })).toBeVisible();
   });
 
@@ -325,7 +330,7 @@ describe('local evidence dashboard', () => {
     renderDashboard();
     await page.getByRole('button', { name: 'Open navigation' }).click();
     await expect.element(page.getByRole('dialog')).toBeVisible();
-    await expect.element(page.getByText('Documentation fixture')).not.toBeInTheDocument();
+    await expect.element(page.getByText('Sample data')).toBeVisible();
     await page.getByRole('dialog').getByRole('button', { name: /Activity/ }).click();
     await expect.element(page.getByRole('combobox', { name: 'Activity severity' })).toBeVisible();
   });

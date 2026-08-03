@@ -73,8 +73,8 @@ must remain vault-encrypted and local.
 - Deferred private proof generation and deterministic `.llmtrace` archives.
 - Local CLI, dashboard, SQLite capture catalog, and versioned loopback REST
   API.
-- Optional consent-based publication of the canonical trace after server-side
-  admission verifies its source package.
+- Optional consent-based sharing of a finalized session after server-side
+  admission verifies and safety-scans its exact source package.
 
 WebSocket proxying, provider-native response signatures, multi-notary proofs,
 and a public transparency log are outside the current prototype.
@@ -202,7 +202,7 @@ the router and committed at
   and the `llm-notary` command client.
 - `crates/llm-notary-server/`: remote notary service.
 - `crates/llm-notary-platform/`: hosted identity, admission, verification,
-  publication, and Library APIs.
+  session-sharing, and Library APIs.
 - `js/app/`: public SPA and the embedded local dashboard source.
 - `vendor/tlsn/` and `vendor/tlsn-utils/`: pinned, locally patched upstream
   dependencies.

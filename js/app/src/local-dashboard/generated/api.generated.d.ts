@@ -44,6 +44,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get the LLM Notary account connection
+         * @description Reports whether this local service has an account connection used for hosted tier admission and sharing.
+         */
+        get: operations["account_status"];
+        put?: never;
+        /**
+         * Connect an LLM Notary account
+         * @description Starts browser approval for an account connection used for hosted tier admission and sharing. Browser approval is unavailable while the daemon uses an injected API key.
+         */
+        post: operations["start_account_connection"];
+        /**
+         * Disconnect the LLM Notary account
+         * @description Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.
+         */
+        delete: operations["end_account_connection"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/account/{request_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Poll account authorization
+         * @description Checks a pending LLM Notary account approval after its required polling interval.
+         */
+        get: operations["poll_account_connection"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/captures": {
         parameters: {
             query?: never;
@@ -124,7 +172,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/captures/{capture_id}/publications": {
+    "/v1/captures/{capture_id}/shares": {
         parameters: {
             query?: never;
             header?: never;
@@ -134,10 +182,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Publish a finalized trace
-         * @description Verifies one finalized capture locally, uploads only its publication archive, and returns the durable publication job.
+         * Share a finalized verified session
+         * @description Verifies one finalized capture locally, uploads the exact safe public package, and returns a durable share.
          */
-        post: operations["publish_capture"];
+        post: operations["share_capture"];
         delete?: never;
         options?: never;
         head?: never;
@@ -284,74 +332,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/publication/auth": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get the LLM Notary account connection
-         * @description Reports whether this local service has an account connection used for hosted tier admission and trace publication.
-         */
-        get: operations["publication_auth_status"];
-        put?: never;
-        /**
-         * Connect an LLM Notary account
-         * @description Starts browser approval for an account connection used for hosted tier admission and trace publication. Browser approval is unavailable while the daemon uses an injected API key.
-         */
-        post: operations["start_publication_auth"];
-        /**
-         * Disconnect the LLM Notary account
-         * @description Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.
-         */
-        delete: operations["end_publication_auth"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/publication/auth/{request_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Poll account authorization
-         * @description Checks a pending LLM Notary account approval after its required polling interval.
-         */
-        get: operations["poll_publication_auth"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/publications/{job_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get publication status
-         * @description Returns the latest admission state and public artifact links for a publication job.
-         */
-        get: operations["publication_status"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/session": {
         parameters: {
             query?: never;
@@ -371,6 +351,26 @@ export interface paths {
          * @description Deletes the current browser session and expires its local cookie.
          */
         delete: operations["end_session"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/shares/{share_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get share status
+         * @description Returns the latest admission state and stable links for a share.
+         */
+        get: operations["share_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -480,6 +480,9 @@ export interface components {
             /** Format: int64 */
             total_captures: number;
         };
+        CreateShareRequest: {
+            visibility: components["schemas"]["ShareVisibility"];
+        };
         ErrorBody: {
             code: string;
             message: string;
@@ -572,18 +575,25 @@ export interface components {
             started_at_unix_ms?: number | null;
             state: string;
         };
-        PublicationResponse: {
+        ShareResponse: {
             capture_id: string;
-            job_id: string;
+            package_url?: string | null;
+            share_id: string;
+            share_url?: string | null;
             state: string;
             status_url: string;
+            visibility: components["schemas"]["ShareVisibility"];
         };
-        PublicationStatusResponse: {
+        ShareStatusResponse: {
             failure_code?: string | null;
-            job_id: string;
+            package_url?: string | null;
+            share_id: string;
+            share_url?: string | null;
             state: string;
-            trace_url?: string | null;
+            visibility: components["schemas"]["ShareVisibility"];
         };
+        /** @enum {string} */
+        ShareVisibility: "unlisted" | "listed";
         StatusResponse: {
             admin_listener: string;
             counts: components["schemas"]["CountsResponse"];
@@ -649,6 +659,143 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    account_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountConnectionResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    start_account_connection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AccountConnectionRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountConnectionStartedResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    end_account_connection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Account disconnected; hosted sessions return to public access */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    poll_account_connection: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountConnectionResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
         };
     };
@@ -814,7 +961,7 @@ export interface operations {
             };
         };
     };
-    publish_capture: {
+    share_capture: {
         parameters: {
             query?: never;
             header?: never;
@@ -823,14 +970,18 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateShareRequest"];
+            };
+        };
         responses: {
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PublicationResponse"];
+                    "application/json": components["schemas"]["ShareResponse"];
                 };
             };
             401: {
@@ -1117,196 +1268,6 @@ export interface operations {
             };
         };
     };
-    publication_auth_status: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AccountConnectionResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    start_publication_auth: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AccountConnectionRequest"];
-            };
-        };
-        responses: {
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AccountConnectionStartedResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    end_publication_auth: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Account disconnected; hosted sessions return to public access */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    poll_publication_auth: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                request_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AccountConnectionResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    publication_status: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                job_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PublicationStatusResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
     start_session: {
         parameters: {
             query?: never;
@@ -1350,6 +1311,59 @@ export interface operations {
                 content?: never;
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    share_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                share_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareStatusResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

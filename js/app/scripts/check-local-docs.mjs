@@ -29,10 +29,10 @@ const expectedOperations = {
   '/v1/captures/{capture_id}/trace': { get: ['200', '401', '404'] },
   '/v1/captures/{capture_id}/trace:verify': { post: ['200', '401', '422'] },
   '/v1/events': { get: ['200', '400', '401'] },
-  '/v1/publication/auth': { get: ['200', '401'], post: ['202', '401', '409'], delete: ['204', '401', '409'] },
-  '/v1/publication/auth/{request_id}': { get: ['200', '401', '404'] },
-  '/v1/captures/{capture_id}/publications': { post: ['202', '401', '404'] },
-  '/v1/publications/{job_id}': { get: ['200', '401', '404', '409', '503'] }
+  '/v1/account': { get: ['200', '401'], post: ['202', '401', '409'], delete: ['204', '401', '409'] },
+  '/v1/account/{request_id}': { get: ['200', '401', '404'] },
+  '/v1/captures/{capture_id}/shares': { post: ['202', '401', '404'] },
+  '/v1/shares/{share_id}': { get: ['200', '401', '404', '409', '503'] }
 };
 
 const actualPaths = Object.keys(openapi.paths).sort();
@@ -68,7 +68,7 @@ const expectedParameters = {
   'GET /v1/captures': ['capture_state', 'finalization_state', 'limit', 'model', 'offset', 'provider', 'query'],
   'GET /v1/operations': ['capture_id', 'kind', 'limit', 'state'],
   'GET /v1/events': ['capture_id', 'created_after_unix_ms', 'cursor', 'event_type', 'limit', 'operation_id', 'severity'],
-  'GET /v1/publications/{job_id}': ['job_id']
+  'GET /v1/shares/{share_id}': ['share_id']
 };
 for (const [operation, expected] of Object.entries(expectedParameters)) {
   const [method, path] = operation.split(' ');
@@ -91,8 +91,8 @@ const expectedRequiredFields = {
   OperationAttemptResponse: ['attempt', 'state', 'started_at_unix_ms'],
   OperationResponse: ['operation_id', 'kind', 'state', 'attempt', 'attempt_history', 'created_at_unix_ms', 'retryable'],
   AccountConnectionStartedResponse: ['request_id', 'user_code', 'verification_uri_complete', 'expires_in_seconds', 'poll_interval_seconds', 'state'],
-  PublicationResponse: ['capture_id', 'job_id', 'state', 'status_url'],
-  PublicationStatusResponse: ['job_id', 'state'],
+  ShareResponse: ['capture_id', 'share_id', 'state', 'visibility', 'status_url'],
+  ShareStatusResponse: ['share_id', 'state', 'visibility'],
   TraceResponse: ['capture_id', 'manifest', 'trace'],
   VerificationResponse: ['capture_id', 'verified', 'verified_at_unix_ms', 'notary_key_id', 'trust_source']
 };
@@ -109,7 +109,9 @@ for (const term of ['202 Accepted', 'deduplicated', 'attempt_history', 'finaliza
 
 const screenshots = [
   'overview-light.png', 'captures-dark.png', 'finalization-retry.png',
-  'trace-verification.png', 'mobile-navigation.png', 'mobile-capture-detail.png'
+  'trace-verification.png', 'share-preview.png', 'share-confirmation.png',
+  'share-admitted.png', 'mobile-navigation.png', 'mobile-capture-detail.png',
+  'mobile-share-choice.png', 'mobile-share-preview.png'
 ];
 const dashboardGuide = readFileSync(resolve(repoRoot, 'docs/local-dashboard.md'), 'utf8');
 for (const file of screenshots) {
@@ -171,8 +173,8 @@ for (const file of consistencySources) {
 const publicDocs = readFileSync(resolve(appRoot, 'src/main.jsx'), 'utf8');
 if (!publicDocs.includes('cargo install --locked --path crates/llm-notary-client')
   || !publicDocs.includes('The JSON directory is not separately signed')
-  || !publicDocs.includes('"status_url":"/v1/publications/…"')) {
-  throw new Error('Public-site documentation is missing the source-install, trust-directory, or local publication-status boundary');
+  || !publicDocs.includes('"status_url":"/v1/shares/…"')) {
+  throw new Error('Public-site documentation is missing the source-install, trust-directory, or local share-status boundary');
 }
 
 for (const required of ['llm-notaryd', 'llm-notary status', 'llm-notary captures list', '--json']) {

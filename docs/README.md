@@ -15,7 +15,7 @@ Use the generated contract when prose and an installed service disagree.
 | Build and run the local service | [Getting started](getting-started.md) |
 | Understand the proof and trust assumptions | [Architecture and trust model](architecture.md) |
 | Connect an SDK or agent | [Provider and agent setup](provider-setup.md) |
-| Understand `.llmbundle`, `.llmtrace`, and public traces | [Artifact formats and verification](artifact-formats.md) |
+| Understand `.llmbundle`, `.llmtrace`, and shared sessions | [Artifact formats and verification](artifact-formats.md) |
 | Operate the daemon, CLI, or local REST API | [Local service and REST API](local-service.md) |
 | Use the visual local workflow | [Local dashboard](local-dashboard.md) |
 | Run CI, cron, or unattended hosts | [API keys for automation](api-key-automation.md) |
@@ -29,8 +29,8 @@ Use the generated contract when prose and an installed service disagree.
 | Rotate or revoke notary keys | [Notary key lifecycle](notary-key-lifecycle.md) |
 | Operate PostgreSQL or Neon | [Database operations](database-operations.md) |
 | Deploy the production Fly.io stack | [Fly.io deployment](../deploy/fly/README.md) |
-| Understand upload staging | [Publication intake API v1](publish-intake-v1.md) |
-| Understand admission and public storage | [Publication admission v1](publication-admission-v1.md) |
+| Understand upload staging | [Share intake API v1](share-intake-v1.md) |
+| Understand admission and public storage | [Share admission v1](share-admission-v1.md) |
 
 ## Contributors
 

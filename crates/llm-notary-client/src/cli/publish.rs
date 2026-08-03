@@ -13,12 +13,12 @@ use crate::{
     sha256_hex,
 };
 use anyhow::{Context, Result, anyhow, bail};
-use clap::Args;
+use clap::{Args, ValueEnum};
 use reqwest::{Method, Response, StatusCode, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 #[derive(Args, Debug)]
-pub struct PublishArgs {
+pub struct ShareArgs {
     /// One finalized `.llmtrace` package produced by LLM Notary.
     package: PathBuf,
 
@@ -26,32 +26,54 @@ pub struct PublishArgs {
     #[arg(long)]
     trusted_notary_key: Option<String>,
 
-    /// Print the job result as one JSON object.
+    /// Whether the share appears in the public Library index.
+    #[arg(long, value_enum, default_value_t = ShareVisibility::Unlisted)]
+    visibility: ShareVisibility,
+
+    /// Print the share result as one JSON object.
     #[arg(long)]
     json: bool,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum ShareVisibility {
+    Unlisted,
+    Listed,
+}
+
+impl ShareVisibility {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Unlisted => "unlisted",
+            Self::Listed => "listed",
+        }
+    }
+}
+
 #[derive(Serialize)]
-struct CreatePublishJob<'a> {
+struct CreateShare<'a> {
     archive_format: &'a str,
     size_bytes: u64,
     sha256: &'a str,
-    visibility: &'static str,
+    visibility: &'a str,
 }
 
 #[derive(Deserialize)]
-struct CreatePublishJobResponse {
-    share: PublishJob,
+struct CreateShareResponse {
+    share: ShareJob,
     upload: Option<UploadInstructions>,
 }
 
 #[derive(Clone, Deserialize)]
-struct PublishJob {
+struct ShareJob {
     id: String,
     state: String,
+    visibility: ShareVisibility,
     status_url: String,
     failure_code: Option<String>,
     share_url: Option<String>,
+    package_url: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -67,46 +89,57 @@ struct ApiErrorResponse {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct PublishOutput {
-    pub(crate) job_id: String,
+pub(crate) struct ShareOutput {
+    pub(crate) share_id: String,
     pub(crate) state: String,
     pub(crate) status_url: String,
+    pub(crate) visibility: ShareVisibility,
+    pub(crate) share_url: Option<String>,
+    pub(crate) package_url: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct PublicationStatus {
-    pub(crate) job_id: String,
+pub(crate) struct ShareStatus {
+    pub(crate) share_id: String,
     pub(crate) state: String,
     pub(crate) failure_code: Option<String>,
-    pub(crate) trace_url: Option<String>,
+    pub(crate) share_url: Option<String>,
+    pub(crate) package_url: Option<String>,
+    pub(crate) visibility: ShareVisibility,
 }
 
 #[derive(Debug)]
-pub(crate) enum PublicationStatusError {
+pub(crate) enum ShareStatusError {
     Authentication,
     NotFound,
     Unavailable,
 }
 
-pub async fn run(args: PublishArgs) -> Result<()> {
-    let (output, capture_id, key_id) =
-        publish_package(&args.package, args.trusted_notary_key.as_deref()).await?;
+pub async fn run(args: ShareArgs) -> Result<()> {
+    let (output, capture_id, key_id) = share_package(
+        &args.package,
+        args.trusted_notary_key.as_deref(),
+        args.visibility,
+    )
+    .await?;
     if args.json {
         println!("{}", serde_json::to_string(&output)?);
     } else {
         println!("submitted verified trace package: {capture_id}");
         println!("trusted notary key: {key_id}");
-        println!("publication job: {}", output.job_id);
+        println!("share: {}", output.share_id);
         println!("state: {}", output.state);
         println!("status: {}", output.status_url);
+        println!("visibility: {}", output.visibility.as_str());
     }
     Ok(())
 }
 
-pub(crate) async fn publish_package(
+pub(crate) async fn share_package(
     package: &std::path::Path,
     trusted_key: Option<&str>,
-) -> Result<(PublishOutput, String, String)> {
+    visibility: ShareVisibility,
+) -> Result<(ShareOutput, String, String)> {
     reject_bundle_path(package)?;
     // Snapshot the finalized package before verification. Verification and
     // upload operate on these exact immutable bytes even if the source file
@@ -132,84 +165,102 @@ pub(crate) async fn publish_package(
     let archive_sha256 = sha256_hex(&archive);
 
     // Everything above is intentionally local so malformed packages never
-    // create a publication job. Authenticate first to recover the configured
+    // create a share. Authenticate first to recover the configured
     // API origin, then refresh that origin's directory before any upload.
     let authenticated = auth::authenticate().await?;
     refresh_notary_directory_from(&authenticated.origin).await?;
     notary::cached_key_at(&trusted_notary_key, verified.manifest.created_at_unix_ms())
         .context("the package notary is no longer trusted; nothing was uploaded")?;
-    let job = submit_archive(
+    let share = submit_archive(
         &authenticated,
         &archive,
         &archive_sha256,
-        &archive_idempotency_key(&archive_sha256),
+        &archive_idempotency_key(&archive_sha256, visibility),
+        visibility,
     )
     .await?;
-    let status_url = absolute_status_url(&authenticated.origin, &job.status_url)?;
-    let output = PublishOutput {
-        job_id: job.id,
-        state: job.state,
+    let status_url = absolute_status_url(&authenticated.origin, &share.status_url)?;
+    let share_url = share
+        .share_url
+        .as_deref()
+        .map(|value| absolute_same_origin_url(&authenticated.origin, value))
+        .transpose()?;
+    let package_url = share
+        .package_url
+        .as_deref()
+        .map(|value| absolute_same_origin_url(&authenticated.origin, value))
+        .transpose()?;
+    let output = ShareOutput {
+        share_id: share.id,
+        state: share.state,
         status_url,
+        visibility: share.visibility,
+        share_url,
+        package_url,
     };
     Ok((output, verified.manifest.capture_id().to_owned(), key_id))
 }
 
-pub(crate) async fn publication_status(
-    job_id: &str,
-) -> std::result::Result<PublicationStatus, PublicationStatusError> {
+pub(crate) async fn share_status(
+    share_id: &str,
+) -> std::result::Result<ShareStatus, ShareStatusError> {
     let authenticated = auth::authenticate_for_publication_status()
         .await
         .map_err(|error| match error {
-            auth::PublicationAuthenticationError::Required => {
-                PublicationStatusError::Authentication
-            }
-            auth::PublicationAuthenticationError::Unavailable => {
-                PublicationStatusError::Unavailable
-            }
+            auth::PublicationAuthenticationError::Required => ShareStatusError::Authentication,
+            auth::PublicationAuthenticationError::Unavailable => ShareStatusError::Unavailable,
         })?;
     let client = http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .map_err(|_| PublicationStatusError::Unavailable)?;
+        .map_err(|_| ShareStatusError::Unavailable)?;
     let response = client
         .get(
             authenticated
                 .origin
-                .api_url(&format!("/api/shares/{job_id}")),
+                .api_url(&format!("/api/shares/{share_id}")),
         )
         .bearer_auth(&authenticated.access_token)
         .send()
         .await
-        .map_err(|_| PublicationStatusError::Unavailable)?;
-    if let Some(error) = publication_status_http_error(response.status()) {
+        .map_err(|_| ShareStatusError::Unavailable)?;
+    if let Some(error) = share_status_http_error(response.status()) {
         return Err(error);
     }
-    let job = response
-        .json::<PublishJob>()
+    let share = response
+        .json::<ShareJob>()
         .await
-        .map_err(|_| PublicationStatusError::Unavailable)?;
-    if job.id != job_id {
-        return Err(PublicationStatusError::Unavailable);
+        .map_err(|_| ShareStatusError::Unavailable)?;
+    if share.id != share_id {
+        return Err(ShareStatusError::Unavailable);
     }
-    let trace_url = job
+    let share_url = share
         .share_url
         .as_deref()
         .map(|value| absolute_same_origin_url(&authenticated.origin, value))
         .transpose()
-        .map_err(|_| PublicationStatusError::Unavailable)?;
-    Ok(PublicationStatus {
-        job_id: job.id,
-        state: job.state,
-        failure_code: job.failure_code,
-        trace_url,
+        .map_err(|_| ShareStatusError::Unavailable)?;
+    let package_url = share
+        .package_url
+        .as_deref()
+        .map(|value| absolute_same_origin_url(&authenticated.origin, value))
+        .transpose()
+        .map_err(|_| ShareStatusError::Unavailable)?;
+    Ok(ShareStatus {
+        share_id: share.id,
+        state: share.state,
+        failure_code: share.failure_code,
+        share_url,
+        package_url,
+        visibility: share.visibility,
     })
 }
 
-fn publication_status_http_error(status: StatusCode) -> Option<PublicationStatusError> {
+fn share_status_http_error(status: StatusCode) -> Option<ShareStatusError> {
     match status {
-        StatusCode::NOT_FOUND => Some(PublicationStatusError::NotFound),
-        StatusCode::UNAUTHORIZED => Some(PublicationStatusError::Authentication),
-        status if !status.is_success() => Some(PublicationStatusError::Unavailable),
+        StatusCode::NOT_FOUND => Some(ShareStatusError::NotFound),
+        StatusCode::UNAUTHORIZED => Some(ShareStatusError::Authentication),
+        status if !status.is_success() => Some(ShareStatusError::Unavailable),
         _ => None,
     }
 }
@@ -219,35 +270,36 @@ async fn submit_archive(
     archive: &[u8],
     archive_sha256: &str,
     idempotency_key: &str,
-) -> Result<PublishJob> {
+    visibility: ShareVisibility,
+) -> Result<ShareJob> {
     let client = http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
-        .context("building publication client")?;
-    let created = api_json::<CreatePublishJobResponse>(
+        .context("building share client")?;
+    let created = api_json::<CreateShareResponse>(
         client
             .post(authenticated.origin.api_url("/api/shares"))
             .bearer_auth(&authenticated.access_token)
             .header("Idempotency-Key", idempotency_key)
-            .json(&CreatePublishJob {
+            .json(&CreateShare {
                 archive_format: ARCHIVE_FORMAT,
                 size_bytes: archive.len() as u64,
                 sha256: archive_sha256,
-                visibility: "unlisted",
+                visibility: visibility.as_str(),
             })
             .send()
             .await
-            .context("creating publication job")?,
-        "creating publication job",
+            .context("creating share")?,
+        "creating share",
     )
     .await?;
 
     if created.share.state == "uploading" {
         let upload = created
             .upload
-            .ok_or_else(|| anyhow!("publication API omitted upload instructions"))?;
+            .ok_or_else(|| anyhow!("share API omitted upload instructions"))?;
         upload_archive(&client, &authenticated.origin, upload, archive).await?;
-        api_json::<PublishJob>(
+        api_json::<ShareJob>(
             client
                 .post(
                     authenticated
@@ -257,15 +309,15 @@ async fn submit_archive(
                 .bearer_auth(&authenticated.access_token)
                 .send()
                 .await
-                .context("completing publication upload")?,
-            "completing publication upload",
+                .context("completing share upload")?,
+            "completing share upload",
         )
         .await?;
     } else if created.upload.is_some() {
-        bail!("publication API returned upload instructions for a non-uploading job");
+        bail!("share API returned upload instructions for a non-uploading share");
     }
 
-    api_json::<PublishJob>(
+    api_json::<ShareJob>(
         client
             .get(
                 authenticated
@@ -275,13 +327,13 @@ async fn submit_archive(
             .bearer_auth(&authenticated.access_token)
             .send()
             .await
-            .context("polling publication job")?,
-        "polling publication job",
+            .context("polling share")?,
+        "polling share",
     )
     .await
     .with_context(|| {
         format!(
-            "publication job {} was uploaded and completed, but status polling failed",
+            "share {} was uploaded and completed, but status polling failed",
             created.share.id
         )
     })
@@ -294,21 +346,21 @@ async fn upload_archive(
     archive: &[u8],
 ) -> Result<()> {
     if instructions.method != Method::PUT.as_str() {
-        bail!("publication API returned an unsupported upload method");
+        bail!("share API returned an unsupported upload method");
     }
     let url = validated_upload_url(api_origin, &instructions.url)?;
     let mut headers = header::HeaderMap::new();
     for (name, value) in instructions.headers {
         let name = header::HeaderName::from_bytes(name.as_bytes())
-            .context("publication API returned an invalid upload header name")?;
+            .context("share API returned an invalid upload header name")?;
         if matches!(
             name,
             header::AUTHORIZATION | header::COOKIE | header::HOST | header::PROXY_AUTHORIZATION
         ) {
-            bail!("publication API returned a forbidden upload header");
+            bail!("share API returned a forbidden upload header");
         }
         let value = header::HeaderValue::from_str(&value)
-            .context("publication API returned an invalid upload header value")?;
+            .context("share API returned an invalid upload header value")?;
         headers.append(name, value);
     }
     if headers
@@ -316,14 +368,14 @@ async fn upload_archive(
         .and_then(|value| value.to_str().ok())
         != Some(ARCHIVE_CONTENT_TYPE)
     {
-        bail!("publication API returned the wrong upload content type");
+        bail!("share API returned the wrong upload content type");
     }
     if headers
         .get(header::CONTENT_LENGTH)
         .and_then(|value| value.to_str().ok())
         != Some(archive.len().to_string().as_str())
     {
-        bail!("publication API returned the wrong upload content length");
+        bail!("share API returned the wrong upload content length");
     }
 
     // Never attach the presigned URL to an error: its query is a temporary
@@ -336,31 +388,27 @@ async fn upload_archive(
         .await
     {
         Ok(response) => response,
-        Err(error) if error.is_timeout() => bail!("publication object upload timed out"),
-        Err(_) => bail!("publication object upload request failed"),
+        Err(error) if error.is_timeout() => bail!("share object upload timed out"),
+        Err(_) => bail!("share object upload request failed"),
     };
     if !response.status().is_success() {
-        bail!(
-            "publication object upload failed with HTTP {}",
-            response.status()
-        );
+        bail!("share object upload failed with HTTP {}", response.status());
     }
     Ok(())
 }
 
-fn archive_idempotency_key(archive_sha256: &str) -> String {
-    format!("trace-package:{archive_sha256}")
+fn archive_idempotency_key(archive_sha256: &str, visibility: ShareVisibility) -> String {
+    format!("trace-package:{archive_sha256}:{}", visibility.as_str())
 }
 
 fn validated_upload_url(api_origin: &ApiOrigin, value: &str) -> Result<url::Url> {
-    let upload =
-        url::Url::parse(value).context("publication API returned an invalid upload URL")?;
+    let upload = url::Url::parse(value).context("share API returned an invalid upload URL")?;
     if upload.host_str().is_none()
         || !upload.username().is_empty()
         || upload.password().is_some()
         || upload.fragment().is_some()
     {
-        bail!("publication API returned an invalid upload URL");
+        bail!("share API returned an invalid upload URL");
     }
 
     let api_is_loopback = api_origin.is_loopback();
@@ -386,7 +434,7 @@ fn validated_upload_url(api_origin: &ApiOrigin, value: &str) -> Result<url::Url>
     if matches!(upload.scheme(), "http" | "https") && api_is_loopback && upload_is_loopback {
         return Ok(upload);
     }
-    bail!("publication uploads require a public HTTPS URL (loopback HTTP is development-only)")
+    bail!("share uploads require a public HTTPS URL (loopback HTTP is development-only)")
 }
 
 fn is_loopback_host(url: &url::Url) -> bool {
@@ -418,7 +466,7 @@ async fn api_json<T: DeserializeOwned>(response: Response, action: &str) -> Resu
         });
     if status == StatusCode::UNAUTHORIZED {
         bail!(
-            "{action} failed: {message}; authorize publication through the local dashboard or administration API"
+            "{action} failed: {message}; connect an account through the local dashboard or administration API"
         );
     }
     bail!("{action} failed with HTTP {status}: {message}")
@@ -432,9 +480,9 @@ fn absolute_same_origin_url(origin: &ApiOrigin, value: &str) -> Result<String> {
     let url = origin
         .url()
         .join(value)
-        .context("publication API returned an invalid same-origin URL")?;
+        .context("share API returned an invalid same-origin URL")?;
     if url.origin() != origin.url().origin() {
-        bail!("publication API returned a cross-origin URL");
+        bail!("share API returned a cross-origin URL");
     }
     Ok(url.to_string())
 }
@@ -445,7 +493,7 @@ fn reject_bundle_path(path: &std::path::Path) -> Result<()> {
         .is_some_and(|extension| extension == "llmbundle")
     {
         bail!(
-            "encrypted .llmbundle files cannot be published; finalize the capture through the local administration API first"
+            "encrypted .llmbundle files cannot be shared; finalize the capture through the local administration API first"
         );
     }
     Ok(())
@@ -484,7 +532,7 @@ mod tests {
             (
                 StatusCode::CREATED,
                 Json(serde_json::json!({
-                    "share": {"id":"job-1","state":"uploading","status_url":"/api/shares/job-1"},
+                    "share": {"id":"job-1","state":"uploading","visibility":"unlisted","status_url":"/api/shares/job-1"},
                     "upload": {
                         "method":"PUT",
                         "url":format!("{origin}/upload"),
@@ -503,13 +551,13 @@ mod tests {
         async fn complete(Path(job_id): Path<String>) -> Json<serde_json::Value> {
             assert_eq!(job_id, "job-1");
             Json(serde_json::json!({
-                "id":"job-1","state":"queued","status_url":"/api/shares/job-1"
+                "id":"job-1","state":"queued","visibility":"unlisted","status_url":"/api/shares/job-1"
             }))
         }
         async fn status(Path(job_id): Path<String>) -> Json<serde_json::Value> {
             assert_eq!(job_id, "job-1");
             Json(serde_json::json!({
-                "id":"job-1","state":"queued","status_url":"/api/shares/job-1"
+                "id":"job-1","state":"queued","visibility":"unlisted","status_url":"/api/shares/job-1"
             }))
         }
 
@@ -540,6 +588,7 @@ mod tests {
             archive,
             &sha256_hex(archive),
             "idempotency-key",
+            ShareVisibility::Unlisted,
         )
         .await
         .unwrap();
@@ -561,8 +610,8 @@ mod tests {
         );
         let digest = "a".repeat(64);
         assert_eq!(
-            archive_idempotency_key(&digest),
-            format!("trace-package:{digest}")
+            archive_idempotency_key(&digest, ShareVisibility::Listed),
+            format!("trace-package:{digest}:listed")
         );
         assert!(
             validated_upload_url(
@@ -590,17 +639,17 @@ mod tests {
     #[test]
     fn publication_status_preserves_not_found_authentication_and_outage_errors() {
         assert!(matches!(
-            publication_status_http_error(StatusCode::NOT_FOUND),
-            Some(PublicationStatusError::NotFound)
+            share_status_http_error(StatusCode::NOT_FOUND),
+            Some(ShareStatusError::NotFound)
         ));
         assert!(matches!(
-            publication_status_http_error(StatusCode::UNAUTHORIZED),
-            Some(PublicationStatusError::Authentication)
+            share_status_http_error(StatusCode::UNAUTHORIZED),
+            Some(ShareStatusError::Authentication)
         ));
         assert!(matches!(
-            publication_status_http_error(StatusCode::BAD_GATEWAY),
-            Some(PublicationStatusError::Unavailable)
+            share_status_http_error(StatusCode::BAD_GATEWAY),
+            Some(ShareStatusError::Unavailable)
         ));
-        assert!(publication_status_http_error(StatusCode::OK).is_none());
+        assert!(share_status_http_error(StatusCode::OK).is_none());
     }
 }

@@ -58,7 +58,7 @@ Declares the archive and verified-package formats, the ordered path, size, and
 SHA-256 of every package entry, and `package_sha256`. The package digest covers
 compact JSON containing the verified-package format and ordered file
 declarations; it is independent of ZIP metadata. A separate outer SHA-256
-binds the complete archive during publication intake.
+binds the complete archive during share intake.
 
 ### `evidence.tlsn`
 
@@ -148,18 +148,18 @@ Full verification checks canonical archive bytes, entry hashes, trust-key
 selection, TLSNotary evidence, provider identity, selective disclosure,
 header-value privacy, manifest hashes, and exact trace reproduction.
 
-## Hosted verification and publication
+## Hosted verification and sharing
 
 `POST /api/verify` accepts one `.llmtrace` and performs the same core
-verification without creating an account, publication, or content record. The
+verification without creating an account, share, or content record. The
 service processes the package without durable retention. Its response is not
 signed, so it is not a portable receipt.
 
-Publication is separate. The platform verifies the uploaded source package and
-stores only its canonical trace and public metadata after admission. A bare
-Library trace is integrity-checked by the platform but no longer contains the
-TLSNotary evidence. Keep the source `.llmtrace` when a recipient needs
-independent verification.
+Sharing is separate. The platform safety-scans and cryptographically verifies
+the uploaded source package, stores its canonical trace and the exact admitted
+`.llmtrace`, then re-downloads and repeats the checks before admission. The
+stable share page links the retained package so a recipient can verify it
+independently.
 
 ## Compatibility rule
 

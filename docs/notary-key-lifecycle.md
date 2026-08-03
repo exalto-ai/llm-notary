@@ -68,7 +68,7 @@ the key may sign. `finalize_until_unix_ms` is the later wall-clock drain
 deadline for already-created bundles. The authenticated provider-connection
 timestamp in a capture or finalized package selects the historical trust
 window. `POST /v1/captures/{capture_id}/trace:verify` remains offline and
-therefore uses the last cached directory. Publication always refreshes the
+therefore uses the last cached directory. Sharing always refreshes the
 directory and enforces current revocation state before sending any bytes, even
 when a configured explicit key was used for the initial local verification.
 

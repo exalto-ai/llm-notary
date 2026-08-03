@@ -9,10 +9,11 @@ export type Operation = components['schemas']['OperationResponse'];
 export type Event = components['schemas']['EventResponse'];
 export type Trace = components['schemas']['TraceResponse'];
 export type Verification = components['schemas']['VerificationResponse'];
-export type PublicationAuth = components['schemas']['AccountConnectionResponse'];
-export type PublicationAuthStarted = components['schemas']['AccountConnectionStartedResponse'];
-export type Publication = components['schemas']['PublicationResponse'];
-export type PublicationStatus = components['schemas']['PublicationStatusResponse'];
+export type AccountConnection = components['schemas']['AccountConnectionResponse'];
+export type AccountConnectionStarted = components['schemas']['AccountConnectionStartedResponse'];
+export type Share = components['schemas']['ShareResponse'];
+export type ShareStatus = components['schemas']['ShareStatusResponse'];
+export type ShareVisibility = components['schemas']['ShareVisibility'];
 type CaptureList = paths['/v1/captures']['get']['responses'][200]['content']['application/json'];
 type FinalizationResult = paths['/v1/captures/{capture_id}/finalizations']['post']['responses'][202]['content']['application/json'];
 type OperationList = paths['/v1/operations']['get']['responses'][200]['content']['application/json'];
@@ -136,18 +137,18 @@ export const localApi = {
     `/v1/captures/${encodeURIComponent(captureId)}/trace:verify`,
     { method: 'POST' }
   ),
-  publicationAuth: () => request<PublicationAuth>('/v1/publication/auth'),
-  startPublicationAuth: () => request<PublicationAuthStarted>('/v1/publication/auth', {
+  account: () => request<AccountConnection>('/v1/account'),
+  startAccountConnection: () => request<AccountConnectionStarted>('/v1/account', {
     method: 'POST', body: {}
   }),
-  pollPublicationAuth: (requestId: string) =>
-    request<PublicationAuth>(`/v1/publication/auth/${encodeURIComponent(requestId)}`),
-  publish: (captureId: string) => request<Publication>(
-    `/v1/captures/${encodeURIComponent(captureId)}/publications`,
-    { method: 'POST' }
+  pollAccountConnection: (requestId: string) =>
+    request<AccountConnection>(`/v1/account/${encodeURIComponent(requestId)}`),
+  share: (captureId: string, visibility: ShareVisibility) => request<Share>(
+    `/v1/captures/${encodeURIComponent(captureId)}/shares`,
+    { method: 'POST', body: { visibility } }
   ),
-  publicationStatus: (jobId: string) => request<PublicationStatus>(
-    `/v1/publications/${encodeURIComponent(jobId)}`
+  shareStatus: (shareId: string) => request<ShareStatus>(
+    `/v1/shares/${encodeURIComponent(shareId)}`
   )
 };
 

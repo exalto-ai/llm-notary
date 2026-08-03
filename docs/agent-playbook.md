@@ -28,11 +28,12 @@ schema authority.
 7. Never request, decode, upload, or expose decrypted `.llmbundle` contents,
    credentials, cookies, raw authenticated headers, authentication secrets,
    or vault material.
-8. Ask the user before publishing a finalized trace or changing service
-   configuration. Finalization alone is not publication consent.
-9. After approved publication, save `job_id` and poll
-   `GET /v1/publications/{job_id}` through the local admin API. Do not attempt
-   to extract or reproduce the vault-held publication credential.
+8. Ask the user before sharing a finalized trace or changing service
+   configuration. Finalization alone is not sharing consent. Confirm whether
+   the public link should be Unlisted or Listed.
+9. After approval, save `share_id` and poll `GET /v1/shares/{share_id}` through
+   the local admin API. Do not extract or reproduce the vault-held account
+   credential.
 
 Use safe error codes and redacted event messages for diagnosis. If the OpenAPI
 document does not describe an operation, stop and explain that the installed
@@ -120,20 +121,24 @@ flow that accepts a path; it reads no `.llmbundle` and writes no local state.
 Report `verified`, `verified_at_unix_ms`, `notary_key_id`, and `trust_source`.
 Do not translate a successful bundle read into a verification claim.
 
-If the user separately approves publication, submit the capture identifier and
+If the user separately approves public sharing, submit the capture identifier,
+defaulting to Unlisted unless they request Library discovery, and
 follow admission through the local service:
 
 ```bash
-publication=$(curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/publications")
-job_id=$(printf '%s' "$publication" | jq -r '.job_id')
+share=$(curl --fail-with-body -X POST \
+  -H 'Content-Type: application/json' \
+  --data '{"visibility":"unlisted"}' \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/shares")
+share_id=$(printf '%s' "$share" | jq -r '.share_id')
 
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/publications/$job_id"
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/shares/$share_id"
 ```
 
 Report the bounded admission state or failure code. Do not claim the trace is
-public until the returned state is `admitted`.
+reachable until the returned state is `admitted`. Never describe an Unlisted
+share as private; anyone with its link can open it.
 
 ## JavaScript example
 
