@@ -125,11 +125,21 @@ function markdownFiles(directory) {
     return entry.isDirectory() ? markdownFiles(path) : extname(entry.name) === '.md' ? [path] : [];
   });
 }
-const markdown = [resolve(repoRoot, 'README.md'), ...markdownFiles(resolve(repoRoot, 'docs'))];
+const markdown = [
+  resolve(repoRoot, 'README.md'),
+  resolve(repoRoot, 'CONTRIBUTING.md'),
+  resolve(repoRoot, 'AGENTS.md'),
+  resolve(repoRoot, 'DESIGN.md'),
+  resolve(repoRoot, 'deploy/fly/README.md'),
+  ...markdownFiles(resolve(repoRoot, 'docs'))
+];
 const consistencySources = [
   ...markdown,
   resolve(appRoot, 'public/llms.txt'),
-  resolve(appRoot, 'src/main.jsx')
+  resolve(appRoot, 'src/main.jsx'),
+  resolve(appRoot, 'src/platform-api/generated/openapi.json'),
+  resolve(appRoot, 'src/platform-api/generated/api.generated.d.ts'),
+  resolve(repoRoot, 'crates/llm-notary-platform/src/lib.rs')
 ];
 const obsoleteCommand = /llm-notary\s+(proxy|verify-trace|download|config|vault|list|show|verify|decode)\b/;
 const obsoleteDaemonInvocation = /^llm-notary(?:\s+--config\s+\S+)?\s*$/m;
@@ -138,6 +148,31 @@ for (const file of consistencySources) {
   if (obsoleteCommand.test(source) || obsoleteDaemonInvocation.test(source)) {
     throw new Error(`Documentation retains an obsolete local operational command: ${file.replace(`${repoRoot}/`, '')}`);
   }
+}
+
+const inaccurateClaims = [
+  /signed (?:production )?notary directory/i,
+  /clients cache the signed notary directory/i,
+  /releases include `llm-notaryd`/i,
+  /deploy the notary and check the v2 admission prelude/i,
+  /download the public evidence attached/i,
+  /durable human-readable result/i,
+  /processes the package in memory/i
+];
+for (const file of consistencySources) {
+  const source = readFileSync(file, 'utf8');
+  for (const claim of inaccurateClaims) {
+    if (claim.test(source)) {
+      throw new Error(`Documentation retains an inaccurate release, trust, or rollout claim: ${file.replace(`${repoRoot}/`, '')}`);
+    }
+  }
+}
+
+const publicDocs = readFileSync(resolve(appRoot, 'src/main.jsx'), 'utf8');
+if (!publicDocs.includes('cargo install --locked --path crates/llm-notary-client')
+  || !publicDocs.includes('The JSON directory is not separately signed')
+  || !publicDocs.includes('"status_url":"/v1/publications/…"')) {
+  throw new Error('Public-site documentation is missing the source-install, trust-directory, or local publication-status boundary');
 }
 
 for (const required of ['llm-notaryd', 'llm-notary status', 'llm-notary captures list', '--json']) {
@@ -154,10 +189,10 @@ for (const file of markdown) {
   }
 }
 
-for (const file of workflowDocuments) {
+for (const file of markdown) {
   const source = readFileSync(resolve(repoRoot, file), 'utf8');
   if (!source.endsWith('\n') || source.endsWith('\n\n')) {
-    throw new Error(`${file} must end with exactly one newline`);
+    throw new Error(`${file.replace(`${repoRoot}/`, '')} must end with exactly one newline`);
   }
 }
 process.stdout.write('Local REST documentation, screenshots, methods, statuses, filters, and schemas match the generated contract.\n');

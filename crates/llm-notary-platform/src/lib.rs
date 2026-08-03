@@ -691,7 +691,7 @@ impl AppState {
 #[utoipa::path(
     get,
     path = "/api/notary",
-    summary = "Get the signed notary directory",
+    summary = "Get the versioned notary directory",
     responses((status = 200, body = NotaryDirectoryResponse)),
     tag = "health"
 )]

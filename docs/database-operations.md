@@ -1,8 +1,9 @@
-# PostgreSQL / Neon deployment operations
+# PostgreSQL and Neon operations
 
-The API uses PostgreSQL exclusively. This guide covers ongoing PostgreSQL/Neon
-deployment, schema-migration, scaling, and rollback operations. SQLite is no
-longer a supported API backend and no SQLite importer is maintained.
+The hosted platform API uses PostgreSQL exclusively. This guide covers ongoing
+PostgreSQL/Neon deployment, schema-migration, scaling, and rollback operations.
+SQLite is no longer a supported hosted API backend and no SQLite importer is
+maintained. The local daemon still uses its own SQLite catalog.
 
 ## Provision and configure Neon
 
@@ -41,7 +42,7 @@ URL, signing key, capture, or environment file.
 ## Deploy schema migrations
 
 `migrations-postgres/0001_initial.sql` is the PostgreSQL baseline. Do not alter
-it: future PostgreSQL schema changes must be new, forward-only migration files.
+an applied migration: schema changes must use new, forward-only migration files.
 Fly runs `llm-notary-api-migrate` as the API release command before replacing
 any API Machines. Compose runs the same one-shot `migrate` service before it
 starts API replicas. SQLx takes an advisory migration lock. The migrator uses a
@@ -57,8 +58,8 @@ and remove obsolete schema only after at least one further successful release.
 A migration that cannot meet this expand/contract sequence needs a separately
 reviewed, staged rollout and recovery procedure before it is merged.
 
-1. Preserve the platform signing key and notary directory as rollback evidence.
-   Do not generate new signing material.
+1. Preserve the notary signing key and published notary directory so existing
+   evidence keeps the same trust history. Do not generate new signing material.
 2. Confirm both staged secrets exist, then merge the release. The normal Fly
    deploy invokes the release command against the direct
    `DATABASE_MIGRATIONS_URL`; no database secret belongs in GitHub.

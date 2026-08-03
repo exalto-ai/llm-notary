@@ -1,8 +1,9 @@
-# Notary key lifecycle (directory v3)
+# Notary key lifecycle
 
-`GET /api/notary` publishes a versioned directory of notary endpoints and
-secp256k1 verification keys. Clients cache successful responses so existing
-evidence remains verifiable when a deployment changes keys.
+`GET /api/notary` publishes a v3 directory of notary endpoints and secp256k1
+verification keys. The public origin authenticates the response with HTTPS;
+the JSON document is not separately signed. Clients cache successful responses
+so existing evidence remains verifiable when a deployment changes keys.
 
 ## Directory format
 
@@ -41,12 +42,11 @@ anchor. Every v3 record must state its transport explicitly.
 
 ## Compatibility
 
-Directory v1 and v2 are end of life. The project has not published a local
-service release or tag, so there are no released clients to support; the
-platform API and local service accept and write v3 only. A development build
-with an old `notary-trust.json` cache must remove that cache and refresh the
-directory before use. This avoids
-silently downgrading an endpoint with an explicit TLS requirement to raw TCP.
+Directory v1 and v2 are end of life. No local-service release or tag exists, so
+the pre-release platform API and local service accept and write v3 only. A
+development build with an old `notary-trust.json` cache must remove that cache
+and refresh the directory before use. This avoids silently downgrading an
+endpoint with an explicit TLS requirement to raw TCP.
 
 ## Status semantics
 
@@ -134,10 +134,9 @@ revocation ineffective. Provider-native signatures or an external
 transparency log would be required to distinguish pre-compromise evidence more
 strongly.
 
-## Deferred privacy-binding follow-up
+## Invariants for future formats
 
-Issue #36 may replace the current consent-based finalized package with a
-privacy-preserving transcript-to-trace binding. That successor must carry the
-notary key ID and authenticated connection timestamp, use this directory's
-validity and revocation rules, and define migration behavior for already
-published directory records.
+Any successor package must carry the notary key ID and authenticated provider-
+connection time, use this directory's validity and revocation rules, and define
+migration behavior for already published directory records. A new artifact
+format must not silently reinterpret an existing lifecycle record.

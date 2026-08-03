@@ -1063,7 +1063,7 @@
         "tags": [
           "health"
         ],
-        "summary": "Get the signed notary directory",
+        "summary": "Get the versioned notary directory",
         "operationId": "notary",
         "responses": {
           "200": {

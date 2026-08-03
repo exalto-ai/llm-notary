@@ -143,9 +143,18 @@ Authorization: Bearer <publication access token>
 ```
 
 Jobs are account-scoped. A caller cannot discover another user's job by ID.
-Times are Unix seconds. This version defines `uploading`, `queued`, `expired`,
-and `failed`; the same response can later expose `verifying`, `admitted`,
-`rejected`, and `purged` as admission is implemented.
+Times are Unix seconds. The implemented path is:
+
+```text
+uploading -> queued -> verifying -> admitted
+     |                    \-> rejected
+     \-> expired -> uploading
+```
+
+An expired upload can reopen on the same idempotent job with a new generation
+and one-use staging key. Queued, verifying, admitted, and rejected jobs never
+return to uploading. Clients should treat `failure_code` as a bounded machine
+code and must not infer admission from a successful upload or completion.
 
 ## Storage lifecycle
 
@@ -153,7 +162,7 @@ The API uses three prefixes in the same private Space:
 
 - `llm-notary/uploads/` contains revocable staging objects;
 - `llm-notary/intake/` contains generation-specific server-promoted objects
-  ready for admission.
+  ready for admission;
 - `llm-notary/public/` contains content-addressed admitted traces.
   Public API reads integrity-check these durable objects; no lifecycle expiry
   applies to this prefix.
