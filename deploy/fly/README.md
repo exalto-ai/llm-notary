@@ -53,13 +53,65 @@ The TLS certificate authenticates the network endpoint but does not replace the
 notary signing key in the directory. A self-hosted notary can advertise either
 `tcp` or `tls`; TLS termination need not be provided by Fly.
 
-Deploy from the repository root:
+## Production rollout
+
+Production is deployed only by the `Production deployment` job in CI. A push
+to `main` first completes the required Rust, PostgreSQL, SPA, documentation,
+and deployment-configuration checks. CI then calls the reusable Fly workflow;
+the Fly workflow has no independent push or manual trigger.
+
+Fly remains the image builder and registry. The workflow uses `fly deploy
+--build-only --push` to build all three images before changing any Machine and
+gives each image a tag unique to the commit and CI run. The rollout then uses
+that tag to resolve an immutable `sha256` digest and deploys only the digest.
+It therefore neither rebuilds nor promotes a different image:
+
+1. Deploy the notary and check the v2 admission prelude.
+2. Deploy the API and check it through the still-old web gateway.
+3. Deploy the web gateway and check the public readiness route again.
+
+Before the first change, the workflow records every app's current Fly image.
+If a deploy or compatibility check fails, it restores each attempted app in
+reverse order. API rollback skips the old image's release command: PostgreSQL
+migrations are forward-only and the previous API must remain usable against
+the newly migrated schema.
+
+### Rolling compatibility contract
+
+Every production change must support the mixed versions that can exist during
+a rolling deployment and its rollback:
+
+- a new notary continues accepting the control protocols used by the current
+  and immediately previous clients;
+- the API works with both the current and immediately previous notary and web
+  contracts;
+- the web gateway works with both the current and immediately previous API;
+- Fly environment/configuration changes remain valid for the previous image;
+- database changes use expand/contract migrations: add compatible schema
+  first, stop using old schema in a later release, and remove it only after at
+  least one further release has made rollback to the old use impossible.
+
+Breaking any of these contracts requires an explicitly staged multi-release
+migration. Do not merge an incompatible change and rely on deployment order to
+hide it.
+
+For a break-glass, operator-driven deployment from the repository root, use the
+same build-then-deploy split and retain the previous image references for
+rollback. Normal production changes must go through CI:
 
 ```bash
-fly deploy . -c deploy/fly/api.fly.toml --flycast
-fly deploy . -c deploy/fly/notary.fly.toml
-# Fly resolves a relative config path against the supplied frontend context.
-fly deploy js/app -c "$PWD/deploy/fly/web.fly.toml"
+label="manual-$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)"
+fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary.fly.toml
+fly deploy --build-only --push --image-label "$label" -c deploy/fly/api.fly.toml
+fly deploy js/app --build-only --push --image-label "$label" \
+  -c "$PWD/deploy/fly/web.fly.toml"
+
+fly deploy --image "registry.fly.io/llm-notary-prod-notary:$label" \
+  --ha=false -c deploy/fly/notary.fly.toml
+fly deploy --image "registry.fly.io/llm-notary-prod-api:$label" \
+  --ha=true -c deploy/fly/api.fly.toml
+fly deploy js/app --image "registry.fly.io/llm-notary-prod-web:$label" \
+  --ha=false -c "$PWD/deploy/fly/web.fly.toml"
 ```
 
 The web and notary apps suspend when idle. The API's configured

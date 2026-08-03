@@ -18,7 +18,10 @@ permissions:
 # and delay the result for the commit a reviewer will actually merge.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # A newer PR revision makes an older run obsolete. A main run may already be
+  # inside the production deployment, however, and must be allowed to finish
+  # so that it cannot be cancelled halfway through a multi-service rollout.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -65,6 +68,7 @@ jobs:
               - 'js/app/src/local-dashboard/generated/openapi.json'
             containers:
               - '.github/workflows/ci.yml'
+              - '.github/workflows/deploy.yml'
               - '.dockerignore'
               - 'Dockerfile'
               - 'build.rs'
@@ -156,13 +160,12 @@ jobs:
       - run: node js/app/scripts/check-local-docs.mjs
 
   containers:
-    name: Container configuration
+    name: Deployment configuration
     needs: changes
     if: needs.changes.outputs.containers == 'true'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
-      - uses: docker/setup-buildx-action@v4
       - uses: docker/setup-compose-action@v1
       - name: Validate Compose configuration
         run: |
@@ -184,31 +187,60 @@ jobs:
             LLM_NOTARY_S3_REGION=sfo3 \
             LLM_NOTARY_PUBLIC_ORIGIN=https://example.com \
             docker compose config --quiet
-      - name: Build notary image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          target: notary
-          load: false
-          push: false
-          cache-from: type=gha,scope=rust-service-images
-          cache-to: type=gha,mode=max,scope=rust-service-images
-      - name: Build web image
-        uses: docker/build-push-action@v7
-        with:
-          context: js/app
-          build-args: |
-            LLM_NOTARY_PUBLIC_ORIGIN=https://example.com
-          load: false
-          push: false
-          cache-from: type=gha,scope=web-image
-          cache-to: type=gha,mode=max,scope=web-image
-      - name: Build API image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          target: api
-          load: false
-          push: false
-          cache-from: type=gha,scope=rust-service-images
-          cache-to: type=gha,mode=max,scope=rust-service-images
+
+  required:
+    name: Required checks
+    if: always()
+    needs: [changes, rust, postgres-integration, app, docs, containers]
+    runs-on: ubuntu-24.04
+    env:
+      CHANGES_RESULT: ${{ needs.changes.result }}
+      RUST_CHANGED: ${{ needs.changes.outputs.rust }}
+      RUST_RESULT: ${{ needs.rust.result }}
+      POSTGRES_RESULT: ${{ needs.postgres-integration.result }}
+      APP_CHANGED: ${{ needs.changes.outputs.app }}
+      APP_RESULT: ${{ needs.app.result }}
+      DOCS_CHANGED: ${{ needs.changes.outputs.docs }}
+      DOCS_RESULT: ${{ needs.docs.result }}
+      CONTAINERS_CHANGED: ${{ needs.changes.outputs.containers }}
+      CONTAINERS_RESULT: ${{ needs.containers.result }}
+    steps:
+      - name: Require every selected check to pass
+        run: |
+          set -euo pipefail
+
+          if test "$CHANGES_RESULT" != success; then
+            echo "changed-path selection ended with: $CHANGES_RESULT" >&2
+            exit 1
+          fi
+
+          require_selected() {
+            local name="$1"
+            local selected="$2"
+            local result="$3"
+            if test "$selected" = true && test "$result" != success; then
+              echo "$name was selected but ended with: $result" >&2
+              exit 1
+            fi
+            case "$result" in
+              success|skipped) ;;
+              *) echo "$name ended with: $result" >&2; exit 1 ;;
+            esac
+          }
+
+          require_selected Rust "$RUST_CHANGED" "$RUST_RESULT"
+          require_selected PostgreSQL "$RUST_CHANGED" "$POSTGRES_RESULT"
+          require_selected SPA "$APP_CHANGED" "$APP_RESULT"
+          require_selected Documentation "$DOCS_CHANGED" "$DOCS_RESULT"
+          require_selected Deployment "$CONTAINERS_CHANGED" "$CONTAINERS_RESULT"
+
+  deploy:
+    name: Production deployment
+    needs: [changes, required]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.changes.outputs.containers == 'true' &&
+      needs.required.result == 'success'
+    uses: ./.github/workflows/deploy.yml
+    secrets: inherit
