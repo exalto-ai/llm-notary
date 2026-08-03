@@ -76,6 +76,7 @@ pub mod bundle;
 pub mod normalize;
 pub mod notary_directory;
 pub mod public;
+pub mod public_safety;
 pub mod telemetry;
 #[cfg(feature = "cli")]
 pub mod vault;
