@@ -1730,7 +1730,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn migration_from_0004_preserves_legacy_stamp_rows() {
+    async fn migration_from_0004_queues_legacy_objects_and_preserves_traces() {
         let database = super::test_database::blank_database().await;
         for migration in [
             include_str!("../../../migrations-postgres/0001_initial.sql"),
@@ -1801,6 +1801,42 @@ mod tests {
             queued_stamps, 0,
             "stamp deletion belongs to contract migration"
         );
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0006_remove_platform_stamp_contract.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let admitted: (Option<String>, Option<String>, Option<i64>) = sqlx::query_as(
+            "SELECT public_trace_object_key, public_trace_sha256, verified_at
+             FROM publish_jobs WHERE id = 'legacy-job'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(admitted.0.as_deref(), Some("legacy-trace"));
+        assert_eq!(admitted.1.as_deref(), Some("b".repeat(64).as_str()));
+        assert_eq!(admitted.2, Some(2));
+        let cleanup: (String, Option<String>, String) = sqlx::query_as(
+            "SELECT object_key, publication_id, artifact_kind
+             FROM publication_object_cleanup WHERE object_key = 'legacy-stamp'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(cleanup.0, "legacy-stamp");
+        assert_eq!(cleanup.1.as_deref(), Some("legacy-job"));
+        assert_eq!(cleanup.2, "stamp");
+        let legacy_columns: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'publish_jobs'
+               AND column_name LIKE 'public_stamp%'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(legacy_columns, 0);
     }
 
     #[test]

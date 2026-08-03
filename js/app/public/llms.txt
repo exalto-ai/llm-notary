@@ -1,6 +1,6 @@
 # LLM Notary
 
-> Capture provider calls locally, retain encrypted bundles, and finalize selected calls into independently verifiable OpenTelemetry traces.
+> Capture provider calls locally, retain encrypted bundles, and finalize selected calls into independently verifiable OpenTelemetry trace packages.
 
 ## Documentation
 
@@ -13,7 +13,8 @@
 - [Agents](%PUBLIC_ORIGIN%/docs/harnesses): Recipes for Codex, Claude Code, and OpenCode.
 - [Finalize](%PUBLIC_ORIGIN%/docs/finalize): Queue a durable operation that turns one pending capture into a verified trace package.
 - [Artifacts](%PUBLIC_ORIGIN%/docs/artifacts): Evidence, disclosed HTTP, normalized OTLP, and manifest responsibilities.
-- [Verify](%PUBLIC_ORIGIN%/docs/verify): Verify a finalized trace through the local service and its configured trust source.
+- [Verify online](%PUBLIC_ORIGIN%/#/verify): Explicitly upload one finalized package for retention-free hosted verification.
+- [Verify locally](%PUBLIC_ORIGIN%/docs/verify): Verify a finalized package through the local service and its configured trust source.
 - [Publish](%PUBLIC_ORIGIN%/docs/publish): Deliberately submit an already-finalized trace package.
 
 ## Core trust boundary

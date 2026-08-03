@@ -3,7 +3,7 @@
 This contract uploads one locally finalized trace package to private object
 storage. It does not admit or publish the package; the admission path owns
 content hashing, defensive archive validation, cryptographic verification, and
-stamping.
+canonical public-trace admission.
 
 The local service finalizes directly to one deterministic `.llmtrace` file in
 `llmnotary.trace-package-archive/v2` format. Publication reads and uploads
@@ -154,7 +154,7 @@ The API uses three prefixes in the same private Space:
 - `llm-notary/uploads/` contains revocable staging objects;
 - `llm-notary/intake/` contains generation-specific server-promoted objects
   ready for admission.
-- `llm-notary/public/` contains content-addressed admitted traces and stamps.
+- `llm-notary/public/` contains content-addressed admitted traces.
   Public API reads integrity-check these durable objects; no lifecycle expiry
   applies to this prefix.
 

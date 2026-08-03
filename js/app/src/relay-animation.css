@@ -38,16 +38,16 @@
 .relay-packet--text:before,.relay-packet--proof:before{content:'TEXT'}.relay-packet--proof:before{content:'PROOF'}
 .relay-packet--text{top:calc(37.5% - 8px);animation:relay-branch-text 4.6s linear 1 forwards}.relay-packet--proof{top:calc(62.5% - 8px);animation:relay-branch-proof 4.6s linear 1 forwards}
 .relay-output{grid-column:7;padding:15px;overflow:hidden}
-.relay-output--agent{grid-row:1}.relay-output--certificate{grid-row:2;padding:14px}
+.relay-output--agent{grid-row:1}.relay-output--package{grid-row:2;padding:14px}
 .relay-output header{display:flex;justify-content:space-between;gap:10px;padding-bottom:10px;border-bottom:1px solid var(--line)}
 .relay-output header>span{font:500 8px/1 'DM Mono',monospace;color:var(--muted)}
 .relay-output--agent p{margin:15px 0 10px;font-size:11px;line-height:1.4;letter-spacing:-.02em;animation:relay-agent-copy 4.6s ease-out 1 forwards}
 .relay-output--agent ul{list-style:none;padding:0;margin:0;display:grid;gap:5px;font-size:9px;line-height:1.3}
 .relay-output--agent li{animation:relay-agent-one 4.6s ease-out 1 forwards}.relay-output--agent li:before{content:'→';margin-right:6px;color:var(--green-ink)}
 .relay-output--agent li:nth-child(2){animation-name:relay-agent-two}.relay-output--agent li:nth-child(3){animation-name:relay-agent-three}
-.certificate-seal{padding:5px 6px!important;color:var(--action-dark)!important;background:var(--action-soft);border:1px solid var(--action);transform:rotate(-2deg);animation:relay-certificate-seal 4.6s ease-out 1 forwards}
-.relay-output dl{display:grid;gap:6px;margin:10px 0 0}.relay-output dl div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:5px;font:500 8px/1 'DM Mono',monospace;animation:relay-certificate-one 4.6s ease-out 1 forwards}.relay-output dl div:nth-child(2){animation-name:relay-certificate-two}.relay-output dl div:nth-child(3){animation-name:relay-certificate-three}.relay-output dt{color:var(--muted)}.relay-output dd{margin:0}
-.relay-output footer{margin-top:9px;color:var(--muted);font:500 8px/1 'DM Mono',monospace;animation:relay-certificate-footer 4.6s ease-out 1 forwards}.relay-output footer i{display:inline-block;width:6px;height:6px;margin-right:5px;border:1px solid var(--green-ink);border-radius:50%;background:var(--green)}
+.package-ready{padding:5px 6px!important;color:var(--action-dark)!important;background:var(--action-soft);border:1px solid var(--action);animation:relay-package-ready 4.6s ease-out 1 forwards}
+.relay-output dl{display:grid;gap:6px;margin:10px 0 0}.relay-output dl div{display:flex;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:5px;font:500 8px/1 'DM Mono',monospace;animation:relay-package-one 4.6s ease-out 1 forwards}.relay-output dl div:nth-child(2){animation-name:relay-package-two}.relay-output dl div:nth-child(3){animation-name:relay-package-three}.relay-output dt{color:var(--muted)}.relay-output dd{margin:0}
+.relay-output footer{margin-top:9px;color:var(--muted);font:500 8px/1 'DM Mono',monospace;animation:relay-package-footer 4.6s ease-out 1 forwards}.relay-output footer i{display:inline-block;width:6px;height:6px;margin-right:5px;border:1px solid var(--green-ink);border-radius:50%;background:var(--green)}
 @keyframes relay-cursor{0%,46%{opacity:1}47%,100%{opacity:0}}
 @keyframes relay-to-notary{0%,4%{opacity:0;transform:translateX(-18px)}7%,27%{opacity:1}31%,100%{opacity:0;transform:translateX(calc(100% + 46px))}}
 @keyframes relay-to-proxy{0%,30%{opacity:0;transform:translateX(-18px)}34%,52%{opacity:1}56%,100%{opacity:0;transform:translateX(calc(100% + 46px))}}
@@ -59,7 +59,7 @@
 @keyframes relay-branch-text{0%,54%{opacity:0;left:-12px}58%{opacity:1;left:0}74%{left:calc(100% - 20px);opacity:1}78%,100%{left:calc(100% - 12px);opacity:0}}
 @keyframes relay-branch-proof{0%,61%{opacity:0;left:-12px}65%{opacity:1;left:0}81%{left:calc(100% - 20px);opacity:1}85%,100%{left:calc(100% - 12px);opacity:0}}
 @keyframes relay-agent-copy{0%,60%{opacity:0;transform:translateY(5px)}65%,100%{opacity:1;transform:translateY(0)}}@keyframes relay-agent-one{0%,63%{opacity:0;transform:translateY(5px)}68%,100%{opacity:1;transform:translateY(0)}}@keyframes relay-agent-two{0%,66%{opacity:0;transform:translateY(5px)}71%,100%{opacity:1;transform:translateY(0)}}@keyframes relay-agent-three{0%,69%{opacity:0;transform:translateY(5px)}74%,100%{opacity:1;transform:translateY(0)}}
-@keyframes relay-certificate-one{0%,68%{opacity:0;transform:translateY(5px)}73%,100%{opacity:1;transform:translateY(0)}}@keyframes relay-certificate-two{0%,71%{opacity:0;transform:translateY(5px)}76%,100%{opacity:1;transform:translateY(0)}}@keyframes relay-certificate-three{0%,74%{opacity:0;transform:translateY(5px)}79%,100%{opacity:1;transform:translateY(0)}}@keyframes relay-certificate-seal{0%,75%{opacity:0;transform:translateY(5px) rotate(-2deg)}80%,100%{opacity:1;transform:translateY(0) rotate(-2deg)}}@keyframes relay-certificate-footer{0%,80%{opacity:0;transform:translateY(5px)}85%,100%{opacity:1;transform:translateY(0)}}
+@keyframes relay-package-one{0%,68%{opacity:0;transform:translateY(5px)}73%,100%{opacity:1;transform:translateY(0)}}@keyframes relay-package-two{0%,71%{opacity:0;transform:translateY(5px)}76%,100%{opacity:1;transform:translateY(0)}}@keyframes relay-package-three{0%,74%{opacity:0;transform:translateY(5px)}79%,100%{opacity:1;transform:translateY(0)}}@keyframes relay-package-ready{0%,75%{opacity:0;transform:translateY(5px)}80%,100%{opacity:1;transform:translateY(0)}}@keyframes relay-package-footer{0%,80%{opacity:0;transform:translateY(5px)}85%,100%{opacity:1;transform:translateY(0)}}
 @media(max-width:960px){
   .relay-animation{padding:36px 12px 32px;overflow:hidden}
   .relay-animation__viewport{height:auto;overflow:visible}
@@ -78,12 +78,12 @@
   .relay-branch .relay-packet{top:17px;left:auto;animation:relay-mobile-label 4.6s steps(1,end) 1 forwards}
   .relay-branch .relay-packet--text{left:calc(25% - 14px)}.relay-branch .relay-packet--proof{left:calc(75% - 14px)}
   .relay-output{grid-row:7;margin:0;padding:12px;min-width:0;min-height:188px}
-  .relay-output--agent{grid-column:1}.relay-output--certificate{grid-column:2;padding:12px}
+  .relay-output--agent{grid-column:1}.relay-output--package{grid-column:2;padding:12px}
   .relay-output header{padding-bottom:8px;align-items:center}.relay-output header>span{display:none}
   .relay-output--agent p{margin:12px 0 9px;font-size:10px;line-height:1.35}.relay-output--agent ul{gap:5px;font-size:8px;line-height:1.3}.relay-output--agent li:before{margin-right:4px}
-  .certificate-seal{display:block!important;padding:4px!important;font-size:7px!important}.relay-output dl{gap:6px;margin-top:10px}.relay-output dl div{display:grid;gap:3px;padding-bottom:5px;font-size:7px}.relay-output footer{margin-top:9px;font-size:7px;line-height:1.3}.relay-output footer i{width:6px;height:6px;margin-right:4px}
+  .package-ready{display:block!important;padding:4px!important;font-size:7px!important}.relay-output dl{gap:6px;margin-top:10px}.relay-output dl div{display:grid;gap:3px;padding-bottom:5px;font-size:7px}.relay-output footer{margin-top:9px;font-size:7px;line-height:1.3}.relay-output footer i{width:6px;height:6px;margin-right:4px}
 }
 @keyframes relay-mobile-to-notary{0%,4%{opacity:0;transform:translateY(-8px)}7%,27%{opacity:1}31%,100%{opacity:0;transform:translateY(30px)}}
 @keyframes relay-mobile-to-proxy{0%,30%{opacity:0;transform:translateY(-8px)}34%,52%{opacity:1}56%,100%{opacity:0;transform:translateY(30px)}}
 @keyframes relay-mobile-label{0%,60%{opacity:0}68%,100%{opacity:1}}
-@media(prefers-reduced-motion:reduce){.relay-animation *{animation:none!important}.relay-node--provider strong i{opacity:0}.decrypt-display__waiting,.decrypt-display__cipher{display:none}.decrypt-display__arrow,.decrypt-display__unlocked,.relay-output--agent p,.relay-output--agent li,.relay-output dl div,.certificate-seal,.relay-output footer,.relay-branch .relay-packet{opacity:1;transform:none}}
+@media(prefers-reduced-motion:reduce){.relay-animation *{animation:none!important}.relay-node--provider strong i{opacity:0}.decrypt-display__waiting,.decrypt-display__cipher{display:none}.decrypt-display__arrow,.decrypt-display__unlocked,.relay-output--agent p,.relay-output--agent li,.relay-output dl div,.package-ready,.relay-output footer,.relay-branch .relay-packet{opacity:1;transform:none}}

@@ -24,6 +24,7 @@ import './relay-animation.css';
 import './landing.css';
 import './notaries.css';
 import './axis.css';
+import './verification.css';
 import { RelayAnimation } from './RelayAnimation';
 import {
   approveCli,
@@ -37,6 +38,7 @@ import {
   getTraceCollection,
   logoutBrowser,
   revokeCliSession,
+  verifyTracePackage,
 } from './platform-api/client';
 import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries } from './notaryLifecycle';
 
@@ -92,7 +94,7 @@ function AccountMenu({ user, onLogout, theme, onThemeChange }) {
 }
 
 function Header({ user, onLogout, theme, onThemeChange }) {
-  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/docs">Docs</a><a href="#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
+  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/verify">Verify</a><a href="#/docs">Docs</a><a href="#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
 }
 
 function Footer() {
@@ -107,8 +109,8 @@ const legalPages = {
     sections: [
       ['Local capture stays local', 'The local proxy handles application plaintext and provider credentials. Within the protocol, the remote notary witnesses encrypted traffic and protocol metadata; it does not receive your API key, prompt, or response plaintext.'],
       ['Account information', 'If you sign in with GitHub, we use the identity information required to operate your account, including your GitHub login and account identifier. The GitHub authorization flow is limited to identity and does not request repository, organization, or email access.'],
-      ['Published evidence', 'Publishing is an explicit action. A submitted package is checked before admission, and an admitted trace, platform stamp, and related public metadata may be available to anyone. Finalized artifacts redact credential and session values, but disclosed trace content may still contain information you choose to publish. Do not publish content you are not permitted to share.'],
-      ['Service processing', 'The service processes submissions to verify and publish them. Private intake objects are removed after a successful admission flow; public artifacts remain available as part of the collection.'],
+      ['Published evidence', 'Publishing is an explicit action. A submitted package is checked before admission, and an admitted trace and related public metadata may be available to anyone. Finalized artifacts redact credential and session header values, but disclosed request and response bodies may still contain information you choose to publish. Do not publish content you are not permitted to share.'],
+      ['Service processing', 'The verification service processes an uploaded package without retaining it. Publication intake objects are removed after admission; public trace artifacts remain available as part of the collection.'],
       ['Your choices', 'You choose whether to publish a finalized trace. Keep private capture bundles and credentials under your control, and avoid uploading them to public collections. For privacy questions or requests, contact the LLM Notary operator through the project’s published support channel.'],
       ['Updates', 'We may revise this policy as the service evolves. The current version will always be available on this page.'],
     ],
@@ -119,7 +121,7 @@ const legalPages = {
     intro: 'These terms govern your use of the LLM Notary website, local tooling, and publishing service.',
     sections: [
       ['Using the service', 'Use LLM Notary lawfully and only with content, credentials, and provider accounts you are authorized to use. Do not interfere with the service, bypass access controls, or submit material that infringes the rights of others.'],
-      ['Your publications', 'You are responsible for every trace or artifact you choose to publish. Publishing is an explicit consent boundary: once a submission is admitted, its public trace, stamp, and related metadata can be accessed and independently verified by others.'],
+      ['Your publications', 'You are responsible for every trace or artifact you choose to publish. Publishing is an explicit consent boundary: once a submission is admitted, its public trace and related metadata can be accessed by others. Keep the source .llmtrace package when others need portable cryptographic verification.'],
       ['What verification means', 'LLM Notary verification concerns the cryptographic and protocol evidence described in the published artifacts. It does not independently establish that an underlying claim, model output, or user interpretation is true, complete, safe, or suitable for a particular purpose.'],
       ['Availability', 'The service is provided on an “as available” basis and may change, be suspended, or be discontinued. Preserve the local materials you need; do not rely on the service as your only record or backup.'],
       ['Your responsibilities', 'You are responsible for maintaining the security of your devices, local captures, API credentials, and account. Do not publish confidential, personal, or otherwise protected information unless you have a clear right to do so.'],
@@ -179,7 +181,109 @@ function CollectionPreview() {
     return () => { cancelled = true; };
   }, [active]);
   const snippets = traceSnippets(tracePreview || []);
-  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Library</span><h2>Featured traces.</h2></div></div>{collection === null && !loadError ? <div className="collection-pending" role="status"><b>Loading verified traces…</b><span>Retrieving admitted publications.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library is temporarily unavailable.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-workspace"><div className="preview-records" aria-label="Featured traces">{visible.map((publication) => <button type="button" className={publication.id === active?.id ? 'active' : ''} onClick={() => setActiveId(publication.id)} aria-pressed={publication.id === active?.id} key={publication.id}><i aria-hidden="true" /><span><b>{publication.title}</b><small>{publication.provider} · {publication.model}</small></span><em>{publication.tags[0] || 'trace'}</em></button>)}</div>{active && <article className="preview-inspector"><header><span className="eyebrow">Selected trace</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h3>{active.title}</h3><p>{active.provider} · {active.model}</p><div className="preview-contents">{snippets.length ? snippets.map((snippet) => <span key={snippet.label}><b>{snippet.label}</b><small>{snippet.text}</small></span>) : <span><b>Trace contents</b><small>Loading preview…</small></span>}</div><div className="preview-command"><span>Verify from the local service</span><code>POST /v1/public-traces/{active.id}/verify</code></div></article>}</div> : <div className="collection-pending"><b>No verified traces yet.</b><span>New publications will appear here as they are admitted.</span></div>}<a className="button button-dark" href="#/library">Open Library</a></section>;
+  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Library</span><h2>Featured traces.</h2></div></div>{collection === null && !loadError ? <div className="collection-pending" role="status"><b>Loading admitted traces…</b><span>Retrieving public publications.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library is temporarily unavailable.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-workspace"><div className="preview-records" aria-label="Featured traces">{visible.map((publication) => <button type="button" className={publication.id === active?.id ? 'active' : ''} onClick={() => setActiveId(publication.id)} aria-pressed={publication.id === active?.id} key={publication.id}><i aria-hidden="true" /><span><b>{publication.title}</b><small>{publication.provider} · {publication.model}</small></span><em>{publication.tags[0] || 'trace'}</em></button>)}</div>{active && <article className="preview-inspector"><header><span className="eyebrow">Selected trace</span><span className="inspector-status"><i aria-hidden="true" /> Admitted</span></header><h3>{active.title}</h3><p>{active.provider} · {active.model}</p><div className="preview-contents">{snippets.length ? snippets.map((snippet) => <span key={snippet.label}><b>{snippet.label}</b><small>{snippet.text}</small></span>) : <span><b>Trace contents</b><small>Loading preview…</small></span>}</div><div className="preview-command"><span>Portable verification requires the source package</span><a href="#/verify">Verify a .llmtrace package</a></div></article>}</div> : <div className="collection-pending"><b>No admitted traces yet.</b><span>New publications will appear here after admission.</span></div>}<a className="button button-dark" href="#/library">Open Library</a></section>;
+}
+
+const MAX_VERIFY_FILE_BYTES = 128 * 1024 * 1024 + 64 * 1024 + 16 * 1024;
+const verificationErrors = {
+  malformed_package: ['Package could not be read', 'This file is not a well-formed canonical `.llmtrace` package.'],
+  tampered_package: ['Package verification failed', 'Authenticated evidence, declared hashes, or the normalized trace did not match.'],
+  untrusted_notary: ['Notary key is not trusted', 'The package was signed by a notary key that is not trusted for its authenticated capture time.'],
+  unsupported_version: ['Package version is unsupported', 'This verifier does not support one of the package contract versions. Update the verifier or use a compatible package.'],
+  verification_in_flight: ['Verification already in progress', 'This network address already has a verification running. Wait for it to finish and try again.'],
+  verification_capacity: ['Verifier is at capacity', 'All verification workers are busy. Wait a moment and try again.'],
+  package_too_large: ['Package is too large', 'Choose a `.llmtrace` package within the 128 MiB verification limit.'],
+  extraction_timeout: ['Package extraction timed out', 'The archive could not be safely extracted within the service limit.'],
+  verification_timeout: ['Verification timed out', 'The cryptographic check did not finish within the service limit.'],
+  verification_unavailable: ['Verification is unavailable', 'The verification service could not complete this request. Try again later or verify locally.'],
+  unsupported_media_type: ['File type is unsupported', 'Choose a finalized file whose name ends in `.llmtrace`.'],
+};
+
+function verificationError(code) {
+  return verificationErrors[code] || verificationErrors.verification_unavailable;
+}
+
+function verificationFileError(file) {
+  if (!file.name.toLowerCase().endsWith('.llmtrace')) return 'unsupported_media_type';
+  if (file.size < 1) return 'malformed_package';
+  if (file.size > MAX_VERIFY_FILE_BYTES) return 'package_too_large';
+  return null;
+}
+
+function formatVerificationTime(unixMilliseconds) {
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'long' }).format(new Date(unixMilliseconds));
+}
+
+function formatTrustSource(source) {
+  const words = String(source).replaceAll('_', ' ');
+  return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+}
+
+function VerificationError({ code }) {
+  const [title, copy] = verificationError(code);
+  return <section className="verification-result verification-result--error" role="alert"><span className="eyebrow">Verification stopped</span><h2>{title}</h2><p>{copy}</p><code>{code}</code></section>;
+}
+
+export function VerificationPage({ verifyFile = verifyTracePackage }) {
+  const inputRef = useRef(null);
+  const requestGeneration = useRef(0);
+  const [file, setFile] = useState(null);
+  const [consent, setConsent] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [status, setStatus] = useState('idle');
+  const [errorCode, setErrorCode] = useState(null);
+  const [result, setResult] = useState(null);
+  const trace = result ? parsePublishedTrace(result.trace) : [];
+  const chooseFile = (nextFile) => {
+    requestGeneration.current += 1;
+    setConsent(false);
+    setResult(null);
+    setStatus('idle');
+    const nextError = nextFile ? verificationFileError(nextFile) : null;
+    setFile(nextError ? null : nextFile);
+    setErrorCode(nextError);
+  };
+  const submit = async (event) => {
+    event.preventDefault();
+    if (!file || !consent || status === 'uploading') return;
+    setErrorCode(null);
+    setResult(null);
+    setStatus('uploading');
+    const generation = ++requestGeneration.current;
+    try {
+      const nextResult = await verifyFile(file);
+      if (requestGeneration.current !== generation) return;
+      setResult(nextResult);
+      setStatus('success');
+    } catch (error) {
+      if (requestGeneration.current !== generation) return;
+      setErrorCode(error instanceof Error ? error.message : 'verification_unavailable');
+      setStatus('error');
+    }
+  };
+  return <main className="verification-shell">
+    <header className="verification-intro"><span className="eyebrow">Portable verification</span><h1>Verify a .llmtrace package.</h1><p>Check the authenticated provider exchange, notary signature, artifact hashes, and normalized OpenTelemetry trace without signing in.</p></header>
+    <form className="verification-workspace" onSubmit={submit}>
+      <section className="verification-disclosure" aria-labelledby="verification-disclosure-title"><span className="eyebrow">Read before uploading</span><h2 id="verification-disclosure-title">The package discloses its request and response bodies.</h2><p>Header values are hidden by default, but prompts, responses, tool definitions, and tool results can be present. The service processes the package in memory and does not retain it. This live result is not a signed receipt.</p></section>
+      <label
+        className={`verification-drop${dragging ? ' verification-drop--active' : ''}`}
+        onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
+        onDragOver={(event) => event.preventDefault()}
+        onDragLeave={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDragging(false); }}
+        onDrop={(event) => { event.preventDefault(); setDragging(false); chooseFile(event.dataTransfer.files[0] || null); }}
+      >
+        <input ref={inputRef} type="file" accept=".llmtrace,application/vnd.llmnotary.trace-package+zip" onChange={(event) => chooseFile(event.target.files[0] || null)} />
+        <span>{file ? 'Package selected' : 'Drop one .llmtrace package here'}</span>
+        <strong>{file ? file.name : 'or choose a file'}</strong>
+        <small>{file ? fileSize(file.size) : 'Maximum package size: 128 MiB'}</small>
+      </label>
+      {file && <label className="verification-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /><span>I understand that this upload discloses the package’s request and response bodies to the verification service.</span></label>}
+      <div className="verification-actions"><button className="button button-dark" type="submit" disabled={!file || !consent || status === 'uploading'}>{status === 'uploading' ? 'Verifying package…' : 'Verify package'}</button>{file && <button className="button" type="button" onClick={() => { chooseFile(null); if (inputRef.current) inputRef.current.value = ''; }}>Clear</button>}</div>
+      {status === 'uploading' && <p className="verification-progress" role="status">Cryptographic verification is running. Keep this page open.</p>}
+    </form>
+    {errorCode && <VerificationError code={errorCode} />}
+    {result && <section className="verification-result verification-result--success" aria-labelledby="verification-success-title" aria-live="polite"><header><div><span className="eyebrow">Portable package</span><h2 id="verification-success-title">Verification passed.</h2></div><strong>Verified</strong></header><p className="verification-result-note">This result was computed from the uploaded package. It is not a platform signature or durable receipt.</p><dl className="verification-facts"><div><dt>Provider</dt><dd>{result.provider}</dd></div><div><dt>Host</dt><dd>{result.host}</dd></div><div><dt>Capture time</dt><dd>{formatVerificationTime(result.authenticated_at_unix_ms)}</dd></div><div><dt>Notary key</dt><dd><code>{result.notary_key_id}</code></dd></div><div><dt>Trust source</dt><dd>{formatTrustSource(result.trust_source)} · generation {result.directory_generation}</dd></div><div><dt>Trace SHA-256</dt><dd><code>{result.trace_sha256}</code></dd></div><div><dt>Package SHA-256</dt><dd><code>{result.package_sha256}</code></dd></div></dl><section className="verification-trace"><div className="span-panel-head"><span>Normalized trace</span><small>{trace.length} {trace.length === 1 ? 'span' : 'spans'}</small></div>{trace.length ? <SpanTree spans={trace} /> : <p>No normalized spans were present.</p>}</section></section>}
+  </main>;
 }
 
 function MotionStudies() {
@@ -191,7 +295,7 @@ function Landing() {
     <section className="hero">
       <HeroSignalField />
       <h1>Verifiable intelligence</h1>
-      <p>Privacy-preserving LLM traces for open research and independent verification.</p>
+      <p>Privacy-preserving LLM trace packages for open research and independent verification.</p>
       <div className="hero-actions"><a className="button button-dark" href="#/docs/getting-started">Get started</a><a className="button button-plain" href="#/library">Browse Library</a></div>
     </section>
     <MotionStudies />
@@ -202,8 +306,8 @@ function Landing() {
     </section>
     <CollectionPreview />
     <section className="section verify" id="verify">
-      <div><span className="eyebrow">Independent verification</span><h2>Proof of origin.</h2><p>LLM Notary verifies the provider-authenticated exchange, then signs the exact trace hash. Anyone can check the signature and confirm the published trace has not been altered.</p><div className="verify-points"><span>OTLP JSON</span><span>Signed hash</span><span>Independently verifiable</span></div><div className="button-row"><a className="button button-dark" href="#/docs/trace-packages">Verify with the local API</a></div></div>
-      <div className="receipt"><header><PenMark /><b>Publication stamp</b></header><h3>Verified</h3><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Artifact</dt><dd>trace.otlp.json</dd></div><div><dt>Trace hash</dt><dd>9b44f8…c21d</dd></div></dl><div className="receipt-contents"><span>Input messages <i>•••</i></span><span>Assistant responses <i>•••</i></span><span>Tool calls + results <i>•••</i></span></div><footer>LLM NOTARY / STAMP v1</footer></div>
+      <div><span className="eyebrow">Independent verification</span><h2>Proof travels with the package.</h2><p>A finalized .llmtrace contains the notary-signed TLS evidence, disclosed exchange, canonical trace, and hashes needed for portable verification. A bare Library trace is for inspection, not independent proof.</p><div className="verify-points"><span>Notary evidence</span><span>Canonical OTLP</span><span>Portable package</span></div><div className="button-row"><a className="button button-dark" href="#/verify">Verify a package</a></div></div>
+      <div className="receipt"><header><PenMark /><b>Portable package</b></header><h3>Verified</h3><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Artifact</dt><dd>capture.llmtrace</dd></div><div><dt>Trace hash</dt><dd>9b44f8…c21d</dd></div></dl><div className="receipt-contents"><span>Notary evidence <i>•••</i></span><span>Disclosed exchange <i>•••</i></span><span>Canonical trace <i>•••</i></span></div><footer>VERIFIED FROM SOURCE PACKAGE</footer></div>
     </section>
   </main>;
 }
@@ -211,7 +315,7 @@ function Landing() {
 const docPages = {
   overview: {
     title: 'How LLM Notary fits.',
-    lead: 'Run your existing model client through a local proxy, keep encrypted evidence on your machine, and turn only the interactions you choose into independently verifiable OpenTelemetry traces.',
+    lead: 'Run your existing model client through a local proxy, keep encrypted evidence on your machine, and turn only the interactions you choose into independently verifiable OpenTelemetry trace packages.',
     blocks: [
       {
         heading: 'The workflow',
@@ -227,7 +331,7 @@ const docPages = {
         cards: [
           { meta: 'Private', title: 'Encrypted bundle', body: 'A sensitive local checkpoint that can be finalized later. It is not yet evidence another person can verify.' },
           { meta: 'Portable', title: 'Trace package', body: 'TLSNotary evidence, disclosed authenticated HTTP, canonical OTLP, and a manifest binding the files together.' },
-          { meta: 'Public', title: 'Published trace', body: 'The canonical OTLP trace paired with an LLM Notary platform stamp and public metadata.' },
+          { meta: 'Public', title: 'Published trace', body: 'Canonical OTLP and public metadata admitted after the platform verifies the source package. Retain the package for portable verification.' },
         ],
       },
       {
@@ -346,8 +450,8 @@ const docPages = {
           { term: 'manifest.json', description: 'The versioned source metadata and trace hash. The cryptographic signature lives in evidence.tlsn, not in this JSON file.' },
         ],
       },
-      { heading: 'Package versus publication', body: 'The finalized source package uses `manifest.json`. A later public trace pairs the canonical `trace.otlp.json` with a platform-issued `stamp.json`; that public stamp does not replace the private TLSNotary evidence.' },
-      { heading: 'Inspect or verify a Library trace', code: 'GET /v1/public-traces/{publication_id}\nPOST /v1/public-traces/{publication_id}/verify', body: 'The local admin API resolves the publication through the public API and returns its canonical trace and stamp. The verify operation checks canonical bytes, trace hash, contract versions, platform key ID, stamp issuer, and signature without accepting an output path.' },
+      { heading: 'Package versus publication', body: 'The finalized `.llmtrace` source package carries all cryptographic evidence and is independently verifiable. A later public `trace.otlp.json` is an inspectable normalized trace admitted from a verified package, but the bare JSON does not carry that proof.' },
+      { heading: 'Verify a portable package', code: 'llm-notary traces verify ./capture.llmtrace\nPOST /api/verify', body: 'Use the local CLI for offline verification against pinned trust history, or explicitly upload the package on the public Verify page. The hosted service does not retain the package and its live result is not a signed receipt.' },
       { heading: 'Complete context is intentional', body: 'A `.llmtrace` can include system context, tool definitions, session metadata, prompts, responses, and tool results. All HTTP header values are hidden by default, but request and response bodies remain disclosed. Inspect it before sharing; the encrypted `.llmbundle` is private retry state and must stay local.' },
       { heading: 'Download or verify locally', code: 'GET /v1/captures/{capture_id}/package\nPOST /v1/captures/{capture_id}/trace:verify\nllm-notary traces verify ./capture.llmtrace' },
       {
@@ -619,7 +723,7 @@ function SpanTree({ spans }) {
     else next.add(index);
     return next;
   });
-  return <div className="span-tree" aria-label="Published trace spans">{spans.map((span, index) => {
+  return <div className="span-tree" aria-label="Trace spans">{spans.map((span, index) => {
     const open = expanded.has(index);
     return <div className="span-row span-row--source" key={`${span.spanId}-${index}`}><button type="button" className="span-summary" aria-expanded={open} onClick={() => toggle(index)}><span className="span-branch" aria-hidden="true" /><span className="span-kind">{span.kind}</span><strong>{span.name}</strong><span className="span-disclosure" aria-hidden="true" /><small>span <code>{span.spanId}</code></small><em>Provider verified</em></button>{open && <>{span.attributes && <div className="span-evidence span-attributes"><span className="message-group-label">attributes</span><div className="trace-fields">{span.attributes.map(([name, value]) => <TraceField key={name} label={name} value={value} />)}</div></div>}{span.messages && <div className="span-evidence span-messages"><MessageGroup label="gen_ai.input.messages" messages={span.messages.input} /><MessageGroup label="gen_ai.output.messages" messages={span.messages.output} /></div>}</>}</div>;
   })}</div>;
@@ -830,7 +934,7 @@ export function Collections({ selectedId, loadCollection = getTraceCollection, l
                   {!showMobileDetail && <div className="collection-list">
                     <div className="library-grid">{filtered.map((item) => <button ref={(node) => { if (node) listButtons.current.set(item.id, node); else listButtons.current.delete(item.id); }} className={`model-card${activeId === item.id ? ' active' : ''}`} onClick={() => selectTrace(item.id)} aria-pressed={activeId === item.id} key={item.id}><span className="model-card-title">{item.title}</span><span className="model-card-model">{item.provider} · {item.model}<time>{new Date(item.admitted_at * 1000).toLocaleDateString()}</time></span>{item.tool_use && <span className="model-card-summary">tool use</span>}<span className="model-card-facts"><span><b>Publisher</b>{item.author}</span></span><span className="tag-list">{item.tags.map((value) => <span key={value}>{value}</span>)}</span></button>)}</div>
                   </div>}
-                  {active && (!mobile || showMobileDetail) && <article className="collection-inspector">{showMobileDetail && <button type="button" className="library-back" onClick={returnToLibrary}>← Back to all traces</button>}<header><span className="eyebrow">Selected trace</span><span className="inspector-status"><i aria-hidden="true" /> Verified</span></header><h2 ref={inspectorHeading} tabIndex={-1}>{active.title}</h2><dl className="inspector-facts"><div><dt>Provider</dt><dd>{active.host}</dd></div><div><dt>Model</dt><dd>{active.model}</dd></div><div><dt>Publisher</dt><dd>{active.author}</dd></div><div><dt>Published</dt><dd>{new Date(active.admitted_at * 1000).toLocaleDateString()}</dd></div></dl><div className="trace-download"><span>Local verification</span><code>POST /v1/public-traces/{active.id}/verify</code><small>Use the local service to fetch the trace and verify its platform stamp.</small></div><section className="span-panel"><div className="span-panel-head"><span>Trace contents</span><small>{active.span_count} {active.span_count === 1 ? 'span' : 'spans'}</small></div><div className="trace-legend"><span><i className="source" /> Fields derived from verified provider exchanges</span></div>{traceError ? <p className="trace-preview-state">{traceError}</p> : tracePreview === null ? <p className="trace-preview-state">Loading messages…</p> : <SpanTree spans={tracePreview} />}</section></article>}
+                  {active && (!mobile || showMobileDetail) && <article className="collection-inspector">{showMobileDetail && <button type="button" className="library-back" onClick={returnToLibrary}>← Back to all traces</button>}<header><span className="eyebrow">Selected trace</span><span className="inspector-status"><i aria-hidden="true" /> Admitted</span></header><h2 ref={inspectorHeading} tabIndex={-1}>{active.title}</h2><dl className="inspector-facts"><div><dt>Provider</dt><dd>{active.host}</dd></div><div><dt>Model</dt><dd>{active.model}</dd></div><div><dt>Publisher</dt><dd>{active.author}</dd></div><div><dt>Published</dt><dd>{new Date(active.admitted_at * 1000).toLocaleDateString()}</dd></div></dl><div className="trace-download"><span>Portable verification</span><a href="#/verify">Verify the source .llmtrace package</a><small>This public trace was admitted from a verified package, but the bare trace is not independently verifiable.</small></div><section className="span-panel"><div className="span-panel-head"><span>Trace contents</span><small>{active.span_count} {active.span_count === 1 ? 'span' : 'spans'}</small></div><div className="trace-legend"><span><i className="source" /> Fields derived from an admitted package</span></div>{traceError ? <p className="trace-preview-state">{traceError}</p> : tracePreview === null ? <p className="trace-preview-state">Loading messages…</p> : <SpanTree spans={tracePreview} />}</section></article>}
                 </div>
               </section>}
         </>}
@@ -848,7 +952,7 @@ function fileSize(bytes) {
 }
 
 function publishState(state) {
-  if (state === 'admitted') return { label: 'Verified', tone: 'verified' };
+  if (state === 'admitted') return { label: 'Admitted', tone: 'verified' };
   if (state === 'queued') return { label: 'Queued', tone: 'pending' };
   if (state === 'verifying') return { label: 'Verifying', tone: 'pending' };
   if (state === 'uploading') return { label: 'Uploading', tone: 'pending' };
@@ -930,7 +1034,7 @@ function Dashboard({ user, view, onPlanChange }) {
     }
   };
 
-  const verifiedCount = jobs?.filter((job) => job.state === 'admitted').length || 0;
+  const admittedCount = jobs?.filter((job) => job.state === 'admitted').length || 0;
   const activeCount = jobs?.filter((job) => ['uploading', 'queued', 'verifying'].includes(job.state)).length || 0;
   const activeView = view === 'traces' ? 'traces' : 'account';
 
@@ -948,7 +1052,7 @@ function Dashboard({ user, view, onPlanChange }) {
           <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Account</h1><p>Manage hosted service access and the local services connected to your account.</p></header>
           <div className="dashboard-summary">
             <div><span>GitHub account</span><b>{user.github_login}</b></div>
-            <div><span>Verified traces</span><b>{jobs === null ? '—' : verifiedCount}</b></div>
+            <div><span>Admitted traces</span><b>{jobs === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{jobs === null ? '—' : activeCount}</b></div>
           </div>
           <section className="dashboard-plan" aria-labelledby="service-plan-title">
@@ -977,7 +1081,7 @@ function Dashboard({ user, view, onPlanChange }) {
                   {job.trace_url && <a href={job.trace_url} target="_blank" rel="noreferrer">Trace</a>}
                 </div>
               </article>;
-            })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No publications</span><b>Publish your first trace.</b><p>Finalize a capture in the local dashboard, then publish its evidence to make it independently verifiable.</p><a href="#/docs/publish">Open the publishing guide</a></div>}
+            })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No publications</span><b>Publish your first trace.</b><p>Finalize a capture in the local dashboard, then publish its normalized trace for public inspection. Keep the source package for portable verification.</p><a href="#/docs/publish">Open the publishing guide</a></div>}
           </section>
         </>}
       </div>
@@ -1119,7 +1223,7 @@ function App() {
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
   const updatePlan = (response) => setUser((current) => current ? { ...current, plan: response.plan, entitlements: response.entitlements } : current);
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections selectedId={page} /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} onPlanChange={updatePlan} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections selectedId={page} /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} onPlanChange={updatePlan} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 const applicationRoot = document.getElementById('root');
