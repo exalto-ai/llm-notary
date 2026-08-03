@@ -775,6 +775,8 @@ async fn load_publication_auth_status() -> Result<Json<AccountConnectionResponse
         signed_in: status.signed_in,
         github_login: status.github_login,
         device_name: status.device_name,
+        credential_kind: status.credential_kind,
+        credential_name: status.credential_name,
     }))
 }
 
@@ -794,11 +796,16 @@ fn default_device_name() -> String {
     auth::DEFAULT_DEVICE_NAME.to_owned()
 }
 
-#[utoipa::path(post, path = "/v1/publication/auth", summary = "Connect an LLM Notary account", description = "Starts browser approval for an account connection used for hosted tier admission and trace publication.", request_body = AccountConnectionRequest, responses((status = 202, body = AccountConnectionStartedResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/publication/auth", summary = "Connect an LLM Notary account", description = "Starts browser approval for an account connection used for hosted tier admission and trace publication. Browser approval is unavailable while the daemon uses an injected API key.", request_body = AccountConnectionRequest, responses((status = 202, body = AccountConnectionStartedResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_publication_auth(
     State(state): State<AdminState>,
     Json(body): Json<AccountConnectionRequest>,
 ) -> Result<(StatusCode, Json<AccountConnectionStartedResponse>), ApiError> {
+    if auth::api_key_mode_active()
+        .map_err(|_| ApiError::internal("publication_auth_configuration_failed"))?
+    {
+        return Err(ApiError::api_key_mode());
+    }
     let pending = auth::start_authorization(&body.api_origin, &body.device_name)
         .await
         .map_err(|_| ApiError::internal("publication_auth_start_failed"))?;
@@ -847,6 +854,8 @@ async fn poll_publication_auth(
             signed_in: false,
             github_login: None,
             device_name: None,
+            credential_kind: None,
+            credential_name: None,
         })),
         auth::AuthorizationPoll::Complete => {
             state
@@ -859,7 +868,7 @@ async fn poll_publication_auth(
     }
 }
 
-#[utoipa::path(delete, path = "/v1/publication/auth", summary = "Disconnect the LLM Notary account", description = "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed.", responses((status = 204, description = "Account disconnected; hosted sessions return to public access"), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/publication/auth", summary = "Disconnect the LLM Notary account", description = "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.", responses((status = 204, description = "Account disconnected; hosted sessions return to public access"), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn end_publication_auth(State(state): State<AdminState>) -> Result<StatusCode, ApiError> {
     let _credentials = state.publication_credentials.lock().await;
     auth::logout_for_service()
@@ -1451,6 +1460,8 @@ struct AccountConnectionResponse {
     signed_in: bool,
     github_login: Option<String>,
     device_name: Option<String>,
+    credential_kind: Option<String>,
+    credential_name: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1523,6 +1534,13 @@ impl ApiError {
             status: StatusCode::CONFLICT,
             code,
             message: "The operation is not retryable",
+        }
+    }
+    fn api_key_mode() -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "api_key_mode",
+            message: "Browser login and logout are unavailable while the daemon uses an injected API key",
         }
     }
     fn finalization_ineligible() -> Self {

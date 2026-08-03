@@ -37,6 +37,8 @@ use utoipa::{Modify, OpenApi, ToSchema};
 use utoipa_axum::{router::OpenApiRouter, routes};
 
 mod admission;
+mod api_keys;
+mod authn;
 mod config;
 mod hosted_verifier;
 mod intake;
@@ -183,9 +185,17 @@ struct CliSessionResponse {
 }
 
 #[derive(Serialize, ToSchema)]
+struct CliCredentialResponse {
+    kind: authn::CredentialKind,
+    id: String,
+    name: String,
+}
+
+#[derive(Serialize, ToSchema)]
 struct CliMeResponse {
     user: PublicUser,
-    session: CliSessionResponse,
+    credential: CliCredentialResponse,
+    session: Option<CliSessionResponse>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -283,6 +293,13 @@ impl ApiError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: "authentication required",
+        }
+    }
+
+    fn forbidden() -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            message: "credential does not have the required scope",
         }
     }
 
@@ -407,7 +424,9 @@ impl Modify for SecurityAddon {
                     HttpBuilder::new()
                         .scheme(HttpAuthScheme::Bearer)
                         .bearer_format("opaque")
-                        .description(Some("Short-lived CLI access token"))
+                        .description(Some(
+                            "Short-lived CLI access token or stable scoped API key",
+                        ))
                         .build(),
                 ),
             );
@@ -449,6 +468,7 @@ fn hosted_router() -> OpenApiRouter<AppState> {
         .routes(routes!(refresh_cli_tokens))
         .routes(routes!(logout_cli_session))
         .routes(routes!(cli_me))
+        .merge(api_keys::router())
         .merge(publish::router())
         .merge(admission::router())
         .merge(verify::router())
@@ -1331,6 +1351,7 @@ async fn logout_cli_session(
     responses(
         (status = 200, body = CliMeResponse),
         (status = 401, body = ErrorResponse),
+        (status = 403, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
     security(("bearerAuth" = [])),
@@ -1340,31 +1361,32 @@ async fn cli_me(
     State(state): State<AppState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<CliMeResponse>> {
-    let token = bearer_token(&headers)?;
-    let now = unix_timestamp()?;
-    let session = sqlx::query_as::<_, (String, String, Option<String>, String)>(
-        "SELECT users.id, users.github_login, users.avatar_url, cli_sessions.device_name
-         FROM cli_access_tokens
-         JOIN cli_sessions ON cli_sessions.id = cli_access_tokens.session_id
-         JOIN users ON users.id = cli_sessions.user_id
-         WHERE cli_access_tokens.token_hash = $1 AND cli_access_tokens.expires_at > $2
-           AND cli_sessions.revoked_at IS NULL",
+    let principal =
+        authn::authenticated_principal(&state, &headers, authn::ApiScope::AccountRead).await?;
+    let user = sqlx::query_as::<_, (String, String, Option<String>)>(
+        "SELECT id, github_login, avatar_url FROM users WHERE id = $1",
     )
-    .bind(sha256_hex(token.as_bytes()))
-    .bind(now)
-    .fetch_optional(&state.database)
+    .bind(&principal.user_id)
+    .fetch_one(&state.database)
     .await
-    .map_err(database_error)?
-    .ok_or_else(ApiError::unauthorized)?;
+    .map_err(database_error)?;
+    let session = (principal.credential_kind == authn::CredentialKind::CliSession).then(|| {
+        CliSessionResponse {
+            device_name: principal.credential_name.clone(),
+        }
+    });
     Ok(Json(CliMeResponse {
         user: PublicUser {
-            id: session.0,
-            github_login: session.1,
-            avatar_url: session.2,
+            id: user.0,
+            github_login: user.1,
+            avatar_url: user.2,
         },
-        session: CliSessionResponse {
-            device_name: session.3,
+        credential: CliCredentialResponse {
+            kind: principal.credential_kind,
+            id: principal.credential_id,
+            name: principal.credential_name,
         },
+        session,
     }))
 }
 
@@ -1673,6 +1695,7 @@ mod tests {
     fn public_routes_and_openapi_are_registered_together() {
         let expected = [
             "DELETE /api/cli/sessions/{session_id}",
+            "DELETE /api/me/api-keys/{api_key_id}",
             "GET /api/auth/github",
             "GET /api/auth/github/callback",
             "GET /api/cli/authorizations/{request_id}/approval",
@@ -1680,6 +1703,7 @@ mod tests {
             "GET /api/cli/sessions",
             "GET /api/healthz",
             "GET /api/me",
+            "GET /api/me/api-keys",
             "GET /api/me/publish-jobs",
             "GET /api/notary",
             "GET /api/public/collections/traces",
@@ -1693,6 +1717,7 @@ mod tests {
             "POST /api/cli/authorizations/{request_id}/token",
             "POST /api/cli/logout",
             "POST /api/cli/token",
+            "POST /api/me/api-keys",
             "POST /api/public/traces/{trace_id}/events/download",
             "POST /api/verify",
             "POST /api/publish/jobs",

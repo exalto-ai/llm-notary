@@ -13,7 +13,7 @@ pub(crate) struct ApiOrigin(Url);
 
 impl ApiOrigin {
     pub(crate) fn parse(value: &str) -> Result<Self> {
-        let mut url = Url::parse(value).context("--api must be an absolute URL")?;
+        let mut url = Url::parse(value).context("API origin must be an absolute URL")?;
         if !matches!(url.scheme(), "https" | "http")
             || url.host_str().is_none()
             || url.path() != "/"
@@ -22,10 +22,12 @@ impl ApiOrigin {
             || !url.username().is_empty()
             || url.password().is_some()
         {
-            bail!("--api must be an HTTP(S) origin without a path, credentials, query, or fragment")
+            bail!(
+                "API origin must be an HTTP(S) origin without a path, credentials, query, or fragment"
+            )
         }
         if url.scheme() == "http" && !is_loopback_url(&url) {
-            bail!("--api must use HTTPS except for a loopback development origin")
+            bail!("API origin must use HTTPS except for a loopback development origin")
         }
 
         // Keep a trailing slash internally so URL joining always starts from

@@ -348,6 +348,9 @@ eligible finalized capture. Ask the user before either publishing or changing
 service configuration. Device authorization starts with `202 Accepted`; obey
 its `poll_interval_seconds` and keep polling the returned
 `/v1/publication/auth/{request_id}` route while `signed_in` is false.
+When the daemon uses an injected API key, `POST /v1/publication/auth` and
+`DELETE /v1/publication/auth` return `409`; create and revoke API keys in the
+hosted dashboard instead.
 After submission, poll `GET /v1/publications/{job_id}` on the local admin
 listener. The service uses the vault-held publication credential
 to fetch admission state; agents and the dashboard never receive that

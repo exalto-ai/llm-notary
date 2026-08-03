@@ -227,7 +227,7 @@ pub(crate) async fn discover_notary() -> Result<NotaryEndpoint> {
 }
 
 pub(crate) async fn refresh_notary_directory() -> Result<NotaryDirectory> {
-    refresh_notary_directory_from(&ApiOrigin::default_public()).await
+    refresh_notary_directory_from(&super::auth::configured_api_origin()?).await
 }
 
 pub(crate) async fn refresh_notary_directory_from(

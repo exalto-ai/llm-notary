@@ -277,6 +277,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/me/api-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List account API keys */
+        get: operations["list_api_keys"];
+        put?: never;
+        /** Create an account API key */
+        post: operations["create_api_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/api-keys/{api_key_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke an account API key */
+        delete: operations["revoke_api_key"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/plan": {
         parameters: {
             query?: never;
@@ -517,6 +552,25 @@ export interface components {
             expires_at: number;
             ticket: string;
         };
+        ApiKeyResponse: {
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            expires_at?: number | null;
+            id: string;
+            /** Format: int64 */
+            last_used_at?: number | null;
+            name: string;
+            prefix: string;
+            /** Format: int64 */
+            revoked_at?: number | null;
+            scopes: components["schemas"]["ApiScope"][];
+        };
+        ApiKeysResponse: {
+            api_keys: components["schemas"]["ApiKeyResponse"][];
+        };
+        /** @enum {string} */
+        ApiScope: "account:read" | "notary:admit" | "publish:read" | "publish:write";
         ApprovalDetails: {
             device_name: string;
             /** Format: int64 */
@@ -536,8 +590,14 @@ export interface components {
             user_code: string;
             verification_uri_complete: string;
         };
+        CliCredentialResponse: {
+            id: string;
+            kind: components["schemas"]["CredentialKind"];
+            name: string;
+        };
         CliMeResponse: {
-            session: components["schemas"]["CliSessionResponse"];
+            credential: components["schemas"]["CliCredentialResponse"];
+            session?: null | components["schemas"]["CliSessionResponse"];
             user: components["schemas"]["PublicUser"];
         };
         CliSessionResponse: {
@@ -573,6 +633,16 @@ export interface components {
             slug: string;
             title: string;
         };
+        CreateApiKeyRequest: {
+            /** Format: int64 */
+            expires_at?: number | null;
+            name: string;
+            scopes: string[];
+        };
+        CreateApiKeyResponse: {
+            api_key: components["schemas"]["ApiKeyResponse"];
+            secret: string;
+        };
         CreateCliAuthorization: {
             device_name: string;
         };
@@ -586,6 +656,8 @@ export interface components {
             job: components["schemas"]["PublishJobResponse"];
             upload?: null | components["schemas"]["UploadInstructions"];
         };
+        /** @enum {string} */
+        CredentialKind: "cli_session" | "api_key";
         EffectiveEntitlements: {
             access_pool: components["schemas"]["AccessPool"];
             /** Format: int64 */
@@ -1147,6 +1219,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             500: {
                 headers: {
                     [name: string]: unknown;
@@ -1477,6 +1557,132 @@ export interface operations {
             };
         };
     };
+    list_api_keys: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiKeysResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_api_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateApiKeyRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateApiKeyResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    revoke_api_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                api_key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description API key revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     change_plan: {
         parameters: {
             query?: never;
@@ -1600,6 +1806,14 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1832,6 +2046,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1885,6 +2107,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -1931,6 +2161,14 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { Collections, HostedNotaryRecord, VerificationPage } from './main';
+import { ApiKeysPanel, Collections, HostedNotaryRecord, VerificationPage } from './main';
 
 afterEach(async () => {
   cleanup();
@@ -42,6 +42,44 @@ function RoutedLibrary() {
 }
 
 describe('hosted site', () => {
+  test('shows a new API key once and revokes it from the account list', async () => {
+    const secret = `llmn_v1_${'a'.repeat(32)}_${'b'.repeat(64)}`;
+    let createRequest;
+    let revokedId;
+    render(<ApiKeysPanel
+      loadKeys={async () => []}
+      createKey={async (request) => {
+        createRequest = request;
+        return {
+          secret,
+          api_key: {
+            id: 'a'.repeat(32), prefix: `llmn_v1_${'a'.repeat(12)}`, name: request.name,
+            scopes: request.scopes, created_at: 1_786_000_000, last_used_at: null,
+            expires_at: request.expires_at, revoked_at: null
+          }
+        };
+      }}
+      revokeKey={async (id) => { revokedId = id; }}
+    />);
+
+    await expect.element(page.getByText('No API keys')).toBeVisible();
+    await page.getByRole('button', { name: 'Create API key' }).click();
+    await page.getByLabelText('Name').fill('Nightly CI');
+    await page.getByRole('dialog').getByRole('button', { name: 'Create API key' }).click();
+
+    await expect.element(page.getByText(secret)).toBeVisible();
+    expect(createRequest.name).toBe('Nightly CI');
+    expect(createRequest.scopes).toEqual(['account:read', 'notary:admit', 'publish:read', 'publish:write']);
+    await page.getByRole('button', { name: 'I stored the key' }).click();
+    await expect.element(page.getByText(secret)).not.toBeInTheDocument();
+    await expect.element(page.getByText('Nightly CI')).toBeVisible();
+
+    await page.getByRole('button', { name: 'Revoke' }).click();
+    await page.getByRole('button', { name: 'Revoke API key' }).click();
+    expect(revokedId).toBe('a'.repeat(32));
+    await expect.element(page.getByText('Revoked')).toBeVisible();
+  });
+
   test('renders a zero notary lower bound as an unbounded interval', async () => {
     render(<HostedNotaryRecord
       record={{

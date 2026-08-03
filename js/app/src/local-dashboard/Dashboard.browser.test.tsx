@@ -231,7 +231,10 @@ describe('local evidence dashboard', () => {
       }),
       pollPublicationAuth: async () => ++polls === 1
         ? { signed_in: false }
-        : { signed_in: true, github_login: 'approved-user', device_name: 'Local dashboard' },
+        : {
+            signed_in: true, github_login: 'approved-user', device_name: 'Local dashboard',
+            credential_kind: 'cli_session', credential_name: 'Local dashboard'
+          },
       publish: async (captureId) => {
         publishedCapture = captureId;
         return { capture_id: captureId, job_id: 'pub-job-fixture', state: 'queued', status_url: '/v1/publications/pub-job-fixture' };
@@ -252,6 +255,24 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('cap-20260727-research-brief')).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Refresh status' })).toBeVisible();
     expect(publishedCapture).toBe('cap-20260727-research-brief');
+  });
+
+  test('identifies API-key mode without offering browser authorization', async () => {
+    const api: LocalApi = {
+      ...createFixtureApi(),
+      publicationAuth: async () => ({
+        signed_in: true,
+        github_login: 'automation-user',
+        credential_kind: 'api_key',
+        credential_name: 'Nightly CI'
+      })
+    };
+
+    renderDashboard('/publishing', api);
+    await expect.element(page.getByRole('heading', { name: 'automation-user' })).toBeVisible();
+    await expect.element(page.getByText('Nightly CI')).toBeVisible();
+    await expect.element(page.getByText('API key', { exact: true })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Begin authorization' })).not.toBeInTheDocument();
   });
 
   test('completes the documentation publication flow without external services', async () => {

@@ -514,6 +514,16 @@
               }
             }
           },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "500": {
             "description": "",
             "content": {
@@ -956,6 +966,175 @@
         ]
       }
     },
+    "/api/me/api-keys": {
+      "get": {
+        "tags": [
+          "browser-auth"
+        ],
+        "summary": "List account API keys",
+        "operationId": "list_api_keys",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeysResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "browser-auth"
+        ],
+        "summary": "Create an account API key",
+        "operationId": "create_api_key",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateApiKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/me/api-keys/{api_key_id}": {
+      "delete": {
+        "tags": [
+          "browser-auth"
+        ],
+        "summary": "Revoke an account API key",
+        "operationId": "revoke_api_key",
+        "parameters": [
+          {
+            "name": "api_key_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "API key revoked"
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
     "/api/me/plan": {
       "put": {
         "tags": [
@@ -1118,6 +1297,16 @@
             }
           },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
             "description": "",
             "content": {
               "application/json": {
@@ -1430,6 +1619,16 @@
               }
             }
           },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "409": {
             "description": "",
             "content": {
@@ -1506,6 +1705,16 @@
               }
             }
           },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "",
             "content": {
@@ -1573,6 +1782,16 @@
             }
           },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
             "description": "",
             "content": {
               "application/json": {
@@ -1818,6 +2037,81 @@
           }
         }
       },
+      "ApiKeyResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "prefix",
+          "name",
+          "scopes",
+          "created_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_used_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "revoked_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApiScope"
+            }
+          }
+        }
+      },
+      "ApiKeysResponse": {
+        "type": "object",
+        "required": [
+          "api_keys"
+        ],
+        "properties": {
+          "api_keys": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ApiKeyResponse"
+            }
+          }
+        }
+      },
+      "ApiScope": {
+        "type": "string",
+        "enum": [
+          "account:read",
+          "notary:admit",
+          "publish:read",
+          "publish:write"
+        ]
+      },
       "ApprovalDetails": {
         "type": "object",
         "required": [
@@ -1882,15 +2176,44 @@
           }
         }
       },
+      "CliCredentialResponse": {
+        "type": "object",
+        "required": [
+          "kind",
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CredentialKind"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
       "CliMeResponse": {
         "type": "object",
         "required": [
           "user",
-          "session"
+          "credential"
         ],
         "properties": {
+          "credential": {
+            "$ref": "#/components/schemas/CliCredentialResponse"
+          },
           "session": {
-            "$ref": "#/components/schemas/CliSessionResponse"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/CliSessionResponse"
+              }
+            ]
           },
           "user": {
             "$ref": "#/components/schemas/PublicUser"
@@ -2023,6 +2346,47 @@
           }
         }
       },
+      "CreateApiKeyRequest": {
+        "type": "object",
+        "required": [
+          "name",
+          "scopes"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateApiKeyResponse": {
+        "type": "object",
+        "required": [
+          "api_key",
+          "secret"
+        ],
+        "properties": {
+          "api_key": {
+            "$ref": "#/components/schemas/ApiKeyResponse"
+          },
+          "secret": {
+            "type": "string"
+          }
+        }
+      },
       "CreateCliAuthorization": {
         "type": "object",
         "required": [
@@ -2075,6 +2439,13 @@
             ]
           }
         }
+      },
+      "CredentialKind": {
+        "type": "string",
+        "enum": [
+          "cli_session",
+          "api_key"
+        ]
       },
       "EffectiveEntitlements": {
         "type": "object",
@@ -2771,7 +3142,7 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "opaque",
-        "description": "Short-lived CLI access token"
+        "description": "Short-lived CLI access token or stable scoped API key"
       },
       "browserSession": {
         "type": "apiKey",

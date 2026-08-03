@@ -918,7 +918,7 @@
           "local-admin"
         ],
         "summary": "Connect an LLM Notary account",
-        "description": "Starts browser approval for an account connection used for hosted tier admission and trace publication.",
+        "description": "Starts browser approval for an account connection used for hosted tier admission and trace publication. Browser approval is unavailable while the daemon uses an injected API key.",
         "operationId": "start_publication_auth",
         "requestBody": {
           "content": {
@@ -950,6 +950,16 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -964,13 +974,23 @@
           "local-admin"
         ],
         "summary": "Disconnect the LLM Notary account",
-        "description": "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed.",
+        "description": "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.",
         "operationId": "end_publication_auth",
         "responses": {
           "204": {
             "description": "Account disconnected; hosted sessions return to public access"
           },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
             "description": "",
             "content": {
               "application/json": {
@@ -1243,6 +1263,18 @@
           "signed_in"
         ],
         "properties": {
+          "credential_kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "credential_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "device_name": {
             "type": [
               "string",

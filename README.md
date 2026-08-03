@@ -185,6 +185,7 @@ Start with the [documentation index](docs/README.md):
 - [Artifact formats and verification](docs/artifact-formats.md)
 - [Local service and REST API](docs/local-service.md)
 - [Local dashboard](docs/local-dashboard.md)
+- [API keys for CI and unattended automation](docs/api-key-automation.md)
 - [Self-hosting](docs/self-hosting.md)
 - [Development and validation](docs/development.md)
 

@@ -105,6 +105,11 @@ public_key = "02..."
 An explicit endpoint without its expected key is rejected. Restart the daemon
 after editing the file.
 
+For CI, cron, or an unattended host that cannot preserve rotating device
+credentials, inject a stable scoped platform API key into `llm-notaryd`. See
+[API keys for automation](api-key-automation.md). The key is separate from the
+provider API key used by the model client.
+
 ## Capture one call
 
 Keep the API key in the provider client and replace only its base URL. For an

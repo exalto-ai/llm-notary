@@ -937,9 +937,10 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
                 .unwrap_or(false)
             {
                 Ok(format!(
-                    "Connected to LLM Notary as {} ({})",
+                    "Connected to LLM Notary as {} ({}: {})",
                     value_string(value, "/github_login"),
-                    value_string(value, "/device_name"),
+                    value_string(value, "/credential_kind"),
+                    value_string(value, "/credential_name"),
                 ))
             } else {
                 Ok("No LLM Notary account is connected.".to_owned())
@@ -1097,11 +1098,13 @@ mod tests {
         let connected = json!({
             "signed_in": true,
             "github_login": "octocat",
-            "device_name": "workstation"
+            "device_name": "workstation",
+            "credential_kind": "cli_session",
+            "credential_name": "workstation"
         });
         assert_eq!(
             human_output(&CliCommand::Whoami, &connected).unwrap(),
-            "Connected to LLM Notary as octocat (workstation)"
+            "Connected to LLM Notary as octocat (cli_session: workstation)"
         );
         assert_eq!(
             human_output(&CliCommand::Whoami, &json!({ "signed_in": false })).unwrap(),

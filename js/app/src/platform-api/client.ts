@@ -51,6 +51,38 @@ export async function getCliSessions() {
   return data.sessions;
 }
 
+export type AccountApiKey = components['schemas']['ApiKeyResponse'];
+export type ApiKeyScope = components['schemas']['ApiScope'];
+
+export async function getApiKeys() {
+  const { data, error, response } = await client.GET('/api/me/api-keys');
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not load API keys.'), response.status);
+  }
+  return data.api_keys;
+}
+
+export async function createApiKey(body: {
+  name: string;
+  scopes: string[];
+  expires_at: number | null;
+}) {
+  const { data, error, response } = await client.POST('/api/me/api-keys', { body });
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not create the API key.'), response.status);
+  }
+  return data;
+}
+
+export async function revokeApiKey(apiKeyId: string) {
+  const { error, response } = await client.DELETE('/api/me/api-keys/{api_key_id}', {
+    params: { path: { api_key_id: apiKeyId } },
+  });
+  if (!response.ok) {
+    throw new PlatformApiError(errorMessage(error, 'Could not revoke the API key.'), response.status);
+  }
+}
+
 export async function getPublishJobs() {
   const { data, error, response } = await client.GET('/api/me/publish-jobs');
   if (!response.ok || !data) {

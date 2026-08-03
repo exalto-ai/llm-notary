@@ -34,6 +34,7 @@ struct DaemonCli {
 pub async fn run_daemon() -> Result<()> {
     let _telemetry = telemetry::init("llm-notaryd")?;
     let cli = DaemonCli::parse();
+    cli::auth::validate_credential_configuration()?;
     cli::proxy::run(cli::proxy::ProxyArgs { config: cli.config }).await
 }
 
