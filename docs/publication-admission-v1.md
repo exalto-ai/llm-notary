@@ -26,8 +26,13 @@ tags are discovery aids, not part of the cryptographic claim.
 
 ```text
 uploading -> queued -> verifying -> admitted
-                              \-> rejected
+     |                    \-> rejected
+     \-> expired -> uploading
 ```
+
+Upload expiry and reopening are intake transitions; admission begins only at
+`queued`. A successful completion request is therefore not a verification or
+publication result.
 
 PostgreSQL atomically selects a queued job with `FOR UPDATE SKIP LOCKED` and
 moves it to `verifying` with a unique claim. Every API replica runs the worker,

@@ -10,12 +10,12 @@ internet ── HTTPS ──> llm-notary.exalto.ai
 local proxies ── TLS:443 ──> llm-notary-prod-notary.fly.dev
 ```
 
-The API is private behind Flycast so its PostgreSQL connection and intake endpoint
-are never directly exposed. Fly Proxy terminates the notary's public TLS
-connection and forwards the unmodified binary protocol to port 7047 through
-Fly's encrypted backhaul. The configuration deliberately uses the `tls` handler
-only—not the HTTP handler. Fly supplies the certificate for the app's
-`.fly.dev` hostname, so no custom DNS is required.
+The API is private behind Flycast, so its PostgreSQL connection and intake
+endpoint are never directly exposed. Fly Proxy terminates the notary's public
+TLS connection and forwards the unmodified binary protocol to port 7047
+through Fly's encrypted backhaul. The configuration deliberately uses the
+`tls` handler only—not the HTTP handler. Fly supplies the certificate for the
+app's `.fly.dev` hostname, so no custom DNS is required.
 
 The checked-in configuration targets the `llm-notary-prod` organization. Create
 the three apps and provision a private Flycast address for the API before the
@@ -24,10 +24,10 @@ Create a Neon PostgreSQL database and stage its pooled connection URL as the
 `DATABASE_URL` Fly secret and its direct connection URL as the
 `DATABASE_MIGRATIONS_URL` Fly secret before deploying the API; staging avoids
 restarting the previous API revision. The API deploy runs the supplied migrator
-once as Fly's release command before replacing Machines. Create a private Tigris bucket for
-the API; the service accepts the standard `AWS_*` and `BUCKET_NAME` variables
-that `fly storage create` sets, as well as the portable `LLM_NOTARY_S3_*`
-variables used by self-hosted container deployments.
+once as Fly's release command before replacing Machines. Create a private
+Tigris bucket for the API; the service accepts the standard `AWS_*` and
+`BUCKET_NAME` variables that `fly storage create` sets, as well as the portable
+`LLM_NOTARY_S3_*` variables used by self-hosted container deployments.
 
 Two base64-encoded file secrets are required:
 
@@ -50,10 +50,11 @@ this path; only their configured policy differs. The reusable browser/CLI
 credential stays between the local daemon and API.
 
 Preserve the existing notary directory so finalized packages continue to use
-the same timestamp-scoped trust history. Ongoing PostgreSQL/Neon migration operations are documented in
-[`docs/postgres-neon-migration.md`](../../docs/postgres-neon-migration.md).
+the same timestamp-scoped trust history. Ongoing PostgreSQL and Neon operations
+are documented in [Database operations](../../docs/database-operations.md).
 
-Clients cache the signed notary directory by its generation. When moving its
+Clients fetch the directory over authenticated HTTPS and cache it by
+generation; the JSON document is not separately signed. When moving its
 advertised hostname, transport, port, or key set, increase
 `LLM_NOTARY_NOTARY_DIRECTORY_GENERATION`; reusing a generation for different
 directory contents is intentionally rejected as a rollback/conflict.
@@ -75,8 +76,10 @@ gives each image a tag unique to the commit and CI run. The rollout then uses
 that tag to resolve an immutable `sha256` digest and deploys only the digest.
 It therefore neither rebuilds nor promotes a different image:
 
-1. Deploy the notary and check the v2 admission prelude.
-2. Deploy the API and check it through the still-old web gateway.
+1. Deploy the API, run migrations, and check it through the still-old web
+   gateway.
+2. Deploy the notary and check the v3 one-time-ticket admission prelude against
+   the new API.
 3. Deploy the web gateway and check the public readiness route again.
 
 Before the first change, the workflow records every app's current Fly image.
@@ -106,7 +109,9 @@ hide it.
 
 For a break-glass, operator-driven deployment from the repository root, use the
 same build-then-deploy split and retain the previous image references for
-rollback. Normal production changes must go through CI:
+rollback. The API must still deploy before the notary because the current
+notary requires the v3 admission coordinator. Normal production changes must
+go through CI:
 
 ```bash
 label="manual-$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)"
@@ -115,11 +120,16 @@ fly deploy --build-only --push --image-label "$label" -c deploy/fly/api.fly.toml
 fly deploy js/app --build-only --push --image-label "$label" \
   -c "$PWD/deploy/fly/web.fly.toml"
 
-fly deploy --image "registry.fly.io/llm-notary-prod-notary:$label" \
-  --ha=false -c deploy/fly/notary.fly.toml
-fly deploy --image "registry.fly.io/llm-notary-prod-api:$label" \
+fly auth docker
+api_image="registry.fly.io/llm-notary-prod-api@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-api:$label")"
+notary_image="registry.fly.io/llm-notary-prod-notary@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-notary:$label")"
+web_image="registry.fly.io/llm-notary-prod-web@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-web:$label")"
+
+fly deploy --image "$api_image" \
   --ha=true -c deploy/fly/api.fly.toml
-fly deploy js/app --image "registry.fly.io/llm-notary-prod-web:$label" \
+fly deploy --image "$notary_image" \
+  --ha=false -c deploy/fly/notary.fly.toml
+fly deploy js/app --image "$web_image" \
   --ha=false -c "$PWD/deploy/fly/web.fly.toml"
 ```
 

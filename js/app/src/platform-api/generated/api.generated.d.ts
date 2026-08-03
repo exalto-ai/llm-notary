@@ -318,7 +318,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get the signed notary directory */
+        /** Get the versioned notary directory */
         get: operations["notary"];
         put?: never;
         post?: never;

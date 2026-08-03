@@ -82,7 +82,7 @@ views:
 - **Evidence** shows the exact trace hash, authenticated provider, source time,
   and manifest format reported by the selected package.
 - **Trace** shows the canonical OpenTelemetry document.
-- **Verification** contains the durable human-readable result after **Verify
+- **Verification** contains the human-readable result of the current check after **Verify
   locally** rechecks the package.
 
 **Download verified package** saves the exact canonical
@@ -92,10 +92,10 @@ package discloses request and response bodies; review that privacy boundary
 before sharing it. The source `.llmbundle` remains vault-encrypted private
 retry state and is never a shareable verification artifact.
 
-![Finalized trace inspector in dark mode with the Verification tab selected and a passed receipt showing the capture, verification time, notary key identifier, and directory trust source.](images/local-dashboard/trace-verification.png)
+![Finalized trace inspector in dark mode with the Verification tab selected and a passed verification result showing the capture, verification time, notary key identifier, and directory trust source.](images/local-dashboard/trace-verification.png)
 
 Bundle availability is not the same as trace verification. Only the
-verification receipt confirms that the finalized package's evidence,
+successful verification result confirms that the finalized package's evidence,
 disclosure, hashes, provider mapping, and canonical trace bytes agree.
 
 ## Publish only with consent

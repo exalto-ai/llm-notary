@@ -42,8 +42,7 @@ import {
 } from './platform-api/client';
 import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries } from './notaryLifecycle';
 
-const publicOrigin = __PUBLIC_ORIGIN__;
-const installCommand = `curl -fsSLO ${publicOrigin}/install.sh && sh install.sh`;
+const installCommand = 'git clone https://github.com/exalto-ai/llm-notary.git\ncd llm-notary\ncargo install --locked --path crates/llm-notary-client';
 function PenMark() {
   return <span className="pen-mark" aria-hidden="true"><img src="/notary-mark.svg" alt="" /></span>;
 }
@@ -109,9 +108,9 @@ const legalPages = {
     sections: [
       ['Local capture stays local', 'The local proxy handles application plaintext and provider credentials. Within the protocol, the remote notary witnesses encrypted traffic and protocol metadata; it does not receive your API key, prompt, or response plaintext.'],
       ['Account information', 'If you sign in with GitHub, we use the identity information required to operate your account, including your GitHub login and account identifier. The GitHub authorization flow is limited to identity and does not request repository, organization, or email access.'],
-      ['Published evidence', 'Publishing is an explicit action. A submitted package is checked before admission, and an admitted trace and related public metadata may be available to anyone. Finalized artifacts redact credential and session header values, but disclosed request and response bodies may still contain information you choose to publish. Do not publish content you are not permitted to share.'],
-      ['Service processing', 'The verification service processes an uploaded package without retaining it. Publication intake objects are removed after admission; public trace artifacts remain available as part of the collection.'],
-      ['Your choices', 'You choose whether to publish a finalized trace. Keep private capture bundles and credentials under your control, and avoid uploading them to public collections. For privacy questions or requests, contact the LLM Notary operator through the project’s published support channel.'],
+      ['Published traces', 'Publishing is an explicit action. The service verifies a submitted .llmtrace package before admission, then makes its bare OpenTelemetry trace and related metadata public. Header values are hidden by the package’s default disclosure policy, but request and response bodies—including prompts, responses, tool definitions, and tool results—may be public. Do not publish content you are not permitted to share.'],
+      ['Service processing', 'The verification service processes an uploaded package without retaining it. Publication intake objects are removed after admission or rejection; public trace artifacts remain available as part of the collection.'],
+      ['Your choices', 'You choose whether to publish a finalized package. Keep private capture bundles and credentials under your control, and avoid uploading them to public collections. For privacy questions or requests, contact the LLM Notary operator through the project’s published support channel.'],
       ['Updates', 'We may revise this policy as the service evolves. The current version will always be available on this page.'],
     ],
   },
@@ -121,8 +120,8 @@ const legalPages = {
     intro: 'These terms govern your use of the LLM Notary website, local tooling, and publishing service.',
     sections: [
       ['Using the service', 'Use LLM Notary lawfully and only with content, credentials, and provider accounts you are authorized to use. Do not interfere with the service, bypass access controls, or submit material that infringes the rights of others.'],
-      ['Your publications', 'You are responsible for every trace or artifact you choose to publish. Publishing is an explicit consent boundary: once a submission is admitted, its public trace and related metadata can be accessed by others. Keep the source .llmtrace package when others need portable cryptographic verification.'],
-      ['What verification means', 'LLM Notary verification concerns the cryptographic and protocol evidence described in the published artifacts. It does not independently establish that an underlying claim, model output, or user interpretation is true, complete, safe, or suitable for a particular purpose.'],
+      ['Your publications', 'You are responsible for every package you choose to submit. Publishing is an explicit consent boundary: once a submission is admitted, its public trace and related metadata can be accessed by others. Keep the source .llmtrace package when others need portable cryptographic verification.'],
+      ['What verification means', 'A full .llmtrace package can be checked against its cryptographic and protocol evidence. A bare Library trace was admitted from a verified source package, but does not carry that evidence and is not independently verifiable. Neither result establishes that a model output or user interpretation is true, complete, safe, or suitable for a particular purpose.'],
       ['Availability', 'The service is provided on an “as available” basis and may change, be suspended, or be discontinued. Preserve the local materials you need; do not rely on the service as your only record or backup.'],
       ['Your responsibilities', 'You are responsible for maintaining the security of your devices, local captures, API credentials, and account. Do not publish confidential, personal, or otherwise protected information unless you have a clear right to do so.'],
       ['Changes to these terms', 'We may update these terms as the product develops. Continued use after an updated version is posted means you accept the revised terms.'],
@@ -132,7 +131,7 @@ const legalPages = {
 
 function LegalPage({ pageKey }) {
   const page = legalPages[pageKey];
-  return <main className="legal-shell"><span className="eyebrow">{page.eyebrow}</span><h1>{page.title}</h1><p className="legal-intro">{page.intro}</p><p className="legal-updated">Last updated: July 2026</p><div className="legal-sections">{page.sections.map(([heading, copy]) => <section key={heading}><h2>{heading}</h2><p>{copy}</p></section>)}</div></main>;
+  return <main className="legal-shell"><span className="eyebrow">{page.eyebrow}</span><h1>{page.title}</h1><p className="legal-intro">{page.intro}</p><p className="legal-updated">Last updated: August 2026</p><div className="legal-sections">{page.sections.map(([heading, copy]) => <section key={heading}><h2>{heading}</h2><p>{copy}</p></section>)}</div></main>;
 }
 
 function TrustColumns() {
@@ -264,7 +263,7 @@ export function VerificationPage({ verifyFile = verifyTracePackage }) {
   return <main className="verification-shell">
     <header className="verification-intro"><span className="eyebrow">Portable verification</span><h1>Verify a .llmtrace package.</h1><p>Check the authenticated provider exchange, notary signature, artifact hashes, and normalized OpenTelemetry trace without signing in.</p></header>
     <form className="verification-workspace" onSubmit={submit}>
-      <section className="verification-disclosure" aria-labelledby="verification-disclosure-title"><span className="eyebrow">Read before uploading</span><h2 id="verification-disclosure-title">Your package may contain sensitive content.</h2><p>Even though headers are hidden by default, prompts, responses, tool definitions, and tool calls may be present. The service processes the package in memory and does not retain it.</p></section>
+      <section className="verification-disclosure" aria-labelledby="verification-disclosure-title"><span className="eyebrow">Read before uploading</span><h2 id="verification-disclosure-title">Your package may contain sensitive content.</h2><p>Header values are hidden by default, but prompts, responses, tool definitions, and tool results can be present. The service processes the package without durable retention. This live result is not a signed receipt.</p></section>
       <label
         className={`verification-drop${dragging ? ' verification-drop--active' : ''}`}
         onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
@@ -387,7 +386,7 @@ const docPages = {
       },
       {
         heading: 'How trust is established',
-        body: 'The service retrieves the signed production notary directory over HTTPS and caches its key history. Finalized packages identify the notary key that signed their evidence; verification accepts it only if that key was trusted at the package timestamp. A self-hosted deployment pairs `notary.endpoint` with `notary.public_key` in `config.toml`, but that is not part of the normal hosted workflow.',
+        body: 'The service retrieves the versioned production notary directory over authenticated HTTPS and caches its key history. The JSON directory is not separately signed. Finalized packages identify the notary key that signed their evidence; verification accepts it only if that key was trusted at the package timestamp. A self-hosted deployment pairs `notary.endpoint` with `notary.public_key` in `config.toml`, but that is not part of the normal hosted workflow.',
       },
     ],
   },
@@ -395,11 +394,11 @@ const docPages = {
     title: 'Install and capture.',
     lead: 'Install one local service, start its foreground process, and point each existing client at its provider path. You keep using the same API key and request shape.',
     blocks: [
-      { heading: 'Install the service', code: installCommand },
-      { heading: 'Supported systems', body: 'The installer selects checksum-verified macOS or Linux releases for Apple silicon, Intel, x86_64, and ARM64. Windows x86_64 is available as a ZIP release. Every package contains llm-notaryd for the service and llm-notary for short-lived commands.' },
+      { heading: 'Build from source', body: 'LLM Notary is a pre-release prototype and has no published binary release yet. Build the two local programs from a source checkout with Rust 1.95.0; the repository toolchain file selects that version.', code: installCommand },
+      { heading: 'Programs', body: '`llm-notaryd` is the long-running local service. `llm-notary` is its short-lived REST client. The checked-in installer becomes usable only after a version tag publishes matching release assets.' },
       { heading: 'Start the service', code: 'llm-notaryd' },
       { heading: 'Open the local dashboard', body: 'Visit `http://127.0.0.1:8788` and use the tabs for captures, finalizations, trace verification, publishing, activity, and settings. The default loopback configuration opens directly. If `admin.auth` is enabled, sign in with its configured username and password; the dashboard exchanges them for an `HttpOnly` session and does not store the password.' },
-      { heading: 'Configuration file', body: 'The first service start creates an editable `config.toml` at the standard user location: `~/.config/llm-notary` on Linux, `%APPDATA%\\llm-notary` on Windows, and `~/Library/Application Support/llm-notary` on macOS. It is written once and never replaced. Start with an explicit file when needed:', code: 'llm-notaryd --config /path/to/config.toml' },
+      { heading: 'Configuration file', body: 'The first service start creates an editable `config.toml` at the standard user location: `~/.config/llm-notary/config.toml` on Linux, `%APPDATA%\\llm-notary\\config.toml` on Windows, and `~/Library/Application Support/llm-notary/config.toml` on macOS. It is written once and never replaced. Start with an explicit file when needed:', code: 'llm-notaryd --config /path/to/config.toml' },
       { heading: 'Use the command client', body: '`llm-notary` is a short-lived client for the daemon\'s versioned loopback API. It checks daemon health and never opens the catalog or vault directly. Add `--json` for automation.', code: 'llm-notary status\nllm-notary captures list --provider openai\nllm-notary operations list --state failed --json\nllm-notary open' },
       { heading: 'What it controls', body: '`config.toml` holds the listener address, optional admin authentication, an optional local or self-hosted notary endpoint, bundle and trace directories, the SQLite catalog path and preview limits, and the enabled provider routes. All built-in providers start enabled. The hostname and API behavior of each provider remain fixed; configuration cannot direct the proxy to an arbitrary upstream host.' },
       { heading: 'Optional admin sign-in', body: 'The loopback administration API is available to local processes without credentials by default. To require sign-in, configure a username and an Argon2id PHC password hash. Store the hash, including its salt and work parameters, rather than the plaintext password. A prompted tool such as caddy hash-password --algorithm argon2id can generate it.', code: '[admin.auth]\nusername = "local-admin"\npassword_hash = "$argon2id$v=19$m=32768,t=2,p=1$..."' },
@@ -416,14 +415,14 @@ const docPages = {
           { term: 'OpenRouter', description: 'Set the OpenAI-compatible base URL to http://127.0.0.1:8787/openrouter/api/v1, retain OPENROUTER_API_KEY, and use /chat/completions. Verified origin is openrouter.ai; a namespaced model slug is metadata, not proof of a direct upstream-vendor connection.' },
         ],
       },
-      { heading: 'OpenRouter + Chat Completions', body: 'The model slug remains trace metadata. The resulting evidence authenticates OpenRouter—not the vendor named in that slug. Authorization is redacted; optional HTTP-Referer and X-Title attribution headers remain in the private capture.', code: 'curl http://127.0.0.1:8787/openrouter/api/v1/chat/completions \\\n  -H "Authorization: Bearer $OPENROUTER_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -H "HTTP-Referer: https://example.test" \\\n  -H "X-Title: LLM Notary example" \\\n  -d \'{"model":"openai/gpt-4o","stream":true,"messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}\'' },
+      { heading: 'OpenRouter + Chat Completions', body: 'The model slug remains trace metadata. The resulting evidence authenticates OpenRouter—not the vendor named in that slug. The Authorization, HTTP-Referer, and X-Title header values are hidden in a finalized package.', code: 'curl http://127.0.0.1:8787/openrouter/api/v1/chat/completions \\\n  -H "Authorization: Bearer $OPENROUTER_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -H "HTTP-Referer: https://example.test" \\\n  -H "X-Title: LLM Notary example" \\\n  -d \'{"model":"YOUR_MODEL","stream":true,"messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}\'' },
       { heading: 'Where the API key comes from', body: 'Keep configuring credentials exactly as your SDK or agent expects—for example, OPENAI_API_KEY in your shell or secret manager. LLM Notary does not create, load, or require a .env file. A .env file is only one optional way your own application might populate environment variables.' },
       { heading: 'Provider boundary', body: 'The first local path segment selects a fixed adapter: /openai, /anthropic, /deepseek, or /openrouter. Each adapter fixes the upstream hostname to an explicit allowlist. The notary—not a caller-supplied URL—resolves and opens the provider connection.' },
-      { heading: 'Codex + OpenAI', code: 'Add this to ~/.codex/config.toml:\n\nmodel_provider = "llm-notary"\nmodel = "gpt-5-mini"\nmodel_reasoning_effort = "low"\n\n[model_providers.llm-notary]\nname = "LLM Notary local proxy"\nbase_url = "http://127.0.0.1:8787/openai/v1"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"\nsupports_websockets = false' },
-      { heading: 'Run Codex', code: 'codex exec --ephemeral --ignore-user-config --skip-git-repo-check \\\n  -m gpt-5-mini \\\n  -c \'model_reasoning_effort="low"\' \\\n  \'Reply with exactly: hello\'' },
-      { heading: 'Claude Code + Anthropic', code: 'ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic \\\nclaude --bare --no-session-persistence \\\n  -p --model claude-haiku-4-5-20251001 \\\n  \'Reply with exactly: hello\'' },
+      { heading: 'Codex + OpenAI', body: 'Replace YOUR_RESPONSES_MODEL with a model available to the OpenAI API key. The explicit no-WebSocket capability keeps Codex on this prototype\'s supported HTTP transport.', code: 'Add this to ~/.codex/config.toml:\n\nmodel_provider = "llm-notary"\nmodel = "YOUR_RESPONSES_MODEL"\n\n[model_providers.llm-notary]\nname = "LLM Notary local proxy"\nbase_url = "http://127.0.0.1:8787/openai/v1"\nenv_key = "OPENAI_API_KEY"\nwire_api = "responses"\nsupports_websockets = false' },
+      { heading: 'Run Codex', code: 'codex exec --ephemeral --skip-git-repo-check \\\n  \'Reply with exactly: hello\'' },
+      { heading: 'Claude Code + Anthropic', body: 'Set Claude Code\'s Anthropic base URL to the local route, keep the API key in its normal environment, and choose a model available to that account.', code: 'ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic \\\nclaude --bare --no-session-persistence \\\n  -p --model YOUR_MODEL \\\n  \'Reply with exactly: hello\'' },
       { heading: 'OpenCode + DeepSeek', body: 'Set the provider base URL to http://127.0.0.1:8787/deepseek and retain DEEPSEEK_API_KEY in the OpenCode environment.' },
-      { heading: 'Search local captures', body: 'Each completed provider interaction keeps its encrypted bundle and gains a row in the local SQLite catalog. Use the dashboard, or fetch the live OpenAPI document and query the local admin API:', code: 'curl "http://127.0.0.1:8788/v1/captures?query=pricing&model=gpt-5"' },
+      { heading: 'Search local captures', body: 'Each completed provider interaction keeps its encrypted bundle and gains a row in the local SQLite catalog. Use the dashboard, or fetch the live OpenAPI document and query the local admin API:', code: 'curl "http://127.0.0.1:8788/v1/captures?query=pricing&provider=openai"' },
       { heading: 'Search punctuation safely', body: 'Capture search treats punctuation as text boundaries instead of raw full-text-search syntax. Hyphenated terms, emphasis marks, multiple words, and double-quoted phrases return matches or an empty list through the normal JSON response.' },
       { heading: 'Filter operations and activity', body: 'The service applies operation state and event severity/type filters before returning bounded results. Coding agents should discover state, kind, capture, event type, severity, and time filters from the live OpenAPI document instead of reimplementing them client-side.', code: 'GET /v1/operations?state=failed&kind=finalization&limit=20\nGET /v1/events?severity=error&event_type=finalization_failed&limit=20' },
       { heading: 'What the catalog records', body: 'A capture records its provider, request and response model when available, HTTP status, request and response sizes, duration, finalization state, and the retained artifact paths. By default, it indexes the first 1,000 characters of the request prompt and output as plain local text. It does not store header values, cookies, or credentials. Change the catalog path, disable full-text search, or set either preview limit to 0 in config.toml.' },
@@ -443,6 +442,7 @@ const docPages = {
       {
         heading: 'Artifact responsibilities',
         definitions: [
+          { term: 'archive-manifest.json', description: 'The deterministic archive format, ordered entry sizes and hashes, and package digest.' },
           { term: 'evidence.tlsn', description: 'The cryptographic TLSNotary evidence and notary signature.' },
           { term: 'request.disclosed.http', description: 'Authenticated request bytes selected for disclosure. Every header value is hidden except the exact structural value Transfer-Encoding: chunked; the body remains disclosed.' },
           { term: 'response.disclosed.http', description: 'The authenticated provider response, including streamed events. Header values follow the same default-deny rule and the body remains disclosed.' },
@@ -474,7 +474,7 @@ const docPages = {
     blocks: [
       { heading: 'Authorize publication', body: 'Use the dashboard Publishing view, or begin the documented `POST /v1/publication/auth` device flow and poll its returned request identifier at the required interval.' },
       { heading: 'Submit one finalized package', code: 'POST /v1/captures/{capture_id}/publications' },
-      { heading: 'Script-friendly output', code: `{"capture_id":"cap-…","job_id":"…","state":"queued","status_url":"${publicOrigin}/api/publish/jobs/…"}` },
+      { heading: 'Script-friendly output', body: 'The status URL stays on the loopback administration API so the browser or agent never receives the vault-held hosted credential.', code: '{"capture_id":"cap-…","job_id":"…","state":"queued","status_url":"/v1/publications/…"}' },
       {
         heading: 'The upload boundary',
         columns: [
@@ -507,7 +507,7 @@ const docPages = {
 
 const docSubheadings = {
   'getting-started': new Set([
-    'Supported systems',
+    'Programs',
     'Configuration file',
     'What it controls',
     'Bundle encryption is automatic',
@@ -531,7 +531,6 @@ const docSubheadings = {
     'Interruption behavior',
     'Artifact responsibilities',
     'Package versus publication',
-    'Download a Library trace',
     'Complete context is intentional',
     'What verification checks',
     'Offline trust',
@@ -1064,7 +1063,7 @@ function Dashboard({ user, view, onPlanChange }) {
           </section>
           <section className="dashboard-sessions" aria-labelledby="publishing-sessions-title"><header><div><span className="eyebrow">Local service access</span><h2 id="publishing-sessions-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
         </> : <>
-          <header className="dashboard-page-header"><span className="eyebrow">Traces</span><h1>Your traces</h1><p>Review publication status and download the public evidence attached to your account.</p></header>
+          <header className="dashboard-page-header"><span className="eyebrow">Traces</span><h1>Your traces</h1><p>Review publication status and open the public traces attached to your account.</p></header>
           <section className="dashboard-traces" aria-label="Your traces">
             {jobError && <p className="dashboard-session-error" role="alert">{jobError}</p>}
             {jobs === null && !jobError ? <p className="dashboard-session-empty">Loading your traces…</p> : jobs?.length ? <div className="dashboard-trace-list">{jobs.map((job) => {

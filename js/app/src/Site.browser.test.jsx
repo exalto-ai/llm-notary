@@ -114,7 +114,7 @@ describe('hosted site', () => {
     fireEvent.change(input, { target: { files: [file] } });
 
     await expect.element(page.getByText('Your package may contain sensitive content.')).toBeVisible();
-    await expect.element(page.getByText('Even though headers are hidden by default, prompts, responses, tool definitions, and tool calls may be present. The service processes the package in memory and does not retain it.')).toBeVisible();
+    await expect.element(page.getByText('Header values are hidden by default, but prompts, responses, tool definitions, and tool results can be present. The service processes the package without durable retention. This live result is not a signed receipt.')).toBeVisible();
     await expect.element(page.getByText('I understand that this package may contain sensitive content.')).toBeVisible();
     expect(calls).toBe(0);
     const submit = page.getByRole('button', { name: 'Verify package' });
