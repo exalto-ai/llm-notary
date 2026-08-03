@@ -99,8 +99,8 @@ function AccountMenu({ user, onLogout, theme, onThemeChange }) {
   return <div className="account-menu" ref={menuRef}><button type="button" className="account-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="menu" aria-label={`Account menu for ${user.github_login}`}>{user.avatar_url ? <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" /> : <span>{initials}</span>}</button>{open && <div className="account-popover" role="menu"><div className="account-identity"><div><b>{user.github_login}</b><span>Signed in with GitHub</span></div><button type="button" className="account-theme" role="menuitemcheckbox" aria-checked={theme === 'dark'} aria-label={`Use ${nextTheme} theme`} title={`Use ${nextTheme} theme`} onClick={() => onThemeChange(nextTheme)}>{theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</button></div><div className="account-actions"><a href="/#/dashboard" role="menuitem" onClick={() => setOpen(false)}>Dashboard</a><button type="button" role="menuitem" onClick={() => { setOpen(false); onLogout(); }}>Log out</button></div></div>}</div>;
 }
 
-function Header({ user, onLogout, theme, onThemeChange }) {
-  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
+export function Header({ user, onLogout, theme, onThemeChange, hideSignIn = false }) {
+  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : !hideSignIn && <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
 }
 
 function Footer() {
@@ -1139,7 +1139,31 @@ function Dashboard({ user, view }) {
   </main>;
 }
 
-function CliApproval({ route, user }) {
+function AuthorizationPage({ title, description, action = null, facts, tone = 'neutral' }) {
+  return <main className={`cli-approval-shell cli-approval-shell--${tone}`}>
+    <section className="cli-approval-workspace" aria-labelledby="cli-approval-title">
+      <div className="cli-approval-primary">
+        <span className="eyebrow">Local service authorization</span>
+        <h1 id="cli-approval-title">{title}</h1>
+        <div className="cli-approval-description">{description}</div>
+        {action && <div className="cli-approval-action">{action}</div>}
+      </div>
+      <aside className="cli-approval-context" aria-label="Connection details">
+        <header>
+          <span className="eyebrow">Connection</span>
+          <div className="cli-approval-path" aria-label="Local service connects to an LLM Notary account">
+            <span><i aria-hidden="true" />Local service</span>
+            <b aria-hidden="true" />
+            <span><i aria-hidden="true" />LLM Notary account</span>
+          </div>
+        </header>
+        <dl>{facts.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>
+      </aside>
+    </section>
+  </main>;
+}
+
+export function CliApproval({ route, user, loadApproval = getCliApproval, approveRequest = approveCli }) {
   const query = new URLSearchParams(route.split('?')[1] || '');
   const requestId = query.get('request_id');
   const approvalSecret = query.get('approval_secret');
@@ -1149,24 +1173,81 @@ function CliApproval({ route, user }) {
   useEffect(() => {
     if (!requestId || !approvalSecret || !user) return;
     let cancelled = false;
-    getCliApproval(requestId, approvalSecret)
+    loadApproval(requestId, approvalSecret)
       .then((payload) => { if (!cancelled) setDetails(payload); })
       .catch((reason) => { if (!cancelled) setError(reason.message); });
     return () => { cancelled = true; };
-  }, [requestId, approvalSecret, user]);
+  }, [requestId, approvalSecret, user, loadApproval]);
   const approve = async () => {
     setError(null);
     try {
-      await approveCli(requestId, approvalSecret);
+      await approveRequest(requestId, approvalSecret);
       setApproved(true);
     } catch (reason) {
       setError(reason.message);
     }
   };
-  if (!requestId || !approvalSecret) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Invalid authorization link.</h1><p>Return to the local dashboard and begin authorization again.</p></main>;
-  if (!user) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Sign in to approve.</h1><p>This browser must be signed in to the LLM Notary account that should own the local service connection.</p><a className="button button-dark" href={`/api/auth/github?return_to=${encodeURIComponent(window.location.hash)}`}>Sign in with GitHub</a></main>;
-  if (approved) return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Service approved.</h1><p>Your local dashboard will finish authorization shortly. You can close this page.</p></main>;
-  return <main className="dashboard-shell"><span className="eyebrow">Local service authorization</span><h1>Approve this service?</h1>{error ? <p>{error}</p> : details ? <><p>Connect <b>{details.device_name}</b> to LLM Notary as <b>{user.github_login}</b> for hosted access and sharing?</p><div className="dashboard-card"><span>Authorization code</span><b>{details.user_code}</b><span>Expires {sessionDate(details.expires_at)}</span><button className="button button-dark" onClick={approve}>Approve service</button></div></> : <p>Checking this authorization request…</p>}</main>;
+  if (!requestId || !approvalSecret) return <AuthorizationPage
+    tone="attention"
+    title="Invalid authorization link"
+    description={<p>Return to the local dashboard and begin authorization again.</p>}
+    facts={[
+      ['Request', 'Invalid or incomplete'],
+      ['Next step', 'Start again in the local dashboard'],
+    ]}
+  />;
+  if (!user) return <AuthorizationPage
+    title="Sign in to continue"
+    description={<p>Use the GitHub account that should own this local service. You’ll review the device name and approve the connection next.</p>}
+    action={<a className="button button-dark" href={`/api/auth/github?return_to=${encodeURIComponent(window.location.hash)}`}>Continue with GitHub</a>}
+    facts={[
+      ['Next step', 'Review and approve the device'],
+      ['GitHub access', 'Identity only'],
+      ['Repository access', 'Not requested'],
+      ['Control', 'Revoke later from Account'],
+    ]}
+  />;
+  if (approved) return <AuthorizationPage
+    tone="success"
+    title="Local service approved"
+    description={<p>Your local dashboard will finish connecting to this account shortly. You can close this page.</p>}
+    facts={[
+      ['Device', details?.device_name || 'Local service'],
+      ['Account', user.github_login],
+      ['Status', 'Approved'],
+    ]}
+  />;
+  if (error) return <AuthorizationPage
+    tone="attention"
+    title="Authorization unavailable"
+    description={<p role="alert">{error} Return to the local dashboard and start again.</p>}
+    facts={[
+      ['Request', 'Needs attention'],
+      ['Account', user.github_login],
+      ['Next step', 'Start again in the local dashboard'],
+    ]}
+  />;
+  if (!details) return <AuthorizationPage
+    title="Checking this request"
+    description={<p role="status">Retrieving the device and account details before you approve anything.</p>}
+    facts={[
+      ['Request', 'Checking'],
+      ['Account', user.github_login],
+      ['Changes', 'None until you approve'],
+    ]}
+  />;
+  return <AuthorizationPage
+    tone="ready"
+    title="Approve this local service?"
+    description={<p>This allows the local dashboard to use hosted finalization and create shares under your account.</p>}
+    action={<button className="button button-dark" type="button" onClick={approve}>Approve service</button>}
+    facts={[
+      ['Device', details.device_name],
+      ['Account', user.github_login],
+      ['Authorization code', details.user_code],
+      ['Expires', sessionDate(details.expires_at)],
+    ]}
+  />;
 }
 
 const hostedNotaryStatuses = new Set(['active', 'retiring', 'retired', 'revoked']);
@@ -1273,7 +1354,7 @@ function App() {
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} hideSignIn={section === 'authorize'} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 const applicationRoot = document.getElementById('root');
