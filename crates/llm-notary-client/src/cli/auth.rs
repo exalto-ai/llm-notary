@@ -17,6 +17,7 @@ use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin, http_client_builder, s
 
 const KEYCHAIN_SERVICE: &str = "llm-notary";
 const KEYCHAIN_ACCOUNT: &str = "publish-refresh-token";
+pub(crate) const DEFAULT_DEVICE_NAME: &str = "llm-notary cli";
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
@@ -24,7 +25,7 @@ pub struct LoginArgs {
     #[arg(long, default_value = DEFAULT_PUBLIC_ORIGIN)]
     api: String,
     /// A recognizable name for this CLI session.
-    #[arg(long, default_value = "LLM Notary CLI")]
+    #[arg(long, default_value = DEFAULT_DEVICE_NAME)]
     device_name: String,
 }
 

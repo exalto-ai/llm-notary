@@ -27,7 +27,6 @@ import { RelayAnimation } from './RelayAnimation';
 
 const publicOrigin = __PUBLIC_ORIGIN__;
 const installCommand = `curl -fsSLO ${publicOrigin}/install.sh && sh install.sh`;
-const publishCommand = 'POST /v1/captures/{capture_id}/publications';
 function PenMark() {
   return <span className="pen-mark" aria-hidden="true"><img src="/notary-mark.svg" alt="" /></span>;
 }
@@ -793,7 +792,7 @@ function publishState(state) {
   return { label: state, tone: 'neutral' };
 }
 
-function Dashboard({ user }) {
+function Dashboard({ user, view }) {
   const [sessions, setSessions] = useState(null);
   const [sessionError, setSessionError] = useState(null);
   const [revoking, setRevoking] = useState(null);
@@ -852,37 +851,50 @@ function Dashboard({ user }) {
 
   const verifiedCount = jobs?.filter((job) => job.state === 'admitted').length || 0;
   const activeCount = jobs?.filter((job) => ['uploading', 'queued', 'verifying'].includes(job.state)).length || 0;
+  const activeView = view === 'traces' ? 'traces' : 'account';
 
   return <main className="dashboard-shell dashboard-shell--account">
-    <span className="eyebrow">Account</span>
-    <h1>Your traces.</h1>
-    <p>Review publication status and download the public evidence attached to your account.</p>
-    <div className="dashboard-summary">
-      <div><span>GitHub account</span><b>{user.github_login}</b></div>
-      <div><span>Verified</span><b>{jobs === null ? '—' : verifiedCount}</b></div>
-      <div><span>In progress</span><b>{jobs === null ? '—' : activeCount}</b></div>
+    <div className="dashboard-layout">
+      <aside className="dashboard-sidebar" aria-label="Dashboard navigation">
+        <span className="eyebrow">Dashboard</span>
+        <nav>
+          <a className={activeView === 'account' ? 'active' : ''} href="#/dashboard" aria-current={activeView === 'account' ? 'page' : undefined}><span>Account</span></a>
+          <a className={activeView === 'traces' ? 'active' : ''} href="#/dashboard/traces" aria-current={activeView === 'traces' ? 'page' : undefined}><span>Traces</span><small>{jobs === null ? '—' : jobs.length}</small></a>
+        </nav>
+      </aside>
+      <div className="dashboard-page">
+        {activeView === 'account' ? <>
+          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Account</h1><p>Manage your publishing identity and the local services connected to it.</p></header>
+          <div className="dashboard-summary">
+            <div><span>GitHub account</span><b>{user.github_login}</b></div>
+            <div><span>Verified traces</span><b>{jobs === null ? '—' : verifiedCount}</b></div>
+            <div><span>In progress</span><b>{jobs === null ? '—' : activeCount}</b></div>
+          </div>
+          <section className="dashboard-sessions" aria-labelledby="publishing-sessions-title"><header><div><span className="eyebrow">Local service access</span><h2 id="publishing-sessions-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
+        </> : <>
+          <header className="dashboard-page-header"><span className="eyebrow">Traces</span><h1>Your traces</h1><p>Review publication status and download the public evidence attached to your account.</p></header>
+          <section className="dashboard-traces" aria-label="Your traces">
+            {jobError && <p className="dashboard-session-error" role="alert">{jobError}</p>}
+            {jobs === null && !jobError ? <p className="dashboard-session-empty">Loading your traces…</p> : jobs?.length ? <div className="dashboard-trace-list">{jobs.map((job) => {
+              const publication = publicationById[job.id];
+              const status = publishState(job.state);
+              return <article key={job.id}>
+                <div className="dashboard-trace-copy">
+                  <div><span className={`dashboard-trace-state dashboard-trace-state--${status.tone}`}><i aria-hidden="true" />{status.label}</span><time>{sessionDate(job.admitted_at || job.updated_at)}</time></div>
+                  <h3>{publication?.title || `Trace ${job.id.slice(0, 8)}`}</h3>
+                  <p>{publication ? `${publication.provider} · ${publication.model}` : `${fileSize(job.size_bytes)} · ${job.id}`}</p>
+                  {job.failure_code && <p className="dashboard-trace-failure">Reason: {job.failure_code.replaceAll('_', ' ')}</p>}
+                </div>
+                <div className="dashboard-trace-actions">
+                  {job.trace_url && <a href={job.trace_url} target="_blank" rel="noreferrer">Trace</a>}
+                  {job.stamp_url && <a href={job.stamp_url} target="_blank" rel="noreferrer">Stamp</a>}
+                </div>
+              </article>;
+            })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No publications</span><b>Publish your first trace.</b><p>Finalize a capture in the local dashboard, then publish its evidence to make it independently verifiable.</p><a href="#/docs/publish">Open the publishing guide</a></div>}
+          </section>
+        </>}
+      </div>
     </div>
-    <section className="dashboard-traces" aria-labelledby="published-traces-title">
-      <header><div><span className="eyebrow">Publications</span><h2 id="published-traces-title">Your traces</h2></div><a href="#/docs/publish">Publish from the local dashboard</a></header>
-      {jobError && <p className="dashboard-session-error" role="alert">{jobError}</p>}
-      {jobs === null && !jobError ? <p className="dashboard-session-empty">Loading your traces…</p> : jobs?.length ? <div className="dashboard-trace-list">{jobs.map((job) => {
-        const publication = publicationById[job.id];
-        const status = publishState(job.state);
-        return <article key={job.id}>
-          <div className="dashboard-trace-copy">
-            <div><span className={`dashboard-trace-state dashboard-trace-state--${status.tone}`}><i aria-hidden="true" />{status.label}</span><time>{sessionDate(job.admitted_at || job.updated_at)}</time></div>
-            <h3>{publication?.title || `Trace ${job.id.slice(0, 8)}`}</h3>
-            <p>{publication ? `${publication.provider} · ${publication.model}` : `${fileSize(job.size_bytes)} · ${job.id}`}</p>
-            {job.failure_code && <p className="dashboard-trace-failure">Reason: {job.failure_code.replaceAll('_', ' ')}</p>}
-          </div>
-          <div className="dashboard-trace-actions">
-            {job.trace_url && <a href={job.trace_url} target="_blank" rel="noreferrer">Trace</a>}
-            {job.stamp_url && <a href={job.stamp_url} target="_blank" rel="noreferrer">Stamp</a>}
-          </div>
-        </article>;
-      })}</div> : <div className="dashboard-empty"><b>No published traces yet.</b><p>Finalize a bundle, then run <code>{publishCommand}</code>.</p><a href="#/docs/publish">Read the publishing guide</a></div>}
-    </section>
-    <section className="dashboard-sessions" aria-labelledby="publishing-sessions-title"><header><div><span className="eyebrow">Local service access</span><h2 id="publishing-sessions-title">Authorized devices</h2></div><p>Revoke a device to require a new browser approval before it can publish.</p></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading authorized devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are authorized to publish.</p>}</section>
     <AlertDialog open={Boolean(revokeTarget)} onOpenChange={(nextOpen) => { if (!nextOpen && !revoking) setRevokeTarget(null); }}><AlertDialogContent className="axis-alert-dialog"><AlertDialogHeader><AlertDialogTitle>Revoke {revokeTarget?.device_name}?</AlertDialogTitle><AlertDialogDescription>This local service will need a new browser approval before it can publish again.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={Boolean(revoking)}>Keep authorization</AlertDialogCancel><AlertDialogAction disabled={Boolean(revoking)} onClick={() => revokeTarget && revoke(revokeTarget)}>{revoking ? 'Revoking…' : 'Revoke device'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </main>;
 }
@@ -932,7 +944,7 @@ function App() {
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'dashboard' && user ? <Dashboard user={user} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} />{section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Collections /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 createRoot(document.getElementById('root')).render(<App />);
