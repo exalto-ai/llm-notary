@@ -106,7 +106,7 @@ export async function revokeCliSession(sessionId: string) {
     params: { path: { session_id: sessionId } },
   });
   if (!response.ok) {
-    throw new PlatformApiError(errorMessage(error, 'Could not revoke this publishing session.'), response.status);
+    throw new PlatformApiError(errorMessage(error, 'Could not revoke this local service session.'), response.status);
   }
 }
 

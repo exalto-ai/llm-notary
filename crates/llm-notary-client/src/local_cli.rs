@@ -17,7 +17,7 @@ use crate::{
         trace_package_created_at_unix_ms_bytes, trace_package_notary_key_bytes,
         verify_trace_package_bytes,
     },
-    cli::notary,
+    cli::{notary, publish::ShareVisibility},
     config::{AgentConfig, default_config_path},
 };
 
@@ -117,8 +117,9 @@ enum CliCommand {
     Logout,
     /// Show the LLM Notary account connected to this daemon.
     Whoami,
-    /// Queue publication of a finalized capture.
-    Publish(IdArgs),
+    /// Create a public link for a finalized verified session.
+    #[command(alias = "publish")]
+    Share(ShareArgs),
     /// List redacted daemon events.
     Events(EventListArgs),
     /// Inspect configured notary trust.
@@ -176,6 +177,16 @@ enum NotariesCommand {
 struct IdArgs {
     /// Opaque capture or operation identifier.
     id: String,
+}
+
+#[derive(Args, Debug)]
+struct ShareArgs {
+    /// Opaque finalized capture identifier.
+    id: String,
+
+    /// Whether the share appears in the public Library index.
+    #[arg(long, value_enum, default_value_t = ShareVisibility::Unlisted)]
+    visibility: ShareVisibility,
 }
 
 #[derive(Args, Debug, Default)]
@@ -637,23 +648,18 @@ async fn execute(
         },
         CliCommand::Login => login(client, stderr).await,
         CliCommand::Logout => {
-            client
-                .request(Method::DELETE, "/v1/publication/auth", &[])
-                .await?;
+            client.request(Method::DELETE, "/v1/account", &[]).await?;
             Ok(json!({ "signed_in": false }))
         }
-        CliCommand::Whoami => {
-            client
-                .request(Method::GET, "/v1/publication/auth", &[])
-                .await
-        }
-        CliCommand::Publish(args) => {
+        CliCommand::Whoami => client.request(Method::GET, "/v1/account", &[]).await,
+        CliCommand::Share(args) => {
             validate_identifier(&args.id, "cap-")?;
             client
-                .request(
+                .request_json(
                     Method::POST,
-                    &format!("/v1/captures/{}/publications", args.id),
+                    &format!("/v1/captures/{}/shares", args.id),
                     &[],
+                    &json!({ "visibility": args.visibility.as_str() }),
                 )
                 .await
         }
@@ -739,7 +745,7 @@ fn validate_identifier(value: &str, prefix: &str) -> Result<(), CliError> {
 
 async fn login(client: &AdminClient, stderr: &mut dyn io::Write) -> Result<Value, CliError> {
     let started = client
-        .request_json(Method::POST, "/v1/publication/auth", &[], &json!({}))
+        .request_json(Method::POST, "/v1/account", &[], &json!({}))
         .await?;
     let request_id = required_string(&started, "/request_id")?;
     let verification_url = required_string(&started, "/verification_uri_complete")?;
@@ -765,11 +771,7 @@ async fn login(client: &AdminClient, stderr: &mut dyn io::Write) -> Result<Value
         }
         tokio::time::sleep(Duration::from_secs(poll_interval)).await;
         let status = client
-            .request(
-                Method::GET,
-                &format!("/v1/publication/auth/{request_id}"),
-                &[],
-            )
+            .request(Method::GET, &format!("/v1/account/{request_id}"), &[])
             .await?;
         if status
             .get("signed_in")
@@ -949,9 +951,10 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
         CliCommand::Logout => Ok(
             "Disconnected from LLM Notary. Future hosted sessions use public access.".to_owned(),
         ),
-        CliCommand::Publish(_) => Ok(format!(
-            "Queued publication job {} for capture {} ({})",
-            value_string(value, "/job_id"),
+        CliCommand::Share(_) => Ok(format!(
+            "Queued {} share {} for capture {} ({})",
+            value_string(value, "/visibility"),
+            value_string(value, "/share_id"),
             value_string(value, "/capture_id"),
             value_string(value, "/state"),
         )),
@@ -1051,6 +1054,14 @@ mod tests {
             vec!["llm-notary", "login"],
             vec!["llm-notary", "logout"],
             vec!["llm-notary", "whoami"],
+            vec!["llm-notary", "share", "cap-example"],
+            vec![
+                "llm-notary",
+                "share",
+                "cap-example",
+                "--visibility",
+                "listed",
+            ],
             vec!["llm-notary", "publish", "cap-example"],
             vec!["llm-notary", "events"],
             vec!["llm-notary", "notaries", "list"],
@@ -1235,7 +1246,7 @@ mod tests {
     #[tokio::test]
     async fn json_requests_send_the_body_and_content_type() {
         let router = Router::new().route(
-            "/v1/publication/auth",
+            "/v1/account",
             post(|Json(body): Json<Value>| async move {
                 assert_eq!(body, json!({}));
                 (AxumStatus::ACCEPTED, Json(json!({ "state": "pending" })))
@@ -1244,7 +1255,7 @@ mod tests {
         let (address, server) = serve(router).await;
         let client = AdminClient::new(address, None).unwrap();
         let response = client
-            .request_json(Method::POST, "/v1/publication/auth", &[], &json!({}))
+            .request_json(Method::POST, "/v1/account", &[], &json!({}))
             .await
             .unwrap();
         assert_eq!(response["state"], "pending");

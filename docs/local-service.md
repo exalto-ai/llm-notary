@@ -169,14 +169,15 @@ llm-notary notaries list
 llm-notary open
 ```
 
-Publication identity remains daemon-owned. Login, logout, account inspection,
-and publication all use the local REST API, so only `llm-notaryd` accesses the
+Sharing identity remains daemon-owned. Login, logout, account inspection,
+and sharing all use the local REST API, so only `llm-notaryd` accesses the
 credential vault or finalized artifact:
 
 ```bash
 llm-notary login
 llm-notary whoami
-llm-notary publish cap-example
+llm-notary share cap-example                         # Unlisted by default
+llm-notary share cap-example --visibility listed
 llm-notary logout
 ```
 
@@ -222,9 +223,8 @@ which workflow owns each operation:
 | Finalization | `POST /v1/captures/{capture_id}/finalizations`, `GET /v1/operations`, `GET /v1/operations/{operation_id}`, `POST /v1/operations/{operation_id}/retry` |
 | Finalized trace | `GET /v1/captures/{capture_id}/package`, `GET /v1/captures/{capture_id}/trace`, `POST /v1/captures/{capture_id}/trace:verify` |
 | Activity | `GET /v1/events` |
-| Publication account | `GET /v1/publication/auth`, `POST /v1/publication/auth`, `GET /v1/publication/auth/{request_id}`, `DELETE /v1/publication/auth` |
-| Publication | `POST /v1/captures/{capture_id}/publications`, `GET /v1/publications/{job_id}` |
-| Public trace | `GET /v1/public-traces/{publication_id}` |
+| Account connection | `GET /v1/account`, `POST /v1/account`, `GET /v1/account/{request_id}`, `DELETE /v1/account` |
+| Sharing | `POST /v1/captures/{capture_id}/shares`, `GET /v1/shares/{share_id}` |
 
 `GET /v1/notaries` returns a safe read-only view of the locally pinned notary
 directory and trust history, or the explicitly configured self-hosted endpoint
@@ -310,7 +310,7 @@ includes `retryable` and `attempt_history`, so an agent can avoid deterministic
 rejections and distinguish earlier interrupted or failed attempts from the
 current aggregate state without searching a bounded event page.
 
-## Validation, verification, and publication
+## Validation, verification, and sharing
 
 An encrypted `.llmbundle` is private retry state. Checking that the vault can
 decrypt and parse it establishes only that the local artifact is structurally
@@ -341,25 +341,24 @@ disclosure, hashes, provider adapter, and canonical trace bytes.
 its manifest and canonical trace document for inspection; it does not replace
 the verification operation.
 
-Publication is a later, explicit consent decision. It is never part of local
-finalization. The `/v1/publication/auth` device flow authorizes the local
-service, and `POST /v1/captures/{capture_id}/publications` accepts only an
-eligible finalized capture. Ask the user before either publishing or changing
-service configuration. Device authorization starts with `202 Accepted`; obey
+Sharing is a later, explicit consent decision. It is never part of local
+finalization. The `/v1/account` device flow authorizes the local service, and
+`POST /v1/captures/{capture_id}/shares` accepts only an eligible finalized
+capture plus an explicit `unlisted` or `listed` visibility. Ask the user before
+sharing or changing service configuration. Device authorization starts with `202 Accepted`; obey
 its `poll_interval_seconds` and keep polling the returned
-`/v1/publication/auth/{request_id}` route while `signed_in` is false.
-When the daemon uses an injected API key, `POST /v1/publication/auth` and
-`DELETE /v1/publication/auth` return `409`; create and revoke API keys in the
-hosted dashboard instead.
-After submission, poll `GET /v1/publications/{job_id}` on the local admin
-listener. The service uses the vault-held publication credential
+`/v1/account/{request_id}` route while `signed_in` is false.
+When the daemon uses an injected API key, `POST /v1/account` and
+`DELETE /v1/account` return `409`; create and revoke API keys in the hosted
+dashboard instead.
+After submission, poll `GET /v1/shares/{share_id}` on the local admin
+listener. The service uses the vault-held account credential
 to fetch admission state; agents and the dashboard never receive that
-credential. A missing job returns `404`; missing or expired publication
+credential. A missing share returns `404`; missing or expired account
 authorization returns `409`; a temporary platform or network failure returns
-`503` rather than pretending the job disappeared. Public Library traces can be
-inspected through `GET /v1/public-traces/{publication_id}`. A bare Library trace
-does not carry the cryptographic evidence; use the source `.llmtrace` package
-with `llm-notary traces verify` for independent verification.
+`503` rather than pretending the share disappeared. An admitted response
+contains the stable `share_url` and exact public `package_url`. Anyone with an
+Unlisted or Listed link can read the disclosure; this is not private access.
 
 ## Local trust boundary
 

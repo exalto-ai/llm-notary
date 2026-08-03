@@ -25,12 +25,12 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from '@/components/ui/select';
 import { LocalApiError } from './api';
-import type { Capture, CaptureDetail, Event, LocalApi, Notary, Operation, Publication, PublicationAuthStarted, Status, Verification } from './api';
+import type { AccountConnectionStarted, Capture, CaptureDetail, Event, LocalApi, Notary, Operation, Share, ShareVisibility, Status, Verification } from './api';
 import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries } from '../notaryLifecycle';
 
 const logoUrl = new URL('../../public/notary-mark.svg', import.meta.url).href;
 
-export type DashboardView = 'overview' | 'captures' | 'finalizations' | 'traces' | 'publishing' | 'activity' | 'settings';
+export type DashboardView = 'overview' | 'captures' | 'finalizations' | 'traces' | 'sharing' | 'activity' | 'settings';
 
 type Route = { view: DashboardView; id?: string };
 
@@ -74,7 +74,7 @@ const navigation: Array<{ view: DashboardView; label: string; icon: typeof Gauge
   { view: 'captures', label: 'Captures', icon: Archive },
   { view: 'finalizations', label: 'Finalizations', icon: ListChecks },
   { view: 'traces', label: 'Finalized traces', icon: FileCheck2 },
-  { view: 'publishing', label: 'Publishing', icon: Send },
+  { view: 'sharing', label: 'Share', icon: Send },
   { view: 'activity', label: 'Activity', icon: Activity },
   { view: 'settings', label: 'Settings', icon: Settings }
 ];
@@ -367,15 +367,15 @@ function Sidebar({ route, status, onNavigate }: {
   </div>;
 }
 
-function TopNav({ route, status, onNavigate, opened, onOpenNavigation }: {
-  route: Route; status: Status; onNavigate: (route: Route) => void; opened: boolean; onOpenNavigation: () => void;
+function TopNav({ route, status, onNavigate, opened, onOpenNavigation, fixture }: {
+  route: Route; status: Status; onNavigate: (route: Route) => void; opened: boolean; onOpenNavigation: () => void; fixture: boolean;
 }) {
   const count = (view: DashboardView) => view === 'captures' ? status.counts.pending
     : view === 'finalizations' ? status.counts.active_operations : undefined;
   return <header className="local-topbar"><nav aria-label="Local dashboard">
     {navigation.map(({ view, label, icon: Icon }) => <UnstyledButton key={view} className={route.view === view ? 'is-active' : ''}
       onClick={() => onNavigate({ view })}><Icon size={15} aria-hidden="true" /><span>{label}</span>{count(view) ? <b>{count(view)}</b> : null}</UnstyledButton>)}
-  </nav><div className="local-topbar-status"><Burger opened={opened} onClick={onOpenNavigation} size="sm" aria-label="Open navigation" /></div></header>;
+  </nav><div className="local-topbar-status">{fixture && <span className="sample-data-label" title="This preview uses synthetic sample data">Sample data</span>}<Burger opened={opened} onClick={onOpenNavigation} size="sm" aria-label="Open navigation" /></div></header>;
 }
 
 export function Dashboard({ api, fixture = false }: { api: LocalApi; fixture?: boolean }) {
@@ -393,7 +393,7 @@ export function Dashboard({ api, fixture = false }: { api: LocalApi; fixture?: b
   if (!statusQuery.data) return <ErrorState onRetry={() => statusQuery.refetch()} />;
   const status = statusQuery.data;
   return <AppShell header={{ height: 50 }} padding={0} className="dashboard-shell">
-    <AppShell.Header className="dashboard-header"><TopNav route={route} status={status} onNavigate={navigate} opened={navOpened} onOpenNavigation={openNav} /></AppShell.Header>
+    <AppShell.Header className="dashboard-header"><TopNav route={route} status={status} onNavigate={navigate} opened={navOpened} onOpenNavigation={openNav} fixture={fixture} /></AppShell.Header>
     <Drawer opened={navOpened} onClose={closeNav} title="Navigation" size="min(88vw, 340px)" classNames={{ body: 'mobile-nav-body' }}>
       <Sidebar route={route} status={status} onNavigate={navigate} />
     </Drawer>
@@ -408,7 +408,7 @@ function View({ route, status, api, navigate, fixture }: { route: Route; status:
     case 'captures': return <CapturesView api={api} selectedId={route.id} navigate={navigate} />;
     case 'finalizations': return <FinalizationsView api={api} selectedId={route.id} navigate={navigate} fixture={fixture} />;
     case 'traces': return <TracesView api={api} selectedId={route.id} navigate={navigate} />;
-    case 'publishing': return <PublishingView api={api} fixture={fixture} navigate={navigate} />;
+    case 'sharing': return <SharingView api={api} fixture={fixture} navigate={navigate} />;
     case 'activity': return <ActivityView api={api} />;
     case 'settings': return <SettingsView status={status} api={api} />;
     default: return <OverviewView api={api} status={status} navigate={navigate} />;
@@ -741,24 +741,30 @@ function Receipt({ title, fields, verified = false }: { title: string; fields: A
   return <div className="receipt"><Group justify="space-between"><Text className="eyebrow">{title}</Text>{verified && <StatusLabel state="verified" />}</Group><dl>{fields.map(([label, value]) => <Fact key={label} label={label} value={value} />)}</dl></div>;
 }
 
-function PublishingView({ api, fixture, navigate }: { api: LocalApi; fixture: boolean; navigate: (route: Route) => void }) {
+function SharingView({ api, fixture, navigate }: { api: LocalApi; fixture: boolean; navigate: (route: Route) => void }) {
   const queryClient = useQueryClient();
-  const auth = useQuery({ queryKey: ['publication-auth'], queryFn: api.publicationAuth, retry: false });
-  const traces = useQuery({ queryKey: ['captures', 'publishing'], queryFn: () => api.allCaptures({ finalization_state: 'finalized' }) });
+  const account = useQuery({ queryKey: ['account'], queryFn: api.account, retry: false });
+  const captures = useQuery({ queryKey: ['captures', 'sharing'], queryFn: () => api.allCaptures({ finalization_state: 'finalized' }) });
   const [selected, setSelected] = useState<string | null>(null);
+  const [visibility, setVisibility] = useState<ShareVisibility>('unlisted');
   const [confirm, setConfirm] = useState(false);
-  const [submitted, setSubmitted] = useState<Publication | null>(null);
-  const [started, setStarted] = useState<{ flow: PublicationAuthStarted; nextPollAt: number } | null>(null);
+  const [submitted, setSubmitted] = useState<Share | null>(null);
+  const [started, setStarted] = useState<{ flow: AccountConnectionStarted; nextPollAt: number } | null>(null);
   const [now, setNow] = useState(Date.now());
-  const eligible = traces.data?.items ?? [];
+  const eligible = captures.data?.items ?? [];
   const selectedId = selected ?? eligible[0]?.capture_id ?? null;
+  const preview = useQuery({
+    queryKey: ['share-preview', selectedId],
+    queryFn: () => api.trace(selectedId!),
+    enabled: Boolean(selectedId)
+  });
   useEffect(() => {
     setSubmitted(null);
     setConfirm(false);
-  }, [selectedId]);
-  const publication = useQuery({
-    queryKey: ['publication', submitted?.job_id],
-    queryFn: () => api.publicationStatus(submitted!.job_id),
+  }, [selectedId, visibility]);
+  const share = useQuery({
+    queryKey: ['share', submitted?.share_id],
+    queryFn: () => api.shareStatus(submitted!.share_id),
     enabled: Boolean(submitted),
     refetchInterval: (query) => {
       const state = query.state.data?.state;
@@ -770,102 +776,114 @@ function PublishingView({ api, fixture, navigate }: { api: LocalApi; fixture: bo
     const timer = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(timer);
   }, [started]);
-  const schedule = (flow: PublicationAuthStarted) => setStarted({ flow, nextPollAt: Date.now() + flow.poll_interval_seconds * 1000 });
-  const beginAuth = useMutation({
-    mutationFn: api.startPublicationAuth,
+  const schedule = (flow: AccountConnectionStarted) => setStarted({ flow, nextPollAt: Date.now() + flow.poll_interval_seconds * 1000 });
+  const beginAccount = useMutation({
+    mutationFn: api.startAccountConnection,
     onSuccess: schedule,
     onError: (error) => mutationError('Could not begin authorization', error)
   });
-  const pollAuth = useMutation({
-    mutationFn: () => api.pollPublicationAuth(started!.flow.request_id),
+  const pollAccount = useMutation({
+    mutationFn: () => api.pollAccountConnection(started!.flow.request_id),
     onSuccess: (result) => {
-      queryClient.setQueryData(['publication-auth'], result);
+      queryClient.setQueryData(['account'], result);
       if (result.signed_in) setStarted(null);
       else if (started) setStarted({ ...started, nextPollAt: Date.now() + started.flow.poll_interval_seconds * 1000 });
     },
     onError: (error) => mutationError('Could not check authorization', error)
   });
-  const publish = useMutation({ mutationFn: () => api.publish(selectedId!), onSuccess: (result) => {
-    setConfirm(false); setSubmitted(result); notifications.show({ title: 'Publication submitted', message: `Job ${result.job_id} is ${result.state}.` });
-  }, onError: (error) => mutationError('Publication failed', error) });
-  const pollReady = Boolean(started && (fixture || now >= started.nextPollAt));
-  const publicationState = publication.data?.state ?? submitted?.state;
-  let publicationCopy = `The local service reports ${publicationState ?? 'queued'}. Status refreshes while admission is in progress.`;
-  if (publicationState === 'admitted') {
-    publicationCopy = fixture
-      ? 'The fixture completed admission in this browser. It did not upload data.'
-      : 'The platform admitted this trace and published its verification record.';
-  } else if (publicationState && ['rejected', 'expired', 'failed'].includes(publicationState)) {
-    publicationCopy = `The publication ended in ${publicationState}. Review the safe failure code before retrying.`;
-  }
+  const createShare = useMutation({
+    mutationFn: () => api.share(selectedId!, visibility),
+    onSuccess: (result) => {
+      setConfirm(false);
+      setSubmitted(result);
+      notifications.show({ title: 'Share started', message: 'The package is uploaded and awaiting verification.' });
+    },
+    onError: (error) => mutationError('Sharing failed', error)
+  });
+  const pollReady = Boolean(started && now >= started.nextPollAt);
+  const shareState = share.data?.state ?? submitted?.state;
+  const shareUrl = share.data?.share_url ?? submitted?.share_url;
+  const packageUrl = share.data?.package_url ?? submitted?.package_url;
+  const transcripts = preview.data ? traceTranscripts(preview.data.trace) : [];
+  const copyShareLink = async () => {
+    if (!shareUrl) return;
+    await navigator.clipboard.writeText(shareUrl);
+    notifications.show({ title: 'URL copied', message: 'The share URL is on the clipboard.' });
+  };
+  const resultTitle = shareState === 'admitted'
+    ? 'Share ready'
+    : shareState === 'rejected'
+      ? 'Share rejected'
+      : shareState === 'expired'
+        ? 'Upload expired'
+        : shareState === 'failed'
+          ? 'Verification failed'
+          : 'Checking share';
+  const resultCopy = shareState === 'admitted'
+    ? `${submitted?.visibility === 'listed' ? 'Listed' : 'Unlisted'} · Anyone with the URL can open it.`
+    : shareState === 'rejected'
+      ? 'The package was rejected before a public URL was created.'
+      : shareState === 'expired'
+        ? 'The upload expired before verification finished.'
+        : shareState === 'failed'
+          ? 'Verification could not finish. Refresh the status or try again.'
+          : 'Uploaded. Checking the package and evidence.';
+  const confirmationTitle = visibility === 'listed' ? 'List this share?' : 'Create this share?';
+  const confirmationCopy = visibility === 'listed'
+    ? 'This share will appear in Library. Anyone can read the disclosed messages and tool data. Header values remain hidden.'
+    : 'Anyone with the URL can read the disclosed messages and tool data. Header values remain hidden.';
 
-  return <div className="view-page"><div className="publishing-grid">
-      <Paper className="publishing-auth">
-        <Group justify="space-between"><Text className="eyebrow">LLM Notary account</Text><KeyRound size={17} /></Group>
-        {auth.isLoading
-          ? <Loader size="sm" />
-          : auth.error
-            ? <QueryError error={auth.error} title="Account connection is unavailable" />
-            : auth.data?.signed_in
-              ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.credential_name ?? auth.data.device_name}</Text>{auth.data.credential_kind === 'api_key' && <Text className="eyebrow">API key</Text>}<StatusLabel state="ready" /></>
-              : <>
-                <Title order={2}>Not authorized</Title>
-                <Text>{fixture ? 'Use the simulated approval below to test the account connection.' : 'Connect an account for hosted tier access and publication, then approve this local service in your browser.'}</Text>
-                <Button variant="outline" loading={beginAuth.isPending} onClick={() => beginAuth.mutate()}>Begin authorization</Button>
-              </>}
-        {started && <div className="authorization-code">
-          <Text className="eyebrow">{fixture ? 'Example approval code' : 'Approval code'}</Text>
-          <code>{started.flow.user_code}</code>
-          {fixture
-            ? <div className="fixture-flow-note"><Database size={16} aria-hidden="true" /><Text>This fixture stays in the browser and does not contact GitHub.</Text></div>
-            : <a href={started.flow.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a>}
-          <Text>{pollReady
-            ? fixture ? 'You can approve the simulated session now.' : 'You can check for approval now.'
-            : `Waiting ${Math.max(1, Math.ceil((started.nextPollAt - now) / 1000))}s before the next check.`}</Text>
-          <Button size="xs" variant="subtle" disabled={!pollReady} loading={pollAuth.isPending} onClick={() => pollAuth.mutate()}>{fixture ? 'Approve demo session' : 'Check approval'}</Button>
-        </div>}
+  return <div className="view-page share-flow">
+    <section className="sharing-toolbar" aria-label="Share settings">
+      {captures.error ? <QueryError error={captures.error} title="Finalized traces are unavailable" /> : captures.isLoading ? <Loader size="sm" /> : eligible.length ? <>
+        <AxisSelect label="Trace" placeholder="Choose a finalized trace" clearable={false} data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} />
+        <div className="share-visibility" role="radiogroup" aria-label="Visibility">
+          <span className="share-control-label">Visibility</span>
+          <div>
+            <button type="button" role="radio" aria-checked={visibility === 'unlisted'} className={visibility === 'unlisted' ? 'active' : ''} onClick={() => setVisibility('unlisted')}><b>Unlisted</b><small>URL access</small></button>
+            <button type="button" role="radio" aria-checked={visibility === 'listed'} className={visibility === 'listed' ? 'active' : ''} onClick={() => setVisibility('listed')}><b>Listed</b><small>Shown in Library</small></button>
+          </div>
+        </div>
+        <Button className="share-primary" disabled={!account.data?.signed_in || !selectedId || preview.isLoading || Boolean(preview.error)} onClick={() => setConfirm(true)}>Share trace</Button>
+      </> : <EmptyState title="Nothing ready to share" copy="Finalize a capture first." />}
+    </section>
+    {submitted && <section className={`share-result share-result--${shareState ?? 'queued'}`}>
+      <Group justify="space-between"><div><Text className="eyebrow">Share status</Text><Title order={2}>{resultTitle}</Title></div><StatusLabel state={shareState ?? 'queued'} /></Group>
+      <Text>{resultCopy}</Text>
+      <code>{submitted.share_id}</code>
+      {share.data?.failure_code && <Text>Failure code: <code>{share.data.failure_code}</code></Text>}
+      {share.error && <QueryError error={share.error} title="Share status is unavailable" />}
+      <Group>
+        {shareUrl && <Button onClick={copyShareLink} leftSection={<Copy size={15} />}>Copy URL</Button>}
+        {shareUrl && <Button component="a" href={shareUrl} target="_blank" rel="noreferrer" variant="outline">Open share</Button>}
+        {packageUrl && <Button component="a" href={packageUrl} variant="outline">Download .llmtrace</Button>}
+        {!shareUrl && <Button variant="outline" loading={share.isFetching} onClick={() => share.refetch()}>Refresh status</Button>}
+        {fixture && shareState === 'admitted' && <Button variant="subtle" onClick={() => navigate({ view: 'traces', id: submitted.capture_id })}>Open local trace</Button>}
+      </Group>
+    </section>}
+    <div className="sharing-grid">
+      <Paper className="sharing-preview">
+        {preview.isLoading ? <LoadingState label="Loading preview" /> : preview.error ? <QueryError error={preview.error} title="Preview is unavailable" /> : preview.data ? <TraceTranscriptView transcripts={transcripts} /> : <EmptyState title="Choose a trace" copy="Select a finalized trace to preview its disclosed content." />}
       </Paper>
-      <Paper className="publication-choice">
-        <Text className="eyebrow">Eligible finalized trace</Text>
-        <Title order={2}>Choose what to publish</Title>
-        {traces.error
-          ? <QueryError error={traces.error} title="Eligible traces are unavailable" />
-          : traces.isLoading
-            ? <Loader size="sm" />
-            : eligible.length
-              ? <>
-                <AxisSelect label="Finalized trace" placeholder="Choose a finalized trace" clearable={false} data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} />
-                <div className="consent-copy"><ShieldCheck size={18} /><Text>The service verifies the disclosure before upload. It never uploads the encrypted source bundle.</Text></div>
-                <Button disabled={!auth.data?.signed_in || !selectedId} onClick={() => setConfirm(true)}>Review publication</Button>
-                {submitted && <div className="publication-result">
-                  <Group justify="space-between"><Text className="eyebrow">Latest submission</Text><StatusLabel state={publicationState ?? 'queued'} /></Group>
-                  <Text>Capture <code>{submitted.capture_id}</code></Text>
-                  <code>{submitted.job_id}</code>
-                  {publication.error ? <QueryError error={publication.error} title="Publication status is unavailable" /> : <Text>{publicationCopy}</Text>}
-                  {publication.data?.failure_code && <Text>Safe failure code: <code>{publication.data.failure_code}</code></Text>}
-                  <Group>
-                    <Button variant="outline" loading={publication.isFetching} onClick={() => publication.refetch()}>Refresh status</Button>
-                    {fixture && publicationState === 'admitted'
-                      ? <Button variant="outline" onClick={() => navigate({ view: 'traces', id: submitted.capture_id })}>Inspect admitted fixture</Button>
-                      : publication.data?.trace_url && <Button component="a" href={publication.data.trace_url} target="_blank" rel="noreferrer" variant="outline">Open public trace</Button>}
-                  </Group>
-                </div>}
-              </>
-              : <EmptyState title="Nothing eligible" copy="Finalize a capture first." />}
+      <Paper className="sharing-controls">
+        <section className="sharing-disclosure">
+          <Group justify="space-between"><Text className="eyebrow">Disclosure</Text><ShieldCheck size={16} /></Group>
+          <dl className="sharing-facts">
+            <Fact label="Visible" value="Prompts, responses, tools" />
+            <Fact label="Hidden" value="HTTP header values" />
+            <Fact label="Access" value={visibility === 'listed' ? 'Library and URL' : 'URL only'} />
+            <Fact label="Checks" value="Safety and cryptographic verification" />
+          </dl>
+        </section>
+        <div className="share-package-preview"><FileCheck2 size={18} /><div><b>.llmtrace included</b><Text>Size and SHA-256 appear on the share.</Text></div></div>
+        <div className="sharing-account">
+          <Group justify="space-between"><Text className="eyebrow">Account</Text><KeyRound size={16} /></Group>
+          {account.isLoading ? <Loader size="xs" /> : account.error ? <QueryError error={account.error} title="Account connection is unavailable" /> : account.data?.signed_in ? <Group justify="space-between"><div><b>{account.data.github_login}</b><Text>{account.data.credential_name ?? account.data.device_name}</Text>{account.data.credential_kind === 'api_key' && <Text className="eyebrow">API key</Text>}</div><StatusLabel state="ready" /></Group> : <><Text>Connect an account to share this trace.</Text><Button variant="outline" loading={beginAccount.isPending} onClick={() => beginAccount.mutate()}>Connect account</Button></>}
+          {started && <div className="authorization-code"><Text className="eyebrow">Approval code</Text><code>{started.flow.user_code}</code>{!fixture && <a href={started.flow.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a>}<Text>{pollReady ? 'Ready to check.' : `Check available in ${Math.max(1, Math.ceil((started.nextPollAt - now) / 1000))}s.`}</Text><Button size="xs" variant="subtle" disabled={!pollReady} loading={pollAccount.isPending} onClick={() => pollAccount.mutate()}>Check approval</Button></div>}
+        </div>
       </Paper>
     </div>
-    <AlertDialog open={confirm} onOpenChange={setConfirm}>
-      <AlertDialogContent className="axis-local-dialog">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Publish this finalized trace?</AlertDialogTitle>
-          <AlertDialogDescription>This submits <code>{selectedId}</code> for public admission. Its disclosed trace may become visible to anyone.</AlertDialogDescription>
-        </AlertDialogHeader>
-        <AlertDialogFooter>
-          <AlertDialogCancel>Keep private</AlertDialogCancel>
-          <AlertDialogAction disabled={publish.isPending} onClick={() => publish.mutate()}>{publish.isPending ? 'Publishing…' : 'Publish trace'}</AlertDialogAction>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <AlertDialog open={confirm} onOpenChange={setConfirm}><AlertDialogContent className="axis-local-dialog"><AlertDialogHeader><AlertDialogTitle>{confirmationTitle}</AlertDialogTitle><AlertDialogDescription>{confirmationCopy}</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction disabled={createShare.isPending} onClick={() => createShare.mutate()}>{createShare.isPending ? 'Sharing…' : visibility === 'listed' ? 'List share' : 'Create share'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </div>;
 }
 

@@ -1384,9 +1384,9 @@ mod tests {
             (http::Method::POST, "/v1/captures/cap-example/trace:verify"),
             (http::Method::GET, "/v1/events"),
             (http::Method::POST, "/v1/session"),
-            (http::Method::GET, "/v1/publication/auth"),
-            (http::Method::POST, "/v1/captures/cap-example/publications"),
-            (http::Method::GET, "/v1/public-traces/publication-example"),
+            (http::Method::GET, "/v1/account"),
+            (http::Method::POST, "/v1/captures/cap-example/shares"),
+            (http::Method::GET, "/v1/shares/share-example"),
         ] {
             let state = state();
             let serial = state.serial.clone();

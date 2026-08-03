@@ -69,7 +69,7 @@ layout:
 
 ## Product posture
 
-LLM Notary is evidence infrastructure. Its audience already understands model providers, local tooling, and the difference between a claim and a record. The interface’s job is to make the next accountable action obvious: capture, inspect, finalize, verify, or publish.
+LLM Notary is evidence infrastructure. Its audience already understands model providers, local tooling, and the difference between a claim and a record. The interface’s job is to make the next accountable action obvious: capture, inspect, finalize, verify, or share.
 
 Axis should feel like a precise instrument panel built around an evidence record. It is cool, compact, legible, and calm. It must never read like a generic AI product, a marketing dashboard, or a document with decorative metadata.
 
@@ -158,7 +158,7 @@ In the local workspace, the active tab is the page label. Begin each tab with it
 
 ### Buttons, links, and controls
 
-Primary actions are rectangular `action-fill` controls with white `action-contrast` text in both themes. Bright `action` blue is not a button fill. Labels use direct verbs: `Finalize capture`, `Publish trace`, `Revoke device`, `Copy URL`. A single screen should normally have one primary action.
+Primary actions are rectangular `action-fill` controls with white `action-contrast` text in both themes. Bright `action` blue is not a button fill. Labels use direct verbs: `Finalize capture`, `Share trace`, `Revoke device`, `Copy URL`. A single screen should normally have one primary action.
 
 Secondary actions are bordered or text-only. Filters and sort controls are square, bordered, and neutral until selected. Inputs have a visible 1px rule and no container behind them. Select chevrons keep at least 12px from the right edge. Do not use rounded pills, floating action buttons, icon-only actions without an accessible label, or fake disabled-looking controls.
 

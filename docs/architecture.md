@@ -16,7 +16,7 @@ convenience features.
 | `llm-notaryd` | yes | vault, catalog, operations, artifacts, trust cache | Runs the proxy, captures private state, finalizes, and verifies |
 | Remote notary | no application plaintext | signing key only | Resolves the provider, relays encrypted TLS records, witnesses the session, and completes proof work |
 | Model provider | yes | provider-owned | Serves an ordinary HTTPS request without an LLM Notary integration |
-| Hosted platform | only explicitly uploaded disclosures | accounts, intake jobs, admitted public traces | Issues admission tickets, verifies uploads, and serves the Library |
+| Hosted platform | only explicitly uploaded disclosures | accounts, share intake, admitted traces and exact packages | Issues admission tickets, verifies uploads, serves stable links, and indexes Listed shares |
 | Independent verifier | disclosed package contents | chosen trust policy | Verifies a `.llmtrace` against a trusted notary key |
 
 The notary is not a generic forward proxy. The protocol selects one of four
@@ -107,11 +107,12 @@ Use these distinctions when describing a trace:
   a later request does not prove that a local tool ran or produced that result.
 - The canonical trace is deterministically derived from authenticated request
   and response bodies.
-- Catalog previews, local operation events, device labels, Library titles,
-  tags, and popularity counts are local or platform observations. They are not
+- Catalog previews, local operation events, device labels, share visibility,
+  and publisher labels are local or platform observations. They are not
   upgraded into cryptographic claims by appearing beside a verified trace.
-- A bare public `trace.otlp.json` was admitted from a verified source package,
-  but it no longer carries the proof needed for independent verification.
+- A shared conversation is rendered from an admitted canonical trace. The
+  retained exact `.llmtrace` download carries the proof needed for independent
+  verification; the rendered page alone does not.
 
 ## What the system does not prove
 
@@ -130,18 +131,20 @@ Provider-native response signatures would provide a stronger origin primitive.
 A transparency log would strengthen key-history auditing. Neither exists in
 the current prototype.
 
-## Publication boundary
+## Sharing boundary
 
-Local capture, finalization, and verification never imply publication.
-Publication requires a separately authorized and explicit action.
+Local capture, finalization, and verification never imply sharing.
+Sharing requires a separately authorized and explicit action plus an Unlisted
+or Listed choice. Both modes are public to anyone with the stable link.
 
 The platform receives the complete `.llmtrace`, including disclosed request
-and response bodies, and may inspect them to reproduce the trace. It never
+and response bodies, and may inspect them to scan and reproduce the trace. It never
 needs the encrypted `.llmbundle`, local vault material, or redacted credential
-values. Admission stores only the canonical trace and intentionally public
-metadata after verification succeeds; the private intake object is then
-deleted, with failed deletions placed on a durable cleanup queue.
+values. Admission stores the canonical trace and the exact safety-checked,
+verified `.llmtrace` package after re-downloading and re-verifying the stored
+bytes. The private intake object is then deleted, with failed deletions placed
+on a durable cleanup queue.
 
 Anonymous hosted verification uses the same core verifier but creates no
-publication or content record. Its live response is not signed and is not a
+share or content record. Its live response is not signed and is not a
 durable receipt.

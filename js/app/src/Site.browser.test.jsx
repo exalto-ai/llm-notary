@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { ApiKeysPanel, Collections, HostedNotaryRecord, SharePage, VerificationPage } from './main';
+import { ApiKeysPanel, HostedNotaryRecord, Library, SharePage, VerificationPage } from './main';
 
 afterEach(async () => {
   cleanup();
@@ -85,14 +85,14 @@ describe('hosted site', () => {
 
   test('keeps the Listed Library as a compact index on a phone', async () => {
     await page.viewport(390, 760);
-    render(<Collections loadShares={loadLibrary} />);
-    await expect.element(page.getByRole('heading', { name: 'Listed verified sessions.' })).toBeVisible();
+    render(<Library loadShares={loadLibrary} />);
+    await expect.element(page.getByRole('heading', { name: 'Library' })).toBeVisible();
     await expect.element(page.getByRole('link', { name: /claude-sonnet-4-6/ })).toBeVisible();
     await expect.element(page.getByText('Unlisted shares never appear in this index.')).not.toBeInTheDocument();
   });
 
   test('filters the Listed Library without loading share contents', async () => {
-    render(<Collections loadShares={loadLibrary} />);
+    render(<Library loadShares={loadLibrary} />);
     await expect.element(page.getByLabelText('Browse Listed shares')).toBeVisible();
     const search = page.getByPlaceholder('Model, provider, or publisher');
     await search.fill('claude');
@@ -115,11 +115,11 @@ describe('hosted site', () => {
     const loadTrace = async () => ({ resourceSpans: [{ scopeSpans: [{ spans: [{
       name: 'gen_ai.inference', spanId: 'span-12', attributes: [
         { key: 'gen_ai.input.messages', value: { stringValue: JSON.stringify([{ role: 'user', parts: [{ type: 'text', content: 'Compare these two evidence trails.' }] }]) } },
-        { key: 'gen_ai.output.messages', value: { stringValue: JSON.stringify([{ role: 'assistant', parts: [{ type: 'text', content: 'The second trail is stronger.' }, { type: 'tool_call', id: 'call-1', name: 'lookup_record', arguments: { id: 42 } }] }]) } },
+        { key: 'gen_ai.output.messages', value: { stringValue: JSON.stringify([{ role: 'assistant', parts: [{ type: 'text', content: 'The second trail is stronger.' }, { type: 'tool_call', id: 'call-1', name: 'lookup_record', arguments: { id: 42 } }, { type: 'tool_call_response', id: 'call-1', result: { source: 'fixture record 42' } }] }]) } },
       ],
     }] }] }] });
     render(<SharePage shareId="share-12" loadShare={loadShare} loadTrace={loadTrace} />);
-    await expect.element(page.getByRole('heading', { name: 'Disclosed transcript' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Conversation' })).toBeVisible();
     await expect.element(page.getByText('Compare these two evidence trails.')).toBeVisible();
     await expect.element(page.getByText('The second trail is stronger.')).toBeVisible();
     const tool = page.getByText('lookup_record');
@@ -127,7 +127,11 @@ describe('hosted site', () => {
     expect(tool.element().closest('details')?.open).toBe(false);
     await tool.click();
     await expect.element(page.getByText('arguments')).toBeVisible();
-    await expect.element(page.getByRole('link', { name: /Download exact .llmtrace/ })).toBeVisible();
+    const toolResult = page.getByText('Tool result');
+    await expect.element(toolResult).toBeVisible();
+    await toolResult.click();
+    await expect.element(page.getByText('fixture record 42')).toBeVisible();
+    await expect.element(page.getByRole('link', { name: /Download .llmtrace/ })).toBeVisible();
     expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain('noindex');
   });
 

@@ -4,12 +4,12 @@
 
 ## Documentation
 
-- [Overview](%PUBLIC_ORIGIN%/docs): Capture, deferred finalization, portable packages, and public traces.
+- [Overview](%PUBLIC_ORIGIN%/docs): Capture, deferred finalization, portable packages, and shared verified sessions.
 - [Trust and guarantees](%PUBLIC_ORIGIN%/docs/how-it-works): The exact provenance claim, participants, authenticated versus observed data, and limits.
 - [Install and capture](%PUBLIC_ORIGIN%/docs/getting-started): Build the pre-release service from source, start both loopback listeners, configure providers, and inspect captures.
 - [Trace packages](%PUBLIC_ORIGIN%/docs/trace-packages): Finalization, package layout, disclosure, and offline verification.
 - [Verify online](%PUBLIC_ORIGIN%/#/verify): Explicitly upload one finalized package for retention-free hosted verification.
-- [Publish](%PUBLIC_ORIGIN%/docs/publish): Deliberately submit an already-finalized trace package.
+- [Share](%PUBLIC_ORIGIN%/docs/share): Preview and deliberately share an already-finalized trace package as Unlisted or Listed.
 
 ## Core trust boundary
 

@@ -10,7 +10,7 @@ documentation update rules that protect LLM Notary's trust boundaries.
 | `crates/llm-notary-core/` | Proxy-TLS protocol, bundle and package contracts, normalization, trust directory, verification |
 | `crates/llm-notary-client/` | local daemon, proxy, catalog, vault integration, REST API, embedded dashboard, command client |
 | `crates/llm-notary-server/` | remote notary protocol and capacity enforcement |
-| `crates/llm-notary-platform/` | hosted API, identity, admission tickets, publication, verification, Library, PostgreSQL |
+| `crates/llm-notary-platform/` | hosted API, identity, admission tickets, session sharing, verification, Library, PostgreSQL |
 | `js/app/` | public Vite/React SPA and local dashboard source |
 | `migrations-postgres/` | forward-only hosted schema migrations |
 | `vendor/tlsn/` | pinned, locally patched TLSNotary dependency |
@@ -133,7 +133,7 @@ When behavior changes, update every affected surface. In particular:
 | --- | --- |
 | CLI command or exit code | README quick path, local-service guide, agent playbook, public docs |
 | REST route or schema | OpenAPI annotations, generated clients, local-service guide, contract check |
-| Artifact or disclosure rule | core producer and verifier, artifact guide, architecture, publication admission |
+| Artifact or disclosure rule | core producer and verifier, artifact guide, architecture, share admission |
 | Notary trust policy | architecture, key lifecycle, local service, hosted public copy |
 | Deployment or migration order | Fly guide, database guide, workflow comments |
 | Dashboard workflow | dashboard guide, screenshots, fixture, browser tests |

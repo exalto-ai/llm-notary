@@ -1,0 +1,246 @@
+.span-panel {
+  margin-top: 22px;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--ink);
+}
+
+.span-panel-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: baseline;
+  margin-bottom: 7px;
+}
+
+.span-panel-head span,
+.span-panel-head small {
+  font: 10px 'DM Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.span-panel-head span { color: var(--ink); }
+.span-panel-head small { color: var(--muted); text-align: right; }
+
+.span-row {
+  border-top: 1px solid var(--line);
+}
+
+.span-row:first-child { border-top: 0; }
+
+.span-branch {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--ink);
+  background: var(--white);
+}
+
+.span-row--source .span-branch {
+  border-color: var(--green-ink);
+  background: var(--green);
+}
+
+/* Trace data is technical, but it is still one interface—not a code editor. */
+.span-tree {
+  --trace-label: 10px;
+  --trace-data: 11px;
+  --trace-copy: 13px;
+}
+
+.span-panel-head span,
+.span-panel-head small,
+.span-kind,
+.span-summary small,
+.span-summary code,
+.span-summary em,
+.message-group-label,
+.message-role,
+.message-part > span,
+.finish-reason,
+.trace-field b,
+.trace-field code {
+  font-family: 'DM Mono', monospace;
+  font-size: var(--trace-label);
+  line-height: 1.45;
+  letter-spacing: 0;
+}
+
+.span-summary {
+  display: grid;
+  grid-template-columns: 12px 68px minmax(0, 1fr) 10px;
+  column-gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 12px 0 10px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.span-summary:hover strong {
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+}
+
+.span-summary:focus-visible {
+  outline: 2px solid var(--green-ink);
+  outline-offset: 3px;
+}
+
+.span-summary strong {
+  grid-column: 3;
+  font: 700 13px/1.3 'Instrument Sans', Arial, sans-serif;
+  letter-spacing: -.025em;
+  overflow-wrap: anywhere;
+}
+
+.span-disclosure {
+  grid-column: 4;
+  width: 7px;
+  height: 7px;
+  border-right: 1px solid currentColor;
+  border-bottom: 1px solid currentColor;
+  transform: rotate(45deg) translate(-2px, 2px);
+  transform-origin: center;
+  transition: transform .15s ease;
+}
+
+.span-summary[aria-expanded="true"] .span-disclosure {
+  transform: rotate(225deg);
+}
+
+.span-summary small {
+  grid-column: 3 / -1;
+  margin-top: 5px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.span-summary small code {
+  color: inherit;
+  font-size: inherit;
+}
+
+.span-summary em {
+  grid-column: 3 / -1;
+  justify-self: start;
+  margin-top: 5px;
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  font-style: normal;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.span-row--source .span-summary em {
+  border-color: var(--green-ink);
+  background: color-mix(in srgb, var(--green) 22%, transparent);
+  color: var(--green-ink);
+}
+
+.span-evidence {
+  margin: 0 0 12px 20px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  background: transparent;
+}
+
+.message-group + .message-group { margin-top: 14px; }
+
+.message-group-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--muted);
+}
+
+.trace-message {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 10px;
+  padding: 11px 0;
+  border-top: 1px solid var(--line);
+}
+
+.message-role,
+.message-part > span {
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.message-role { color: var(--green-ink); }
+
+.message-part p {
+  margin: 4px 0 0;
+  color: var(--body-copy-soft);
+  font: 400 var(--trace-copy)/1.5 'Instrument Sans', Arial, sans-serif;
+}
+
+.message-markdown {
+  margin-top: 4px;
+  color: var(--body-copy-soft);
+  font: 400 var(--trace-copy)/1.55 'Instrument Sans', Arial, sans-serif;
+  overflow-wrap: anywhere;
+}
+
+.message-markdown > :first-child { margin-top: 0; }
+.message-markdown > :last-child { margin-bottom: 0; }
+.message-markdown p { margin: 0 0 9px; font: inherit; color: inherit; }
+.message-markdown ul,
+.message-markdown ol { margin: 8px 0; padding-left: 20px; }
+.message-markdown li + li { margin-top: 4px; }
+.message-markdown pre { max-width: 100%; margin: 9px 0; padding: 10px; overflow-x: auto; background: var(--inverse-surface); color: var(--inverse-text); }
+.message-markdown code { font: 11px/1.55 'DM Mono', monospace; }
+.message-markdown :not(pre) > code { padding: 1px 3px; background: var(--soft); color: var(--ink); }
+.message-markdown blockquote { margin: 9px 0; padding-left: 12px; border-left: 2px solid var(--line); color: var(--muted); }
+
+.message-part--tool > span { display: block; }
+
+.trace-fields {
+  display: grid;
+  gap: 5px;
+  margin-top: 6px;
+}
+
+.trace-field {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.trace-field b {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.trace-field code {
+  color: var(--body-copy-soft);
+  font-size: var(--trace-data);
+  overflow-wrap: anywhere;
+}
+
+.finish-reason {
+  margin-top: 8px;
+  color: var(--muted);
+}
+
+.span-attributes .trace-fields { margin-top: 0; }
+.span-attributes .trace-field { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.span-attributes .trace-field b { color: var(--muted); }
+.span-attributes .trace-field code { color: var(--body-copy-soft); }
+
+.span-messages {
+  border-color: var(--ink);
+}
+
+@media (max-width: 820px) {
+  .span-panel-head { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .span-summary { grid-template-columns: 10px 50px minmax(0, 1fr) 10px; }
+  .span-disclosure { grid-column: 4; grid-row: 1; }
+  .span-summary small,
+  .span-summary em { grid-column: 3; }
+  .span-evidence { margin-left: 10px; padding: 11px; }
+  .trace-message { grid-template-columns: 55px minmax(0, 1fr); gap: 8px; }
+}
