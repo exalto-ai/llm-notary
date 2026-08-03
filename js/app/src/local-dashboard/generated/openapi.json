@@ -556,6 +556,54 @@
         ]
       }
     },
+    "/v1/notaries": {
+      "get": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Get configured notary trust",
+        "description": "Returns a safe read-only projection of the pinned notary trust history or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.",
+        "operationId": "notaries",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotariesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
     "/v1/operations": {
       "get": {
         "tags": [
@@ -1601,6 +1649,95 @@
           },
           "status": {
             "type": "string"
+          }
+        }
+      },
+      "NotariesResponse": {
+        "type": "object",
+        "required": [
+          "source",
+          "notaries"
+        ],
+        "properties": {
+          "active_key_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Selected active directory key. Explicit configuration has no directory\nlifecycle selection and therefore leaves this field unset."
+          },
+          "directory_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Public URL from which the current pinned directory generation came."
+          },
+          "generation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "notaries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/NotaryResponse"
+            }
+          },
+          "source": {
+            "type": "string",
+            "description": "`directory` for the locally pinned trust store or\n`explicit_configuration` for a self-hosted endpoint and key."
+          }
+        }
+      },
+      "NotaryResponse": {
+        "type": "object",
+        "required": [
+          "endpoint",
+          "transport",
+          "key_id",
+          "status"
+        ],
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "finalize_until_unix_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "key_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "One of `active`, `retiring`, `retired`, `revoked`, or `configured`."
+          },
+          "transport": {
+            "type": "string"
+          },
+          "valid_from_unix_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "valid_until_unix_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
           }
         }
       },

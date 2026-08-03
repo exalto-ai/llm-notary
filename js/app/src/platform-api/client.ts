@@ -25,6 +25,14 @@ export async function getTraceCollection() {
   return data;
 }
 
+export async function getNotaryDirectory() {
+  const { data, error, response } = await client.GET('/api/notary');
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not load the notary directory.'), response.status);
+  }
+  return data;
+}
+
 export async function getPublishedTrace(traceId: string) {
   const { data, error, response } = await client.GET('/api/public/traces/{trace_id}/trace.otlp.json', {
     params: { path: { trace_id: traceId } },

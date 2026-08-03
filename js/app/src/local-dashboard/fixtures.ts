@@ -1,5 +1,5 @@
 import type {
-  Capture, CaptureDetail, Event, LocalApi, Operation, PublicationAuth, Status, Trace, Verification
+  Capture, CaptureDetail, Event, LocalApi, Notaries, Operation, PublicationAuth, Status, Trace, Verification
 } from './api';
 
 const hour = 60 * 60 * 1000;
@@ -96,6 +96,38 @@ export const fixtureStatus: Status = {
   version: '0.1.0', proxy_listener: '127.0.0.1:8787', admin_listener: '127.0.0.1:8788',
   vault: 'OS vault', notary: 'directory', preview_chars: 1000,
   counts: { total_captures: 5, capturing: 1, pending: 1, finalized: 1, failed: 1, active_operations: 1 }
+};
+
+export const fixtureNotaries: Notaries = {
+  source: 'directory',
+  directory_source: 'https://llm-notary.exalto.ai/api/notary',
+  generation: 12,
+  active_key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+  notaries: [
+    {
+      endpoint: 'tls://notary.exalto.ai:7047', transport: 'tls',
+      key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', status: 'active',
+      valid_from_unix_ms: fixtureNow - hour * 24 * 30, valid_until_unix_ms: null, finalize_until_unix_ms: null
+    },
+    {
+      endpoint: 'tls://notary-old.exalto.ai:7047', transport: 'tls',
+      key_id: 'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', status: 'retiring',
+      valid_from_unix_ms: fixtureNow - hour * 24 * 120, valid_until_unix_ms: fixtureNow - hour * 24 * 7,
+      finalize_until_unix_ms: fixtureNow + hour * 24 * 14
+    },
+    {
+      endpoint: 'tls://notary-history.exalto.ai:7047', transport: 'tls',
+      key_id: 'sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', status: 'retired',
+      valid_from_unix_ms: fixtureNow - hour * 24 * 240, valid_until_unix_ms: fixtureNow - hour * 24 * 121,
+      finalize_until_unix_ms: fixtureNow - hour * 24 * 90
+    },
+    {
+      endpoint: 'tls://notary-revoked.exalto.ai:7047', transport: 'tls',
+      key_id: 'sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', status: 'revoked',
+      valid_from_unix_ms: fixtureNow - hour * 24 * 360, valid_until_unix_ms: fixtureNow - hour * 24 * 241,
+      finalize_until_unix_ms: fixtureNow - hour * 24 * 220
+    }
+  ]
 };
 
 const fixtureTrace: Trace = {
@@ -257,6 +289,7 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     session: async () => undefined,
     endSession: async () => undefined,
     status: async () => status(),
+    notaries: async () => structuredClone(fixtureNotaries),
     captures: async (filters = {}) => {
       const limit = Number(filters.limit ?? 50);
       const offset = Number(filters.offset ?? 0);

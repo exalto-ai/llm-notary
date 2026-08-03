@@ -242,7 +242,7 @@ pub(crate) async fn refresh_notary_directory_from(
         .await
         .context("reading notary directory from LLM Notary API")?;
     let directory = parse_directory(&bytes)?;
-    pin(directory.clone())?;
+    pin(directory.clone(), directory_url.as_str())?;
     tracing::info!(
         key_id = %directory.active_key_id,
         key_count = directory.notaries.len(),

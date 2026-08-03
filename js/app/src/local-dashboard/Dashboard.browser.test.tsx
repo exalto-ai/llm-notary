@@ -5,8 +5,8 @@ import { MantineProvider, createTheme } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Dashboard } from './Dashboard';
-import { createFixtureApi } from './fixtures';
-import { LocalApiError, type LocalApi } from './api';
+import { createFixtureApi, fixtureNotaries } from './fixtures';
+import { LocalApiError, type LocalApi, type Notaries } from './api';
 import '@mantine/core/styles.css';
 import '@mantine/notifications/styles.css';
 
@@ -48,6 +48,53 @@ describe('local evidence dashboard', () => {
     expect(localStorage.getItem('mantine-color-scheme-value')).toBe('dark');
     await page.getByRole('button', { name: 'System color scheme' }).click();
     expect(localStorage.getItem('mantine-color-scheme-value')).toBe('auto');
+  });
+
+  test('renders pinned notary lifecycle records in trust order without health claims', async () => {
+    const api: LocalApi = {
+      ...createFixtureApi(),
+      notaries: async () => ({ ...structuredClone(fixtureNotaries), notaries: [...structuredClone(fixtureNotaries.notaries)].reverse() })
+    };
+    renderDashboard('/settings', api);
+    await expect.element(page.getByRole('heading', { name: 'Configured trust' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Accepts new captures and finalizations' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Finalization-only' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Historical verification only' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Untrusted' })).toBeVisible();
+    await expect.element(page.getByText('It does not accept new captures.', { exact: false })).toBeVisible();
+    await expect.element(page.getByText('Revoked and not trusted for capture, finalization, or historical verification.')).toBeVisible();
+    await expect.poll(() => Array.from(document.querySelectorAll('.local-notary-record h3')).map((node) => node.textContent)).toEqual([
+      'Accepts new captures and finalizations', 'Finalization-only', 'Historical verification only', 'Untrusted'
+    ]);
+    await expect.element(page.getByText('Online', { exact: true })).not.toBeInTheDocument();
+  });
+
+  test('distinguishes explicit self-hosted configuration from the directory', async () => {
+    const explicit: Notaries = {
+      source: 'explicit_configuration', directory_source: null, generation: null, active_key_id: null,
+      notaries: [{ endpoint: 'tcp://127.0.0.1:7047', transport: 'tcp',
+        key_id: 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', status: 'configured',
+        valid_from_unix_ms: null, valid_until_unix_ms: null, finalize_until_unix_ms: null }]
+    };
+    renderDashboard('/settings', { ...createFixtureApi(), notaries: async () => explicit });
+    await expect.element(page.getByRole('heading', { name: 'Explicit self-hosted configuration' })).toBeVisible();
+    await expect.element(page.getByText('are not members of the hosted directory', { exact: false })).toBeVisible();
+    await expect.element(page.getByText('Directory generation', { exact: false })).not.toBeInTheDocument();
+  });
+
+  test('handles empty, malformed, and unavailable local notary trust without a false status', async () => {
+    const empty: Notaries = { source: 'directory', directory_source: null, generation: null, active_key_id: null, notaries: [] };
+    const view = renderDashboard('/settings', { ...createFixtureApi(), notaries: async () => empty });
+    await expect.element(page.getByText('No pinned notary records')).toBeVisible();
+    view.unmount();
+
+    renderDashboard('/settings', { ...createFixtureApi(), notaries: async () => { throw new LocalApiError(500, 'notary_trust_state_invalid', 'Invalid'); } });
+    await expect.element(page.getByText('Pinned trust state is malformed')).toBeVisible();
+    cleanup();
+
+    renderDashboard('/settings', { ...createFixtureApi(), notaries: async () => { throw new LocalApiError(503, 'request_failed', 'Unavailable'); } });
+    await expect.element(page.getByText('Local notary trust is unavailable')).toBeVisible();
+    await expect.element(page.getByText('Online', { exact: true })).not.toBeInTheDocument();
   });
 
   test('queues a finalization and makes the durable operation visible', async () => {

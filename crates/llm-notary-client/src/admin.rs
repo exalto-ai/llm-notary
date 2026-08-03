@@ -42,7 +42,7 @@ use crate::{
     },
     cli::{DEFAULT_PUBLIC_ORIGIN, auth, download, notary, proxy, publish},
     config::AgentConfig,
-    notary_directory::key_id,
+    notary_directory::{NotaryDirectoryRecord, NotaryKeyStatus, key_id},
     vault::Vault,
 };
 
@@ -85,6 +85,7 @@ impl AdminState {
 pub(crate) fn router(state: AdminState) -> Result<Router> {
     let protected = Router::new()
         .route("/v1/status", get(status))
+        .route("/v1/notaries", get(notaries))
         .route("/v1/captures", get(captures))
         .route("/v1/captures/{capture_id}", get(capture))
         .route(
@@ -203,14 +204,14 @@ fn embedded_dashboard_response(path: &str) -> Response {
         description = "Loopback administration API. Routes are available without credentials by default; configure admin.auth to require HTTP Basic authentication."
     ),
     paths(
-        health, openapi, start_session, end_session, status, captures, capture,
+        health, openapi, start_session, end_session, status, notaries, captures, capture,
         start_finalization, operations, operation, retry_operation, trace,
         verify_trace, events, publication_auth_status, start_publication_auth,
         end_publication_auth, poll_publication_auth, publish_capture,
         publication_status, download_public_trace, verify_public_trace
     ),
     components(schemas(
-        HealthResponse, StatusResponse, CountsResponse,
+        HealthResponse, StatusResponse, CountsResponse, NotariesResponse, NotaryResponse,
         CaptureResponse, CaptureDetailResponse, ArtifactResponse, CaptureListResponse,
         OperationResponse, OperationAttemptResponse, OperationListResponse, FinalizationResponse, EventResponse,
         EventListResponse, TraceResponse, VerificationResponse, PublicationAuthResponse,
@@ -355,6 +356,76 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
         preview_chars: state.config.catalog.prompt_preview_chars,
         counts: CountsResponse::from(counts),
     }))
+}
+
+#[utoipa::path(get, path = "/v1/notaries", summary = "Get configured notary trust", description = "Returns a safe read-only projection of the pinned notary trust history or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.", responses((status = 200, body = NotariesResponse), (status = 401, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn notaries(State(state): State<AdminState>) -> Result<Json<NotariesResponse>, ApiError> {
+    notaries_response(&state.config)
+        .map(Json)
+        .map_err(|_| ApiError::internal("notary_trust_state_invalid"))
+}
+
+fn notaries_response(config: &AgentConfig) -> Result<NotariesResponse> {
+    if let (Some(endpoint), Some(public_key)) =
+        (config.notary_endpoint()?, config.notary_public_key()?)
+    {
+        return Ok(NotariesResponse {
+            source: "explicit_configuration".into(),
+            directory_source: None,
+            generation: None,
+            active_key_id: None,
+            notaries: vec![NotaryResponse {
+                endpoint: endpoint.to_string(),
+                transport: endpoint.transport.scheme().into(),
+                key_id: key_id(&public_key),
+                status: "configured".into(),
+                valid_from_unix_ms: None,
+                valid_until_unix_ms: None,
+                finalize_until_unix_ms: None,
+            }],
+        });
+    }
+
+    let Some(pinned) = notary::pinned_state()? else {
+        return Ok(NotariesResponse {
+            source: "directory".into(),
+            directory_source: None,
+            generation: None,
+            active_key_id: None,
+            notaries: Vec::new(),
+        });
+    };
+    Ok(directory_notaries_response(pinned))
+}
+
+fn directory_notaries_response(pinned: notary::PinnedNotaryState) -> NotariesResponse {
+    let active_key_id = pinned.active_key_id;
+    let mut records = pinned.records;
+    records.sort_by(|left, right| {
+        notary_record_order(left, &active_key_id)
+            .cmp(&notary_record_order(right, &active_key_id))
+            .then_with(|| right.valid_from_unix_ms.cmp(&left.valid_from_unix_ms))
+            .then_with(|| left.key_id.cmp(&right.key_id))
+    });
+    NotariesResponse {
+        source: "directory".into(),
+        directory_source: pinned.directory_source,
+        generation: Some(pinned.generation),
+        active_key_id: Some(active_key_id),
+        notaries: records.into_iter().map(NotaryResponse::from).collect(),
+    }
+}
+
+fn notary_record_order(record: &NotaryDirectoryRecord, active_key_id: &str) -> u8 {
+    if record.key_id == active_key_id {
+        return 0;
+    }
+    match record.status {
+        NotaryKeyStatus::Active => 1,
+        NotaryKeyStatus::Retiring => 2,
+        NotaryKeyStatus::Retired => 3,
+        NotaryKeyStatus::Revoked => 4,
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -1103,6 +1174,56 @@ struct StatusResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+struct NotariesResponse {
+    /// `directory` for the locally pinned trust store or
+    /// `explicit_configuration` for a self-hosted endpoint and key.
+    source: String,
+    /// Public URL from which the current pinned directory generation came.
+    directory_source: Option<String>,
+    generation: Option<u64>,
+    /// Selected active directory key. Explicit configuration has no directory
+    /// lifecycle selection and therefore leaves this field unset.
+    active_key_id: Option<String>,
+    notaries: Vec<NotaryResponse>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct NotaryResponse {
+    endpoint: String,
+    transport: String,
+    key_id: String,
+    /// One of `active`, `retiring`, `retired`, `revoked`, or `configured`.
+    status: String,
+    valid_from_unix_ms: Option<u64>,
+    valid_until_unix_ms: Option<u64>,
+    finalize_until_unix_ms: Option<u64>,
+}
+
+impl From<NotaryDirectoryRecord> for NotaryResponse {
+    fn from(record: NotaryDirectoryRecord) -> Self {
+        let endpoint = record
+            .endpoint()
+            .expect("validated pinned notary record has an endpoint")
+            .to_string();
+        Self {
+            endpoint,
+            transport: record.transport.scheme().into(),
+            key_id: record.key_id,
+            status: match record.status {
+                NotaryKeyStatus::Active => "active",
+                NotaryKeyStatus::Retiring => "retiring",
+                NotaryKeyStatus::Retired => "retired",
+                NotaryKeyStatus::Revoked => "revoked",
+            }
+            .into(),
+            valid_from_unix_ms: Some(record.valid_from_unix_ms),
+            valid_until_unix_ms: record.valid_until_unix_ms,
+            finalize_until_unix_ms: record.finalize_until_unix_ms,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 struct CaptureResponse {
     capture_id: String,
     created_at_unix_ms: u64,
@@ -1503,6 +1624,22 @@ mod tests {
         )
     }
 
+    fn notary_record(seed: u8, status: NotaryKeyStatus, valid_from: u64) -> NotaryDirectoryRecord {
+        let signing = k256::ecdsa::SigningKey::from_slice(&[seed; 32]).unwrap();
+        let public_key = signing.verifying_key().to_sec1_bytes().to_vec();
+        NotaryDirectoryRecord {
+            host: format!("notary-{seed}.example"),
+            port: 7047,
+            transport: crate::notary_directory::NotaryTransport::Tls,
+            key_id: key_id(&public_key),
+            public_key: hex::encode(public_key),
+            status,
+            valid_from_unix_ms: valid_from,
+            valid_until_unix_ms: Some(valid_from + 1_000),
+            finalize_until_unix_ms: Some(valid_from + 2_000),
+        }
+    }
+
     #[tokio::test]
     async fn admin_routes_are_open_by_default() {
         let directory = tempfile::tempdir().unwrap();
@@ -1620,6 +1757,7 @@ mod tests {
             "/healthz",
             "/openapi.json",
             "/v1/status",
+            "/v1/notaries",
             "/v1/captures",
             "/v1/captures/{capture_id}",
             "/v1/captures/{capture_id}/finalizations",
@@ -1641,6 +1779,7 @@ mod tests {
         }
         for (path, method) in [
             ("/v1/status", "get"),
+            ("/v1/notaries", "get"),
             ("/v1/captures", "get"),
             ("/v1/captures/{capture_id}", "get"),
             ("/v1/captures/{capture_id}/finalizations", "post"),
@@ -1691,7 +1830,64 @@ mod tests {
                 documented_operations += 1;
             }
         }
-        assert_eq!(documented_operations, 22);
+        assert_eq!(documented_operations, 23);
+    }
+
+    #[test]
+    fn directory_notary_projection_orders_lifecycle_and_retains_revocations() {
+        let active = notary_record(1, NotaryKeyStatus::Active, 100);
+        let retiring = notary_record(2, NotaryKeyStatus::Retiring, 90);
+        let retired = notary_record(3, NotaryKeyStatus::Retired, 80);
+        let revoked = notary_record(4, NotaryKeyStatus::Revoked, 110);
+        let response = directory_notaries_response(notary::PinnedNotaryState {
+            directory_source: Some("https://example.test/api/notary".into()),
+            generation: 7,
+            active_key_id: active.key_id.clone(),
+            records: vec![
+                revoked.clone(),
+                retired.clone(),
+                active.clone(),
+                retiring.clone(),
+            ],
+        });
+
+        assert_eq!(response.source, "directory");
+        assert_eq!(response.generation, Some(7));
+        assert_eq!(
+            response.active_key_id.as_deref(),
+            Some(active.key_id.as_str())
+        );
+        assert_eq!(
+            response
+                .notaries
+                .iter()
+                .map(|record| record.status.as_str())
+                .collect::<Vec<_>>(),
+            ["active", "retiring", "retired", "revoked"]
+        );
+        let revoked_response = response.notaries.last().unwrap();
+        assert_eq!(revoked_response.key_id, revoked.key_id);
+        assert_eq!(revoked_response.endpoint, "tls://notary-4.example:7047");
+    }
+
+    #[test]
+    fn explicit_notary_projection_does_not_claim_directory_membership() {
+        let signing = k256::ecdsa::SigningKey::from_slice(&[9; 32]).unwrap();
+        let public_key = signing.verifying_key().to_sec1_bytes().to_vec();
+        let mut config = AgentConfig::default();
+        config.notary.endpoint = Some("tcp://127.0.0.1:7047".into());
+        config.notary.public_key = Some(hex::encode(&public_key));
+
+        let response = notaries_response(&config).unwrap();
+
+        assert_eq!(response.source, "explicit_configuration");
+        assert_eq!(response.directory_source, None);
+        assert_eq!(response.generation, None);
+        assert_eq!(response.active_key_id, None);
+        assert_eq!(response.notaries.len(), 1);
+        assert_eq!(response.notaries[0].status, "configured");
+        assert_eq!(response.notaries[0].key_id, key_id(&public_key));
+        assert_eq!(response.notaries[0].endpoint, "tcp://127.0.0.1:7047");
     }
 
     #[tokio::test]

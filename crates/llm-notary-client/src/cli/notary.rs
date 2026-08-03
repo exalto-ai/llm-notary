@@ -29,16 +29,26 @@ struct TrustStore {
     generation: u64,
     #[serde(default)]
     directory_sha256: Option<String>,
+    #[serde(default)]
+    directory_source: Option<String>,
     active_key_id: Option<String>,
     records: Vec<NotaryDirectoryRecord>,
 }
 
-pub fn pin(directory: NotaryDirectory) -> Result<()> {
-    let path = trust_store_path()?;
-    pin_at_path(&path, directory)
+#[derive(Clone, Debug)]
+pub(crate) struct PinnedNotaryState {
+    pub directory_source: Option<String>,
+    pub generation: u64,
+    pub active_key_id: String,
+    pub records: Vec<NotaryDirectoryRecord>,
 }
 
-fn pin_at_path(path: &Path, directory: NotaryDirectory) -> Result<()> {
+pub fn pin(directory: NotaryDirectory, directory_source: &str) -> Result<()> {
+    let path = trust_store_path()?;
+    pin_at_path(&path, directory, directory_source)
+}
+
+fn pin_at_path(path: &Path, directory: NotaryDirectory, directory_source: &str) -> Result<()> {
     directory.validate()?;
     let parent = path.parent().expect("trust store has a parent");
     fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
@@ -54,7 +64,8 @@ fn pin_at_path(path: &Path, directory: NotaryDirectory) -> Result<()> {
         .with_context(|| format!("lock {}", lock_path.display()))?;
     // The read must happen after acquiring the cross-process lock. Otherwise a
     // slower process could overwrite a newer generation or cached revocation.
-    let store = merge_store(load_store(path)?, directory)?;
+    let mut store = merge_store(load_store(path)?, directory)?;
+    store.directory_source = Some(directory_source.to_owned());
     validate_trust_store(&store)?;
     write_store(path, &store)
 }
@@ -175,6 +186,23 @@ pub fn explicit_key(value: &str) -> Result<(Vec<u8>, String)> {
     Ok((key.clone(), key_id(&key)))
 }
 
+pub(crate) fn pinned_state() -> Result<Option<PinnedNotaryState>> {
+    let path = trust_store_path()?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let store = load_store(&path)?;
+    validate_trust_store(&store)?;
+    Ok(Some(PinnedNotaryState {
+        directory_source: store.directory_source,
+        generation: store.generation,
+        active_key_id: store
+            .active_key_id
+            .expect("validated trust store has an active key"),
+        records: store.records,
+    }))
+}
+
 fn validated_store() -> Result<TrustStore> {
     let store = load_store(&trust_store_path()?)?;
     validate_trust_store(&store)?;
@@ -187,6 +215,20 @@ fn validate_trust_store(store: &TrustStore) -> Result<()> {
     }
     if store.records.is_empty() || store.records.len() > 4096 {
         bail!("local notary trust store must contain between 1 and 4096 historical records");
+    }
+    if let Some(source) = &store.directory_source {
+        let source_url =
+            url::Url::parse(source).context("cached notary directory source is invalid")?;
+        if source.len() > 2048
+            || !matches!(source_url.scheme(), "http" | "https")
+            || !source_url.username().is_empty()
+            || source_url.password().is_some()
+            || source_url.path() != "/api/notary"
+            || source_url.query().is_some()
+            || source_url.fragment().is_some()
+        {
+            bail!("cached notary directory source is not a public directory URL");
+        }
     }
     let active_key_id = store
         .active_key_id
@@ -288,6 +330,7 @@ mod tests {
             format: DIRECTORY_FORMAT_V3.into(),
             generation: 1,
             directory_sha256: None,
+            directory_source: None,
             active_key_id: Some(old.key_id.clone()),
             records: vec![old.clone()],
         };
@@ -366,6 +409,7 @@ mod tests {
             format: DIRECTORY_FORMAT_V3.into(),
             generation: 2,
             directory_sha256: Some("directory-sha".into()),
+            directory_source: Some("https://example.test/api/notary".into()),
             active_key_id: Some(active.key_id.clone()),
             records: vec![active],
         };
@@ -375,6 +419,26 @@ mod tests {
         let loaded = load_store(&path).unwrap();
         assert_eq!(loaded.generation, 2);
         assert_eq!(loaded.directory_sha256.as_deref(), Some("directory-sha"));
+        assert_eq!(
+            loaded.directory_source.as_deref(),
+            Some("https://example.test/api/notary")
+        );
+    }
+
+    #[test]
+    fn trust_store_rejects_a_non_public_directory_source() {
+        let active = record(8, NotaryKeyStatus::Active);
+        let mut store = TrustStore {
+            format: DIRECTORY_FORMAT_V3.into(),
+            generation: 2,
+            directory_sha256: Some("directory-sha".into()),
+            directory_source: Some("https://user:secret@example.test/api/notary".into()),
+            active_key_id: Some(active.key_id.clone()),
+            records: vec![active],
+        };
+        assert!(validate_trust_store(&store).is_err());
+        store.directory_source = Some("/Users/example/private/notary.json".into());
+        assert!(validate_trust_store(&store).is_err());
     }
 
     #[test]
@@ -474,6 +538,7 @@ mod tests {
                         active_key_id: active.key_id.clone(),
                         notaries: vec![active],
                     },
+                    "https://example.test/api/notary",
                 )
             })
         };
