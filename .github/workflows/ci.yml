@@ -243,6 +243,7 @@ jobs:
     name: Production deployment
     needs: [changes, required]
     if: >-
+      always() &&
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
       needs.changes.outputs.containers == 'true' &&
