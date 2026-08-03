@@ -173,9 +173,13 @@ describe('local evidence dashboard', () => {
     expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('queued');
     expect((await api.allCaptures({ finalization_state: 'finalized' })).items.some((item) => item.capture_id === captureId)).toBe(false);
     await expect(api.trace(captureId)).rejects.toMatchObject({ code: 'finalized_trace_not_found' });
+    expect((await api.operation(queued.operation.operation_id)).state).toBe('queued');
+    expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('queued');
+    expect((await api.operation(queued.operation.operation_id)).state).toBe('running');
     expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('running');
     expect((await api.capture(captureId)).capture.finalization_state).toBe('running');
     expect((await api.allCaptures({ finalization_state: 'finalized' })).items.some((item) => item.capture_id === captureId)).toBe(false);
+    expect((await api.operation(queued.operation.operation_id)).state).toBe('finalized');
     expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('finalized');
     const capture = (await api.capture(captureId)).capture;
     expect(capture.finalization_state).toBe('finalized');

@@ -322,41 +322,40 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     captures = captures.map((capture) => capture.capture_id === captureId
       ? { ...capture, finalization_state: finalizationState } : capture);
   };
-  const advanceDemoOperations = () => {
-    for (const operationId of progressingOperations) {
-      const polls = operationPolls.get(operationId) ?? 0;
-      operationPolls.set(operationId, polls + 1);
-      if (polls === 0) continue;
-      const operation = operations.find((item) => item.operation_id === operationId);
-      if (!operation?.capture_id) {
-        progressingOperations.delete(operationId);
-        continue;
-      }
-      if (operation.state === 'queued') {
-        const attempt = operation.attempt + 1;
-        const startedAt = actionTimestamp();
-        operations = operations.map((item) => item.operation_id === operationId ? {
-          ...item, state: 'running', attempt, started_at_unix_ms: startedAt, completed_at_unix_ms: null,
-          retryable: false,
-          attempt_history: [{ attempt, state: 'running', started_at_unix_ms: startedAt }, ...item.attempt_history]
-        } : item);
-        setCaptureFinalization(operation.capture_id, 'running');
-        recordEvent('finalization_started', 'Finalization started', 'info', operation.capture_id, operationId);
-      } else if (operation.state === 'running') {
-        const completedAt = actionTimestamp();
-        operations = operations.map((item) => item.operation_id === operationId ? {
-          ...item, state: 'finalized', completed_at_unix_ms: completedAt,
-          retryable: false,
-          attempt_history: item.attempt_history.map((attempt, index) => index === 0
-            ? { ...attempt, state: 'finalized', completed_at_unix_ms: completedAt } : attempt)
-        } : item);
-        setCaptureFinalization(operation.capture_id, 'finalized');
-        const capture = captures.find((item) => item.capture_id === operation.capture_id);
-        if (capture) traces.set(capture.capture_id, traceForCapture(capture));
-        recordEvent('finalization_completed', 'Finalization completed', 'success', operation.capture_id, operationId);
-        progressingOperations.delete(operationId);
-        operationPolls.delete(operationId);
-      }
+  const advanceDemoOperation = (operationId: string) => {
+    if (!progressingOperations.has(operationId)) return;
+    const polls = operationPolls.get(operationId) ?? 0;
+    operationPolls.set(operationId, polls + 1);
+    if (polls === 0) return;
+    const operation = operations.find((item) => item.operation_id === operationId);
+    if (!operation?.capture_id) {
+      progressingOperations.delete(operationId);
+      return;
+    }
+    if (operation.state === 'queued') {
+      const attempt = operation.attempt + 1;
+      const startedAt = actionTimestamp();
+      operations = operations.map((item) => item.operation_id === operationId ? {
+        ...item, state: 'running', attempt, started_at_unix_ms: startedAt, completed_at_unix_ms: null,
+        retryable: false,
+        attempt_history: [{ attempt, state: 'running', started_at_unix_ms: startedAt }, ...item.attempt_history]
+      } : item);
+      setCaptureFinalization(operation.capture_id, 'running');
+      recordEvent('finalization_started', 'Finalization started', 'info', operation.capture_id, operationId);
+    } else if (operation.state === 'running') {
+      const completedAt = actionTimestamp();
+      operations = operations.map((item) => item.operation_id === operationId ? {
+        ...item, state: 'finalized', completed_at_unix_ms: completedAt,
+        retryable: false,
+        attempt_history: item.attempt_history.map((attempt, index) => index === 0
+          ? { ...attempt, state: 'finalized', completed_at_unix_ms: completedAt } : attempt)
+      } : item);
+      setCaptureFinalization(operation.capture_id, 'finalized');
+      const capture = captures.find((item) => item.capture_id === operation.capture_id);
+      if (capture) traces.set(capture.capture_id, traceForCapture(capture));
+      recordEvent('finalization_completed', 'Finalization completed', 'success', operation.capture_id, operationId);
+      progressingOperations.delete(operationId);
+      operationPolls.delete(operationId);
     }
   };
   const status = (): Status => ({
@@ -413,7 +412,6 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       return { operation, deduplicated: false };
     },
     operations: async (filters = {}) => {
-      advanceDemoOperations();
       const limit = Number(filters.limit ?? 50);
       const items = structuredClone(operations.filter((operation) =>
         (!filters.state || operation.state === filters.state)
@@ -424,7 +422,8 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     operation: async (operationId) => {
       const operation = operations.find((item) => item.operation_id === operationId);
       if (!operation) throw new LocalApiError(404, 'operation_not_found', 'Operation not found');
-      return structuredClone(operation);
+      advanceDemoOperation(operationId);
+      return structuredClone(operations.find((item) => item.operation_id === operationId)!);
     },
     retry: async (operationId) => {
       const existing = operations.find((operation) => operation.operation_id === operationId);
