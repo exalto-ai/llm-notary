@@ -21,9 +21,10 @@ schema authority.
 5. Treat finalization as asynchronous. Save the returned `op-…` identifier and
    poll its documented operation URL until `finalized`, `failed`, or
    `interrupted`. Use `attempt_history` when explaining retries.
-6. Use `POST /v1/captures/{capture_id}/trace:verify` for cryptographic package
-   verification. Decrypting or structurally validating an encrypted bundle is
-   not independent verification.
+6. Use `GET /v1/captures/{capture_id}/package` to download the exact canonical
+   `.llmtrace` bytes, and `POST /v1/captures/{capture_id}/trace:verify` for
+   cryptographic package verification. Decrypting or structurally validating
+   an encrypted bundle is not independent verification.
 7. Never request, decode, upload, or expose decrypted `.llmbundle` contents,
    credentials, cookies, raw authenticated headers, authentication secrets,
    or vault material.
@@ -111,6 +112,10 @@ test "$state" = finalized || exit 1
 curl --fail-with-body -X POST \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/trace:verify"
 ```
+
+For a portable file that is not cataloged by this daemon, use
+`llm-notary traces verify ./capture.llmtrace`. This is the one CLI verification
+flow that accepts a path; it reads no `.llmbundle` and writes no local state.
 
 Report `verified`, `verified_at_unix_ms`, `notary_key_id`, and `trust_source`.
 Do not translate a successful bundle read into a verification claim.

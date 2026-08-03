@@ -67,6 +67,24 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return response.json() as Promise<T>;
 }
 
+async function requestBlob(path: string): Promise<Blob> {
+  const response = await fetch(path, {
+    credentials: 'same-origin',
+    headers: { 'x-llm-notary-request': 'dashboard' }
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as {
+      error?: { code?: string; message?: string };
+    } | null;
+    throw new LocalApiError(
+      response.status,
+      payload?.error?.code ?? 'request_failed',
+      payload?.error?.message ?? 'The local service could not complete the request.'
+    );
+  }
+  return response.blob();
+}
+
 function queryString(values: Record<string, string | number | undefined>) {
   const query = new URLSearchParams();
   Object.entries(values).forEach(([key, value]) => {
@@ -111,6 +129,9 @@ export const localApi = {
   events: (filters: Record<string, string | number | undefined> = {}) =>
     request<EventList>(`/v1/events${queryString(filters)}`),
   trace: (captureId: string) => request<Trace>(`/v1/captures/${encodeURIComponent(captureId)}/trace`),
+  downloadPackage: (captureId: string) => requestBlob(
+    `/v1/captures/${encodeURIComponent(captureId)}/package`
+  ),
   verify: (captureId: string) => request<Verification>(
     `/v1/captures/${encodeURIComponent(captureId)}/trace:verify`,
     { method: 'POST' }

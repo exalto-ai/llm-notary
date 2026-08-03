@@ -102,6 +102,8 @@ pub(super) struct PublishJobRow {
     pub(super) failure_code: Option<String>,
     pub(super) admitted_at: Option<i64>,
     pub(super) private_purged_at: Option<i64>,
+    pub(super) public_trace_object_key: Option<String>,
+    pub(super) public_stamp_object_key: Option<String>,
 }
 
 impl PublishService {
@@ -739,12 +741,6 @@ fn idempotency_key(headers: &HeaderMap) -> ApiResult<String> {
 }
 
 fn job_response(job: &PublishJobRow) -> PublishJobResponse {
-    let public = (job.state == "admitted").then(|| {
-        (
-            format!("/api/public/traces/{}/trace.otlp.json", job.id),
-            format!("/api/public/traces/{}/stamp.json", job.id),
-        )
-    });
     PublishJobResponse {
         id: job.id.clone(),
         state: job.state.clone(),
@@ -759,8 +755,14 @@ fn job_response(job: &PublishJobRow) -> PublishJobResponse {
         private_purged_at: job.private_purged_at,
         failure_code: job.failure_code.clone(),
         status_url: format!("/api/publish/jobs/{}", job.id),
-        trace_url: public.as_ref().map(|urls| urls.0.clone()),
-        stamp_url: public.map(|urls| urls.1),
+        trace_url: job
+            .public_trace_object_key
+            .as_ref()
+            .map(|_| format!("/api/public/traces/{}/trace.otlp.json", job.id)),
+        stamp_url: job
+            .public_stamp_object_key
+            .as_ref()
+            .map(|_| format!("/api/public/traces/{}/stamp.json", job.id)),
     }
 }
 

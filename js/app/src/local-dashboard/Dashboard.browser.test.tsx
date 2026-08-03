@@ -123,7 +123,8 @@ describe('local evidence dashboard', () => {
 
   test('shows independent trace verification feedback', async () => {
     renderDashboard('/traces/cap-20260727-research-brief');
-    await page.getByRole('button', { name: 'Verify now' }).click();
+    await expect.element(page.getByRole('button', { name: 'Download verified package' })).toBeVisible();
+    await page.getByRole('button', { name: 'Verify locally' }).click();
     await page.getByRole('tab', { name: 'Verification' }).click();
     await expect.element(page.getByText('Verification passed')).toBeVisible();
     await expect.element(page.getByText(/sha256:3828b21f/)).toBeVisible();
@@ -139,7 +140,7 @@ describe('local evidence dashboard', () => {
 
   test('clears verification when a different trace is selected', async () => {
     renderDashboard('/traces/cap-20260727-research-brief');
-    await page.getByRole('button', { name: 'Verify now' }).click();
+    await page.getByRole('button', { name: 'Verify locally' }).click();
     await expect.element(page.getByText('Verification passed')).toBeVisible();
     window.location.hash = '/traces/cap-20260726-direct-link';
     await expect.element(page.getByRole('heading', { name: 'cap-20260726-direct-link' })).toBeVisible();
@@ -335,7 +336,7 @@ describe('local evidence dashboard', () => {
     await page.viewport(390, 760);
     renderDashboard('/traces');
     await expect.element(page.getByRole('listitem').first()).toBeVisible();
-    await expect.element(page.getByRole('button', { name: 'Verify now' })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Verify locally' })).not.toBeInTheDocument();
     await page.getByRole('list', { name: 'Finalized traces' }).getByRole('button').first().click();
     await expect.element(page.getByRole('button', { name: 'All finalized traces' })).toBeVisible();
     await expect.element(page.getByRole('listitem')).not.toBeInTheDocument();

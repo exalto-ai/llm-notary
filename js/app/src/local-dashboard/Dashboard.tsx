@@ -14,7 +14,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity, Archive, ArrowLeft, Check, CheckCircle2, CodeXml,
   ChevronRight, CircleDot, Clock3, Copy, Database, FileCheck2, FileJson2, Gauge,
-  KeyRound, ListChecks, Moon, PanelLeft, Play, RefreshCw, Search,
+  KeyRound, ListChecks, Moon, PanelLeft, Play, RefreshCw, Search, Download,
   Send, Settings, ShieldCheck, Sun, TerminalSquare, Unplug, XCircle
 } from 'lucide-react';
 import {
@@ -650,6 +650,19 @@ function TraceInspector({ api, captureId, mobile, onBack }: { api: LocalApi; cap
     },
     onError: (error) => mutationError('Trace verification failed', error)
   });
+  const download = useMutation({
+    mutationFn: () => api.downloadPackage(captureId),
+    onSuccess: (packageBytes) => {
+      const url = URL.createObjectURL(packageBytes);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${captureId}.llmtrace`;
+      link.click();
+      URL.revokeObjectURL(url);
+      notifications.show({ title: 'Verified package downloaded', message: 'Keep the .llmtrace file to verify or share privately.' });
+    },
+    onError: (error) => mutationError('Could not download verified package', error)
+  });
   if (trace.isLoading) return <LoadingState />;
   if (trace.error) return <QueryError error={trace.error} title="Trace package is unavailable" />;
   if (!trace.data) return <ErrorState title="Trace package is unavailable" onRetry={() => trace.refetch()} />;
@@ -661,7 +674,7 @@ function TraceInspector({ api, captureId, mobile, onBack }: { api: LocalApi; cap
   const providerLabel = [providerName, providerHost].filter(Boolean).join(' · ') || 'Not reported';
   const traceDigest = typeof manifest.trace_sha256 === 'string' ? manifest.trace_sha256 : 'Not reported';
   const transcripts = traceTranscripts(trace.data.trace);
-  return <article className="trace-inspector">{mobile && <Button variant="subtle" leftSection={<ArrowLeft size={15} />} onClick={onBack}>All finalized traces</Button>}<Group justify="space-between"><div><Text className="eyebrow">Verified trace package</Text><Title order={2}>{captureId}</Title></div><Button leftSection={<ShieldCheck size={15} />} loading={verify.isPending} onClick={() => verify.mutate()}>Verify now</Button></Group>
+  return <article className="trace-inspector">{mobile && <Button variant="subtle" leftSection={<ArrowLeft size={15} />} onClick={onBack}>All finalized traces</Button>}<Group justify="space-between" align="flex-start"><div><Text className="eyebrow">Verified trace package</Text><Title order={2}>{captureId}</Title></div><Group><Button leftSection={<Download size={15} />} loading={download.isPending} onClick={() => download.mutate()}>Download verified package</Button><Button variant="outline" leftSection={<ShieldCheck size={15} />} loading={verify.isPending} onClick={() => verify.mutate()}>Verify locally</Button></Group></Group>
     <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
       <Tabs.List><Tabs.Tab value="summary">Summary</Tabs.Tab><Tabs.Tab value="evidence">Evidence</Tabs.Tab><Tabs.Tab value="trace">Trace</Tabs.Tab><Tabs.Tab value="verification">Verification</Tabs.Tab></Tabs.List>
       <Tabs.Panel value="summary"><div className="document-panel"><Title order={3}>Authenticated inference</Title><Text>The package contains the disclosed provider exchange, its canonical OpenTelemetry trace, and the supporting TLSNotary evidence.</Text><dl className="metadata-grid"><Fact label="Capture" value={captureId} /><Fact label="Format" value={typeof manifest.format === 'string' ? manifest.format : 'Not reported'} /><Fact label="Normalizer" value={typeof manifest.normalizer_version === 'string' ? manifest.normalizer_version : 'Not reported'} /><Fact label="Provider" value={providerLabel} /></dl><TraceTranscriptView transcripts={transcripts} /></div></Tabs.Panel>

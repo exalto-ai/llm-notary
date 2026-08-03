@@ -173,7 +173,7 @@ export const fixtureNotaries: Notaries = {
 const fixtureTrace: Trace = {
   capture_id: 'cap-20260727-research-brief',
   manifest: {
-    format: 'llm-notary/verified-trace-package/v1', normalizer_version: 'llm-notary/normalizer/v1',
+    format: 'llm-notary/verified-trace-package/v2', normalizer_version: 'llm-notary/normalizer/v1',
     trace_sha256: '9a32d7c66a7e4fdd525ea6c803355273ade0f46e7c8dc4973343399731585b26',
     source: { provider: { name: 'openrouter', host: 'openrouter.ai' }, created_at_unix_ms: fixtureNow - hour * 18 }
   },
@@ -457,6 +457,10 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       if (!trace) throw new LocalApiError(404, 'finalized_trace_not_found', 'Finalized trace not found');
       return structuredClone(trace);
     },
+    downloadPackage: async (captureId) => new Blob(
+      [`fixture .llmtrace for ${captureId}`],
+      { type: 'application/vnd.llmnotary.trace-package+zip' }
+    ),
     verify: async (captureId) => {
       if (!traces.has(captureId)) throw new LocalApiError(422, 'trace_verification_failed', 'Trace verification failed');
       return { ...fixtureVerification, capture_id: captureId, verified_at_unix_ms: fixtureVerification.verified_at_unix_ms + offset };

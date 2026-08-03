@@ -94,13 +94,8 @@ const REQUEST_WRITE_CHUNK: usize = 8 << 10;
 /// Keeps the bounded proof path below the 1 GiB notary budget in the measured
 /// Proxy-TLS configuration.
 const CHUNKED_PROOF_BYTES: usize = 128 << 10;
-const REDACTED_REQUEST_HEADERS: &[&str] = &[
-    "authorization",
-    "proxy-authorization",
-    "cookie",
-    "x-api-key",
-];
-const REDACTED_RESPONSE_HEADERS: &[&str] = &["set-cookie"];
+const DISCLOSED_HEADER_VALUE_NAME: &str = "transfer-encoding";
+const DISCLOSED_TRANSFER_ENCODING_VALUE: &[u8] = b"chunked";
 const DEFERRED_BUNDLE_FORMAT: &str = "llm-notary/deferred-bundle/v1";
 const DEFERRED_RECEIPT_FORMAT: &str = "llm-notary/deferred-receipt/v1";
 const NOTARY_CONTROL_MAGIC_V1: &[u8; 8] = b"LLMN\0\0\0\x01";
@@ -482,10 +477,10 @@ fn disclosed_http_ranges(
     sent.union_mut(request.without_data());
     sent.union_mut(&request.request.target);
     for value in &request.headers {
-        if is_redacted_request_header(&value.name.as_str()) {
-            sent.union_mut(value.without_value());
-        } else {
+        if may_disclose_header_value(&value.name.as_str(), &value.value.as_bytes()) {
             sent.union_mut(value);
+        } else {
+            sent.union_mut(value.without_value());
         }
     }
     if let Some(body) = &request.body {
@@ -505,10 +500,10 @@ fn disclosed_http_ranges(
     let mut received = RangeSet::default();
     received.union_mut(response.without_data());
     for value in &response.headers {
-        if is_redacted_response_header(&value.name.as_str()) {
-            received.union_mut(value.without_value());
-        } else {
+        if may_disclose_header_value(&value.name.as_str(), &value.value.as_bytes()) {
             received.union_mut(value);
+        } else {
+            received.union_mut(value.without_value());
         }
     }
     if let Some(body) = &response.body {
@@ -558,26 +553,21 @@ fn commit_bounded_ranges(
     Ok(())
 }
 
-fn is_redacted_request_header(name: &str) -> bool {
-    REDACTED_REQUEST_HEADERS
-        .iter()
-        .any(|redacted| name.eq_ignore_ascii_case(redacted))
-}
-
-fn is_redacted_response_header(name: &str) -> bool {
-    REDACTED_RESPONSE_HEADERS
-        .iter()
-        .any(|redacted| name.eq_ignore_ascii_case(redacted))
+fn may_disclose_header_value(name: &str, value: &[u8]) -> bool {
+    name.eq_ignore_ascii_case(DISCLOSED_HEADER_VALUE_NAME)
+        && value
+            .trim_ascii()
+            .eq_ignore_ascii_case(DISCLOSED_TRANSFER_ENCODING_VALUE)
 }
 
 /// Enforces the finalized-package disclosure contract after the TLSNotary
 /// presentation has authenticated these bytes.
 pub fn validate_disclosed_http_redactions(request: &[u8], response: &[u8]) -> Result<()> {
-    validate_redacted_headers(request, REDACTED_REQUEST_HEADERS, "request")?;
-    validate_redacted_headers(response, REDACTED_RESPONSE_HEADERS, "response")
+    validate_redacted_headers(request, "request")?;
+    validate_redacted_headers(response, "response")
 }
 
-fn validate_redacted_headers(bytes: &[u8], sensitive: &[&str], label: &str) -> Result<()> {
+fn validate_redacted_headers(bytes: &[u8], label: &str) -> Result<()> {
     let header_end = bytes
         .windows(4)
         .position(|window| window == b"\r\n\r\n")
@@ -588,14 +578,17 @@ fn validate_redacted_headers(bytes: &[u8], sensitive: &[&str], label: &str) -> R
             bail!("{label} contains a malformed HTTP header");
         };
         let name = &line[..colon];
-        if sensitive
+        let value = &line[colon + 1..];
+        let visible = value
             .iter()
-            .any(|expected| name.eq_ignore_ascii_case(expected.as_bytes()))
-            && line[colon + 1..]
-                .iter()
-                .any(|byte| !byte.is_ascii_whitespace() && *byte != 0)
-        {
-            bail!("{label} discloses a credential or cookie header value");
+            .any(|byte| !byte.is_ascii_whitespace() && *byte != 0);
+        let allowlisted = may_disclose_header_value(
+            std::str::from_utf8(name)
+                .map_err(|_| anyhow!("{label} contains a non-UTF-8 HTTP header name"))?,
+            value,
+        );
+        if visible && (!allowlisted || value.contains(&0)) {
+            bail!("{label} discloses a non-allowlisted HTTP header value");
         }
     }
     Ok(())
@@ -1815,6 +1808,7 @@ fn verify_capture_value_with_provider(
     {
         bail!("capture HTTP artifacts do not match the authenticated presentation");
     }
+    validate_disclosed_http_redactions(&capture.request_disclosed, &capture.response)?;
     Ok((
         capture.manifest.clone(),
         String::from_utf8_lossy(&capture.request_disclosed).into_owned(),
@@ -2465,7 +2459,7 @@ mod tests {
     }
 
     #[test]
-    fn disclosed_http_rejects_visible_credentials_and_cookies() {
+    fn disclosed_http_rejects_every_non_allowlisted_header_value() {
         let response = b"HTTP/1.1 200 OK\r\nset-cookie:\0\0\0\r\n\r\n{}";
         assert!(
             validate_disclosed_http_redactions(
@@ -2488,13 +2482,36 @@ mod tests {
             )
             .is_err()
         );
+        assert!(
+            validate_disclosed_http_redactions(
+                b"POST /v1 HTTP/1.1\r\nContent-Type: application/json\r\n\r\n{}",
+                b"HTTP/1.1 200 OK\r\n\r\n{}",
+            )
+            .is_err()
+        );
+        assert!(
+            validate_disclosed_http_redactions(
+                b"POST /v1 HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n2\r\n{}\r\n0\r\n\r\n",
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: CHUNKED\r\n\r\n2\r\n{}\r\n0\r\n\r\n",
+            )
+            .is_ok()
+        );
     }
 
     #[test]
-    fn disclosure_header_policy_covers_every_sensitive_header() {
+    fn disclosure_header_policy_has_one_exact_value_allowlist() {
         let empty_response = b"HTTP/1.1 200 OK\r\n\r\n{}";
-        for name in REDACTED_REQUEST_HEADERS {
-            assert!(is_redacted_request_header(&name.to_ascii_uppercase()));
+        for name in [
+            "authorization",
+            "proxy-authorization",
+            "cookie",
+            "x-api-key",
+            "content-type",
+            "content-length",
+            "x-request-id",
+            "x-organization-id",
+            "x-ratelimit-remaining",
+        ] {
             let visible = format!("POST /v1 HTTP/1.1\r\n{name}: private-value\r\n\r\n{{}}");
             assert!(
                 validate_disclosed_http_redactions(visible.as_bytes(), empty_response).is_err(),
@@ -2508,8 +2525,13 @@ mod tests {
         }
 
         let empty_request = b"POST /v1 HTTP/1.1\r\n\r\n{}";
-        for name in REDACTED_RESPONSE_HEADERS {
-            assert!(is_redacted_response_header(&name.to_ascii_uppercase()));
+        for name in [
+            "set-cookie",
+            "content-type",
+            "content-length",
+            "x-request-id",
+            "x-ratelimit-limit",
+        ] {
             let visible = format!("HTTP/1.1 200 OK\r\n{name}: private-value\r\n\r\n{{}}");
             assert!(
                 validate_disclosed_http_redactions(empty_request, visible.as_bytes()).is_err(),
@@ -2522,8 +2544,13 @@ mod tests {
             );
         }
 
-        assert!(!is_redacted_request_header("http-referer"));
-        assert!(!is_redacted_response_header("content-type"));
+        assert!(may_disclose_header_value("Transfer-Encoding", b" chunked "));
+        assert!(may_disclose_header_value("transfer-encoding", b"CHUNKED"));
+        assert!(!may_disclose_header_value(
+            "transfer-encoding",
+            b"gzip, chunked"
+        ));
+        assert!(!may_disclose_header_value("content-type", b"chunked"));
     }
 
     #[test]
@@ -2622,22 +2649,18 @@ mod tests {
                 Direction::Received => &http.responses[0].headers,
             };
             for header in headers {
-                let redacted = match direction {
-                    Direction::Sent => is_redacted_request_header(&header.name.as_str()),
-                    Direction::Received => is_redacted_response_header(&header.name.as_str()),
-                };
-                if redacted {
+                let disclosed =
+                    may_disclose_header_value(&header.name.as_str(), &header.value.as_bytes());
+                if !disclosed {
                     assert!(
                         ranges.intersection(header.value.indices()).next().is_none(),
-                        "a private commitment must not include the {} value",
+                        "a private commitment must not include non-allowlisted {} values",
                         header.name.as_str()
                     );
-                } else if header.name.as_str().eq_ignore_ascii_case("http-referer")
-                    || header.name.as_str().eq_ignore_ascii_case("x-title")
-                {
+                } else {
                     assert!(
                         ranges.intersection(header.value.indices()).next().is_some(),
-                        "safe OpenRouter attribution header {} must remain disclosed",
+                        "the chunked transfer-encoding value {} must remain disclosed",
                         header.name.as_str()
                     );
                 }
@@ -2763,6 +2786,9 @@ mod tests {
                         .header("content-type", "application/json")
                         .header("authorization", "Bearer fixture-secret")
                         .header("cookie", "session=fixture-cookie")
+                        .header("x-request-id", "request-fixture-private")
+                        .header("openai-organization", "organization-fixture-private")
+                        .header("openai-project", "project-fixture-private")
                         .body(chunked_request_body(Bytes::from_static(
                             br#"{"model":"fixture","messages":[{"role":"user","content":"hello"}],"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}"#,
                         )))
@@ -2969,7 +2995,8 @@ mod tests {
                     .unwrap()
                     .as_nanos()
             ));
-            let valid = root.join("valid");
+            fs::create_dir_all(&root).unwrap();
+            let valid = root.join("valid.llmtrace");
             crate::bundle::write_trace_package_with_provider(
                 &capture,
                 &valid,
@@ -2977,6 +3004,34 @@ mod tests {
                 &crypto_provider,
             )
             .unwrap();
+            let repeated = root.join("repeated.llmtrace");
+            crate::bundle::write_trace_package_with_provider(
+                &capture,
+                &repeated,
+                &trusted_public_key,
+                &crypto_provider,
+            )
+            .unwrap();
+            assert_eq!(
+                fs::read(&valid).unwrap(),
+                fs::read(&repeated).unwrap(),
+                "identical finalized inputs must produce identical .llmtrace bytes"
+            );
+            let finalized_bytes = fs::read(&valid).unwrap();
+            for secret in [
+                b"fixture-secret".as_slice(),
+                b"fixture-cookie".as_slice(),
+                b"request-fixture-private".as_slice(),
+                b"organization-fixture-private".as_slice(),
+                b"project-fixture-private".as_slice(),
+            ] {
+                assert!(
+                    !finalized_bytes
+                        .windows(secret.len())
+                        .any(|window| window == secret),
+                    "finalized .llmtrace bytes must not retain header secrets"
+                );
+            }
             crate::bundle::verify_trace_package_with_provider(
                 &valid,
                 &trusted_public_key,
@@ -2984,31 +3039,36 @@ mod tests {
             )
             .unwrap();
 
-            fn copy_package(source: &Path, destination: &Path) {
-                fs::create_dir_all(destination).unwrap();
-                for name in [
-                    "evidence.tlsn",
-                    "manifest.json",
-                    "request.disclosed.http",
-                    "response.http",
-                    "trace.otlp.json",
-                ] {
-                    fs::copy(source.join(name), destination.join(name)).unwrap();
-                }
+            fn unpack_package(source: &Path, destination: &Path) {
+                crate::archive::extract_trace_package_archive(
+                    &fs::read(source).unwrap(),
+                    destination,
+                )
+                .unwrap();
+            }
+
+            fn archive_package(source: &Path, destination: &Path) {
+                fs::write(
+                    destination,
+                    crate::archive::build_trace_package_archive(source).unwrap(),
+                )
+                .unwrap();
             }
 
             for name in [
                 "evidence.tlsn",
                 "request.disclosed.http",
-                "response.http",
+                "response.disclosed.http",
                 "trace.otlp.json",
             ] {
-                let tampered = root.join(format!("tampered-{}", name.replace('.', "-")));
-                copy_package(&valid, &tampered);
-                let path = tampered.join(name);
+                let directory = root.join(format!("tampered-{}-dir", name.replace('.', "-")));
+                let tampered = root.join(format!("tampered-{}.llmtrace", name.replace('.', "-")));
+                unpack_package(&valid, &directory);
+                let path = directory.join(name);
                 let mut bytes = fs::read(&path).unwrap();
                 bytes.push(b' ');
                 fs::write(path, bytes).unwrap();
+                archive_package(&directory, &tampered);
                 assert!(
                     crate::bundle::verify_trace_package_with_provider(
                         &tampered,
@@ -3040,9 +3100,10 @@ mod tests {
                     }),
                 ),
             ] {
-                let tampered = root.join(format!("tampered-{label}"));
-                copy_package(&valid, &tampered);
-                let manifest_path = tampered.join("manifest.json");
+                let directory = root.join(format!("tampered-{label}-dir"));
+                let tampered = root.join(format!("tampered-{label}.llmtrace"));
+                unpack_package(&valid, &directory);
+                let manifest_path = directory.join("manifest.json");
                 let mut manifest: serde_json::Value =
                     serde_json::from_slice(&fs::read(&manifest_path).unwrap()).unwrap();
                 mutate(&mut manifest);
@@ -3051,6 +3112,7 @@ mod tests {
                     serde_json::to_vec_pretty(&manifest).unwrap(),
                 )
                 .unwrap();
+                archive_package(&directory, &tampered);
                 assert!(
                     crate::bundle::verify_trace_package_with_provider(
                         &tampered,

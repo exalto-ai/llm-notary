@@ -1941,8 +1941,7 @@
           "model",
           "span_count",
           "recent_downloads",
-          "trace_url",
-          "stamp_url"
+          "trace_url"
         ],
         "properties": {
           "admitted_at": {
@@ -1973,7 +1972,10 @@
             "minimum": 0
           },
           "stamp_url": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "tags": {
             "type": "array",
@@ -2380,15 +2382,17 @@
         "type": "object",
         "required": [
           "id",
-          "trace_url",
-          "stamp_url"
+          "trace_url"
         ],
         "properties": {
           "id": {
             "type": "string"
           },
           "stamp_url": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "trace_url": {
             "type": "string"

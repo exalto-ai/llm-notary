@@ -1380,6 +1380,7 @@ mod tests {
             (http::Method::POST, "/v1/captures/cap-example/finalizations"),
             (http::Method::GET, "/v1/operations/op-example"),
             (http::Method::POST, "/v1/operations/op-example/retry"),
+            (http::Method::GET, "/v1/captures/cap-example/package"),
             (http::Method::POST, "/v1/captures/cap-example/trace:verify"),
             (http::Method::GET, "/v1/events"),
             (http::Method::POST, "/v1/session"),

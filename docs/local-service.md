@@ -163,6 +163,7 @@ llm-notary operations list --state failed --kind finalization
 llm-notary operations retry op-example
 llm-notary traces show cap-example --json
 llm-notary traces verify cap-example
+llm-notary traces verify ./cap-example.llmtrace
 llm-notary events --severity error --limit 20
 llm-notary notaries list
 llm-notary open
@@ -219,7 +220,7 @@ which workflow owns each operation:
 | Notary trust | `GET /v1/notaries` |
 | Captures | `GET /v1/captures`, `GET /v1/captures/{capture_id}` |
 | Finalization | `POST /v1/captures/{capture_id}/finalizations`, `GET /v1/operations`, `GET /v1/operations/{operation_id}`, `POST /v1/operations/{operation_id}/retry` |
-| Finalized trace | `GET /v1/captures/{capture_id}/trace`, `POST /v1/captures/{capture_id}/trace:verify` |
+| Finalized trace | `GET /v1/captures/{capture_id}/package`, `GET /v1/captures/{capture_id}/trace`, `POST /v1/captures/{capture_id}/trace:verify` |
 | Activity | `GET /v1/events` |
 | Publication account | `GET /v1/publication/auth`, `POST /v1/publication/auth`, `GET /v1/publication/auth/{request_id}`, `DELETE /v1/publication/auth` |
 | Publication | `POST /v1/captures/{capture_id}/publications`, `GET /v1/publications/{job_id}` |
@@ -317,12 +318,18 @@ usable; it is not independent proof of the provider response. The bundle can
 reconstruct the original authenticated request, including credentials, so it
 must remain vault-encrypted and local.
 
-A finalized trace package contains the TLSNotary evidence, disclosed HTTP
-artifacts, a manifest, and canonical OpenTelemetry JSON. Verify that package
+A finalized trace is one deterministic `.llmtrace` ZIP containing the
+TLSNotary evidence, disclosed HTTP artifacts, manifest, archive manifest, and
+canonical OpenTelemetry JSON. Every HTTP header value is hidden except the
+exact structural value `Transfer-Encoding: chunked`; the authenticated request
+and response bodies remain disclosed. Download its exact bytes or verify it
 through the capture identifier:
 
 ```bash
 capture_id=cap-example
+curl --fail-with-body --output "$capture_id.llmtrace" \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/package"
+
 curl --fail-with-body -X POST \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/trace:verify"
 ```

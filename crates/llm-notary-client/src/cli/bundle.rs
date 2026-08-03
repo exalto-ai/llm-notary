@@ -21,12 +21,12 @@ use crate::{
 pub struct FinalizeArgs {
     /// Local `.llmbundle` file.
     bundle: PathBuf,
-    /// Destination directory for the verified trace package.
+    /// Destination `.llmtrace` file for the verified trace package.
     #[arg(long)]
     output: Option<PathBuf>,
     /// Agent configuration file. Defaults to the standard path. The default
-    /// output location is `storage.finalized_dir/<capture-id>` and the package
-    /// is cataloged.
+    /// output location is `storage.finalized_dir/<capture-id>.llmtrace` and the
+    /// package is cataloged.
     #[arg(long)]
     config: Option<PathBuf>,
     /// Hex-encoded notary public key used to verify the source evidence.
@@ -36,7 +36,7 @@ pub struct FinalizeArgs {
 
 #[derive(Args, Debug)]
 pub struct VerifyArgs {
-    /// Verified trace package directory.
+    /// Finalized `.llmtrace` package.
     package: PathBuf,
     /// Hex-encoded notary public key used to verify the source evidence.
     #[arg(long)]
@@ -48,9 +48,12 @@ pub async fn finalize(args: FinalizeArgs) -> Result<()> {
     let vault = Vault::open_interactive()?;
     let bundle = DeferredBundle::load(&args.bundle, &vault)?;
     let hosted_admission = config.notary.endpoint.is_none();
-    let output = args
-        .output
-        .unwrap_or_else(|| config.storage.finalized_dir.join(bundle.capture_id()));
+    let output = args.output.unwrap_or_else(|| {
+        config
+            .storage
+            .finalized_dir
+            .join(format!("{}.llmtrace", bundle.capture_id()))
+    });
     if args.trusted_notary_key.is_none() {
         refresh_notary_directory().await?;
     }

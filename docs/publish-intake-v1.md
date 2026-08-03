@@ -2,14 +2,15 @@
 
 This contract uploads one locally finalized trace package to private object
 storage. It does not admit or publish the package; the admission path owns
-content hashing, safe extraction, cryptographic verification, and stamping.
+content hashing, defensive archive validation, cryptographic verification, and
+stamping.
 
-The local service packages a finalized trace directory as
-`llmnotary.trace-package-archive/v1`. It must never package or upload an
-encrypted `.llmbundle`. The intake API deliberately treats uploaded bytes as
-untrusted and opaque, so a malicious client can mislabel arbitrary bytes. The
-later admission verifier must reject anything that is not the declared
-finalized-package archive.
+The local service finalizes directly to one deterministic `.llmtrace` file in
+`llmnotary.trace-package-archive/v2` format. Publication reads and uploads
+those exact bytes; it must never package or upload an encrypted `.llmbundle`.
+The intake API deliberately treats uploaded bytes as untrusted and opaque, so
+a malicious client can mislabel arbitrary bytes. The later admission verifier
+must reject anything that is not the declared finalized-package archive.
 
 ## Deterministic archive layout
 
@@ -21,7 +22,7 @@ archive-manifest.json
 evidence.tlsn
 manifest.json
 request.disclosed.http
-response.http
+response.disclosed.http
 trace.otlp.json
 ```
 
@@ -48,7 +49,7 @@ Idempotency-Key: <16-200 safe ASCII characters>
 Content-Type: application/json
 
 {
-  "archive_format": "llmnotary.trace-package-archive/v1",
+  "archive_format": "llmnotary.trace-package-archive/v2",
   "size_bytes": 12345,
   "sha256": "<64 lowercase hexadecimal characters>"
 }
@@ -74,7 +75,7 @@ verifying, or rejected job is never reset.
   "job": {
     "id": "c52ecff9-2bd4-42f3-bb1d-b6ad2b671605",
     "state": "uploading",
-    "archive_format": "llmnotary.trace-package-archive/v1",
+    "archive_format": "llmnotary.trace-package-archive/v2",
     "size_bytes": 12345,
     "sha256": "<declared hash>",
     "created_at": 1785294000,
@@ -90,7 +91,7 @@ verifying, or rejected job is never reset.
     "headers": {
       "content-length": "12345",
       "content-type": "application/vnd.llmnotary.trace-package+zip",
-      "x-amz-meta-archive-format": "llmnotary.trace-package-archive/v1",
+      "x-amz-meta-archive-format": "llmnotary.trace-package-archive/v2",
       "x-amz-meta-declared-sha256": "<declared hash>"
     },
     "expires_at": 1785294900

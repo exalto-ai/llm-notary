@@ -24,7 +24,8 @@ Use the sidebar to move between these parts of the local workflow:
   capture in a detail panel.
 - **Finalizations** shows durable queued, running, interrupted, failed, and
   completed proof operations.
-- **Finalized traces** presents the portable package and an independent local
+- **Finalized traces** presents the portable `.llmtrace` package, makes its
+  exact bytes the primary download, and offers an independent local
   verification action.
 - **Publishing** keeps optional public publication separate from local proof
   creation and requires confirmation.
@@ -82,7 +83,14 @@ views:
   and manifest format reported by the selected package.
 - **Trace** shows the canonical OpenTelemetry document.
 - **Verification** contains the durable human-readable result after **Verify
-  now** rechecks the package.
+  locally** rechecks the package.
+
+**Download verified package** saves the exact canonical
+`<capture-id>.llmtrace` bytes produced by finalization. It is the artifact to
+retain, share with an intended verifier, or submit for publication. The
+package discloses request and response bodies; review that privacy boundary
+before sharing it. The source `.llmbundle` remains vault-encrypted private
+retry state and is never a shareable verification artifact.
 
 ![Finalized trace inspector in dark mode with the Verification tab selected and a passed receipt showing the capture, verification time, notary key identifier, and directory trust source.](images/local-dashboard/trace-verification.png)
 

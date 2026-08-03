@@ -281,6 +281,69 @@
         ]
       }
     },
+    "/v1/captures/{capture_id}/package": {
+      "get": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Download a finalized verified package",
+        "description": "Returns the exact stored canonical .llmtrace bytes as the primary portable verification artifact.",
+        "operationId": "download_package",
+        "parameters": [
+          {
+            "name": "capture_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/vnd.llmnotary.trace-package+zip": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
     "/v1/captures/{capture_id}/publications": {
       "post": {
         "tags": [
@@ -819,7 +882,7 @@
           "local-admin"
         ],
         "summary": "Get a public trace",
-        "description": "Fetches one public canonical trace and platform stamp through the configured publication API.",
+        "description": "Fetches one public canonical trace and any legacy platform stamp through the configured publication API.",
         "operationId": "download_public_trace",
         "parameters": [
           {
@@ -1955,8 +2018,7 @@
         "type": "object",
         "required": [
           "publication_id",
-          "trace",
-          "stamp"
+          "trace"
         ],
         "properties": {
           "publication_id": {

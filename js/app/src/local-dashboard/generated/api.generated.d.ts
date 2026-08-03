@@ -104,6 +104,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/captures/{capture_id}/package": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download a finalized verified package
+         * @description Returns the exact stored canonical .llmtrace bytes as the primary portable verification artifact.
+         */
+        get: operations["download_package"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/captures/{capture_id}/publications": {
         parameters: {
             query?: never;
@@ -273,7 +293,7 @@ export interface paths {
         };
         /**
          * Get a public trace
-         * @description Fetches one public canonical trace and platform stamp through the configured publication API.
+         * @description Fetches one public canonical trace and any legacy platform stamp through the configured publication API.
          */
         get: operations["download_public_trace"];
         put?: never;
@@ -592,7 +612,7 @@ export interface components {
         };
         PublicTraceResponse: {
             publication_id: string;
-            stamp: unknown;
+            stamp?: unknown;
             trace: unknown;
             verification?: null | components["schemas"]["PublicTraceVerificationResponse"];
         };
@@ -801,6 +821,43 @@ export interface operations {
                 };
             };
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    download_package: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                capture_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.llmnotary.trace-package+zip": number[];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

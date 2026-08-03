@@ -778,6 +778,18 @@ mod tests {
         format!("HTTP/1.1 200 OK\r\n\r\n{body}")
     }
 
+    fn fixed_length_response(body: &str) -> String {
+        format!("HTTP/1.1 200 OK\r\nContent-Length: \0\0\0\r\n\r\n{body}")
+    }
+
+    fn chunked_response(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nContent-Type: \0\0\0\0\0\0\0\0\r\n\r\n{:x}\r\n{}\r\n0\r\n\r\n",
+            body.len(),
+            body
+        )
+    }
+
     fn fixture(name: &str) -> Value {
         let source = match name {
             "openai-chat" => include_str!("../tests/fixtures/normalize/openai-chat.json"),
@@ -947,13 +959,29 @@ mod tests {
         ] {
             let fixture = fixture(name);
             let request = http(&serde_json::to_string(&fixture["request"]).expect("request"));
-            let direct = response(&serde_json::to_string(&fixture["response"]).expect("response"));
-            let streamed = response(fixture["sse"].as_str().expect("SSE"));
+            let response_json = serde_json::to_string(&fixture["response"]).expect("response");
+            let response_sse = fixture["sse"].as_str().expect("SSE");
+            let direct = fixed_length_response(&response_json);
+            let chunked_json = chunked_response(&response_json);
+            let streamed = chunked_response(response_sse);
+            crate::validate_disclosed_http_redactions(request.as_bytes(), direct.as_bytes())
+                .unwrap_or_else(|error| panic!("{name} fixed disclosure: {error}"));
+            crate::validate_disclosed_http_redactions(request.as_bytes(), chunked_json.as_bytes())
+                .unwrap_or_else(|error| panic!("{name} chunked JSON disclosure: {error}"));
+            crate::validate_disclosed_http_redactions(request.as_bytes(), streamed.as_bytes())
+                .unwrap_or_else(|error| panic!("{name} chunked SSE disclosure: {error}"));
             let direct = verified_inference_from_capture(&manifest(provider), &request, &direct)
                 .unwrap_or_else(|error| panic!("{name} direct fixture: {error}"));
+            let chunked_json =
+                verified_inference_from_capture(&manifest(provider), &request, &chunked_json)
+                    .unwrap_or_else(|error| panic!("{name} chunked JSON fixture: {error}"));
             let streamed =
                 verified_inference_from_capture(&manifest(provider), &request, &streamed)
                     .unwrap_or_else(|error| panic!("{name} SSE fixture: {error}"));
+            assert_eq!(
+                direct.output_messages, chunked_json.output_messages,
+                "{name} chunked JSON output"
+            );
             assert_eq!(
                 direct.input_messages, streamed.input_messages,
                 "{name} input"

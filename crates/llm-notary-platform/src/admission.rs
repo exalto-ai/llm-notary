@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use axum::{
@@ -32,8 +28,11 @@ use super::{
     unix_timestamp,
 };
 use llm_notary_core::{
-    archive::extract_trace_package_archive,
-    bundle::{trace_package_created_at_unix_ms, trace_package_notary_key, verify_trace_package},
+    archive::read_trace_package_archive,
+    bundle::{
+        trace_package_created_at_unix_ms_bytes, trace_package_notary_key_bytes,
+        verify_trace_package_bytes,
+    },
     public::{ProviderProvenance, TLSNOTARY_PROVENANCE, platform_key_id, stamp_trace},
     sha256_hex, validate_disclosed_http_redactions,
 };
@@ -70,16 +69,17 @@ struct PublicArtifactRow {
     public_trace_object_key: String,
     public_trace_size_bytes: i64,
     public_trace_sha256: String,
-    public_stamp_object_key: String,
-    public_stamp_size_bytes: i64,
-    public_stamp_sha256: String,
+    public_stamp_object_key: Option<String>,
+    public_stamp_size_bytes: Option<i64>,
+    public_stamp_sha256: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
 struct PublicTraceMetadata {
     id: String,
     trace_url: String,
-    stamp_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stamp_url: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -103,6 +103,7 @@ struct LibraryRow {
     title: Option<String>,
     tags_json: Option<String>,
     recent_downloads: i64,
+    has_stamp: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -129,7 +130,8 @@ struct CollectionPublication {
     span_count: usize,
     recent_downloads: i64,
     trace_url: String,
-    stamp_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stamp_url: Option<String>,
 }
 
 #[derive(Clone)]
@@ -415,7 +417,8 @@ async fn traces_collection(State(state): State<AppState>) -> ApiResult<Json<Coll
                 publish_jobs.library_model, publish_jobs.library_span_count,
                 publish_jobs.library_tool_use,
                 publication_metadata.title, publication_metadata.tags_json,
-                COUNT(publication_activity_events.id) AS recent_downloads
+                COUNT(publication_activity_events.id) AS recent_downloads,
+                (publish_jobs.public_stamp_object_key IS NOT NULL) AS has_stamp
          FROM publish_jobs
          JOIN users ON users.id = publish_jobs.user_id
          LEFT JOIN publication_metadata ON publication_metadata.publication_id = publish_jobs.id
@@ -424,7 +427,6 @@ async fn traces_collection(State(state): State<AppState>) -> ApiResult<Json<Coll
              AND publication_activity_events.occurred_at >= $1
          WHERE publish_jobs.state = 'admitted'
            AND publish_jobs.public_trace_object_key IS NOT NULL
-           AND publish_jobs.public_stamp_object_key IS NOT NULL
          GROUP BY publish_jobs.id, users.github_login,
                   publish_jobs.library_provider, publish_jobs.library_host,
                   publish_jobs.library_model, publish_jobs.library_span_count,
@@ -474,7 +476,9 @@ fn collection_publication(artifact: LibraryRow) -> ApiResult<CollectionPublicati
             .map_err(|error| ApiError::internal(anyhow::Error::from(error)))?,
         recent_downloads: artifact.recent_downloads,
         trace_url: format!("/api/public/traces/{}/trace.otlp.json", artifact.id),
-        stamp_url: format!("/api/public/traces/{}/stamp.json", artifact.id),
+        stamp_url: artifact
+            .has_stamp
+            .then(|| format!("/api/public/traces/{}/stamp.json", artifact.id)),
     })
 }
 
@@ -702,7 +706,6 @@ pub async fn has_pending_work(state: &AppState) -> Result<bool> {
                ON publication_metadata.publication_id = publish_jobs.id
              WHERE publish_jobs.state = 'admitted'
                AND publish_jobs.public_trace_object_key IS NOT NULL
-               AND publish_jobs.public_stamp_object_key IS NOT NULL
                AND (publication_metadata.publication_id IS NULL
                     OR (publication_metadata.title_source = 'fallback'
                         AND (
@@ -822,7 +825,6 @@ async fn claim_next_metadata_artifact(
                    ON metadata.publication_id = jobs.id
                  WHERE jobs.state = 'admitted'
                    AND jobs.public_trace_object_key IS NOT NULL
-                   AND jobs.public_stamp_object_key IS NOT NULL
                    AND (
                         metadata.publication_id IS NULL
                         OR (
@@ -960,20 +962,10 @@ async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
         .clone()
         .expect("enabled publication service has a platform signing key");
     let issuer = state.publish.stamp_issuer.clone();
-    let job_id = job.id.clone();
     let issued_at = job.queued_at.unwrap_or(job.updated_at).max(0) as u64 * 1000;
     let parent = Span::current();
     let result = tokio::task::spawn_blocking(move || {
-        parent.in_scope(|| {
-            verify_and_stamp(
-                &job_id,
-                &archive,
-                &directory,
-                &signing_key,
-                issuer,
-                issued_at,
-            )
-        })
+        parent.in_scope(|| verify_and_stamp(&archive, &directory, &signing_key, issuer, issued_at))
     })
     .await;
     match result {
@@ -1017,20 +1009,17 @@ fn finish_admission_metric(outcome: &'static str, started: Instant) {
 }
 
 fn verify_and_stamp(
-    job_id: &str,
     archive: &[u8],
     directory: &llm_notary_core::notary_directory::NotaryDirectory,
     signing_key: &k256::ecdsa::SigningKey,
     issuer: String,
     issued_at_unix_ms: u64,
 ) -> std::result::Result<AdmittedArtifacts, AdmissionFailure> {
-    let workspace = AdmissionWorkspace::new(job_id)
-        .map_err(|error| AdmissionFailure::Retry(error.context("creating admission workspace")))?;
-    extract_trace_package_archive(archive, &workspace.package)
+    let validated = read_trace_package_archive(archive)
         .map_err(|error| AdmissionFailure::Reject("archive_invalid", error))?;
-    let embedded_key = trace_package_notary_key(&workspace.package)
+    let embedded_key = trace_package_notary_key_bytes(archive)
         .map_err(|error| AdmissionFailure::Reject("package_invalid", error))?;
-    let authenticated_at = trace_package_created_at_unix_ms(&workspace.package)
+    let authenticated_at = trace_package_created_at_unix_ms_bytes(archive)
         .map_err(|error| AdmissionFailure::Reject("package_invalid", error))?;
     let record = directory
         .notaries
@@ -1055,19 +1044,20 @@ fn verify_and_stamp(
     let trusted_key = record
         .public_key_bytes()
         .map_err(|error| AdmissionFailure::Retry(error.context("reading trusted notary key")))?;
-    let manifest = verify_trace_package(&workspace.package, &trusted_key)
+    let verified = verify_trace_package_bytes(archive, &trusted_key)
         .map_err(|error| AdmissionFailure::Reject("package_invalid", error))?;
-    let request = fs::read(workspace.package.join("request.disclosed.http"))
-        .map_err(|error| AdmissionFailure::Retry(error.into()))?;
-    let response = fs::read(workspace.package.join("response.http"))
-        .map_err(|error| AdmissionFailure::Retry(error.into()))?;
-    validate_disclosed_http_redactions(&request, &response)
+    let request = validated
+        .file("request.disclosed.http")
+        .map_err(|error| AdmissionFailure::Reject("package_invalid", error))?;
+    let response = validated
+        .file("response.disclosed.http")
+        .map_err(|error| AdmissionFailure::Reject("package_invalid", error))?;
+    validate_disclosed_http_redactions(request, response)
         .map_err(|error| AdmissionFailure::Reject("sensitive_header_disclosed", error))?;
-    let trace = fs::read(workspace.package.join("trace.otlp.json"))
-        .map_err(|error| AdmissionFailure::Retry(error.into()))?;
+    let trace = verified.trace;
     let card = library_card_facts(
-        manifest.provider_name().to_owned(),
-        manifest.provider_host().to_owned(),
+        verified.manifest.provider_name().to_owned(),
+        verified.manifest.provider_host().to_owned(),
         &trace,
     )
     .map_err(|error| AdmissionFailure::Reject("package_invalid", error))?;
@@ -1077,8 +1067,8 @@ fn verify_and_stamp(
         issued_at_unix_ms,
         ProviderProvenance {
             evidence: TLSNOTARY_PROVENANCE.to_owned(),
-            host: manifest.provider_host().to_owned(),
-            name: manifest.provider_name().to_owned(),
+            host: verified.manifest.provider_host().to_owned(),
+            name: verified.manifest.provider_name().to_owned(),
         },
         signing_key,
     )
@@ -1257,9 +1247,9 @@ impl PublicArtifactRow {
         self.public_trace_object_key == stored.trace_object_key
             && self.public_trace_size_bytes == stored.trace_size_bytes
             && self.public_trace_sha256 == stored.trace_sha256
-            && self.public_stamp_object_key == stored.stamp_object_key
-            && self.public_stamp_size_bytes == stored.stamp_size_bytes
-            && self.public_stamp_sha256 == stored.stamp_sha256
+            && self.public_stamp_object_key.as_deref() == Some(stored.stamp_object_key.as_str())
+            && self.public_stamp_size_bytes == Some(stored.stamp_size_bytes)
+            && self.public_stamp_sha256.as_deref() == Some(stored.stamp_sha256.as_str())
     }
 }
 
@@ -1391,8 +1381,7 @@ async fn load_public_artifact_optional(
                 publish_jobs.public_stamp_sha256
          FROM publish_jobs
          WHERE publish_jobs.id = $1 AND publish_jobs.state = 'admitted'
-           AND publish_jobs.public_trace_object_key IS NOT NULL
-           AND publish_jobs.public_stamp_object_key IS NOT NULL",
+           AND publish_jobs.public_trace_object_key IS NOT NULL",
     )
     .bind(trace_id)
     .fetch_optional(&state.database)
@@ -1420,7 +1409,10 @@ async fn public_trace_metadata(
     Ok(Json(PublicTraceMetadata {
         id: artifact.id.clone(),
         trace_url: format!("/api/public/traces/{}/trace.otlp.json", artifact.id),
-        stamp_url: format!("/api/public/traces/{}/stamp.json", artifact.id),
+        stamp_url: artifact
+            .public_stamp_object_key
+            .is_some()
+            .then(|| format!("/api/public/traces/{}/stamp.json", artifact.id)),
     }))
 }
 
@@ -1470,13 +1462,15 @@ async fn public_stamp(
     AxumPath(trace_id): AxumPath<String>,
 ) -> ApiResult<Response> {
     let artifact = load_public_artifact(&state, &trace_id).await?;
-    let bytes = load_public_bytes(
-        &state,
-        &artifact.public_stamp_object_key,
+    let (object_key, size_bytes, sha256) = match (
+        artifact.public_stamp_object_key.as_deref(),
         artifact.public_stamp_size_bytes,
-        &artifact.public_stamp_sha256,
-    )
-    .await?;
+        artifact.public_stamp_sha256.as_deref(),
+    ) {
+        (Some(object_key), Some(size_bytes), Some(sha256)) => (object_key, size_bytes, sha256),
+        _ => return Err(ApiError::not_found("public stamp was not found")),
+    };
+    let bytes = load_public_bytes(&state, object_key, size_bytes, sha256).await?;
     Ok(public_bytes(bytes, "application/json; charset=utf-8"))
 }
 
@@ -1517,35 +1511,6 @@ fn public_bytes(bytes: Vec<u8>, content_type: &'static str) -> Response {
         Body::from(bytes),
     )
         .into_response()
-}
-
-struct AdmissionWorkspace {
-    root: PathBuf,
-    package: PathBuf,
-}
-
-impl AdmissionWorkspace {
-    fn new(job_id: &str) -> Result<Self> {
-        if !job_id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        {
-            bail!("job ID is unsafe for an admission workspace");
-        }
-        let root = std::env::temp_dir().join(format!(
-            "llm-notary-admission-{job_id}-{}",
-            Uuid::new_v4().simple()
-        ));
-        fs::create_dir(&root)?;
-        let package = root.join("package");
-        Ok(Self { root, package })
-    }
-}
-
-impl Drop for AdmissionWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
-    }
 }
 
 #[cfg(test)]
@@ -1712,6 +1677,54 @@ mod tests {
         assert_eq!(publication.span_count, 2);
         assert!(publication.tool_use);
         assert!(storage.bodies.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn predecessor_readers_keep_stamp_less_admissions_visible_for_rollback() {
+        let (state, storage) = test_state().await;
+        let trace = b"{}".to_vec();
+        let trace_sha256 = sha256_hex(&trace);
+        queued_job(&state, b"archive", &sha256_hex(b"archive")).await;
+        sqlx::query(
+            "UPDATE publish_jobs
+             SET state = 'admitted', admitted_at = 100, private_purged_at = 100,
+                 public_trace_object_key = 'trace-key', public_trace_size_bytes = $1,
+                 public_trace_sha256 = $2,
+                 library_provider = 'OpenAI', library_host = 'api.openai.com',
+                 library_model = 'gpt-test', library_span_count = 1,
+                 library_tool_use = FALSE
+             WHERE id = 'job-1'",
+        )
+        .bind(trace.len() as i64)
+        .bind(&trace_sha256)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        storage.object_bytes("trace-key", trace);
+
+        let collection = traces_collection(State(state.clone())).await.unwrap().0;
+        assert_eq!(collection.publications.len(), 1);
+        assert_eq!(collection.publications[0].stamp_url, None);
+
+        let metadata = public_trace_metadata(State(state.clone()), AxumPath("job-1".to_owned()))
+            .await
+            .unwrap()
+            .0;
+        assert_eq!(metadata.stamp_url, None);
+        assert_eq!(
+            public_trace(State(state.clone()), AxumPath("job-1".to_owned()))
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert!(matches!(
+            public_stamp(State(state), AxumPath("job-1".to_owned())).await,
+            Err(ApiError {
+                status: StatusCode::NOT_FOUND,
+                ..
+            })
+        ));
     }
 
     #[test]

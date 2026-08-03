@@ -82,13 +82,13 @@ try {
       file: 'trace-verification.png', scheme: 'dark', viewport: desktop,
       route: 'view=traces&id=cap-20260727-research-brief',
       prepare: async (page) => {
-        await page.getByRole('button', { name: 'Verify now' }).click();
+        await page.getByRole('button', { name: 'Verify locally' }).click();
         await page.getByRole('tab', { name: 'Verification' }).click();
         await page.getByRole('tab', { name: 'Verification', selected: true }).waitFor();
         await page.getByText('Verification passed').waitFor();
         await page.waitForFunction(() => {
           const button = [...document.querySelectorAll('button')]
-            .find((candidate) => candidate.textContent?.includes('Verify now'));
+            .find((candidate) => candidate.textContent?.includes('Verify locally'));
           return button && !button.hasAttribute('disabled') && !button.querySelector('.mantine-Loader-root');
         });
         await page.mouse.move(0, 0);

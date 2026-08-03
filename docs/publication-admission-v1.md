@@ -1,7 +1,7 @@
 # Consent-based publication admission v1
 
 This is the first server-side admission path for
-`llmnotary.trace-package-archive/v1`. It is an explicit publication action,
+`llmnotary.trace-package-archive/v2`. It is an explicit publication action,
 not an automatic upload from the proxy.
 
 ## Privacy boundary
@@ -12,6 +12,10 @@ context, tool definitions and calls, provider metadata, and model output. It
 does not receive the encrypted `.llmbundle`, local vault key, provider
 credential values, or cookie values.
 
+Version 2 is already privacy-minimized for verifier input: authenticated
+request and response bodies remain disclosed, but every HTTP header value is
+hidden except the exact structural value `Transfer-Encoding: chunked`.
+
 Successful and rejected intake objects are deleted immediately after the
 database transition. A background purge pass retries failed deletions. Public
 endpoints serve only the canonical `trace.otlp.json`, the platform-signed
@@ -19,9 +23,9 @@ endpoints serve only the canonical `trace.otlp.json`, the platform-signed
 metadata. Library titles and tags are discovery aids, not part of the
 cryptographic claim or platform stamp.
 
-This path does not claim that the service learns only the public trace. Issue
-#36 must introduce a new versioned artifact and verifier for that stronger
-property; it cannot silently reinterpret previously uploaded v1 packages.
+The service still learns the disclosed request and response bodies required by
+the shared verifier. It does not receive the private retry checkpoint or
+provider credentials.
 
 ## State machine
 
@@ -58,13 +62,13 @@ The worker:
 
 1. downloads the immutable intake object with a hard byte limit;
 2. computes its actual size and SHA-256 and compares both with the job;
-3. defensively validates and extracts the canonical stored ZIP;
+3. defensively validates the canonical ZIP entirely from the uploaded bytes;
 4. selects a trusted notary directory record using the embedded key and
    authenticated provider-connection timestamp;
 5. verifies the TLSNotary presentation, provider hostname, package hashes,
    disclosed HTTP bytes, and exact deterministic OTLP reproduction;
-6. rejects visible `Authorization`, `Proxy-Authorization`, `Cookie`,
-   `x-api-key`, or `Set-Cookie` values;
+6. rejects every visible HTTP header value except the exact structural
+   `Transfer-Encoding: chunked` value;
 7. signs the exact canonical trace with the separate platform key;
 8. stores and verifies the public pair in Spaces; and
 9. atomically records its immutable keys and hashes before deleting the
