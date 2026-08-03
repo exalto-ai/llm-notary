@@ -93,7 +93,7 @@ const expectedRequiredFields = {
   NotaryResponse: ['endpoint', 'transport', 'key_id', 'status'],
   OperationAttemptResponse: ['attempt', 'state', 'started_at_unix_ms'],
   OperationResponse: ['operation_id', 'kind', 'state', 'attempt', 'attempt_history', 'created_at_unix_ms'],
-  PublicationAuthStartedResponse: ['request_id', 'user_code', 'verification_uri_complete', 'expires_in_seconds', 'poll_interval_seconds', 'state'],
+  AccountConnectionStartedResponse: ['request_id', 'user_code', 'verification_uri_complete', 'expires_in_seconds', 'poll_interval_seconds', 'state'],
   PublicationResponse: ['capture_id', 'job_id', 'state', 'status_url'],
   PublicationStatusResponse: ['job_id', 'state'],
   TraceResponse: ['capture_id', 'manifest', 'trace'],

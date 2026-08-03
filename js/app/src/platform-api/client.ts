@@ -46,7 +46,7 @@ export async function getPublishedTrace(traceId: string) {
 export async function getCliSessions() {
   const { data, error, response } = await client.GET('/api/cli/sessions');
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load publishing sessions.'), response.status);
+    throw new PlatformApiError(errorMessage(error, 'Could not load connected local services.'), response.status);
   }
   return data.sessions;
 }
@@ -93,7 +93,17 @@ export async function getCurrentUser() {
   if (!response.ok || !data) {
     throw new PlatformApiError(errorMessage(error, 'Could not load the current account.'), response.status);
   }
-  return data.user;
+  return { ...data.user, plan: data.plan, entitlements: data.entitlements };
+}
+
+export async function changeServicePlan(plan: 'free' | 'paid_preview') {
+  const { data, error, response } = await client.PUT('/api/me/plan', {
+    body: { plan },
+  });
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not change the service plan.'), response.status);
+  }
+  return data;
 }
 
 export async function logoutBrowser() {

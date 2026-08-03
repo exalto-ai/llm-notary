@@ -21,6 +21,7 @@ use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
     api_origin::ApiOrigin,
+    auth,
     config::load_agent_config,
     http_client_builder,
     notary::{parse_directory, pin},
@@ -30,7 +31,7 @@ use crate::{
     catalog::{Catalog, NewCapture},
     chunked_request_body,
     config::{AgentConfig, ProviderConfig},
-    deferred_streaming_request_to, notary_admission_error,
+    deferred_streaming_request_to, deferred_streaming_request_to_admitted, notary_admission_error,
     notary_directory::{NotaryDirectory, NotaryDirectoryRecord, NotaryEndpoint},
     vault::Vault,
 };
@@ -110,6 +111,7 @@ pub(crate) struct AppState {
     pub(crate) config: Arc<AgentConfig>,
     config_fingerprint: Arc<str>,
     serial: Arc<Mutex<u64>>,
+    hosted_admission: bool,
 }
 
 pub async fn run(args: ProxyArgs) -> Result<()> {
@@ -128,6 +130,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         bail!("maximum attestable HTTP bytes must be non-zero");
     }
     std::fs::create_dir_all(&bundle_dir)?;
+    let hosted_admission = config.notary.endpoint.is_none();
     let notary = match config.notary_endpoint()? {
         Some(notary) => notary,
         None => discover_notary().await?,
@@ -153,6 +156,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         config_fingerprint: Arc::from(config.fingerprint()?),
         config: Arc::new(config),
         serial: Arc::new(Mutex::new(0)),
+        hosted_admission,
     };
     let app = router(state.clone());
     let admin_state = crate::admin::AdminState::new(state.catalog.clone(), state.config.clone())?;
@@ -297,6 +301,12 @@ fn proxy_error_response(error: &anyhow::Error) -> Response {
         crate::NotaryAdmissionRejection::FinalizeAtCapacity => {
             "LLM Notary returned an unexpected finalization-capacity rejection. Retry shortly."
         }
+        crate::NotaryAdmissionRejection::AdmissionDenied => {
+            "LLM Notary admission was denied. Request a new admission and try again."
+        }
+        crate::NotaryAdmissionRejection::CoordinatorUnavailable => {
+            "LLM Notary admission is temporarily unavailable. Retry shortly."
+        }
     };
     let body = serde_json::json!({
         "error": {
@@ -423,13 +433,27 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     );
     let request_header_bytes =
         attestable_request_header_bytes(&parts.method, &upstream_uri, &outbound_headers)?;
-    let request_body_limit = state
-        .max_attestable_http_bytes
+    let admission = if state.hosted_admission {
+        Some(auth::issue_capture_admission().await?)
+    } else {
+        None
+    };
+    let effective_attestable_http_bytes = admission
+        .as_ref()
+        .map(|admission| admission.max_attestable_http_bytes)
+        .unwrap_or(state.max_attestable_http_bytes)
+        .min(state.max_attestable_http_bytes);
+    let effective_frame_bytes = admission
+        .as_ref()
+        .map(|admission| admission.max_frame_bytes)
+        .unwrap_or(state.max_frame_bytes)
+        .min(state.max_frame_bytes);
+    let request_body_limit = effective_attestable_http_bytes
         .checked_sub(request_header_bytes)
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "provider request headers exceed the {}-byte maximum attestable HTTP budget",
-                state.max_attestable_http_bytes
+                effective_attestable_http_bytes
             )
         })?;
     let input = collect_request_body(body, request_body_limit).await?;
@@ -466,20 +490,27 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         config_fingerprint: state.config_fingerprint.to_string(),
     })?;
     let started = Instant::now();
-    let upstream = deferred_streaming_request_to(
-        &state.notary,
-        host,
-        DeferredCaptureConfig {
-            capture_id: capture_id.clone(),
-            provider_name: provider.name().to_owned(),
-            created_at_unix_ms,
-            request_body_bytes,
-            max_attestable_http_bytes: state.max_attestable_http_bytes,
-            max_frame_bytes: state.max_frame_bytes,
-        },
-        outbound,
-    )
-    .await;
+    let capture = DeferredCaptureConfig {
+        capture_id: capture_id.clone(),
+        provider_name: provider.name().to_owned(),
+        created_at_unix_ms,
+        request_body_bytes,
+        max_attestable_http_bytes: effective_attestable_http_bytes,
+        max_frame_bytes: effective_frame_bytes,
+    };
+    let upstream = match admission {
+        Some(admission) => {
+            deferred_streaming_request_to_admitted(
+                &state.notary,
+                host,
+                capture,
+                outbound,
+                &admission.ticket,
+            )
+            .await
+        }
+        None => deferred_streaming_request_to(&state.notary, host, capture, outbound).await,
+    };
     let upstream = match upstream {
         Ok(upstream) => upstream,
         Err(error) => {
@@ -1121,6 +1152,7 @@ mod tests {
             config_fingerprint: Arc::from(config.fingerprint().unwrap()),
             config: Arc::new(config),
             serial: Arc::new(Mutex::new(0)),
+            hosted_admission: false,
         }
     }
 

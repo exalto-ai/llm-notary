@@ -20,6 +20,8 @@ pub(crate) const DEFAULT_METADATA_CACHED_INPUT_NANOUSD_PER_TOKEN: i64 = 20;
 pub(crate) const DEFAULT_METADATA_CACHE_WRITE_NANOUSD_PER_TOKEN: i64 = 250;
 pub(crate) const DEFAULT_METADATA_OUTPUT_NANOUSD_PER_TOKEN: i64 = 1_200;
 pub(crate) const NANOUSD_PER_CENT: i64 = 10_000_000;
+pub(crate) const DEFAULT_ADMISSION_TICKET_TTL_SECS: i64 = 45;
+pub(crate) const DEFAULT_ADMISSION_LEASE_TTL_SECS: i64 = 30;
 
 /// Validated runtime configuration for the hosted platform API.
 ///
@@ -33,6 +35,34 @@ pub struct PlatformConfig {
     pub notary_directory: NotaryDirectoryConfig,
     pub storage: StorageConfig,
     pub metadata: Option<MetadataConfig>,
+    pub admission: AdmissionConfig,
+}
+
+/// Admission coordinator authentication and effective hosted-service policy.
+#[derive(Clone)]
+pub struct AdmissionConfig {
+    pub service_token: String,
+    pub ticket_ttl_secs: i64,
+    pub lease_ttl_secs: i64,
+    pub global_capture_concurrency: i64,
+    pub global_finalize_concurrency: i64,
+    pub public: TierPolicy,
+    pub free: TierPolicy,
+    pub paid_preview: TierPolicy,
+}
+
+#[derive(Clone, Debug)]
+pub struct TierPolicy {
+    pub capture_concurrency: i64,
+    pub finalize_concurrency: i64,
+    pub account_concurrency: Option<i64>,
+    pub starts_per_minute: i64,
+    pub session_timeout_secs: i64,
+    pub max_attestable_http_bytes: i64,
+    pub max_frame_bytes: i64,
+    pub max_private_chunk_bytes: i64,
+    pub max_private_chunk_commitments: i64,
+    pub monthly_finalization_bytes: i64,
 }
 
 /// GitHub OAuth and public-origin configuration.
@@ -94,6 +124,146 @@ impl PlatformConfig {
             notary_directory: NotaryDirectoryConfig::from_env()?,
             storage: StorageConfig::from_env()?,
             metadata: MetadataConfig::from_env()?,
+            admission: AdmissionConfig::from_env()?,
+        })
+    }
+}
+
+impl AdmissionConfig {
+    fn from_env() -> Result<Self> {
+        let service_token_file =
+            PathBuf::from(required_env("LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE")?);
+        let service_token = std::fs::read_to_string(&service_token_file)
+            .with_context(|| format!("reading {}", service_token_file.display()))?
+            .trim()
+            .to_owned();
+        if service_token.len() < 32 || service_token.len() > 512 {
+            bail!("admission service token must contain between 32 and 512 bytes");
+        }
+        let ticket_ttl_secs = positive_integer_or_default(
+            "LLM_NOTARY_ADMISSION_TICKET_TTL_SECS",
+            DEFAULT_ADMISSION_TICKET_TTL_SECS,
+        )?;
+        if !(10..=300).contains(&ticket_ttl_secs) {
+            bail!("LLM_NOTARY_ADMISSION_TICKET_TTL_SECS must be between 10 and 300");
+        }
+        let lease_ttl_secs = positive_integer_or_default(
+            "LLM_NOTARY_ADMISSION_LEASE_TTL_SECS",
+            DEFAULT_ADMISSION_LEASE_TTL_SECS,
+        )?;
+        if !(10..=300).contains(&lease_ttl_secs) {
+            bail!("LLM_NOTARY_ADMISSION_LEASE_TTL_SECS must be between 10 and 300");
+        }
+        Ok(Self {
+            service_token,
+            ticket_ttl_secs,
+            lease_ttl_secs,
+            global_capture_concurrency: positive_integer_or_default(
+                "LLM_NOTARY_ADMISSION_GLOBAL_CAPTURE_CONCURRENCY",
+                16,
+            )?,
+            global_finalize_concurrency: positive_integer_or_default(
+                "LLM_NOTARY_ADMISSION_GLOBAL_FINALIZE_CONCURRENCY",
+                4,
+            )?,
+            public: TierPolicy::from_env("PUBLIC", TierPolicy::public())?,
+            free: TierPolicy::from_env("FREE", TierPolicy::free())?,
+            paid_preview: TierPolicy::from_env("PAID_PREVIEW", TierPolicy::paid_preview())?,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            service_token: "test-service-token-that-is-long-enough".to_owned(),
+            ticket_ttl_secs: DEFAULT_ADMISSION_TICKET_TTL_SECS,
+            lease_ttl_secs: DEFAULT_ADMISSION_LEASE_TTL_SECS,
+            global_capture_concurrency: 2,
+            global_finalize_concurrency: 2,
+            public: TierPolicy::public(),
+            free: TierPolicy::free(),
+            paid_preview: TierPolicy::paid_preview(),
+        }
+    }
+}
+
+impl TierPolicy {
+    pub(crate) fn public() -> Self {
+        Self {
+            capture_concurrency: 1,
+            finalize_concurrency: 1,
+            account_concurrency: None,
+            starts_per_minute: 12,
+            session_timeout_secs: 5 * 60,
+            max_attestable_http_bytes: 1 << 20,
+            max_frame_bytes: 16 << 20,
+            max_private_chunk_bytes: 64 << 10,
+            max_private_chunk_commitments: 32,
+            monthly_finalization_bytes: 64 << 20,
+        }
+    }
+
+    pub(crate) fn free() -> Self {
+        Self {
+            capture_concurrency: 4,
+            finalize_concurrency: 2,
+            account_concurrency: Some(2),
+            starts_per_minute: 60,
+            session_timeout_secs: 15 * 60,
+            max_attestable_http_bytes: 8 << 20,
+            max_frame_bytes: 64 << 20,
+            max_private_chunk_bytes: 128 << 10,
+            max_private_chunk_commitments: 64,
+            monthly_finalization_bytes: 512 << 20,
+        }
+    }
+
+    pub(crate) fn paid_preview() -> Self {
+        Self {
+            capture_concurrency: 12,
+            finalize_concurrency: 4,
+            account_concurrency: Some(4),
+            starts_per_minute: 240,
+            session_timeout_secs: 30 * 60,
+            max_attestable_http_bytes: 15 << 20,
+            max_frame_bytes: 128 << 20,
+            max_private_chunk_bytes: 128 << 10,
+            max_private_chunk_commitments: 128,
+            monthly_finalization_bytes: 5_i64 << 30,
+        }
+    }
+
+    fn from_env(prefix: &str, defaults: Self) -> Result<Self> {
+        let value = |suffix: &str, default: i64| {
+            positive_integer_or_default(&format!("LLM_NOTARY_ADMISSION_{prefix}_{suffix}"), default)
+        };
+        let account_concurrency = defaults
+            .account_concurrency
+            .map(|default| value("ACCOUNT_CONCURRENCY", default))
+            .transpose()?;
+        Ok(Self {
+            capture_concurrency: value("CAPTURE_CONCURRENCY", defaults.capture_concurrency)?,
+            finalize_concurrency: value("FINALIZE_CONCURRENCY", defaults.finalize_concurrency)?,
+            account_concurrency,
+            starts_per_minute: value("STARTS_PER_MINUTE", defaults.starts_per_minute)?,
+            session_timeout_secs: value("SESSION_TIMEOUT_SECS", defaults.session_timeout_secs)?,
+            max_attestable_http_bytes: value(
+                "MAX_ATTESTABLE_HTTP_BYTES",
+                defaults.max_attestable_http_bytes,
+            )?,
+            max_frame_bytes: value("MAX_FRAME_BYTES", defaults.max_frame_bytes)?,
+            max_private_chunk_bytes: value(
+                "MAX_PRIVATE_CHUNK_BYTES",
+                defaults.max_private_chunk_bytes,
+            )?,
+            max_private_chunk_commitments: value(
+                "MAX_PRIVATE_CHUNK_COMMITMENTS",
+                defaults.max_private_chunk_commitments,
+            )?,
+            monthly_finalization_bytes: value(
+                "MONTHLY_FINALIZATION_BYTES",
+                defaults.monthly_finalization_bytes,
+            )?,
         })
     }
 }

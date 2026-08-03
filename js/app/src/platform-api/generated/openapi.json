@@ -709,6 +709,207 @@
         }
       }
     },
+    "/api/internal/notary/admissions/redeem": {
+      "post": {
+        "tags": [
+          "notary-admission"
+        ],
+        "summary": "Consume a ticket and acquire a distributed notary lease",
+        "operationId": "redeem_admission",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RedeemAdmissionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RedeemAdmissionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "serviceBearer": []
+          }
+        ]
+      }
+    },
+    "/api/internal/notary/leases/release": {
+      "post": {
+        "tags": [
+          "notary-admission"
+        ],
+        "summary": "Release an active distributed notary lease",
+        "operationId": "release_lease",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Lease released or already terminal"
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "serviceBearer": []
+          }
+        ]
+      }
+    },
+    "/api/internal/notary/leases/renew": {
+      "post": {
+        "tags": [
+          "notary-admission"
+        ],
+        "summary": "Renew an active distributed notary lease",
+        "operationId": "renew_lease",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LeaseRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LeaseRenewedResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "serviceBearer": []
+          }
+        ]
+      }
+    },
     "/api/me": {
       "get": {
         "tags": [
@@ -723,6 +924,62 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/MeResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/me/plan": {
+      "put": {
+        "tags": [
+          "browser-auth"
+        ],
+        "summary": "Switch the signed-in account between free and paid preview",
+        "operationId": "change_plan",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChangePlanRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlanResponse"
                 }
               }
             }
@@ -820,6 +1077,83 @@
             }
           }
         }
+      }
+    },
+    "/api/notary/admissions": {
+      "post": {
+        "tags": [
+          "notary-admission"
+        ],
+        "summary": "Issue a short-lived one-time hosted notary admission ticket",
+        "operationId": "issue_admission",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/IssueAdmissionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdmissionTicketResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "bearerAuth": []
+          }
+        ]
       }
     },
     "/api/platform": {
@@ -1430,6 +1764,14 @@
   },
   "components": {
     "schemas": {
+      "AccessPool": {
+        "type": "string",
+        "enum": [
+          "public",
+          "free",
+          "paid_preview"
+        ]
+      },
       "ActivityRequest": {
         "type": "object",
         "required": [
@@ -1441,6 +1783,39 @@
           }
         },
         "additionalProperties": false
+      },
+      "AdmissionMode": {
+        "type": "string",
+        "enum": [
+          "capture",
+          "finalize"
+        ]
+      },
+      "AdmissionTicketResponse": {
+        "type": "object",
+        "required": [
+          "ticket",
+          "expires_at",
+          "directory_generation",
+          "entitlements"
+        ],
+        "properties": {
+          "directory_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "entitlements": {
+            "$ref": "#/components/schemas/EffectiveEntitlements"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "ticket": {
+            "type": "string"
+          }
+        }
       },
       "ApprovalDetails": {
         "type": "object",
@@ -1459,6 +1834,17 @@
           },
           "user_code": {
             "type": "string"
+          }
+        }
+      },
+      "ChangePlanRequest": {
+        "type": "object",
+        "required": [
+          "plan"
+        ],
+        "properties": {
+          "plan": {
+            "$ref": "#/components/schemas/ServicePlan"
           }
         }
       },
@@ -1693,6 +2079,74 @@
           }
         }
       },
+      "EffectiveEntitlements": {
+        "type": "object",
+        "required": [
+          "access_pool",
+          "capture_concurrency",
+          "finalize_concurrency",
+          "starts_per_minute",
+          "session_timeout_secs",
+          "max_attestable_http_bytes",
+          "max_frame_bytes",
+          "max_private_chunk_bytes",
+          "max_private_chunk_commitments",
+          "monthly_finalization_bytes",
+          "remaining_finalization_bytes"
+        ],
+        "properties": {
+          "access_pool": {
+            "$ref": "#/components/schemas/AccessPool"
+          },
+          "account_concurrency": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "capture_concurrency": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "finalize_concurrency": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_attestable_http_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_frame_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_private_chunk_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_private_chunk_commitments": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "monthly_finalization_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "remaining_finalization_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "session_timeout_secs": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "starts_per_minute": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "ErrorResponse": {
         "type": "object",
         "required": [
@@ -1715,12 +2169,71 @@
           }
         }
       },
+      "IssueAdmissionRequest": {
+        "type": "object",
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "$ref": "#/components/schemas/AdmissionMode"
+          },
+          "record_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "requested_allowance_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "LeaseRenewedResponse": {
+        "type": "object",
+        "required": [
+          "lease_expires_at"
+        ],
+        "properties": {
+          "lease_expires_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "LeaseRequest": {
+        "type": "object",
+        "required": [
+          "lease_id",
+          "notary_instance_id"
+        ],
+        "properties": {
+          "lease_id": {
+            "type": "string"
+          },
+          "notary_instance_id": {
+            "type": "string"
+          }
+        }
+      },
       "MeResponse": {
         "type": "object",
         "required": [
-          "user"
+          "user",
+          "plan",
+          "entitlements"
         ],
         "properties": {
+          "entitlements": {
+            "$ref": "#/components/schemas/EffectiveEntitlements"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/ServicePlan"
+          },
           "user": {
             "$ref": "#/components/schemas/PublicUser"
           }
@@ -1824,6 +2337,21 @@
           "tcp",
           "tls"
         ]
+      },
+      "PlanResponse": {
+        "type": "object",
+        "required": [
+          "plan",
+          "entitlements"
+        ],
+        "properties": {
+          "entitlements": {
+            "$ref": "#/components/schemas/EffectiveEntitlements"
+          },
+          "plan": {
+            "$ref": "#/components/schemas/ServicePlan"
+          }
+        }
       },
       "PlatformDirectory": {
         "type": "object",
@@ -1974,6 +2502,87 @@
           }
         }
       },
+      "RedeemAdmissionRequest": {
+        "type": "object",
+        "required": [
+          "ticket",
+          "notary_instance_id",
+          "mode",
+          "directory_generation"
+        ],
+        "properties": {
+          "directory_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "mode": {
+            "$ref": "#/components/schemas/AdmissionMode"
+          },
+          "notary_instance_id": {
+            "type": "string"
+          },
+          "ticket": {
+            "type": "string"
+          }
+        }
+      },
+      "RedeemAdmissionResponse": {
+        "type": "object",
+        "required": [
+          "lease_id",
+          "lease_expires_at",
+          "access_pool",
+          "session_timeout_secs",
+          "max_attestable_http_bytes",
+          "max_frame_bytes",
+          "max_private_chunk_bytes",
+          "max_private_chunk_commitments",
+          "authorized_allowance_bytes"
+        ],
+        "properties": {
+          "access_pool": {
+            "$ref": "#/components/schemas/AccessPool"
+          },
+          "authorized_allowance_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lease_expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "lease_id": {
+            "type": "string"
+          },
+          "max_attestable_http_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_frame_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_private_chunk_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_private_chunk_commitments": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "record_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "session_timeout_secs": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "RefreshRequest": {
         "type": "object",
         "required": [
@@ -1984,6 +2593,13 @@
             "type": "string"
           }
         }
+      },
+      "ServicePlan": {
+        "type": "string",
+        "enum": [
+          "free",
+          "paid_preview"
+        ]
       },
       "UploadInstructions": {
         "type": "object",
@@ -2092,6 +2708,12 @@
         "in": "header",
         "name": "X-LLM-Notary-Poll-Secret",
         "description": "One-time secret returned when CLI authorization starts"
+      },
+      "serviceBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque",
+        "description": "Dedicated notary-to-platform service credential"
       }
     }
   },
@@ -2107,6 +2729,10 @@
     {
       "name": "cli-auth",
       "description": "Local service authorization and CLI sessions"
+    },
+    {
+      "name": "notary-admission",
+      "description": "Hosted notary tickets and distributed leases"
     },
     {
       "name": "publication",

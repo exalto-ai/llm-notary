@@ -8,12 +8,12 @@ use clap::Args;
 use crate::{
     DeferredBundle,
     bundle::{
-        finalize_bundle, trace_package_created_at_unix_ms, trace_package_notary_key,
-        verify_trace_package,
+        finalize_bundle, finalize_bundle_admitted, trace_package_created_at_unix_ms,
+        trace_package_notary_key, verify_trace_package,
     },
     catalog::Catalog,
     cli::proxy::{refresh_notary_directory, resolve_notary},
-    cli::{config::load_agent_config, notary},
+    cli::{auth, config::load_agent_config, notary},
     vault::Vault,
 };
 
@@ -47,6 +47,7 @@ pub async fn finalize(args: FinalizeArgs) -> Result<()> {
     let (config, _) = load_agent_config(args.config.as_deref())?;
     let vault = Vault::open_interactive()?;
     let bundle = DeferredBundle::load(&args.bundle, &vault)?;
+    let hosted_admission = config.notary.endpoint.is_none();
     let output = args
         .output
         .unwrap_or_else(|| config.storage.finalized_dir.join(bundle.capture_id()));
@@ -82,17 +83,40 @@ pub async fn finalize(args: FinalizeArgs) -> Result<()> {
     eprintln!(
         "the encrypted bundle is unchanged and can be retried if this command is interrupted"
     );
-    let path = finalize_bundle(
-        &args.bundle,
-        &output,
-        &key,
-        &vault,
-        &notary,
-        config.proxy.max_attestable_http_bytes,
-        config.notary.max_frame_bytes,
-    )
-    .await
-    .map_err(|error| {
+    let result = if hosted_admission {
+        let allowance = bundle.finalization_allowance_bytes()?;
+        if allowance > config.proxy.max_attestable_http_bytes {
+            anyhow::bail!("bundle exceeds the current local finalization byte limit");
+        }
+        let admission =
+            auth::issue_finalization_admission(&bundle.record_digest_hex(), allowance).await?;
+        finalize_bundle_admitted(
+            &args.bundle,
+            &output,
+            &key,
+            &vault,
+            &notary,
+            config
+                .proxy
+                .max_attestable_http_bytes
+                .min(admission.max_attestable_http_bytes),
+            config.notary.max_frame_bytes.min(admission.max_frame_bytes),
+            &admission.ticket,
+        )
+        .await
+    } else {
+        finalize_bundle(
+            &args.bundle,
+            &output,
+            &key,
+            &vault,
+            &notary,
+            config.proxy.max_attestable_http_bytes,
+            config.notary.max_frame_bytes,
+        )
+        .await
+    };
+    let path = result.map_err(|error| {
         let Some(admission) = crate::notary_admission_error(&error) else {
             return error;
         };

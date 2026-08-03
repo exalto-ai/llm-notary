@@ -209,6 +209,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/internal/notary/admissions/redeem": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Consume a ticket and acquire a distributed notary lease */
+        post: operations["redeem_admission"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/internal/notary/leases/release": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Release an active distributed notary lease */
+        post: operations["release_lease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/internal/notary/leases/renew": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Renew an active distributed notary lease */
+        post: operations["renew_lease"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me": {
         parameters: {
             query?: never;
@@ -219,6 +270,23 @@ export interface paths {
         /** Get the signed-in browser user */
         get: operations["me"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/plan": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Switch the signed-in account between free and paid preview */
+        put: operations["change_plan"];
         post?: never;
         delete?: never;
         options?: never;
@@ -254,6 +322,23 @@ export interface paths {
         get: operations["notary"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notary/admissions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Issue a short-lived one-time hosted notary admission ticket */
+        post: operations["issue_admission"];
         delete?: never;
         options?: never;
         head?: never;
@@ -434,14 +519,29 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @enum {string} */
+        AccessPool: "public" | "free" | "paid_preview";
         ActivityRequest: {
             subject: string;
+        };
+        /** @enum {string} */
+        AdmissionMode: "capture" | "finalize";
+        AdmissionTicketResponse: {
+            /** Format: int64 */
+            directory_generation: number;
+            entitlements: components["schemas"]["EffectiveEntitlements"];
+            /** Format: int64 */
+            expires_at: number;
+            ticket: string;
         };
         ApprovalDetails: {
             device_name: string;
             /** Format: int64 */
             expires_at: number;
             user_code: string;
+        };
+        ChangePlanRequest: {
+            plan: components["schemas"]["ServicePlan"];
         };
         CliAuthorizationStarted: {
             /** Format: int64 */
@@ -504,13 +604,54 @@ export interface components {
             job: components["schemas"]["PublishJobResponse"];
             upload?: null | components["schemas"]["UploadInstructions"];
         };
+        EffectiveEntitlements: {
+            access_pool: components["schemas"]["AccessPool"];
+            /** Format: int64 */
+            account_concurrency?: number | null;
+            /** Format: int64 */
+            capture_concurrency: number;
+            /** Format: int64 */
+            finalize_concurrency: number;
+            /** Format: int64 */
+            max_attestable_http_bytes: number;
+            /** Format: int64 */
+            max_frame_bytes: number;
+            /** Format: int64 */
+            max_private_chunk_bytes: number;
+            /** Format: int64 */
+            max_private_chunk_commitments: number;
+            /** Format: int64 */
+            monthly_finalization_bytes: number;
+            /** Format: int64 */
+            remaining_finalization_bytes: number;
+            /** Format: int64 */
+            session_timeout_secs: number;
+            /** Format: int64 */
+            starts_per_minute: number;
+        };
         ErrorResponse: {
             error: string;
         };
         Health: {
             status: string;
         };
+        IssueAdmissionRequest: {
+            mode: components["schemas"]["AdmissionMode"];
+            record_digest?: string | null;
+            /** Format: int64 */
+            requested_allowance_bytes?: number | null;
+        };
+        LeaseRenewedResponse: {
+            /** Format: int64 */
+            lease_expires_at: number;
+        };
+        LeaseRequest: {
+            lease_id: string;
+            notary_instance_id: string;
+        };
         MeResponse: {
+            entitlements: components["schemas"]["EffectiveEntitlements"];
+            plan: components["schemas"]["ServicePlan"];
             user: components["schemas"]["PublicUser"];
         };
         NotaryDirectoryRecordResponse: {
@@ -539,6 +680,10 @@ export interface components {
         NotaryKeyStatusResponse: "active" | "retiring" | "retired" | "revoked";
         /** @enum {string} */
         NotaryTransportResponse: "tcp" | "tls";
+        PlanResponse: {
+            entitlements: components["schemas"]["EffectiveEntitlements"];
+            plan: components["schemas"]["ServicePlan"];
+        };
         PlatformDirectory: {
             format: string;
             issuer: string;
@@ -579,9 +724,37 @@ export interface components {
             /** Format: int64 */
             upload_expires_at: number;
         };
+        RedeemAdmissionRequest: {
+            /** Format: int64 */
+            directory_generation: number;
+            mode: components["schemas"]["AdmissionMode"];
+            notary_instance_id: string;
+            ticket: string;
+        };
+        RedeemAdmissionResponse: {
+            access_pool: components["schemas"]["AccessPool"];
+            /** Format: int64 */
+            authorized_allowance_bytes: number;
+            /** Format: int64 */
+            lease_expires_at: number;
+            lease_id: string;
+            /** Format: int64 */
+            max_attestable_http_bytes: number;
+            /** Format: int64 */
+            max_frame_bytes: number;
+            /** Format: int64 */
+            max_private_chunk_bytes: number;
+            /** Format: int64 */
+            max_private_chunk_commitments: number;
+            record_digest?: string | null;
+            /** Format: int64 */
+            session_timeout_secs: number;
+        };
         RefreshRequest: {
             refresh_token: string;
         };
+        /** @enum {string} */
+        ServicePlan: "free" | "paid_preview";
         UploadInstructions: {
             /** Format: int64 */
             expires_at: number;
@@ -1117,6 +1290,154 @@ export interface operations {
             };
         };
     };
+    redeem_admission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RedeemAdmissionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedeemAdmissionResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    release_lease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LeaseRequest"];
+            };
+        };
+        responses: {
+            /** @description Lease released or already terminal */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    renew_lease: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LeaseRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LeaseRenewedResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     me: {
         parameters: {
             query?: never;
@@ -1132,6 +1453,45 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MeResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    change_plan: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePlanRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanResponse"];
                 };
             };
             401: {
@@ -1202,6 +1562,61 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["NotaryDirectoryResponse"];
+                };
+            };
+        };
+    };
+    issue_admission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["IssueAdmissionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdmissionTicketResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

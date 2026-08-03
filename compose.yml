@@ -55,6 +55,7 @@ services:
       LLM_NOTARY_INTAKE_MAX_BYTES: ${LLM_NOTARY_INTAKE_MAX_BYTES:-134217728}
       LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS: ${LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS:-900}
       LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE: /run/secrets/platform_signing_key
+      LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE: /run/secrets/admission_service_token
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       LLM_NOTARY_LIBRARY_METADATA_MODEL: ${LLM_NOTARY_LIBRARY_METADATA_MODEL:-gpt-5.6-luna}
       LLM_NOTARY_LIBRARY_METADATA_WEEKLY_BUDGET_CENTS: ${LLM_NOTARY_LIBRARY_METADATA_WEEKLY_BUDGET_CENTS:-1000}
@@ -72,6 +73,8 @@ services:
     secrets:
       - source: platform_signing_key
         target: platform_signing_key
+      - source: admission_service_token
+        target: admission_service_token
     restart: unless-stopped
 
   site:
@@ -104,6 +107,10 @@ services:
     environment:
       NOTARY_SIGNING_KEY_FILE: /run/secrets/notary_signing_key
       LLM_NOTARY_NOTARY_PUBLIC_KEY: ${LLM_NOTARY_NOTARY_PUBLIC_KEY:?Set LLM_NOTARY_NOTARY_PUBLIC_KEY to the notary SEC1 public key}
+      LLM_NOTARY_ADMISSION_API_ORIGIN: http://api:8080
+      LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE: /run/secrets/admission_service_token
+      LLM_NOTARY_NOTARY_DIRECTORY_GENERATION: ${LLM_NOTARY_NOTARY_DIRECTORY_GENERATION:-1}
+      LLM_NOTARY_INSTANCE_ID: ${LLM_NOTARY_INSTANCE_ID:-notary-compose-1}
       # Internal-only scrape endpoint. Do not publish it through the gateway.
       LLM_NOTARY_METRICS_LISTEN: 0.0.0.0:9090
     ports:
@@ -112,6 +119,8 @@ services:
     secrets:
       - source: notary_signing_key
         target: notary_signing_key
+      - source: admission_service_token
+        target: admission_service_token
     read_only: true
     tmpfs:
       - /tmp
@@ -140,3 +149,5 @@ secrets:
     file: ${NOTARY_SIGNING_KEY_FILE:?Set NOTARY_SIGNING_KEY_FILE to the host signing-key path}
   platform_signing_key:
     file: ${PLATFORM_SIGNING_KEY_FILE:?Set PLATFORM_SIGNING_KEY_FILE to the host platform signing-key path}
+  admission_service_token:
+    file: ${ADMISSION_SERVICE_TOKEN_FILE:?Set ADMISSION_SERVICE_TOKEN_FILE to the shared API/notary admission service-token path}
