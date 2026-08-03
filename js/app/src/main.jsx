@@ -91,11 +91,11 @@ function AccountMenu({ user, onLogout, theme, onThemeChange }) {
 }
 
 function Header({ user, onLogout, theme, onThemeChange }) {
-  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/docs">Docs</a><a href="#/library">Library</a><a href="#/notaries">Notaries</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
+  return <header className="nav-wrap"><a className="brand" href="#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="#/docs">Docs</a><a href="#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
 }
 
 function Footer() {
-  return <footer className="site-footer"><span>© 2026 LLM Notary</span><nav aria-label="Legal"><a href="#/privacy">Privacy</a><a href="#/terms">Terms</a></nav></footer>;
+  return <footer className="site-footer"><span className="footer-copyright">© 2026 LLM Notary</span><nav aria-label="Footer"><a href="#/notaries">Notaries</a><a href="#/privacy">Privacy</a><a href="#/terms">Terms</a></nav></footer>;
 }
 
 const legalPages = {
