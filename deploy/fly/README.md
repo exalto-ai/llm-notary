@@ -48,9 +48,9 @@ Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private
 `llm-notary-prod-api.flycast` origin and renews the returned PostgreSQL-backed
 lease while the session is active. New sessions fail closed if that control
-plane is unavailable. Public, free-account, and paid-preview sessions share
-this path; only their configured policy differs. The reusable browser/CLI
-credential stays between the local daemon and API.
+plane is unavailable. Public and signed-in Free sessions share this path;
+their credit subjects determine which grants fund finalization. The reusable
+browser/CLI credential stays between the local daemon and API.
 
 Preserve the existing notary directory so finalized packages continue to use
 the same timestamp-scoped trust history. Ongoing PostgreSQL and Neon operations

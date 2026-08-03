@@ -1,8 +1,8 @@
 # Hosted finalization credits
 
-Every signed-in hosted account is Free. There is no paid plan or account tier.
-An account receives included monthly finalization credits and can add more
-through purchases, promotions, or manual adjustments.
+Every signed-in hosted account uses the same Free access model. An account
+receives included monthly finalization credits and can add more through
+purchases, promotions, or manual adjustments.
 
 Credits are byte-denominated grants used only when a hosted finalization ticket
 is redeemed. Adding or using them never changes proof strength, notary identity,
@@ -44,9 +44,7 @@ notary and does not enter evidence.
 
 Address scoping is abuse control, not identity. Unrelated users behind one NAT
 may share an allowance. A VPN, proxy, or address change may receive a different
-allowance. Shared service-capacity limits still apply, but there is no
-per-address session count, start-rate limit, or account-specific session
-timeout.
+allowance. Shared service-capacity limits still apply.
 
 Forwarding headers are not trusted by default. The API accepts its dedicated
 edge address header only when the immediate socket peer matches an explicitly
