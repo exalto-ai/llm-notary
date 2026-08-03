@@ -317,7 +317,6 @@ mod tests {
             secure_cookies: true,
             notary_directory: super::super::tests::directory_key(),
             publish: super::super::publish::PublishService::disabled_for_test(),
-            library_metadata: super::super::admission::MetadataService::disabled(),
             admission: std::sync::Arc::new(super::super::config::AdmissionConfig::for_test()),
         };
         let jar = |token| CookieJar::new().add(Cookie::new(SESSION_COOKIE, token));

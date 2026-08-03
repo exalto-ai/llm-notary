@@ -123,7 +123,7 @@ impl IntakeStorage {
 
     pub fn public_artifact_key(&self, trace_id: &str, kind: &str, sha256: &str) -> Result<String> {
         validate_identifier(trace_id, "trace ID")?;
-        if kind != "trace" {
+        if !matches!(kind, "trace" | "package") {
             bail!("public artifact kind is unsupported");
         }
         if sha256.len() != 64
@@ -134,7 +134,14 @@ impl IntakeStorage {
             bail!("public artifact SHA-256 is invalid");
         }
         let prefix = self.prefix()?;
-        Ok(format!("{prefix}/public/{trace_id}/{kind}-{sha256}.json"))
+        let extension = if kind == "package" {
+            "llmtrace"
+        } else {
+            "json"
+        };
+        Ok(format!(
+            "{prefix}/public/{trace_id}/{kind}-{sha256}.{extension}"
+        ))
     }
 
     pub async fn presign_upload(
@@ -340,12 +347,17 @@ impl IntakeStorage {
         match self {
             Self::Disabled => bail!("publication storage is disabled"),
             Self::S3(storage) => {
+                let content_type = if kind == "package" {
+                    ARCHIVE_CONTENT_TYPE
+                } else {
+                    "application/json; charset=utf-8"
+                };
                 storage
                     .client
                     .put_object()
                     .bucket(&storage.bucket)
                     .key(object_key)
-                    .content_type("application/json; charset=utf-8")
+                    .content_type(content_type)
                     .cache_control("public, max-age=31536000, immutable")
                     .metadata(PUBLIC_KIND_METADATA, kind)
                     .metadata(PUBLIC_SHA256_METADATA, sha256)

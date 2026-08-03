@@ -1,8 +1,7 @@
-import { useEffect, useState } from 'react';
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { ApiKeysPanel, Collections, HostedNotaryRecord, VerificationPage } from './main';
+import { ApiKeysPanel, Collections, HostedNotaryRecord, SharePage, VerificationPage } from './main';
 
 afterEach(async () => {
   cleanup();
@@ -10,17 +9,16 @@ afterEach(async () => {
   await page.viewport(1280, 900);
 });
 
-const libraryPublications = Array.from({ length: 20 }, (_, index) => ({
-  id: `pub-${index + 1}`,
-  title: `Trace ${String(index + 1).padStart(2, '0')}`,
+const libraryShares = Array.from({ length: 20 }, (_, index) => ({
+  id: `share-${index + 1}`,
   provider: index === 11 ? 'anthropic' : 'openai',
-  host: index === 11 ? 'api.anthropic.com' : 'api.openai.com',
   model: index === 11 ? 'claude-sonnet-4-6' : 'gpt-5.2',
-  tags: ['evaluation'], author: 'fixture-user', tool_use: false,
-  span_count: 1, admitted_at: 1_786_000_000 - index, recent_downloads: 20 - index
+  publisher: 'fixture-user',
+  authenticated_at_unix_ms: 1_786_000_000_000 - index,
+  share_url: `https://example.test/s/share-${index + 1}`,
 }));
 
-const loadLibrary = async () => ({ publications: structuredClone(libraryPublications) });
+const loadLibrary = async () => structuredClone(libraryShares);
 const loadLibraryTrace = async (id) => ({
   resourceSpans: [{ scopeSpans: [{ spans: [{
     name: 'gen_ai.inference', spanId: `${id}-span`, attributes: [
@@ -29,17 +27,6 @@ const loadLibraryTrace = async (id) => ({
     ]
   }] }] }]
 });
-
-function RoutedLibrary() {
-  const selectedFromHash = () => window.location.hash.replace(/^#\/?library\/?/, '') || undefined;
-  const [selectedId, setSelectedId] = useState(selectedFromHash);
-  useEffect(() => {
-    const update = () => setSelectedId(selectedFromHash());
-    window.addEventListener('hashchange', update);
-    return () => window.removeEventListener('hashchange', update);
-  }, []);
-  return <Collections selectedId={selectedId} loadCollection={loadLibrary} loadTrace={loadLibraryTrace} />;
-}
 
 describe('hosted site', () => {
   test('shows a new API key once and revokes it from the account list', async () => {
@@ -96,39 +83,52 @@ describe('hosted site', () => {
     await expect.element(page.getByText(/1969|1970/)).not.toBeInTheDocument();
   });
 
-  test('uses a focused list-to-detail flow for the Library on a phone', async () => {
+  test('keeps the Listed Library as a compact index on a phone', async () => {
     await page.viewport(390, 760);
-    window.location.hash = '/library';
-    render(<RoutedLibrary />);
-
-    const list = page.getByRole('button', { name: /Trace 12/ });
-    await expect.element(list).toBeVisible();
-    window.scrollTo({ top: 500, behavior: 'instant' });
-    await list.click();
-
-    const heading = page.getByRole('heading', { name: 'Trace 12' });
-    await expect.element(heading).toBeVisible();
-    await expect.element(page.getByLabelText('Browse traces')).not.toBeInTheDocument();
-    await expect.element(page.getByRole('button', { name: /Trace 01/ })).not.toBeInTheDocument();
-    await expect.poll(() => document.activeElement?.textContent).toBe('Trace 12');
-    await expect.poll(() => {
-      const bounds = document.querySelector('.library-back')?.getBoundingClientRect();
-      return Boolean(bounds && bounds.top >= 0 && bounds.bottom <= window.innerHeight);
-    }).toBe(true);
-    expect(getComputedStyle(document.activeElement).outlineStyle).not.toBe('none');
-
-    await page.getByRole('button', { name: '← Back to all traces' }).click();
-    await expect.element(page.getByLabelText('Browse traces')).toBeVisible();
-    await expect.element(list).toHaveFocus();
-    expect(window.scrollY).toBeGreaterThan(0);
+    render(<Collections loadShares={loadLibrary} />);
+    await expect.element(page.getByRole('heading', { name: 'Listed verified sessions.' })).toBeVisible();
+    await expect.element(page.getByRole('link', { name: /claude-sonnet-4-6/ })).toBeVisible();
+    await expect.element(page.getByText('Unlisted shares never appear in this index.')).not.toBeInTheDocument();
   });
 
-  test('keeps the Library list and inspector together on desktop', async () => {
-    window.location.hash = '/library';
-    render(<RoutedLibrary />);
-    await expect.element(page.getByLabelText('Browse traces')).toBeVisible();
-    await expect.element(page.getByRole('button', { name: /Trace 02/ })).toBeVisible();
-    await expect.element(page.getByRole('heading', { name: 'Trace 01' })).toBeVisible();
+  test('filters the Listed Library without loading share contents', async () => {
+    render(<Collections loadShares={loadLibrary} />);
+    await expect.element(page.getByLabelText('Browse Listed shares')).toBeVisible();
+    const search = page.getByPlaceholder('Model, provider, or publisher');
+    await search.fill('claude');
+    await expect.element(page.getByRole('link', { name: /claude-sonnet-4-6/ })).toBeVisible();
+    await expect.element(page.getByRole('link', { name: /gpt-5.2/ })).not.toBeInTheDocument();
+  });
+
+  test('puts the disclosed conversation before collapsible evidence and tools', async () => {
+    const loadShare = async () => ({
+      id: 'share-12', visibility: 'unlisted', publisher: 'fixture-user', admitted_at: 1_786_000_000,
+      authenticated_at_unix_ms: 1_786_000_000_000, verified_at: 1_786_000_001,
+      provider: 'anthropic', host: 'api.anthropic.com', model: 'claude-sonnet-4-6',
+      verification_state: 'verified', notary_key_id: 'sha256:abc', directory_generation: 42,
+      trust_source: 'hosted_notary_directory', trace_sha256: 'b'.repeat(64), package_available: true,
+      package_size_bytes: 4096, package_sha256: 'c'.repeat(64),
+      public_package_safety_version: 'llm-notary/public-package-safety/v1',
+      trace_url: '/api/public/shares/share-12/trace.otlp.json',
+      package_url: '/api/public/shares/share-12/package.llmtrace', share_url: 'https://example.test/s/share-12',
+    });
+    const loadTrace = async () => ({ resourceSpans: [{ scopeSpans: [{ spans: [{
+      name: 'gen_ai.inference', spanId: 'span-12', attributes: [
+        { key: 'gen_ai.input.messages', value: { stringValue: JSON.stringify([{ role: 'user', parts: [{ type: 'text', content: 'Compare these two evidence trails.' }] }]) } },
+        { key: 'gen_ai.output.messages', value: { stringValue: JSON.stringify([{ role: 'assistant', parts: [{ type: 'text', content: 'The second trail is stronger.' }, { type: 'tool_call', id: 'call-1', name: 'lookup_record', arguments: { id: 42 } }] }]) } },
+      ],
+    }] }] }] });
+    render(<SharePage shareId="share-12" loadShare={loadShare} loadTrace={loadTrace} />);
+    await expect.element(page.getByRole('heading', { name: 'Disclosed transcript' })).toBeVisible();
+    await expect.element(page.getByText('Compare these two evidence trails.')).toBeVisible();
+    await expect.element(page.getByText('The second trail is stronger.')).toBeVisible();
+    const tool = page.getByText('lookup_record');
+    await expect.element(tool).toBeVisible();
+    expect(tool.element().closest('details')?.open).toBe(false);
+    await tool.click();
+    await expect.element(page.getByText('arguments')).toBeVisible();
+    await expect.element(page.getByRole('link', { name: /Download exact .llmtrace/ })).toBeVisible();
+    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain('noindex');
   });
 
   test('requires disclosure consent before hosted package verification', async () => {

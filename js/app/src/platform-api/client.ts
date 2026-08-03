@@ -17,12 +17,12 @@ function errorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-export async function getTraceCollection() {
-  const { data, error, response } = await client.GET('/api/public/collections/traces');
+export async function getListedShares() {
+  const { data, error, response } = await client.GET('/api/public/shares');
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load the collection.'), response.status);
+    throw new PlatformApiError(errorMessage(error, 'Could not load the Library.'), response.status);
   }
-  return data;
+  return data.shares;
 }
 
 export async function getNotaryDirectory() {
@@ -33,12 +33,22 @@ export async function getNotaryDirectory() {
   return data;
 }
 
-export async function getPublishedTrace(traceId: string) {
-  const { data, error, response } = await client.GET('/api/public/traces/{trace_id}/trace.otlp.json', {
-    params: { path: { trace_id: traceId } },
+export async function getPublicShare(shareId: string) {
+  const { data, error, response } = await client.GET('/api/public/shares/{share_id}', {
+    params: { path: { share_id: shareId } },
+  });
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not load this shared session.'), response.status);
+  }
+  return data;
+}
+
+export async function getSharedTrace(shareId: string) {
+  const { data, error, response } = await client.GET('/api/public/shares/{share_id}/trace.otlp.json', {
+    params: { path: { share_id: shareId } },
   });
   if (!response.ok || data === undefined) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load this trace preview.'), response.status);
+    throw new PlatformApiError(errorMessage(error, 'Could not load this shared transcript.'), response.status);
   }
   return data;
 }
@@ -83,12 +93,12 @@ export async function revokeApiKey(apiKeyId: string) {
   }
 }
 
-export async function getPublishJobs() {
-  const { data, error, response } = await client.GET('/api/me/publish-jobs');
+export async function getMyShares() {
+  const { data, error, response } = await client.GET('/api/me/shares');
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load your traces.'), response.status);
+    throw new PlatformApiError(errorMessage(error, 'Could not load your shares.'), response.status);
   }
-  return data.jobs;
+  return data.shares;
 }
 
 export async function revokeCliSession(sessionId: string) {

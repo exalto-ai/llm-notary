@@ -42,17 +42,40 @@ pub struct CreatePublishJob {
     archive_format: String,
     size_bytes: i64,
     sha256: String,
+    visibility: ShareVisibility,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ShareVisibility {
+    Unlisted,
+    Listed,
+}
+
+impl ShareVisibility {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unlisted => "unlisted",
+            Self::Listed => "listed",
+        }
+    }
 }
 
 #[derive(Serialize, ToSchema)]
-struct CreatePublishJobResponse {
-    job: PublishJobResponse,
+struct CreateShareResponse {
+    share: ShareResponse,
     upload: Option<UploadInstructions>,
 }
 
 #[derive(Serialize, ToSchema)]
-struct WebPublishJobsResponse {
-    jobs: Vec<PublishJobResponse>,
+struct WebSharesResponse {
+    shares: Vec<ShareResponse>,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct UpdateShareVisibility {
+    visibility: ShareVisibility,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -64,21 +87,17 @@ struct UploadInstructions {
 }
 
 #[derive(Serialize, ToSchema)]
-struct PublishJobResponse {
+struct ShareResponse {
     id: String,
     state: String,
-    archive_format: String,
-    size_bytes: i64,
-    sha256: String,
+    visibility: ShareVisibility,
     created_at: i64,
     updated_at: i64,
-    upload_expires_at: i64,
-    queued_at: Option<i64>,
     admitted_at: Option<i64>,
-    private_purged_at: Option<i64>,
     failure_code: Option<String>,
     status_url: String,
-    trace_url: Option<String>,
+    share_url: Option<String>,
+    package_url: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -86,6 +105,7 @@ pub(super) struct PublishJobRow {
     pub(super) id: String,
     pub(super) user_id: String,
     pub(super) state: String,
+    pub(super) visibility: String,
     pub(super) archive_format: String,
     pub(super) declared_size_bytes: i64,
     pub(super) declared_sha256: String,
@@ -95,11 +115,9 @@ pub(super) struct PublishJobRow {
     pub(super) upload_generation: i64,
     pub(super) created_at: i64,
     pub(super) updated_at: i64,
-    pub(super) queued_at: Option<i64>,
     pub(super) failure_code: Option<String>,
     pub(super) admitted_at: Option<i64>,
-    pub(super) private_purged_at: Option<i64>,
-    pub(super) public_trace_object_key: Option<String>,
+    pub(super) package_object_key: Option<String>,
 }
 
 impl PublishService {
@@ -142,14 +160,14 @@ impl PublishService {
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(create_publish_job))
-        .routes(routes!(get_publish_job))
+        .routes(routes!(get_publish_job, update_share_visibility))
         .routes(routes!(list_web_publish_jobs))
         .routes(routes!(complete_publish_job))
 }
 
 pub fn spawn_cleanup(state: AppState) {
     if !state.publish.enabled() {
-        tracing::warn!("publication intake is disabled; publish endpoints will return 503");
+        tracing::warn!("share intake is disabled; share endpoints will return 503");
         return;
     }
     tokio::spawn(async move {
@@ -198,13 +216,13 @@ pub async fn has_pending_cleanup(state: &AppState) -> ApiResult<bool> {
 
 #[utoipa::path(
     post,
-    path = "/api/publish/jobs",
-    summary = "Create or resume a publication job",
-    params(("Idempotency-Key" = String, Header, description = "Stable key for this publication attempt")),
+    path = "/api/shares",
+    summary = "Create or resume a share",
+    params(("Idempotency-Key" = String, Header, description = "Stable key for this share attempt")),
     request_body = CreatePublishJob,
     responses(
-        (status = 200, body = CreatePublishJobResponse, description = "Existing publication job"),
-        (status = 201, body = CreatePublishJobResponse, description = "New or reopened publication job"),
+        (status = 200, body = CreateShareResponse, description = "Existing share"),
+        (status = 201, body = CreateShareResponse, description = "New or reopened share"),
         (status = 400, body = super::ErrorResponse),
         (status = 401, body = super::ErrorResponse),
         (status = 403, body = super::ErrorResponse),
@@ -213,7 +231,7 @@ pub async fn has_pending_cleanup(state: &AppState) -> ApiResult<bool> {
         (status = 503, body = super::ErrorResponse)
     ),
     security(("bearerAuth" = [])),
-    tag = "publication"
+    tag = "sharing"
 )]
 async fn create_publish_job(
     State(state): State<AppState>,
@@ -242,15 +260,16 @@ async fn create_publish_job(
     let upload_expires_at = now + state.publish.upload_ttl_secs;
     let inserted = sqlx::query(
         "INSERT INTO publish_jobs
-         (id, user_id, idempotency_key, state, archive_format, declared_size_bytes,
+         (id, user_id, idempotency_key, state, visibility, archive_format, declared_size_bytes,
           declared_sha256, upload_object_key, intake_object_key, upload_expires_at,
           created_at, updated_at)
-         VALUES ($1, $2, $3, 'uploading', $4, $5, $6, $7, $8, $9, $10, $11)
+         VALUES ($1, $2, $3, 'uploading', $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (user_id, idempotency_key) DO NOTHING",
     )
     .bind(&job_id)
     .bind(&user_id)
     .bind(&idempotency_key)
+    .bind(request.visibility.as_str())
     .bind(&request.archive_format)
     .bind(request.size_bytes)
     .bind(&request.sha256)
@@ -267,6 +286,7 @@ async fn create_publish_job(
     if job.archive_format != request.archive_format
         || job.declared_size_bytes != request.size_bytes
         || job.declared_sha256 != request.sha256
+        || job.visibility != request.visibility.as_str()
     {
         return Err(ApiError::conflict(
             "idempotency key was already used with different archive metadata",
@@ -338,8 +358,8 @@ async fn create_publish_job(
     };
     Ok((
         status,
-        Json(CreatePublishJobResponse {
-            job: job_response(&job),
+        Json(CreateShareResponse {
+            share: share_response(&job, &state.app_url),
             upload,
         }),
     )
@@ -348,11 +368,11 @@ async fn create_publish_job(
 
 #[utoipa::path(
     get,
-    path = "/api/publish/jobs/{job_id}",
-    summary = "Get a publication job",
-    params(("job_id" = String, Path)),
+    path = "/api/shares/{share_id}",
+    summary = "Get a share's admission state",
+    params(("share_id" = String, Path)),
     responses(
-        (status = 200, body = PublishJobResponse),
+        (status = 200, body = ShareResponse),
         (status = 401, body = super::ErrorResponse),
         (status = 403, body = super::ErrorResponse),
         (status = 404, body = super::ErrorResponse),
@@ -360,13 +380,13 @@ async fn create_publish_job(
         (status = 503, body = super::ErrorResponse)
     ),
     security(("bearerAuth" = [])),
-    tag = "publication"
+    tag = "sharing"
 )]
 async fn get_publish_job(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(job_id): Path<String>,
-) -> ApiResult<Json<PublishJobResponse>> {
+) -> ApiResult<Json<ShareResponse>> {
     require_enabled(&state)?;
     let user_id = authenticated_principal(&state, &headers, ApiScope::PublishRead)
         .await?
@@ -377,27 +397,72 @@ async fn get_publish_job(
         expire_upload(&state, &job, now).await?;
         job = load_owned_job(&state, &user_id, &job_id).await?;
     }
-    Ok(Json(job_response(&job)))
+    Ok(Json(share_response(&job, &state.app_url)))
+}
+
+#[utoipa::path(
+    patch,
+    path = "/api/shares/{share_id}",
+    summary = "Explicitly change a share's visibility",
+    params(("share_id" = String, Path)),
+    request_body = UpdateShareVisibility,
+    responses(
+        (status = 200, body = ShareResponse),
+        (status = 401, body = super::ErrorResponse),
+        (status = 404, body = super::ErrorResponse),
+        (status = 500, body = super::ErrorResponse),
+        (status = 503, body = super::ErrorResponse)
+    ),
+    security(("bearerAuth" = [])),
+    tag = "sharing"
+)]
+async fn update_share_visibility(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(share_id): Path<String>,
+    Json(request): Json<UpdateShareVisibility>,
+) -> ApiResult<Json<ShareResponse>> {
+    require_enabled(&state)?;
+    let user_id = authenticated_principal(&state, &headers, ApiScope::PublishWrite)
+        .await?
+        .user_id;
+    let now = unix_timestamp()?;
+    let updated = sqlx::query(
+        "UPDATE publish_jobs SET visibility = $1, updated_at = $2
+         WHERE id = $3 AND user_id = $4",
+    )
+    .bind(request.visibility.as_str())
+    .bind(now)
+    .bind(&share_id)
+    .bind(&user_id)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    if updated.rows_affected() == 0 {
+        return Err(ApiError::not_found("share was not found"));
+    }
+    let share = load_owned_job(&state, &user_id, &share_id).await?;
+    Ok(Json(share_response(&share, &state.app_url)))
 }
 
 #[utoipa::path(
     get,
-    path = "/api/me/publish-jobs",
-    summary = "List the browser user's publication jobs",
+    path = "/api/me/shares",
+    summary = "List the browser user's shares",
     responses(
-        (status = 200, body = WebPublishJobsResponse),
+        (status = 200, body = WebSharesResponse),
         (status = 401, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "publication"
+    tag = "sharing"
 )]
 async fn list_web_publish_jobs(
     State(state): State<AppState>,
     jar: CookieJar,
-) -> ApiResult<Json<WebPublishJobsResponse>> {
+) -> ApiResult<Json<WebSharesResponse>> {
     let user = authenticated_web_user(&state, &jar).await?;
-    let jobs = sqlx::query_as::<_, PublishJobRow>(
+    let shares = sqlx::query_as::<_, PublishJobRow>(
         "SELECT * FROM publish_jobs
          WHERE user_id = $1
          ORDER BY created_at DESC, id DESC
@@ -408,18 +473,18 @@ async fn list_web_publish_jobs(
     .await
     .map_err(database_error)?
     .iter()
-    .map(job_response)
+    .map(|share| share_response(share, &state.app_url))
     .collect();
-    Ok(Json(WebPublishJobsResponse { jobs }))
+    Ok(Json(WebSharesResponse { shares }))
 }
 
 #[utoipa::path(
     post,
-    path = "/api/publish/jobs/{job_id}/complete",
-    summary = "Complete the upload for a publication job",
-    params(("job_id" = String, Path)),
+    path = "/api/shares/{share_id}/complete",
+    summary = "Complete the upload for a share",
+    params(("share_id" = String, Path)),
     responses(
-        (status = 200, body = PublishJobResponse),
+        (status = 200, body = ShareResponse),
         (status = 401, body = super::ErrorResponse),
         (status = 403, body = super::ErrorResponse),
         (status = 404, body = super::ErrorResponse),
@@ -429,30 +494,28 @@ async fn list_web_publish_jobs(
         (status = 503, body = super::ErrorResponse)
     ),
     security(("bearerAuth" = [])),
-    tag = "publication"
+    tag = "sharing"
 )]
 async fn complete_publish_job(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(job_id): Path<String>,
-) -> ApiResult<Json<PublishJobResponse>> {
+) -> ApiResult<Json<ShareResponse>> {
     require_enabled(&state)?;
     let user_id = authenticated_principal(&state, &headers, ApiScope::PublishWrite)
         .await?
         .user_id;
     let job = load_owned_job(&state, &user_id, &job_id).await?;
     if job.state == "queued" {
-        return Ok(Json(job_response(&job)));
+        return Ok(Json(share_response(&job, &state.app_url)));
     }
     if job.state != "uploading" {
-        return Err(ApiError::conflict(
-            "publication job is not accepting an upload",
-        ));
+        return Err(ApiError::conflict("share is not accepting an upload"));
     }
     let now = unix_timestamp()?;
     if job.upload_expires_at <= now {
         expire_upload(&state, &job, now).await?;
-        return Err(ApiError::gone("publication upload expired"));
+        return Err(ApiError::gone("share upload expired"));
     }
     let uploaded = state
         .publish
@@ -460,7 +523,7 @@ async fn complete_publish_job(
         .head_object(&job.upload_object_key)
         .await
         .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::conflict("publication upload was not found"))?;
+        .ok_or_else(|| ApiError::conflict("share upload was not found"))?;
     if uploaded.size_bytes != job.declared_size_bytes {
         return Err(ApiError::conflict(
             "uploaded object size does not match the declared size",
@@ -468,7 +531,7 @@ async fn complete_publish_job(
     }
     if !IntakeStorage::has_expected_metadata(&uploaded, &job.declared_sha256) {
         return Err(ApiError::conflict(
-            "uploaded object metadata does not match the publish job",
+            "uploaded object metadata does not match the share",
         ));
     }
 
@@ -480,11 +543,11 @@ async fn complete_publish_job(
     {
         let current = load_owned_job(&state, &user_id, &job.id).await?;
         if current.state == "queued" && current.upload_generation == job.upload_generation {
-            return Ok(Json(job_response(&current)));
+            return Ok(Json(share_response(&current, &state.app_url)));
         }
         if current.upload_generation != job.upload_generation || current.state != "uploading" {
             return Err(ApiError::conflict(
-                "publication upload attempt was superseded while completing",
+                "share upload attempt was superseded while completing",
             ));
         }
         return Err(ApiError::internal(error));
@@ -509,7 +572,7 @@ async fn complete_publish_job(
     }
 
     let job = queue_completed_attempt(&state, &user_id, &job, now).await?;
-    Ok(Json(job_response(&job)))
+    Ok(Json(share_response(&job, &state.app_url)))
 }
 
 async fn queue_completed_attempt(
@@ -558,7 +621,7 @@ async fn queue_completed_attempt(
             let _ = cleanup_object(state, &job.intake_object_key).await;
             let _ = cleanup_object(state, &job.upload_object_key).await;
             return Err(ApiError::conflict(
-                "publication job changed while the upload was completing",
+                "share changed while the upload was completing",
             ));
         }
         return Ok(current);
@@ -587,7 +650,7 @@ async fn load_owned_job(state: &AppState, user_id: &str, job_id: &str) -> ApiRes
         .fetch_optional(&state.database)
         .await
         .map_err(database_error)?
-        .ok_or_else(|| ApiError::not_found("publication job was not found"))
+        .ok_or_else(|| ApiError::not_found("share was not found"))
 }
 
 async fn expire_upload(state: &AppState, job: &PublishJobRow, now: i64) -> ApiResult<bool> {
@@ -792,7 +855,7 @@ fn require_enabled(state: &AppState) -> ApiResult<()> {
         Ok(())
     } else {
         Err(ApiError::service_unavailable(
-            "publication intake is not configured",
+            "share intake is not configured",
         ))
     }
 }
@@ -841,25 +904,29 @@ fn idempotency_key(headers: &HeaderMap) -> ApiResult<String> {
     Ok(value.to_owned())
 }
 
-fn job_response(job: &PublishJobRow) -> PublishJobResponse {
-    PublishJobResponse {
+fn share_response(job: &PublishJobRow, app_url: &url::Url) -> ShareResponse {
+    let visibility = match job.visibility.as_str() {
+        "listed" => ShareVisibility::Listed,
+        _ => ShareVisibility::Unlisted,
+    };
+    let admitted = job.state == "admitted";
+    ShareResponse {
         id: job.id.clone(),
         state: job.state.clone(),
-        archive_format: job.archive_format.clone(),
-        size_bytes: job.declared_size_bytes,
-        sha256: job.declared_sha256.clone(),
+        visibility,
         created_at: job.created_at,
         updated_at: job.updated_at,
-        upload_expires_at: job.upload_expires_at,
-        queued_at: job.queued_at,
         admitted_at: job.admitted_at,
-        private_purged_at: job.private_purged_at,
         failure_code: job.failure_code.clone(),
-        status_url: format!("/api/publish/jobs/{}", job.id),
-        trace_url: job
-            .public_trace_object_key
-            .as_ref()
-            .map(|_| format!("/api/public/traces/{}/trace.otlp.json", job.id)),
+        status_url: format!("/api/shares/{}", job.id),
+        share_url: admitted.then(|| {
+            app_url
+                .join(&format!("/s/{}", job.id))
+                .expect("share path is a valid same-origin URL")
+                .to_string()
+        }),
+        package_url: (admitted && job.package_object_key.is_some())
+            .then(|| format!("/api/public/shares/{}/package.llmtrace", job.id)),
     }
 }
 
@@ -916,7 +983,6 @@ mod tests {
             secure_cookies: true,
             notary_directory: super::super::tests::directory_key(),
             publish: PublishService::mock(storage.clone()),
-            library_metadata: super::super::admission::MetadataService::disabled(),
             admission: std::sync::Arc::new(super::super::config::AdmissionConfig::for_test()),
         };
         (
@@ -932,6 +998,7 @@ mod tests {
             archive_format: ARCHIVE_FORMAT.to_owned(),
             size_bytes: 1234,
             sha256: SHA256.to_owned(),
+            visibility: ShareVisibility::Unlisted,
         }
     }
 
@@ -1158,7 +1225,7 @@ mod tests {
         let response = list_web_publish_jobs(State(state), jar)
             .await
             .expect("publish jobs");
-        assert_eq!(response.0.jobs.len(), 1);
+        assert_eq!(response.0.shares.len(), 1);
     }
 
     #[tokio::test]

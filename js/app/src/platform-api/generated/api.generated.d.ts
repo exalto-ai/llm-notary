@@ -329,14 +329,14 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/me/publish-jobs": {
+    "/api/me/shares": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List the browser user's publication jobs */
+        /** List the browser user's shares */
         get: operations["list_web_publish_jobs"];
         put?: never;
         post?: never;
@@ -380,15 +380,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/public/collections/traces": {
+    "/api/public/shares": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List admitted public traces */
-        get: operations["traces_collection"];
+        /** List Listed verified-session shares */
+        get: operations["listed_shares"];
         put?: never;
         post?: never;
         delete?: never;
@@ -397,15 +397,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/public/traces/{trace_id}": {
+    "/api/public/shares/{share_id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get public artifact links for an admitted trace */
-        get: operations["public_trace_metadata"];
+        /** Get one verified-session share by its stable ID */
+        get: operations["public_share_detail"];
         put?: never;
         post?: never;
         delete?: never;
@@ -414,32 +414,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/public/traces/{trace_id}/events/download": {
+    "/api/public/shares/{share_id}/package.llmtrace": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
-        /** Record a privacy-preserving trace download event */
-        post: operations["record_download_event"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/public/traces/{trace_id}/trace.otlp.json": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Download an admitted canonical OpenTelemetry trace */
-        get: operations["public_trace"];
+        /** Download the exact admitted portable proof package */
+        get: operations["public_share_package"];
         put?: never;
         post?: never;
         delete?: never;
@@ -448,51 +431,17 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/publish/jobs": {
+    "/api/public/shares/{share_id}/trace.otlp.json": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
-        /** Create or resume a publication job */
-        post: operations["create_publish_job"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/publish/jobs/{job_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get a publication job */
-        get: operations["get_publish_job"];
+        /** Download the admitted canonical OpenTelemetry trace */
+        get: operations["public_share_trace"];
         put?: never;
         post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/publish/jobs/{job_id}/complete": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Complete the upload for a publication job */
-        post: operations["complete_publish_job"];
         delete?: never;
         options?: never;
         head?: never;
@@ -510,6 +459,58 @@ export interface paths {
         get: operations["readiness"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create or resume a share */
+        post: operations["create_publish_job"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/shares/{share_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get a share's admission state */
+        get: operations["get_publish_job"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Explicitly change a share's visibility */
+        patch: operations["update_share_visibility"];
+        trace?: never;
+    };
+    "/api/shares/{share_id}/complete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Complete the upload for a share */
+        post: operations["complete_publish_job"];
         delete?: never;
         options?: never;
         head?: never;
@@ -539,9 +540,6 @@ export interface components {
     schemas: {
         /** @enum {string} */
         AccessPool: "public" | "free" | "paid_preview";
-        ActivityRequest: {
-            subject: string;
-        };
         /** @enum {string} */
         AdmissionMode: "capture" | "finalize";
         AdmissionTicketResponse: {
@@ -609,30 +607,6 @@ export interface components {
             expires_in: number;
             refresh_token: string;
         };
-        CollectionPublication: {
-            /** Format: int64 */
-            admitted_at: number;
-            author: string;
-            host: string;
-            id: string;
-            model: string;
-            provider: string;
-            /** Format: int64 */
-            recent_downloads: number;
-            span_count: number;
-            tags: string[];
-            title: string;
-            tool_use: boolean;
-            trace_url: string;
-        };
-        CollectionResponse: {
-            consent_label: string;
-            description: string;
-            format: string;
-            publications: components["schemas"]["CollectionPublication"][];
-            slug: string;
-            title: string;
-        };
         CreateApiKeyRequest: {
             /** Format: int64 */
             expires_at?: number | null;
@@ -651,9 +625,10 @@ export interface components {
             sha256: string;
             /** Format: int64 */
             size_bytes: number;
+            visibility: components["schemas"]["ShareVisibility"];
         };
-        CreatePublishJobResponse: {
-            job: components["schemas"]["PublishJobResponse"];
+        CreateShareResponse: {
+            share: components["schemas"]["ShareResponse"];
             upload?: null | components["schemas"]["UploadInstructions"];
         };
         /** @enum {string} */
@@ -703,6 +678,18 @@ export interface components {
             lease_id: string;
             notary_instance_id: string;
         };
+        ListedShareSummary: {
+            /** Format: int64 */
+            authenticated_at_unix_ms?: number | null;
+            id: string;
+            model: string;
+            provider: string;
+            publisher: string;
+            share_url: string;
+        };
+        ListedSharesResponse: {
+            shares: components["schemas"]["ListedShareSummary"][];
+        };
         MeResponse: {
             entitlements: components["schemas"]["EffectiveEntitlements"];
             plan: components["schemas"]["ServicePlan"];
@@ -738,50 +725,38 @@ export interface components {
             entitlements: components["schemas"]["EffectiveEntitlements"];
             plan: components["schemas"]["ServicePlan"];
         };
-        PublicTraceMetadata: {
+        PublicShareDetail: {
+            /** Format: int64 */
+            admitted_at: number;
             /** Format: int64 */
             authenticated_at_unix_ms?: number | null;
             /** Format: int64 */
             directory_generation?: number | null;
             host: string;
             id: string;
+            model: string;
             notary_key_id?: string | null;
-            platform_verified_source: boolean;
+            package_available: boolean;
+            package_sha256?: string | null;
+            /** Format: int64 */
+            package_size_bytes?: number | null;
+            package_url?: string | null;
             provider: string;
-            source_package_sha256?: string | null;
+            public_package_safety_version?: string | null;
+            publisher: string;
+            share_url: string;
             trace_sha256: string;
             trace_url: string;
             trust_source?: string | null;
+            verification_state: string;
             /** Format: int64 */
             verified_at?: number | null;
+            visibility: string;
         };
         PublicUser: {
             avatar_url?: string | null;
             github_login: string;
             id: string;
-        };
-        PublishJobResponse: {
-            /** Format: int64 */
-            admitted_at?: number | null;
-            archive_format: string;
-            /** Format: int64 */
-            created_at: number;
-            failure_code?: string | null;
-            id: string;
-            /** Format: int64 */
-            private_purged_at?: number | null;
-            /** Format: int64 */
-            queued_at?: number | null;
-            sha256: string;
-            /** Format: int64 */
-            size_bytes: number;
-            state: string;
-            status_url: string;
-            trace_url?: string | null;
-            /** Format: int64 */
-            updated_at: number;
-            /** Format: int64 */
-            upload_expires_at: number;
         };
         RedeemAdmissionRequest: {
             /** Format: int64 */
@@ -814,8 +789,28 @@ export interface components {
         };
         /** @enum {string} */
         ServicePlan: "free" | "paid_preview";
+        ShareResponse: {
+            /** Format: int64 */
+            admitted_at?: number | null;
+            /** Format: int64 */
+            created_at: number;
+            failure_code?: string | null;
+            id: string;
+            package_url?: string | null;
+            share_url?: string | null;
+            state: string;
+            status_url: string;
+            /** Format: int64 */
+            updated_at: number;
+            visibility: components["schemas"]["ShareVisibility"];
+        };
+        /** @enum {string} */
+        ShareVisibility: "unlisted" | "listed";
         /** Format: binary */
         TracePackageBody: string;
+        UpdateShareVisibility: {
+            visibility: components["schemas"]["ShareVisibility"];
+        };
         UploadInstructions: {
             /** Format: int64 */
             expires_at: number;
@@ -853,8 +848,8 @@ export interface components {
         WebCliSessionsResponse: {
             sessions: components["schemas"]["WebCliSession"][];
         };
-        WebPublishJobsResponse: {
-            jobs: components["schemas"]["PublishJobResponse"][];
+        WebSharesResponse: {
+            shares: components["schemas"]["ShareResponse"][];
         };
     };
     responses: never;
@@ -1736,7 +1731,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WebPublishJobsResponse"];
+                    "application/json": components["schemas"]["WebSharesResponse"];
                 };
             };
             401: {
@@ -1839,7 +1834,7 @@ export interface operations {
             };
         };
     };
-    traces_collection: {
+    listed_shares: {
         parameters: {
             query?: never;
             header?: never;
@@ -1853,7 +1848,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CollectionResponse"];
+                    "application/json": components["schemas"]["ListedSharesResponse"];
                 };
             };
             500: {
@@ -1866,12 +1861,12 @@ export interface operations {
             };
         };
     };
-    public_trace_metadata: {
+    public_share_detail: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                trace_id: string;
+                share_id: string;
             };
             cookie?: never;
         };
@@ -1882,7 +1877,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PublicTraceMetadata"];
+                    "application/json": components["schemas"]["PublicShareDetail"];
                 };
             };
             404: {
@@ -1903,29 +1898,26 @@ export interface operations {
             };
         };
     };
-    record_download_event: {
+    public_share_package: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                trace_id: string;
+                share_id: string;
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ActivityRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description Download event recorded */
-            204: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/vnd.llmnotary.trace-package+zip": number[];
+                };
             };
-            400: {
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1933,7 +1925,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            404: {
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1949,14 +1941,22 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
-    public_trace: {
+    public_share_trace: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                trace_id: string;
+                share_id: string;
             };
             cookie?: never;
         };
@@ -1996,11 +1996,38 @@ export interface operations {
             };
         };
     };
+    readiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Health"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     create_publish_job: {
         parameters: {
             query?: never;
             header: {
-                /** @description Stable key for this publication attempt */
+                /** @description Stable key for this share attempt */
                 "Idempotency-Key": string;
             };
             path?: never;
@@ -2012,22 +2039,22 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Existing publication job */
+            /** @description Existing share */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CreatePublishJobResponse"];
+                    "application/json": components["schemas"]["CreateShareResponse"];
                 };
             };
-            /** @description New or reopened publication job */
+            /** @description New or reopened share */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CreatePublishJobResponse"];
+                    "application/json": components["schemas"]["CreateShareResponse"];
                 };
             };
             400: {
@@ -2085,7 +2112,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                job_id: string;
+                share_id: string;
             };
             cookie?: never;
         };
@@ -2096,7 +2123,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PublishJobResponse"];
+                    "application/json": components["schemas"]["ShareResponse"];
                 };
             };
             401: {
@@ -2141,12 +2168,69 @@ export interface operations {
             };
         };
     };
+    update_share_visibility: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                share_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateShareVisibility"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     complete_publish_job: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                job_id: string;
+                share_id: string;
             };
             cookie?: never;
         };
@@ -2157,7 +2241,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PublishJobResponse"];
+                    "application/json": components["schemas"]["ShareResponse"];
                 };
             };
             401: {
@@ -2209,33 +2293,6 @@ export interface operations {
                 };
             };
             503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    readiness: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Health"];
-                };
-            };
-            500: {
                 headers: {
                     [name: string]: unknown;
                 };
