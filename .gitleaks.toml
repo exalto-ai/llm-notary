@@ -1,0 +1,14 @@
+title = "LLM Notary secret scanning"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "llm-notary-private-artifact"
+description = "LLM Notary private evidence or local credential artifact"
+path = '''(?i)(^|/)(bundles?|captures?|traces?)(/|$)|(^|/)llm-notary-api\.db$|\.(llmbundle|bundle\.json|key|pem|sqlite)$'''
+tags = ["llm-notary", "private-artifact"]
+
+[[rules.allowlists]]
+description = "Vendored public certificate used by TLS parsing tests"
+paths = ['''^vendor/tlsn/crates/tls-core/testdata/cert-digicert\.pem$''']
