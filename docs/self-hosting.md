@@ -213,10 +213,10 @@ The private bucket has distinct staging, intake, and admitted-trace prefixes.
 Keep it private; public reads pass through the API after integrity checks.
 
 Use forward-only database migrations. Migration `0009` deliberately removes
-the test-only paid-preview and account-session policy columns, so deploy the
-matching API and notary images together rather than rolling back to the
-previous admission binary. See [Database operations](database-operations.md)
-and [Share admission v1](share-admission-v1.md).
+obsolete account-policy columns, so deploy the matching API and notary images
+together rather than rolling back to the previous admission binary. See
+[Database operations](database-operations.md) and
+[Share admission v1](share-admission-v1.md).
 
 ## Observability
 

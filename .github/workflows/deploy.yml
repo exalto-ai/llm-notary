@@ -110,6 +110,9 @@ jobs:
           touch "$RUNNER_TEMP/api-rollout-attempted"
           flyctl deploy --image "$API_IMAGE" --ha=true --strategy rolling \
             --config deploy/fly/api.fly.toml
+          # The API exits when idle. If an old stopped process wakes during the
+          # config update, restart it now so it runs the newly pinned image.
+          bash deploy/fly/restart-active-machines.sh llm-notary-prod-api
       - name: Verify old web to new API compatibility
         run: >-
           curl --fail --retry 5 --retry-all-errors --retry-delay 2
@@ -216,9 +219,15 @@ jobs:
           fi
 
           if test -e "$RUNNER_TEMP/api-rollout-attempted"; then
-            FLY_API_TOKEN="$API_TOKEN" flyctl deploy \
-              --image "$PREVIOUS_API_IMAGE" --ha=true --strategy rolling \
-              --skip-release-command --config deploy/fly/api.fly.toml || rollback_failed=1
+            if FLY_API_TOKEN="$API_TOKEN" flyctl deploy \
+                --image "$PREVIOUS_API_IMAGE" --ha=true --strategy rolling \
+                --skip-release-command --config deploy/fly/api.fly.toml; then
+              FLY_API_TOKEN="$API_TOKEN" \
+                bash deploy/fly/restart-active-machines.sh llm-notary-prod-api || \
+                rollback_failed=1
+            else
+              rollback_failed=1
+            fi
           fi
 
           if test -e "$RUNNER_TEMP/notary-rollout-attempted"; then
