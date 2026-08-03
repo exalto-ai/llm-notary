@@ -299,12 +299,12 @@ export interface paths {
         put?: never;
         /**
          * Connect an LLM Notary account
-         * @description Starts browser approval for an account connection used for hosted tier admission and trace publication.
+         * @description Starts browser approval for an account connection used for hosted tier admission and trace publication. Browser approval is unavailable while the daemon uses an injected API key.
          */
         post: operations["start_publication_auth"];
         /**
          * Disconnect the LLM Notary account
-         * @description Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed.
+         * @description Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.
          */
         delete: operations["end_publication_auth"];
         options?: never;
@@ -405,6 +405,8 @@ export interface components {
             device_name?: string;
         };
         AccountConnectionResponse: {
+            credential_kind?: string | null;
+            credential_name?: string | null;
             device_name?: string | null;
             github_login?: string | null;
             signed_in: boolean;
@@ -1171,6 +1173,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
         };
     };
     end_publication_auth: {
@@ -1190,6 +1200,14 @@ export interface operations {
                 content?: never;
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

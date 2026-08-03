@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Command, CommandDialog, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import './shadcn.css';
 import './styles.css';
 import './hero-evidence.css';
@@ -29,6 +30,8 @@ import { RelayAnimation } from './RelayAnimation';
 import {
   approveCli,
   changeServicePlan,
+  createApiKey,
+  getApiKeys,
   getCliApproval,
   getCliSessions,
   getCurrentUser,
@@ -37,6 +40,7 @@ import {
   getPublishJobs,
   getTraceCollection,
   logoutBrowser,
+  revokeApiKey,
   revokeCliSession,
   verifyTracePackage,
 } from './platform-api/client';
@@ -961,6 +965,100 @@ function publishState(state) {
   return { label: state, tone: 'neutral' };
 }
 
+const apiKeyScopeOptions = [
+  ['account:read', 'Read account identity'],
+  ['notary:admit', 'Request hosted notary admission'],
+  ['publish:read', 'Read owned publication status'],
+  ['publish:write', 'Create and complete publications'],
+];
+
+function apiKeyState(apiKey) {
+  if (apiKey.revoked_at) return 'Revoked';
+  if (apiKey.expires_at && apiKey.expires_at <= Math.floor(Date.now() / 1000)) return 'Expired';
+  return 'Active';
+}
+
+export function ApiKeysPanel({ loadKeys = getApiKeys, createKey = createApiKey, revokeKey = revokeApiKey }) {
+  const [apiKeys, setApiKeys] = useState(null);
+  const [error, setError] = useState(null);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [name, setName] = useState('');
+  const [scopes, setScopes] = useState(apiKeyScopeOptions.map(([scope]) => scope));
+  const [expiresOn, setExpiresOn] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [created, setCreated] = useState(null);
+  const [copied, setCopied] = useState(false);
+  const [revokeTarget, setRevokeTarget] = useState(null);
+  const [revoking, setRevoking] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadKeys()
+      .then((keys) => { if (!cancelled) setApiKeys(keys); })
+      .catch((reason) => { if (!cancelled) setError(reason.message); });
+    return () => { cancelled = true; };
+  }, [loadKeys]);
+
+  const closeDialog = (open) => {
+    if (!open && creating) return;
+    setDialogOpen(open);
+    if (!open) {
+      setCreated(null);
+      setCopied(false);
+      setName('');
+      setScopes(apiKeyScopeOptions.map(([scope]) => scope));
+      setExpiresOn('');
+    }
+  };
+  const toggleScope = (scope) => setScopes((current) => current.includes(scope)
+    ? current.filter((value) => value !== scope)
+    : [...current, scope]);
+  const create = async (event) => {
+    event.preventDefault();
+    setCreating(true);
+    setError(null);
+    try {
+      const expiresAt = expiresOn
+        ? Math.floor(new Date(`${expiresOn}T23:59:59`).getTime() / 1000)
+        : null;
+      const response = await createKey({ name, scopes, expires_at: expiresAt });
+      setCreated(response);
+      setApiKeys((current) => [response.api_key, ...(current || [])]);
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setCreating(false);
+    }
+  };
+  const copySecret = async () => {
+    await navigator.clipboard.writeText(created.secret);
+    setCopied(true);
+  };
+  const revoke = async () => {
+    setRevoking(true);
+    setError(null);
+    try {
+      await revokeKey(revokeTarget.id);
+      const revokedAt = Math.floor(Date.now() / 1000);
+      setApiKeys((current) => current.map((key) => key.id === revokeTarget.id ? { ...key, revoked_at: key.revoked_at || revokedAt } : key));
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setRevoking(false);
+      setRevokeTarget(null);
+    }
+  };
+
+  return <section className="dashboard-api-keys" aria-labelledby="api-keys-title">
+    <header><div><span className="eyebrow">Automation access</span><h2 id="api-keys-title">API keys</h2></div><button type="button" onClick={() => setDialogOpen(true)}>Create API key</button></header>
+    {error && <p className="dashboard-session-error" role="alert">{error}</p>}
+    {apiKeys === null && !error ? <p className="dashboard-session-empty">Loading API keys…</p> : apiKeys?.length ? <div className="dashboard-api-key-list">{apiKeys.map((apiKey) => <article key={apiKey.id} className={apiKeyState(apiKey).toLowerCase()}><div className="dashboard-api-key-copy"><div><b>{apiKey.name}</b><span className="dashboard-api-key-state"><i aria-hidden="true" />{apiKeyState(apiKey)}</span></div><code>{apiKey.prefix}</code><span>{apiKey.scopes.join(' · ')}</span><small>Created {sessionDate(apiKey.created_at)} · Last used {apiKey.last_used_at ? sessionDate(apiKey.last_used_at) : 'Never'} · Expires {apiKey.expires_at ? sessionDate(apiKey.expires_at) : 'Never'}</small></div>{!apiKey.revoked_at && <button type="button" onClick={() => setRevokeTarget(apiKey)}>Revoke</button>}</article>)}</div> : <div className="dashboard-api-key-empty"><b>No API keys</b><p>Create a scoped key for CI, cron jobs, or another unattended host.</p></div>}
+
+    <Dialog open={dialogOpen} onOpenChange={closeDialog}><DialogContent className="axis-api-key-dialog" showCloseButton={!creating}><DialogHeader><DialogTitle>{created ? 'Copy this API key now' : 'Create API key'}</DialogTitle><DialogDescription>{created ? 'The complete key is shown once. Store it in your CI or service secret manager before closing.' : 'Choose only the access this automation needs. The key remains valid until it expires or you revoke it.'}</DialogDescription></DialogHeader>{created ? <div className="api-key-receipt"><span className="eyebrow">API key</span><code>{created.secret}</code><button type="button" onClick={copySecret}>{copied ? 'Copied' : 'Copy API key'}</button></div> : <form id="create-api-key-form" className="api-key-form" onSubmit={create}><label><span>Name</span><Input value={name} onChange={(event) => setName(event.target.value)} maxLength={100} required placeholder="GitHub Actions release" /></label><fieldset><legend>Scopes</legend>{apiKeyScopeOptions.map(([scope, description]) => <label key={scope}><input type="checkbox" checked={scopes.includes(scope)} onChange={() => toggleScope(scope)} /><span><code>{scope}</code><small>{description}</small></span></label>)}</fieldset><label><span>Expiration</span><Input type="date" value={expiresOn} min={new Date(Date.now() + 86400000).toISOString().slice(0, 10)} onChange={(event) => setExpiresOn(event.target.value)} /><small>Leave blank to never expire.</small></label></form>}<DialogFooter>{created ? <button type="button" className="api-key-primary" onClick={() => closeDialog(false)}>I stored the key</button> : <><button type="button" className="api-key-secondary" onClick={() => closeDialog(false)} disabled={creating}>Cancel</button><button type="submit" form="create-api-key-form" className="api-key-primary" disabled={creating || !name.trim() || !scopes.length}>{creating ? 'Creating…' : 'Create API key'}</button></>}</DialogFooter></DialogContent></Dialog>
+    <AlertDialog open={Boolean(revokeTarget)} onOpenChange={(open) => { if (!open && !revoking) setRevokeTarget(null); }}><AlertDialogContent className="axis-alert-dialog"><AlertDialogHeader><AlertDialogTitle>Revoke {revokeTarget?.name}?</AlertDialogTitle><AlertDialogDescription>Requests using this key will be rejected immediately. This action does not affect other keys or connected devices.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={revoking}>Keep key</AlertDialogCancel><AlertDialogAction disabled={revoking} onClick={revoke}>{revoking ? 'Revoking…' : 'Revoke API key'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+  </section>;
+}
+
 function Dashboard({ user, view, onPlanChange }) {
   const [sessions, setSessions] = useState(null);
   const [sessionError, setSessionError] = useState(null);
@@ -1062,6 +1160,7 @@ function Dashboard({ user, view, onPlanChange }) {
             <button type="button" onClick={() => changePlan(plan === 'paid_preview' ? 'free' : 'paid_preview')} disabled={planChanging}>{planChanging ? 'Updating…' : plan === 'paid_preview' ? 'Return to free' : 'Upgrade to paid preview'}</button>
           </section>
           <section className="dashboard-sessions" aria-labelledby="publishing-sessions-title"><header><div><span className="eyebrow">Local service access</span><h2 id="publishing-sessions-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
+          <ApiKeysPanel />
         </> : <>
           <header className="dashboard-page-header"><span className="eyebrow">Traces</span><h1>Your traces</h1><p>Review publication status and open the public traces attached to your account.</p></header>
           <section className="dashboard-traces" aria-label="Your traces">

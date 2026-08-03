@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use super::{
     ApiError, ApiResult, AppState, ErrorResponse,
+    authn::{ApiScope, optional_authenticated_principal},
     config::{AdmissionConfig, TierPolicy},
     database_error, random_token, unix_timestamp,
 };
@@ -252,6 +253,7 @@ async fn change_plan(
         (status = 200, body = AdmissionTicketResponse),
         (status = 400, body = ErrorResponse),
         (status = 401, body = ErrorResponse),
+        (status = 403, body = ErrorResponse),
         (status = 429, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
@@ -263,15 +265,21 @@ async fn issue_admission(
     headers: HeaderMap,
     Json(request): Json<IssueAdmissionRequest>,
 ) -> ApiResult<Json<AdmissionTicketResponse>> {
-    let identity = optional_cli_identity(&state, &headers).await?;
+    let identity =
+        optional_authenticated_principal(&state, &headers, ApiScope::NotaryAdmit).await?;
     let (subject_id, pool) = match identity {
-        Some((user_id, plan)) => {
+        Some(principal) => {
+            let plan: String = sqlx::query_scalar("SELECT service_plan FROM users WHERE id = $1")
+                .bind(&principal.user_id)
+                .fetch_one(&state.database)
+                .await
+                .map_err(database_error)?;
             let plan = ServicePlan::parse(&plan)?;
             let pool = match plan {
                 ServicePlan::Free => AccessPool::Free,
                 ServicePlan::PaidPreview => AccessPool::PaidPreview,
             };
-            (Some(user_id), pool)
+            (Some(principal.user_id), pool)
         }
         None => (None, AccessPool::Public),
     };
@@ -577,37 +585,6 @@ fn validate_ticket_request(
             Ok((Some(digest.to_owned()), allowance))
         }
     }
-}
-
-async fn optional_cli_identity(
-    state: &AppState,
-    headers: &HeaderMap,
-) -> ApiResult<Option<(String, String)>> {
-    let Some(value) = headers.get(header::AUTHORIZATION) else {
-        return Ok(None);
-    };
-    let token = value
-        .to_str()
-        .ok()
-        .and_then(|value| value.strip_prefix("Bearer "))
-        .filter(|token| !token.is_empty())
-        .ok_or_else(ApiError::unauthorized)?;
-    let now = unix_timestamp()?;
-    sqlx::query_as::<_, (String, String)>(
-        "SELECT users.id, users.service_plan
-         FROM cli_access_tokens
-         JOIN cli_sessions ON cli_sessions.id = cli_access_tokens.session_id
-         JOIN users ON users.id = cli_sessions.user_id
-         WHERE cli_access_tokens.token_hash = $1 AND cli_access_tokens.expires_at > $2
-           AND cli_sessions.revoked_at IS NULL AND cli_sessions.expires_at > $2",
-    )
-    .bind(sha256_hex(token.as_bytes()))
-    .bind(now)
-    .fetch_optional(&state.database)
-    .await
-    .map_err(database_error)?
-    .map(Some)
-    .ok_or_else(ApiError::unauthorized)
 }
 
 fn authenticate_service(state: &AppState, headers: &HeaderMap) -> ApiResult<()> {

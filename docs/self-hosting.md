@@ -161,6 +161,25 @@ curl --fail https://notary.example.com/api/notary
 
 `/api/healthz` does not prove database availability; `/api/readyz` does.
 
+### API keys for self-hosted automation
+
+The hosted account dashboard manages account-owned API keys through
+`/api/me/api-keys`; these routes require the HttpOnly browser session. A local
+daemon using a self-hosted key needs both its injected key and the public HTTPS
+origin:
+
+```bash
+LLM_NOTARY_API_ORIGIN=https://notary.example.com \
+LLM_NOTARY_API_KEY_FILE=/run/secrets/llm-notary-api-key \
+llm-notaryd
+```
+
+Do not add either value to the editable daemon configuration or Compose image.
+Mount the key file from the deployment secret store. API keys remain between
+the daemon and platform API; the notary receives only the existing one-time
+admission ticket. See [API keys for automation](api-key-automation.md) for
+scope selection, manual rotation, and a CI example.
+
 ## Hosted admission control
 
 Every hosted capture or finalization obtains a short-lived one-time ticket from

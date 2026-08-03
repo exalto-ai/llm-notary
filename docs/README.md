@@ -18,6 +18,7 @@ Use the generated contract when prose and an installed service disagree.
 | Understand `.llmbundle`, `.llmtrace`, and public traces | [Artifact formats and verification](artifact-formats.md) |
 | Operate the daemon, CLI, or local REST API | [Local service and REST API](local-service.md) |
 | Use the visual local workflow | [Local dashboard](local-dashboard.md) |
+| Run CI, cron, or unattended hosts | [API keys for automation](api-key-automation.md) |
 | Give a coding agent safe API instructions | [Coding-agent playbook](agent-playbook.md) |
 
 ## Operators

@@ -470,7 +470,13 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       verification_uri_complete: '#/publishing', expires_in_seconds: 600,
       poll_interval_seconds: 0, state: 'pending' }),
     pollPublicationAuth: async () => {
-      publicationAuth = { signed_in: true, github_login: 'fixture-user', device_name: 'Local dashboard' };
+      publicationAuth = {
+        signed_in: true,
+        github_login: 'fixture-user',
+        device_name: 'Local dashboard',
+        credential_kind: 'cli_session',
+        credential_name: 'Local dashboard'
+      };
       return publicationAuth;
     },
     publish: async (captureId) => {

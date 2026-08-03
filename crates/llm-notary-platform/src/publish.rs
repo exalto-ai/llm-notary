@@ -14,7 +14,8 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use super::{
-    ApiError, ApiResult, AppState, authenticated_web_user, bearer_token,
+    ApiError, ApiResult, AppState, authenticated_web_user,
+    authn::{ApiScope, authenticated_principal},
     config::StorageConfig,
     database_error,
     intake::{ARCHIVE_FORMAT, IntakeStorage},
@@ -206,6 +207,7 @@ pub async fn has_pending_cleanup(state: &AppState) -> ApiResult<bool> {
         (status = 201, body = CreatePublishJobResponse, description = "New or reopened publication job"),
         (status = 400, body = super::ErrorResponse),
         (status = 401, body = super::ErrorResponse),
+        (status = 403, body = super::ErrorResponse),
         (status = 409, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse),
         (status = 503, body = super::ErrorResponse)
@@ -220,7 +222,9 @@ async fn create_publish_job(
 ) -> ApiResult<Response> {
     require_enabled(&state)?;
     validate_request(&state.publish, &request)?;
-    let user_id = authenticated_cli_user_id(&state, &headers).await?;
+    let user_id = authenticated_principal(&state, &headers, ApiScope::PublishWrite)
+        .await?
+        .user_id;
     let idempotency_key = idempotency_key(&headers)?;
     let now = unix_timestamp()?;
     let job_id = Uuid::new_v4().to_string();
@@ -350,6 +354,7 @@ async fn create_publish_job(
     responses(
         (status = 200, body = PublishJobResponse),
         (status = 401, body = super::ErrorResponse),
+        (status = 403, body = super::ErrorResponse),
         (status = 404, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse),
         (status = 503, body = super::ErrorResponse)
@@ -363,7 +368,9 @@ async fn get_publish_job(
     Path(job_id): Path<String>,
 ) -> ApiResult<Json<PublishJobResponse>> {
     require_enabled(&state)?;
-    let user_id = authenticated_cli_user_id(&state, &headers).await?;
+    let user_id = authenticated_principal(&state, &headers, ApiScope::PublishRead)
+        .await?
+        .user_id;
     let mut job = load_owned_job(&state, &user_id, &job_id).await?;
     let now = unix_timestamp()?;
     if job.state == "uploading" && job.upload_expires_at <= now {
@@ -414,6 +421,7 @@ async fn list_web_publish_jobs(
     responses(
         (status = 200, body = PublishJobResponse),
         (status = 401, body = super::ErrorResponse),
+        (status = 403, body = super::ErrorResponse),
         (status = 404, body = super::ErrorResponse),
         (status = 409, body = super::ErrorResponse),
         (status = 410, body = super::ErrorResponse),
@@ -429,7 +437,9 @@ async fn complete_publish_job(
     Path(job_id): Path<String>,
 ) -> ApiResult<Json<PublishJobResponse>> {
     require_enabled(&state)?;
-    let user_id = authenticated_cli_user_id(&state, &headers).await?;
+    let user_id = authenticated_principal(&state, &headers, ApiScope::PublishWrite)
+        .await?
+        .user_id;
     let job = load_owned_job(&state, &user_id, &job_id).await?;
     if job.state == "queued" {
         return Ok(Json(job_response(&job)));
@@ -555,25 +565,6 @@ async fn queue_completed_attempt(
     }
     let _ = cleanup_object(state, &job.upload_object_key).await;
     load_owned_job(state, user_id, &job.id).await
-}
-
-async fn authenticated_cli_user_id(state: &AppState, headers: &HeaderMap) -> ApiResult<String> {
-    let token = bearer_token(headers)?;
-    let now = unix_timestamp()?;
-    sqlx::query_scalar(
-        "SELECT cli_sessions.user_id
-         FROM cli_access_tokens
-         JOIN cli_sessions ON cli_sessions.id = cli_access_tokens.session_id
-         WHERE cli_access_tokens.token_hash = $1 AND cli_access_tokens.expires_at > $2
-           AND cli_sessions.revoked_at IS NULL AND cli_sessions.expires_at > $3",
-    )
-    .bind(llm_notary_core::sha256_hex(token.as_bytes()))
-    .bind(now)
-    .bind(now)
-    .fetch_optional(&state.database)
-    .await
-    .map_err(database_error)?
-    .ok_or_else(ApiError::unauthorized)
 }
 
 async fn load_job_by_idempotency(

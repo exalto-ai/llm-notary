@@ -807,7 +807,7 @@ function PublishingView({ api, fixture, navigate }: { api: LocalApi; fixture: bo
           : auth.error
             ? <QueryError error={auth.error} title="Account connection is unavailable" />
             : auth.data?.signed_in
-              ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.device_name}</Text><StatusLabel state="ready" /></>
+              ? <><Title order={2}>{auth.data.github_login}</Title><Text>{auth.data.credential_name ?? auth.data.device_name}</Text>{auth.data.credential_kind === 'api_key' && <Text className="eyebrow">API key</Text>}<StatusLabel state="ready" /></>
               : <>
                 <Title order={2}>Not authorized</Title>
                 <Text>{fixture ? 'Use the simulated approval below to test the account connection.' : 'Connect an account for hosted tier access and publication, then approve this local service in your browser.'}</Text>

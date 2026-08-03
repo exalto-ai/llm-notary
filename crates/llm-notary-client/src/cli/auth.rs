@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    env, fs,
     path::{Path, PathBuf},
     process::Command,
     sync::OnceLock,
@@ -18,6 +18,10 @@ use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin, http_client_builder, s
 
 const KEYCHAIN_SERVICE: &str = "llm-notary";
 const KEYCHAIN_ACCOUNT: &str = "publish-refresh-token";
+const API_KEY_ENV: &str = "LLM_NOTARY_API_KEY";
+const API_KEY_FILE_ENV: &str = "LLM_NOTARY_API_KEY_FILE";
+const API_ORIGIN_ENV: &str = "LLM_NOTARY_API_ORIGIN";
+const API_KEY_VERSION_PREFIX: &str = "llmn_v1_";
 pub(crate) const DEFAULT_DEVICE_NAME: &str = "llm-notary cli";
 static CREDENTIAL_REFRESH: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
@@ -66,6 +70,8 @@ pub(crate) struct AccountConnectionStatus {
     pub(crate) signed_in: bool,
     pub(crate) github_login: Option<String>,
     pub(crate) device_name: Option<String>,
+    pub(crate) credential_kind: Option<String>,
+    pub(crate) credential_name: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -90,7 +96,8 @@ struct RefreshResponse {
 #[derive(Deserialize)]
 struct WhoamiResponse {
     user: CliUser,
-    session: CliSession,
+    credential: CliCredential,
+    session: Option<CliSession>,
 }
 
 #[derive(Deserialize)]
@@ -103,6 +110,12 @@ struct CliSession {
     device_name: String,
 }
 
+#[derive(Deserialize)]
+struct CliCredential {
+    kind: String,
+    name: String,
+}
+
 #[derive(Serialize, Deserialize)]
 struct FileCredentials {
     api_origin: ApiOrigin,
@@ -112,6 +125,12 @@ struct FileCredentials {
 pub(crate) struct AuthenticatedApi {
     pub(crate) origin: ApiOrigin,
     pub(crate) access_token: String,
+}
+
+enum CredentialConfiguration {
+    Anonymous { origin: ApiOrigin },
+    ApiKey(AuthenticatedApi),
+    DeviceSession { origin: ApiOrigin },
 }
 
 #[derive(Serialize)]
@@ -155,6 +174,7 @@ pub(crate) enum PublicationAuthenticationError {
 }
 
 pub async fn login(args: LoginArgs) -> Result<()> {
+    ensure_browser_auth_available()?;
     let pending = start_authorization(&args.api, &args.device_name).await?;
     println!("Open this URL in a browser and approve the request:");
     println!("{}", pending.verification_uri_complete);
@@ -185,6 +205,7 @@ pub(crate) async fn start_authorization(
     api: &str,
     device_name: &str,
 ) -> Result<PendingAuthorization> {
+    ensure_browser_auth_available()?;
     let api_origin = ApiOrigin::parse(api)?;
     let client = http_client_builder()
         .build()
@@ -260,8 +281,14 @@ pub(crate) async fn logout_for_service() -> Result<()> {
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await;
-    if !credentials_path()?.exists() {
-        return Ok(());
+    match credential_configuration()? {
+        CredentialConfiguration::ApiKey(_) => {
+            bail!(
+                "browser-driven logout is unavailable in API-key mode; revoke the key in the hosted dashboard"
+            )
+        }
+        CredentialConfiguration::Anonymous { .. } => return Ok(()),
+        CredentialConfiguration::DeviceSession { .. } => {}
     }
     let credentials = load_credentials()?;
     let client = http_client_builder()
@@ -287,22 +314,28 @@ pub(crate) async fn logout_for_service() -> Result<()> {
 pub async fn whoami() -> Result<()> {
     let status = account_connection_status().await?;
     println!(
-        "{} ({})",
+        "{} ({}: {})",
         status.github_login.unwrap_or_default(),
-        status.device_name.unwrap_or_default()
+        status.credential_kind.unwrap_or_default(),
+        status.credential_name.unwrap_or_default()
     );
     Ok(())
 }
 
 pub(crate) async fn account_connection_status() -> Result<AccountConnectionStatus> {
-    if !credentials_path()?.exists() {
-        return Ok(AccountConnectionStatus {
-            signed_in: false,
-            github_login: None,
-            device_name: None,
-        });
-    }
-    let authenticated = authenticate().await?;
+    let authenticated = match credential_configuration()? {
+        CredentialConfiguration::Anonymous { .. } => {
+            return Ok(AccountConnectionStatus {
+                signed_in: false,
+                github_login: None,
+                device_name: None,
+                credential_kind: None,
+                credential_name: None,
+            });
+        }
+        CredentialConfiguration::ApiKey(authenticated) => authenticated,
+        CredentialConfiguration::DeviceSession { .. } => authenticate_device_session().await?,
+    };
     let response = http_client_builder()
         .build()
         .context("building API client")?
@@ -319,11 +352,29 @@ pub(crate) async fn account_connection_status() -> Result<AccountConnectionStatu
     Ok(AccountConnectionStatus {
         signed_in: true,
         github_login: Some(response.user.github_login),
-        device_name: Some(response.session.device_name),
+        device_name: response.session.map(|session| session.device_name),
+        credential_kind: Some(response.credential.kind),
+        credential_name: Some(response.credential.name),
     })
 }
 
 pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
+    authenticate_configuration(credential_configuration()?).await
+}
+
+async fn authenticate_configuration(
+    configuration: CredentialConfiguration,
+) -> Result<AuthenticatedApi> {
+    match configuration {
+        CredentialConfiguration::Anonymous { .. } => {
+            bail!("an LLM Notary account connection is required")
+        }
+        CredentialConfiguration::ApiKey(authenticated) => Ok(authenticated),
+        CredentialConfiguration::DeviceSession { .. } => authenticate_device_session().await,
+    }
+}
+
+async fn authenticate_device_session() -> Result<AuthenticatedApi> {
     let _refresh = CREDENTIAL_REFRESH
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -360,17 +411,18 @@ async fn issue_admission(
     record_digest: Option<&str>,
     requested_allowance_bytes: Option<usize>,
 ) -> Result<AdmissionTicket> {
-    let authenticated = if credentials_path()?.exists() {
-        Some(authenticate().await.context(
-            "the connected LLM Notary account could not be refreshed; reconnect it or explicitly sign out to use public access",
-        )?)
-    } else {
-        None
+    let (origin, authenticated) = match credential_configuration()? {
+        CredentialConfiguration::Anonymous { origin } => (origin, None),
+        CredentialConfiguration::ApiKey(authenticated) => {
+            (authenticated.origin.clone(), Some(authenticated))
+        }
+        CredentialConfiguration::DeviceSession { .. } => {
+            let authenticated = authenticate_device_session().await.context(
+                "the connected LLM Notary account could not be refreshed; reconnect it or explicitly sign out to use public access",
+            )?;
+            (authenticated.origin.clone(), Some(authenticated))
+        }
     };
-    let origin = authenticated
-        .as_ref()
-        .map(|authenticated| authenticated.origin.clone())
-        .unwrap_or_else(ApiOrigin::default_public);
     let client = http_client_builder()
         .build()
         .context("building admission API client")?;
@@ -412,6 +464,13 @@ impl AdmissionResponse {
 
 pub(crate) async fn authenticate_for_publication_status()
 -> std::result::Result<AuthenticatedApi, PublicationAuthenticationError> {
+    match credential_configuration().map_err(|_| PublicationAuthenticationError::Unavailable)? {
+        CredentialConfiguration::Anonymous { .. } => {
+            return Err(PublicationAuthenticationError::Required);
+        }
+        CredentialConfiguration::ApiKey(authenticated) => return Ok(authenticated),
+        CredentialConfiguration::DeviceSession { .. } => {}
+    }
     let _refresh = CREDENTIAL_REFRESH
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
@@ -425,6 +484,136 @@ pub(crate) async fn authenticate_for_publication_status()
         origin: credentials.api_origin,
         access_token,
     })
+}
+
+pub(crate) fn validate_credential_configuration() -> Result<()> {
+    let _ = credential_configuration()?;
+    Ok(())
+}
+
+pub(crate) fn configured_api_origin() -> Result<ApiOrigin> {
+    match credential_configuration()? {
+        CredentialConfiguration::Anonymous { origin }
+        | CredentialConfiguration::DeviceSession { origin } => Ok(origin),
+        CredentialConfiguration::ApiKey(authenticated) => Ok(authenticated.origin),
+    }
+}
+
+pub(crate) fn api_key_mode_active() -> Result<bool> {
+    Ok(matches!(
+        credential_configuration()?,
+        CredentialConfiguration::ApiKey(_)
+    ))
+}
+
+fn ensure_browser_auth_available() -> Result<()> {
+    if api_key_mode_active()? {
+        bail!(
+            "browser-driven login is unavailable in API-key mode; revoke API keys in the hosted dashboard"
+        )
+    }
+    Ok(())
+}
+
+fn credential_configuration() -> Result<CredentialConfiguration> {
+    let direct = env::var_os(API_KEY_ENV);
+    let file = env::var_os(API_KEY_FILE_ENV);
+    let stored = credentials_path()?.exists();
+    validate_source_combination(direct.is_some(), file.is_some(), stored)?;
+
+    let origin = match env::var(API_ORIGIN_ENV) {
+        Ok(value) => ApiOrigin::parse(&value).context("validating LLM_NOTARY_API_ORIGIN")?,
+        Err(env::VarError::NotPresent) => ApiOrigin::default_public(),
+        Err(env::VarError::NotUnicode(_)) => bail!("LLM_NOTARY_API_ORIGIN must be UTF-8"),
+    };
+    let key = match (direct, file) {
+        (Some(value), None) => Some(
+            value
+                .into_string()
+                .map_err(|_| anyhow!("LLM_NOTARY_API_KEY must be UTF-8"))?,
+        ),
+        (None, Some(path)) => Some(read_api_key_file(Path::new(&path))?),
+        (None, None) => None,
+        (Some(_), Some(_)) => unreachable!("source validation rejects two API-key sources"),
+    };
+    if let Some(access_token) = key {
+        validate_api_key_shape(&access_token)?;
+        return Ok(CredentialConfiguration::ApiKey(AuthenticatedApi {
+            origin,
+            access_token,
+        }));
+    }
+    if stored {
+        Ok(CredentialConfiguration::DeviceSession {
+            origin: load_stored_api_origin()?,
+        })
+    } else {
+        Ok(CredentialConfiguration::Anonymous { origin })
+    }
+}
+
+fn load_stored_api_origin() -> Result<ApiOrigin> {
+    let path = credentials_path()?;
+    let data = fs::read(&path).with_context(|| format!("read {}", path.display()))?;
+    let credentials: FileCredentials =
+        serde_json::from_slice(&data).context("parse CLI credentials")?;
+    Ok(credentials.api_origin)
+}
+
+fn validate_source_combination(direct: bool, file: bool, stored: bool) -> Result<()> {
+    if direct && file {
+        bail!("LLM_NOTARY_API_KEY and LLM_NOTARY_API_KEY_FILE are mutually exclusive")
+    }
+    if (direct || file) && stored {
+        bail!(
+            "an explicit API key and the stored browser-approved device session are mutually exclusive; remove one credential source"
+        )
+    }
+    Ok(())
+}
+
+fn read_api_key_file(path: &Path) -> Result<String> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("reading API key file {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!("API key path {} is not a regular file", path.display())
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            bail!(
+                "API key file {} must not be readable by group or others",
+                path.display()
+            )
+        }
+    }
+    if metadata.len() > 1024 {
+        bail!("API key file {} is unexpectedly large", path.display())
+    }
+    let value = fs::read_to_string(path)
+        .with_context(|| format!("reading API key file {}", path.display()))?;
+    Ok(value.trim_end_matches(['\r', '\n']).to_owned())
+}
+
+fn validate_api_key_shape(value: &str) -> Result<()> {
+    let Some(value) = value.strip_prefix(API_KEY_VERSION_PREFIX) else {
+        bail!("LLM Notary API key has an unsupported format")
+    };
+    let Some((id, secret)) = value.split_once('_') else {
+        bail!("LLM Notary API key has an unsupported format")
+    };
+    if !is_lower_hex(id, 32) || !is_lower_hex(secret, 64) {
+        bail!("LLM Notary API key has an unsupported format")
+    }
+    Ok(())
+}
+
+fn is_lower_hex(value: &str, len: usize) -> bool {
+    value.len() == len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
 async fn refresh(credentials: &FileCredentials) -> Result<(String, String)> {
@@ -771,6 +960,86 @@ mod tests {
         );
         assert!(ApiOrigin::parse("http://example.com").is_err());
         assert!(ApiOrigin::parse("http://localhost:3000").is_ok());
+    }
+
+    #[test]
+    fn explicit_credential_sources_cannot_be_ambiguous() {
+        assert!(validate_source_combination(false, false, false).is_ok());
+        assert!(validate_source_combination(false, false, true).is_ok());
+        assert!(validate_source_combination(true, false, false).is_ok());
+        assert!(validate_source_combination(false, true, false).is_ok());
+        assert!(validate_source_combination(true, true, false).is_err());
+        assert!(validate_source_combination(true, false, true).is_err());
+        assert!(validate_source_combination(false, true, true).is_err());
+    }
+
+    #[test]
+    fn validates_versioned_api_keys_without_echoing_them() {
+        let key = format!(
+            "{API_KEY_VERSION_PREFIX}{}_{}",
+            "a".repeat(32),
+            "b".repeat(64)
+        );
+        assert!(validate_api_key_shape(&key).is_ok());
+        assert!(validate_api_key_shape("not-a-key").is_err());
+        assert!(validate_api_key_shape(&format!("{key}\n")).is_err());
+    }
+
+    #[test]
+    fn api_key_files_allow_only_line_ending_trimming() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("api-key");
+        let key = format!(
+            "{API_KEY_VERSION_PREFIX}{}_{}",
+            "a".repeat(32),
+            "b".repeat(64)
+        );
+        fs::write(&path, format!("{key}\r\n")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        assert_eq!(read_api_key_file(&path).unwrap(), key);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn api_key_files_must_be_private() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("api-key");
+        fs::write(
+            &path,
+            format!(
+                "{API_KEY_VERSION_PREFIX}{}_{}",
+                "a".repeat(32),
+                "b".repeat(64)
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+
+        assert!(read_api_key_file(&path).is_err());
+    }
+
+    #[tokio::test]
+    async fn api_key_authentication_returns_the_stable_key_without_refreshing() {
+        let key = format!(
+            "{API_KEY_VERSION_PREFIX}{}_{}",
+            "a".repeat(32),
+            "b".repeat(64)
+        );
+        let authenticated =
+            authenticate_configuration(CredentialConfiguration::ApiKey(AuthenticatedApi {
+                origin: ApiOrigin::parse("http://127.0.0.1:1").unwrap(),
+                access_token: key.clone(),
+            }))
+            .await
+            .unwrap();
+
+        assert_eq!(authenticated.access_token, key);
     }
 
     #[tokio::test]
