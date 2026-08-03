@@ -52,8 +52,9 @@ services:
       LLM_NOTARY_S3_REGION: ${LLM_NOTARY_S3_REGION:?Set LLM_NOTARY_S3_REGION to the Space region}
       LLM_NOTARY_S3_PREFIX: ${LLM_NOTARY_S3_PREFIX:-llm-notary}
       LLM_NOTARY_S3_FORCE_PATH_STYLE: ${LLM_NOTARY_S3_FORCE_PATH_STYLE:-true}
-      LLM_NOTARY_INTAKE_MAX_BYTES: ${LLM_NOTARY_INTAKE_MAX_BYTES:-134217728}
+      LLM_NOTARY_INTAKE_MAX_BYTES: ${LLM_NOTARY_INTAKE_MAX_BYTES:-134299648}
       LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS: ${LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS:-900}
+      # Retained through the expand release so the previous API image remains rollback-safe.
       LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE: /run/secrets/platform_signing_key
       LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE: /run/secrets/admission_service_token
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}

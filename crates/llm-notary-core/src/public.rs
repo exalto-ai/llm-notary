@@ -1,213 +1,17 @@
-//! The shareable trace and platform-stamp contract.
+//! The deterministic canonical trace contract.
 //!
-//! Unlike a private TLSNotary presentation, a platform stamp is a signed
-//! admission statement.  It is deliberately small enough to verify from the
-//! two public files alone.
+//! A bare trace is a normalized view, not portable evidence. Independent
+//! verification requires the corresponding `.llmtrace` package.
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::collections::BTreeMap;
 
 use anyhow::{Context, Result, anyhow, ensure};
-use k256::ecdsa::{
-    Signature, SigningKey, VerifyingKey,
-    signature::hazmat::{PrehashSigner, PrehashVerifier},
-};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
-
-use crate::{CAPTURE_FORMAT, sha256_hex};
 
 pub const PUBLIC_TRACE_FORMAT: &str = "llm-notary/otlp-trace/v1";
-pub const PLATFORM_STAMP_FORMAT: &str = "llm-notary/platform-stamp/v1";
 pub const NORMALIZER_VERSION: &str = "llm-notary/normalizer/v1";
 pub const OTEL_SEMCONV_VERSION: &str = "1.37.0";
 pub const CANONICALIZATION_ID: &str = "llm-notary/json-lexicographic-v1";
-pub const PLATFORM_SIGNATURE_ALGORITHM: &str = "secp256k1-ecdsa-sha256";
-pub const TLSNOTARY_PROVENANCE: &str = "tlsnotary-presentation/v1";
-
-/// The provenance facts that the admission service derived from its private
-/// source-capture check. They are a platform claim, not TLSNotary evidence.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderProvenance {
-    pub evidence: String,
-    pub host: String,
-    pub name: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct StampSignature {
-    pub algorithm: String,
-    pub value: String,
-}
-
-/// The complete signed public admission statement.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct PublicStamp {
-    pub canonicalization: String,
-    pub capture_format: String,
-    pub format: String,
-    pub issued_at_unix_ms: u64,
-    pub issuer: String,
-    pub key_id: String,
-    pub normalizer_version: String,
-    pub otel_semconv_version: String,
-    pub provider: ProviderProvenance,
-    pub signature: StampSignature,
-    pub trace_sha256: String,
-}
-
-#[derive(Serialize)]
-struct StampPayload<'a> {
-    canonicalization: &'a str,
-    capture_format: &'a str,
-    format: &'a str,
-    issued_at_unix_ms: u64,
-    issuer: &'a str,
-    key_id: &'a str,
-    normalizer_version: &'a str,
-    otel_semconv_version: &'a str,
-    provider: &'a ProviderProvenance,
-    trace_sha256: &'a str,
-}
-
-impl PublicStamp {
-    fn payload(&self) -> StampPayload<'_> {
-        StampPayload {
-            canonicalization: &self.canonicalization,
-            capture_format: &self.capture_format,
-            format: &self.format,
-            issued_at_unix_ms: self.issued_at_unix_ms,
-            issuer: &self.issuer,
-            key_id: &self.key_id,
-            normalizer_version: &self.normalizer_version,
-            otel_semconv_version: &self.otel_semconv_version,
-            provider: &self.provider,
-            trace_sha256: &self.trace_sha256,
-        }
-    }
-
-    fn signing_bytes(&self) -> Result<Vec<u8>> {
-        canonical_json(&serde_json::to_value(self.payload())?)
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VerifiedPublicTrace {
-    pub stamp: PublicStamp,
-    pub trace_sha256: String,
-}
-
-/// Create a platform stamp after the caller has admitted the trace against a
-/// private source capture. The signing key belongs only to that service.
-pub fn stamp_trace(
-    trace: &[u8],
-    issuer: String,
-    issued_at_unix_ms: u64,
-    provider: ProviderProvenance,
-    signing_key: &SigningKey,
-) -> Result<PublicStamp> {
-    let metadata = validate_canonical_trace(trace)?;
-    validate_provenance(&provider)?;
-    ensure!(
-        metadata.provider == provider.name,
-        "provider provenance does not match the trace"
-    );
-    ensure!(!issuer.trim().is_empty(), "stamp issuer must not be empty");
-    ensure!(issued_at_unix_ms != 0, "stamp issued time must not be zero");
-
-    let mut stamp = PublicStamp {
-        canonicalization: CANONICALIZATION_ID.to_owned(),
-        capture_format: CAPTURE_FORMAT.to_owned(),
-        format: PLATFORM_STAMP_FORMAT.to_owned(),
-        issued_at_unix_ms,
-        issuer,
-        key_id: platform_key_id(signing_key.verifying_key()),
-        normalizer_version: metadata.normalizer_version,
-        otel_semconv_version: metadata.otel_semconv_version,
-        provider,
-        signature: StampSignature {
-            algorithm: PLATFORM_SIGNATURE_ALGORITHM.to_owned(),
-            value: String::new(),
-        },
-        trace_sha256: sha256_hex(trace),
-    };
-    let digest = Sha256::digest(stamp.signing_bytes()?);
-    let signature: Signature = signing_key
-        .sign_prehash(&digest)
-        .map_err(|error| anyhow!("signing platform stamp: {error}"))?;
-    stamp.signature.value = hex::encode(signature.to_bytes());
-    Ok(stamp)
-}
-
-/// Verify a shareable artifact pair without a private capture or network.
-pub fn verify_public_trace(
-    trace_path: &Path,
-    stamp_path: &Path,
-    trusted_platform_key: &[u8],
-) -> Result<VerifiedPublicTrace> {
-    let trace = fs::read(trace_path)
-        .with_context(|| format!("reading public trace {}", trace_path.display()))?;
-    let stamp_bytes = fs::read(stamp_path)
-        .with_context(|| format!("reading platform stamp {}", stamp_path.display()))?;
-    verify_public_trace_bytes(&trace, &stamp_bytes, trusted_platform_key)
-}
-
-/// Byte-oriented variant used by the server and deterministic fixtures.
-pub fn verify_public_trace_bytes(
-    trace: &[u8],
-    stamp_bytes: &[u8],
-    trusted_platform_key: &[u8],
-) -> Result<VerifiedPublicTrace> {
-    let metadata = validate_canonical_trace(trace)?;
-    let stamp: PublicStamp =
-        serde_json::from_slice(stamp_bytes).context("parsing platform stamp")?;
-    validate_stamp(&stamp, &metadata)?;
-
-    let trace_sha256 = sha256_hex(trace);
-    ensure!(
-        stamp.trace_sha256 == trace_sha256,
-        "trace SHA-256 does not match the platform stamp"
-    );
-    let trusted_platform_key = VerifyingKey::from_sec1_bytes(trusted_platform_key)
-        .context("trusted platform key is not a valid secp256k1 SEC1 key")?;
-    ensure!(
-        stamp.key_id == platform_key_id(&trusted_platform_key),
-        "platform stamp key ID does not match the trusted platform key"
-    );
-    let signature_bytes = hex::decode(&stamp.signature.value)
-        .context("platform stamp signature is not hexadecimal")?;
-    let signature = Signature::from_slice(&signature_bytes)
-        .context("platform stamp signature is not a compact secp256k1 signature")?;
-    ensure!(
-        signature.normalize_s().is_none(),
-        "platform stamp signature is not low-S"
-    );
-    let digest = Sha256::digest(stamp.signing_bytes()?);
-    trusted_platform_key
-        .verify_prehash(&digest, &signature)
-        .map_err(|_| anyhow!("platform stamp signature is invalid"))?;
-
-    Ok(VerifiedPublicTrace {
-        stamp,
-        trace_sha256,
-    })
-}
-
-pub fn platform_key_id(key: &VerifyingKey) -> String {
-    format!(
-        "sha256:{}",
-        sha256_hex(key.to_encoded_point(true).as_bytes())
-    )
-}
-
-struct TraceMetadata {
-    normalizer_version: String,
-    otel_semconv_version: String,
-    provider: String,
-}
 
 /// The public trace must already use the contract's deterministic byte form.
 /// Objects are sorted by UTF-8 key bytes, arrays preserve order, and scalar
@@ -223,10 +27,10 @@ pub fn canonical_trace_bytes(value: &Value) -> Result<Vec<u8>> {
 /// Check the canonical bytes and the supported provider-inference OTLP shape.
 /// This is useful for unsigned local previews before platform admission.
 pub fn validate_public_trace_bytes(bytes: &[u8]) -> Result<()> {
-    validate_canonical_trace(bytes).map(|_| ())
+    validate_canonical_trace(bytes)
 }
 
-fn validate_canonical_trace(bytes: &[u8]) -> Result<TraceMetadata> {
+fn validate_canonical_trace(bytes: &[u8]) -> Result<()> {
     let value: Value = serde_json::from_slice(bytes).context("parsing public trace JSON")?;
     let canonical = canonical_trace_bytes(&value)?;
     ensure!(
@@ -276,7 +80,7 @@ fn write_canonical_json(value: &Value, output: &mut Vec<u8>) -> Result<()> {
     Ok(())
 }
 
-fn validate_trace_shape(value: &Value) -> Result<TraceMetadata> {
+fn validate_trace_shape(value: &Value) -> Result<()> {
     let root = object_with_fields(value, &["resourceSpans"], "trace")?;
     let resource_spans = array(root["resourceSpans"].clone(), "trace.resourceSpans")?;
     ensure!(
@@ -444,75 +248,7 @@ fn validate_trace_shape(value: &Value) -> Result<TraceMetadata> {
             provider = Some(span_provider);
         }
     }
-    Ok(TraceMetadata {
-        normalizer_version,
-        otel_semconv_version,
-        provider: provider.expect("non-empty spans have a provider"),
-    })
-}
-
-fn validate_stamp(stamp: &PublicStamp, trace: &TraceMetadata) -> Result<()> {
-    ensure!(
-        stamp.format == PLATFORM_STAMP_FORMAT,
-        "platform stamp format is unsupported"
-    );
-    ensure!(
-        stamp.capture_format == CAPTURE_FORMAT,
-        "platform stamp capture format is unsupported"
-    );
-    ensure!(
-        stamp.canonicalization == CANONICALIZATION_ID,
-        "platform stamp canonicalization is unsupported"
-    );
-    ensure!(
-        stamp.normalizer_version == trace.normalizer_version,
-        "platform stamp normalizer version does not match the trace"
-    );
-    ensure!(
-        stamp.otel_semconv_version == trace.otel_semconv_version,
-        "platform stamp semantic-convention version does not match the trace"
-    );
-    ensure!(
-        stamp.signature.algorithm == PLATFORM_SIGNATURE_ALGORITHM,
-        "platform stamp signature algorithm is unsupported"
-    );
-    ensure!(
-        !stamp.issuer.trim().is_empty(),
-        "platform stamp issuer must not be empty"
-    );
-    ensure!(
-        stamp.issued_at_unix_ms != 0,
-        "platform stamp issued time must not be zero"
-    );
-    validate_provenance(&stamp.provider)?;
-    ensure!(
-        stamp.provider.name == trace.provider,
-        "platform stamp provider does not match the trace"
-    );
-    ensure!(
-        stamp.trace_sha256.len() == 64
-            && stamp
-                .trace_sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()),
-        "platform stamp trace SHA-256 is invalid"
-    );
-    Ok(())
-}
-
-fn validate_provenance(provenance: &ProviderProvenance) -> Result<()> {
-    ensure!(
-        provenance.evidence == TLSNOTARY_PROVENANCE,
-        "platform stamp provenance evidence is unsupported"
-    );
-    ensure!(
-        !provenance.name.trim().is_empty(),
-        "platform stamp provider name must not be empty"
-    );
-    ensure!(
-        !provenance.host.trim().is_empty() && !provenance.host.chars().any(char::is_whitespace),
-        "platform stamp provider host is invalid"
-    );
+    let _ = (normalizer_version, otel_semconv_version, provider);
     Ok(())
 }
 
@@ -628,23 +364,6 @@ mod tests {
     use super::*;
 
     const FIXTURE_TRACE: &[u8] = include_bytes!("../tests/fixtures/public-trace/trace.otlp.json");
-    const FIXTURE_STAMP: &[u8] = include_bytes!("../tests/fixtures/public-trace/stamp.json");
-    const TAMPERED_TRACE: &[u8] =
-        include_bytes!("../tests/fixtures/public-trace/trace.tampered.otlp.json");
-    const TAMPERED_STAMP: &[u8] =
-        include_bytes!("../tests/fixtures/public-trace/stamp.tampered.json");
-    const PUBLIC_KEY: &str = "02989c0b76cb563971fdc9bef31ec06c3560f3249d6ee9e5d83c57625596e05f6f";
-
-    #[test]
-    fn valid_public_fixture_verifies_and_tampering_fails() {
-        let public_key = hex::decode(PUBLIC_KEY).expect("fixture public key is hexadecimal");
-        let verified = verify_public_trace_bytes(FIXTURE_TRACE, FIXTURE_STAMP, &public_key)
-            .expect("valid fixture must verify");
-        assert_eq!(verified.stamp.normalizer_version, NORMALIZER_VERSION);
-        assert!(verify_public_trace_bytes(TAMPERED_TRACE, FIXTURE_STAMP, &public_key).is_err());
-        assert!(verify_public_trace_bytes(FIXTURE_TRACE, TAMPERED_STAMP, &public_key).is_err());
-    }
-
     #[test]
     fn trace_requires_canonical_bytes_and_explicit_versions() {
         let mut noncanonical = FIXTURE_TRACE.to_vec();
@@ -656,25 +375,5 @@ mod tests {
             .expect("resource attributes")
             .retain(|attribute| attribute["key"] != "llmnotary.normalizer.version");
         assert!(validate_trace_shape(&without_version).is_err());
-    }
-
-    #[test]
-    fn stamp_trace_binds_provider_and_uses_contract_versions() {
-        let signing_key = SigningKey::from_slice(&[7; 32]).expect("test signing key");
-        let stamp = stamp_trace(
-            FIXTURE_TRACE,
-            "test issuer".to_owned(),
-            1,
-            ProviderProvenance {
-                evidence: TLSNOTARY_PROVENANCE.to_owned(),
-                host: "api.openai.com".to_owned(),
-                name: "openai".to_owned(),
-            },
-            &signing_key,
-        )
-        .expect("stamp trace");
-        assert_eq!(stamp.format, PLATFORM_STAMP_FORMAT);
-        assert_eq!(stamp.normalizer_version, NORMALIZER_VERSION);
-        assert_eq!(stamp.otel_semconv_version, OTEL_SEMCONV_VERSION);
     }
 }

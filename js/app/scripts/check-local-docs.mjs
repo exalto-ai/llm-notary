@@ -32,9 +32,7 @@ const expectedOperations = {
   '/v1/publication/auth': { get: ['200', '401'], post: ['202', '401'], delete: ['204', '401'] },
   '/v1/publication/auth/{request_id}': { get: ['200', '401', '404'] },
   '/v1/captures/{capture_id}/publications': { post: ['202', '401', '404'] },
-  '/v1/publications/{job_id}': { get: ['200', '401', '404', '409', '503'] },
-  '/v1/public-traces/{publication_id}': { get: ['200', '400', '401', '404'] },
-  '/v1/public-traces/{publication_id}/verify': { post: ['200', '400', '401', '422'] }
+  '/v1/publications/{job_id}': { get: ['200', '401', '404', '409', '503'] }
 };
 
 const actualPaths = Object.keys(openapi.paths).sort();
@@ -70,9 +68,7 @@ const expectedParameters = {
   'GET /v1/captures': ['capture_state', 'finalization_state', 'limit', 'model', 'offset', 'provider', 'query'],
   'GET /v1/operations': ['capture_id', 'kind', 'limit', 'state'],
   'GET /v1/events': ['capture_id', 'created_after_unix_ms', 'cursor', 'event_type', 'limit', 'operation_id', 'severity'],
-  'GET /v1/publications/{job_id}': ['job_id'],
-  'GET /v1/public-traces/{publication_id}': ['api_origin', 'publication_id'],
-  'POST /v1/public-traces/{publication_id}/verify': ['api_origin', 'publication_id']
+  'GET /v1/publications/{job_id}': ['job_id']
 };
 for (const [operation, expected] of Object.entries(expectedParameters)) {
   const [method, path] = operation.split(' ');

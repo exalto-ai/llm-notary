@@ -25,6 +25,7 @@ kill_timeout = "30s"
   # Keep the existing namespace when moving published state from Spaces.
   LLM_NOTARY_S3_PREFIX = "llm-notary"
   LLM_NOTARY_S3_FORCE_PATH_STYLE = "true"
+  # Kept for rollback compatibility until the contract migration removes it.
   LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE = "/run/secrets/platform_signing_key"
   LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE = "/run/secrets/admission_service_token"
   # Keep the per-Machine pool small. With both replicas active this is ten

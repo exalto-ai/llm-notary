@@ -848,7 +848,6 @@ function PublishingView({ api, fixture, navigate }: { api: LocalApi; fixture: bo
                     {fixture && publicationState === 'admitted'
                       ? <Button variant="outline" onClick={() => navigate({ view: 'traces', id: submitted.capture_id })}>Inspect admitted fixture</Button>
                       : publication.data?.trace_url && <Button component="a" href={publication.data.trace_url} target="_blank" rel="noreferrer" variant="outline">Open public trace</Button>}
-                    {!fixture && publication.data?.stamp_url && <Button component="a" href={publication.data.stamp_url} target="_blank" rel="noreferrer" variant="outline">Open admission receipt</Button>}
                   </Group>
                 </div>}
               </>

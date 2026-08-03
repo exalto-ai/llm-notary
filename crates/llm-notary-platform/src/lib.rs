@@ -38,10 +38,12 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 
 mod admission;
 mod config;
+mod hosted_verifier;
 mod intake;
 pub mod migrate;
 mod publish;
 mod service_admission;
+mod verify;
 
 pub use config::{
     AdmissionConfig, AuthConfig, DatabaseConfig, MetadataConfig, NotaryDirectoryConfig,
@@ -376,6 +378,7 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
         (name = "browser-auth", description = "GitHub-backed browser sessions"),
         (name = "cli-auth", description = "Local service authorization and CLI sessions"),
         (name = "notary-admission", description = "Hosted notary tickets and distributed leases"),
+        (name = "verification", description = "Anonymous, retention-free portable package verification"),
         (name = "publication", description = "Authenticated publication intake"),
         (name = "library", description = "Public admitted traces and metadata")
     )
@@ -448,12 +451,29 @@ fn hosted_router() -> OpenApiRouter<AppState> {
         .routes(routes!(cli_me))
         .merge(publish::router())
         .merge(admission::router())
+        .merge(verify::router())
         .merge(service_admission::router())
 }
 
 /// Returns the deterministic public hosted-platform contract.
 pub fn openapi_document() -> utoipa::openapi::OpenApi {
     hosted_router().into_openapi()
+}
+
+/// Runs the private, stdin/stdout verifier subprocess used to enforce a hard
+/// anonymous-verification timeout without retaining uploaded bytes.
+#[doc(hidden)]
+pub fn run_verification_worker() -> Result<()> {
+    hosted_verifier::run_worker()
+}
+
+/// Runs the isolated verifier with the vendored private certificate authority.
+/// This exists only behind `test-utils` for sanitized acceptance fixtures and
+/// is deliberately a separate binary from the production worker.
+#[cfg(feature = "test-utils")]
+#[doc(hidden)]
+pub fn run_verification_fixture_worker() -> Result<()> {
+    hosted_verifier::run_fixture_worker()
 }
 
 /// Runs the hosted LLM Notary platform API.
@@ -617,10 +637,7 @@ impl Drop for RequestActivity {
 
 impl AppState {
     async fn from_config(config: &PlatformConfig) -> Result<Self> {
-        let publish = publish::PublishService::from_config(
-            &config.storage,
-            config.auth.app_url.origin().ascii_serialization(),
-        )?;
+        let publish = publish::PublishService::from_config(&config.storage)?;
         publish.validate().await?;
         let database = PgPoolOptions::new()
             .max_connections(config.database.max_connections)
@@ -1594,10 +1611,7 @@ mod test_database {
         }
     }
 
-    /// Creates an isolated PostgreSQL 17 container and applies exactly the
-    /// production migration baseline. The container is removed when the
-    /// associated test state is dropped.
-    pub async fn fresh_database() -> TestDatabase {
+    pub(super) async fn blank_database() -> TestDatabase {
         let server = Arc::new(
             Postgres::default()
                 .with_tag("17.7-alpine")
@@ -1617,14 +1631,22 @@ mod test_database {
             .connect(&database_url)
             .await
             .expect("connect to isolated PostgreSQL test database");
-        sqlx::migrate!("../../migrations-postgres")
-            .run(&pool)
-            .await
-            .expect("apply PostgreSQL test migrations");
         TestDatabase {
             pool,
             _server: server,
         }
+    }
+
+    /// Creates an isolated PostgreSQL 17 container and applies exactly the
+    /// production migration baseline. The container is removed when the
+    /// associated test state is dropped.
+    pub async fn fresh_database() -> TestDatabase {
+        let database = blank_database().await;
+        sqlx::migrate!("../../migrations-postgres")
+            .run(&database.pool)
+            .await
+            .expect("apply PostgreSQL test migrations");
+        database
     }
 }
 
@@ -1660,10 +1682,8 @@ mod tests {
             "GET /api/me",
             "GET /api/me/publish-jobs",
             "GET /api/notary",
-            "GET /api/platform",
             "GET /api/public/collections/traces",
             "GET /api/public/traces/{trace_id}",
-            "GET /api/public/traces/{trace_id}/stamp.json",
             "GET /api/public/traces/{trace_id}/trace.otlp.json",
             "GET /api/publish/jobs/{job_id}",
             "GET /api/readyz",
@@ -1674,6 +1694,7 @@ mod tests {
             "POST /api/cli/logout",
             "POST /api/cli/token",
             "POST /api/public/traces/{trace_id}/events/download",
+            "POST /api/verify",
             "POST /api/publish/jobs",
             "POST /api/publish/jobs/{job_id}/complete",
             "POST /api/internal/notary/admissions/redeem",
@@ -1697,6 +1718,89 @@ mod tests {
         }
         assert_eq!(actual, expected);
         assert!(!paths.contains_key("/metrics"));
+        let upload_schema = &document["paths"]["/api/verify"]["post"]["requestBody"]["content"]
+            [crate::intake::ARCHIVE_CONTENT_TYPE]["schema"];
+        assert_eq!(
+            upload_schema["$ref"],
+            "#/components/schemas/TracePackageBody"
+        );
+        let upload_schema = &document["components"]["schemas"]["TracePackageBody"];
+        assert_eq!(upload_schema["type"], "string");
+        assert_eq!(upload_schema["format"], "binary");
+    }
+
+    #[tokio::test]
+    async fn migration_from_0004_preserves_legacy_stamp_rows() {
+        let database = super::test_database::blank_database().await;
+        for migration in [
+            include_str!("../../../migrations-postgres/0001_initial.sql"),
+            include_str!("../../../migrations-postgres/0002_library_card_facts.sql"),
+            include_str!("../../../migrations-postgres/0003_admitted_library_card_facts.sql"),
+            include_str!("../../../migrations-postgres/0004_service_admission.sql"),
+        ] {
+            sqlx::raw_sql(migration)
+                .execute(&database.pool)
+                .await
+                .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
+             VALUES ('legacy-user', 1, 'legacy', 1, 1)",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO publish_jobs (
+                 id, user_id, idempotency_key, state, archive_format,
+                 declared_size_bytes, declared_sha256, upload_object_key,
+                 intake_object_key, upload_expires_at, created_at, updated_at,
+                 actual_sha256, admitted_at, public_trace_object_key,
+                 public_trace_size_bytes, public_trace_sha256,
+                 public_stamp_object_key, public_stamp_size_bytes,
+                 public_stamp_sha256, library_provider, library_host,
+                 library_model, library_span_count, library_tool_use
+             ) VALUES (
+                 'legacy-job', 'legacy-user', 'legacy-idempotency', 'admitted', $1,
+                 1, $2, 'legacy-upload', 'legacy-intake', 1, 1, 1, $2, 2,
+                 'legacy-trace', 1, $3, 'legacy-stamp', 1, $4,
+                 'OpenAI', 'api.openai.com', 'gpt-test', 1, FALSE
+             )",
+        )
+        .bind(crate::intake::ARCHIVE_FORMAT)
+        .bind("a".repeat(64))
+        .bind("b".repeat(64))
+        .bind("c".repeat(64))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0005_prepare_stamp_removal.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let legacy: (Option<String>, Option<i64>, Option<String>) = sqlx::query_as(
+            "SELECT public_stamp_object_key, verified_at, source_package_sha256
+             FROM publish_jobs WHERE id = 'legacy-job'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(legacy.0.as_deref(), Some("legacy-stamp"));
+        assert_eq!(legacy.1, Some(2));
+        assert_eq!(legacy.2.as_deref(), Some("a".repeat(64).as_str()));
+        let queued_stamps: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM publication_object_cleanup WHERE artifact_kind = 'stamp'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            queued_stamps, 0,
+            "stamp deletion belongs to contract migration"
+        );
     }
 
     #[test]

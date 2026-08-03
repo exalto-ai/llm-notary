@@ -7,7 +7,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    io::{Cursor, Read, Write},
+    io::{Cursor, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -30,6 +30,12 @@ pub const PACKAGE_FILES: [&str; 5] = [
 ];
 pub const MAX_ARCHIVE_UNCOMPRESSED_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_ARCHIVE_MANIFEST_BYTES: u64 = 64 * 1024;
+const MAX_ZIP_CONTAINER_BYTES: u64 = 16 * 1024;
+const MAX_REWRITTEN_COMPARISON_BYTES: usize = MAX_ZIP_CONTAINER_BYTES as usize;
+/// Safe on-wire ceiling for the five Stored package entries, the bounded
+/// archive manifest, and deterministic ZIP headers/directories.
+pub const MAX_ARCHIVE_WIRE_BYTES: u64 =
+    MAX_ARCHIVE_UNCOMPRESSED_BYTES + MAX_ARCHIVE_MANIFEST_BYTES + MAX_ZIP_CONTAINER_BYTES;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -64,6 +70,10 @@ impl ValidatedTracePackageArchive {
             .get(name)
             .map(Vec::as_slice)
             .ok_or_else(|| anyhow!("trace package entry is not part of the v2 contract: {name}"))
+    }
+
+    pub(crate) fn into_files(self) -> BTreeMap<String, Vec<u8>> {
+        self.files
     }
 }
 
@@ -130,14 +140,32 @@ fn render_trace_package_archive(
     files: &BTreeMap<String, Vec<u8>>,
 ) -> Result<Vec<u8>> {
     let manifest_bytes = serde_json::to_vec(manifest).context("encoding archive manifest")?;
-    let cursor = Cursor::new(Vec::new());
-    let mut writer = ZipWriter::new(cursor);
+    let package_size = files.values().try_fold(0u64, |size, file| {
+        size.checked_add(file.len() as u64)
+            .ok_or_else(|| anyhow!("trace package size overflow"))
+    })?;
+    let capacity = archive_capacity(package_size, manifest_bytes.len() as u64)?;
+    let cursor = Cursor::new(Vec::with_capacity(capacity.try_into()?));
+    let cursor = write_trace_package_archive(&manifest_bytes, files, cursor)?;
+    let archive = cursor.into_inner();
+    if archive.len() as u64 > MAX_ARCHIVE_WIRE_BYTES {
+        bail!("trace package archive exceeds the on-wire size limit");
+    }
+    Ok(archive)
+}
+
+fn write_trace_package_archive<W: Write + Seek>(
+    manifest_bytes: &[u8],
+    files: &BTreeMap<String, Vec<u8>>,
+    output: W,
+) -> Result<W> {
+    let mut writer = ZipWriter::new(output);
     let options = deterministic_options();
     writer
         .start_file(ARCHIVE_MANIFEST_PATH, options)
         .context("starting archive manifest")?;
     writer
-        .write_all(&manifest_bytes)
+        .write_all(manifest_bytes)
         .context("writing archive manifest")?;
     for name in PACKAGE_FILES {
         writer
@@ -147,10 +175,21 @@ fn render_trace_package_archive(
             .write_all(files.get(name).expect("required package file was loaded"))
             .with_context(|| format!("writing archive entry {name}"))?;
     }
-    Ok(writer
-        .finish()
-        .context("finalizing trace package archive")?
-        .into_inner())
+    writer.finish().context("finalizing trace package archive")
+}
+
+fn archive_capacity(package_size: u64, manifest_size: u64) -> Result<u64> {
+    if package_size > MAX_ARCHIVE_UNCOMPRESSED_BYTES || manifest_size > MAX_ARCHIVE_MANIFEST_BYTES {
+        bail!("trace package archive exceeds the on-wire size limit");
+    }
+    let capacity = package_size
+        .checked_add(manifest_size)
+        .and_then(|size| size.checked_add(MAX_ZIP_CONTAINER_BYTES))
+        .ok_or_else(|| anyhow!("trace package size overflow"))?;
+    if capacity > MAX_ARCHIVE_WIRE_BYTES {
+        bail!("trace package archive exceeds the on-wire size limit");
+    }
+    Ok(capacity)
 }
 
 /// Validates a transport archive without writing any attacker-controlled path.
@@ -161,6 +200,12 @@ pub fn validate_trace_package_archive(bytes: &[u8]) -> Result<TracePackageArchiv
 /// Parses and validates all `.llmtrace` entries in memory without creating an
 /// attacker-controlled path.
 pub fn read_trace_package_archive(bytes: &[u8]) -> Result<ValidatedTracePackageArchive> {
+    if bytes.len() as u64 > MAX_ARCHIVE_WIRE_BYTES {
+        bail!("trace package archive exceeds the on-wire size limit");
+    }
+    if !bytes.starts_with(b"PK\x03\x04") {
+        bail!("trace package archive does not start at the canonical ZIP offset");
+    }
     read_validated_archive(bytes)
 }
 
@@ -346,8 +391,13 @@ fn read_validated_archive(bytes: &[u8]) -> Result<ValidatedTracePackageArchive> 
             .get("manifest.json")
             .expect("validated archive contains package manifest"),
     )?;
-    let canonical = render_trace_package_archive(&manifest, &entries)?;
-    if canonical != bytes {
+    let manifest_bytes = serde_json::to_vec(&manifest).context("encoding archive manifest")?;
+    let comparison = write_trace_package_archive(
+        &manifest_bytes,
+        &entries,
+        CanonicalComparisonWriter::new(bytes),
+    )?;
+    if !comparison.matches_expected() {
         bail!("archive ZIP container is not canonical");
     }
     entries.remove(ARCHIVE_MANIFEST_PATH);
@@ -355,6 +405,105 @@ fn read_validated_archive(bytes: &[u8]) -> Result<ValidatedTracePackageArchive> 
         manifest,
         files: entries,
     })
+}
+
+/// A seekable ZIP destination that compares every canonical write with the
+/// uploaded bytes. This preserves byte-for-byte validation without allocating
+/// a second near-limit archive beside the decoded entries.
+struct CanonicalComparisonWriter<'a> {
+    expected: &'a [u8],
+    position: u64,
+    max_written: u64,
+    structurally_valid: bool,
+    mismatches: BTreeSet<u64>,
+}
+
+impl<'a> CanonicalComparisonWriter<'a> {
+    fn new(expected: &'a [u8]) -> Self {
+        Self {
+            expected,
+            position: 0,
+            max_written: 0,
+            structurally_valid: true,
+            mismatches: BTreeSet::new(),
+        }
+    }
+
+    fn matches_expected(&self) -> bool {
+        self.structurally_valid
+            && self.mismatches.is_empty()
+            && self.max_written == self.expected.len() as u64
+    }
+}
+
+impl Write for CanonicalComparisonWriter<'_> {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        let start = usize::try_from(self.position).ok();
+        let end = self.position.checked_add(buffer.len() as u64);
+        if self.position > self.max_written {
+            self.structurally_valid = false;
+        }
+        match (start, end.and_then(|end| usize::try_from(end).ok())) {
+            (Some(start), Some(end)) => {
+                let Some(expected) = self.expected.get(start..end) else {
+                    self.structurally_valid = false;
+                    self.position = end as u64;
+                    self.max_written = self.max_written.max(self.position);
+                    return Ok(buffer.len());
+                };
+                if expected == buffer {
+                    let corrected = self
+                        .mismatches
+                        .range(self.position..self.position + buffer.len() as u64)
+                        .copied()
+                        .collect::<Vec<_>>();
+                    for position in corrected {
+                        self.mismatches.remove(&position);
+                    }
+                } else {
+                    for (offset, (actual, expected)) in buffer.iter().zip(expected).enumerate() {
+                        let position = self.position + offset as u64;
+                        if actual == expected {
+                            self.mismatches.remove(&position);
+                        } else {
+                            self.mismatches.insert(position);
+                            if self.mismatches.len() > MAX_REWRITTEN_COMPARISON_BYTES {
+                                // Canonical ZIP creation only rewrites bounded
+                                // local-header fields. A larger mismatch cannot
+                                // become canonical later and must not grow with
+                                // attacker-controlled archive size.
+                                self.structurally_valid = false;
+                                self.mismatches.clear();
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => self.structurally_valid = false,
+        }
+        self.position = end.unwrap_or(u64::MAX);
+        self.max_written = self.max_written.max(self.position);
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Seek for CanonicalComparisonWriter<'_> {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        let next = match position {
+            SeekFrom::Start(position) => i128::from(position),
+            SeekFrom::End(offset) => self.expected.len() as i128 + i128::from(offset),
+            SeekFrom::Current(offset) => i128::from(self.position) + i128::from(offset),
+        };
+        self.position = u64::try_from(next).map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid ZIP seek")
+        })?;
+        Ok(self.position)
+    }
 }
 
 fn require_plain_directory(package: &Path) -> Result<()> {
@@ -517,6 +666,39 @@ mod tests {
                 fs::read(package.0.join(name)).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn archive_wire_limit_accepts_the_exact_payload_boundary() {
+        assert_eq!(
+            archive_capacity(MAX_ARCHIVE_UNCOMPRESSED_BYTES, MAX_ARCHIVE_MANIFEST_BYTES).unwrap(),
+            MAX_ARCHIVE_WIRE_BYTES
+        );
+        assert!(
+            archive_capacity(
+                MAX_ARCHIVE_UNCOMPRESSED_BYTES + 1,
+                MAX_ARCHIVE_MANIFEST_BYTES,
+            )
+            .is_err()
+        );
+        assert!(
+            archive_capacity(
+                MAX_ARCHIVE_UNCOMPRESSED_BYTES,
+                MAX_ARCHIVE_MANIFEST_BYTES + 1,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn canonical_comparison_mismatch_state_is_container_bounded() {
+        let expected = vec![0; MAX_REWRITTEN_COMPARISON_BYTES + 1];
+        let actual = vec![1; expected.len()];
+        let mut comparison = CanonicalComparisonWriter::new(&expected);
+        comparison.write_all(&actual).unwrap();
+        assert!(!comparison.structurally_valid);
+        assert!(comparison.mismatches.is_empty());
+        assert!(!comparison.matches_expected());
     }
 
     #[test]

@@ -123,7 +123,7 @@ impl IntakeStorage {
 
     pub fn public_artifact_key(&self, trace_id: &str, kind: &str, sha256: &str) -> Result<String> {
         validate_identifier(trace_id, "trace ID")?;
-        if !matches!(kind, "trace" | "stamp") {
+        if kind != "trace" {
             bail!("public artifact kind is unsupported");
         }
         if sha256.len() != 64
@@ -393,6 +393,14 @@ impl IntakeStorage {
             }
             #[cfg(test)]
             Self::Mock(storage) => {
+                if storage
+                    .delete_failures
+                    .lock()
+                    .expect("mock lock")
+                    .contains(object_key)
+                {
+                    bail!("injected mock delete failure");
+                }
                 storage
                     .objects
                     .lock()
@@ -466,6 +474,7 @@ pub struct MockIntakeStorage {
     pub objects: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, StoredObject>>>,
     pub bodies: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<u8>>>>,
     pub deleted: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    pub delete_failures: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<String>>>,
     pub presign_calls: std::sync::Arc<std::sync::Mutex<Vec<(String, i64, String)>>>,
 }
 
@@ -496,6 +505,13 @@ impl MockIntakeStorage {
         let sha256 = llm_notary_core::sha256_hex(&bytes);
         self.object(&key, bytes.len() as i64, &sha256);
         self.bodies.lock().expect("mock lock").insert(key, bytes);
+    }
+
+    pub fn fail_delete(&self, key: impl Into<String>) {
+        self.delete_failures
+            .lock()
+            .expect("mock lock")
+            .insert(key.into());
     }
 }
 

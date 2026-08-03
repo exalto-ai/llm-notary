@@ -11,7 +11,8 @@ use llm_notary_core::notary_directory::{
 
 pub(crate) const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 5;
 const MAX_DATABASE_CONNECTIONS: u32 = 64;
-pub(crate) const DEFAULT_MAX_ARCHIVE_BYTES: i64 = 128 * 1024 * 1024;
+pub(crate) const DEFAULT_MAX_ARCHIVE_BYTES: i64 =
+    llm_notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64;
 pub(crate) const DEFAULT_UPLOAD_TTL_SECS: i64 = 15 * 60;
 pub(crate) const DEFAULT_METADATA_MODEL: &str = "gpt-5.6-luna";
 pub(crate) const DEFAULT_METADATA_WEEKLY_BUDGET_CENTS: i64 = 1_000;
@@ -89,7 +90,6 @@ pub struct StorageConfig {
     pub max_archive_bytes: i64,
     pub upload_ttl_secs: i64,
     pub s3: Option<S3StorageConfig>,
-    pub platform_signing_key_file: Option<PathBuf>,
 }
 
 /// Settings for an S3-compatible intake bucket.
@@ -354,9 +354,7 @@ impl StorageConfig {
     pub(crate) fn from_env() -> Result<Self> {
         let max_archive_bytes =
             integer_or_default("LLM_NOTARY_INTAKE_MAX_BYTES", DEFAULT_MAX_ARCHIVE_BYTES)?;
-        if max_archive_bytes <= 0 {
-            bail!("LLM_NOTARY_INTAKE_MAX_BYTES must be positive");
-        }
+        validate_max_archive_bytes(max_archive_bytes)?;
         let upload_ttl_secs =
             integer_or_default("LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS", DEFAULT_UPLOAD_TTL_SECS)?;
         if !(60..=24 * 60 * 60).contains(&upload_ttl_secs) {
@@ -390,18 +388,22 @@ impl StorageConfig {
                 })
             })
             .transpose()?;
-        let platform_signing_key_file = s3
-            .is_some()
-            .then(|| required_env("LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE").map(PathBuf::from))
-            .transpose()?;
-
         Ok(Self {
             max_archive_bytes,
             upload_ttl_secs,
             s3,
-            platform_signing_key_file,
         })
     }
+}
+
+fn validate_max_archive_bytes(value: i64) -> Result<()> {
+    if value <= 0 || value > llm_notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64 {
+        bail!(
+            "LLM_NOTARY_INTAKE_MAX_BYTES must be positive and no greater than {}",
+            llm_notary_core::archive::MAX_ARCHIVE_WIRE_BYTES
+        );
+    }
+    Ok(())
 }
 
 impl MetadataConfig {
@@ -630,5 +632,13 @@ mod tests {
         assert!(parse_idle_shutdown_secs("0").is_err());
         assert!(parse_idle_shutdown_secs("-1").is_err());
         assert!(parse_idle_shutdown_secs("soon").is_err());
+    }
+
+    #[test]
+    fn archive_limit_can_be_lower_but_never_exceed_the_wire_ceiling() {
+        assert!(validate_max_archive_bytes(1).is_ok());
+        assert!(validate_max_archive_bytes(DEFAULT_MAX_ARCHIVE_BYTES).is_ok());
+        assert!(validate_max_archive_bytes(0).is_err());
+        assert!(validate_max_archive_bytes(DEFAULT_MAX_ARCHIVE_BYTES + 1).is_err());
     }
 }

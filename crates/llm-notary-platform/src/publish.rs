@@ -1,6 +1,5 @@
-use std::{collections::BTreeMap, path::Path as StdPath, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, time::Duration};
 
-use anyhow::Context;
 use axum::{
     Json,
     extract::{Path, State},
@@ -8,9 +7,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use axum_extra::extract::cookie::CookieJar;
-use k256::ecdsa::SigningKey;
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{FromRow, Postgres, Transaction};
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
@@ -28,14 +26,13 @@ use super::config::{DEFAULT_MAX_ARCHIVE_BYTES, DEFAULT_UPLOAD_TTL_SECS};
 
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 const CLEANUP_INTERVAL_SECS: u64 = 10 * 60;
+const OBJECTS_PER_CLEANUP: i64 = 32;
 
 #[derive(Clone)]
 pub struct PublishService {
     pub(super) storage: IntakeStorage,
     pub(super) max_archive_bytes: i64,
     upload_ttl_secs: i64,
-    pub(super) platform_signing_key: Option<Arc<SigningKey>>,
-    pub(super) stamp_issuer: String,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -81,7 +78,6 @@ struct PublishJobResponse {
     failure_code: Option<String>,
     status_url: String,
     trace_url: Option<String>,
-    stamp_url: Option<String>,
 }
 
 #[derive(FromRow)]
@@ -103,31 +99,15 @@ pub(super) struct PublishJobRow {
     pub(super) admitted_at: Option<i64>,
     pub(super) private_purged_at: Option<i64>,
     pub(super) public_trace_object_key: Option<String>,
-    pub(super) public_stamp_object_key: Option<String>,
 }
 
 impl PublishService {
-    pub fn from_config(config: &StorageConfig, stamp_issuer: String) -> anyhow::Result<Self> {
+    pub fn from_config(config: &StorageConfig) -> anyhow::Result<Self> {
         let storage = IntakeStorage::from_config(config)?;
-        let (platform_signing_key, stamp_issuer) = if storage.is_enabled() {
-            let path = config.platform_signing_key_file.as_deref().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "LLM_NOTARY_PLATFORM_SIGNING_KEY_FILE is required when publication intake is enabled"
-                )
-            })?;
-            (
-                Some(Arc::new(load_platform_signing_key(path)?)),
-                stamp_issuer,
-            )
-        } else {
-            (None, String::new())
-        };
         Ok(Self {
             storage,
             max_archive_bytes: config.max_archive_bytes,
             upload_ttl_secs: config.upload_ttl_secs,
-            platform_signing_key,
-            stamp_issuer,
         })
     }
 
@@ -145,10 +125,6 @@ impl PublishService {
             storage: IntakeStorage::Mock(storage),
             max_archive_bytes: DEFAULT_MAX_ARCHIVE_BYTES,
             upload_ttl_secs: DEFAULT_UPLOAD_TTL_SECS,
-            platform_signing_key: Some(Arc::new(
-                SigningKey::from_slice(&[11; 32]).expect("test platform key"),
-            )),
-            stamp_issuer: "https://llmnotary.example".to_owned(),
         }
     }
 
@@ -158,20 +134,8 @@ impl PublishService {
             storage: IntakeStorage::Disabled,
             max_archive_bytes: DEFAULT_MAX_ARCHIVE_BYTES,
             upload_ttl_secs: DEFAULT_UPLOAD_TTL_SECS,
-            platform_signing_key: None,
-            stamp_issuer: String::new(),
         }
     }
-}
-
-fn load_platform_signing_key(path: &StdPath) -> anyhow::Result<SigningKey> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("reading platform signing key {}", path.display()))?;
-    let bytes = hex::decode(text.trim()).context("platform signing key must be hexadecimal")?;
-    if bytes.len() != 32 {
-        anyhow::bail!("platform signing key must contain exactly 32 bytes");
-    }
-    SigningKey::from_slice(&bytes).context("platform signing key is invalid")
 }
 
 pub fn router() -> OpenApiRouter<AppState> {
@@ -198,6 +162,13 @@ pub fn spawn_cleanup(state: AppState) {
                     "cleaning up expired publication uploads failed"
                 );
             }
+            if let Err(error) = cleanup_publication_objects(&state).await {
+                tracing::error!(
+                    status = %error.status,
+                    error = error.message,
+                    "cleaning up publication objects failed"
+                );
+            }
         }
     });
 }
@@ -211,6 +182,9 @@ pub async fn has_pending_cleanup(state: &AppState) -> ApiResult<bool> {
         "SELECT EXISTS(
              SELECT 1 FROM publish_jobs
              WHERE state = 'uploading' AND upload_expires_at <= $1
+             LIMIT 1
+         ) OR EXISTS(
+             SELECT 1 FROM publication_object_cleanup
              LIMIT 1
          )",
     )
@@ -515,12 +489,10 @@ async fn complete_publish_job(
     if promoted.size_bytes != job.declared_size_bytes
         || !IntakeStorage::has_expected_metadata(&promoted, &job.declared_sha256)
     {
-        state
-            .publish
-            .storage
-            .delete_object(&job.intake_object_key)
+        enqueue_cleanup_direct(&state, &job.id, &job.intake_object_key, "intake", now)
             .await
-            .map_err(ApiError::internal)?;
+            .map_err(database_error)?;
+        let _ = cleanup_object(&state, &job.intake_object_key).await;
         return Err(ApiError::internal(anyhow::anyhow!(
             "promoted intake object metadata changed"
         )));
@@ -536,6 +508,7 @@ async fn queue_completed_attempt(
     job: &PublishJobRow,
     now: i64,
 ) -> ApiResult<PublishJobRow> {
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
     let updated = sqlx::query(
         "UPDATE publish_jobs
          SET state = 'queued', queued_at = $1, updated_at = $2
@@ -551,50 +524,36 @@ async fn queue_completed_attempt(
     .bind(&job.upload_object_key)
     .bind(&job.intake_object_key)
     .bind(job.upload_expires_at)
-    .execute(&state.database)
+    .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
+    if updated.rows_affected() == 1 {
+        enqueue_cleanup(
+            &mut transaction,
+            &job.id,
+            &job.upload_object_key,
+            "upload",
+            now,
+        )
+        .await
+        .map_err(database_error)?;
+    }
+    transaction.commit().await.map_err(database_error)?;
     if updated.rows_affected() != 1 {
         let current = load_owned_job(state, user_id, &job.id).await?;
         if current.state != "queued" || current.upload_generation != job.upload_generation {
-            if let Err(error) = state
-                .publish
-                .storage
-                .delete_object(&job.intake_object_key)
+            enqueue_private_cleanup_pair(state, job, now)
                 .await
-            {
-                tracing::warn!(
-                    job_id = %job.id,
-                    %error,
-                    "deleting unqueued promoted intake object failed"
-                );
-            }
-            if let Err(error) = state
-                .publish
-                .storage
-                .delete_object(&job.upload_object_key)
-                .await
-            {
-                tracing::warn!(
-                    job_id = %job.id,
-                    %error,
-                    "deleting superseded staging upload failed"
-                );
-            }
+                .map_err(database_error)?;
+            let _ = cleanup_object(state, &job.intake_object_key).await;
+            let _ = cleanup_object(state, &job.upload_object_key).await;
             return Err(ApiError::conflict(
                 "publication job changed while the upload was completing",
             ));
         }
         return Ok(current);
     }
-    if let Err(error) = state
-        .publish
-        .storage
-        .delete_object(&job.upload_object_key)
-        .await
-    {
-        tracing::warn!(job_id = %job.id, %error, "deleting completed staging upload failed");
-    }
+    let _ = cleanup_object(state, &job.upload_object_key).await;
     load_owned_job(state, user_id, &job.id).await
 }
 
@@ -641,6 +600,7 @@ async fn load_owned_job(state: &AppState, user_id: &str, job_id: &str) -> ApiRes
 }
 
 async fn expire_upload(state: &AppState, job: &PublishJobRow, now: i64) -> ApiResult<bool> {
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
     let updated = sqlx::query(
         "UPDATE publish_jobs SET state = 'expired', updated_at = $1
          WHERE id = $2 AND user_id = $3 AND state = 'uploading'
@@ -654,20 +614,34 @@ async fn expire_upload(state: &AppState, job: &PublishJobRow, now: i64) -> ApiRe
     .bind(&job.upload_object_key)
     .bind(job.upload_expires_at)
     .bind(now)
-    .execute(&state.database)
+    .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
     if updated.rows_affected() == 0 {
+        transaction.rollback().await.map_err(database_error)?;
         return Ok(false);
     }
-    if let Err(error) = state
-        .publish
-        .storage
-        .delete_object(&job.upload_object_key)
-        .await
-    {
-        tracing::warn!(job_id = %job.id, %error, "deleting expired staging upload failed");
-    }
+    enqueue_cleanup(
+        &mut transaction,
+        &job.id,
+        &job.upload_object_key,
+        "upload",
+        now,
+    )
+    .await
+    .map_err(database_error)?;
+    enqueue_cleanup(
+        &mut transaction,
+        &job.id,
+        &job.intake_object_key,
+        "intake",
+        now,
+    )
+    .await
+    .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
+    let _ = cleanup_object(state, &job.upload_object_key).await;
+    let _ = cleanup_object(state, &job.intake_object_key).await;
     Ok(true)
 }
 
@@ -689,6 +663,139 @@ async fn cleanup_expired_uploads(state: &AppState) -> ApiResult<()> {
     Ok(())
 }
 
+async fn cleanup_publication_objects(state: &AppState) -> ApiResult<()> {
+    let objects: Vec<String> = sqlx::query_scalar(
+        "SELECT object_key
+         FROM publication_object_cleanup
+         ORDER BY attempts, created_at, object_key
+         LIMIT $1",
+    )
+    .bind(OBJECTS_PER_CLEANUP)
+    .fetch_all(&state.database)
+    .await
+    .map_err(database_error)?;
+    for object_key in objects {
+        cleanup_object(state, &object_key)
+            .await
+            .map_err(database_error)?;
+    }
+    Ok(())
+}
+
+async fn enqueue_cleanup(
+    transaction: &mut Transaction<'_, Postgres>,
+    publication_id: &str,
+    object_key: &str,
+    artifact_kind: &str,
+    now: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO publication_object_cleanup
+             (object_key, publication_id, artifact_kind, created_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (object_key) DO NOTHING",
+    )
+    .bind(object_key)
+    .bind(publication_id)
+    .bind(artifact_kind)
+    .bind(now)
+    .execute(&mut **transaction)
+    .await?;
+    Ok(())
+}
+
+async fn enqueue_cleanup_direct(
+    state: &AppState,
+    publication_id: &str,
+    object_key: &str,
+    artifact_kind: &str,
+    now: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO publication_object_cleanup
+             (object_key, publication_id, artifact_kind, created_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (object_key) DO NOTHING",
+    )
+    .bind(object_key)
+    .bind(publication_id)
+    .bind(artifact_kind)
+    .bind(now)
+    .execute(&state.database)
+    .await?;
+    Ok(())
+}
+
+async fn enqueue_private_cleanup_pair(
+    state: &AppState,
+    job: &PublishJobRow,
+    now: i64,
+) -> Result<(), sqlx::Error> {
+    let mut transaction = state.database.begin().await?;
+    enqueue_cleanup(
+        &mut transaction,
+        &job.id,
+        &job.upload_object_key,
+        "upload",
+        now,
+    )
+    .await?;
+    enqueue_cleanup(
+        &mut transaction,
+        &job.id,
+        &job.intake_object_key,
+        "intake",
+        now,
+    )
+    .await?;
+    transaction.commit().await
+}
+
+async fn cleanup_object(state: &AppState, object_key: &str) -> Result<bool, sqlx::Error> {
+    let now = unix_timestamp().map_err(|error| sqlx::Error::Protocol(error.message.into()))?;
+    match state.publish.storage.delete_object(object_key).await {
+        Ok(()) => {
+            sqlx::query("DELETE FROM publication_object_cleanup WHERE object_key = $1")
+                .bind(object_key)
+                .execute(&state.database)
+                .await?;
+            Ok(true)
+        }
+        Err(_) => {
+            sqlx::query(
+                "UPDATE publication_object_cleanup
+                 SET attempts = attempts + 1, last_attempt_at = $1
+                 WHERE object_key = $2",
+            )
+            .bind(now)
+            .bind(object_key)
+            .execute(&state.database)
+            .await?;
+            Ok(false)
+        }
+    }
+}
+
+pub(super) async fn purge_private_objects(
+    state: &AppState,
+    job: &PublishJobRow,
+) -> anyhow::Result<bool> {
+    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
+    enqueue_private_cleanup_pair(state, job, now).await?;
+    let _ = cleanup_object(state, &job.upload_object_key).await?;
+    let _ = cleanup_object(state, &job.intake_object_key).await?;
+    let pending: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM publication_object_cleanup
+             WHERE publication_id = $1 AND artifact_kind IN ('upload', 'intake')
+         )",
+    )
+    .bind(&job.id)
+    .fetch_one(&state.database)
+    .await?;
+    Ok(!pending)
+}
+
 fn require_enabled(state: &AppState) -> ApiResult<()> {
     if state.publish.enabled() {
         Ok(())
@@ -705,7 +812,10 @@ fn validate_request(service: &PublishService, request: &CreatePublishJob) -> Api
             "archive_format is not supported by this server",
         ));
     }
-    if request.size_bytes <= 0 || request.size_bytes > service.max_archive_bytes {
+    let max_archive_bytes = service
+        .max_archive_bytes
+        .min(llm_notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64);
+    if request.size_bytes <= 0 || request.size_bytes > max_archive_bytes {
         return Err(ApiError::bad_request(
             "size_bytes is outside the accepted range",
         ));
@@ -759,10 +869,6 @@ fn job_response(job: &PublishJobRow) -> PublishJobResponse {
             .public_trace_object_key
             .as_ref()
             .map(|_| format!("/api/public/traces/{}/trace.otlp.json", job.id)),
-        stamp_url: job
-            .public_stamp_object_key
-            .as_ref()
-            .map(|_| format!("/api/public/traces/{}/stamp.json", job.id)),
     }
 }
 
@@ -855,6 +961,141 @@ mod tests {
             .await
             .expect("expire upload");
         assert!(has_pending_cleanup(&state).await.expect("expired upload"));
+    }
+
+    #[tokio::test]
+    async fn obsolete_stamp_cleanup_is_bounded_and_retryable() {
+        let (state, storage, _, _) = test_state().await;
+        let object_key = "test/public/legacy/stamp-deadbeef.json";
+        storage.object_bytes(object_key, b"obsolete stamp".to_vec());
+        storage.fail_delete(object_key);
+        sqlx::query(
+            "INSERT INTO publication_object_cleanup
+                 (object_key, publication_id, artifact_kind, created_at)
+             VALUES ($1, NULL, 'stamp', 1)",
+        )
+        .bind(object_key)
+        .execute(&state.database)
+        .await
+        .unwrap();
+
+        assert!(has_pending_cleanup(&state).await.unwrap());
+        cleanup_publication_objects(&state).await.unwrap();
+        let attempts: i64 = sqlx::query_scalar(
+            "SELECT attempts FROM publication_object_cleanup WHERE object_key = $1",
+        )
+        .bind(object_key)
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(attempts, 1);
+
+        storage.delete_failures.lock().unwrap().remove(object_key);
+        cleanup_publication_objects(&state).await.unwrap();
+        assert!(!has_pending_cleanup(&state).await.unwrap());
+        assert!(
+            storage
+                .deleted
+                .lock()
+                .unwrap()
+                .contains(&object_key.to_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn completed_upload_cleanup_is_durable_across_delete_failures() {
+        let (state, storage, headers, _) = test_state().await;
+        create_publish_job(State(state.clone()), headers.clone(), Json(request()))
+            .await
+            .expect("create");
+        let job: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("job");
+        storage.object(&job.upload_object_key, job.declared_size_bytes, SHA256);
+        storage.fail_delete(&job.upload_object_key);
+
+        let _ = complete_publish_job(State(state.clone()), headers, Path(job.id.clone()))
+            .await
+            .expect("complete despite deferred cleanup");
+        let queued: (String, i64) = sqlx::query_as(
+            "SELECT artifact_kind, attempts FROM publication_object_cleanup
+             WHERE object_key = $1",
+        )
+        .bind(&job.upload_object_key)
+        .fetch_one(&state.database)
+        .await
+        .expect("durable upload cleanup");
+        assert_eq!(queued, ("upload".to_owned(), 1));
+        assert!(
+            storage
+                .objects
+                .lock()
+                .unwrap()
+                .contains_key(&job.upload_object_key)
+        );
+
+        storage
+            .delete_failures
+            .lock()
+            .unwrap()
+            .remove(&job.upload_object_key);
+        cleanup_publication_objects(&state).await.unwrap();
+        assert!(
+            !storage
+                .objects
+                .lock()
+                .unwrap()
+                .contains_key(&job.upload_object_key)
+        );
+        let pending: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM publication_object_cleanup WHERE object_key = $1",
+        )
+        .bind(&job.upload_object_key)
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(pending, 0);
+    }
+
+    #[tokio::test]
+    async fn expired_upload_cleanup_is_durable_across_delete_failures() {
+        let (state, storage, headers, _) = test_state().await;
+        create_publish_job(State(state.clone()), headers, Json(request()))
+            .await
+            .expect("create");
+        let job: PublishJobRow = sqlx::query_as("SELECT * FROM publish_jobs")
+            .fetch_one(&state.database)
+            .await
+            .expect("job");
+        storage.object(&job.upload_object_key, job.declared_size_bytes, SHA256);
+        storage.fail_delete(&job.upload_object_key);
+
+        assert!(expire_upload(&state, &job, i64::MAX).await.unwrap());
+        assert!(has_pending_cleanup(&state).await.unwrap());
+        let attempts: i64 = sqlx::query_scalar(
+            "SELECT attempts FROM publication_object_cleanup WHERE object_key = $1",
+        )
+        .bind(&job.upload_object_key)
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(attempts, 1);
+
+        storage
+            .delete_failures
+            .lock()
+            .unwrap()
+            .remove(&job.upload_object_key);
+        cleanup_publication_objects(&state).await.unwrap();
+        assert!(!has_pending_cleanup(&state).await.unwrap());
+        assert!(
+            !storage
+                .objects
+                .lock()
+                .unwrap()
+                .contains_key(&job.upload_object_key)
+        );
     }
 
     #[tokio::test]

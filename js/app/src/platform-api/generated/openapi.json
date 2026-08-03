@@ -1156,37 +1156,6 @@
         ]
       }
     },
-    "/api/platform": {
-      "get": {
-        "tags": [
-          "health"
-        ],
-        "summary": "Get the platform stamp verification key",
-        "operationId": "platform_directory",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/PlatformDirectory"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/public/collections/traces": {
       "get": {
         "tags": [
@@ -1321,65 +1290,6 @@
             }
           },
           "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/public/traces/{trace_id}/stamp.json": {
-      "get": {
-        "tags": [
-          "library"
-        ],
-        "summary": "Download an admitted platform stamp",
-        "operationId": "public_stamp",
-        "parameters": [
-          {
-            "name": "trace_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {}
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
             "description": "",
             "content": {
               "application/json": {
@@ -1760,6 +1670,97 @@
           }
         }
       }
+    },
+    "/api/verify": {
+      "post": {
+        "tags": [
+          "verification"
+        ],
+        "summary": "Verify a portable .llmtrace package",
+        "operationId": "verify",
+        "requestBody": {
+          "content": {
+            "application/vnd.llmnotary.trace-package+zip": {
+              "schema": {
+                "$ref": "#/components/schemas/TracePackageBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerificationResponse"
+                }
+              }
+            }
+          },
+          "408": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1970,12 +1971,6 @@
           "span_count": {
             "type": "integer",
             "minimum": 0
-          },
-          "stamp_url": {
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "tags": {
             "type": "array",
@@ -2355,47 +2350,73 @@
           }
         }
       },
-      "PlatformDirectory": {
-        "type": "object",
-        "required": [
-          "format",
-          "issuer",
-          "key_id",
-          "public_key"
-        ],
-        "properties": {
-          "format": {
-            "type": "string"
-          },
-          "issuer": {
-            "type": "string"
-          },
-          "key_id": {
-            "type": "string"
-          },
-          "public_key": {
-            "type": "string"
-          }
-        }
-      },
       "PublicTraceMetadata": {
         "type": "object",
         "required": [
           "id",
-          "trace_url"
+          "trace_url",
+          "platform_verified_source",
+          "provider",
+          "host",
+          "trace_sha256"
         ],
         "properties": {
+          "authenticated_at_unix_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "directory_generation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "host": {
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },
-          "stamp_url": {
+          "notary_key_id": {
             "type": [
               "string",
               "null"
             ]
           },
+          "platform_verified_source": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "source_package_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trace_sha256": {
+            "type": "string"
+          },
           "trace_url": {
             "type": "string"
+          },
+          "trust_source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verified_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           }
         }
       },
@@ -2477,12 +2498,6 @@
           "size_bytes": {
             "type": "integer",
             "format": "int64"
-          },
-          "stamp_url": {
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "state": {
             "type": "string"
@@ -2605,6 +2620,10 @@
           "paid_preview"
         ]
       },
+      "TracePackageBody": {
+        "type": "string",
+        "format": "binary"
+      },
       "UploadInstructions": {
         "type": "object",
         "required": [
@@ -2632,6 +2651,59 @@
           },
           "url": {
             "type": "string"
+          }
+        }
+      },
+      "VerificationResponse": {
+        "type": "object",
+        "required": [
+          "verified",
+          "capture_id",
+          "authenticated_at_unix_ms",
+          "provider",
+          "host",
+          "notary_key_id",
+          "directory_generation",
+          "trust_source",
+          "package_sha256",
+          "trace_sha256",
+          "trace"
+        ],
+        "properties": {
+          "authenticated_at_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "capture_id": {
+            "type": "string"
+          },
+          "directory_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "host": {
+            "type": "string"
+          },
+          "notary_key_id": {
+            "type": "string"
+          },
+          "package_sha256": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "trace": {},
+          "trace_sha256": {
+            "type": "string"
+          },
+          "trust_source": {
+            "type": "string"
+          },
+          "verified": {
+            "type": "boolean"
           }
         }
       },
@@ -2737,6 +2809,10 @@
     {
       "name": "notary-admission",
       "description": "Hosted notary tickets and distributed leases"
+    },
+    {
+      "name": "verification",
+      "description": "Anonymous, retention-free portable package verification"
     },
     {
       "name": "publication",
