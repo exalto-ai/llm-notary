@@ -55,27 +55,6 @@
   -webkit-line-clamp: 3;
 }
 
-.preview-command {
-  display: grid;
-  gap: 7px;
-  padding: 12px 14px;
-  border: 1px solid var(--ink);
-  background: var(--inverse-surface);
-}
-
-.preview-command span {
-  color: var(--inverse-muted);
-  font: 9px 'DM Mono', monospace;
-  text-transform: uppercase;
-  letter-spacing: .05em;
-}
-
-.preview-command code {
-  color: var(--inverse-accent);
-  font: 10px/1.5 'DM Mono', monospace;
-  overflow-wrap: anywhere;
-}
-
 @media (max-width: 820px) {
   .verify { grid-template-columns: 1fr; }
   .receipt { max-width: none; }
