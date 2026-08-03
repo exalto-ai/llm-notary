@@ -40,9 +40,7 @@ jobs:
           flyctl deploy --remote-only --build-only --push \
             --image-label "$IMAGE_LABEL" --config deploy/fly/notary.fly.toml
           flyctl auth docker
-          digest="$(docker buildx imagetools inspect "$NOTARY_IMAGE_TAG" \
-            --format '{{json .Manifest}}' | jq -er '.digest')"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          digest="$(bash deploy/fly/resolve-image-digest.sh "$NOTARY_IMAGE_TAG")"
           echo "ref=${NOTARY_IMAGE_TAG%:*}@$digest" >> "$GITHUB_OUTPUT"
       - name: Build API image on Fly
         id: api-image
@@ -53,9 +51,7 @@ jobs:
           flyctl deploy --remote-only --build-only --push \
             --image-label "$IMAGE_LABEL" --config deploy/fly/api.fly.toml
           flyctl auth docker
-          digest="$(docker buildx imagetools inspect "$API_IMAGE_TAG" \
-            --format '{{json .Manifest}}' | jq -er '.digest')"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          digest="$(bash deploy/fly/resolve-image-digest.sh "$API_IMAGE_TAG")"
           echo "ref=${API_IMAGE_TAG%:*}@$digest" >> "$GITHUB_OUTPUT"
       - name: Build web image on Fly
         id: web-image
@@ -67,9 +63,7 @@ jobs:
             --image-label "$IMAGE_LABEL" \
             --config "$GITHUB_WORKSPACE/deploy/fly/web.fly.toml"
           flyctl auth docker
-          digest="$(docker buildx imagetools inspect "$WEB_IMAGE_TAG" \
-            --format '{{json .Manifest}}' | jq -er '.digest')"
-          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          digest="$(bash deploy/fly/resolve-image-digest.sh "$WEB_IMAGE_TAG")"
           echo "ref=${WEB_IMAGE_TAG%:*}@$digest" >> "$GITHUB_OUTPUT"
 
       - name: Record rollback images
