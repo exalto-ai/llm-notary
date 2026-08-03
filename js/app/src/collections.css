@@ -171,21 +171,6 @@
   box-shadow: inset 3px 0 0 var(--ink);
 }
 
-.inspector-status {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--green-ink);
-}
-
-.inspector-status i {
-  width: 9px;
-  height: 9px;
-  border: 1px solid var(--green-ink);
-  border-radius: 50%;
-  background: var(--green);
-}
-
 .model-card-title,
 .model-card-model,
 .model-card-summary,
@@ -268,11 +253,6 @@
   justify-content: space-between;
   gap: 14px;
   align-items: center;
-}
-
-.inspector-status {
-  font: 10px 'DM Mono', monospace;
-  white-space: nowrap;
 }
 
 .collection-inspector h2 {
@@ -444,7 +424,6 @@
 }
 
 .collection-inspector .eyebrow,
-.inspector-status,
 .inspector-facts dt,
 .inspector-facts dd,
 .span-panel-head span,
