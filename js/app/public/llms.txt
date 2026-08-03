@@ -26,14 +26,14 @@ On first use, the client creates a user-editable `config.toml` at the standard p
 
 ```sh
 curl -fsSLO %PUBLIC_ORIGIN%/install.sh && sh install.sh
-llm-notary
+llm-notaryd
 
 curl http://127.0.0.1:8788/healthz
 curl http://127.0.0.1:8788/openapi.json
 curl "http://127.0.0.1:8788/v1/captures?query=pricing"
 ```
 
-Open `http://127.0.0.1:8788` for the local dashboard. The loopback admin API is open to local processes by default; an installation can require HTTP Basic credentials by setting `admin.auth` to a username and Argon2id password hash. Follow the live OpenAPI document instead of guessing routes or request bodies. Use `llm-notary --config /path/to/config.toml` to select a non-standard local configuration. For a self-hosted notary, set `notary.endpoint` and `notary.public_key` together in that file. Hosted services discover the notary endpoint and key from the signed directory.
+Open `http://127.0.0.1:8788` for the local dashboard. Use `llm-notary status`, `llm-notary captures list`, or another CLI command to operate the daemon through its versioned REST API; add `--json` for automation. The loopback admin API is open to local processes by default; an installation can require HTTP Basic credentials by setting `admin.auth` to a username and Argon2id password hash. Use `llm-notaryd --config /path/to/config.toml` to start the daemon with a non-standard local configuration, and pass the same `--config` option to CLI commands. For a self-hosted notary, set `notary.endpoint` and `notary.public_key` together in that file. Hosted services discover the notary endpoint and key from the signed directory.
 
 ## Package layout
 

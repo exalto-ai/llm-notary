@@ -3,12 +3,16 @@ name = "llm-notary-client"
 version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-description = "Local LLM Notary proxy and administration service"
+description = "Local LLM Notary daemon and REST-backed command client"
 build = "build.rs"
 
 [[bin]]
 name = "llm-notary"
 path = "src/bin/llm-notary.rs"
+
+[[bin]]
+name = "llm-notaryd"
+path = "src/bin/llm-notaryd.rs"
 
 [dependencies]
 anyhow = "1.0"

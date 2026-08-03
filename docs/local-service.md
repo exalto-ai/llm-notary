@@ -1,7 +1,9 @@
 # Local service and REST API
 
-The `llm-notary` process is the only local runtime. It owns two different
-loopback listeners:
+The `llm-notaryd` process is the only local runtime and the only writer of the
+catalog, vault, artifacts, and durable operation state. The short-lived
+`llm-notary` command talks to it through the versioned loopback API.
+`llm-notaryd` owns two different loopback listeners:
 
 | Listener | Default | Purpose |
 | --- | --- | --- |
@@ -19,7 +21,7 @@ Run the service in the foreground. It writes the default configuration on
 first start, or accepts an explicit file:
 
 ```bash
-llm-notary --config /path/to/config.toml
+llm-notaryd --config /path/to/config.toml
 ```
 
 The process logs lifecycle metadata to standard error and exits when it cannot
@@ -27,6 +29,33 @@ bind either listener or safely open its storage. A service manager such as
 systemd, launchd, or the Windows Service Control Manager can supervise this
 same foreground command. Stop it through the manager or with the terminal's
 normal interrupt; do not run a second process against the same catalog.
+
+There is no compatibility alias: `llm-notary` does not start the service.
+Service-manager `ExecStart`, launchd `ProgramArguments`, and Windows service
+definitions must invoke `llm-notaryd`, optionally followed by `--config` and
+the configuration path.
+
+The executable name is the same in each supervisor. Adapt the executable and
+configuration paths to the installation:
+
+```ini
+# systemd service
+ExecStart=/usr/local/bin/llm-notaryd --config /etc/llm-notary/config.toml
+```
+
+```xml
+<!-- launchd ProgramArguments -->
+<array>
+  <string>/usr/local/bin/llm-notaryd</string>
+  <string>--config</string>
+  <string>/Users/example/Library/Application Support/llm-notary/config.toml</string>
+</array>
+```
+
+```powershell
+# Windows Service Control Manager
+sc.exe create LLMNotary binPath= '"C:\Program Files\LLM Notary\llm-notaryd.exe" --config "C:\ProgramData\LLM Notary\config.toml"'
+```
 
 The smallest useful explicit configuration is:
 
@@ -101,6 +130,59 @@ Noninteractive clients should obtain the password from their approved secret
 mechanism and follow the `basicAuth` scheme in OpenAPI. The service sends no
 cross-origin access headers, so another website cannot use the admin API as a
 browser backend.
+
+The bundled CLI reads the daemon configuration only to resolve the loopback
+admin listener and configured username. It rejects non-loopback listeners,
+checks `/healthz` for API `v1` before each command, and sends every stateful
+operation through `/v1`. With Basic authentication enabled it prompts for the
+password without echoing it. For automation, store the password in a private
+UTF-8 file and pass its path rather than the secret itself:
+
+```bash
+llm-notary status
+llm-notary --admin-password-file /private/admin-password status
+llm-notary --config /path/to/config.toml captures list --json
+```
+
+On Unix, the password file must not be accessible to group or other users.
+The CLI never reads the Argon2id hash as though it were a password and never
+stores a prompted password.
+
+## Command client
+
+Human-readable output is the default. `--json` prints one JSON value to
+standard output for automation. List filters map directly to server-side REST
+filters, and accepted mutations print the durable operation or job identifier
+without waiting indefinitely:
+
+```bash
+llm-notary captures list --query sanitized --provider openai --limit 20
+llm-notary captures show cap-example
+llm-notary finalize cap-example
+llm-notary operations list --state failed --kind finalization
+llm-notary operations retry op-example
+llm-notary traces show cap-example --json
+llm-notary traces verify cap-example
+llm-notary events --severity error --limit 20
+llm-notary notaries list
+llm-notary open
+```
+
+Publication identity remains daemon-owned. Login, logout, account inspection,
+and publication all use the local REST API, so only `llm-notaryd` accesses the
+credential vault or finalized artifact:
+
+```bash
+llm-notary login
+llm-notary whoami
+llm-notary publish cap-example
+llm-notary logout
+```
+
+Exit code `2` is invalid input, `3` means the daemon is unavailable, `4` is an
+authentication failure, `5` is not found, `6` is a state conflict, `7` is a
+retryable daemon failure, and `8` is an API-version mismatch. Other failures
+use `1`. Error text is safe and never echoes credentials or plaintext headers.
 
 ## API conventions
 

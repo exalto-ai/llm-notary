@@ -1,6 +1,6 @@
 # Local evidence dashboard
 
-Open [http://127.0.0.1:8788](http://127.0.0.1:8788) while `llm-notary` is
+Open [http://127.0.0.1:8788](http://127.0.0.1:8788) while `llm-notaryd` is
 running. The default configuration opens the dashboard directly. If
 `admin.auth` is configured, the service asks for that username and password,
 exchanges them for an HttpOnly local session, clears the fields, and does not

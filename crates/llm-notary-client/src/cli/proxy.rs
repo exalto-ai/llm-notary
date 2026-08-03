@@ -164,9 +164,9 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         notary = %notary,
         config = %config_path.display(),
         providers = ?Provider::ALL,
-        "LLM Notary proxy listening"
+        "LLM Notary daemon proxy listening"
     );
-    tracing::info!(address = %state.config.admin.listen, "LLM Notary admin API listening");
+    tracing::info!(address = %state.config.admin.listen, "LLM Notary daemon admin API listening");
     let mut worker = crate::admin::spawn_finalization_worker(
         state.catalog.clone(),
         state.config.clone(),
@@ -178,7 +178,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         result = axum::serve(admin_listener, admin) => result.map_err(Into::into),
         result = &mut worker => result.context("finalization worker exited")?,
         () = shutdown_signal() => {
-            tracing::info!("LLM Notary service shutting down");
+            tracing::info!("LLM Notary daemon shutting down");
             Ok(())
         },
     };

@@ -134,12 +134,17 @@ const consistencySources = [
   resolve(appRoot, 'public/llms.txt'),
   resolve(appRoot, 'src/main.jsx')
 ];
-const obsoleteCommand = /llm-notary\s+(proxy|captures|finalize|verify-trace|publish|download|login|config|vault|list|show|status|verify|decode)\b/;
+const obsoleteCommand = /llm-notary\s+(proxy|verify-trace|download|config|vault|list|show|verify|decode)\b/;
+const obsoleteDaemonInvocation = /^llm-notary(?:\s+--config\s+\S+)?\s*$/m;
 for (const file of consistencySources) {
   const source = readFileSync(file, 'utf8');
-  if (obsoleteCommand.test(source)) {
+  if (obsoleteCommand.test(source) || obsoleteDaemonInvocation.test(source)) {
     throw new Error(`Documentation retains an obsolete local operational command: ${file.replace(`${repoRoot}/`, '')}`);
   }
+}
+
+for (const required of ['llm-notaryd', 'llm-notary status', 'llm-notary captures list', '--json']) {
+  if (!workflowContent.includes(required)) throw new Error(`Workflow documentation is missing daemon/CLI guidance: ${required}`);
 }
 
 for (const file of markdown) {
