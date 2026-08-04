@@ -2153,7 +2153,10 @@ mod tests {
                   WHERE credit_subject = 'user:legacy-user'),
                  (SELECT COUNT(*) FROM notary_credit_debits
                   WHERE credit_subject = 'user:legacy-user'),
-                 (SELECT COUNT(*) FROM notary_credit_debit_allocations)",
+                 (SELECT COUNT(*)
+                  FROM notary_credit_debit_allocations AS allocations
+                  JOIN notary_credit_debits AS debits ON debits.id = allocations.debit_id
+                  WHERE debits.credit_subject = 'user:legacy-user')",
         )
         .fetch_one(&database.pool)
         .await

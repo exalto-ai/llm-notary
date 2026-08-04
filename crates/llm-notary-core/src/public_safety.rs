@@ -13,7 +13,7 @@ use crate::{archive::read_trace_package_archive, validate_disclosed_http_redacti
 
 /// The admission record stores this value so an older share is never silently
 /// claimed to satisfy a newer public-package contract.
-pub const PUBLIC_PACKAGE_SAFETY_VERSION: &str = "llm-notary/public-package-safety/v2";
+pub const PUBLIC_PACKAGE_SAFETY_VERSION: &str = "llm-notary/public-package-safety/v3";
 
 /// Authenticated provider context for narrow, provider-defined public values.
 ///
@@ -86,6 +86,15 @@ impl std::error::Error for PublicPackageSafetyError {}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct PublicPackageSafetyResult {
     pub version: &'static str,
+    /// Whether an explicit publication override accepted at least one
+    /// otherwise unexplained high-entropy value.
+    pub high_entropy_override_applied: bool,
+}
+
+#[derive(Default)]
+struct ScanState {
+    allow_high_entropy: bool,
+    high_entropy_override_applied: bool,
 }
 
 /// Validates the exact canonical archive that admission intends to retain.
@@ -97,7 +106,7 @@ pub struct PublicPackageSafetyResult {
 pub fn validate_public_trace_package(
     bytes: &[u8],
 ) -> Result<PublicPackageSafetyResult, PublicPackageSafetyError> {
-    validate_public_trace_package_inner(bytes, None)
+    validate_public_trace_package_inner(bytes, None, false)
 }
 
 /// Validates an archive using provider context authenticated by package
@@ -106,13 +115,31 @@ pub fn validate_public_trace_package_with_context(
     bytes: &[u8],
     context: PublicPackageSafetyContext<'_>,
 ) -> Result<PublicPackageSafetyResult, PublicPackageSafetyError> {
-    validate_public_trace_package_inner(bytes, Some(context))
+    validate_public_trace_package_inner(bytes, Some(context), false)
+}
+
+/// Validates an archive while allowing an explicit publisher decision to
+/// override only unexplained high-entropy values.
+///
+/// Concrete secret patterns, credential fields and headers, signed credential
+/// queries, malformed archives, and every other safety error remain fatal.
+pub fn validate_public_trace_package_with_context_and_force(
+    bytes: &[u8],
+    context: PublicPackageSafetyContext<'_>,
+    force: bool,
+) -> Result<PublicPackageSafetyResult, PublicPackageSafetyError> {
+    validate_public_trace_package_inner(bytes, Some(context), force)
 }
 
 fn validate_public_trace_package_inner(
     bytes: &[u8],
     context: Option<PublicPackageSafetyContext<'_>>,
+    allow_high_entropy: bool,
 ) -> Result<PublicPackageSafetyResult, PublicPackageSafetyError> {
+    let mut scan = ScanState {
+        allow_high_entropy,
+        ..ScanState::default()
+    };
     let archive = read_trace_package_archive(bytes).map_err(|_| {
         PublicPackageSafetyError::new("archive_invalid", PublicPackageLocation::Archive)
     })?;
@@ -141,13 +168,27 @@ fn validate_public_trace_package_inner(
     scan_request_target(request_head)?;
     scan_public_bytes(request_head, PublicPackageLocation::RequestHeaders)?;
     scan_public_bytes(response_head, PublicPackageLocation::ResponseHeaders)?;
-    scan_body(request_body, PublicPackageLocation::RequestBody, None)?;
-    scan_body(response_body, PublicPackageLocation::ResponseBody, context)?;
+    scan_body(
+        request_body,
+        PublicPackageLocation::RequestBody,
+        context,
+        &mut scan,
+    )?;
+    scan_body(
+        response_body,
+        PublicPackageLocation::ResponseBody,
+        context,
+        &mut scan,
+    )?;
 
     let archive_manifest = serde_json::to_vec(&archive.manifest).map_err(|_| {
         PublicPackageSafetyError::new("archive_invalid", PublicPackageLocation::Archive)
     })?;
-    scan_json(&archive_manifest, PublicPackageLocation::Manifest)?;
+    scan_json(
+        &archive_manifest,
+        PublicPackageLocation::Manifest,
+        &mut scan,
+    )?;
     for (name, location) in [
         ("manifest.json", PublicPackageLocation::Manifest),
         ("evidence.tlsn", PublicPackageLocation::Evidence),
@@ -157,7 +198,7 @@ fn validate_public_trace_package_inner(
             PublicPackageSafetyError::new("archive_invalid", PublicPackageLocation::Archive)
         })?;
         if name.ends_with(".json") {
-            scan_json(entry, location)?;
+            scan_json(entry, location, &mut scan)?;
         } else {
             scan_public_bytes(entry, location)?;
         }
@@ -170,6 +211,7 @@ fn validate_public_trace_package_inner(
 
     Ok(PublicPackageSafetyResult {
         version: PUBLIC_PACKAGE_SAFETY_VERSION,
+        high_entropy_override_applied: scan.high_entropy_override_applied,
     })
 }
 
@@ -214,6 +256,7 @@ fn scan_body(
     bytes: &[u8],
     location: PublicPackageLocation,
     context: Option<PublicPackageSafetyContext<'_>>,
+    scan: &mut ScanState,
 ) -> Result<(), PublicPackageSafetyError> {
     if bytes
         .iter()
@@ -222,38 +265,76 @@ fn scan_body(
         return Ok(());
     }
     if serde_json::from_slice::<serde_json::Value>(bytes).is_ok() {
-        scan_json_with_context(bytes, location, context)
+        scan_json_with_context(bytes, location, context, scan)
     } else {
         scan_public_bytes(bytes, location)?;
-        scan_entropy_tokens(bytes, None, false, location)
+        if context.is_some() && scan_sse_json(bytes, location, context, scan)? {
+            return Ok(());
+        }
+        scan_entropy_tokens(bytes, None, false, location, scan)
     }
+}
+
+/// Scans a complete Server-Sent Events body one structured `data:` value at a
+/// time. Returning `false` makes the caller fall back to the ordinary opaque
+/// body entropy scan, so malformed or unfamiliar event streams fail closed.
+fn scan_sse_json(
+    bytes: &[u8],
+    location: PublicPackageLocation,
+    context: Option<PublicPackageSafetyContext<'_>>,
+    scan: &mut ScanState,
+) -> Result<bool, PublicPackageSafetyError> {
+    let Ok(body) = std::str::from_utf8(bytes) else {
+        return Ok(false);
+    };
+    let mut saw_json = false;
+    for line in body.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with(':')
+            || line.starts_with("event:")
+            || line.starts_with("id:")
+            || line.starts_with("retry:")
+        {
+            scan_entropy_tokens(line.as_bytes(), None, false, location, scan)?;
+            continue;
+        }
+        let Some(data) = line.strip_prefix("data:") else {
+            return Ok(false);
+        };
+        let data = data.trim_start();
+        if data == "[DONE]" {
+            continue;
+        }
+        if serde_json::from_str::<serde_json::Value>(data).is_err() {
+            return Ok(false);
+        }
+        scan_json_with_context(data.as_bytes(), location, context, scan)?;
+        saw_json = true;
+    }
+    Ok(saw_json)
 }
 
 fn scan_json(
     bytes: &[u8],
     location: PublicPackageLocation,
+    scan: &mut ScanState,
 ) -> Result<(), PublicPackageSafetyError> {
-    scan_json_with_context(bytes, location, None)
+    scan_json_with_context(bytes, location, None, scan)
 }
 
 fn scan_json_with_context(
     bytes: &[u8],
     location: PublicPackageLocation,
     context: Option<PublicPackageSafetyContext<'_>>,
+    scan: &mut ScanState,
 ) -> Result<(), PublicPackageSafetyError> {
     let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|_| PublicPackageSafetyError::new("public_json_invalid", location))?;
-    let mut nested = BTreeSet::new();
-    let mut path = Vec::new();
-    scan_json_value(
-        &value,
-        None,
-        location,
-        context,
-        true,
-        &mut path,
-        &mut nested,
-    )
+    let mut traversal = JsonTraversal::default();
+    scan_json_value(&value, None, location, context, true, &mut traversal, scan)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -262,14 +343,20 @@ enum JsonPathSegment {
     Index(usize),
 }
 
+#[derive(Default)]
+struct JsonTraversal {
+    path: Vec<JsonPathSegment>,
+    nested: BTreeSet<String>,
+}
+
 fn scan_json_value(
     value: &serde_json::Value,
     key: Option<&str>,
     location: PublicPackageLocation,
     context: Option<PublicPackageSafetyContext<'_>>,
     provider_exemptions_allowed: bool,
-    path: &mut Vec<JsonPathSegment>,
-    nested: &mut BTreeSet<String>,
+    traversal: &mut JsonTraversal,
+    scan: &mut ScanState,
 ) -> Result<(), PublicPackageSafetyError> {
     if key.is_some_and(is_credential_key) && has_public_value(value) {
         return Err(PublicPackageSafetyError::new("credential_field", location));
@@ -291,32 +378,34 @@ fn scan_json_value(
                 } else {
                     Some(child_key.as_str())
                 };
-                path.push(JsonPathSegment::Key(child_key.to_owned()));
+                traversal
+                    .path
+                    .push(JsonPathSegment::Key(child_key.to_owned()));
                 scan_json_value(
                     value,
                     child_key_context,
                     location,
                     context,
                     provider_exemptions_allowed,
-                    path,
-                    nested,
+                    traversal,
+                    scan,
                 )?;
-                path.pop();
+                traversal.path.pop();
             }
         }
         serde_json::Value::Array(values) => {
             for (index, value) in values.iter().enumerate() {
-                path.push(JsonPathSegment::Index(index));
+                traversal.path.push(JsonPathSegment::Index(index));
                 scan_json_value(
                     value,
                     key,
                     location,
                     context,
                     provider_exemptions_allowed,
-                    path,
-                    nested,
+                    traversal,
+                    scan,
                 )?;
-                path.pop();
+                traversal.path.pop();
             }
         }
         serde_json::Value::String(value) => {
@@ -325,16 +414,17 @@ fn scan_json_value(
                 value.as_bytes(),
                 key,
                 provider_exemptions_allowed
-                    && is_documented_openai_response_id(value, context, path),
+                    && is_documented_public_protocol_id(value, context, location, &traversal.path),
                 location,
+                scan,
             )?;
             let trimmed = value.trim();
             if trimmed.len() <= 1_048_576
                 && matches!(trimmed.as_bytes().first(), Some(b'{') | Some(b'['))
-                && nested.insert(trimmed.to_owned())
+                && traversal.nested.insert(trimmed.to_owned())
                 && let Ok(inner) = serde_json::from_str::<serde_json::Value>(trimmed)
             {
-                scan_json_value(&inner, key, location, context, false, path, nested)?;
+                scan_json_value(&inner, key, location, context, false, traversal, scan)?;
             }
         }
         _ => {}
@@ -342,22 +432,86 @@ fn scan_json_value(
     Ok(())
 }
 
-fn is_documented_openai_response_id(
+fn is_documented_public_protocol_id(
     value: &str,
     context: Option<PublicPackageSafetyContext<'_>>,
+    location: PublicPackageLocation,
     path: &[JsonPathSegment],
 ) -> bool {
     let Some(context) = context else {
         return false;
     };
-    context.provider_host == "api.openai.com"
+    if context.provider_host == "api.openai.com"
+        && location == PublicPackageLocation::ResponseBody
         && path.len() == 1
         && matches!(&path[0], JsonPathSegment::Key(key) if key == "id")
-        && match context.request_path {
+    {
+        return match context.request_path {
             "/v1/chat/completions" => has_public_id_format(value, "chatcmpl-"),
             "/v1/responses" => has_public_id_format(value, "resp_"),
             _ => false,
+        };
+    }
+    let chat_completions = matches!(
+        (context.provider_host, context.request_path),
+        ("api.openai.com", "/v1/chat/completions") | ("openrouter.ai", "/api/v1/chat/completions")
+    );
+    if !chat_completions {
+        return false;
+    }
+    if location == PublicPackageLocation::ResponseBody
+        && path.len() == 1
+        && matches!(&path[0], JsonPathSegment::Key(key) if key == "id")
+    {
+        return (context.provider_host == "api.openai.com"
+            && has_public_id_format(value, "chatcmpl-"))
+            || (context.provider_host == "openrouter.ai"
+                && (has_public_id_format(value, "gen-")
+                    || has_public_id_format(value, "chatcmpl-")));
+    }
+    is_chat_completion_tool_call_id_path(location, path) && has_public_id_format(value, "call_")
+}
+
+fn is_chat_completion_tool_call_id_path(
+    location: PublicPackageLocation,
+    path: &[JsonPathSegment],
+) -> bool {
+    match location {
+        PublicPackageLocation::RequestBody => {
+            matches!(
+                path,
+                [
+                    JsonPathSegment::Key(messages),
+                    JsonPathSegment::Index(_),
+                    JsonPathSegment::Key(tool_calls),
+                    JsonPathSegment::Index(_),
+                    JsonPathSegment::Key(id),
+                ] if messages == "messages" && tool_calls == "tool_calls" && id == "id"
+            ) || matches!(
+                path,
+                [
+                    JsonPathSegment::Key(messages),
+                    JsonPathSegment::Index(_),
+                    JsonPathSegment::Key(tool_call_id),
+                ] if messages == "messages" && tool_call_id == "tool_call_id"
+            )
         }
+        PublicPackageLocation::ResponseBody => matches!(
+            path,
+            [
+                JsonPathSegment::Key(choices),
+                JsonPathSegment::Index(_),
+                JsonPathSegment::Key(message_or_delta),
+                JsonPathSegment::Key(tool_calls),
+                JsonPathSegment::Index(_),
+                JsonPathSegment::Key(id),
+            ] if choices == "choices"
+                && matches!(message_or_delta.as_str(), "message" | "delta")
+                && tool_calls == "tool_calls"
+                && id == "id"
+        ),
+        _ => false,
+    }
 }
 
 fn has_public_id_format(value: &str, prefix: &str) -> bool {
@@ -445,6 +599,7 @@ fn scan_entropy_tokens(
     key: Option<&str>,
     exempt: bool,
     location: PublicPackageLocation,
+    scan: &mut ScanState,
 ) -> Result<(), PublicPackageSafetyError> {
     if exempt || key.is_some_and(is_intentionally_public_crypto_key) {
         return Ok(());
@@ -460,6 +615,10 @@ fn scan_entropy_tokens(
                 && shannon_entropy(token) >= 4.35
         });
     if suspicious {
+        if scan.allow_high_entropy {
+            scan.high_entropy_override_applied = true;
+            return Ok(());
+        }
         return Err(PublicPackageSafetyError::new(
             "high_entropy_value",
             location,
@@ -627,6 +786,13 @@ mod tests {
         }
     }
 
+    fn openrouter_chat_context() -> PublicPackageSafetyContext<'static> {
+        PublicPackageSafetyContext {
+            provider_host: "openrouter.ai",
+            request_path: "/api/v1/chat/completions",
+        }
+    }
+
     fn safe_trace() -> serde_json::Value {
         serde_json::json!({
             "resourceSpans": [{"scopeSpans": [{"spans": [{
@@ -757,6 +923,155 @@ mod tests {
             validate_public_trace_package_with_context(&archive, openai_context(request_path))
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn accepts_verified_chat_completion_protocol_ids_at_exact_paths() {
+        let tool_id = "call_Q2xvdWRDcmVkZW50aWFsX0ZpeHR1cmVfMTIzNDU2Nzg5MC1hYmNkZWY";
+        let generation_id = "gen-Q2xvdWRDcmVkZW50aWFsX0ZpeHR1cmVfMTIzNDU2Nzg5MC1hYmNkZWY";
+        let request = serde_json::json!({
+            "model": "openai/gpt-oss-20b:free",
+            "messages": [
+                {"role": "assistant", "tool_calls": [{"id": tool_id, "type": "function"}]},
+                {"role": "tool", "tool_call_id": tool_id, "content": "ordinary result"}
+            ]
+        });
+        let response = serde_json::json!({
+            "id": generation_id,
+            "choices": [{"message": {"tool_calls": [{"id": tool_id, "type": "function"}]}}]
+        });
+        let archive = package_with_path(
+            "/api/v1/chat/completions",
+            &request.to_string(),
+            &response.to_string(),
+            safe_trace(),
+        );
+        assert_eq!(
+            validate_public_trace_package(&archive).unwrap_err().code,
+            "high_entropy_value"
+        );
+        validate_public_trace_package_with_context(&archive, openrouter_chat_context()).unwrap();
+    }
+
+    #[test]
+    fn chat_completion_protocol_id_exemptions_reject_wrong_paths_and_secrets() {
+        let opaque = "call_Q2xvdWRDcmVkZW50aWFsX0ZpeHR1cmVfMTIzNDU2Nzg5MC1hYmNkZWY";
+        let wrong_path = package_with_path(
+            "/api/v1/chat/completions",
+            &serde_json::json!({"messages": [{"content": opaque}]}).to_string(),
+            r#"{"choices": []}"#,
+            safe_trace(),
+        );
+        assert_eq!(
+            validate_public_trace_package_with_context(&wrong_path, openrouter_chat_context())
+                .unwrap_err()
+                .code,
+            "high_entropy_value"
+        );
+
+        let secret = "call_sk-proj-1234567890abcdefghijklmnop";
+        let credential_shaped = package_with_path(
+            "/api/v1/chat/completions",
+            r#"{"messages": []}"#,
+            &serde_json::json!({
+                "choices": [{"message": {"tool_calls": [{"id": secret}]}}]
+            })
+            .to_string(),
+            safe_trace(),
+        );
+        assert_eq!(
+            validate_public_trace_package_with_context(
+                &credential_shaped,
+                openrouter_chat_context()
+            )
+            .unwrap_err()
+            .code,
+            "secret_pattern"
+        );
+    }
+
+    #[test]
+    fn force_overrides_only_high_entropy_and_continues_scanning() {
+        let opaque = "Q2xvdWRDcmVkZW50aWFsX0ZpeHR1cmVfMTIzNDU2Nzg5MC1hYmNkZWY=";
+        let false_positive = package_with_path(
+            "/api/v1/chat/completions",
+            &serde_json::json!({"messages": [{"content": opaque}]}).to_string(),
+            r#"{"choices": []}"#,
+            safe_trace(),
+        );
+        let accepted = validate_public_trace_package_with_context_and_force(
+            &false_positive,
+            openrouter_chat_context(),
+            true,
+        )
+        .unwrap();
+        assert!(accepted.high_entropy_override_applied);
+
+        let secret_after_false_positive = package_with_path(
+            "/api/v1/chat/completions",
+            &serde_json::json!({"messages": [{"content": opaque}]}).to_string(),
+            r#"{"choices":[{"message":{"content":"sk-proj-1234567890abcdefghijklmnop"}}]}"#,
+            safe_trace(),
+        );
+        assert_eq!(
+            validate_public_trace_package_with_context_and_force(
+                &secret_after_false_positive,
+                openrouter_chat_context(),
+                true,
+            )
+            .unwrap_err()
+            .code,
+            "secret_pattern"
+        );
+    }
+
+    #[test]
+    fn scans_openrouter_sse_data_as_structured_chat_completion_events() {
+        let tool_id = "call_Q2xvdWRDcmVkZW50aWFsX0ZpeHR1cmVfMTIzNDU2Nzg5MC1hYmNkZWY";
+        let generation_id = "gen-Q2xvdWRDcmVkZW50aWFsX0ZpeHR1cmVfMTIzNDU2Nzg5MC1hYmNkZWY";
+        let event = serde_json::json!({
+            "id": generation_id,
+            "choices": [{"delta": {"tool_calls": [{"id": tool_id}]}}]
+        });
+        let response = format!(": OPENROUTER PROCESSING\n\ndata: {event}\n\ndata: [DONE]\n\n");
+        let archive = package_with_path(
+            "/api/v1/chat/completions",
+            r#"{"model":"openai/gpt-oss-20b:free","messages":[]}"#,
+            &response,
+            safe_trace(),
+        );
+        validate_public_trace_package_with_context(&archive, openrouter_chat_context()).unwrap();
+
+        let opaque = "Q2xvdWRDcmVkZW50aWFsX0ZpeHR1cmVfMTIzNDU2Nzg5MC1hYmNkZWY=";
+        let hostile_event = serde_json::json!({"choices": [{"delta": {"content": opaque}}]});
+        let hostile = package_with_path(
+            "/api/v1/chat/completions",
+            r#"{"model":"openai/gpt-oss-20b:free","messages":[]}"#,
+            &format!("data: {hostile_event}\n\n"),
+            safe_trace(),
+        );
+        assert_eq!(
+            validate_public_trace_package_with_context(&hostile, openrouter_chat_context())
+                .unwrap_err()
+                .code,
+            "high_entropy_value"
+        );
+
+        let hostile_metadata = package_with_path(
+            "/api/v1/chat/completions",
+            r#"{"model":"openai/gpt-oss-20b:free","messages":[]}"#,
+            &format!("id: {opaque}\ndata: {{\"choices\": []}}\n\n"),
+            safe_trace(),
+        );
+        assert_eq!(
+            validate_public_trace_package_with_context(
+                &hostile_metadata,
+                openrouter_chat_context()
+            )
+            .unwrap_err()
+            .code,
+            "high_entropy_value"
+        );
     }
 
     #[test]

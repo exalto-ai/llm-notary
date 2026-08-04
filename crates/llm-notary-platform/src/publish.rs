@@ -43,6 +43,9 @@ pub struct CreatePublishJob {
     size_bytes: i64,
     sha256: String,
     visibility: ShareVisibility,
+    /// Accept unexplained high-entropy values after reviewing the disclosure.
+    #[serde(default)]
+    force: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema, PartialEq, Eq)]
@@ -91,6 +94,7 @@ struct ShareResponse {
     id: String,
     state: String,
     visibility: ShareVisibility,
+    force: bool,
     created_at: i64,
     updated_at: i64,
     admitted_at: Option<i64>,
@@ -106,6 +110,7 @@ pub(super) struct PublishJobRow {
     pub(super) user_id: String,
     pub(super) state: String,
     pub(super) visibility: String,
+    pub(super) force_publication: bool,
     pub(super) archive_format: String,
     pub(super) declared_size_bytes: i64,
     pub(super) declared_sha256: String,
@@ -260,16 +265,18 @@ async fn create_publish_job(
     let upload_expires_at = now + state.publish.upload_ttl_secs;
     let inserted = sqlx::query(
         "INSERT INTO publish_jobs
-         (id, user_id, idempotency_key, state, visibility, archive_format, declared_size_bytes,
+         (id, user_id, idempotency_key, state, visibility, force_publication,
+          archive_format, declared_size_bytes,
           declared_sha256, upload_object_key, intake_object_key, upload_expires_at,
           created_at, updated_at)
-         VALUES ($1, $2, $3, 'uploading', $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         VALUES ($1, $2, $3, 'uploading', $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          ON CONFLICT (user_id, idempotency_key) DO NOTHING",
     )
     .bind(&job_id)
     .bind(&user_id)
     .bind(&idempotency_key)
     .bind(request.visibility.as_str())
+    .bind(request.force)
     .bind(&request.archive_format)
     .bind(request.size_bytes)
     .bind(&request.sha256)
@@ -287,6 +294,7 @@ async fn create_publish_job(
         || job.declared_size_bytes != request.size_bytes
         || job.declared_sha256 != request.sha256
         || job.visibility != request.visibility.as_str()
+        || job.force_publication != request.force
     {
         return Err(ApiError::conflict(
             "idempotency key was already used with different archive metadata",
@@ -914,6 +922,7 @@ fn share_response(job: &PublishJobRow, app_url: &url::Url) -> ShareResponse {
         id: job.id.clone(),
         state: job.state.clone(),
         visibility,
+        force: job.force_publication,
         created_at: job.created_at,
         updated_at: job.updated_at,
         admitted_at: job.admitted_at,
@@ -999,6 +1008,7 @@ mod tests {
             size_bytes: 1234,
             sha256: SHA256.to_owned(),
             visibility: ShareVisibility::Unlisted,
+            force: false,
         }
     }
 
@@ -1167,6 +1177,17 @@ mod tests {
             .await
             .expect("idempotent create");
         assert_eq!(second.status(), StatusCode::OK);
+        let mut forced = request();
+        forced.force = true;
+        let force_conflict =
+            create_publish_job(State(state.clone()), headers_one.clone(), Json(forced)).await;
+        assert!(matches!(
+            force_conflict,
+            Err(ApiError {
+                status: StatusCode::CONFLICT,
+                ..
+            })
+        ));
         let mut changed = request();
         changed.size_bytes += 1;
         let conflict = create_publish_job(State(state.clone()), headers_one, Json(changed)).await;

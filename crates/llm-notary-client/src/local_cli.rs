@@ -226,6 +226,11 @@ struct ShareArgs {
     /// Whether the share appears in the public Library index.
     #[arg(long, value_enum, default_value_t = ShareVisibility::Unlisted)]
     visibility: ShareVisibility,
+
+    /// Accept unexplained high-entropy values after reviewing the disclosure.
+    /// Concrete secret detections and verification failures remain blocked.
+    #[arg(long)]
+    force: bool,
 }
 
 #[derive(Args, Debug, Default)]
@@ -758,7 +763,7 @@ async fn execute(
                     Method::POST,
                     &format!("/v1/captures/{}/shares", args.id),
                     &[],
-                    &json!({ "visibility": args.visibility.as_str() }),
+                    &json!({ "visibility": args.visibility.as_str(), "force": args.force }),
                 )
                 .await
         }
