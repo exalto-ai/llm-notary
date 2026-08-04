@@ -6,6 +6,7 @@ export type Notary = components['schemas']['NotaryResponse'];
 export type Capture = components['schemas']['CaptureResponse'];
 export type CaptureDetail = components['schemas']['CaptureDetailResponse'];
 export type Operation = components['schemas']['OperationResponse'];
+export type OperationSummary = components['schemas']['OperationSummaryResponse'];
 export type Event = components['schemas']['EventResponse'];
 export type Trace = components['schemas']['TraceResponse'];
 export type Verification = components['schemas']['VerificationResponse'];
@@ -86,7 +87,7 @@ async function requestBlob(path: string): Promise<Blob> {
   return response.blob();
 }
 
-function queryString(values: Record<string, string | number | undefined>) {
+function queryString(values: Record<string, string | number | boolean | undefined>) {
   const query = new URLSearchParams();
   Object.entries(values).forEach(([key, value]) => {
     if (value !== undefined && value !== '') query.set(key, String(value));
@@ -102,32 +103,22 @@ export const localApi = {
   endSession: () => request<void>('/v1/session', { method: 'DELETE' }),
   status: () => request<Status>('/v1/status'),
   notaries: () => request<Notaries>('/v1/notaries'),
-  captures: (filters: Record<string, string | number | undefined> = {}) =>
+  captures: (filters: Record<string, string | number | boolean | undefined> = {}) =>
     request<CaptureList>(`/v1/captures${queryString(filters)}`),
-  allCaptures: async (filters: Record<string, string | number | undefined> = {}) => {
-    const items: Capture[] = [];
-    let offset = 0;
-    for (;;) {
-      const page = await request<CaptureList>(`/v1/captures${queryString({ ...filters, limit: 200, offset })}`);
-      items.push(...page.items);
-      if (page.items.length < page.limit) return { items, limit: page.limit, offset: 0 };
-      offset += page.items.length;
-    }
-  },
   capture: (captureId: string) => request<CaptureDetail>(`/v1/captures/${encodeURIComponent(captureId)}`),
   startFinalization: (captureId: string) =>
     request<FinalizationResult>(
       `/v1/captures/${encodeURIComponent(captureId)}/finalizations`,
       { method: 'POST' }
     ),
-  operations: (filters: Record<string, string | number | undefined> = {}) =>
+  operations: (filters: Record<string, string | number | boolean | undefined> = {}) =>
     request<OperationList>(`/v1/operations${queryString(filters)}`),
   operation: (operationId: string) => request<Operation>(`/v1/operations/${encodeURIComponent(operationId)}`),
   retry: (operationId: string) => request<Operation>(
     `/v1/operations/${encodeURIComponent(operationId)}/retry`,
     { method: 'POST' }
   ),
-  events: (filters: Record<string, string | number | undefined> = {}) =>
+  events: (filters: Record<string, string | number | boolean | undefined> = {}) =>
     request<EventList>(`/v1/events${queryString(filters)}`),
   trace: (captureId: string) => request<Trace>(`/v1/captures/${encodeURIComponent(captureId)}/trace`),
   downloadPackage: (captureId: string) => requestBlob(

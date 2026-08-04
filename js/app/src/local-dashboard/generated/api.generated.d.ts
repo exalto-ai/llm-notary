@@ -101,7 +101,7 @@ export interface paths {
         };
         /**
          * Search local captures
-         * @description Lists the bounded local capture catalog with punctuation-safe preview search and exact metadata filters.
+         * @description Lists the local capture catalog with opaque cursor pagination, punctuation-safe preview search, and exact metadata filters. The legacy offset parameter is rejected; restart traversal without a cursor instead.
          */
         get: operations["captures"];
         put?: never;
@@ -241,7 +241,7 @@ export interface paths {
         };
         /**
          * List service events
-         * @description Lists the bounded redacted event history with cursor, severity, type, resource, and time filters.
+         * @description Lists redacted event history with opaque back-pagination and a separate high-water cursor for following new events.
          */
         get: operations["events"];
         put?: never;
@@ -281,7 +281,7 @@ export interface paths {
         };
         /**
          * List background operations
-         * @description Lists durable background operations with optional state, kind, and capture filters.
+         * @description Lists bounded operation summaries with opaque cursor pagination and optional state, kind, and capture filters. Fetch one operation for its complete attempt history.
          */
         get: operations["operations"];
         put?: never;
@@ -433,11 +433,6 @@ export interface components {
             capture: components["schemas"]["CaptureResponse"];
             finalizations: components["schemas"]["OperationResponse"][];
         };
-        CaptureListResponse: {
-            items: components["schemas"]["CaptureResponse"][];
-            limit: number;
-            offset: number;
-        };
         CaptureResponse: {
             capture_id: string;
             capture_state: string;
@@ -519,9 +514,10 @@ export interface components {
             error: components["schemas"]["ErrorBody"];
         };
         EventListResponse: {
+            /** @description Snapshot cursor for polling events committed after this response. */
+            high_water_cursor?: string | null;
             items: components["schemas"]["EventResponse"][];
-            /** Format: int64 */
-            next_cursor?: number | null;
+            next_cursor?: string | null;
         };
         EventResponse: {
             capture_id?: string | null;
@@ -583,9 +579,6 @@ export interface components {
             started_at_unix_ms: number;
             state: string;
         };
-        OperationListResponse: {
-            items: components["schemas"]["OperationResponse"][];
-        };
         OperationResponse: {
             /** Format: int32 */
             attempt: number;
@@ -602,6 +595,85 @@ export interface components {
             /** Format: int64 */
             started_at_unix_ms?: number | null;
             state: string;
+        };
+        OperationSummaryResponse: {
+            /** Format: int32 */
+            attempt: number;
+            capture_id?: string | null;
+            /** Format: int64 */
+            completed_at_unix_ms?: number | null;
+            /** Format: int64 */
+            created_at_unix_ms: number;
+            failure_code?: string | null;
+            kind: string;
+            operation_id: string;
+            /** Format: int64 */
+            started_at_unix_ms?: number | null;
+            state: string;
+        };
+        /** @description Query fields shared by every paginated list route. */
+        PageQuery: {
+            /** @description Opaque continuation token returned by the same route and filter set. */
+            cursor?: string | null;
+            /**
+             * Format: int32
+             * @description Number of items to return. Each route documents its own maximum.
+             */
+            limit?: number | null;
+        };
+        /** @description Uniform response shape for every paginated list route. */
+        Page_CaptureResponse: {
+            items: {
+                capture_id: string;
+                capture_state: string;
+                /** Format: int64 */
+                completed_at_unix_ms?: number | null;
+                /** Format: int64 */
+                created_at_unix_ms: number;
+                /** Format: int64 */
+                duration_ms?: number | null;
+                failure_code?: string | null;
+                finalization_eligible: boolean;
+                finalization_ineligibility_code?: string | null;
+                finalization_state: string;
+                /** Format: int32 */
+                http_status?: number | null;
+                operation: string;
+                output_preview: string;
+                output_preview_truncated: boolean;
+                prompt_preview: string;
+                prompt_preview_truncated: boolean;
+                provider: string;
+                /** Format: int64 */
+                request_bytes: number;
+                requested_model?: string | null;
+                /** Format: int64 */
+                response_bytes?: number | null;
+                response_model?: string | null;
+                streaming: boolean;
+            }[];
+            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
+            next_cursor?: string | null;
+        };
+        /** @description Uniform response shape for every paginated list route. */
+        Page_OperationSummaryResponse: {
+            items: {
+                /** Format: int32 */
+                attempt: number;
+                capture_id?: string | null;
+                /** Format: int64 */
+                completed_at_unix_ms?: number | null;
+                /** Format: int64 */
+                created_at_unix_ms: number;
+                failure_code?: string | null;
+                kind: string;
+                operation_id: string;
+                /** Format: int64 */
+                started_at_unix_ms?: number | null;
+                state: string;
+            }[];
+            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
+            next_cursor?: string | null;
         };
         ShareResponse: {
             capture_id: string;
@@ -835,7 +907,11 @@ export interface operations {
                 provider?: string;
                 capture_state?: string;
                 finalization_state?: string;
+                streaming?: boolean;
+                created_after_unix_ms?: number;
+                /** @description Page size; defaults to 50 */
                 limit?: number;
+                cursor?: string;
                 offset?: number;
             };
             header?: never;
@@ -849,7 +925,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CaptureListResponse"];
+                    "application/json": components["schemas"]["Page_CaptureResponse"];
                 };
             };
             400: {
@@ -1107,12 +1183,14 @@ export interface operations {
     events: {
         parameters: {
             query?: {
-                cursor?: number;
+                cursor?: string;
+                after?: string;
                 severity?: string;
                 event_type?: string;
                 capture_id?: string;
                 operation_id?: string;
                 created_after_unix_ms?: number;
+                /** @description Page size; defaults to 50 */
                 limit?: number;
             };
             header?: never;
@@ -1188,7 +1266,9 @@ export interface operations {
                 state?: string;
                 kind?: string;
                 capture_id?: string;
+                /** @description Page size; defaults to 50 */
                 limit?: number;
+                cursor?: string;
             };
             header?: never;
             path?: never;
@@ -1201,7 +1281,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OperationListResponse"];
+                    "application/json": components["schemas"]["Page_OperationSummaryResponse"];
                 };
             };
             400: {

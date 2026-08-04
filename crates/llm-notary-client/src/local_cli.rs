@@ -247,8 +247,12 @@ struct CaptureListArgs {
     finalization_state: Option<String>,
     #[arg(long)]
     limit: Option<usize>,
+    /// Continue from an opaque cursor returned by the daemon.
     #[arg(long)]
-    offset: Option<usize>,
+    cursor: Option<String>,
+    /// Traverse every remaining page and emit one combined result.
+    #[arg(long)]
+    all: bool,
 }
 
 #[derive(Args, Debug, Default)]
@@ -261,12 +265,21 @@ struct OperationListArgs {
     capture_id: Option<String>,
     #[arg(long)]
     limit: Option<usize>,
+    /// Continue from an opaque cursor returned by the daemon.
+    #[arg(long)]
+    cursor: Option<String>,
+    /// Traverse every remaining page and emit one combined result.
+    #[arg(long)]
+    all: bool,
 }
 
 #[derive(Args, Debug, Default)]
 struct EventListArgs {
     #[arg(long)]
-    cursor: Option<u64>,
+    cursor: Option<String>,
+    /// Follow events after a high-water cursor returned by an earlier request.
+    #[arg(long)]
+    after: Option<String>,
     #[arg(long)]
     severity: Option<String>,
     #[arg(long)]
@@ -279,6 +292,9 @@ struct EventListArgs {
     created_after_unix_ms: Option<u64>,
     #[arg(long)]
     limit: Option<usize>,
+    /// Traverse every remaining page and emit one combined result.
+    #[arg(long)]
+    all: bool,
 }
 
 struct AdminCredentials {
@@ -683,9 +699,7 @@ async fn execute(
         CliCommand::Status => client.request(Method::GET, "/v1/status", &[]).await,
         CliCommand::Captures { command } => match command {
             CapturesCommand::List(args) => {
-                client
-                    .request(Method::GET, "/v1/captures", &capture_query(args))
-                    .await
+                list_request(client, "/v1/captures", capture_query(args), args.all).await
             }
             CapturesCommand::Show(args) => {
                 validate_identifier(&args.id, "cap-")?;
@@ -706,9 +720,7 @@ async fn execute(
         }
         CliCommand::Operations { command } => match command {
             OperationsCommand::List(args) => {
-                client
-                    .request(Method::GET, "/v1/operations", &operation_query(args))
-                    .await
+                list_request(client, "/v1/operations", operation_query(args), args.all).await
             }
             OperationsCommand::Show(args) => {
                 validate_identifier(&args.id, "op-")?;
@@ -768,9 +780,7 @@ async fn execute(
                 .await
         }
         CliCommand::Events(args) => {
-            client
-                .request(Method::GET, "/v1/events", &event_query(args))
-                .await
+            list_request(client, "/v1/events", event_query(args), args.all).await
         }
         CliCommand::Notaries { .. } => client.request(Method::GET, "/v1/notaries", &[]).await,
         CliCommand::Open => {
@@ -911,7 +921,7 @@ fn capture_query(args: &CaptureListArgs) -> Vec<(String, String)> {
         args.finalization_state.as_deref(),
     );
     push_number(&mut query, "limit", args.limit);
-    push_number(&mut query, "offset", args.offset);
+    push_string(&mut query, "cursor", args.cursor.as_deref());
     query
 }
 
@@ -921,12 +931,14 @@ fn operation_query(args: &OperationListArgs) -> Vec<(String, String)> {
     push_string(&mut query, "kind", args.kind.as_deref());
     push_string(&mut query, "capture_id", args.capture_id.as_deref());
     push_number(&mut query, "limit", args.limit);
+    push_string(&mut query, "cursor", args.cursor.as_deref());
     query
 }
 
 fn event_query(args: &EventListArgs) -> Vec<(String, String)> {
     let mut query = Vec::new();
-    push_number(&mut query, "cursor", args.cursor);
+    push_string(&mut query, "cursor", args.cursor.as_deref());
+    push_string(&mut query, "after", args.after.as_deref());
     push_string(&mut query, "severity", args.severity.as_deref());
     push_string(&mut query, "event_type", args.event_type.as_deref());
     push_string(&mut query, "capture_id", args.capture_id.as_deref());
@@ -938,6 +950,56 @@ fn event_query(args: &EventListArgs) -> Vec<(String, String)> {
     );
     push_number(&mut query, "limit", args.limit);
     query
+}
+
+async fn list_request(
+    client: &AdminClient,
+    path: &str,
+    mut query: Vec<(String, String)>,
+    all: bool,
+) -> Result<Value, CliError> {
+    let mut response = client.request(Method::GET, path, &query).await?;
+    if !all {
+        return Ok(response);
+    }
+    let mut items = response
+        .get_mut("items")
+        .and_then(Value::as_array_mut)
+        .map(std::mem::take)
+        .ok_or_else(incomplete_page_error)?;
+    while let Some(cursor) = response
+        .get("next_cursor")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    {
+        set_query_value(&mut query, "cursor", cursor);
+        response = client.request(Method::GET, path, &query).await?;
+        let page = response
+            .get_mut("items")
+            .and_then(Value::as_array_mut)
+            .map(std::mem::take)
+            .ok_or_else(incomplete_page_error)?;
+        items.extend(page);
+    }
+    let object = response.as_object_mut().ok_or_else(incomplete_page_error)?;
+    object.insert("items".to_owned(), Value::Array(items));
+    object.insert("next_cursor".to_owned(), Value::Null);
+    Ok(response)
+}
+
+fn incomplete_page_error() -> CliError {
+    CliError::new(
+        EXIT_RETRYABLE,
+        "the daemon returned an incomplete page; check that the CLI and daemon versions match",
+    )
+}
+
+fn set_query_value(query: &mut Vec<(String, String)>, key: &str, value: String) {
+    if let Some((_, current)) = query.iter_mut().find(|(name, _)| name == key) {
+        *current = value;
+    } else {
+        query.push((key.to_owned(), value));
+    }
 }
 
 fn push_string(query: &mut Vec<(String, String)>, key: &str, value: Option<&str>) {
@@ -1174,9 +1236,18 @@ mod tests {
         for arguments in [
             vec!["llm-notary", "status"],
             vec!["llm-notary", "captures", "list"],
+            vec!["llm-notary", "captures", "list", "--all"],
+            vec![
+                "llm-notary",
+                "captures",
+                "list",
+                "--cursor",
+                "opaque-cursor",
+            ],
             vec!["llm-notary", "captures", "show", "cap-example"],
             vec!["llm-notary", "finalize", "cap-example"],
             vec!["llm-notary", "operations", "list"],
+            vec!["llm-notary", "operations", "list", "--all"],
             vec!["llm-notary", "operations", "show", "op-example"],
             vec!["llm-notary", "operations", "retry", "op-example"],
             vec!["llm-notary", "traces", "show", "cap-example"],
@@ -1195,6 +1266,8 @@ mod tests {
             ],
             vec!["llm-notary", "publish", "cap-example"],
             vec!["llm-notary", "events"],
+            vec!["llm-notary", "events", "--all"],
+            vec!["llm-notary", "events", "--after", "high-water"],
             vec!["llm-notary", "notaries", "list"],
             vec!["llm-notary", "open"],
         ] {
@@ -1424,6 +1497,49 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response["state"], "pending");
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn all_mode_combines_pages_and_preserves_final_page_metadata() {
+        let router = Router::new().route(
+            "/v1/captures",
+            get(
+                |axum::extract::Query(query): axum::extract::Query<
+                    std::collections::HashMap<String, String>,
+                >| async move {
+                    if query.get("cursor").map(String::as_str) == Some("page-two") {
+                        Json(json!({
+                            "items": [{"capture_id": "cap-b"}],
+                            "next_cursor": null,
+                            "high_water_cursor": "watermark-two"
+                        }))
+                    } else {
+                        Json(json!({
+                            "items": [{"capture_id": "cap-a"}],
+                            "next_cursor": "page-two",
+                            "high_water_cursor": "watermark-one"
+                        }))
+                    }
+                },
+            ),
+        );
+        let (address, server) = serve(router).await;
+        let client = AdminClient::new(address, None).unwrap();
+
+        let response = list_request(
+            &client,
+            "/v1/captures",
+            vec![("limit".into(), "1".into())],
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response["items"][0]["capture_id"], "cap-a");
+        assert_eq!(response["items"][1]["capture_id"], "cap-b");
+        assert!(response["next_cursor"].is_null());
+        assert_eq!(response["high_water_cursor"], "watermark-two");
         server.abort();
     }
 

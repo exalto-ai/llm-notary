@@ -373,20 +373,30 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       active_operations: operations.filter((operation) => ['queued', 'running'].includes(operation.state)).length
     }
   });
-  const filteredCaptures = (filters: Record<string, string | number | undefined> = {}) => {
+  const filteredCaptures = (filters: Record<string, string | number | boolean | undefined> = {}) => {
     const queryTerms = String(filters.query ?? '').toLowerCase().split(/[^\p{L}\p{N}_]+/u).filter(Boolean);
     const state = String(filters.finalization_state ?? '');
     const captureState = String(filters.capture_state ?? '');
     const provider = String(filters.provider ?? '');
     const model = String(filters.model ?? '');
+    const streaming = filters.streaming === undefined ? null : filters.streaming === true || filters.streaming === 'true';
+    const createdAfter = Number(filters.created_after_unix_ms ?? 0);
     return captures.filter((capture) =>
       (queryTerms.length === 0 || queryTerms.every((term) =>
         `${capture.prompt_preview} ${capture.output_preview} ${capture.requested_model}`.toLowerCase().includes(term)))
       && (!state || capture.finalization_state === state)
       && (!captureState || capture.capture_state === captureState)
       && (!provider || capture.provider === provider)
-      && (!model || capture.requested_model === model));
+      && (!model || capture.requested_model === model)
+      && (streaming == null || capture.streaming === streaming)
+      && (!createdAfter || capture.created_at_unix_ms >= createdAfter));
   };
+  const cursorPosition = (value: unknown) => {
+    if (typeof value !== 'string') return undefined;
+    const position = Number(value.split(':').at(-1));
+    return Number.isFinite(position) ? position : undefined;
+  };
+  const cursor = (kind: string, position: number) => `fixture:${kind}:${position}`;
   return {
     session: async () => undefined,
     endSession: async () => undefined,
@@ -394,10 +404,12 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     notaries: async () => structuredClone(fixtureNotaries),
     captures: async (filters = {}) => {
       const limit = Number(filters.limit ?? 50);
-      const offset = Number(filters.offset ?? 0);
-      return { items: filteredCaptures(filters).slice(offset, offset + limit), limit, offset };
+      const all = filteredCaptures(filters);
+      const start = cursorPosition(filters.cursor) ?? 0;
+      const items = all.slice(start, start + limit);
+      const next = start + items.length;
+      return { items, next_cursor: next < all.length ? cursor('captures', next) : null };
     },
-    allCaptures: async (filters = {}) => ({ items: filteredCaptures(filters), limit: 200, offset: 0 }),
     capture: async (captureId) => detail(captureId, captures, operations),
     startFinalization: async (captureId) => {
       const capture = captures.find((item) => item.capture_id === captureId);
@@ -417,11 +429,14 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     },
     operations: async (filters = {}) => {
       const limit = Number(filters.limit ?? 50);
-      const items = structuredClone(operations.filter((operation) =>
+      const all = operations.filter((operation) =>
         (!filters.state || operation.state === filters.state)
         && (!filters.kind || operation.kind === filters.kind)
-        && (!filters.capture_id || operation.capture_id === filters.capture_id)).slice(0, limit));
-      return { items };
+        && (!filters.capture_id || operation.capture_id === filters.capture_id));
+      const start = cursorPosition(filters.cursor) ?? 0;
+      const items = structuredClone(all.slice(start, start + limit));
+      const next = start + items.length;
+      return { items, next_cursor: next < all.length ? cursor('operations', next) : null };
     },
     operation: async (operationId) => {
       const operation = operations.find((item) => item.operation_id === operationId);
@@ -444,17 +459,27 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       return operation;
     },
     events: async (filters = {}) => {
-      const cursor = Number(filters.cursor ?? filters.after ?? 0);
+      const pagePosition = cursorPosition(filters.cursor);
+      const after = cursorPosition(filters.after);
       const createdAfter = Number(filters.created_after_unix_ms ?? 0);
       const limit = Number(filters.limit ?? 100);
-      const items = events.filter((event) =>
-        (!cursor || event.event_id > cursor)
+      const matching = events.filter((event) =>
+        (after === undefined
+          ? pagePosition === undefined || event.event_id < pagePosition
+          : event.event_id > (pagePosition ?? after))
         && (!filters.severity || event.severity === filters.severity)
         && (!filters.event_type || event.event_type === filters.event_type)
         && (!filters.capture_id || event.capture_id === filters.capture_id)
         && (!filters.operation_id || event.operation_id === filters.operation_id)
-        && (!createdAfter || event.created_at_unix_ms >= createdAfter)).slice(0, limit);
-      return { items, next_cursor: events[0]?.event_id };
+        && (!createdAfter || event.created_at_unix_ms >= createdAfter));
+      if (after !== undefined) matching.sort((left, right) => left.event_id - right.event_id);
+      const items = matching.slice(0, limit);
+      return {
+        items,
+        next_cursor: matching.length > limit && items.length
+          ? cursor('events', items.at(-1)!.event_id) : null,
+        high_water_cursor: events.length ? cursor('events', events[0].event_id) : null
+      };
     },
     trace: async (captureId) => {
       const trace = traces.get(captureId);

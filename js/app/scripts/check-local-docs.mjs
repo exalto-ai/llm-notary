@@ -65,9 +65,9 @@ function parameterNames(path, method) {
   return (openapi.paths[path][method].parameters ?? []).map((parameter) => parameter.name).sort();
 }
 const expectedParameters = {
-  'GET /v1/captures': ['capture_state', 'finalization_state', 'limit', 'model', 'offset', 'provider', 'query'],
-  'GET /v1/operations': ['capture_id', 'kind', 'limit', 'state'],
-  'GET /v1/events': ['capture_id', 'created_after_unix_ms', 'cursor', 'event_type', 'limit', 'operation_id', 'severity'],
+  'GET /v1/captures': ['capture_state', 'created_after_unix_ms', 'cursor', 'finalization_state', 'limit', 'model', 'offset', 'provider', 'query', 'streaming'],
+  'GET /v1/operations': ['capture_id', 'cursor', 'kind', 'limit', 'state'],
+  'GET /v1/events': ['after', 'capture_id', 'created_after_unix_ms', 'cursor', 'event_type', 'limit', 'operation_id', 'severity'],
   'GET /v1/shares/{share_id}': ['share_id']
 };
 for (const [operation, expected] of Object.entries(expectedParameters)) {
@@ -79,12 +79,14 @@ for (const [operation, expected] of Object.entries(expectedParameters)) {
 }
 
 const expectedRequiredFields = {
-  CaptureListResponse: ['items', 'limit', 'offset'],
+  Page_CaptureResponse: ['items'],
+  Page_OperationSummaryResponse: ['items'],
   CaptureDetailResponse: ['artifacts', 'capture', 'finalizations'],
   CaptureResponse: ['capture_id', 'created_at_unix_ms', 'provider', 'operation', 'streaming', 'request_bytes', 'capture_state', 'finalization_state', 'finalization_eligible', 'prompt_preview', 'prompt_preview_truncated', 'output_preview', 'output_preview_truncated'],
   ErrorBody: ['code', 'message'],
   ErrorEnvelope: ['error'],
   EventResponse: ['event_id', 'created_at_unix_ms', 'event_type', 'severity', 'message'],
+  EventListResponse: ['items'],
   FinalizationResponse: ['operation', 'deduplicated'],
   NotariesResponse: ['source', 'notaries'],
   NotaryResponse: ['endpoint', 'transport', 'key_id', 'status'],
@@ -103,7 +105,7 @@ for (const [schema, expected] of Object.entries(expectedRequiredFields)) {
   }
 }
 
-for (const term of ['202 Accepted', 'deduplicated', 'attempt_history', 'finalization_eligible', 'retryable', 'next_cursor', 'poll_interval_seconds', 'notary_key_id', 'trust_source']) {
+for (const term of ['202 Accepted', 'deduplicated', 'attempt_history', 'finalization_eligible', 'retryable', 'next_cursor', 'high_water_cursor', 'poll_interval_seconds', 'notary_key_id', 'trust_source']) {
   if (!workflowContent.includes(term)) throw new Error(`Workflow documentation is missing contract term: ${term}`);
 }
 

@@ -8,10 +8,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 
 use crate::{config::AgentConfig, sha256_hex};
 
-const CATALOG_SCHEMA_VERSION: i64 = 4;
+const CATALOG_SCHEMA_VERSION: i64 = 5;
 
 /// The durable capture fields that are safe and useful to query locally.
 #[derive(Clone, Debug)]
@@ -89,6 +90,36 @@ pub struct Event {
     pub message: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct CapturePagePosition {
+    pub created_at_unix_ms: u64,
+    pub capture_id: String,
+}
+
+impl From<&CaptureSummary> for CapturePagePosition {
+    fn from(capture: &CaptureSummary) -> Self {
+        Self {
+            created_at_unix_ms: capture.created_at_unix_ms,
+            capture_id: capture.capture_id.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub struct OperationPagePosition {
+    pub created_at_unix_ms: u64,
+    pub operation_id: String,
+}
+
+impl From<&Operation> for OperationPagePosition {
+    fn from(operation: &Operation) -> Self {
+        Self {
+            created_at_unix_ms: operation.created_at_unix_ms,
+            operation_id: operation.operation_id.clone(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CatalogCounts {
     pub total_captures: u64,
@@ -106,8 +137,10 @@ pub struct CaptureFilters<'a> {
     pub provider: Option<&'a str>,
     pub capture_state: Option<&'a str>,
     pub finalization_state: Option<&'a str>,
+    pub streaming: Option<bool>,
+    pub created_after_unix_ms: Option<u64>,
+    pub cursor: Option<&'a CapturePagePosition>,
     pub limit: usize,
-    pub offset: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -115,11 +148,15 @@ pub struct OperationFilters<'a> {
     pub state: Option<&'a str>,
     pub kind: Option<&'a str>,
     pub capture_id: Option<&'a str>,
+    pub cursor: Option<&'a OperationPagePosition>,
     pub limit: usize,
 }
 
 #[derive(Clone, Debug, Default)]
 pub struct EventFilters<'a> {
+    /// Continue backward through history before this event identifier.
+    pub before: Option<u64>,
+    /// Follow events committed after this high-water identifier.
     pub after: Option<u64>,
     pub severity: Option<&'a str>,
     pub event_type: Option<&'a str>,
@@ -410,21 +447,22 @@ impl Catalog {
                 "SELECT c.* FROM captures c
                  JOIN capture_search search ON search.capture_id = c.capture_id
                  WHERE capture_search MATCH ? AND c.requested_model = ?
-                 ORDER BY c.created_at_unix_ms DESC",
+                 ORDER BY c.created_at_unix_ms DESC, c.capture_id DESC",
             )?,
             (Some(_), None) => connection.prepare(
                 "SELECT c.* FROM captures c
                  JOIN capture_search search ON search.capture_id = c.capture_id
                  WHERE capture_search MATCH ?
-                 ORDER BY c.created_at_unix_ms DESC",
+                 ORDER BY c.created_at_unix_ms DESC, c.capture_id DESC",
             )?,
             (None, Some(_)) => connection.prepare(
                 "SELECT c.* FROM captures c
                  WHERE c.requested_model = ?
-                 ORDER BY c.created_at_unix_ms DESC",
+                 ORDER BY c.created_at_unix_ms DESC, c.capture_id DESC",
             )?,
-            (None, None) => connection
-                .prepare("SELECT c.* FROM captures c ORDER BY c.created_at_unix_ms DESC")?,
+            (None, None) => connection.prepare(
+                "SELECT c.* FROM captures c ORDER BY c.created_at_unix_ms DESC, c.capture_id DESC",
+            )?,
         };
         let mut rows = match (query, model) {
             (Some(query), Some(model)) => statement.query(params![query, model])?,
@@ -449,7 +487,7 @@ impl Catalog {
         if filters.query.is_some() && search_query.is_none() {
             return Ok(Vec::new());
         }
-        let limit = filters.limit.clamp(1, 200);
+        let limit = filters.limit.clamp(1, 201);
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let mut sql = if search_query.is_some() {
             "SELECT c.* FROM captures c JOIN capture_search search ON search.capture_id = c.capture_id WHERE capture_search MATCH ?".to_owned()
@@ -473,9 +511,25 @@ impl Catalog {
                 values.push(value.to_owned().into());
             }
         }
-        sql.push_str(" ORDER BY c.created_at_unix_ms DESC LIMIT ? OFFSET ?");
+        if let Some(streaming) = filters.streaming {
+            sql.push_str(" AND c.streaming = ?");
+            values.push(streaming.into());
+        }
+        if let Some(created_after) = filters.created_after_unix_ms {
+            sql.push_str(" AND c.created_at_unix_ms >= ?");
+            values.push(i64::try_from(created_after)?.into());
+        }
+        if let Some(cursor) = filters.cursor {
+            sql.push_str(
+                " AND (c.created_at_unix_ms < ? OR (c.created_at_unix_ms = ? AND c.capture_id < ?))",
+            );
+            let created_at = i64::try_from(cursor.created_at_unix_ms)?;
+            values.push(created_at.into());
+            values.push(created_at.into());
+            values.push(cursor.capture_id.clone().into());
+        }
+        sql.push_str(" ORDER BY c.created_at_unix_ms DESC, c.capture_id DESC LIMIT ?");
         values.push(i64::try_from(limit)?.into());
-        values.push(i64::try_from(filters.offset)?.into());
         let mut statement = connection.prepare(&sql)?;
         let mut rows = statement.query(rusqlite::params_from_iter(values))?;
         let mut captures = Vec::new();
@@ -838,8 +892,17 @@ impl Catalog {
                 values.push(value.to_owned().into());
             }
         }
-        sql.push_str(" ORDER BY created_at_unix_ms DESC LIMIT ?");
-        values.push(i64::try_from(filters.limit.clamp(1, 200))?.into());
+        if let Some(cursor) = filters.cursor {
+            sql.push_str(
+                " AND (created_at_unix_ms < ? OR (created_at_unix_ms = ? AND operation_id < ?))",
+            );
+            let created_at = i64::try_from(cursor.created_at_unix_ms)?;
+            values.push(created_at.into());
+            values.push(created_at.into());
+            values.push(cursor.operation_id.clone().into());
+        }
+        sql.push_str(" ORDER BY created_at_unix_ms DESC, operation_id DESC LIMIT ?");
+        values.push(i64::try_from(filters.limit.clamp(1, 201))?.into());
         let mut statement = connection.prepare(&sql)?;
         let mut rows = statement.query(rusqlite::params_from_iter(values))?;
         let mut operations = Vec::new();
@@ -870,9 +933,9 @@ impl Catalog {
             .map_err(Into::into)
     }
 
-    pub fn events(&self, after: Option<u64>, limit: usize) -> Result<Vec<Event>> {
+    pub fn events(&self, before: Option<u64>, limit: usize) -> Result<Vec<Event>> {
         self.filtered_events(&EventFilters {
-            after,
+            before,
             limit,
             ..EventFilters::default()
         })
@@ -880,38 +943,114 @@ impl Catalog {
 
     pub fn filtered_events(&self, filters: &EventFilters<'_>) -> Result<Vec<Event>> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
-        let mut sql = "SELECT * FROM events WHERE event_id > ?".to_owned();
-        let mut values = Vec::<rusqlite::types::Value>::from([i64::try_from(
-            filters.after.unwrap_or(0),
-        )?
-        .into()]);
-        for (column, value) in [
-            ("severity", filters.severity),
-            ("event_type", filters.event_type),
-            ("capture_id", filters.capture_id),
-            ("operation_id", filters.operation_id),
-        ] {
-            if let Some(value) = value {
-                sql.push_str(" AND ");
-                sql.push_str(column);
-                sql.push_str(" = ?");
-                values.push(value.to_owned().into());
-            }
-        }
-        if let Some(created_after) = filters.created_after_unix_ms {
-            sql.push_str(" AND created_at_unix_ms >= ?");
-            values.push(i64::try_from(created_after)?.into());
-        }
-        sql.push_str(" ORDER BY event_id DESC LIMIT ?");
-        values.push(i64::try_from(filters.limit.clamp(1, 200))?.into());
-        let mut statement = connection.prepare(&sql)?;
-        let mut rows = statement.query(rusqlite::params_from_iter(values))?;
-        let mut events = Vec::new();
-        while let Some(row) = rows.next()? {
-            events.push(event_from_row(row)?);
-        }
-        Ok(events)
+        filtered_events(&connection, filters)
     }
+
+    /// Reads the displayed page and its follow watermark from one SQLite
+    /// snapshot so an event committed between the two reads cannot be skipped.
+    pub fn filtered_events_with_high_water(
+        &self,
+        filters: &EventFilters<'_>,
+    ) -> Result<(Vec<Event>, Option<u64>)> {
+        self.filtered_events_snapshot(filters, || {})
+    }
+
+    fn filtered_events_snapshot<F>(
+        &self,
+        filters: &EventFilters<'_>,
+        after_page: F,
+    ) -> Result<(Vec<Event>, Option<u64>)>
+    where
+        F: FnOnce(),
+    {
+        let mut connection = self.connection.lock().expect("catalog mutex poisoned");
+        let transaction = connection.transaction()?;
+        let events = filtered_events(&transaction, filters)?;
+        after_page();
+        let high_water = event_high_water(&transaction, filters)?;
+        transaction.commit()?;
+        Ok((events, high_water))
+    }
+
+    pub fn event_high_water(&self, filters: &EventFilters<'_>) -> Result<Option<u64>> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        event_high_water(&connection, filters)
+    }
+}
+
+fn filtered_events(connection: &Connection, filters: &EventFilters<'_>) -> Result<Vec<Event>> {
+    if filters.before.is_some() && filters.after.is_some() {
+        anyhow::bail!("event history and follow positions are mutually exclusive");
+    }
+    let mut sql = "SELECT * FROM events WHERE 1 = 1".to_owned();
+    let mut values = Vec::<rusqlite::types::Value>::new();
+    if let Some(before) = filters.before {
+        sql.push_str(" AND event_id < ?");
+        values.push(i64::try_from(before)?.into());
+    }
+    if let Some(after) = filters.after {
+        sql.push_str(" AND event_id > ?");
+        values.push(i64::try_from(after)?.into());
+    }
+    for (column, value) in [
+        ("severity", filters.severity),
+        ("event_type", filters.event_type),
+        ("capture_id", filters.capture_id),
+        ("operation_id", filters.operation_id),
+    ] {
+        if let Some(value) = value {
+            sql.push_str(" AND ");
+            sql.push_str(column);
+            sql.push_str(" = ?");
+            values.push(value.to_owned().into());
+        }
+    }
+    if let Some(created_after) = filters.created_after_unix_ms {
+        sql.push_str(" AND created_at_unix_ms >= ?");
+        values.push(i64::try_from(created_after)?.into());
+    }
+    if filters.after.is_some() {
+        sql.push_str(" ORDER BY event_id ASC LIMIT ?");
+    } else {
+        sql.push_str(" ORDER BY event_id DESC LIMIT ?");
+    }
+    values.push(i64::try_from(filters.limit.clamp(1, 201))?.into());
+    let mut statement = connection.prepare(&sql)?;
+    let mut rows = statement.query(rusqlite::params_from_iter(values))?;
+    let mut events = Vec::new();
+    while let Some(row) = rows.next()? {
+        events.push(event_from_row(row)?);
+    }
+    Ok(events)
+}
+
+fn event_high_water(connection: &Connection, filters: &EventFilters<'_>) -> Result<Option<u64>> {
+    let mut sql = "SELECT MAX(event_id) FROM events WHERE 1 = 1".to_owned();
+    let mut values = Vec::<rusqlite::types::Value>::new();
+    for (column, value) in [
+        ("severity", filters.severity),
+        ("event_type", filters.event_type),
+        ("capture_id", filters.capture_id),
+        ("operation_id", filters.operation_id),
+    ] {
+        if let Some(value) = value {
+            sql.push_str(" AND ");
+            sql.push_str(column);
+            sql.push_str(" = ?");
+            values.push(value.to_owned().into());
+        }
+    }
+    if let Some(created_after) = filters.created_after_unix_ms {
+        sql.push_str(" AND created_at_unix_ms >= ?");
+        values.push(i64::try_from(created_after)?.into());
+    }
+    connection
+        .query_row(&sql, rusqlite::params_from_iter(values), |row| {
+            row.get::<_, Option<i64>>(0)
+        })?
+        .map(TryInto::try_into)
+        .transpose()
+        .map_err(Into::into)
 }
 
 fn capture_search_expression(input: &str) -> Option<String> {
@@ -1084,6 +1223,17 @@ fn migrate(connection: &mut Connection) -> Result<()> {
             [],
         )?;
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (4)", [])?;
+        transaction.commit()?;
+    }
+    if version < 5 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "CREATE INDEX IF NOT EXISTS captures_page_idx
+                ON captures(created_at_unix_ms DESC, capture_id DESC);
+            CREATE INDEX IF NOT EXISTS operations_page_idx
+                ON operations(created_at_unix_ms DESC, operation_id DESC);",
+        )?;
+        transaction.execute("INSERT INTO schema_migrations(version) VALUES (5)", [])?;
         transaction.commit()?;
     }
     Ok(())
@@ -1364,7 +1514,7 @@ mod tests {
                 )
                 .unwrap();
             connection
-                .execute("DELETE FROM schema_migrations WHERE version = 4", [])
+                .execute("DELETE FROM schema_migrations WHERE version >= 4", [])
                 .unwrap();
         }
         drop(catalog);
@@ -1543,6 +1693,7 @@ mod tests {
                     kind: Some("finalization"),
                     capture_id: Some("cap-1"),
                     limit: 20,
+                    ..OperationFilters::default()
                 })
                 .unwrap(),
             vec![catalog.operation(&running.operation_id).unwrap().unwrap()]
@@ -1580,6 +1731,47 @@ mod tests {
             ]
         );
         assert_eq!(catalog.events(None, 20).unwrap().len(), 6);
+    }
+
+    #[test]
+    fn event_page_and_follow_watermark_share_one_snapshot() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("catalog.db");
+        let reader = Catalog::open(&path, true).unwrap();
+        let writer = Catalog::open(&path, true).unwrap();
+        writer
+            .connection
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO events (created_at_unix_ms, event_type, severity, message)
+                 VALUES (1, 'first', 'info', 'first')",
+                [],
+            )
+            .unwrap();
+
+        let filters = EventFilters {
+            limit: 20,
+            ..EventFilters::default()
+        };
+        let (events, high_water) = reader
+            .filtered_events_snapshot(&filters, || {
+                writer
+                    .connection
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "INSERT INTO events (created_at_unix_ms, event_type, severity, message)
+                         VALUES (2, 'between_reads', 'info', 'between reads')",
+                        [],
+                    )
+                    .unwrap();
+            })
+            .unwrap();
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(high_water, Some(events[0].event_id));
+        assert!(writer.event_high_water(&filters).unwrap() > high_water);
     }
 
     #[test]

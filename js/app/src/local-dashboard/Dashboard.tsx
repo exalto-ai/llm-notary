@@ -10,7 +10,7 @@ import {
 } from '@mantine/core';
 import { useDisclosure, useMediaQuery } from '@mantine/hooks';
 import { notifications } from '@mantine/notifications';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity, Archive, ArrowLeft, Check, CheckCircle2, CodeXml,
   ChevronRight, CircleDot, Clock3, Copy, Database, FileCheck2, FileJson2, Gauge,
@@ -25,7 +25,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from '@/components/ui/select';
 import { LocalApiError } from './api';
-import type { AccountConnectionStarted, Capture, CaptureDetail, Event, LocalApi, Notary, Operation, Share, ShareVisibility, Status, Verification } from './api';
+import type { AccountConnectionStarted, Capture, CaptureDetail, Event, LocalApi, Notary, Operation, OperationSummary, Share, ShareVisibility, Status, Verification } from './api';
 import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries } from '../notaryLifecycle';
 import { ProviderIdentity } from '../ProviderIdentity';
 
@@ -225,12 +225,6 @@ function traceTranscripts(value: unknown): TraceTranscript[] {
     }
   }
   return transcripts;
-}
-
-function withinTime(timestamp: number, range: string | null) {
-  if (!range) return true;
-  const milliseconds = range === 'hour' ? 60 * 60 * 1000 : range === 'day' ? 24 * 60 * 60 * 1000 : 7 * 24 * 60 * 60 * 1000;
-  return timestamp >= Date.now() - milliseconds;
 }
 
 function timeRangeStart(range: string | null) {
@@ -453,16 +447,22 @@ function CapturesView({ api, selectedId, navigate }: { api: LocalApi; selectedId
   const [streaming, setStreaming] = useState<string | null>(null);
   const [time, setTime] = useState<string | null>(null);
   const mobile = useMediaQuery('(max-width: 820px)');
-  const captures = useQuery({
-    queryKey: ['captures', query, model, provider, captureState, finalization],
-    queryFn: () => api.allCaptures({ query, model, provider: provider ?? undefined, capture_state: captureState ?? undefined, finalization_state: finalization ?? undefined })
+  const createdAfter = useMemo(() => timeRangeStart(time), [time]);
+  const captures = useInfiniteQuery({
+    queryKey: ['captures', query, model, provider, captureState, finalization, streaming, createdAfter],
+    queryFn: ({ pageParam }) => api.captures({
+      query, model, provider: provider ?? undefined, capture_state: captureState ?? undefined,
+      finalization_state: finalization ?? undefined,
+      streaming: streaming ? streaming === 'streaming' : undefined,
+      created_after_unix_ms: createdAfter, limit: 50, cursor: pageParam
+    }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.next_cursor ?? undefined
   });
   const selectedDetail = useQuery({
     queryKey: ['capture', selectedId], queryFn: () => api.capture(selectedId!), enabled: Boolean(selectedId)
   });
-  const visible = useMemo(() => (captures.data?.items ?? []).filter((capture) =>
-    (!streaming || capture.streaming === (streaming === 'streaming')) && withinTime(capture.created_at_unix_ms, time)
-  ), [captures.data, streaming, time]);
+  const visible = useMemo(() => captures.data?.pages.flatMap((page) => page.items) ?? [], [captures.data]);
   const activeId = selectedId ?? visible[0]?.capture_id;
   const active = visible.find((capture) => capture.capture_id === activeId) ?? selectedDetail.data?.capture;
   const showDetail = Boolean(mobile && selectedId);
@@ -475,7 +475,7 @@ function CapturesView({ api, selectedId, navigate }: { api: LocalApi; selectedId
       <AxisSelect ariaLabel="Capture time filter" placeholder="Any time" data={[{ value: 'hour', label: 'Last hour' }, { value: 'day', label: 'Last 24 hours' }, { value: 'week', label: 'Last 7 days' }]} value={time} onChange={setTime} /></div>}
     {captures.isLoading || (selectedId && selectedDetail.isLoading) ? <LoadingState /> : captures.error ? <QueryError error={captures.error} title="Captures are unavailable" /> : selectedDetail.error ? <QueryError error={selectedDetail.error} title="Capture detail is unavailable" /> : !visible.length && !active ? <EmptyState title="No captures match" copy="Clear a filter or send a new request through the provider proxy." />
       : <ResizableSplit className={`master-detail ${showDetail ? 'show-detail' : ''}`}>
-        <ScrollArea className="master-list" type="auto"><ul className="capture-list" aria-label="Captures">{visible.map((capture) => <li key={capture.capture_id}><CaptureRow capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'captures', id: capture.capture_id })} /></li>)}</ul></ScrollArea>
+        <ScrollArea className="master-list" type="auto"><ul className="capture-list" aria-label="Captures">{visible.map((capture) => <li key={capture.capture_id}><CaptureRow capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'captures', id: capture.capture_id })} /></li>)}</ul>{captures.hasNextPage && <Button className="load-more" variant="subtle" loading={captures.isFetchingNextPage} onClick={() => captures.fetchNextPage()}>Load more captures</Button>}</ScrollArea>
         <div className="detail-panel">{active ? <CaptureInspector api={api} capture={active} mobile={Boolean(mobile)} onBack={() => navigate({ view: 'captures' })} navigate={navigate} /> : null}</div>
       </ResizableSplit>}
   </div>;
@@ -571,22 +571,29 @@ function ArtifactList({ detail }: { detail: CaptureDetail }) {
 }
 
 function FinalizationsView({ api, selectedId, navigate, fixture }: { api: LocalApi; selectedId?: string; navigate: (route: Route) => void; fixture: boolean }) {
-  const operations = useQuery({ queryKey: ['operations'], queryFn: () => api.operations(), refetchInterval: 3_000 });
-  const selectedOperation = useQuery({
-    queryKey: ['operation', selectedId], queryFn: () => api.operation(selectedId!),
-    enabled: Boolean(selectedId), refetchInterval: 3_000
+  const operations = useInfiniteQuery({
+    queryKey: ['operations'],
+    queryFn: ({ pageParam }) => api.operations({ limit: 50, cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
+    refetchInterval: 3_000
   });
-  const active = operations.data?.items.find((item) => item.operation_id === selectedId)
-    ?? selectedOperation.data ?? operations.data?.items[0];
-  return <div className="view-page">{operations.isLoading || (selectedId && selectedOperation.isLoading) ? <LoadingState /> : operations.error ? <QueryError error={operations.error} title="Finalizations are unavailable" /> : selectedOperation.error ? <QueryError error={selectedOperation.error} title="Finalization detail is unavailable" /> : !operations.data?.items.length && !active ? <EmptyState icon={ListChecks} title="No finalizations yet" copy="Queue one from a captured provider response." />
+  const activeId = selectedId ?? operations.data?.pages[0]?.items[0]?.operation_id;
+  const selectedOperation = useQuery({
+    queryKey: ['operation', activeId], queryFn: () => api.operation(activeId!),
+    enabled: Boolean(activeId), refetchInterval: 3_000
+  });
+  const items = operations.data?.pages.flatMap((page) => page.items) ?? [];
+  const active = selectedOperation.data;
+  return <div className="view-page">{operations.isLoading || (activeId && selectedOperation.isLoading) ? <LoadingState /> : operations.error ? <QueryError error={operations.error} title="Finalizations are unavailable" /> : selectedOperation.error ? <QueryError error={selectedOperation.error} title="Finalization detail is unavailable" /> : !items.length && !active ? <EmptyState icon={ListChecks} title="No finalizations yet" copy="Queue one from a captured provider response." />
       : <ResizableSplit className="operations-layout">
-        <ScrollArea className="operations-list-scroll" type="auto"><ul className="operations-list" aria-label="Finalizations">{(operations.data?.items ?? []).map((operation) => <li key={operation.operation_id}><OperationRow operation={operation} active={active?.operation_id === operation.operation_id} onClick={() => navigate({ view: 'finalizations', id: operation.operation_id })} /></li>)}</ul></ScrollArea>
+        <ScrollArea className="operations-list-scroll" type="auto"><ul className="operations-list" aria-label="Finalizations">{items.map((operation) => <li key={operation.operation_id}><OperationRow operation={operation} active={active?.operation_id === operation.operation_id} onClick={() => navigate({ view: 'finalizations', id: operation.operation_id })} /></li>)}</ul>{operations.hasNextPage && <Button className="load-more" variant="subtle" loading={operations.isFetchingNextPage} onClick={() => operations.fetchNextPage()}>Load more finalizations</Button>}</ScrollArea>
         {active ? <OperationInspector api={api} operation={active} fixture={fixture} /> : <div />}
       </ResizableSplit>}
   </div>;
 }
 
-function OperationRow({ operation, active, onClick }: { operation: Operation; active: boolean; onClick: () => void }) {
+function OperationRow({ operation, active, onClick }: { operation: OperationSummary; active: boolean; onClick: () => void }) {
   return <UnstyledButton className={`operation-row ${active ? 'is-active' : ''}`} onClick={onClick} aria-label={`Inspect ${operation.operation_id}`}>
     <span className="operation-row-top"><StatusLabel state={operation.state} /><time>{formatDate(operation.created_at_unix_ms)}</time></span>
     <code>{operation.capture_id ?? 'Capture not reported'}</code>
@@ -618,14 +625,19 @@ function OperationInspector({ api, operation, fixture }: { api: LocalApi; operat
 function TracesView({ api, selectedId, navigate }: { api: LocalApi; selectedId?: string; navigate: (route: Route) => void }) {
   const [query, setQuery] = useState('');
   const mobile = useMediaQuery('(max-width: 820px)');
-  const captures = useQuery({ queryKey: ['captures', 'finalized'], queryFn: () => api.allCaptures({ finalization_state: 'finalized' }) });
-  const visible = (captures.data?.items ?? []).filter((capture) => `${capture.capture_id} ${capture.provider} ${capture.requested_model ?? ''} ${capture.prompt_preview} ${capture.output_preview}`.toLowerCase().includes(query.toLowerCase()));
+  const captures = useInfiniteQuery({
+    queryKey: ['captures', 'finalized', query],
+    queryFn: ({ pageParam }) => api.captures({ finalization_state: 'finalized', query, limit: 50, cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.next_cursor ?? undefined
+  });
+  const visible = captures.data?.pages.flatMap((page) => page.items) ?? [];
   const activeId = selectedId ?? visible[0]?.capture_id;
   const showDetail = Boolean(mobile && selectedId);
   return <div className="view-page">{!showDetail && <div className="filter-bar filter-bar--short"><TextInput aria-label="Search finalized traces" placeholder="Search finalized traces" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} /></div>}
     {captures.isLoading ? <LoadingState /> : captures.error ? <QueryError error={captures.error} title="Finalized traces are unavailable" /> : !visible.length && !selectedId ? <EmptyState icon={FileCheck2} title="No finalized traces" copy="Finalize a captured provider response or clear the search." />
       : <ResizableSplit className={`trace-layout ${showDetail ? 'show-detail' : ''}`}>
-        {!showDetail ? <ul className="trace-list" aria-label="Finalized traces">{visible.map((capture) => <li key={capture.capture_id}><CaptureRow capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'traces', id: capture.capture_id })} /></li>)}</ul> : <div />}
+        {!showDetail ? <div><ul className="trace-list" aria-label="Finalized traces">{visible.map((capture) => <li key={capture.capture_id}><CaptureRow capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'traces', id: capture.capture_id })} /></li>)}</ul>{captures.hasNextPage && <Button className="load-more" variant="subtle" loading={captures.isFetchingNextPage} onClick={() => captures.fetchNextPage()}>Load more traces</Button>}</div> : <div />}
         {activeId && (!mobile || selectedId) ? <TraceInspector api={api} captureId={activeId} mobile={Boolean(mobile)} onBack={() => navigate({ view: 'traces' })} /> : <div />}
       </ResizableSplit>}
   </div>;
@@ -745,14 +757,19 @@ function Receipt({ title, fields, verified = false }: { title: string; fields: A
 function SharingView({ api, fixture, navigate }: { api: LocalApi; fixture: boolean; navigate: (route: Route) => void }) {
   const queryClient = useQueryClient();
   const account = useQuery({ queryKey: ['account'], queryFn: api.account, retry: false });
-  const captures = useQuery({ queryKey: ['captures', 'sharing'], queryFn: () => api.allCaptures({ finalization_state: 'finalized' }) });
+  const captures = useInfiniteQuery({
+    queryKey: ['captures', 'sharing'],
+    queryFn: ({ pageParam }) => api.captures({ finalization_state: 'finalized', limit: 50, cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.next_cursor ?? undefined
+  });
   const [selected, setSelected] = useState<string | null>(null);
   const [visibility, setVisibility] = useState<ShareVisibility>('unlisted');
   const [confirm, setConfirm] = useState(false);
   const [submitted, setSubmitted] = useState<Share | null>(null);
   const [started, setStarted] = useState<{ flow: AccountConnectionStarted; nextPollAt: number } | null>(null);
   const [now, setNow] = useState(Date.now());
-  const eligible = captures.data?.items ?? [];
+  const eligible = captures.data?.pages.flatMap((page) => page.items) ?? [];
   const selectedId = selected ?? eligible[0]?.capture_id ?? null;
   const preview = useQuery({
     queryKey: ['share-preview', selectedId],
@@ -837,7 +854,8 @@ function SharingView({ api, fixture, navigate }: { api: LocalApi; fixture: boole
   return <div className="view-page share-flow">
     <section className="sharing-toolbar" aria-label="Share settings">
       {captures.error ? <QueryError error={captures.error} title="Finalized traces are unavailable" /> : captures.isLoading ? <Loader size="sm" /> : eligible.length ? <>
-        <AxisSelect label="Trace" placeholder="Choose a finalized trace" clearable={false} data={eligible.map((capture) => ({ value: capture.capture_id, label: <ProviderIdentity provider={capture.provider} detail={capture.requested_model} /> }))} value={selectedId} onChange={setSelected} />
+        <div className="sharing-trace-picker"><AxisSelect label="Trace" placeholder="Choose a finalized trace" clearable={false} data={eligible.map((capture) => ({ value: capture.capture_id, label: <ProviderIdentity provider={capture.provider} detail={capture.requested_model} /> }))} value={selectedId} onChange={setSelected} />
+          {captures.hasNextPage && <Button variant="subtle" loading={captures.isFetchingNextPage} onClick={() => captures.fetchNextPage()}>Load more traces</Button>}</div>
         <div className="share-visibility" role="radiogroup" aria-label="Visibility">
           <span className="share-control-label">Visibility</span>
           <div>
@@ -902,19 +920,21 @@ function ActivityView({ api }: { api: LocalApi }) {
     event_type: eventType,
     created_after_unix_ms: createdAfter
   };
-  const events = useQuery({
+  const events = useInfiniteQuery({
     queryKey: ['events', filters],
-    queryFn: () => api.events(filters),
+    queryFn: ({ pageParam }) => api.events({ ...filters, limit: 50, cursor: pageParam }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.next_cursor ?? undefined,
     refetchInterval: 5_000
   });
-  const visible = events.data?.items ?? [];
+  const visible = events.data?.pages.flatMap((page) => page.items) ?? [];
   return <div className="view-page"><div className="filter-bar filter-bar--activity"><AxisSelect ariaLabel="Activity severity" placeholder="All severities" data={['info', 'success', 'warning', 'error']} value={severity} onChange={setSeverity} />
       <TextInput aria-label="Activity capture ID" placeholder="Capture ID" value={captureId} onChange={(event) => setCaptureId(event.currentTarget.value)} />
       <TextInput aria-label="Activity operation ID" placeholder="Operation ID" value={operationId} onChange={(event) => setOperationId(event.currentTarget.value)} />
       <TextInput aria-label="Activity event type" placeholder="Event type" value={eventType} onChange={(event) => setEventType(event.currentTarget.value)} />
       <AxisSelect ariaLabel="Activity time filter" placeholder="Any time" data={[{ value: 'hour', label: 'Last hour' }, { value: 'day', label: 'Last 24 hours' }, { value: 'week', label: 'Last 7 days' }]} value={time} onChange={setTime} />
       <Button variant="outline" leftSection={<RefreshCw size={14} />} onClick={() => events.refetch()}>Refresh</Button></div>
-    {events.isLoading ? <LoadingState /> : events.error ? <QueryError error={events.error} title="Activity is unavailable" /> : visible.length ? <EventList events={visible} /> : <EmptyState icon={Activity} title="No activity" copy="New capture and finalization events will appear here." />}</div>;
+    {events.isLoading ? <LoadingState /> : events.error ? <QueryError error={events.error} title="Activity is unavailable" /> : visible.length ? <><EventList events={visible} />{events.hasNextPage && <Button className="load-more" variant="subtle" loading={events.isFetchingNextPage} onClick={() => events.fetchNextPage()}>Load more activity</Button>}</> : <EmptyState icon={Activity} title="No activity" copy="New capture and finalization events will appear here." />}</div>;
 }
 
 function EventList({ events }: { events: Event[] }) {

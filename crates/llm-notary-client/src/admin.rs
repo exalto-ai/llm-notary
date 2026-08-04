@@ -30,6 +30,10 @@ use tower_http::{
 };
 use utoipa::{Modify, OpenApi, ToSchema};
 
+use llm_notary_core::pagination::{
+    CursorScope, Page, PageQuery, PaginationError, decode_cursor, encode_cursor,
+};
+
 use crate::{
     DeferredBundle,
     archive::{ARCHIVE_CONTENT_TYPE, read_trace_package_archive},
@@ -38,8 +42,8 @@ use crate::{
         trace_package_notary_key, verify_trace_package,
     },
     catalog::{
-        CaptureFilters, CaptureSummary, Catalog, Event, EventFilters, Operation, OperationAttempt,
-        OperationFilters,
+        CaptureFilters, CapturePagePosition, CaptureSummary, Catalog, Event, EventFilters,
+        Operation, OperationAttempt, OperationFilters, OperationPagePosition,
     },
     cli::{DEFAULT_PUBLIC_ORIGIN, auth, notary, proxy, publish},
     config::AgentConfig,
@@ -200,8 +204,9 @@ fn embedded_dashboard_response(path: &str) -> Response {
     ),
     components(schemas(
         HealthResponse, StatusResponse, CountsResponse, NotariesResponse, NotaryResponse,
-        CaptureResponse, CaptureDetailResponse, ArtifactResponse, CaptureListResponse,
-        OperationResponse, OperationAttemptResponse, OperationListResponse, FinalizationResponse, EventResponse,
+        PageQuery, CaptureResponse, CaptureDetailResponse, ArtifactResponse,
+        OperationSummaryResponse, OperationResponse, OperationAttemptResponse,
+        FinalizationResponse, EventResponse,
         EventListResponse, TraceResponse, VerificationResponse, AccountConnectionResponse,
         AccountConnectionRequest, AccountConnectionStartedResponse, CreateShareRequest,
         ShareVisibility, ShareResponse, ShareStatusResponse,
@@ -424,19 +429,55 @@ struct CaptureQuery {
     provider: Option<String>,
     capture_state: Option<String>,
     finalization_state: Option<String>,
-    limit: Option<usize>,
-    offset: Option<usize>,
+    streaming: Option<bool>,
+    created_after_unix_ms: Option<u64>,
+    limit: Option<u32>,
+    cursor: Option<String>,
+    offset: Option<u64>,
 }
 
-#[utoipa::path(get, path = "/v1/captures", summary = "Search local captures", description = "Lists the bounded local capture catalog with punctuation-safe preview search and exact metadata filters.", params(("query" = Option<String>, Query), ("model" = Option<String>, Query), ("provider" = Option<String>, Query), ("capture_state" = Option<String>, Query), ("finalization_state" = Option<String>, Query), ("limit" = Option<usize>, Query), ("offset" = Option<usize>, Query)), responses((status = 200, body = CaptureListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures", summary = "Search local captures", description = "Lists the local capture catalog with opaque cursor pagination, punctuation-safe preview search, and exact metadata filters. The legacy offset parameter is rejected; restart traversal without a cursor instead.", params(("query" = Option<String>, Query), ("model" = Option<String>, Query), ("provider" = Option<String>, Query), ("capture_state" = Option<String>, Query), ("finalization_state" = Option<String>, Query), ("streaming" = Option<bool>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200), ("cursor" = Option<String>, Query), ("offset" = Option<u64>, Query)), responses((status = 200, body = Page<CaptureResponse>), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn captures(
     State(state): State<AdminState>,
     query: Result<Query<CaptureQuery>, QueryRejection>,
-) -> Result<Json<CaptureListResponse>, ApiError> {
+) -> Result<Json<Page<CaptureResponse>>, ApiError> {
     let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
+    if query.offset.is_some() {
+        return Err(ApiError::bad_request("offset_pagination_removed"));
+    }
+    if let Some(created_after) = query.created_after_unix_ms {
+        validate_sqlite_query_integer(created_after)?;
+    }
+    let limit = PageQuery {
+        limit: query.limit,
+        cursor: query.cursor.clone(),
+    }
+    .limit(50, 200)
+    .map_err(pagination_api_error)?;
+    let scope = CursorScope::new(
+        "/v1/captures",
+        &(
+            &query.query,
+            &query.model,
+            &query.provider,
+            &query.capture_state,
+            &query.finalization_state,
+            query.streaming,
+            query.created_after_unix_ms,
+        ),
+        "created_at_unix_ms desc, capture_id desc",
+    )
+    .map_err(pagination_api_error)?;
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(|cursor| decode_cursor::<CapturePagePosition>(&scope, cursor))
+        .transpose()
+        .map_err(pagination_api_error)?;
+    if let Some(position) = cursor.as_ref() {
+        validate_sqlite_cursor_integer(position.created_at_unix_ms)?;
+    }
     let catalog = state.catalog.clone();
-    let limit = query.limit.unwrap_or(50).clamp(1, 200);
-    let offset = query.offset.unwrap_or(0);
     let values = tokio::task::spawn_blocking(move || {
         catalog.filtered_captures(&CaptureFilters {
             query: query.query.as_deref(),
@@ -444,17 +485,22 @@ async fn captures(
             provider: query.provider.as_deref(),
             capture_state: query.capture_state.as_deref(),
             finalization_state: query.finalization_state.as_deref(),
-            limit,
-            offset,
+            streaming: query.streaming,
+            created_after_unix_ms: query.created_after_unix_ms,
+            cursor: cursor.as_ref(),
+            limit: limit + 1,
         })
     })
     .await
     .map_err(|_| ApiError::internal("catalog_task_failed"))?
     .map_err(|_| ApiError::bad_request("invalid_capture_filter"))?;
-    Ok(Json(CaptureListResponse {
-        items: values.into_iter().map(CaptureResponse::from).collect(),
-        limit,
-        offset,
+    let page = Page::from_limit_plus_one(values, limit, &scope, |capture| {
+        CapturePagePosition::from(capture)
+    })
+    .map_err(pagination_api_error)?;
+    Ok(Json(Page {
+        items: page.items.into_iter().map(CaptureResponse::from).collect(),
+        next_cursor: page.next_cursor,
     }))
 }
 
@@ -548,32 +594,64 @@ struct OperationQuery {
     state: Option<String>,
     kind: Option<String>,
     capture_id: Option<String>,
-    limit: Option<usize>,
+    limit: Option<u32>,
+    cursor: Option<String>,
 }
 
-#[utoipa::path(get, path = "/v1/operations", summary = "List background operations", description = "Lists durable background operations with optional state, kind, and capture filters.", params(("state" = Option<String>, Query), ("kind" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("limit" = Option<usize>, Query)), responses((status = 200, body = OperationListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/operations", summary = "List background operations", description = "Lists bounded operation summaries with opaque cursor pagination and optional state, kind, and capture filters. Fetch one operation for its complete attempt history.", params(("state" = Option<String>, Query), ("kind" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200), ("cursor" = Option<String>, Query)), responses((status = 200, body = Page<OperationSummaryResponse>), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn operations(
     State(state): State<AdminState>,
     query: Result<Query<OperationQuery>, QueryRejection>,
-) -> Result<Json<OperationListResponse>, ApiError> {
+) -> Result<Json<Page<OperationSummaryResponse>>, ApiError> {
     let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
+    let limit = PageQuery {
+        limit: query.limit,
+        cursor: query.cursor.clone(),
+    }
+    .limit(50, 200)
+    .map_err(pagination_api_error)?;
+    let scope = CursorScope::new(
+        "/v1/operations",
+        &(&query.state, &query.kind, &query.capture_id),
+        "created_at_unix_ms desc, operation_id desc",
+    )
+    .map_err(pagination_api_error)?;
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(|cursor| decode_cursor::<OperationPagePosition>(&scope, cursor))
+        .transpose()
+        .map_err(pagination_api_error)?;
+    if let Some(position) = cursor.as_ref() {
+        validate_sqlite_cursor_integer(position.created_at_unix_ms)?;
+    }
     let catalog = state.catalog.clone();
-    let values = tokio::task::spawn_blocking(move || -> Result<Vec<OperationResponse>> {
+    let values = tokio::task::spawn_blocking(move || {
         catalog
             .filtered_operations(&OperationFilters {
                 state: query.state.as_deref(),
                 kind: query.kind.as_deref(),
                 capture_id: query.capture_id.as_deref(),
-                limit: query.limit.unwrap_or(50),
-            })?
-            .into_iter()
-            .map(|operation| operation_response(&catalog, operation))
-            .collect()
+                cursor: cursor.as_ref(),
+                limit: limit + 1,
+            })
+            .map(|operations| {
+                operations
+                    .into_iter()
+                    .map(OperationSummaryResponse::from)
+                    .collect::<Vec<_>>()
+            })
     })
     .await
     .map_err(|_| ApiError::internal("catalog_task_failed"))?
     .map_err(|_| ApiError::internal("catalog_query_failed"))?;
-    Ok(Json(OperationListResponse { items: values }))
+    let page =
+        Page::from_limit_plus_one(values, limit, &scope, |operation| OperationPagePosition {
+            created_at_unix_ms: operation.created_at_unix_ms,
+            operation_id: operation.operation_id.clone(),
+        })
+        .map_err(pagination_api_error)?;
+    Ok(Json(page))
 }
 
 #[utoipa::path(get, path = "/v1/operations/{operation_id}", summary = "Get an operation", description = "Returns the current state and complete attempt history for one durable operation.", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
@@ -717,40 +795,117 @@ async fn verify_trace(
 
 #[derive(Debug, Default, Deserialize)]
 struct EventQuery {
-    cursor: Option<u64>,
+    /// Back-pagination cursor returned as `next_cursor`.
+    cursor: Option<String>,
+    /// High-water cursor returned by an earlier response; follows newer events.
+    after: Option<String>,
     severity: Option<String>,
     event_type: Option<String>,
     capture_id: Option<String>,
     operation_id: Option<String>,
     created_after_unix_ms: Option<u64>,
-    limit: Option<usize>,
+    limit: Option<u32>,
 }
 
-#[utoipa::path(get, path = "/v1/events", summary = "List service events", description = "Lists the bounded redacted event history with cursor, severity, type, resource, and time filters.", params(("cursor" = Option<u64>, Query), ("severity" = Option<String>, Query), ("event_type" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("operation_id" = Option<String>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<usize>, Query)), responses((status = 200, body = EventListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/events", summary = "List service events", description = "Lists redacted event history with opaque back-pagination and a separate high-water cursor for following new events.", params(("cursor" = Option<String>, Query), ("after" = Option<String>, Query), ("severity" = Option<String>, Query), ("event_type" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("operation_id" = Option<String>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200)), responses((status = 200, body = EventListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn events(
     State(state): State<AdminState>,
     query: Result<Query<EventQuery>, QueryRejection>,
 ) -> Result<Json<EventListResponse>, ApiError> {
     let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
+    if let Some(created_after) = query.created_after_unix_ms {
+        validate_sqlite_query_integer(created_after)?;
+    }
+    let limit = PageQuery {
+        limit: query.limit,
+        cursor: query.cursor.clone(),
+    }
+    .limit(50, 200)
+    .map_err(pagination_api_error)?;
+    let filter_scope = (
+        &query.severity,
+        &query.event_type,
+        &query.capture_id,
+        &query.operation_id,
+        query.created_after_unix_ms,
+    );
+    let follow_scope = CursorScope::new("/v1/events", &(filter_scope, "follow"), "event_id asc")
+        .map_err(pagination_api_error)?;
+    let after = query
+        .after
+        .as_deref()
+        .map(|cursor| decode_cursor::<EventPagePosition>(&follow_scope, cursor))
+        .transpose()
+        .map_err(pagination_api_error)?;
+    if let Some(position) = after.as_ref() {
+        validate_sqlite_cursor_integer(position.event_id)?;
+    }
+    let page_scope = CursorScope::new(
+        "/v1/events",
+        &(
+            &query.severity,
+            &query.event_type,
+            &query.capture_id,
+            &query.operation_id,
+            query.created_after_unix_ms,
+            after.as_ref().map(|position| position.event_id),
+        ),
+        if after.is_some() {
+            "event_id asc"
+        } else {
+            "event_id desc"
+        },
+    )
+    .map_err(pagination_api_error)?;
+    let cursor = query
+        .cursor
+        .as_deref()
+        .map(|cursor| decode_cursor::<EventPagePosition>(&page_scope, cursor))
+        .transpose()
+        .map_err(pagination_api_error)?;
+    if let Some(position) = cursor.as_ref() {
+        validate_sqlite_cursor_integer(position.event_id)?;
+    }
     let catalog = state.catalog.clone();
-    let values = tokio::task::spawn_blocking(move || {
-        catalog.filtered_events(&EventFilters {
-            after: query.cursor,
+    let (values, high_water) = tokio::task::spawn_blocking(move || {
+        let filters = EventFilters {
+            before: if after.is_none() {
+                cursor.as_ref().map(|position| position.event_id)
+            } else {
+                None
+            },
+            after: if after.is_some() {
+                cursor
+                    .as_ref()
+                    .map(|position| position.event_id)
+                    .or_else(|| after.as_ref().map(|position| position.event_id))
+            } else {
+                None
+            },
             severity: query.severity.as_deref(),
             event_type: query.event_type.as_deref(),
             capture_id: query.capture_id.as_deref(),
             operation_id: query.operation_id.as_deref(),
             created_after_unix_ms: query.created_after_unix_ms,
-            limit: query.limit.unwrap_or(50),
-        })
+            limit: limit + 1,
+        };
+        catalog.filtered_events_with_high_water(&filters)
     })
     .await
     .map_err(|_| ApiError::internal("catalog_task_failed"))?
     .map_err(|_| ApiError::internal("catalog_query_failed"))?;
-    let next_cursor = values.first().map(|event| event.event_id);
+    let page = Page::from_limit_plus_one(values, limit, &page_scope, |event| EventPagePosition {
+        event_id: event.event_id,
+    })
+    .map_err(pagination_api_error)?;
+    let high_water_cursor = high_water
+        .map(|event_id| encode_cursor(&follow_scope, &EventPagePosition { event_id }))
+        .transpose()
+        .map_err(pagination_api_error)?;
     Ok(Json(EventListResponse {
-        items: values.into_iter().map(Into::into).collect(),
-        next_cursor,
+        items: page.items.into_iter().map(Into::into).collect(),
+        next_cursor: page.next_cursor,
+        high_water_cursor,
     }))
 }
 
@@ -1363,13 +1518,6 @@ struct CaptureDetailResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct CaptureListResponse {
-    items: Vec<CaptureResponse>,
-    limit: usize,
-    offset: usize,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
 struct OperationResponse {
     operation_id: String,
     kind: String,
@@ -1382,6 +1530,35 @@ struct OperationResponse {
     failure_code: Option<String>,
     retryable: bool,
     attempt_history: Vec<OperationAttemptResponse>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct OperationSummaryResponse {
+    operation_id: String,
+    kind: String,
+    capture_id: Option<String>,
+    state: String,
+    attempt: u32,
+    created_at_unix_ms: u64,
+    started_at_unix_ms: Option<u64>,
+    completed_at_unix_ms: Option<u64>,
+    failure_code: Option<String>,
+}
+
+impl From<Operation> for OperationSummaryResponse {
+    fn from(value: Operation) -> Self {
+        Self {
+            operation_id: value.operation_id,
+            kind: value.kind,
+            capture_id: value.capture_id,
+            state: value.state,
+            attempt: value.attempt,
+            created_at_unix_ms: value.created_at_unix_ms,
+            started_at_unix_ms: value.started_at_unix_ms,
+            completed_at_unix_ms: value.completed_at_unix_ms,
+            failure_code: value.failure_code,
+        }
+    }
 }
 
 fn operation_response(catalog: &Catalog, value: Operation) -> Result<OperationResponse> {
@@ -1449,11 +1626,6 @@ impl From<OperationAttempt> for OperationAttemptResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct OperationListResponse {
-    items: Vec<OperationResponse>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
 struct FinalizationResponse {
     operation: OperationResponse,
     deduplicated: bool,
@@ -1487,7 +1659,14 @@ impl From<Event> for EventResponse {
 #[derive(Debug, Serialize, ToSchema)]
 struct EventListResponse {
     items: Vec<EventResponse>,
-    next_cursor: Option<u64>,
+    next_cursor: Option<String>,
+    /// Snapshot cursor for polling events committed after this response.
+    high_water_cursor: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+struct EventPagePosition {
+    event_id: u64,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1562,6 +1741,26 @@ struct ApiError {
     status: StatusCode,
     code: &'static str,
     message: &'static str,
+}
+
+fn pagination_api_error(error: PaginationError) -> ApiError {
+    if error.is_client_error() {
+        ApiError::bad_request(error.code())
+    } else {
+        ApiError::internal(error.code())
+    }
+}
+
+fn validate_sqlite_cursor_integer(value: u64) -> Result<(), ApiError> {
+    i64::try_from(value)
+        .map(|_| ())
+        .map_err(|_| pagination_api_error(PaginationError::MalformedCursor))
+}
+
+fn validate_sqlite_query_integer(value: u64) -> Result<(), ApiError> {
+    i64::try_from(value)
+        .map(|_| ())
+        .map_err(|_| ApiError::bad_request("invalid_query_parameter"))
 }
 
 impl ApiError {
@@ -2069,6 +2268,348 @@ mod tests {
                     .unwrap();
             assert_eq!(body["error"]["code"], "invalid_query_parameter");
         }
+    }
+
+    #[tokio::test]
+    async fn capture_pages_are_stable_across_ties_and_new_inserts() {
+        use crate::catalog::NewCapture;
+
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        for capture_id in ["cap-a", "cap-b", "cap-c"] {
+            state
+                .catalog
+                .begin_capture(&NewCapture {
+                    capture_id: capture_id.into(),
+                    created_at_unix_ms: 10,
+                    provider: "openai".into(),
+                    operation: "responses".into(),
+                    requested_model: Some("gpt-5".into()),
+                    streaming: false,
+                    request_bytes: 1,
+                    prompt_preview: String::new(),
+                    prompt_preview_truncated: false,
+                    config_fingerprint: "sha256:test".into(),
+                })
+                .unwrap();
+        }
+        let app = router(state.clone()).unwrap();
+        let first = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/captures?limit=2")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let first_status = first.status();
+        let first_bytes = first.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            first_status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&first_bytes)
+        );
+        let first: serde_json::Value = serde_json::from_slice(&first_bytes).unwrap();
+        assert_eq!(first["items"][0]["capture_id"], "cap-c");
+        assert_eq!(first["items"][1]["capture_id"], "cap-b");
+        let cursor = first["next_cursor"].as_str().unwrap();
+
+        state
+            .catalog
+            .begin_capture(&NewCapture {
+                capture_id: "cap-new".into(),
+                created_at_unix_ms: 11,
+                provider: "openai".into(),
+                operation: "responses".into(),
+                requested_model: Some("gpt-5".into()),
+                streaming: true,
+                request_bytes: 1,
+                prompt_preview: String::new(),
+                prompt_preview_truncated: false,
+                config_fingerprint: "sha256:test".into(),
+            })
+            .unwrap();
+        let second = app
+            .oneshot(
+                Request::get(format!("/v1/captures?limit=2&cursor={cursor}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let second: serde_json::Value =
+            serde_json::from_slice(&second.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(second["items"].as_array().unwrap().len(), 1);
+        assert_eq!(second["items"][0]["capture_id"], "cap-a");
+        assert!(second["next_cursor"].is_null());
+    }
+
+    #[tokio::test]
+    async fn cursors_reject_malformed_cross_route_and_changed_filter_requests() {
+        use crate::catalog::NewCapture;
+
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        for capture_id in ["cap-a", "cap-b"] {
+            state
+                .catalog
+                .begin_capture(&NewCapture {
+                    capture_id: capture_id.into(),
+                    created_at_unix_ms: 1,
+                    provider: "openai".into(),
+                    operation: "responses".into(),
+                    requested_model: None,
+                    streaming: false,
+                    request_bytes: 1,
+                    prompt_preview: String::new(),
+                    prompt_preview_truncated: false,
+                    config_fingerprint: "sha256:test".into(),
+                })
+                .unwrap();
+        }
+        let app = router(state).unwrap();
+        let first = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/captures?limit=1&provider=openai")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let first: serde_json::Value =
+            serde_json::from_slice(&first.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let cursor = first["next_cursor"].as_str().unwrap();
+        for (path, expected) in [
+            ("/v1/captures?cursor=not-a-cursor", "invalid_cursor"),
+            ("/v1/captures?limit=201", "invalid_page_limit"),
+            ("/v1/captures?offset=100", "offset_pagination_removed"),
+            (
+                &format!("/v1/captures?provider=anthropic&cursor={cursor}"),
+                "cursor_scope_mismatch",
+            ),
+            (
+                &format!("/v1/operations?cursor={cursor}"),
+                "cursor_scope_mismatch",
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(body["error"]["code"], expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn sqlite_integer_overflow_in_queries_and_forged_cursors_is_a_typed_400() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = router(state(directory.path())).unwrap();
+        let no_text = None::<String>;
+        let capture_scope = CursorScope::new(
+            "/v1/captures",
+            &(
+                &no_text,
+                &no_text,
+                &no_text,
+                &no_text,
+                &no_text,
+                None::<bool>,
+                None::<u64>,
+            ),
+            "created_at_unix_ms desc, capture_id desc",
+        )
+        .unwrap();
+        let operation_scope = CursorScope::new(
+            "/v1/operations",
+            &(&no_text, &no_text, &no_text),
+            "created_at_unix_ms desc, operation_id desc",
+        )
+        .unwrap();
+        let event_page_scope = CursorScope::new(
+            "/v1/events",
+            &(
+                &no_text,
+                &no_text,
+                &no_text,
+                &no_text,
+                None::<u64>,
+                None::<u64>,
+            ),
+            "event_id desc",
+        )
+        .unwrap();
+        let event_follow_scope = CursorScope::new(
+            "/v1/events",
+            &(
+                (&no_text, &no_text, &no_text, &no_text, None::<u64>),
+                "follow",
+            ),
+            "event_id asc",
+        )
+        .unwrap();
+        let capture_cursor = encode_cursor(
+            &capture_scope,
+            &CapturePagePosition {
+                created_at_unix_ms: u64::MAX,
+                capture_id: "cap-forged".to_owned(),
+            },
+        )
+        .unwrap();
+        let operation_cursor = encode_cursor(
+            &operation_scope,
+            &OperationPagePosition {
+                created_at_unix_ms: u64::MAX,
+                operation_id: "op-forged".to_owned(),
+            },
+        )
+        .unwrap();
+        let event_page_cursor =
+            encode_cursor(&event_page_scope, &EventPagePosition { event_id: u64::MAX }).unwrap();
+        let event_follow_cursor = encode_cursor(
+            &event_follow_scope,
+            &EventPagePosition { event_id: u64::MAX },
+        )
+        .unwrap();
+
+        for (path, expected) in [
+            (
+                format!("/v1/captures?cursor={capture_cursor}"),
+                "invalid_cursor",
+            ),
+            (
+                format!("/v1/operations?cursor={operation_cursor}"),
+                "invalid_cursor",
+            ),
+            (
+                format!("/v1/events?cursor={event_page_cursor}"),
+                "invalid_cursor",
+            ),
+            (
+                format!("/v1/events?after={event_follow_cursor}"),
+                "invalid_cursor",
+            ),
+            (
+                format!("/v1/captures?created_after_unix_ms={}", u64::MAX),
+                "invalid_query_parameter",
+            ),
+            (
+                format!("/v1/events?created_after_unix_ms={}", u64::MAX),
+                "invalid_query_parameter",
+            ),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            let body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert_eq!(body["error"]["code"], expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn event_history_and_follow_cursors_have_separate_directions() {
+        use crate::catalog::NewCapture;
+
+        let directory = tempfile::tempdir().unwrap();
+        let state = state(directory.path());
+        for capture_id in ["cap-a", "cap-b"] {
+            let bundle = directory.path().join(format!("{capture_id}.llmbundle"));
+            fs::write(&bundle, b"encrypted bundle").unwrap();
+            state
+                .catalog
+                .begin_capture(&NewCapture {
+                    capture_id: capture_id.into(),
+                    created_at_unix_ms: 1,
+                    provider: "openai".into(),
+                    operation: "responses".into(),
+                    requested_model: None,
+                    streaming: false,
+                    request_bytes: 1,
+                    prompt_preview: String::new(),
+                    prompt_preview_truncated: false,
+                    config_fingerprint: "sha256:test".into(),
+                })
+                .unwrap();
+            state
+                .catalog
+                .complete_capture(capture_id, 2, 1, 200, 1, None, "", false, &bundle)
+                .unwrap();
+            state.catalog.enqueue_finalization(capture_id, 3).unwrap();
+        }
+        let app = router(state.clone()).unwrap();
+        let first = app
+            .clone()
+            .oneshot(
+                Request::get("/v1/events?limit=1")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let first: serde_json::Value =
+            serde_json::from_slice(&first.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let history_cursor = first["next_cursor"].as_str().unwrap();
+        let high_water = first["high_water_cursor"].as_str().unwrap();
+        let older = app
+            .clone()
+            .oneshot(
+                Request::get(format!("/v1/events?limit=1&cursor={history_cursor}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let older: serde_json::Value =
+            serde_json::from_slice(&older.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(older["items"].as_array().unwrap().len(), 1);
+
+        let bundle = directory.path().join("cap-c.llmbundle");
+        fs::write(&bundle, b"encrypted bundle").unwrap();
+        state
+            .catalog
+            .begin_capture(&NewCapture {
+                capture_id: "cap-c".into(),
+                created_at_unix_ms: 2,
+                provider: "openai".into(),
+                operation: "responses".into(),
+                requested_model: None,
+                streaming: false,
+                request_bytes: 1,
+                prompt_preview: String::new(),
+                prompt_preview_truncated: false,
+                config_fingerprint: "sha256:test".into(),
+            })
+            .unwrap();
+        state
+            .catalog
+            .complete_capture("cap-c", 3, 1, 200, 1, None, "", false, &bundle)
+            .unwrap();
+        state.catalog.enqueue_finalization("cap-c", 4).unwrap();
+        let newer = app
+            .oneshot(
+                Request::get(format!("/v1/events?limit=1&after={high_water}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let newer: serde_json::Value =
+            serde_json::from_slice(&newer.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(newer["items"].as_array().unwrap().len(), 1);
+        assert_eq!(newer["items"][0]["capture_id"], "cap-c");
     }
 
     #[tokio::test]
