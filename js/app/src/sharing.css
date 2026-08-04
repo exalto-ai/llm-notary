@@ -98,7 +98,7 @@
 .share-page-header > div:first-child { display: grid; gap: 8px; }
 .share-page-header h1 { margin: 0; font: 600 clamp(28px, 3vw, 40px)/1 'Space Grotesk', sans-serif; letter-spacing: -.05em; }
 .share-page-header p { align-items: center; display: flex; flex-wrap: wrap; gap: 0; margin: 0; color: var(--muted); }
-.share-page-header p span::before { content: '·'; margin: 0 7px; }
+.share-page-header p > span::before { content: '·'; margin: 0 7px; }
 .share-page-header p b { color: var(--ink); }
 .share-verification-mark { align-items: center; display: flex; gap: 12px; min-width: 146px; }
 .share-verification-mark span { display: grid; gap: 3px; }

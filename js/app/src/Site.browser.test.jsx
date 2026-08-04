@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { ApiKeysPanel, CliApproval, Header, HostedNotaryRecord, Library, SharePage, VerificationPage } from './main';
+import { ProviderIdentity } from './ProviderIdentity';
 
 afterEach(async () => {
   cleanup();
@@ -29,6 +30,35 @@ const loadLibraryTrace = async (id) => ({
 });
 
 describe('hosted site', () => {
+  test('renders every known provider icon and neutral fallbacks beside provider text', async () => {
+    render(<div>
+      {['openai', 'anthropic', 'deepseek', 'openrouter', 'future-provider'].map((provider) => <ProviderIdentity provider={provider} key={provider} />)}
+      <ProviderIdentity provider={null} />
+    </div>);
+
+    for (const provider of ['openai', 'anthropic', 'deepseek', 'openrouter']) {
+      expect(document.querySelector(`[data-provider-icon="${provider}"]`)).not.toBeNull();
+      await expect.element(page.getByText(provider, { exact: true })).toBeVisible();
+    }
+    expect(document.querySelectorAll('[data-provider-icon="unknown"]')).toHaveLength(2);
+    await expect.element(page.getByText('future-provider')).toBeVisible();
+    await expect.element(page.getByText('Provider not reported')).toBeVisible();
+    expect(document.querySelectorAll('[data-provider-icon] [aria-hidden="true"]')).toHaveLength(6);
+  });
+
+  test('keeps an OpenRouter icon when its model slug names an upstream vendor', async () => {
+    render(<Library loadShares={async () => [{
+      id: 'routed-share', provider: 'openrouter', model: 'openai/gpt-5-mini',
+      publisher: 'fixture-user', authenticated_at_unix_ms: 1_786_000_000_000,
+      share_url: 'https://example.test/s/routed-share'
+    }]} />);
+
+    const row = page.getByRole('link', { name: /openai\/gpt-5-mini/ });
+    await expect.element(row).toBeVisible();
+    expect(row.element().querySelector('[data-provider-icon="openrouter"]')).not.toBeNull();
+    expect(row.element().querySelector('[data-provider-icon="openai"]')).toBeNull();
+  });
+
   test('makes local service authorization a clear two-step decision', async () => {
     window.location.hash = '#/authorize?request_id=request-123&approval_secret=secret-456';
     render(<>
