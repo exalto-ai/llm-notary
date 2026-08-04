@@ -3,6 +3,8 @@ import { playwright } from '@vitest/browser-playwright';
 import { resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
 
+const localBrowser = process.env.PLAYWRIGHT_EXECUTABLE_PATH;
+
 export default defineConfig({
   define: { __PUBLIC_ORIGIN__: JSON.stringify('https://llm-notary.example') },
   optimizeDeps: { include: ['cmdk', 'openapi-fetch', 'react-dom/client', 'react-markdown'] },
@@ -13,7 +15,7 @@ export default defineConfig({
     browser: {
       enabled: true,
       headless: true,
-      provider: playwright(),
+      provider: playwright(localBrowser ? { launchOptions: { executablePath: localBrowser } } : undefined),
       instances: [{ browser: 'chromium' }],
       viewport: { width: 1280, height: 900 }
     }

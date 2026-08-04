@@ -473,7 +473,7 @@ fn hosted_router() -> OpenApiRouter<AppState> {
         .routes(routes!(start_github_login))
         .routes(routes!(finish_github_login))
         .routes(routes!(logout))
-        .routes(routes!(me))
+        .routes(routes!(me, delete_account))
         .routes(routes!(list_cli_sessions))
         .routes(routes!(revoke_web_cli_session))
         .routes(routes!(start_cli_authorization))
@@ -934,6 +934,70 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
         },
         credits,
     }))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/me",
+    summary = "Delete the current account and all associated hosted data",
+    responses(
+        (status = 204, description = "Account deleted", headers(("Set-Cookie" = String))),
+        (status = 401, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    security(("browserSession" = [])),
+    tag = "browser-auth"
+)]
+async fn delete_account(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> ApiResult<(CookieJar, StatusCode)> {
+    let user = authenticated_web_user(&state, &jar).await?;
+    let now = unix_timestamp()?;
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    sqlx::query(
+        "INSERT INTO publication_object_cleanup
+             (object_key, publication_id, artifact_kind, created_at)
+         SELECT artifact.object_key, jobs.id, artifact.artifact_kind, $2
+         FROM publish_jobs AS jobs
+         CROSS JOIN LATERAL (
+             VALUES
+                 (jobs.upload_object_key, 'upload'),
+                 (jobs.intake_object_key, 'intake'),
+                 (jobs.public_trace_object_key, 'trace'),
+                 (jobs.package_object_key, 'package')
+         ) AS artifact(object_key, artifact_kind)
+         WHERE jobs.user_id = $1 AND artifact.object_key IS NOT NULL
+         ON CONFLICT (object_key) DO NOTHING",
+    )
+    .bind(&user.0)
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    sqlx::query("DELETE FROM users WHERE id = $1")
+        .bind(&user.0)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
+
+    if state.publish.enabled() {
+        let cleanup_state = state.clone();
+        tokio::spawn(async move {
+            if let Err(error) = publish::cleanup_publication_objects(&cleanup_state).await {
+                tracing::error!(
+                    status = %error.status,
+                    error = error.message,
+                    "cleaning up deleted account objects failed"
+                );
+            }
+        });
+    }
+    Ok((
+        jar.remove(state.expired_cookie(SESSION_COOKIE)),
+        StatusCode::NO_CONTENT,
+    ))
 }
 
 #[utoipa::path(
@@ -1712,6 +1776,7 @@ mod tests {
     fn public_routes_and_openapi_are_registered_together() {
         let expected = [
             "DELETE /api/cli/sessions/{session_id}",
+            "DELETE /api/me",
             "DELETE /api/me/api-keys/{api_key_id}",
             "GET /api/auth/github",
             "GET /api/auth/github/callback",
@@ -1774,7 +1839,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn forward_migration_preserves_legacy_shares_and_drops_library_wrappers() {
+    async fn forward_migrations_remove_package_less_shares_after_preserving_compatibility() {
         let database = super::test_database::blank_database().await;
         for migration in [
             include_str!("../../../migrations-postgres/0001_initial.sql"),
@@ -2040,6 +2105,60 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(compatibility_subject, "public");
+
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0012_remove_package_less_shares.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let legacy_share_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM publish_jobs WHERE id = 'legacy-job'")
+                .fetch_one(&database.pool)
+                .await
+                .unwrap();
+        assert_eq!(legacy_share_count, 0);
+        let cleanup: Vec<(String, String)> = sqlx::query_as(
+            "SELECT object_key, artifact_kind
+             FROM publication_object_cleanup
+             WHERE publication_id = 'legacy-job'
+             ORDER BY object_key",
+        )
+        .fetch_all(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            cleanup,
+            vec![
+                ("legacy-intake".to_owned(), "intake".to_owned()),
+                ("legacy-stamp".to_owned(), "stamp".to_owned()),
+                ("legacy-trace".to_owned(), "trace".to_owned()),
+                ("legacy-upload".to_owned(), "upload".to_owned()),
+            ]
+        );
+
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0013_account_deletion_cascades.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        sqlx::query("DELETE FROM users WHERE id = 'legacy-user'")
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        let credit_rows: (i64, i64, i64) = sqlx::query_as(
+            "SELECT
+                 (SELECT COUNT(*) FROM notary_credit_grants
+                  WHERE credit_subject = 'user:legacy-user'),
+                 (SELECT COUNT(*) FROM notary_credit_debits
+                  WHERE credit_subject = 'user:legacy-user'),
+                 (SELECT COUNT(*) FROM notary_credit_debit_allocations)",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(credit_rows, (0, 0, 0));
     }
 
     #[test]
@@ -2252,5 +2371,143 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn deleting_an_account_cascades_database_rows_and_queues_every_artifact() {
+        let database = fresh_database().await;
+        let pool = database.pool.clone();
+        let web_token = "delete-web-session";
+        sqlx::query(
+            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
+             VALUES ('delete-user', 44, 'delete-me', 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
+             VALUES ($1, 'delete-user', 4102444800, 1)",
+        )
+        .bind(sha256_hex(web_token.as_bytes()))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO cli_sessions
+             (id, user_id, device_name, refresh_token_hash, created_at, last_used_at, expires_at)
+             VALUES ('delete-device', 'delete-user', 'Test device', 'delete-refresh', 1, 1, 4102444800)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO api_keys
+             (id, display_prefix, user_id, name, secret_hash, scopes, created_at)
+             VALUES ('delete-key', 'llmn_v1_delete', 'delete-user', 'Test key', $1,
+                     ARRAY['account:read']::TEXT[], 1)",
+        )
+        .bind(vec![7_u8; 32])
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO publish_jobs
+             (id, user_id, idempotency_key, state, visibility, archive_format,
+              declared_size_bytes, declared_sha256, upload_object_key, intake_object_key,
+              upload_expires_at, created_at, updated_at, admitted_at,
+              public_trace_object_key, public_trace_size_bytes, public_trace_sha256,
+              provider, provider_host, model, package_object_key, package_size_bytes,
+              package_sha256, public_package_safety_version)
+             VALUES
+             ('delete-trace', 'delete-user', 'delete-idempotency', 'admitted', 'listed', $1,
+              1, $2, 'delete-upload', 'delete-intake', 2, 1, 1, 1,
+              'delete-public-trace', 1, $3, 'openai', 'api.openai.com', 'gpt-test',
+              'delete-package', 1, $4, 'llm-notary/public-package-safety/v1')",
+        )
+        .bind(crate::intake::ARCHIVE_FORMAT)
+        .bind("a".repeat(64))
+        .bind("b".repeat(64))
+        .bind("c".repeat(64))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notary_credit_grants
+             (id, credit_subject, account_id, amount_bytes, source_kind,
+              source_reference, idempotency_key, created_at, available_at, display_label)
+             VALUES ('delete-grant', 'user:delete-user', 'delete-user', 100, 'promotion',
+                     'delete-grant', 'delete-grant', 1, 1, 'Test grant')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notary_credit_debits
+             (id, credit_subject, account_id, record_digest, allowance_bytes, created_at)
+             VALUES ('delete-debit', 'user:delete-user', 'delete-user', $1, 40, 1)",
+        )
+        .bind("d".repeat(64))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notary_credit_debit_allocations
+             (debit_id, grant_id, amount_bytes, allocation_order)
+             VALUES ('delete-debit', 'delete-grant', 40, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let state = AppState {
+            database: pool.clone(),
+            _test_database: Some(database),
+            http: reqwest::Client::new(),
+            github_client_id: "client-id".to_owned(),
+            github_client_secret: "secret".to_owned(),
+            callback_url: Url::parse("https://llm-notary.exalto.ai/api/auth/github/callback")
+                .unwrap(),
+            app_url: Url::parse("https://llm-notary.exalto.ai").unwrap(),
+            secure_cookies: true,
+            notary_directory: directory_key(),
+            publish: publish::PublishService::disabled_for_test(),
+            admission: Arc::new(AdmissionConfig::for_test()),
+        };
+        let jar = CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
+        let (_, status) = delete_account(State(state), jar).await.unwrap();
+        assert_eq!(status, StatusCode::NO_CONTENT);
+
+        let remaining: (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT
+                 (SELECT COUNT(*) FROM users WHERE id = 'delete-user'),
+                 (SELECT COUNT(*) FROM sessions WHERE user_id = 'delete-user'),
+                 (SELECT COUNT(*) FROM cli_sessions WHERE user_id = 'delete-user'),
+                 (SELECT COUNT(*) FROM api_keys WHERE user_id = 'delete-user'),
+                 (SELECT COUNT(*) FROM publish_jobs WHERE user_id = 'delete-user'),
+                 (SELECT COUNT(*) FROM notary_credit_grants WHERE account_id = 'delete-user'),
+                 (SELECT COUNT(*) FROM notary_credit_debit_allocations)",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, (0, 0, 0, 0, 0, 0, 0));
+        let queued: Vec<(String, String)> = sqlx::query_as(
+            "SELECT object_key, artifact_kind FROM publication_object_cleanup
+             WHERE publication_id = 'delete-trace' ORDER BY object_key",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            queued,
+            vec![
+                ("delete-intake".to_owned(), "intake".to_owned()),
+                ("delete-package".to_owned(), "package".to_owned()),
+                ("delete-public-trace".to_owned(), "trace".to_owned()),
+                ("delete-upload".to_owned(), "upload".to_owned()),
+            ]
+        );
     }
 }

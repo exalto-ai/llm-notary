@@ -98,6 +98,8 @@ pub struct CreditHistoryEntry {
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
 pub struct CreditSummary {
+    pub total_granted_bytes: i64,
+    pub total_used_bytes: i64,
     pub total_remaining_bytes: i64,
     pub included_monthly_remaining_bytes: i64,
     pub supplemental_remaining_bytes: i64,
@@ -820,6 +822,8 @@ struct ExistingGrantRow {
 struct GrantBalanceRow {
     source_kind: String,
     expires_at: Option<i64>,
+    granted_bytes: i64,
+    used_bytes: i64,
     remaining_bytes: i64,
 }
 
@@ -1186,6 +1190,8 @@ async fn credit_summary(
     let period = monthly_credit_period(database, now).await?;
     let balances = sqlx::query_as::<_, GrantBalanceRow>(
         "SELECT grants.source_kind, grants.expires_at,
+                grants.amount_bytes AS granted_bytes,
+                COALESCE(SUM(allocations.amount_bytes), 0)::BIGINT AS used_bytes,
                 grants.amount_bytes - COALESCE(SUM(allocations.amount_bytes), 0)::BIGINT
                     AS remaining_bytes
          FROM notary_credit_grants AS grants
@@ -1194,7 +1200,6 @@ async fn credit_summary(
          WHERE grants.credit_subject = $1 AND grants.available_at <= $2
            AND (grants.expires_at IS NULL OR grants.expires_at > $2)
          GROUP BY grants.id
-         HAVING grants.amount_bytes - COALESCE(SUM(allocations.amount_bytes), 0)::BIGINT > 0
          ORDER BY grants.expires_at ASC NULLS LAST, grants.created_at, grants.id",
     )
     .bind(credit_subject)
@@ -1212,7 +1217,16 @@ async fn credit_summary(
         .filter(|grant| grant.source_kind != "included_monthly")
         .map(|grant| grant.remaining_bytes)
         .sum::<i64>();
-    let next_grant_expiration = balances.iter().filter_map(|grant| grant.expires_at).min();
+    let next_grant_expiration = balances
+        .iter()
+        .filter(|grant| grant.remaining_bytes > 0)
+        .filter_map(|grant| grant.expires_at)
+        .min();
+    let total_granted_bytes = balances
+        .iter()
+        .map(|grant| grant.granted_bytes)
+        .sum::<i64>();
+    let total_used_bytes = balances.iter().map(|grant| grant.used_bytes).sum::<i64>();
 
     let mut history = sqlx::query_as::<_, (String, String, i64, String, i64, Option<i64>)>(
         "SELECT id, source_kind, amount_bytes,
@@ -1272,6 +1286,8 @@ async fn credit_summary(
     });
     history.truncate(CREDIT_HISTORY_LIMIT as usize);
     Ok(CreditSummary {
+        total_granted_bytes,
+        total_used_bytes,
         total_remaining_bytes: included_monthly_remaining_bytes
             .saturating_add(supplemental_remaining_bytes),
         included_monthly_remaining_bytes,

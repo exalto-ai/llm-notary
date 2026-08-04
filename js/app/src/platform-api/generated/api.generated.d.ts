@@ -271,7 +271,8 @@ export interface paths {
         get: operations["me"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Delete the current account and all associated hosted data */
+        delete: operations["delete_account"];
         options?: never;
         head?: never;
         patch?: never;
@@ -701,7 +702,11 @@ export interface components {
             /** Format: int64 */
             supplemental_remaining_bytes: number;
             /** Format: int64 */
+            total_granted_bytes: number;
+            /** Format: int64 */
             total_remaining_bytes: number;
+            /** Format: int64 */
+            total_used_bytes: number;
         };
         ErrorResponse: {
             error: string;
@@ -1580,6 +1585,41 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["MeResponse"];
                 };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Account deleted */
+            204: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             401: {
                 headers: {

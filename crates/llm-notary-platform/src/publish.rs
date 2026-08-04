@@ -717,7 +717,7 @@ async fn cleanup_expired_uploads(state: &AppState) -> ApiResult<()> {
     Ok(())
 }
 
-async fn cleanup_publication_objects(state: &AppState) -> ApiResult<()> {
+pub(super) async fn cleanup_publication_objects(state: &AppState) -> ApiResult<()> {
     let objects: Vec<String> = sqlx::query_scalar(
         "SELECT object_key
          FROM publication_object_cleanup

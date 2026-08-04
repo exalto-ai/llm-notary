@@ -166,6 +166,7 @@ async fn listed_shares(State(state): State<AppState>) -> ApiResult<Json<ListedSh
          WHERE publish_jobs.state = 'admitted'
            AND publish_jobs.visibility = 'listed'
            AND publish_jobs.public_trace_object_key IS NOT NULL
+           AND publish_jobs.package_object_key IS NOT NULL
          ORDER BY publish_jobs.authenticated_provider_connection_unix_ms DESC NULLS LAST,
                   publish_jobs.id DESC",
     )
@@ -1006,7 +1007,8 @@ async fn load_public_share_optional(
          FROM publish_jobs
          JOIN users ON users.id = publish_jobs.user_id
          WHERE publish_jobs.id = $1 AND publish_jobs.state = 'admitted'
-           AND publish_jobs.public_trace_object_key IS NOT NULL",
+           AND publish_jobs.public_trace_object_key IS NOT NULL
+           AND publish_jobs.package_object_key IS NOT NULL",
     )
     .bind(share_id)
     .fetch_optional(&state.database)

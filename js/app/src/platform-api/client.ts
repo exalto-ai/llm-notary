@@ -166,6 +166,13 @@ export async function logoutBrowser() {
   }
 }
 
+export async function deleteCurrentAccount() {
+  const { error, response } = await client.DELETE('/api/me');
+  if (!response.ok) {
+    throw new PlatformApiError(errorMessage(error, 'Could not delete the account.'), response.status);
+  }
+}
+
 export type HostedVerificationResult = components['schemas']['VerificationResponse'];
 
 export async function verifyTracePackage(file: File): Promise<HostedVerificationResult> {

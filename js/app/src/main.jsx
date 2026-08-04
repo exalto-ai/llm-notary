@@ -6,6 +6,7 @@ import '@fontsource/dm-mono/400.css';
 import '@fontsource/dm-mono/500.css';
 import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Command, CommandDialog, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
@@ -33,6 +34,7 @@ import { RelayAnimation } from './RelayAnimation';
 import {
   approveCli,
   createApiKey,
+  deleteCurrentAccount,
   getApiKeys,
   claimCreditOffer,
   getCliApproval,
@@ -51,7 +53,10 @@ import {
 } from './platform-api/client';
 import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries } from './notaryLifecycle';
 
-const installCommand = 'git clone https://github.com/exalto-ai/llm-notary.git\ncd llm-notary\ncargo install --locked --path crates/llm-notary-client';
+const installCommand = 'curl -fsSL https://llm-notary.exalto.ai/install.sh | sh';
+const sourceInstallCommand = `git clone https://github.com/exalto-ai/llm-notary.git
+cd llm-notary
+cargo install --locked --path crates/llm-notary-client`;
 function PenMark() {
   return <span className="pen-mark" aria-hidden="true"><img src="/notary-mark.svg" alt="" /></span>;
 }
@@ -106,8 +111,14 @@ function AccountMenu({ user, onLogout }) {
   </div>;
 }
 
-export function Header({ user, onLogout, hideSignIn = false }) {
-  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} /> : !hideSignIn && <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
+export function Header({ user, onLogout, hideSignIn = false, authPending = false }) {
+  const [signingIn, setSigningIn] = useState(false);
+  useEffect(() => {
+    const reset = () => setSigningIn(false);
+    window.addEventListener('pageshow', reset);
+    return () => window.removeEventListener('pageshow', reset);
+  }, []);
+  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} /> : !hideSignIn && authPending ? <span className="account-auth-placeholder" role="status" aria-label="Checking sign-in status"><i /></span> : !hideSignIn && <a className={`sign-in-link${signingIn ? ' sign-in-link--pending' : ''}`} href="/api/auth/github" aria-busy={signingIn || undefined} onClick={() => setSigningIn(true)}><span>{signingIn ? 'Opening GitHub…' : 'Sign in'}</span>{signingIn && <i aria-hidden="true" />}</a>}</nav></header>;
 }
 
 function Footer() {
@@ -172,7 +183,7 @@ export function ListedSharesPreview({ loadShares = getListedShares }) {
     return () => { cancelled = true; };
   }, [loadShares]);
   const visible = (shares || []).slice(0, 5);
-  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Public sessions</span><h2>Open the conversation first.</h2></div></div>{shares === null && !loadError ? <div className="collection-pending" role="status"><b>Loading the Library…</b><span>Finding the latest public sessions.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library couldn’t load.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-share-list" aria-label="Featured shared sessions">{visible.map((share) => <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><span><b>{share.model}</b><small>{share.input_preview || <ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} />}</small></span><em><ProviderIdentity provider={share.provider} /></em></a>)}</div> : <div className="collection-pending"><b>The Library is empty.</b><span>Public sessions will appear here after they’re shared.</span></div>}<a className="button button-dark" href="#/library">Open Library</a></section>;
+  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Public domain</span><h2>Traces from the community.</h2></div></div>{shares === null && !loadError ? <div className="collection-pending" role="status"><b>Loading the Library…</b><span>Finding the latest public traces.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library couldn’t load.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-share-list" aria-label="Featured public traces">{visible.map((share) => <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><header><b>{share.model}</b><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} /></header><div className="preview-share-snippets"><p><span>Prompt</span>{share.input_preview || 'No prompt excerpt disclosed.'}</p><p><span>Response</span>{share.output_preview || 'No response excerpt disclosed.'}</p></div></a>)}</div> : <div className="collection-pending"><b>The Library is empty.</b><span>Public traces will appear here after they’re shared.</span></div>}<a className="button button-dark" href="#/library">Browse the Library</a></section>;
 }
 
 const MAX_VERIFY_FILE_BYTES = 128 * 1024 * 1024 + 64 * 1024 + 16 * 1024;
@@ -210,13 +221,14 @@ function formatTrustSource(source) {
   return `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 }
 
-function VerificationError({ code }) {
+function VerificationError({ code, onReset = null }) {
   const [title, copy] = verificationError(code);
-  return <section className="verification-result verification-result--error" role="alert"><span className="eyebrow">Verification stopped</span><h2>{title}</h2><p>{copy}</p><code>{code}</code></section>;
+  return <section className="verification-result verification-result--error" role="alert"><span className="eyebrow">Verification stopped</span><h2>{title}</h2><p>{copy}</p><code>{code}</code>{onReset && <button type="button" className="button" onClick={onReset}>Choose another package</button>}</section>;
 }
 
 export function VerificationPage({ verifyFile = verifyTracePackage }) {
   const inputRef = useRef(null);
+  const outcomeRef = useRef(null);
   const requestGeneration = useRef(0);
   const [file, setFile] = useState(null);
   const [consent, setConsent] = useState(false);
@@ -252,9 +264,25 @@ export function VerificationPage({ verifyFile = verifyTracePackage }) {
       setStatus('error');
     }
   };
+  const resetVerification = () => {
+    chooseFile(null);
+    if (inputRef.current) inputRef.current.value = '';
+  };
+  useEffect(() => {
+    if (!['success', 'error'].includes(status)) return;
+    const frame = window.requestAnimationFrame(() => {
+      outcomeRef.current?.focus({ preventScroll: true });
+      outcomeRef.current?.scrollIntoView({
+        block: 'start',
+        behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [status]);
+  const completed = status === 'success' || status === 'error';
   return <main className="verification-shell">
     <header className="verification-intro"><span className="eyebrow">Portable verification</span><h1>Verify a .llmtrace package.</h1><p>Check the authenticated provider exchange, notary signature, artifact hashes, and normalized OpenTelemetry trace without signing in.</p></header>
-    <form className="verification-workspace" onSubmit={submit}>
+    {!completed && <form className="verification-workspace" onSubmit={submit}>
       <section className="verification-disclosure" aria-labelledby="verification-disclosure-title"><span className="eyebrow">Read before uploading</span><h2 id="verification-disclosure-title">Your package may contain sensitive content.</h2><p>Headers are hidden by default, but prompts, responses, tool definitions, and tool results may be included. We check the package without saving it.</p></section>
       <label
         className={`verification-drop${dragging ? ' verification-drop--active' : ''}`}
@@ -269,11 +297,14 @@ export function VerificationPage({ verifyFile = verifyTracePackage }) {
         <small>{file ? fileSize(file.size) : 'Maximum package size: 128 MiB'}</small>
       </label>
       {file && <label className="verification-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /><span>I understand that this package may contain sensitive content.</span></label>}
-      <div className="verification-actions"><button className="button button-dark" type="submit" disabled={!file || !consent || status === 'uploading'}>{status === 'uploading' ? 'Checking package…' : 'Verify package'}</button>{file && <button className="button" type="button" onClick={() => { chooseFile(null); if (inputRef.current) inputRef.current.value = ''; }}>Clear</button>}</div>
+      <div className="verification-actions"><button className="button button-dark" type="submit" disabled={!file || !consent || status === 'uploading'}>{status === 'uploading' ? 'Checking package…' : 'Verify package'}</button>{file && <button className="button" type="button" onClick={resetVerification}>Clear</button>}</div>
       {status === 'uploading' && <div className="verification-progress" role="status"><i aria-hidden="true" /><span><b>Checking the evidence</b><small>Keep this page open. Large packages can take a moment.</small></span></div>}
-    </form>
-    {errorCode && <VerificationError code={errorCode} />}
-    {result && <section className="verification-result verification-result--success" aria-labelledby="verification-success-title" aria-live="polite"><header><div><span className="eyebrow">Portable package</span><h2 id="verification-success-title">Verification passed.</h2></div><strong>Verified</strong></header><p className="verification-result-note">Checked from the package you selected.</p><dl className="verification-facts"><div><dt>Provider</dt><dd><ProviderIdentity provider={result.provider} /></dd></div><div><dt>Host</dt><dd>{result.host}</dd></div><div><dt>Capture time</dt><dd>{formatVerificationTime(result.authenticated_at_unix_ms)}</dd></div><div><dt>Notary key</dt><dd><code>{result.notary_key_id}</code></dd></div><div><dt>Trust source</dt><dd>{formatTrustSource(result.trust_source)} · generation {result.directory_generation}</dd></div><div><dt>Trace SHA-256</dt><dd><code>{result.trace_sha256}</code></dd></div><div><dt>Package SHA-256</dt><dd><code>{result.package_sha256}</code></dd></div></dl><section className="verification-trace"><div className="span-panel-head"><span>Normalized trace</span><small>{trace.length} {trace.length === 1 ? 'span' : 'spans'}</small></div>{trace.length ? <SpanTree spans={trace} /> : <p>No normalized spans were present.</p>}</section></section>}
+    </form>}
+    {!completed && errorCode && <VerificationError code={errorCode} />}
+    {completed && <div ref={outcomeRef} className="verification-outcome" tabIndex={-1}>
+      {status === 'error' && <VerificationError code={errorCode} onReset={resetVerification} />}
+      {result && <section className="verification-result verification-result--success" aria-labelledby="verification-success-title" aria-live="polite"><header><div><span className="eyebrow">Portable package</span><h2 id="verification-success-title">Verification passed.</h2></div><div className="verification-result-actions"><strong>Verified</strong><button type="button" className="button" onClick={resetVerification}>Verify another package</button></div></header><p className="verification-result-note">Checked from the package you selected.</p><dl className="verification-facts"><div><dt>Provider</dt><dd><ProviderIdentity provider={result.provider} /></dd></div><div><dt>Host</dt><dd>{result.host}</dd></div><div><dt>Capture time</dt><dd>{formatVerificationTime(result.authenticated_at_unix_ms)}</dd></div><div><dt>Notary key</dt><dd><code>{result.notary_key_id}</code></dd></div><div><dt>Trust source</dt><dd>{formatTrustSource(result.trust_source)} · generation {result.directory_generation}</dd></div><div><dt>Trace SHA-256</dt><dd><code>{result.trace_sha256}</code></dd></div><div><dt>Package SHA-256</dt><dd><code>{result.package_sha256}</code></dd></div></dl><section className="verification-trace"><div className="span-panel-head"><span>Normalized trace</span><small>{trace.length} {trace.length === 1 ? 'span' : 'spans'}</small></div>{trace.length ? <SpanTree spans={trace} /> : <p>No normalized spans were present.</p>}</section></section>}
+    </div>}
   </main>;
 }
 
@@ -386,7 +417,7 @@ const docPages = {
     title: 'Install and capture.',
     lead: 'Install one local service, start its foreground process, and point each existing client at its provider path. You keep using the same API key and request shape.',
     blocks: [
-      { heading: 'Build from source', body: 'LLM Notary is a pre-release prototype and has no published binary release yet. Build the two local programs from a source checkout with Rust 1.95.0; the repository toolchain file selects that version.', code: installCommand },
+      { heading: 'Build from source', body: 'LLM Notary is a pre-release prototype and has no published binary release yet. Build the two local programs from a source checkout with Rust 1.95.0; the repository toolchain file selects that version.', code: sourceInstallCommand },
       { heading: 'Programs', body: '`llm-notaryd` is the long-running local service. `llm-notary` is its short-lived REST client. The checked-in installer becomes usable only after a version tag publishes matching release assets.' },
       { heading: 'Start the service', code: 'llm-notaryd' },
       { heading: 'Open the local dashboard', body: 'Visit `http://127.0.0.1:8788` and use the tabs for captures, finalizations, trace verification, sharing, activity, and settings. The default loopback configuration opens directly. If `admin.auth` is enabled, sign in with its configured username and password; the dashboard exchanges them for an `HttpOnly` session and does not store the password.' },
@@ -422,11 +453,11 @@ const docPages = {
     ],
   },
   'hosted-credits': {
-    title: 'Hosted finalization credits',
-    lead: 'Every signed-in account is Free. Included monthly credits and additional purchased or promotional credits pay for hosted finalization.',
+    title: 'Credits and utilization',
+    lead: 'Signed-in accounts receive included monthly credits and can add purchased or promotional credits for hosted use.',
     blocks: [
-      { heading: 'One Free account', body: 'Every signed-in account uses the same Free access model. It receives an included monthly grant and can add credits through purchases, promotions, or manual adjustments. Capturing locally, retrying an unchanged finalization, verifying a package, and sharing an already-finalized session do not spend credits.' },
-      { heading: 'Monthly and additional grants', body: 'Anonymous Public use receives 64 MiB each UTC month and a signed-in Free account receives 512 MiB. During prototype testing, every Free account also receives one automatic, non-expiring 128 MiB testing grant. Purchased and promotional credits remain separate grants, and finalization spends the grant that expires soonest before non-expiring credit.' },
+      { heading: 'How credits work', body: 'Every signed-in account receives an included monthly grant and can add credits through purchases, promotions, or manual adjustments. Capturing locally, retrying an unchanged finalization, verifying a package, and sharing an already-finalized session do not spend credits.' },
+      { heading: 'Monthly and additional grants', body: 'Anonymous use receives 64 MiB each UTC month and a signed-in account receives 512 MiB. During prototype testing, every signed-in account also receives one automatic, non-expiring 128 MiB testing grant. Purchased and promotional credits remain separate grants, and finalization spends the grant that expires soonest before non-expiring credit.' },
       { heading: 'Anonymous allowances are scoped by network address', body: 'Public hosted use derives a rotating, keyed subject from the connection address: one IPv4 address or one IPv6 /64 prefix. Only explicitly trusted reverse proxies may supply the client address. The raw address is not stored in admission records or sent to a notary worker.' },
       { heading: 'An abuse control, not an identity claim', note: 'Network-address scoping is only a coarse abuse control. People behind the same NAT, corporate gateway, or VPN can share an allowance, while one person may appear under different addresses. The derived subject does not identify a person and is not a privacy guarantee.' },
       { heading: 'Account summary', body: 'The hosted dashboard shows included and additional balances, the monthly reset, the next expiration, available offers, and a bounded recent history. A connected local service can retrieve the same credit summary with `llm-notary whoami --json`.' },
@@ -562,7 +593,7 @@ const docSubheadings = {
 
 const docNavigation = [
   { label: 'Start', pages: [['overview', 'Overview'], ['getting-started', 'Install and capture']] },
-  { label: 'Understand', pages: [['how-it-works', 'Trust model'], ['hosted-credits', 'Hosted credits'], ['trace-packages', 'Trace packages']] },
+  { label: 'Understand', pages: [['how-it-works', 'Trust model'], ['hosted-credits', 'Credits and utilization'], ['trace-packages', 'Trace packages']] },
   { label: 'Share', pages: [['share', 'Share a session']] },
 ];
 const docOrder = docNavigation.flatMap((group) => group.pages.map(([key]) => key));
@@ -783,23 +814,6 @@ function parseSharedTrace(trace) {
   });
 }
 
-function tracePreviews(spans) {
-  const inputMessages = spans.flatMap((span) => span.messages?.input || []);
-  const outputMessages = spans.flatMap((span) => span.messages?.output || []);
-  const textPart = (messages, role) => (messages.find((message) => message.role === role)?.parts || []).find((part) => part.type === 'text' && part.content)
-    || messages.flatMap((message) => message.parts || []).find((part) => part.type === 'text' && part.content);
-  const shorten = (value) => {
-    const text = String(value).replace(/\s+/g, ' ').trim();
-    return text.length > 180 ? `${text.slice(0, 179)}…` : text;
-  };
-  const input = textPart(inputMessages, 'user');
-  const output = textPart(outputMessages, 'assistant');
-  return {
-    input: input ? shorten(input.content) : null,
-    output: output ? shorten(output.content) : null,
-  };
-}
-
 function LibraryLoading() {
   return <main className="share-library share-library--loading" aria-busy="true"><header className="share-library-titlebar"><h1>Library</h1></header><div className="share-library-skeleton" role="status" aria-label="Loading the Library">{[1, 2, 3].map((row) => <div key={row}><i /><span><i /><i /></span></div>)}</div></main>;
 }
@@ -811,49 +825,21 @@ function formatLibraryDate(unixMilliseconds) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(date);
 }
 
-function LibraryShareRow({ share, loadTrace }) {
-  const rowRef = useRef(null);
-  const hasSummaryPreview = Boolean(share.input_preview || share.output_preview);
-  const [legacyPreview, setLegacyPreview] = useState({ status: hasSummaryPreview ? 'ready' : 'waiting', input: null, output: null });
-  useEffect(() => {
-    if (hasSummaryPreview) return undefined;
-    let cancelled = false;
-    let observer;
-    const load = () => {
-      setLegacyPreview((current) => ({ ...current, status: 'loading' }));
-      loadTrace(share.id)
-        .then((trace) => {
-          if (!cancelled) setLegacyPreview({ status: 'ready', ...tracePreviews(parseSharedTrace(trace)) });
-        })
-        .catch(() => { if (!cancelled) setLegacyPreview({ status: 'error', input: null, output: null }); });
-    };
-    if ('IntersectionObserver' in window) {
-      observer = new IntersectionObserver(([entry]) => {
-        if (entry?.isIntersecting) {
-          observer.disconnect();
-          load();
-        }
-      }, { rootMargin: '160px' });
-      if (rowRef.current) observer.observe(rowRef.current);
-    } else {
-      load();
-    }
-    return () => { cancelled = true; observer?.disconnect(); };
-  }, [hasSummaryPreview, loadTrace, share.id]);
+function LibraryShareRow({ share }) {
   const captureDate = formatLibraryDate(share.authenticated_at_unix_ms);
-  const inputPreview = share.input_preview || legacyPreview.input;
-  const outputPreview = share.output_preview || legacyPreview.output;
-  return <a className="share-index-row" href={`/s/${encodeURIComponent(share.id)}`} ref={rowRef}>
-    <header><div className="share-index-heading"><b>{share.model}</b><small><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} />{captureDate && <time dateTime={new Date(share.authenticated_at_unix_ms).toISOString()}>{captureDate}</time>}</small></div><span className="share-index-open">Open session</span></header>
+  const inputPreview = share.input_preview;
+  const outputPreview = share.output_preview;
+  return <a className="share-index-row" href={`/s/${encodeURIComponent(share.id)}`}>
+    <header><div className="share-index-heading"><b>{share.model}</b><small><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} />{captureDate && <time dateTime={new Date(share.authenticated_at_unix_ms).toISOString()}>{captureDate}</time>}</small></div><span className="share-index-open">Open trace</span></header>
     <div className="share-index-previews">
       {inputPreview && <p><span>Input</span>{inputPreview}</p>}
       {outputPreview && <p><span>Response</span>{outputPreview}</p>}
-      {!inputPreview && !outputPreview && <p className="share-index-preview-missing">{legacyPreview.status === 'error' ? 'Conversation preview unavailable.' : 'Loading conversation preview…'}</p>}
+      {!inputPreview && !outputPreview && <p className="share-index-preview-missing">No conversation excerpt was disclosed.</p>}
     </div>
   </a>;
 }
 
-export function Library({ loadShares = getListedShares, loadTrace = getSharedTrace }) {
+export function Library({ loadShares = getListedShares }) {
   const [shares, setShares] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [query, setQuery] = useState('');
@@ -881,7 +867,7 @@ export function Library({ loadShares = getListedShares, loadTrace = getSharedTra
       <Select value={provider} onValueChange={setProvider}><SelectTrigger aria-label="Provider"><SelectValue /></SelectTrigger><SelectContent>{providers.map((value) => <SelectItem value={value} key={value}>{value === 'All' ? 'All providers' : <ProviderIdentity provider={value} />}</SelectItem>)}</SelectContent></Select>
       <span>{filtered.length} {filtered.length === 1 ? 'session' : 'sessions'}</span>
     </section>
-    {loadError ? <section className="collection-empty" role="alert"><b>The Library couldn’t load.</b><p>{loadError}</p><button type="button" onClick={() => setReload((value) => value + 1)}>Try again</button></section> : filtered.length ? <section className="share-index" aria-label="Public sessions">{filtered.map((share) => <LibraryShareRow share={share} loadTrace={loadTrace} key={share.id} />)}</section> : shares.length ? <section className="collection-empty"><b>Nothing matches.</b><p>Try a different search or provider.</p><button type="button" onClick={() => { setQuery(''); setProvider('All'); }}>Clear filters</button></section> : <section className="collection-empty"><b>The Library is empty.</b><p>Public sessions will appear here after they’re shared.</p><a href="#/docs/share">Learn how sharing works</a></section>}
+    {loadError ? <section className="collection-empty" role="alert"><b>The Library couldn’t load.</b><p>{loadError}</p><button type="button" onClick={() => setReload((value) => value + 1)}>Try again</button></section> : filtered.length ? <section className="share-index" aria-label="Public sessions">{filtered.map((share) => <LibraryShareRow share={share} key={share.id} />)}</section> : shares.length ? <section className="collection-empty"><b>Nothing matches.</b><p>Try a different search or provider.</p><button type="button" onClick={() => { setQuery(''); setProvider('All'); }}>Clear filters</button></section> : <section className="collection-empty"><b>The Library is empty.</b><p>Public sessions will appear here after they’re shared.</p><a href="#/docs/share">Learn how sharing works</a></section>}
   </main>;
 }
 
@@ -935,7 +921,13 @@ export function SharePage({ shareId, loadShare = getPublicShare, loadTrace = get
     return () => { robots?.remove(); document.title = 'LLM Notary'; };
   }, [share]);
   if (loadError) return <main className="share-page share-page-state" role="alert"><h1>Share unavailable</h1><p>{loadError}</p><a href="#/library">Open Library</a></main>;
-  if (!share || spans === null) return <main className="share-page share-page-state" aria-busy="true"><h1>Loading share</h1></main>;
+  if (!share || spans === null) return <main className="share-page share-page-loading" aria-busy="true" aria-label="Loading shared trace">
+    <header className="share-page-header"><div><i className="share-loading-title" /><i className="share-loading-meta" /></div><div className="share-verification-mark"><i aria-hidden="true" /><span><i /><i /></span></div></header>
+    <div className="share-page-layout">
+      <section className="share-transcript"><header><i className="share-loading-section" /><i className="share-loading-count" /></header><div className="shared-conversation">{[1, 2, 3].map((row) => <article className="shared-message" key={row}><aside><i /><i /></aside><div><i /><i /><i /></div></article>)}</div></section>
+      <aside className="share-evidence-rail"><i className="share-loading-label" /><dl>{[1, 2, 3, 4].map((row) => <div key={row}><dt><i /></dt><dd><i /></dd></div>)}</dl><i className="share-loading-package" /></aside>
+    </div>
+  </main>;
   const authenticated = share.authenticated_at_unix_ms ? new Date(share.authenticated_at_unix_ms).toLocaleString() : 'Not recorded';
   const messageCount = spans.reduce((count, span) => count + (span.messages?.input?.length || 0) + (span.messages?.output?.length || 0), 0);
   return <main className="share-page">
@@ -1076,7 +1068,59 @@ export function AccountSettings({ theme, onThemeChange }) {
   </section>;
 }
 
-function Dashboard({ user, view, theme, onThemeChange }) {
+export function DeleteAccountPanel({ githubLogin, onDeleted, deleteAccount = deleteCurrentAccount }) {
+  const [open, setOpen] = useState(false);
+  const [confirmation, setConfirmation] = useState('');
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState('');
+  const close = (nextOpen) => {
+    if (deleting) return;
+    setOpen(nextOpen);
+    if (!nextOpen) {
+      setConfirmation('');
+      setError('');
+    }
+  };
+  const remove = async (event) => {
+    event.preventDefault();
+    if (confirmation !== githubLogin || deleting) return;
+    setDeleting(true);
+    setError('');
+    try {
+      await deleteAccount();
+      onDeleted();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not delete the account.');
+      setDeleting(false);
+    }
+  };
+  return <section className="dashboard-delete-account" aria-labelledby="delete-account-title">
+    <div><span className="eyebrow">Account deletion</span><h2 id="delete-account-title">Delete account</h2><p>Remove this account, its API keys and devices, credit records, and every hosted public or unlisted trace.</p></div>
+    <button type="button" onClick={() => setOpen(true)}>Delete account</button>
+    <AlertDialog open={open} onOpenChange={close}><AlertDialogContent className="axis-alert-dialog axis-delete-account-dialog"><AlertDialogHeader><AlertDialogTitle>Delete {githubLogin}?</AlertDialogTitle><AlertDialogDescription>This permanently removes the account and disables its API keys, devices, trace links, and package downloads. This cannot be undone.</AlertDialogDescription></AlertDialogHeader><form id="delete-account-form" className="delete-account-form" onSubmit={remove}><label htmlFor="delete-account-confirmation">Type <b>{githubLogin}</b> to confirm.</label><Input id="delete-account-confirmation" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" disabled={deleting} />{error && <p role="alert">{error}</p>}</form><AlertDialogFooter><AlertDialogCancel disabled={deleting}>Keep account</AlertDialogCancel><AlertDialogAction type="button" disabled={confirmation !== githubLogin || deleting} onClick={remove}>{deleting ? 'Deleting…' : 'Delete account'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+  </section>;
+}
+
+function CreditUtilizationChart({ credits }) {
+  const data = [{ name: 'Active credits', used: credits.total_used_bytes, available: credits.total_remaining_bytes }];
+  return <section className="dashboard-utilization" aria-labelledby="dashboard-utilization-title">
+    <header><div><span className="eyebrow">Current allocation</span><h2 id="dashboard-utilization-title">Utilization</h2></div><span>{fileSize(credits.total_granted_bytes)} granted</span></header>
+    <div className="dashboard-utilization-plot" aria-label={`${fileSize(credits.total_used_bytes)} used and ${fileSize(credits.total_remaining_bytes)} available`}>
+      <ResponsiveContainer width="100%" height={92}>
+        <BarChart data={data} layout="vertical" margin={{ top: 20, right: 0, bottom: 20, left: 0 }} accessibilityLayer>
+          <XAxis type="number" domain={[0, Math.max(1, credits.total_granted_bytes)]} hide />
+          <YAxis type="category" dataKey="name" hide />
+          <Tooltip cursor={false} formatter={(value, name) => [fileSize(Number(value)), name === 'used' ? 'Used' : 'Available']} contentStyle={{ border: '1px solid var(--line)', borderRadius: 0, background: 'var(--white)', boxShadow: 'none', fontSize: 11 }} />
+          <Bar dataKey="used" stackId="credits" fill="var(--ink)" isAnimationActive={false} />
+          <Bar dataKey="available" stackId="credits" fill="var(--action)" isAnimationActive={false} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+    <dl><div><dt><i className="dashboard-utilization-used" />Used</dt><dd>{fileSize(credits.total_used_bytes)}</dd></div><div><dt><i className="dashboard-utilization-available" />Available</dt><dd>{fileSize(credits.total_remaining_bytes)}</dd></div></dl>
+  </section>;
+}
+
+function Dashboard({ user, view, theme, onThemeChange, onAccountDeleted }) {
   const [sessions, setSessions] = useState(null);
   const [sessionError, setSessionError] = useState(null);
   const [revoking, setRevoking] = useState(null);
@@ -1149,55 +1193,65 @@ function Dashboard({ user, view, theme, onThemeChange }) {
 
   const admittedCount = shares?.filter((share) => share.state === 'admitted').length || 0;
   const activeCount = shares?.filter((share) => ['uploading', 'queued', 'verifying'].includes(share.state)).length || 0;
-  const activeView = view === 'shares' ? 'shares' : 'account';
+  const activeView = view === 'shares' ? 'traces' : ['overview', 'traces', 'credits', 'settings'].includes(view) ? view : 'overview';
 
   return <main className="dashboard-shell dashboard-shell--account">
     <div className="dashboard-layout">
       <aside className="dashboard-sidebar" aria-label="Dashboard navigation">
-        <span className="eyebrow">Dashboard</span>
         <nav>
-          <a className={activeView === 'account' ? 'active' : ''} href="#/dashboard" aria-current={activeView === 'account' ? 'page' : undefined}><span>Account</span></a>
-          <a className={activeView === 'shares' ? 'active' : ''} href="#/dashboard/shares" aria-current={activeView === 'shares' ? 'page' : undefined}><span>Shares</span><small>{shares === null ? '—' : shares.length}</small></a>
+          <a className={activeView === 'overview' ? 'active' : ''} href="#/dashboard" aria-current={activeView === 'overview' ? 'page' : undefined}><span>Overview</span></a>
+          <a className={activeView === 'traces' ? 'active' : ''} href="#/dashboard/traces" aria-current={activeView === 'traces' ? 'page' : undefined}><span>Traces</span><small>{shares === null ? '—' : shares.length}</small></a>
+          <a className={activeView === 'credits' ? 'active' : ''} href="#/dashboard/credits" aria-current={activeView === 'credits' ? 'page' : undefined}><span>Credits</span></a>
+          <a className={activeView === 'settings' ? 'active' : ''} href="#/dashboard/settings" aria-current={activeView === 'settings' ? 'page' : undefined}><span>Settings</span></a>
         </nav>
       </aside>
       <div className="dashboard-page">
-        {activeView === 'account' ? <>
-          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Account</h1><p>Manage hosted finalization credits and the local services connected to your Free account.</p></header>
+        {activeView === 'overview' && <>
+          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Overview</h1><p>Your GitHub identity, admitted traces, current activity, and service utilization.</p></header>
           <div className="dashboard-summary">
             <div><span>GitHub account</span><b>{user.github_login}</b></div>
-            <div><span>Admitted shares</span><b>{shares === null ? '—' : admittedCount}</b></div>
+            <div><span>Admitted traces</span><b>{shares === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>
-          <AccountSettings theme={theme} onThemeChange={onThemeChange} />
+          {credits && <CreditUtilizationChart credits={credits} />}
+        </>}
+        {activeView === 'credits' && <>
+          <header className="dashboard-page-header"><span className="eyebrow">Usage</span><h1>Credits</h1><p>Review available finalization capacity, expirations, offers, and recent credit activity.</p></header>
           {credits && <section className="dashboard-credits" aria-labelledby="credit-balance-title">
-            <header><div><span className="eyebrow">Hosted finalization credits</span><h2 id="credit-balance-title">{fileSize(credits.total_remaining_bytes)} available</h2></div><div className="dashboard-credit-meta"><span className="dashboard-account-badge">Free account</span><span>Resets {sessionDate(credits.reset_at)}</span></div></header>
+            <header><div><span className="eyebrow">Utilization</span><h2 id="credit-balance-title">{fileSize(credits.total_remaining_bytes)} available</h2></div><div className="dashboard-credit-meta"><span>Resets {sessionDate(credits.reset_at)}</span></div></header>
             <p className="dashboard-credit-note">Included credits reset monthly. Credits you purchase or receive are added separately and keep their own expiration.</p>
             <div className="dashboard-credit-ledger" aria-label="Credit balance breakdown"><div><span>Included this month</span><b>{fileSize(credits.included_monthly_remaining_bytes)}</b></div><div><span>Additional credits</span><b>{fileSize(credits.supplemental_remaining_bytes)}</b></div><div><span>Next expiration</span><b>{credits.next_grant_expiration ? sessionDate(credits.next_grant_expiration) : 'None'}</b></div></div>
             {creditError && <p className="dashboard-session-error" role="alert">{creditError}</p>}
             {creditOffers?.map((offer) => <article className="dashboard-credit-offer" key={offer.id}><div><span className="eyebrow">Available offer</span><b>{offer.title}</b><p>{offer.description} Claim by {sessionDate(offer.claim_expires_at)}.</p></div><button type="button" onClick={() => claimOffer(offer)} disabled={claimingOffer === offer.id}>{claimingOffer === offer.id ? 'Claiming…' : `Claim ${fileSize(offer.amount_bytes)}`}</button></article>)}
             {credits.history.length > 0 && <div className="dashboard-credit-history"><h3>Recent credit activity</h3>{credits.history.slice(0, 6).map((entry) => <div key={`${entry.kind}-${entry.id}`}><span className={`dashboard-credit-sign dashboard-credit-sign--${entry.kind}`}>{entry.kind === 'grant' ? '+' : '−'}{fileSize(entry.amount_bytes)}</span><span>{entry.display_label}</span><time>{sessionDate(entry.created_at)}</time></div>)}</div>}
           </section>}
-          <section className="dashboard-sessions" aria-labelledby="connected-services-title"><header><div><span className="eyebrow">Local service access</span><h2 id="connected-services-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
+        </>}
+        {activeView === 'settings' && <>
+          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Settings</h1><p>Manage this browser, automation access, and the local services connected to your account.</p></header>
+          <AccountSettings theme={theme} onThemeChange={onThemeChange} />
           <ApiKeysPanel />
-        </> : <>
-          <header className="dashboard-page-header"><span className="eyebrow">Shares</span><h1>Your shares</h1><p>Review admission state, visibility, and the stable links created by your local service.</p></header>
-          <section className="dashboard-traces" aria-label="Your shares">
+          <section className="dashboard-sessions" aria-labelledby="connected-services-title"><header><div><span className="eyebrow">Local service access</span><h2 id="connected-services-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
+          <DeleteAccountPanel githubLogin={user.github_login} onDeleted={onAccountDeleted} />
+        </>}
+        {activeView === 'traces' && <>
+          <header className="dashboard-page-header"><span className="eyebrow">Published evidence</span><h1>Your traces</h1><p>Review admission state, visibility, and the stable links created by your local service.</p></header>
+          <section className="dashboard-traces" aria-label="Your traces">
             {shareError && <p className="dashboard-session-error" role="alert">{shareError}</p>}
-            {shares === null && !shareError ? <p className="dashboard-session-empty">Loading your shares…</p> : shares?.length ? <div className="dashboard-trace-list">{shares.map((share) => {
+            {shares === null && !shareError ? <p className="dashboard-session-empty">Loading your traces…</p> : shares?.length ? <div className="dashboard-trace-list">{shares.map((share) => {
               const status = shareStateLabel(share.state);
               return <article key={share.id}>
                 <div className="dashboard-trace-copy">
                   <div><span className={`dashboard-trace-state dashboard-trace-state--${status.tone}`}><i aria-hidden="true" />{status.label}</span><time>{sessionDate(share.admitted_at || share.updated_at)}</time></div>
-                  <h3>Share {share.id.slice(0, 8)}</h3>
+                  <h3>Trace {share.id.slice(0, 8)}</h3>
                   <p>{share.visibility} · <code>{share.id}</code></p>
                   {share.failure_code && <p className="dashboard-trace-failure">Reason: {share.failure_code.replaceAll('_', ' ')}</p>}
                 </div>
                 <div className="dashboard-trace-actions">
-                  {share.share_url && <a href={share.share_url} target="_blank" rel="noreferrer">Open share</a>}
+                  {share.share_url && <a href={share.share_url} target="_blank" rel="noreferrer">Open trace</a>}
                   {share.package_url && <a href={share.package_url}>Package</a>}
                 </div>
               </article>;
-            })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No shares</span><b>Share your first verified session.</b><p>Finalize a capture in the local dashboard, preview its disclosed conversation, then create an Unlisted or Listed link.</p><a href="#/docs/share">Open the sharing guide</a></div>}
+            })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No traces</span><b>Publish your first verified trace.</b><p>Finalize a capture in the local dashboard, preview its disclosed conversation, then create an Unlisted or Listed link.</p><a href="#/docs/share">Open the sharing guide</a></div>}
           </section>
         </>}
       </div>
@@ -1405,6 +1459,7 @@ function NotariesPage() {
 function App() {
   const [route, setRoute] = useState(window.location.hash || '#/');
   const [user, setUser] = useState(null);
+  const [authPending, setAuthPending] = useState(true);
   const [theme, setTheme] = useState(initialThemePreference);
   useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
@@ -1424,8 +1479,9 @@ function App() {
     const nextSection = route.replace(/^#\/?/, '').split(/[/?]/)[0];
     if (nextSection !== 'docs') window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'instant' }));
   }, [route]);
-  useEffect(() => { let cancelled = false; getCurrentUser().then((user) => { if (!cancelled) setUser(user); }).catch(() => { if (!cancelled) setUser(null); }); return () => { cancelled = true; }; }, []);
+  useEffect(() => { let cancelled = false; getCurrentUser().then((user) => { if (!cancelled) { setUser(user); setAuthPending(false); } }).catch(() => { if (!cancelled) { setUser(null); setAuthPending(false); } }); return () => { cancelled = true; }; }, []);
   const logout = async () => { await logoutBrowser(); setUser(null); if (window.location.hash === '#/dashboard') window.location.hash = '#/'; };
+  const accountDeleted = () => { setUser(null); setAuthPending(false); window.location.hash = '#/'; };
   const path = route.replace(/^#\/?/, '');
   const directShare = window.location.pathname.match(/^\/s\/([^/]+)\/?$/);
   const directShareId = directShare ? decodeURIComponent(directShare[1]) : null;
@@ -1433,7 +1489,7 @@ function App() {
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  return <><Header user={user} onLogout={logout} hideSignIn={section === 'authorize'} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} theme={theme} onThemeChange={setTheme} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} hideSignIn={section === 'authorize'} authPending={authPending} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} theme={theme} onThemeChange={setTheme} onAccountDeleted={accountDeleted} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 const applicationRoot = document.getElementById('root');

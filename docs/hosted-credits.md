@@ -1,6 +1,6 @@
-# Hosted finalization credits
+# Credits and utilization
 
-Every signed-in hosted account uses the same Free access model. An account
+Every signed-in hosted account uses the same credit model. An account
 receives included monthly finalization credits and can add more through
 purchases, promotions, or manual adjustments.
 
@@ -14,11 +14,11 @@ receipt, not the size of the `.llmtrace` ZIP.
 ## Monthly and supplemental credits
 
 The default monthly included grants are 64 MiB for anonymous Public use and
-512 MiB for a signed-in Free account. They reset at the first instant of each
+512 MiB for a signed-in account. They reset at the first instant of each
 UTC month.
 
 Supplemental grants are separate from monthly included credits. The hosted API
-automatically gives every Free account one non-expiring 128 MiB testing grant.
+automatically gives every account one non-expiring 128 MiB testing grant.
 It is labeled as testing credit in account history and uses a versioned source
 reference so migration, sign-in, account refresh, and admission requests cannot
 issue it twice. The API also offers an eligible account one server-defined,

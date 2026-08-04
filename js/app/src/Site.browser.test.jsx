@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { AccountSettings, ApiKeysPanel, CliApproval, Header, HostedNotaryRecord, Library, ListedSharesPreview, SharePage, VerificationPage } from './main';
+import { AccountSettings, ApiKeysPanel, CliApproval, DeleteAccountPanel, Header, HostedNotaryRecord, Library, ListedSharesPreview, SharePage, VerificationPage } from './main';
 import { ProviderIdentity } from './ProviderIdentity';
 import { initialThemePreference } from './theme';
 
@@ -41,6 +41,13 @@ describe('hosted site', () => {
     await page.getByRole('button', { name: 'Account menu for fixture-user' }).click();
     await expect.element(page.getByRole('menuitem', { name: 'Dashboard' })).toBeVisible();
     await expect.element(page.getByRole('group', { name: 'Appearance' })).not.toBeInTheDocument();
+  });
+
+  test('reserves the account slot while browser authentication is loading', async () => {
+    render(<Header user={null} authPending onLogout={() => {}} />);
+
+    await expect.element(page.getByRole('status', { name: 'Checking sign-in status' })).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
   });
 
   test('offers Auto, Light, and Dark in Dashboard account settings', async () => {
@@ -185,7 +192,7 @@ describe('hosted site', () => {
     await expect.element(row).toBeVisible();
     expect(row.element().textContent).toContain('Prompt for share-12');
     expect(row.element().textContent).toContain('Response for share-12');
-    expect(row.element().textContent).toContain('Open session');
+    expect(row.element().textContent).toContain('Open trace');
     expect(document.body.textContent).not.toContain('Verified');
     expect(document.body.textContent).not.toContain('↗');
     expect(document.body.textContent).not.toContain('Listed shares');
@@ -194,7 +201,7 @@ describe('hosted site', () => {
   test('shows provider marks in the landing Library preview', async () => {
     render(<ListedSharesPreview loadShares={async () => [libraryShares[0], libraryShares[11]]} />);
 
-    const preview = page.getByLabelText('Featured shared sessions');
+    const preview = page.getByLabelText('Featured public traces');
     await expect.element(preview).toBeVisible();
     expect(preview.element().querySelectorAll('[data-provider-icon="openai"]')).toHaveLength(1);
     expect(preview.element().querySelectorAll('[data-provider-icon="anthropic"]')).toHaveLength(1);
@@ -209,7 +216,7 @@ describe('hosted site', () => {
     await expect.element(page.getByRole('link', { name: /gpt-5.2/ })).not.toBeInTheDocument();
   });
 
-  test('loads a visible legacy row preview from its public trace', async () => {
+  test('does not treat a bare legacy trace as a package-backed preview', async () => {
     let traceLoads = 0;
     render(<Library
       loadShares={async () => [{
@@ -219,9 +226,25 @@ describe('hosted site', () => {
       loadTrace={async (id) => { traceLoads += 1; return loadLibraryTrace(id); }}
     />);
 
-    await expect.element(page.getByText('Prompt for legacy-share')).toBeVisible();
-    await expect.element(page.getByText('Response for legacy-share')).toBeVisible();
-    expect(traceLoads).toBe(1);
+    await expect.element(page.getByText('No conversation excerpt was disclosed.')).toBeVisible();
+    expect(traceLoads).toBe(0);
+  });
+
+  test('requires the GitHub login before deleting an account', async () => {
+    let deleted = false;
+    let completed = false;
+    render(<DeleteAccountPanel githubLogin="fixture-user" deleteAccount={async () => { deleted = true; }} onDeleted={() => { completed = true; }} />);
+
+    await page.getByRole('button', { name: 'Delete account' }).click();
+    const dialog = page.getByRole('alertdialog');
+    const submit = dialog.getByRole('button', { name: 'Delete account' });
+    await expect.element(submit).toBeDisabled();
+    await dialog.getByLabelText('Type fixture-user to confirm.').fill('fixture-user');
+    await expect.element(submit).toBeEnabled();
+    await submit.click();
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    expect(deleted).toBe(true);
+    expect(completed).toBe(true);
   });
 
   test('puts the disclosed conversation before collapsible evidence and tools', async () => {

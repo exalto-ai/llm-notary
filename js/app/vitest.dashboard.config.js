@@ -3,6 +3,8 @@ import { playwright } from '@vitest/browser-playwright';
 import { resolve } from 'node:path';
 import { defineConfig } from 'vitest/config';
 
+const localBrowser = process.env.PLAYWRIGHT_EXECUTABLE_PATH;
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -15,7 +17,7 @@ export default defineConfig({
     browser: {
       enabled: true,
       headless: true,
-      provider: playwright(),
+      provider: playwright(localBrowser ? { launchOptions: { executablePath: localBrowser } } : undefined),
       instances: [{ browser: 'chromium' }],
       viewport: { width: 1280, height: 900 }
     }

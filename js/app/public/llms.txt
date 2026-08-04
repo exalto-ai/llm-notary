@@ -7,7 +7,7 @@
 - [Overview](%PUBLIC_ORIGIN%/docs): Capture, deferred finalization, portable packages, and shared verified sessions.
 - [Trust and guarantees](%PUBLIC_ORIGIN%/docs/how-it-works): The exact provenance claim, participants, authenticated versus observed data, and limits.
 - [Install and capture](%PUBLIC_ORIGIN%/docs/getting-started): Build the pre-release service from source, start both loopback listeners, configure providers, and inspect captures.
-- [Hosted finalization credits](%PUBLIC_ORIGIN%/docs/hosted-credits): Free-account monthly credits, automatic testing grants, additional purchases and promotions, account summaries, and IP-scoped anonymous allowances.
+- [Credits and utilization](%PUBLIC_ORIGIN%/docs/hosted-credits): Monthly credits, automatic testing grants, additional purchases and promotions, account summaries, and IP-scoped anonymous allowances.
 - [Trace packages](%PUBLIC_ORIGIN%/docs/trace-packages): Finalization, package layout, disclosure, and offline verification.
 - [Verify online](%PUBLIC_ORIGIN%/#/verify): Explicitly upload one finalized package for retention-free hosted verification.
 - [Share](%PUBLIC_ORIGIN%/docs/share): Preview and deliberately share an already-finalized trace package as Unlisted or Listed.

@@ -974,6 +974,50 @@
             "browserSession": []
           }
         ]
+      },
+      "delete": {
+        "tags": [
+          "browser-auth"
+        ],
+        "summary": "Delete the current account and all associated hosted data",
+        "operationId": "delete_account",
+        "responses": {
+          "204": {
+            "description": "Account deleted",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
       }
     },
     "/api/me/api-keys": {
@@ -2670,6 +2714,8 @@
       "CreditSummary": {
         "type": "object",
         "required": [
+          "total_granted_bytes",
+          "total_used_bytes",
           "total_remaining_bytes",
           "included_monthly_remaining_bytes",
           "supplemental_remaining_bytes",
@@ -2702,7 +2748,15 @@
             "type": "integer",
             "format": "int64"
           },
+          "total_granted_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
           "total_remaining_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total_used_bytes": {
             "type": "integer",
             "format": "int64"
           }
