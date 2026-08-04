@@ -39,7 +39,7 @@ hex = "0.4"
 hmac = "0.12"
 ipnet = "2.12"
 k256 = { version = "0.13", features = ["ecdsa"] }
-llm-notary-core = { path = "../llm-notary-core" }
+llm-notary-core = { path = "../llm-notary-core", features = ["openapi"] }
 metrics = { version = "0.24.6", default-features = false }
 opentelemetry = "0.32.0"
 opentelemetry-http = "0.32.0"

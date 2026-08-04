@@ -36,6 +36,7 @@ Use the generated contract when prose and an installed service disagree.
 ## Contributors
 
 - [Development and validation](development.md)
+- [Cursor-pagination contract and array inventory](adr/0001-cursor-pagination.md)
 - [Design language](../DESIGN.md)
 - [Provider icon assets and usage terms](provider-icons.md)
 - [OpenCode production canary](../benchmarks/opencode-e2e/README.md)

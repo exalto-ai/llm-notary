@@ -75,6 +75,7 @@ pub mod archive;
 pub mod bundle;
 pub mod normalize;
 pub mod notary_directory;
+pub mod pagination;
 pub mod public;
 pub mod public_safety;
 pub mod telemetry;
