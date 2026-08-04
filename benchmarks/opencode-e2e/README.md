@@ -13,7 +13,7 @@ The runner:
 5. checks the test result and exact diff allowlist;
 6. finalizes and locally verifies eligible captures;
 7. scans the public disclosure, explicitly accepts only entropy-heuristic false
-   positives, publishes it as Unlisted, and polls admission;
+   positives, publishes it as Listed, and polls admission;
 8. downloads each public package and verifies it again; and
 9. deletes all private state and retains only sanitized metrics and public URLs.
 
@@ -62,10 +62,10 @@ python3 benchmarks/opencode-e2e/notify.py "$result" || true
 exit "$status"
 ```
 
-This deliberately consumes hosted finalization capacity and publishes Unlisted
-public traces. The runner's `--force` publication decision cannot override a
-known secret, credential field, disclosed header, malformed package, or failed
-verification. Unit tests do neither:
+This deliberately consumes hosted finalization capacity and publishes Listed
+public traces in the Library. The runner's `--force` publication decision cannot
+override a known secret, credential field, disclosed header, malformed package,
+or failed verification. Unit tests do neither:
 
 ```bash
 python3 benchmarks/opencode-e2e/test_runner.py -v

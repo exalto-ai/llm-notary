@@ -25,6 +25,7 @@ from typing import Any
 RESULT_FORMAT = "llm-notary/opencode-e2e-result/v1"
 FIXTURE_VERSION = "retry-after/v1"
 DEFAULT_MODEL = "openrouter/cohere/north-mini-code:free"
+PUBLICATION_VISIBILITY = "listed"
 ALLOWED_FILES = {"retry_after.py"}
 TERMINAL_OPERATION_STATES = {"finalized", "failed", "interrupted"}
 TERMINAL_SHARE_STATES = {"admitted", "rejected"}
@@ -806,7 +807,7 @@ class Canary:
                     "share",
                     capture_id,
                     "--visibility",
-                    "unlisted",
+                    PUBLICATION_VISIBILITY,
                     "--force",
                 ],
                 env=self.environment,
@@ -865,7 +866,7 @@ class Canary:
                 {
                     "capture_id": capture_id,
                     "share_id": share_id,
-                    "visibility": "unlisted",
+                    "visibility": PUBLICATION_VISIBILITY,
                     "high_entropy_force_requested": True,
                     "admission_wall_ms": elapsed_ms(submitted_at),
                     "share_url": share_url,
