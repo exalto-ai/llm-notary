@@ -4,7 +4,7 @@ import '@fontsource-variable/instrument-sans';
 import '@fontsource-variable/space-grotesk';
 import '@fontsource/dm-mono/400.css';
 import '@fontsource/dm-mono/500.css';
-import { ChevronDown, Moon, Sun } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -12,6 +12,7 @@ import { Command, CommandDialog, CommandEmpty, CommandInput, CommandItem, Comman
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { ProviderIdentity } from './ProviderIdentity';
+import { initialThemePreference, resolvedTheme, themeOptions } from './theme';
 import './shadcn.css';
 import './styles.css';
 import './hero-evidence.css';
@@ -84,7 +85,7 @@ function HeroSignalField() {
 function LinkIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 13.4a4 4 0 0 0 5.7.1l2-2a4 4 0 0 0-5.7-5.7l-1.1 1.1M13.4 10.6a4 4 0 0 0-5.7-.1l-2 2a4 4 0 0 0 5.7 5.7l1.1-1.1" /></svg>; }
 function CheckIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4.2 4.2L19 6.5" /></svg>; }
 
-function AccountMenu({ user, onLogout, theme, onThemeChange }) {
+function AccountMenu({ user, onLogout }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef(null);
   const initials = user.github_login.slice(0, 2).toUpperCase();
@@ -96,12 +97,17 @@ function AccountMenu({ user, onLogout, theme, onThemeChange }) {
     window.addEventListener('keydown', close);
     return () => { document.removeEventListener('mousedown', close); window.removeEventListener('keydown', close); };
   }, []);
-  const nextTheme = theme === 'dark' ? 'light' : 'dark';
-  return <div className="account-menu" ref={menuRef}><button type="button" className="account-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="menu" aria-label={`Account menu for ${user.github_login}`}>{user.avatar_url ? <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" /> : <span>{initials}</span>}</button>{open && <div className="account-popover" role="menu"><div className="account-identity"><div><b>{user.github_login}</b><span>Signed in with GitHub</span></div><button type="button" className="account-theme" role="menuitemcheckbox" aria-checked={theme === 'dark'} aria-label={`Use ${nextTheme} theme`} title={`Use ${nextTheme} theme`} onClick={() => onThemeChange(nextTheme)}>{theme === 'dark' ? <Sun aria-hidden="true" /> : <Moon aria-hidden="true" />}</button></div><div className="account-actions"><a href="/#/dashboard" role="menuitem" onClick={() => setOpen(false)}>Dashboard</a><button type="button" role="menuitem" onClick={() => { setOpen(false); onLogout(); }}>Log out</button></div></div>}</div>;
+  return <div className="account-menu" ref={menuRef}>
+    <button type="button" className="account-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="menu" aria-label={`Account menu for ${user.github_login}`}>{user.avatar_url ? <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" /> : <span>{initials}</span>}</button>
+    {open && <div className="account-popover" role="menu">
+      <div className="account-identity"><div><b>{user.github_login}</b><span>Signed in with GitHub</span></div></div>
+      <div className="account-actions"><a href="/#/dashboard" role="menuitem" onClick={() => setOpen(false)}>Dashboard</a><button type="button" role="menuitem" onClick={() => { setOpen(false); onLogout(); }}>Log out</button></div>
+    </div>}
+  </div>;
 }
 
-export function Header({ user, onLogout, theme, onThemeChange, hideSignIn = false }) {
-  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : !hideSignIn && <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
+export function Header({ user, onLogout, hideSignIn = false }) {
+  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} /> : !hideSignIn && <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
 }
 
 function Footer() {
@@ -155,18 +161,18 @@ function VerificationArchitecture() {
   return <section className="section architecture" id="how-it-works"><div className="section-head"><span className="eyebrow">How it works</span><h2>Don’t trust. Verify.</h2></div><TrustColumns /><div className="section-link"><a href="#/docs/how-it-works">Learn more about the trust model</a></div></section>;
 }
 
-function ListedSharesPreview() {
+export function ListedSharesPreview({ loadShares = getListedShares }) {
   const [shares, setShares] = useState(null);
   const [loadError, setLoadError] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    getListedShares()
+    loadShares()
       .then((payload) => { if (!cancelled) setShares(payload); })
       .catch(() => { if (!cancelled) setLoadError(true); });
     return () => { cancelled = true; };
-  }, []);
+  }, [loadShares]);
   const visible = (shares || []).slice(0, 5);
-  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Listed sessions</span><h2>Open the conversation first.</h2></div></div>{shares === null && !loadError ? <div className="collection-pending" role="status"><b>Loading shared sessions…</b><span>Retrieving the public Listed index.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library is temporarily unavailable.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-share-list" aria-label="Featured shared sessions">{visible.map((share) => <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><i aria-hidden="true" /><span><b>{share.model}</b><small><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} /></small></span><em>Verified</em></a>)}</div> : <div className="collection-pending"><b>No Listed sessions yet.</b><span>Unlisted links remain accessible without appearing here.</span></div>}<a className="button button-dark" href="#/library">Open Library</a></section>;
+  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Public sessions</span><h2>Open the conversation first.</h2></div></div>{shares === null && !loadError ? <div className="collection-pending" role="status"><b>Loading the Library…</b><span>Finding the latest public sessions.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library couldn’t load.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-share-list" aria-label="Featured shared sessions">{visible.map((share) => <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><span><b>{share.model}</b><small>{share.input_preview || <ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} />}</small></span><em><ProviderIdentity provider={share.provider} /></em></a>)}</div> : <div className="collection-pending"><b>The Library is empty.</b><span>Public sessions will appear here after they’re shared.</span></div>}<a className="button button-dark" href="#/library">Open Library</a></section>;
 }
 
 const MAX_VERIFY_FILE_BYTES = 128 * 1024 * 1024 + 64 * 1024 + 16 * 1024;
@@ -249,7 +255,7 @@ export function VerificationPage({ verifyFile = verifyTracePackage }) {
   return <main className="verification-shell">
     <header className="verification-intro"><span className="eyebrow">Portable verification</span><h1>Verify a .llmtrace package.</h1><p>Check the authenticated provider exchange, notary signature, artifact hashes, and normalized OpenTelemetry trace without signing in.</p></header>
     <form className="verification-workspace" onSubmit={submit}>
-      <section className="verification-disclosure" aria-labelledby="verification-disclosure-title"><span className="eyebrow">Read before uploading</span><h2 id="verification-disclosure-title">Your package may contain sensitive content.</h2><p>Header values are hidden by default, but prompts, responses, tool definitions, and tool results can be present. The service processes the package without durable retention. This live result is not a signed receipt.</p></section>
+      <section className="verification-disclosure" aria-labelledby="verification-disclosure-title"><span className="eyebrow">Read before uploading</span><h2 id="verification-disclosure-title">Your package may contain sensitive content.</h2><p>Headers are hidden by default, but prompts, responses, tool definitions, and tool results may be included. We check the package without saving it.</p></section>
       <label
         className={`verification-drop${dragging ? ' verification-drop--active' : ''}`}
         onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
@@ -257,17 +263,17 @@ export function VerificationPage({ verifyFile = verifyTracePackage }) {
         onDragLeave={(event) => { if (!(event.relatedTarget instanceof Node) || !event.currentTarget.contains(event.relatedTarget)) setDragging(false); }}
         onDrop={(event) => { event.preventDefault(); setDragging(false); chooseFile(event.dataTransfer.files[0] || null); }}
       >
-        <input ref={inputRef} type="file" accept=".llmtrace,application/vnd.llmnotary.trace-package+zip" onChange={(event) => chooseFile(event.target.files[0] || null)} />
+        <input ref={inputRef} type="file" onChange={(event) => chooseFile(event.target.files[0] || null)} />
         <span>{file ? 'Package selected' : 'Drop one .llmtrace package here'}</span>
         <strong>{file ? file.name : 'or choose a file'}</strong>
         <small>{file ? fileSize(file.size) : 'Maximum package size: 128 MiB'}</small>
       </label>
       {file && <label className="verification-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /><span>I understand that this package may contain sensitive content.</span></label>}
-      <div className="verification-actions"><button className="button button-dark" type="submit" disabled={!file || !consent || status === 'uploading'}>{status === 'uploading' ? 'Verifying package…' : 'Verify package'}</button>{file && <button className="button" type="button" onClick={() => { chooseFile(null); if (inputRef.current) inputRef.current.value = ''; }}>Clear</button>}</div>
-      {status === 'uploading' && <p className="verification-progress" role="status">Cryptographic verification is running. Keep this page open.</p>}
+      <div className="verification-actions"><button className="button button-dark" type="submit" disabled={!file || !consent || status === 'uploading'}>{status === 'uploading' ? 'Checking package…' : 'Verify package'}</button>{file && <button className="button" type="button" onClick={() => { chooseFile(null); if (inputRef.current) inputRef.current.value = ''; }}>Clear</button>}</div>
+      {status === 'uploading' && <div className="verification-progress" role="status"><i aria-hidden="true" /><span><b>Checking the evidence</b><small>Keep this page open. Large packages can take a moment.</small></span></div>}
     </form>
     {errorCode && <VerificationError code={errorCode} />}
-    {result && <section className="verification-result verification-result--success" aria-labelledby="verification-success-title" aria-live="polite"><header><div><span className="eyebrow">Portable package</span><h2 id="verification-success-title">Verification passed.</h2></div><strong>Verified</strong></header><p className="verification-result-note">This result was computed from the uploaded package. It is not a platform signature or durable receipt.</p><dl className="verification-facts"><div><dt>Provider</dt><dd><ProviderIdentity provider={result.provider} /></dd></div><div><dt>Host</dt><dd>{result.host}</dd></div><div><dt>Capture time</dt><dd>{formatVerificationTime(result.authenticated_at_unix_ms)}</dd></div><div><dt>Notary key</dt><dd><code>{result.notary_key_id}</code></dd></div><div><dt>Trust source</dt><dd>{formatTrustSource(result.trust_source)} · generation {result.directory_generation}</dd></div><div><dt>Trace SHA-256</dt><dd><code>{result.trace_sha256}</code></dd></div><div><dt>Package SHA-256</dt><dd><code>{result.package_sha256}</code></dd></div></dl><section className="verification-trace"><div className="span-panel-head"><span>Normalized trace</span><small>{trace.length} {trace.length === 1 ? 'span' : 'spans'}</small></div>{trace.length ? <SpanTree spans={trace} /> : <p>No normalized spans were present.</p>}</section></section>}
+    {result && <section className="verification-result verification-result--success" aria-labelledby="verification-success-title" aria-live="polite"><header><div><span className="eyebrow">Portable package</span><h2 id="verification-success-title">Verification passed.</h2></div><strong>Verified</strong></header><p className="verification-result-note">Checked from the package you selected.</p><dl className="verification-facts"><div><dt>Provider</dt><dd><ProviderIdentity provider={result.provider} /></dd></div><div><dt>Host</dt><dd>{result.host}</dd></div><div><dt>Capture time</dt><dd>{formatVerificationTime(result.authenticated_at_unix_ms)}</dd></div><div><dt>Notary key</dt><dd><code>{result.notary_key_id}</code></dd></div><div><dt>Trust source</dt><dd>{formatTrustSource(result.trust_source)} · generation {result.directory_generation}</dd></div><div><dt>Trace SHA-256</dt><dd><code>{result.trace_sha256}</code></dd></div><div><dt>Package SHA-256</dt><dd><code>{result.package_sha256}</code></dd></div></dl><section className="verification-trace"><div className="span-panel-head"><span>Normalized trace</span><small>{trace.length} {trace.length === 1 ? 'span' : 'spans'}</small></div>{trace.length ? <SpanTree spans={trace} /> : <p>No normalized spans were present.</p>}</section></section>}
   </main>;
 }
 
@@ -449,7 +455,7 @@ const docPages = {
         ],
       },
       { heading: 'Package versus shared view', body: 'The finalized `.llmtrace` package carries all cryptographic evidence and is independently verifiable. A shared session presents a readable view derived from that package and retains the exact admitted bytes for download and independent verification.' },
-      { heading: 'Verify a portable package', code: 'llm-notary traces verify ./capture.llmtrace\nPOST /api/verify', body: 'Use the local CLI for offline verification against pinned trust history, or explicitly upload the package on the public Verify page. The hosted service does not retain the package and its live result is not a signed receipt.' },
+      { heading: 'Verify a portable package', code: 'llm-notary traces verify ./capture.llmtrace\nPOST /api/verify', body: 'Use the local CLI to verify locally, or upload the package on the public Verify page. The hosted page checks the package without saving it.' },
       { heading: 'Complete context is intentional', body: 'A `.llmtrace` can include system context, tool definitions, session metadata, prompts, responses, and tool results. All HTTP header values are hidden by default, but request and response bodies remain disclosed. Inspect it before sharing; the encrypted `.llmbundle` is private retry state and must stay local.' },
       { heading: 'Download or verify locally', code: 'GET /v1/captures/{capture_id}/package\nPOST /v1/captures/{capture_id}/trace:verify\nllm-notary traces verify ./capture.llmtrace' },
       {
@@ -736,7 +742,7 @@ function SpanTree({ spans }) {
   });
   return <div className="span-tree" aria-label="Trace spans">{spans.map((span, index) => {
     const open = expanded.has(index);
-    return <div className="span-row span-row--source" key={`${span.spanId}-${index}`}><button type="button" className="span-summary" aria-expanded={open} onClick={() => toggle(index)}><span className="span-branch" aria-hidden="true" /><span className="span-kind">{span.kind}</span><strong>{span.name}</strong><span className="span-disclosure" aria-hidden="true" /><small>span <code>{span.spanId}</code></small><em>Provider verified</em></button>{open && <>{span.attributes && <div className="span-evidence span-attributes"><span className="message-group-label">attributes</span><div className="trace-fields">{span.attributes.map(([name, value]) => <TraceField key={name} label={name} value={value} />)}</div></div>}{span.messages && <div className="span-evidence span-messages"><MessageGroup label="gen_ai.input.messages" messages={span.messages.input} /><MessageGroup label="gen_ai.output.messages" messages={span.messages.output} /></div>}</>}</div>;
+    return <div className="span-row span-row--source" key={`${span.spanId}-${index}`}><button type="button" className="span-summary" aria-expanded={open} onClick={() => toggle(index)}><span className="span-branch" aria-hidden="true" /><span className="span-kind">{span.kind}</span><strong>{span.name}</strong><span className="span-disclosure" aria-hidden="true" /><small>span <code>{span.spanId}</code></small></button>{open && <>{span.attributes && <div className="span-evidence span-attributes"><span className="message-group-label">attributes</span><div className="trace-fields">{span.attributes.map(([name, value]) => <TraceField key={name} label={name} value={value} />)}</div></div>}{span.messages && <div className="span-evidence span-messages"><MessageGroup label="gen_ai.input.messages" messages={span.messages.input} /><MessageGroup label="gen_ai.output.messages" messages={span.messages.output} /></div>}</>}</div>;
   })}</div>;
 }
 
@@ -777,56 +783,105 @@ function parseSharedTrace(trace) {
   });
 }
 
-function traceSnippets(spans) {
+function tracePreviews(spans) {
   const inputMessages = spans.flatMap((span) => span.messages?.input || []);
   const outputMessages = spans.flatMap((span) => span.messages?.output || []);
-  const parts = [...inputMessages, ...outputMessages].flatMap((message) => message.parts || []);
-  const input = (inputMessages.find((message) => message.role === 'user')?.parts || []).find((part) => part.type === 'text' && part.content)
-    || inputMessages.flatMap((message) => message.parts || []).find((part) => part.type === 'text' && part.content);
-  const output = (outputMessages.find((message) => message.role === 'assistant')?.parts || []).find((part) => part.type === 'text' && part.content)
-    || outputMessages.flatMap((message) => message.parts || []).find((part) => part.type === 'text' && part.content);
-  const tool = parts.find((part) => part.type === 'tool_call' || part.type === 'tool_call_response');
+  const textPart = (messages, role) => (messages.find((message) => message.role === role)?.parts || []).find((part) => part.type === 'text' && part.content)
+    || messages.flatMap((message) => message.parts || []).find((part) => part.type === 'text' && part.content);
   const shorten = (value) => {
     const text = String(value).replace(/\s+/g, ' ').trim();
-    return text.length > 150 ? `${text.slice(0, 147)}…` : text;
+    return text.length > 180 ? `${text.slice(0, 179)}…` : text;
   };
-  return [
-    input && { label: 'Input', text: shorten(input.content) },
-    output && { label: 'Response', text: shorten(output.content) },
-    tool && { label: tool.type === 'tool_call' ? 'Tool call' : 'Tool result', text: tool.type === 'tool_call' ? `${tool.name}(${shorten(JSON.stringify(tool.arguments))})` : shorten(typeof tool.result === 'string' ? tool.result : JSON.stringify(tool.result)) },
-  ].filter(Boolean);
+  const input = textPart(inputMessages, 'user');
+  const output = textPart(outputMessages, 'assistant');
+  return {
+    input: input ? shorten(input.content) : null,
+    output: output ? shorten(output.content) : null,
+  };
 }
 
 function LibraryLoading() {
-  return <main className="share-library share-library--loading" aria-busy="true"><header className="share-library-titlebar"><h1>Library</h1><span>Listed shares</span></header><div className="share-library-skeleton" role="status"><i /><i /><i /><span>Loading shares</span></div></main>;
+  return <main className="share-library share-library--loading" aria-busy="true"><header className="share-library-titlebar"><h1>Library</h1></header><div className="share-library-skeleton" role="status" aria-label="Loading the Library">{[1, 2, 3].map((row) => <div key={row}><i /><span><i /><i /></span></div>)}</div></main>;
 }
 
-export function Library({ loadShares = getListedShares }) {
+function formatLibraryDate(unixMilliseconds) {
+  if (!unixMilliseconds) return null;
+  const date = new Date(unixMilliseconds);
+  if (Number.isNaN(date.valueOf())) return null;
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(date);
+}
+
+function LibraryShareRow({ share, loadTrace }) {
+  const rowRef = useRef(null);
+  const hasSummaryPreview = Boolean(share.input_preview || share.output_preview);
+  const [legacyPreview, setLegacyPreview] = useState({ status: hasSummaryPreview ? 'ready' : 'waiting', input: null, output: null });
+  useEffect(() => {
+    if (hasSummaryPreview) return undefined;
+    let cancelled = false;
+    let observer;
+    const load = () => {
+      setLegacyPreview((current) => ({ ...current, status: 'loading' }));
+      loadTrace(share.id)
+        .then((trace) => {
+          if (!cancelled) setLegacyPreview({ status: 'ready', ...tracePreviews(parseSharedTrace(trace)) });
+        })
+        .catch(() => { if (!cancelled) setLegacyPreview({ status: 'error', input: null, output: null }); });
+    };
+    if ('IntersectionObserver' in window) {
+      observer = new IntersectionObserver(([entry]) => {
+        if (entry?.isIntersecting) {
+          observer.disconnect();
+          load();
+        }
+      }, { rootMargin: '160px' });
+      if (rowRef.current) observer.observe(rowRef.current);
+    } else {
+      load();
+    }
+    return () => { cancelled = true; observer?.disconnect(); };
+  }, [hasSummaryPreview, loadTrace, share.id]);
+  const captureDate = formatLibraryDate(share.authenticated_at_unix_ms);
+  const inputPreview = share.input_preview || legacyPreview.input;
+  const outputPreview = share.output_preview || legacyPreview.output;
+  return <a className="share-index-row" href={`/s/${encodeURIComponent(share.id)}`} ref={rowRef}>
+    <header><div className="share-index-heading"><b>{share.model}</b><small><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} />{captureDate && <time dateTime={new Date(share.authenticated_at_unix_ms).toISOString()}>{captureDate}</time>}</small></div><span className="share-index-open">Open session</span></header>
+    <div className="share-index-previews">
+      {inputPreview && <p><span>Input</span>{inputPreview}</p>}
+      {outputPreview && <p><span>Response</span>{outputPreview}</p>}
+      {!inputPreview && !outputPreview && <p className="share-index-preview-missing">{legacyPreview.status === 'error' ? 'Conversation preview unavailable.' : 'Loading conversation preview…'}</p>}
+    </div>
+  </a>;
+}
+
+export function Library({ loadShares = getListedShares, loadTrace = getSharedTrace }) {
   const [shares, setShares] = useState(null);
   const [loadError, setLoadError] = useState('');
   const [query, setQuery] = useState('');
   const [provider, setProvider] = useState('All');
+  const [reload, setReload] = useState(0);
   useEffect(() => {
     let cancelled = false;
+    setLoadError('');
+    setShares(null);
     loadShares()
       .then((payload) => { if (!cancelled) setShares(payload); })
-      .catch((error) => { if (!cancelled) setLoadError(error.message); });
+      .catch((error) => { if (!cancelled) setLoadError(error instanceof Error ? error.message : 'Could not load the Library.'); });
     return () => { cancelled = true; };
-  }, [loadShares]);
+  }, [loadShares, reload]);
   const providers = ['All', ...new Set((shares || []).map((share) => share.provider))];
   const filtered = useMemo(() => (shares || []).filter((share) => {
-    const searchable = `${share.provider} ${share.model} ${share.publisher}`.toLowerCase();
+    const searchable = `${share.provider} ${share.model} ${share.publisher} ${share.input_preview || ''} ${share.output_preview || ''}`.toLowerCase();
     return searchable.includes(query.toLowerCase()) && (provider === 'All' || share.provider === provider);
   }), [provider, query, shares]);
   if (shares === null && !loadError) return <LibraryLoading />;
   return <main className="share-library">
-    <header className="share-library-titlebar"><h1>Library</h1><span>Listed shares</span></header>
-    <section className="share-library-controls" aria-label="Browse Listed shares">
-      <label><span>Search</span><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Model, provider, or publisher" /></label>
+    <header className="share-library-titlebar"><h1>Library</h1></header>
+    <section className="share-library-controls" aria-label="Browse public sessions">
+      <label><span>Search</span><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search conversations or models" /></label>
       <Select value={provider} onValueChange={setProvider}><SelectTrigger aria-label="Provider"><SelectValue /></SelectTrigger><SelectContent>{providers.map((value) => <SelectItem value={value} key={value}>{value === 'All' ? 'All providers' : <ProviderIdentity provider={value} />}</SelectItem>)}</SelectContent></Select>
       <span>{filtered.length} {filtered.length === 1 ? 'session' : 'sessions'}</span>
     </section>
-    {loadError ? <section className="collection-empty" role="alert">{loadError}</section> : filtered.length ? <section className="share-index" aria-label="Listed shares">{filtered.map((share) => <a className="share-index-row" href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><span><b>{share.model}</b><small><ProviderIdentity provider={share.provider} /></small></span><span><small>Publisher</small>{share.publisher}</span><span className="share-index-state"><i aria-hidden="true" />Verified</span><span aria-hidden="true">↗</span></a>)}</section> : <section className="collection-empty"><b>No matches</b><p>Clear the search or choose another provider.</p></section>}
+    {loadError ? <section className="collection-empty" role="alert"><b>The Library couldn’t load.</b><p>{loadError}</p><button type="button" onClick={() => setReload((value) => value + 1)}>Try again</button></section> : filtered.length ? <section className="share-index" aria-label="Public sessions">{filtered.map((share) => <LibraryShareRow share={share} loadTrace={loadTrace} key={share.id} />)}</section> : shares.length ? <section className="collection-empty"><b>Nothing matches.</b><p>Try a different search or provider.</p><button type="button" onClick={() => { setQuery(''); setProvider('All'); }}>Clear filters</button></section> : <section className="collection-empty"><b>The Library is empty.</b><p>Public sessions will appear here after they’re shared.</p><a href="#/docs/share">Learn how sharing works</a></section>}
   </main>;
 }
 
@@ -1011,7 +1066,17 @@ export function ApiKeysPanel({ loadKeys = getApiKeys, createKey = createApiKey, 
   </section>;
 }
 
-function Dashboard({ user, view }) {
+export function AccountSettings({ theme, onThemeChange }) {
+  return <section className="dashboard-account-settings" aria-labelledby="account-settings-title">
+    <header><span className="eyebrow">Preferences</span><h2 id="account-settings-title">Account settings</h2></header>
+    <div className="dashboard-account-setting">
+      <div><b>Appearance</b><span>Use your device setting, or choose a theme for this browser.</span></div>
+      <div className="dashboard-appearance-options" role="radiogroup" aria-label="Appearance">{themeOptions.map((option) => <button type="button" role="radio" aria-checked={theme === option} onClick={() => onThemeChange(option)} key={option}>{option}</button>)}</div>
+    </div>
+  </section>;
+}
+
+function Dashboard({ user, view, theme, onThemeChange }) {
   const [sessions, setSessions] = useState(null);
   const [sessionError, setSessionError] = useState(null);
   const [revoking, setRevoking] = useState(null);
@@ -1103,6 +1168,7 @@ function Dashboard({ user, view }) {
             <div><span>Admitted shares</span><b>{shares === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>
+          <AccountSettings theme={theme} onThemeChange={onThemeChange} />
           {credits && <section className="dashboard-credits" aria-labelledby="credit-balance-title">
             <header><div><span className="eyebrow">Hosted finalization credits</span><h2 id="credit-balance-title">{fileSize(credits.total_remaining_bytes)} available</h2></div><div className="dashboard-credit-meta"><span className="dashboard-account-badge">Free account</span><span>Resets {sessionDate(credits.reset_at)}</span></div></header>
             <p className="dashboard-credit-note">Included credits reset monthly. Credits you purchase or receive are added separately and keep their own expiration.</p>
@@ -1339,8 +1405,20 @@ function NotariesPage() {
 function App() {
   const [route, setRoute] = useState(window.location.hash || '#/');
   const [user, setUser] = useState(null);
-  const [theme, setTheme] = useState(() => window.localStorage.getItem('llm-notary-theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
-  useEffect(() => { document.documentElement.dataset.theme = theme; document.documentElement.style.colorScheme = theme; window.localStorage.setItem('llm-notary-theme', theme); }, [theme]);
+  const [theme, setTheme] = useState(initialThemePreference);
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const applyTheme = () => {
+      const activeTheme = resolvedTheme(theme, media.matches);
+      document.documentElement.dataset.theme = activeTheme;
+      document.documentElement.style.colorScheme = activeTheme;
+      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', activeTheme === 'dark' ? '#171717' : '#f6f5f2');
+    };
+    applyTheme();
+    window.localStorage.setItem('llm-notary-theme', theme);
+    if (theme === 'auto') media.addEventListener('change', applyTheme);
+    return () => media.removeEventListener('change', applyTheme);
+  }, [theme]);
   useEffect(() => { const update = () => setRoute(window.location.hash || '#/'); window.addEventListener('hashchange', update); return () => window.removeEventListener('hashchange', update); }, []);
   useEffect(() => {
     const nextSection = route.replace(/^#\/?/, '').split(/[/?]/)[0];
@@ -1355,7 +1433,7 @@ function App() {
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} hideSignIn={section === 'authorize'} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} hideSignIn={section === 'authorize'} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} theme={theme} onThemeChange={setTheme} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 const applicationRoot = document.getElementById('root');

@@ -1,12 +1,14 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { ApiKeysPanel, CliApproval, Header, HostedNotaryRecord, Library, SharePage, VerificationPage } from './main';
+import { AccountSettings, ApiKeysPanel, CliApproval, Header, HostedNotaryRecord, Library, ListedSharesPreview, SharePage, VerificationPage } from './main';
 import { ProviderIdentity } from './ProviderIdentity';
+import { initialThemePreference } from './theme';
 
 afterEach(async () => {
   cleanup();
   window.location.hash = '';
+  window.localStorage.removeItem('llm-notary-theme');
   await page.viewport(1280, 900);
 });
 
@@ -16,6 +18,8 @@ const libraryShares = Array.from({ length: 20 }, (_, index) => ({
   model: index === 11 ? 'claude-sonnet-4-6' : 'gpt-5.2',
   publisher: 'fixture-user',
   authenticated_at_unix_ms: 1_786_000_000_000 - index,
+  input_preview: `Prompt for share-${index + 1}`,
+  output_preview: `Response for share-${index + 1}`,
   share_url: `https://example.test/s/share-${index + 1}`,
 }));
 
@@ -30,6 +34,27 @@ const loadLibraryTrace = async (id) => ({
 });
 
 describe('hosted site', () => {
+  test('defaults to light and keeps appearance choices out of the signed-in account menu', async () => {
+    expect(initialThemePreference()).toBe('light');
+    render(<Header user={{ github_login: 'fixture-user' }} onLogout={() => {}} />);
+
+    await page.getByRole('button', { name: 'Account menu for fixture-user' }).click();
+    await expect.element(page.getByRole('menuitem', { name: 'Dashboard' })).toBeVisible();
+    await expect.element(page.getByRole('group', { name: 'Appearance' })).not.toBeInTheDocument();
+  });
+
+  test('offers Auto, Light, and Dark in Dashboard account settings', async () => {
+    let selectedTheme;
+    render(<AccountSettings theme="light" onThemeChange={(theme) => { selectedTheme = theme; }} />);
+
+    await expect.element(page.getByRole('heading', { name: 'Account settings' })).toBeVisible();
+    const appearance = page.getByRole('radiogroup', { name: 'Appearance' });
+    await expect.element(appearance.getByRole('radio', { name: 'light' })).toHaveAttribute('aria-checked', 'true');
+    await appearance.getByRole('radio', { name: 'auto' }).click();
+    expect(selectedTheme).toBe('auto');
+    await expect.element(appearance.getByRole('radio', { name: 'dark' })).toBeVisible();
+  });
+
   test('renders every known provider icon and neutral fallbacks beside provider text', async () => {
     render(<div>
       {['openai', 'anthropic', 'deepseek', 'openrouter', 'future-provider'].map((provider) => <ProviderIdentity provider={provider} key={provider} />)}
@@ -50,6 +75,7 @@ describe('hosted site', () => {
     render(<Library loadShares={async () => [{
       id: 'routed-share', provider: 'openrouter', model: 'openai/gpt-5-mini',
       publisher: 'fixture-user', authenticated_at_unix_ms: 1_786_000_000_000,
+      input_preview: 'Compare these records.', output_preview: 'The second record is stronger.',
       share_url: 'https://example.test/s/routed-share'
     }]} />);
 
@@ -62,7 +88,7 @@ describe('hosted site', () => {
   test('makes local service authorization a clear two-step decision', async () => {
     window.location.hash = '#/authorize?request_id=request-123&approval_secret=secret-456';
     render(<>
-      <Header user={null} hideSignIn theme="light" onThemeChange={() => {}} />
+      <Header user={null} hideSignIn />
       <CliApproval route="authorize?request_id=request-123&approval_secret=secret-456" user={null} />
     </>);
 
@@ -151,21 +177,51 @@ describe('hosted site', () => {
     await expect.element(page.getByText(/1969|1970/)).not.toBeInTheDocument();
   });
 
-  test('keeps the Listed Library as a compact index on a phone', async () => {
+  test('makes Library rows distinct and uncluttered on a phone', async () => {
     await page.viewport(390, 760);
     render(<Library loadShares={loadLibrary} />);
     await expect.element(page.getByRole('heading', { name: 'Library' })).toBeVisible();
-    await expect.element(page.getByRole('link', { name: /claude-sonnet-4-6/ })).toBeVisible();
-    await expect.element(page.getByText('Unlisted shares never appear in this index.')).not.toBeInTheDocument();
+    const row = page.getByRole('link', { name: /claude-sonnet-4-6/ });
+    await expect.element(row).toBeVisible();
+    expect(row.element().textContent).toContain('Prompt for share-12');
+    expect(row.element().textContent).toContain('Response for share-12');
+    expect(row.element().textContent).toContain('Open session');
+    expect(document.body.textContent).not.toContain('Verified');
+    expect(document.body.textContent).not.toContain('↗');
+    expect(document.body.textContent).not.toContain('Listed shares');
   });
 
-  test('filters the Listed Library without loading share contents', async () => {
+  test('shows provider marks in the landing Library preview', async () => {
+    render(<ListedSharesPreview loadShares={async () => [libraryShares[0], libraryShares[11]]} />);
+
+    const preview = page.getByLabelText('Featured shared sessions');
+    await expect.element(preview).toBeVisible();
+    expect(preview.element().querySelectorAll('[data-provider-icon="openai"]')).toHaveLength(1);
+    expect(preview.element().querySelectorAll('[data-provider-icon="anthropic"]')).toHaveLength(1);
+  });
+
+  test('filters the Library by its public session summaries', async () => {
     render(<Library loadShares={loadLibrary} />);
-    await expect.element(page.getByLabelText('Browse Listed shares')).toBeVisible();
-    const search = page.getByPlaceholder('Model, provider, or publisher');
+    await expect.element(page.getByLabelText('Browse public sessions')).toBeVisible();
+    const search = page.getByPlaceholder('Search conversations or models');
     await search.fill('claude');
     await expect.element(page.getByRole('link', { name: /claude-sonnet-4-6/ })).toBeVisible();
     await expect.element(page.getByRole('link', { name: /gpt-5.2/ })).not.toBeInTheDocument();
+  });
+
+  test('loads a visible legacy row preview from its public trace', async () => {
+    let traceLoads = 0;
+    render(<Library
+      loadShares={async () => [{
+        id: 'legacy-share', provider: 'openai', model: 'gpt-4.1', publisher: 'fixture-user',
+        authenticated_at_unix_ms: 1_786_000_000_000, share_url: 'https://example.test/s/legacy-share'
+      }]}
+      loadTrace={async (id) => { traceLoads += 1; return loadLibraryTrace(id); }}
+    />);
+
+    await expect.element(page.getByText('Prompt for legacy-share')).toBeVisible();
+    await expect.element(page.getByText('Response for legacy-share')).toBeVisible();
+    expect(traceLoads).toBe(1);
   });
 
   test('puts the disclosed conversation before collapsible evidence and tools', async () => {
@@ -220,11 +276,12 @@ describe('hosted site', () => {
     let calls = 0;
     render(<VerificationPage verifyFile={async () => { calls += 1; return verified; }} />);
     const input = document.querySelector('input[type="file"]');
+    expect(input.getAttribute('accept')).toBeNull();
     const file = new File(['sanitized fixture'], 'sanitized.llmtrace', { type: 'application/vnd.llmnotary.trace-package+zip' });
     fireEvent.change(input, { target: { files: [file] } });
 
     await expect.element(page.getByText('Your package may contain sensitive content.')).toBeVisible();
-    await expect.element(page.getByText('Header values are hidden by default, but prompts, responses, tool definitions, and tool results can be present. The service processes the package without durable retention. This live result is not a signed receipt.')).toBeVisible();
+    await expect.element(page.getByText('Headers are hidden by default, but prompts, responses, tool definitions, and tool results may be included. We check the package without saving it.')).toBeVisible();
     await expect.element(page.getByText('I understand that this package may contain sensitive content.')).toBeVisible();
     expect(calls).toBe(0);
     const submit = page.getByRole('button', { name: 'Verify package' });
@@ -236,6 +293,7 @@ describe('hosted site', () => {
     await expect.element(page.getByRole('heading', { name: 'Verification passed.' })).toBeVisible();
     await expect.element(page.getByText('api.openai.com')).toBeVisible();
     await expect.element(page.getByText('Prompt for verified')).toBeVisible();
+    expect(document.body.textContent).not.toContain('Provider verified');
     expect(calls).toBe(1);
   });
 

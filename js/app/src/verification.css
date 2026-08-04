@@ -146,14 +146,38 @@
 }
 
 .verification-progress {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   margin: -22px 0 38px clamp(24px, 4vw, 56px);
-  color: var(--muted);
-  font-size: 12px;
+  color: var(--body-copy);
+}
+
+.verification-progress > i {
+  width: 16px;
+  height: 16px;
+  flex: none;
+  border: 2px solid var(--line);
+  border-top-color: var(--action);
+  border-radius: 50%;
+  animation: verification-spin .8s linear infinite;
+}
+
+.verification-progress > span { display: grid; gap: 2px; }
+.verification-progress b { font-size: 12px; }
+.verification-progress small { color: var(--muted); font-size: 11px; }
+
+@keyframes verification-spin {
+  to { transform: rotate(360deg); }
 }
 
 .verification-result {
   padding-top: 48px;
   padding-bottom: 64px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .verification-progress > i { animation: none; }
 }
 
 .verification-result--error {

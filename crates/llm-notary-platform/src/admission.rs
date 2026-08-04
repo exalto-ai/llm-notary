@@ -36,6 +36,7 @@ use super::{
 const ADMISSION_INTERVAL_SECS: u64 = 2;
 const CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
 const MAX_JOBS_PER_TICK: usize = 4;
+const LIBRARY_PREVIEW_CHARS: usize = 180;
 
 #[derive(FromRow)]
 struct PublicShareRow {
@@ -60,6 +61,17 @@ struct PublicShareRow {
     public_package_safety_version: Option<String>,
 }
 
+#[derive(FromRow)]
+struct ListedShareRow {
+    id: String,
+    github_login: String,
+    provider: String,
+    model: String,
+    authenticated_provider_connection_unix_ms: Option<i64>,
+    library_input_preview: Option<String>,
+    library_output_preview: Option<String>,
+}
+
 #[derive(Serialize, ToSchema)]
 struct ListedSharesResponse {
     shares: Vec<ListedShareSummary>,
@@ -72,6 +84,8 @@ struct ListedShareSummary {
     model: String,
     publisher: String,
     authenticated_at_unix_ms: Option<i64>,
+    input_preview: Option<String>,
+    output_preview: Option<String>,
     share_url: String,
 }
 
@@ -104,6 +118,8 @@ struct AdmittedArtifacts {
     verified: HostedVerifiedPackage,
     archive: Vec<u8>,
     model: String,
+    input_preview: Option<String>,
+    output_preview: Option<String>,
 }
 
 struct StoredPublicArtifacts {
@@ -139,20 +155,12 @@ pub fn router() -> OpenApiRouter<AppState> {
     tag = "library"
 )]
 async fn listed_shares(State(state): State<AppState>) -> ApiResult<Json<ListedSharesResponse>> {
-    let rows: Vec<PublicShareRow> = sqlx::query_as(
-        "SELECT publish_jobs.id, publish_jobs.visibility, users.github_login,
-                publish_jobs.admitted_at, publish_jobs.provider,
-                publish_jobs.provider_host, publish_jobs.model,
+    let rows: Vec<ListedShareRow> = sqlx::query_as(
+        "SELECT publish_jobs.id, users.github_login, publish_jobs.provider,
+                publish_jobs.model,
                 publish_jobs.authenticated_provider_connection_unix_ms,
-                publish_jobs.verified_at, publish_jobs.verified_notary_key_id,
-                publish_jobs.verified_directory_generation,
-                publish_jobs.verified_trust_source,
-                publish_jobs.public_trace_object_key,
-                publish_jobs.public_trace_size_bytes,
-                publish_jobs.public_trace_sha256,
-                publish_jobs.package_object_key, publish_jobs.package_size_bytes,
-                publish_jobs.package_sha256,
-                publish_jobs.public_package_safety_version
+                publish_jobs.library_input_preview,
+                publish_jobs.library_output_preview
          FROM publish_jobs
          JOIN users ON users.id = publish_jobs.user_id
          WHERE publish_jobs.state = 'admitted'
@@ -173,6 +181,8 @@ async fn listed_shares(State(state): State<AppState>) -> ApiResult<Json<ListedSh
             model: share.model,
             publisher: share.github_login,
             authenticated_at_unix_ms: share.authenticated_provider_connection_unix_ms,
+            input_preview: share.library_input_preview,
+            output_preview: share.library_output_preview,
         })
         .collect();
     Ok(Json(ListedSharesResponse { shares }))
@@ -522,10 +532,14 @@ fn finish_verified_admission(
     .map_err(|error| AdmissionFailure::Reject(error.admission_code(), anyhow::anyhow!(error)))?;
     let model = trace_model(&verified.trace)
         .map_err(|error| AdmissionFailure::Reject("package_invalid".to_owned(), error))?;
+    let (input_preview, output_preview) = trace_previews(&verified.trace)
+        .map_err(|error| AdmissionFailure::Reject("package_invalid".to_owned(), error))?;
     Ok(AdmittedArtifacts {
         verified,
         archive,
         model,
+        input_preview,
+        output_preview,
     })
 }
 
@@ -551,6 +565,100 @@ fn trace_model(trace: &[u8]) -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("public trace has no request model"))
 }
 
+fn trace_previews(trace: &[u8]) -> Result<(Option<String>, Option<String>)> {
+    let value: serde_json::Value = serde_json::from_slice(trace)?;
+    Ok((
+        trace_message_preview(&value, "gen_ai.input.messages", "user"),
+        trace_message_preview(&value, "gen_ai.output.messages", "assistant"),
+    ))
+}
+
+fn trace_message_preview(
+    trace: &serde_json::Value,
+    attribute_key: &str,
+    preferred_role: &str,
+) -> Option<String> {
+    let resources = trace.get("resourceSpans")?.as_array()?;
+    for resource in resources {
+        let Some(scopes) = resource
+            .get("scopeSpans")
+            .and_then(serde_json::Value::as_array)
+        else {
+            continue;
+        };
+        for scope in scopes {
+            let Some(spans) = scope.get("spans").and_then(serde_json::Value::as_array) else {
+                continue;
+            };
+            for span in spans {
+                let Some(attributes) = span.get("attributes").and_then(serde_json::Value::as_array)
+                else {
+                    continue;
+                };
+                let Some(serialized_messages) = attributes.iter().find_map(|attribute| {
+                    (attribute.get("key").and_then(serde_json::Value::as_str)
+                        == Some(attribute_key))
+                    .then(|| attribute.pointer("/value/stringValue"))
+                    .flatten()
+                    .and_then(serde_json::Value::as_str)
+                }) else {
+                    continue;
+                };
+                let Ok(messages) = serde_json::from_str::<serde_json::Value>(serialized_messages)
+                else {
+                    continue;
+                };
+                let Some(messages) = messages.as_array() else {
+                    continue;
+                };
+                let preferred = messages.iter().find(|message| {
+                    message.get("role").and_then(serde_json::Value::as_str) == Some(preferred_role)
+                });
+                if let Some(preview) = preferred
+                    .and_then(message_text)
+                    .or_else(|| messages.iter().find_map(message_text))
+                    .and_then(compact_preview)
+                {
+                    return Some(preview);
+                }
+            }
+        }
+    }
+    None
+}
+
+fn message_text(message: &serde_json::Value) -> Option<&str> {
+    message
+        .get("parts")?
+        .as_array()?
+        .iter()
+        .find(|part| {
+            part.get("type").and_then(serde_json::Value::as_str) == Some("text")
+                && part
+                    .get("content")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some()
+        })
+        .and_then(|part| part.get("content"))
+        .and_then(serde_json::Value::as_str)
+}
+
+fn compact_preview(value: &str) -> Option<String> {
+    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    let mut characters = normalized.chars();
+    let mut preview = characters
+        .by_ref()
+        .take(LIBRARY_PREVIEW_CHARS)
+        .collect::<String>();
+    if characters.next().is_some() {
+        preview.push('…');
+    }
+    Some(preview)
+}
+
 async fn admit_claim(
     state: &AppState,
     job: &PublishJobRow,
@@ -573,11 +681,12 @@ async fn admit_claim(
              package_size_bytes = $9, package_sha256 = $10,
              public_package_safety_version = $11,
              provider = $12, provider_host = $13, model = $14,
-             authenticated_provider_connection_unix_ms = $15,
-             verified_at = $16, verified_notary_key_id = $17,
-             verified_directory_generation = $18, verified_trust_source = $19,
+             library_input_preview = $15, library_output_preview = $16,
+             authenticated_provider_connection_unix_ms = $17,
+             verified_at = $18, verified_notary_key_id = $19,
+             verified_directory_generation = $20, verified_trust_source = $21,
              verification_claim = NULL
-         WHERE id = $20 AND state = 'verifying' AND verification_claim = $21
+         WHERE id = $22 AND state = 'verifying' AND verification_claim = $23
            AND public_trace_object_key IS NULL AND package_object_key IS NULL",
     )
     .bind(actual_size)
@@ -594,6 +703,8 @@ async fn admit_claim(
     .bind(&artifacts.verified.provider_name)
     .bind(&artifacts.verified.provider_host)
     .bind(&artifacts.model)
+    .bind(&artifacts.input_preview)
+    .bind(&artifacts.output_preview)
     .bind(i64::try_from(artifacts.verified.authenticated_at_unix_ms)?)
     .bind(now)
     .bind(&artifacts.verified.notary_key_id)
@@ -1020,6 +1131,34 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(trace_model(&trace).unwrap(), "gpt-test");
+    }
+
+    #[test]
+    fn extracts_short_library_previews_from_disclosed_messages() {
+        let long_output = "answer ".repeat(50);
+        let trace = serde_json::to_vec(&serde_json::json!({
+            "resourceSpans": [{"scopeSpans": [{"spans": [{"attributes": [
+                {
+                    "key": "gen_ai.input.messages",
+                    "value": {"stringValue": serde_json::to_string(&serde_json::json!([
+                        {"role": "system", "parts": [{"type": "text", "content": "instructions"}]},
+                        {"role": "user", "parts": [{"type": "text", "content": "  Compare\nthese traces.  "}]}
+                    ])).unwrap()}
+                },
+                {
+                    "key": "gen_ai.output.messages",
+                    "value": {"stringValue": serde_json::to_string(&serde_json::json!([
+                        {"role": "assistant", "parts": [{"type": "text", "content": long_output}]}
+                    ])).unwrap()}
+                }
+            ]}]}]}]
+        }))
+        .unwrap();
+        let (input, output) = trace_previews(&trace).unwrap();
+        assert_eq!(input.as_deref(), Some("Compare these traces."));
+        let output = output.unwrap();
+        assert!(output.ends_with('…'));
+        assert_eq!(output.chars().count(), LIBRARY_PREVIEW_CHARS + 1);
     }
 
     #[test]

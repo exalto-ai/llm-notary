@@ -80,7 +80,9 @@ Access-controlled private shares are outside this contract.
 
 ## Public API
 
-- `GET /api/public/shares` returns the minimal Listed index.
+- `GET /api/public/shares` returns the Listed index with stable share facts and
+  short input/output excerpts derived from each disclosed public trace. Legacy
+  shares without stored excerpts return `null` preview fields.
 - `GET /api/public/shares/{share_id}` returns one admitted share record for
   either visibility.
 - `GET /api/public/shares/{share_id}/trace.otlp.json` returns its
