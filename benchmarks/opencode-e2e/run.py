@@ -339,7 +339,10 @@ def classify_provider_failure(captures: list[dict[str, Any]]) -> str | None:
 
 
 def classify_attempt_failure(
-    captures: list[dict[str, Any]], exit_code: int, tool_calls: int
+    captures: list[dict[str, Any]],
+    exit_code: int,
+    tool_calls: int,
+    task_completed: bool,
 ) -> tuple[str, bool]:
     provider_failure = classify_provider_failure(captures)
     if provider_failure is not None:
@@ -347,6 +350,16 @@ def classify_attempt_failure(
             "provider_rate_limited",
             "model_unavailable",
         }
+    if (
+        exit_code != 0
+        and task_completed
+        and captures
+        and all(
+            item.get("http_status") == 200 and item.get("finalization_eligible")
+            for item in captures
+        )
+    ):
+        return "agent_post_task_error", True
     if exit_code == 0 and tool_calls == 0 and captures:
         return "agent_no_tool_call", True
     return "agent_task_failed", False
@@ -641,11 +654,8 @@ class Canary:
         new_captures.sort(key=lambda item: int(item.get("created_at_unix_ms") or 0))
         records = [capture_record(item, number) for item in new_captures]
         result["captures"].extend(records)
-        functional_pass = (
-            exit_code == 0
-            and final_tests.returncode == 0
-            and validate_changed_files(files)
-        )
+        task_completed = final_tests.returncode == 0 and validate_changed_files(files)
+        functional_pass = exit_code == 0 and task_completed
         eligible = [item for item in new_captures if item.get("finalization_eligible")]
         summary = {
             "attempt": number,
@@ -663,13 +673,16 @@ class Canary:
         result["attempts"].append(summary)
         if not functional_pass:
             code, retryable = classify_attempt_failure(
-                new_captures, exit_code, event_summary["tool_calls"]
+                new_captures,
+                exit_code,
+                event_summary["tool_calls"],
+                task_completed,
             )
             return {
                 "passed": False,
                 "transient": retryable,
                 "failure_code": code,
-                "retry_after": retry_after,
+                "retry_after": 0 if code == "agent_post_task_error" else retry_after,
                 "captures": new_captures,
             }
         if not new_captures:

@@ -21,6 +21,12 @@ OpenCode raw events, prompts, model output, daemon logs, provider responses,
 encrypted bundles, and private finalized packages are never written to the
 result artifact or workflow log.
 
+The runner allows at most one retry from a fresh fixture for a typed transient
+provider failure, a response that makes no tool call, or a nonzero OpenCode
+exit after the tests and exact diff gate have already passed with only eligible
+HTTP 200 captures. Captures from the failed attempt are recorded as sanitized
+metadata but are never finalized or published.
+
 ## Local run
 
 The ignored repository `.env` must contain these dedicated values:

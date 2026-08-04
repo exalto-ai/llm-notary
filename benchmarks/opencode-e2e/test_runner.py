@@ -105,11 +105,25 @@ class GateAndClassificationTests(unittest.TestCase):
 
     def test_retries_one_successful_response_that_made_no_tool_call(self) -> None:
         self.assertEqual(
-            run.classify_attempt_failure([{"http_status": 200}], 0, 0),
+            run.classify_attempt_failure([{"http_status": 200}], 0, 0, False),
             ("agent_no_tool_call", True),
         )
         self.assertEqual(
-            run.classify_attempt_failure([{"http_status": 200}], 1, 0),
+            run.classify_attempt_failure([{"http_status": 200}], 1, 0, False),
+            ("agent_task_failed", False),
+        )
+
+    def test_retries_post_task_exit_only_for_an_eligible_capture_set(self) -> None:
+        self.assertEqual(
+            run.classify_attempt_failure(
+                [{"http_status": 200, "finalization_eligible": True}], 1, 4, True
+            ),
+            ("agent_post_task_error", True),
+        )
+        self.assertEqual(
+            run.classify_attempt_failure(
+                [{"http_status": 200, "finalization_eligible": False}], 1, 4, True
+            ),
             ("agent_task_failed", False),
         )
 
