@@ -160,6 +160,8 @@ waiting indefinitely:
 
 ```bash
 llm-notary captures list --query sanitized --provider openai --limit 20
+llm-notary captures list --cursor "$next_cursor"
+llm-notary captures list --provider openai --all --json
 llm-notary captures show cap-example
 llm-notary finalize cap-example
 llm-notary operations list --state failed --kind finalization
@@ -168,6 +170,7 @@ llm-notary traces show cap-example --json
 llm-notary traces verify cap-example
 llm-notary traces verify ./cap-example.llmtrace
 llm-notary events --severity error --limit 20
+llm-notary events --after "$high_water_cursor"
 llm-notary notaries list
 llm-notary open
 ```
@@ -206,17 +209,22 @@ use `1`. Error text is safe and never echoes credentials or plaintext headers.
   Codes and messages exclude credentials, plaintext headers, and local paths.
   Invalid query values use the same JSON envelope; for example, a negative
   `limit` returns `invalid_query_parameter` instead of a framework error page.
-- Capture lists use `limit` and `offset`. Supported filters are `query`,
-  `provider`, `model`, `capture_state`, and `finalization_state`.
+- Capture lists use `limit` and an opaque `cursor`. Supported filters are
+  `query`, `provider`, `model`, `capture_state`, `finalization_state`,
+  `streaming`, and `created_after_unix_ms`. A cursor is valid only with the
+  route and filters that produced it. The removed `offset` parameter returns
+  `offset_pagination_removed`; callers must restart at page one and follow
+  `next_cursor`.
 - Capture search treats punctuation as token boundaries, so `safety-review`
   and `**safety**` are safe inputs. Space-separated words must all match;
   double quotes preserve a phrase such as `"safety review"`.
 - Operation lists support exact `state`, `kind`, and `capture_id` filters plus
-  `limit`.
+  `limit` and an opaque `cursor`.
 - Activity supports exact `severity`, `event_type`, `capture_id`, and
   `operation_id` filters, a `created_after_unix_ms` lower bound, and `limit`.
-  It also uses a monotonic `cursor`; pass the returned `next_cursor` on a later
-  request to ask only for newer events.
+  Use `next_cursor` to continue backward through history. Save the separate
+  `high_water_cursor` and pass it as `after` to follow newer events without
+  changing the meaning of the back-pagination cursor.
 - Mutations that start or retry background work return `202 Accepted`. Record
   the returned operation identifier and poll its resource. A 202 response does
   not mean the proof is complete.
@@ -246,7 +254,7 @@ identifier:
 
 ```bash
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&limit=20&offset=0"
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&limit=20"
 
 capture_id=cap-example
 curl --fail-with-body \
@@ -317,10 +325,11 @@ curl --fail-with-body -X POST \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations/$operation_id/retry"
 ```
 
-Capture detail includes its `finalizations` history. Every operation response
-includes `retryable` and `attempt_history`, so an agent can avoid deterministic
-rejections and distinguish earlier interrupted or failed attempts from the
-current aggregate state without searching a bounded event page.
+Capture detail includes its `finalizations` history. Operation list rows are
+bounded summaries; `GET /v1/operations/{operation_id}` includes `retryable`
+and complete `attempt_history`, so an agent can avoid deterministic rejections
+and distinguish earlier interrupted or failed attempts from the current
+aggregate state without searching an event page.
 
 ## Validation, verification, and sharing
 

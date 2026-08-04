@@ -41,6 +41,27 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('cap-20260727-benchmark')).toBeVisible();
   });
 
+  test('loads another cursor page without downloading the full capture catalog', async () => {
+    const fixture = createFixtureApi();
+    const samples = (await fixture.captures({ limit: 200 })).items;
+    const cursors: Array<string | undefined> = [];
+    const api: LocalApi = {
+      ...fixture,
+      captures: async (filters = {}) => {
+        const cursor = typeof filters.cursor === 'string' ? filters.cursor : undefined;
+        cursors.push(cursor);
+        return cursor === 'fixture:next'
+          ? { items: [samples[1]], next_cursor: null }
+          : { items: [samples[0]], next_cursor: 'fixture:next' };
+      }
+    };
+    renderDashboard('/captures', api);
+    await expect.element(page.getByRole('button', { name: 'Load more captures' })).toBeVisible();
+    await page.getByRole('button', { name: 'Load more captures' }).click();
+    await expect.poll(() => cursors).toContain('fixture:next');
+    await expect.element(page.getByText(samples[1].requested_model!, { exact: true })).toBeVisible();
+  });
+
   test('uses the authenticated provider for icons instead of a namespaced model slug', async () => {
     renderDashboard('/captures/cap-20260727-research-brief');
     await expect.element(page.getByText('openai/gpt-5-mini', { exact: true }).first()).toBeVisible();
@@ -189,19 +210,19 @@ describe('local evidence dashboard', () => {
     const queued = await api.startFinalization('cap-20260728-knowledge-eval');
     expect(queued.operation.state).toBe('queued');
     expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('queued');
-    expect((await api.allCaptures({ finalization_state: 'finalized' })).items.some((item) => item.capture_id === captureId)).toBe(false);
+    expect((await api.captures({ finalization_state: 'finalized', limit: 200 })).items.some((item) => item.capture_id === captureId)).toBe(false);
     await expect(api.trace(captureId)).rejects.toMatchObject({ code: 'finalized_trace_not_found' });
     expect((await api.operation(queued.operation.operation_id)).state).toBe('queued');
     expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('queued');
     expect((await api.operation(queued.operation.operation_id)).state).toBe('running');
     expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('running');
     expect((await api.capture(captureId)).capture.finalization_state).toBe('running');
-    expect((await api.allCaptures({ finalization_state: 'finalized' })).items.some((item) => item.capture_id === captureId)).toBe(false);
+    expect((await api.captures({ finalization_state: 'finalized', limit: 200 })).items.some((item) => item.capture_id === captureId)).toBe(false);
     expect((await api.operation(queued.operation.operation_id)).state).toBe('finalized');
     expect((await api.operations()).items.find((item) => item.operation_id === queued.operation.operation_id)?.state).toBe('finalized');
     const capture = (await api.capture(captureId)).capture;
     expect(capture.finalization_state).toBe('finalized');
-    expect((await api.allCaptures({ finalization_state: 'finalized' })).items.some((item) => item.capture_id === captureId)).toBe(true);
+    expect((await api.captures({ finalization_state: 'finalized', limit: 200 })).items.some((item) => item.capture_id === captureId)).toBe(true);
     expect((await api.events()).items.some((event) => event.event_type === 'finalization_completed'
       && event.capture_id === captureId && event.operation_id === queued.operation.operation_id)).toBe(true);
 
@@ -353,7 +374,7 @@ describe('local evidence dashboard', () => {
 
   test('sends activity filters to the service', async () => {
     const api: LocalApi = createFixtureApi();
-    let receivedFilters: Record<string, string | number | undefined> = {};
+    let receivedFilters: Record<string, string | number | boolean | undefined> = {};
     const filteredApi: LocalApi = {
       ...api,
       events: async (filters = {}) => {

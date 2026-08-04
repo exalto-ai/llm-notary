@@ -72,6 +72,7 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'DM Mono', ui-monospace
 .master-detail { display: grid; gap: 24px; grid-template-columns: minmax(310px, .8fr) minmax(480px, 1.2fr); height: calc(100vh - 290px); min-height: 540px; padding-top: 20px; }
 .master-list { border: 1px solid var(--rule); background: var(--raised); }
 .capture-list { display: grid; list-style: none; margin: 0; padding: 0; }
+.load-more { border-top: 1px solid var(--rule); width: 100%; }
 .capture-row { background: var(--raised); border-bottom: 1px solid var(--rule); color: var(--ink); display: grid; gap: 11px; padding: 17px; text-align: left; width: 100%; }
 .capture-list > li:last-child .capture-row, .trace-list > li:last-child .capture-row { border-bottom: 0; }
 .capture-row:hover, .capture-row.is-active { background: var(--subtle); }
@@ -174,6 +175,7 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'DM Mono', ui-monospace
 .view-page.share-flow { display: grid; gap: 0; margin-top: -50px; min-height: calc(100% + 50px); padding-top: 0; }
 .sharing-toolbar { align-items: end; border-bottom: 1px solid var(--rule); display: grid; gap: 12px; grid-template-columns: minmax(260px, 1fr) auto 128px; margin: 0 -16px; min-height: 74px; padding: 11px 16px 12px; }
 .sharing-toolbar .axis-select-field { margin: 0; }
+.sharing-trace-picker { align-items: end; display: grid; gap: 8px; grid-template-columns: minmax(220px, 1fr) auto; }
 .share-control-label { color: var(--muted); font: 500 9px 'DM Mono', monospace; letter-spacing: .06em; text-transform: uppercase; }
 .share-visibility { display: grid; gap: 6px; }
 .share-visibility > div { display: flex; }
@@ -214,6 +216,7 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'DM Mono', ui-monospace
 @media (max-width: 820px) {
   .view-page.share-flow { margin-top: 0; min-height: 100%; padding-top: 78px; }
   .sharing-toolbar { grid-template-columns: 1fr; margin-inline: -12px; padding: 14px 12px; }
+  .sharing-trace-picker { grid-template-columns: 1fr; }
   .share-visibility > div { width: 100%; }
   .share-visibility button { flex: 1; }
   .share-primary { width: 100%; }

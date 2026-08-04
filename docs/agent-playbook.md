@@ -76,7 +76,7 @@ returned by the service:
 
 ```bash
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&capture_state=captured&limit=10&offset=0"
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&capture_state=captured&limit=10"
 
 capture_id=cap-example
 curl --fail-with-body \
@@ -153,7 +153,7 @@ if (!health.ok) throw new Error(`Local service unavailable: ${health.status}`);
 const specification = await fetch(`${origin}/openapi.json`).then((response) => response.json());
 if (!specification.paths['/v1/captures']) throw new Error('Installed API is incompatible');
 
-const response = await fetch(`${origin}/v1/captures?capture_state=captured&limit=10&offset=0`);
+const response = await fetch(`${origin}/v1/captures?capture_state=captured&limit=10`);
 if (!response.ok) throw new Error(`Capture search failed: ${response.status}`);
 const captures = await response.json();
 console.log(captures.items.map(({ capture_id, provider, requested_model, finalization_state }) => ({
