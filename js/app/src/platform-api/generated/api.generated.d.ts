@@ -652,6 +652,8 @@ export interface components {
         };
         CreatePublishJob: {
             archive_format: string;
+            /** @description Accept unexplained high-entropy values after reviewing the disclosure. */
+            force?: boolean;
             sha256: string;
             /** Format: int64 */
             size_bytes: number;
@@ -790,6 +792,7 @@ export interface components {
             package_size_bytes?: number | null;
             package_url?: string | null;
             provider: string;
+            public_package_safety_override: boolean;
             public_package_safety_version?: string | null;
             publisher: string;
             share_url: string;
@@ -839,6 +842,7 @@ export interface components {
             /** Format: int64 */
             created_at: number;
             failure_code?: string | null;
+            force: boolean;
             id: string;
             package_url?: string | null;
             share_url?: string | null;

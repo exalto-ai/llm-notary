@@ -2573,6 +2573,10 @@
           "archive_format": {
             "type": "string"
           },
+          "force": {
+            "type": "boolean",
+            "description": "Accept unexplained high-entropy values after reviewing the disclosure."
+          },
           "sha256": {
             "type": "string"
           },
@@ -3026,6 +3030,7 @@
           "verification_state",
           "trace_sha256",
           "package_available",
+          "public_package_safety_override",
           "trace_url",
           "share_url"
         ],
@@ -3087,6 +3092,9 @@
           },
           "provider": {
             "type": "string"
+          },
+          "public_package_safety_override": {
+            "type": "boolean"
           },
           "public_package_safety_version": {
             "type": [
@@ -3241,6 +3249,7 @@
           "id",
           "state",
           "visibility",
+          "force",
           "created_at",
           "updated_at",
           "status_url"
@@ -3262,6 +3271,9 @@
               "string",
               "null"
             ]
+          },
+          "force": {
+            "type": "boolean"
           },
           "id": {
             "type": "string"

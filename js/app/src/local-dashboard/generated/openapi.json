@@ -541,7 +541,7 @@
           "local-admin"
         ],
         "summary": "Share a finalized verified session",
-        "description": "Verifies one finalized capture locally, uploads the exact safe public package, and returns a durable share.",
+        "description": "Verifies one finalized capture locally, applies the public disclosure safety policy, and uploads the exact package. Force overrides only unexplained high-entropy values.",
         "operationId": "share_capture",
         "parameters": [
           {
@@ -1585,6 +1585,10 @@
           "visibility"
         ],
         "properties": {
+          "force": {
+            "type": "boolean",
+            "description": "Accept only unexplained high-entropy false positives after review."
+          },
           "visibility": {
             "$ref": "#/components/schemas/ShareVisibility"
           }

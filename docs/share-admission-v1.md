@@ -12,7 +12,7 @@ metadata, and model output. It never receives an encrypted `.llmbundle`, vault
 key, or provider credential value.
 
 Before a share can become reachable, the worker applies the versioned
-`llm-notary/public-package-safety/v2` contract to the exact archive bytes. It:
+`llm-notary/public-package-safety/v3` contract to the exact archive bytes. It:
 
 1. requires the strict canonical archive and manifest layout;
 2. rejects every visible request or response header value except the structural
@@ -23,16 +23,32 @@ Before a share can become reachable, the worker applies the versioned
    token formats, private-key material, and unexplained high-entropy values;
 5. reports only bounded error codes and locations, never matched plaintext.
 
+The local CLI runs the same contract on the exact, cryptographically verified
+package before authentication or upload. The worker repeats it as the
+authoritative admission check, so an older client cannot bypass a newer server
+policy.
+
+An authenticated publisher may send `force: true` to accept only unexplained
+high-entropy values after reviewing the disclosure. Validation continues after
+each overridden value, so a later concrete secret still rejects the package.
+The request cannot override any other safety or verification failure, and an
+admitted share records whether the override was actually applied.
+
 Known public hashes, signatures, public keys, and key identifiers are exempt
 from entropy rejection when their structure identifies them as public proof
 material. After cryptographic package verification, documented OpenAI response
-IDs are also exempt from entropy rejection only for `api.openai.com`, the exact
-`/v1/chat/completions` or `/v1/responses` request path, and the root response
-`/id` with the matching `chatcmpl-...` or `resp_...` format. Known-secret
-patterns still run on those IDs. Nested IDs, other providers and operations,
-tool data, and model content receive no exemption. Hostile fixtures cover
-tokens split across parsing boundaries, nested tool data, signed queries,
-private keys, and high-entropy secrets.
+IDs are also exempt from entropy rejection only after package verification and
+only at documented protocol paths. OpenAI root response IDs require
+`api.openai.com`, the exact `/v1/chat/completions` or `/v1/responses` request
+path, and the matching `chatcmpl-...` or `resp_...` format. OpenRouter root
+generation IDs require `openrouter.ai`, `/api/v1/chat/completions`, and a
+documented `gen-...` or `chatcmpl-...` format. The same verified Chat
+Completions contexts permit `call_...` only at exact request or response tool
+call identifier paths, including parsed SSE `data:` objects. Known-secret
+patterns still run on every exempt ID. Other nested IDs, tool arguments and
+results, model content, providers, and operations receive no exemption.
+Hostile fixtures cover tokens split across parsing boundaries, nested tool
+data, signed queries, private keys, malformed SSE, and high-entropy secrets.
 
 ## Admission and storage
 

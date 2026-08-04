@@ -182,6 +182,7 @@ llm-notary whoami
 llm-notary whoami --json
 llm-notary share cap-example                         # Unlisted by default
 llm-notary share cap-example --visibility listed
+llm-notary share cap-example --force                 # Only after disclosure review
 llm-notary logout
 ```
 
@@ -362,6 +363,15 @@ its `poll_interval_seconds` and keep polling the returned
 When the daemon uses an injected API key, `POST /v1/account` and
 `DELETE /v1/account` return `409`; create and revoke API keys in the hosted
 dashboard instead.
+Before it authenticates or uploads, the local service cryptographically verifies
+the exact finalized package and applies the same versioned public-disclosure
+safety policy used by hosted admission. The hosted worker repeats both checks;
+local acceptance never guarantees admission by a newer server policy.
+An explicit `force: true` request, exposed by `llm-notary share --force`, accepts
+only unexplained high-entropy values after the publisher reviews the complete
+disclosure. It cannot override known secret patterns, credential fields,
+disclosed header values, signed credential queries, invalid archives, or failed
+cryptographic verification.
 After submission, poll `GET /v1/shares/{share_id}` on the local admin
 listener. The service uses the vault-held account credential
 to fetch admission state; agents and the dashboard never receive that

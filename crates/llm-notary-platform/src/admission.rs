@@ -18,7 +18,7 @@ use uuid::Uuid;
 use llm_notary_core::{
     public_safety::{
         PUBLIC_PACKAGE_SAFETY_VERSION, PublicPackageSafetyContext,
-        validate_public_trace_package_with_context,
+        validate_public_trace_package_with_context_and_force,
     },
     sha256_hex,
 };
@@ -59,6 +59,7 @@ struct PublicShareRow {
     package_size_bytes: Option<i64>,
     package_sha256: Option<String>,
     public_package_safety_version: Option<String>,
+    public_package_safety_override: bool,
 }
 
 #[derive(FromRow)]
@@ -109,6 +110,7 @@ struct PublicShareDetail {
     package_size_bytes: Option<i64>,
     package_sha256: Option<String>,
     public_package_safety_version: Option<String>,
+    public_package_safety_override: bool,
     trace_url: String,
     package_url: Option<String>,
     share_url: String,
@@ -120,6 +122,7 @@ struct AdmittedArtifacts {
     model: String,
     input_preview: Option<String>,
     output_preview: Option<String>,
+    safety_override_applied: bool,
 }
 
 struct StoredPublicArtifacts {
@@ -225,6 +228,7 @@ async fn public_share_detail(
         package_size_bytes: share.package_size_bytes,
         package_sha256: share.package_sha256,
         public_package_safety_version: share.public_package_safety_version,
+        public_package_safety_override: share.public_package_safety_override,
         trace_url: format!("/api/public/shares/{}/trace.otlp.json", share.id),
         package_url: share
             .package_object_key
@@ -457,9 +461,10 @@ async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
     }
 
     let directory = state.notary_directory.clone();
+    let force_publication = job.force_publication;
     let parent = Span::current();
     let result = tokio::task::spawn_blocking(move || {
-        parent.in_scope(|| verify_for_admission(archive, &directory))
+        parent.in_scope(|| verify_for_admission(archive, &directory, force_publication))
     })
     .await;
     match result {
@@ -505,6 +510,7 @@ fn finish_admission_metric(outcome: &'static str, started: Instant) {
 fn verify_for_admission(
     archive: Vec<u8>,
     directory: &llm_notary_core::notary_directory::NotaryDirectory,
+    force_publication: bool,
 ) -> std::result::Result<AdmittedArtifacts, AdmissionFailure> {
     let verified = verify_package(&archive, directory).map_err(|error| match error {
         HostedVerificationError::Service(error) => AdmissionFailure::Retry(error),
@@ -516,19 +522,21 @@ fn verify_for_admission(
             anyhow::anyhow!(error.public_code()),
         ),
     })?;
-    finish_verified_admission(archive, verified)
+    finish_verified_admission(archive, verified, force_publication)
 }
 
 fn finish_verified_admission(
     archive: Vec<u8>,
     verified: HostedVerifiedPackage,
+    force_publication: bool,
 ) -> std::result::Result<AdmittedArtifacts, AdmissionFailure> {
-    validate_public_trace_package_with_context(
+    let safety = validate_public_trace_package_with_context_and_force(
         &archive,
         PublicPackageSafetyContext {
             provider_host: &verified.provider_host,
             request_path: &verified.request_path,
         },
+        force_publication,
     )
     .map_err(|error| AdmissionFailure::Reject(error.admission_code(), anyhow::anyhow!(error)))?;
     let model = trace_model(&verified.trace)
@@ -541,6 +549,7 @@ fn finish_verified_admission(
         model,
         input_preview,
         output_preview,
+        safety_override_applied: safety.high_entropy_override_applied,
     })
 }
 
@@ -681,13 +690,14 @@ async fn admit_claim(
              public_trace_sha256 = $7, package_object_key = $8,
              package_size_bytes = $9, package_sha256 = $10,
              public_package_safety_version = $11,
-             provider = $12, provider_host = $13, model = $14,
-             library_input_preview = $15, library_output_preview = $16,
-             authenticated_provider_connection_unix_ms = $17,
-             verified_at = $18, verified_notary_key_id = $19,
-             verified_directory_generation = $20, verified_trust_source = $21,
+             public_package_safety_override = $12,
+             provider = $13, provider_host = $14, model = $15,
+             library_input_preview = $16, library_output_preview = $17,
+             authenticated_provider_connection_unix_ms = $18,
+             verified_at = $19, verified_notary_key_id = $20,
+             verified_directory_generation = $21, verified_trust_source = $22,
              verification_claim = NULL
-         WHERE id = $22 AND state = 'verifying' AND verification_claim = $23
+         WHERE id = $23 AND state = 'verifying' AND verification_claim = $24
            AND public_trace_object_key IS NULL AND package_object_key IS NULL",
     )
     .bind(actual_size)
@@ -701,6 +711,7 @@ async fn admit_claim(
     .bind(stored.package_size_bytes)
     .bind(&stored.package_sha256)
     .bind(PUBLIC_PACKAGE_SAFETY_VERSION)
+    .bind(artifacts.safety_override_applied)
     .bind(&artifacts.verified.provider_name)
     .bind(&artifacts.verified.provider_host)
     .bind(&artifacts.model)
@@ -800,17 +811,22 @@ async fn store_public_artifacts(
         let directory = state.notary_directory.clone();
         let expected_trace = stored.trace_sha256.clone();
         let expected_package = stored.package_sha256.clone();
+        let expected_safety_override = artifacts.safety_override_applied;
         tokio::task::spawn_blocking(move || -> Result<()> {
             let verified = verify_package(&downloaded, &directory)
                 .map_err(|_| anyhow::anyhow!("stored package failed cryptographic verification"))?;
-            validate_public_trace_package_with_context(
+            let safety = validate_public_trace_package_with_context_and_force(
                 &downloaded,
                 PublicPackageSafetyContext {
                     provider_host: &verified.provider_host,
                     request_path: &verified.request_path,
                 },
+                expected_safety_override,
             )
             .map_err(|error| anyhow::anyhow!(error))?;
+            if safety.high_entropy_override_applied != expected_safety_override {
+                bail!("stored package safety decision changed");
+            }
             if verified.trace_sha256 != expected_trace
                 || verified.package_sha256 != expected_package
             {
@@ -1003,7 +1019,8 @@ async fn load_public_share_optional(
                 publish_jobs.public_trace_sha256,
                 publish_jobs.package_object_key, publish_jobs.package_size_bytes,
                 publish_jobs.package_sha256,
-                publish_jobs.public_package_safety_version
+                publish_jobs.public_package_safety_version,
+                publish_jobs.public_package_safety_override
          FROM publish_jobs
          JOIN users ON users.id = publish_jobs.user_id
          WHERE publish_jobs.id = $1 AND publish_jobs.state = 'admitted'
@@ -1185,7 +1202,7 @@ mod tests {
             trace,
         };
 
-        let admitted = match finish_verified_admission(archive, verified) {
+        let admitted = match finish_verified_admission(archive, verified, false) {
             Ok(admitted) => admitted,
             Err(AdmissionFailure::Reject(code, error)) => {
                 panic!("hosted admission rejected {code}: {error}")
@@ -1196,6 +1213,7 @@ mod tests {
         };
         assert_eq!(admitted.model, "gpt-test");
         assert_eq!(admitted.verified.request_path, "/v1/chat/completions");
+        assert!(!admitted.safety_override_applied);
     }
 
     #[test]

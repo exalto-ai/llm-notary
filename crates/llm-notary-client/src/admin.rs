@@ -899,9 +899,12 @@ impl From<ShareVisibility> for publish::ShareVisibility {
 #[serde(deny_unknown_fields)]
 struct CreateShareRequest {
     visibility: ShareVisibility,
+    /// Accept only unexplained high-entropy false positives after review.
+    #[serde(default)]
+    force: bool,
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/shares", summary = "Share a finalized verified session", description = "Verifies one finalized capture locally, uploads the exact safe public package, and returns a durable share.", params(("capture_id" = String, Path)), request_body = CreateShareRequest, responses((status = 202, body = ShareResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/shares", summary = "Share a finalized verified session", description = "Verifies one finalized capture locally, applies the public disclosure safety policy, and uploads the exact package. Force overrides only unexplained high-entropy values.", params(("capture_id" = String, Path)), request_body = CreateShareRequest, responses((status = 202, body = ShareResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn share_capture(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -914,6 +917,7 @@ async fn share_capture(
         &path,
         state.config.notary.public_key.as_deref(),
         body.visibility.into(),
+        body.force,
     )
     .await
     .map_err(|_| ApiError::internal("share_failed"))?;

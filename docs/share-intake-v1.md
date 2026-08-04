@@ -40,7 +40,8 @@ Content-Type: application/json
   "archive_format": "llmnotary.trace-package-archive/v2",
   "size_bytes": 12345,
   "sha256": "<64 lowercase hexadecimal characters>",
-  "visibility": "unlisted"
+  "visibility": "unlisted",
+  "force": false
 }
 ```
 
@@ -53,8 +54,15 @@ Content-Type: application/json
 
 This model is intentionally not private or access-controlled.
 
+`force` defaults to `false`. Set it to `true` only after reviewing the complete
+disclosure and accepting an entropy-heuristic false positive. It does not
+override known secret formats, credential fields or headers, signed credential
+queries, malformed packages, or failed cryptographic verification. The share
+record and admitted public detail retain whether force was requested and
+whether the entropy override was actually applied.
+
 A new share returns `201 Created`. Reusing the idempotency key with identical
-metadata and visibility returns `200 OK` and the same share. Reusing it with
+metadata, visibility, and force decision returns `200 OK` and the same share. Reusing it with
 different input returns `409 Conflict`. The local client derives its key from
 the exact archive SHA-256 and chosen visibility so ambiguous network failures
 resume safely.
@@ -68,6 +76,7 @@ upload instructions:
     "id": "c52ecff9-2bd4-42f3-bb1d-b6ad2b671605",
     "state": "uploading",
     "visibility": "unlisted",
+    "force": false,
     "created_at": 1785294000,
     "updated_at": 1785294000,
     "admitted_at": null,

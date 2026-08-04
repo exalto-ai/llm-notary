@@ -183,7 +183,7 @@ export interface paths {
         put?: never;
         /**
          * Share a finalized verified session
-         * @description Verifies one finalized capture locally, uploads the exact safe public package, and returns a durable share.
+         * @description Verifies one finalized capture locally, applies the public disclosure safety policy, and uploads the exact package. Force overrides only unexplained high-entropy values.
          */
         post: operations["share_capture"];
         delete?: never;
@@ -482,6 +482,8 @@ export interface components {
             total_captures: number;
         };
         CreateShareRequest: {
+            /** @description Accept only unexplained high-entropy false positives after review. */
+            force?: boolean;
             visibility: components["schemas"]["ShareVisibility"];
         };
         CreditHistoryEntry: {

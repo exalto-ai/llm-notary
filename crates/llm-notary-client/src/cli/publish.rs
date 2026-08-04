@@ -10,6 +10,9 @@ use crate::{
         api_origin::ApiOrigin, auth, http_client_builder, notary,
         proxy::refresh_notary_directory_from,
     },
+    public_safety::{
+        PublicPackageSafetyContext, validate_public_trace_package_with_context_and_force,
+    },
     sha256_hex,
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -29,6 +32,11 @@ pub struct ShareArgs {
     /// Whether the share appears in the public Library index.
     #[arg(long, value_enum, default_value_t = ShareVisibility::Unlisted)]
     visibility: ShareVisibility,
+
+    /// Accept unexplained high-entropy values after reviewing the disclosure.
+    /// Concrete secret detections and verification failures remain blocked.
+    #[arg(long)]
+    force: bool,
 
     /// Print the share result as one JSON object.
     #[arg(long)]
@@ -57,6 +65,7 @@ struct CreateShare<'a> {
     size_bytes: u64,
     sha256: &'a str,
     visibility: &'a str,
+    force: bool,
 }
 
 #[derive(Deserialize)]
@@ -120,6 +129,7 @@ pub async fn run(args: ShareArgs) -> Result<()> {
         &args.package,
         args.trusted_notary_key.as_deref(),
         args.visibility,
+        args.force,
     )
     .await?;
     if args.json {
@@ -139,6 +149,7 @@ pub(crate) async fn share_package(
     package: &std::path::Path,
     trusted_key: Option<&str>,
     visibility: ShareVisibility,
+    force: bool,
 ) -> Result<(ShareOutput, String, String)> {
     reject_bundle_path(package)?;
     // Snapshot the finalized package before verification. Verification and
@@ -162,6 +173,15 @@ pub(crate) async fn share_package(
     };
     let verified = verify_trace_package_bytes(&archive, &trusted_notary_key)
         .context("local trace package verification failed; nothing was uploaded")?;
+    validate_public_trace_package_with_context_and_force(
+        &archive,
+        PublicPackageSafetyContext {
+            provider_host: verified.manifest.provider_host(),
+            request_path: &verified.request_path,
+        },
+        force,
+    )
+    .context("local public disclosure safety check failed; nothing was uploaded")?;
     let archive_sha256 = sha256_hex(&archive);
 
     // Everything above is intentionally local so malformed packages never
@@ -175,8 +195,9 @@ pub(crate) async fn share_package(
         &authenticated,
         &archive,
         &archive_sha256,
-        &archive_idempotency_key(&archive_sha256, visibility),
+        &archive_idempotency_key(&archive_sha256, visibility, force),
         visibility,
+        force,
     )
     .await?;
     let status_url = absolute_status_url(&authenticated.origin, &share.status_url)?;
@@ -271,6 +292,7 @@ async fn submit_archive(
     archive_sha256: &str,
     idempotency_key: &str,
     visibility: ShareVisibility,
+    force: bool,
 ) -> Result<ShareJob> {
     let client = http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -286,6 +308,7 @@ async fn submit_archive(
                 size_bytes: archive.len() as u64,
                 sha256: archive_sha256,
                 visibility: visibility.as_str(),
+                force,
             })
             .send()
             .await
@@ -397,8 +420,13 @@ async fn upload_archive(
     Ok(())
 }
 
-fn archive_idempotency_key(archive_sha256: &str, visibility: ShareVisibility) -> String {
-    format!("trace-package:{archive_sha256}:{}", visibility.as_str())
+fn archive_idempotency_key(
+    archive_sha256: &str,
+    visibility: ShareVisibility,
+    force: bool,
+) -> String {
+    let base = format!("trace-package:{archive_sha256}:{}", visibility.as_str());
+    if force { format!("{base}:force") } else { base }
 }
 
 fn validated_upload_url(api_origin: &ApiOrigin, value: &str) -> Result<url::Url> {
@@ -528,6 +556,7 @@ mod tests {
             assert!(headers.contains_key("authorization"));
             assert!(headers.contains_key("idempotency-key"));
             assert_eq!(request["visibility"], "unlisted");
+            assert_eq!(request["force"], true);
             let size = request["size_bytes"].as_u64().unwrap();
             (
                 StatusCode::CREATED,
@@ -589,6 +618,7 @@ mod tests {
             &sha256_hex(archive),
             "idempotency-key",
             ShareVisibility::Unlisted,
+            true,
         )
         .await
         .unwrap();
@@ -610,8 +640,12 @@ mod tests {
         );
         let digest = "a".repeat(64);
         assert_eq!(
-            archive_idempotency_key(&digest, ShareVisibility::Listed),
+            archive_idempotency_key(&digest, ShareVisibility::Listed, false),
             format!("trace-package:{digest}:listed")
+        );
+        assert_eq!(
+            archive_idempotency_key(&digest, ShareVisibility::Listed, true),
+            format!("trace-package:{digest}:listed:force")
         );
         assert!(
             validated_upload_url(
