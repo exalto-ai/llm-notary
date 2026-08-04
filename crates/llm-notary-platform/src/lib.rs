@@ -1968,6 +1968,20 @@ mod tests {
         .execute(&database.pool)
         .await
         .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0011_share_library_previews.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let previews: (Option<String>, Option<String>) = sqlx::query_as(
+            "SELECT library_input_preview, library_output_preview
+             FROM publish_jobs WHERE id = 'legacy-job'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(previews, (None, None));
         let accounting: (i64, i64, i64) = sqlx::query_as(
             "SELECT
                  (SELECT COALESCE(SUM(amount_bytes), 0)::BIGINT

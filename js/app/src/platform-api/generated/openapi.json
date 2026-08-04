@@ -2805,8 +2805,20 @@
           "id": {
             "type": "string"
           },
+          "input_preview": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "model": {
             "type": "string"
+          },
+          "output_preview": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "provider": {
             "type": "string"

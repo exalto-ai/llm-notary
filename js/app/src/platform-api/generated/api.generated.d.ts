@@ -728,7 +728,9 @@ export interface components {
             /** Format: int64 */
             authenticated_at_unix_ms?: number | null;
             id: string;
+            input_preview?: string | null;
             model: string;
+            output_preview?: string | null;
             provider: string;
             publisher: string;
             share_url: string;
