@@ -333,18 +333,8 @@ fn scan_json_with_context(
 ) -> Result<(), PublicPackageSafetyError> {
     let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|_| PublicPackageSafetyError::new("public_json_invalid", location))?;
-    let mut nested = BTreeSet::new();
-    let mut path = Vec::new();
-    scan_json_value(
-        &value,
-        None,
-        location,
-        context,
-        true,
-        &mut path,
-        &mut nested,
-        scan,
-    )
+    let mut traversal = JsonTraversal::default();
+    scan_json_value(&value, None, location, context, true, &mut traversal, scan)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -353,14 +343,19 @@ enum JsonPathSegment {
     Index(usize),
 }
 
+#[derive(Default)]
+struct JsonTraversal {
+    path: Vec<JsonPathSegment>,
+    nested: BTreeSet<String>,
+}
+
 fn scan_json_value(
     value: &serde_json::Value,
     key: Option<&str>,
     location: PublicPackageLocation,
     context: Option<PublicPackageSafetyContext<'_>>,
     provider_exemptions_allowed: bool,
-    path: &mut Vec<JsonPathSegment>,
-    nested: &mut BTreeSet<String>,
+    traversal: &mut JsonTraversal,
     scan: &mut ScanState,
 ) -> Result<(), PublicPackageSafetyError> {
     if key.is_some_and(is_credential_key) && has_public_value(value) {
@@ -383,34 +378,34 @@ fn scan_json_value(
                 } else {
                     Some(child_key.as_str())
                 };
-                path.push(JsonPathSegment::Key(child_key.to_owned()));
+                traversal
+                    .path
+                    .push(JsonPathSegment::Key(child_key.to_owned()));
                 scan_json_value(
                     value,
                     child_key_context,
                     location,
                     context,
                     provider_exemptions_allowed,
-                    path,
-                    nested,
+                    traversal,
                     scan,
                 )?;
-                path.pop();
+                traversal.path.pop();
             }
         }
         serde_json::Value::Array(values) => {
             for (index, value) in values.iter().enumerate() {
-                path.push(JsonPathSegment::Index(index));
+                traversal.path.push(JsonPathSegment::Index(index));
                 scan_json_value(
                     value,
                     key,
                     location,
                     context,
                     provider_exemptions_allowed,
-                    path,
-                    nested,
+                    traversal,
                     scan,
                 )?;
-                path.pop();
+                traversal.path.pop();
             }
         }
         serde_json::Value::String(value) => {
@@ -419,17 +414,17 @@ fn scan_json_value(
                 value.as_bytes(),
                 key,
                 provider_exemptions_allowed
-                    && is_documented_public_protocol_id(value, context, location, path),
+                    && is_documented_public_protocol_id(value, context, location, &traversal.path),
                 location,
                 scan,
             )?;
             let trimmed = value.trim();
             if trimmed.len() <= 1_048_576
                 && matches!(trimmed.as_bytes().first(), Some(b'{') | Some(b'['))
-                && nested.insert(trimmed.to_owned())
+                && traversal.nested.insert(trimmed.to_owned())
                 && let Ok(inner) = serde_json::from_str::<serde_json::Value>(trimmed)
             {
-                scan_json_value(&inner, key, location, context, false, path, nested, scan)?;
+                scan_json_value(&inner, key, location, context, false, traversal, scan)?;
             }
         }
         _ => {}
