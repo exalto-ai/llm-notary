@@ -2289,6 +2289,149 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn provider_neutral_identity_migration_backfills_and_dual_writes() {
+        let database = super::test_database::blank_database().await;
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0001_initial.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO users
+             (id, github_id, github_login, avatar_url, created_at, updated_at)
+             VALUES ('legacy-user', 41, 'legacy-login', 'https://example.test/old', 1, 2)",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0016_provider_neutral_identities.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+        let display_name: String =
+            sqlx::query_scalar("SELECT display_name FROM users WHERE id = 'legacy-user'")
+                .fetch_one(&database.pool)
+                .await
+                .unwrap();
+        assert_eq!(display_name, "legacy-login");
+        let identity: (String, String, String, String, Option<String>, i64) = sqlx::query_as(
+            "SELECT id, user_id, provider, provider_display_name,
+                    provider_avatar_url, last_used_at
+             FROM user_identities
+             WHERE provider = 'github' AND provider_subject = '41'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            identity,
+            (
+                "identity-github-41".to_owned(),
+                "legacy-user".to_owned(),
+                "github".to_owned(),
+                "legacy-login".to_owned(),
+                Some("https://example.test/old".to_owned()),
+                2,
+            )
+        );
+
+        sqlx::query(
+            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
+             VALUES ('new-user', 42, 'new-login', 3, 3)",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let new_profile: (String, String) = sqlx::query_as(
+            "SELECT users.display_name, user_identities.provider_display_name
+             FROM users
+             JOIN user_identities ON user_identities.user_id = users.id
+             WHERE users.id = 'new-user'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            new_profile,
+            ("new-login".to_owned(), "new-login".to_owned())
+        );
+
+        sqlx::query(
+            "UPDATE users
+             SET github_login = 'renamed-login',
+                 avatar_url = 'https://example.test/new',
+                 updated_at = 4
+             WHERE id = 'legacy-user'",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let updated: (String, String, Option<String>, i64) = sqlx::query_as(
+            "SELECT users.display_name, user_identities.provider_display_name,
+                    user_identities.provider_avatar_url, user_identities.last_used_at
+             FROM users
+             JOIN user_identities ON user_identities.user_id = users.id
+             WHERE users.id = 'legacy-user'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            updated,
+            (
+                "renamed-login".to_owned(),
+                "renamed-login".to_owned(),
+                Some("https://example.test/new".to_owned()),
+                4,
+            )
+        );
+
+        sqlx::query("UPDATE users SET display_name = 'Custom name' WHERE id = 'legacy-user'")
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE users
+             SET github_login = 'renamed-again', updated_at = 5
+             WHERE id = 'legacy-user'",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let customized: (String, String) = sqlx::query_as(
+            "SELECT users.display_name, user_identities.provider_display_name
+             FROM users
+             JOIN user_identities ON user_identities.user_id = users.id
+             WHERE users.id = 'legacy-user'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            customized,
+            ("Custom name".to_owned(), "renamed-again".to_owned())
+        );
+
+        sqlx::query("DELETE FROM users WHERE id = 'legacy-user'")
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        let remaining: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM user_identities WHERE user_id = 'legacy-user'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn new_cli_session_is_usable_until_its_refresh_expiry() {
         let database = fresh_database().await;
         sqlx::query(
