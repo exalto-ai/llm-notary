@@ -143,7 +143,7 @@ export interface paths {
         put?: never;
         /**
          * Queue capture finalization
-         * @description Queues durable proof generation for an eligible pending capture or returns its existing finalization operation. Captures with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.
+         * @description Queues durable proof generation for an eligible captured provider response or returns its existing finalization operation. Captures with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.
          */
         post: operations["start_finalization"];
         delete?: never;
@@ -477,7 +477,7 @@ export interface components {
             /** Format: int64 */
             finalized: number;
             /** Format: int64 */
-            pending: number;
+            ready_to_finalize: number;
             /** Format: int64 */
             total_captures: number;
         };

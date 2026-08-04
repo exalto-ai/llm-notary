@@ -12,7 +12,7 @@ provider proxy on port 8787 never serves it.
 ## Find the next useful action
 
 **Overview** shows service, vault, notary, and work-queue health. The
-capture-state strip distinguishes live captures, pending evidence, active
+capture-state strip distinguishes live captures, captured evidence, active
 finalization work, finalized traces, and failures. Recent activity uses safe
 event summaries and links back to the relevant work.
 
@@ -47,7 +47,7 @@ operation for that capture to its detailed attempt history.
 
 ![Local dashboard in dark mode with Captures selected, provider and finalization filters, a running Anthropic capture selected in the results, privacy-aware previews, lifecycle, and artifact details.](images/local-dashboard/captures-dark.png)
 
-A pending capture has one **Finalize** action. The service responds with a
+A captured response that has not yet been finalized has one **Finalize** action. The service responds with a
 durable operation, and the dashboard moves to its finalization view. Repeating
 the action resolves to the already-active operation and is labeled as
 deduplicated; it does not create parallel work.
@@ -142,7 +142,7 @@ the desktop sidebar. Use the back action to return from an inspector. Keyboard
 focus is visible, dialogs and drawers return focus to their trigger, and
 reduced-motion preferences are respected.
 
-![Mobile local dashboard with a private capture detail behind the open full-height navigation drawer, including pending and active-work counts and all dashboard destinations.](images/local-dashboard/mobile-navigation.png)
+![Mobile local dashboard with a private capture detail behind the open full-height navigation drawer, including ready-to-finalize and active-work counts and all dashboard destinations.](images/local-dashboard/mobile-navigation.png)
 
 After the drawer closes, the selected capture occupies a single mobile panel
 with a clear back action; the desktop list is not squeezed beside it.

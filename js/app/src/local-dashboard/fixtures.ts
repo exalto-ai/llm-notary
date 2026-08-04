@@ -12,7 +12,7 @@ export const fixtureCaptures: Capture[] = [
     capture_id: 'cap-20260728-knowledge-eval', created_at_unix_ms: fixtureNow - hour * 2,
     completed_at_unix_ms: fixtureNow - hour * 2 + 1842, provider: 'openai', operation: '/v1/responses',
     requested_model: 'gpt-5.2', response_model: 'gpt-5.2', http_status: 200, streaming: true,
-    request_bytes: 1842, response_bytes: 9421, duration_ms: 1842, capture_state: 'pending',
+    request_bytes: 1842, response_bytes: 9421, duration_ms: 1842, capture_state: 'captured',
     finalization_state: 'not_requested', finalization_eligible: true,
     prompt_preview: 'Compare two sanitized evaluation strategies and identify the stronger evidence trail.',
     prompt_preview_truncated: false, output_preview: 'The second strategy preserves a clearer chain of independently checkable claims…',
@@ -23,7 +23,7 @@ export const fixtureCaptures: Capture[] = [
     completed_at_unix_ms: fixtureNow - hour * 4 + 967, provider: 'anthropic', operation: '/v1/messages',
     requested_model: 'claude-sonnet-4-6', response_model: 'claude-sonnet-4-6', http_status: 200,
     streaming: false, request_bytes: 1210, response_bytes: 5110, duration_ms: 967,
-    capture_state: 'pending', finalization_state: 'running', finalization_eligible: true,
+    capture_state: 'captured', finalization_state: 'running', finalization_eligible: true,
     prompt_preview: 'Review a synthetic policy response for unsupported claims.',
     prompt_preview_truncated: false, output_preview: 'Three claims require either a citation or more qualified language.',
     output_preview_truncated: false
@@ -33,7 +33,7 @@ export const fixtureCaptures: Capture[] = [
     completed_at_unix_ms: fixtureNow - hour * 18 + 2312, provider: 'openrouter', operation: '/api/v1/chat/completions',
     requested_model: 'openai/gpt-5-mini', response_model: 'openai/gpt-5-mini', http_status: 200,
     streaming: true, request_bytes: 2208, response_bytes: 14392, duration_ms: 2312,
-    capture_state: 'pending', finalization_state: 'finalized', finalization_eligible: true,
+    capture_state: 'captured', finalization_state: 'finalized', finalization_eligible: true,
     prompt_preview: 'Choose a reproducibility baseline from two sanitized evaluation runs and explain the limits of the evidence.',
     prompt_preview_truncated: false, output_preview: 'Use Run 15 as the baseline; its settings were recorded and all 20 reruns matched.',
     output_preview_truncated: false
@@ -43,7 +43,7 @@ export const fixtureCaptures: Capture[] = [
     completed_at_unix_ms: fixtureNow - hour * 31 + 1288, provider: 'anthropic', operation: '/v1/messages',
     requested_model: 'claude-sonnet-4-6', response_model: 'claude-sonnet-4-6', http_status: 200,
     streaming: false, request_bytes: 1540, response_bytes: 7290, duration_ms: 1288,
-    capture_state: 'pending', finalization_state: 'finalized', finalization_eligible: true,
+    capture_state: 'captured', finalization_state: 'finalized', finalization_eligible: true,
     prompt_preview: 'Check whether the direct-link fixture keeps its provider and model identity.',
     prompt_preview_truncated: false,
     output_preview: 'The fixture identity remains Anthropic / claude-sonnet-4-6 in every view.',
@@ -54,7 +54,7 @@ export const fixtureCaptures: Capture[] = [
     completed_at_unix_ms: fixtureNow - hour * 25 + 1400, provider: 'deepseek', operation: '/chat/completions',
     requested_model: 'deepseek-v4-flash', response_model: 'deepseek-v4-flash', http_status: 200,
     streaming: false, request_bytes: 3101, response_bytes: 8802, duration_ms: 1400,
-    capture_state: 'pending', finalization_state: 'failed', finalization_eligible: true,
+    capture_state: 'captured', finalization_state: 'failed', finalization_eligible: true,
     prompt_preview: 'Run the deterministic benchmark fixture.',
     prompt_preview_truncated: false, output_preview: 'Benchmark fixture complete.', output_preview_truncated: false,
     failure_code: 'notary_capacity'
@@ -63,7 +63,7 @@ export const fixtureCaptures: Capture[] = [
     capture_id: 'cap-20260728-auth-error', created_at_unix_ms: fixtureNow - hour * 6,
     completed_at_unix_ms: fixtureNow - hour * 6 + 412, provider: 'openai', operation: '/v1/responses',
     requested_model: 'gpt-5.2', response_model: null, http_status: 401, streaming: true,
-    request_bytes: 988, response_bytes: 214, duration_ms: 412, capture_state: 'pending',
+    request_bytes: 988, response_bytes: 214, duration_ms: 412, capture_state: 'captured',
     finalization_state: 'not_requested', finalization_eligible: false,
     finalization_ineligibility_code: 'unsupported_provider_http_status',
     prompt_preview: 'Summarize the sanitized authentication-error fixture.', prompt_preview_truncated: false,
@@ -136,7 +136,7 @@ export const fixtureEvents: Event[] = [
 export const fixtureStatus: Status = {
   version: '0.1.0', proxy_listener: '127.0.0.1:8787', admin_listener: '127.0.0.1:8788',
   vault: 'OS vault', notary: 'directory', preview_chars: 1000,
-  counts: { total_captures: 7, capturing: 1, pending: 2, finalized: 2, failed: 1, active_operations: 1 }
+  counts: { total_captures: 7, capturing: 1, ready_to_finalize: 1, finalized: 2, failed: 1, active_operations: 1 }
 };
 
 export const fixtureNotaries: Notaries = {
@@ -367,7 +367,7 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     counts: {
       total_captures: captures.length,
       capturing: captures.filter((capture) => capture.capture_state === 'capturing').length,
-      pending: captures.filter((capture) => capture.capture_state === 'pending' && capture.finalization_state === 'not_requested').length,
+      ready_to_finalize: captures.filter((capture) => capture.capture_state === 'captured' && capture.finalization_state === 'not_requested' && capture.finalization_eligible).length,
       finalized: captures.filter((capture) => capture.finalization_state === 'finalized').length,
       failed: captures.filter((capture) => ['failed', 'interrupted'].includes(capture.finalization_state)).length,
       active_operations: operations.filter((operation) => ['queued', 'running'].includes(operation.state)).length

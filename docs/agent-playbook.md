@@ -52,7 +52,7 @@ Use the LLM Notary administration service at http://127.0.0.1:8788.
 First check /healthz and fetch /openapi.json. Use the local API without
 credentials unless it returns 401. If authentication is configured, use only
 the approved Basic credentials and never print or persist the password.
-Find the newest pending OpenAI capture whose preview matches "sanitized",
+Find the newest captured OpenAI response whose preview matches "sanitized",
 show me its safe metadata, and ask before starting finalization. If I approve,
 record the returned operation identifier and poll it to a terminal state. When
 finalized, run the documented trace verification operation and report exactly
@@ -76,7 +76,7 @@ returned by the service:
 
 ```bash
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&capture_state=pending&limit=10&offset=0"
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&capture_state=captured&limit=10&offset=0"
 
 capture_id=cap-example
 curl --fail-with-body \
@@ -153,7 +153,7 @@ if (!health.ok) throw new Error(`Local service unavailable: ${health.status}`);
 const specification = await fetch(`${origin}/openapi.json`).then((response) => response.json());
 if (!specification.paths['/v1/captures']) throw new Error('Installed API is incompatible');
 
-const response = await fetch(`${origin}/v1/captures?capture_state=pending&limit=10&offset=0`);
+const response = await fetch(`${origin}/v1/captures?capture_state=captured&limit=10&offset=0`);
 if (!response.ok) throw new Error(`Capture search failed: ${response.status}`);
 const captures = await response.json();
 console.log(captures.items.map(({ capture_id, provider, requested_model, finalization_state }) => ({

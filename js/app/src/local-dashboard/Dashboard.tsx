@@ -355,7 +355,7 @@ function Brand() {
 function Sidebar({ route, status, onNavigate }: {
   route: Route; status: Status; onNavigate: (route: Route) => void;
 }) {
-  const count = (view: DashboardView) => view === 'captures' ? status.counts.pending
+  const count = (view: DashboardView) => view === 'captures' ? status.counts.ready_to_finalize
     : view === 'finalizations' ? status.counts.active_operations : undefined;
   return <div className="sidebar-inner">
     <div className="sidebar-primary">
@@ -371,7 +371,7 @@ function Sidebar({ route, status, onNavigate }: {
 function TopNav({ route, status, onNavigate, opened, onOpenNavigation, fixture }: {
   route: Route; status: Status; onNavigate: (route: Route) => void; opened: boolean; onOpenNavigation: () => void; fixture: boolean;
 }) {
-  const count = (view: DashboardView) => view === 'captures' ? status.counts.pending
+  const count = (view: DashboardView) => view === 'captures' ? status.counts.ready_to_finalize
     : view === 'finalizations' ? status.counts.active_operations : undefined;
   return <header className="local-topbar"><nav aria-label="Local dashboard">
     {navigation.map(({ view, label, icon: Icon }) => <UnstyledButton key={view} className={route.view === view ? 'is-active' : ''}
@@ -419,7 +419,7 @@ function View({ route, status, api, navigate, fixture }: { route: Route; status:
 function OverviewView({ api, status, navigate }: { api: LocalApi; status: Status; navigate: (route: Route) => void }) {
   const events = useQuery({ queryKey: ['events'], queryFn: () => api.events() });
   const stats = [
-    ['Capturing', status.counts.capturing, 'active'], ['Pending', status.counts.pending, 'muted'],
+    ['Capturing', status.counts.capturing, 'active'], ['Ready to finalize', status.counts.ready_to_finalize, 'muted'],
     ['Finalizing', status.counts.active_operations, 'active'], ['Finalized', status.counts.finalized, 'ready'],
     ['Failed', status.counts.failed, 'danger']
   ] as const;
@@ -431,9 +431,9 @@ function OverviewView({ api, status, navigate }: { api: LocalApi; status: Status
     </SimpleGrid>
     <section className="overview-work"><div><Text className="eyebrow">Capture states</Text><div className="count-strip">{stats.map(([label, value, tone]) => <UnstyledButton key={label} onClick={() => navigate({ view: label === 'Finalizing' ? 'finalizations' : 'captures' })}>
       <span className={`count-marker count-marker--${tone}`} /><b>{value}</b><span>{label}</span></UnstyledButton>)}</div></div>
-      <Paper className="next-action"><Text className="eyebrow">Next action</Text><Title order={2}>{status.counts.pending ? 'Finalize pending evidence' : 'Send a provider request'}</Title>
-        <Text>{status.counts.pending ? `${status.counts.pending} capture${status.counts.pending === 1 ? ' is' : 's are'} ready to finalize.` : 'Point an SDK at the local provider proxy to create a private capture.'}</Text>
-        <Button onClick={() => navigate({ view: status.counts.pending ? 'captures' : 'settings' })}>{status.counts.pending ? 'Review captures' : 'View proxy routes'}</Button></Paper>
+      <Paper className="next-action"><Text className="eyebrow">Next action</Text><Title order={2}>{status.counts.ready_to_finalize ? 'Finalize captured evidence' : 'Send a provider request'}</Title>
+        <Text>{status.counts.ready_to_finalize ? `${status.counts.ready_to_finalize} capture${status.counts.ready_to_finalize === 1 ? ' is' : 's are'} ready to finalize.` : 'Point an SDK at the local provider proxy to create a private capture.'}</Text>
+        <Button onClick={() => navigate({ view: status.counts.ready_to_finalize ? 'captures' : 'settings' })}>{status.counts.ready_to_finalize ? 'Review captures' : 'View proxy routes'}</Button></Paper>
     </section>
     <section className="recent-section"><Group justify="space-between"><div><Text className="eyebrow">Recent activity</Text><Title order={2}>What changed</Title></div><Button variant="subtle" onClick={() => navigate({ view: 'activity' })}>All activity</Button></Group>
       {events.isLoading ? <LoadingState /> : events.error ? <QueryError error={events.error} title="Recent activity is unavailable" /> : <EventList events={events.data?.items.slice(0, 4) ?? []} />}</section>
@@ -469,7 +469,7 @@ function CapturesView({ api, selectedId, navigate }: { api: LocalApi; selectedId
   return <div className="view-page capture-page">{!showDetail && <div className="filter-bar filter-bar--captures"><TextInput aria-label="Search captures" placeholder="Search prompt and output previews" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
       <TextInput aria-label="Model filter" placeholder="All models" value={model} onChange={(event) => setModel(event.currentTarget.value)} />
       <AxisSelect ariaLabel="Provider filter" placeholder="All providers" data={['openai', 'anthropic', 'deepseek', 'openrouter'].map((value) => ({ value, label: <ProviderIdentity provider={value} /> }))} value={provider} onChange={setProvider} />
-      <AxisSelect ariaLabel="Capture state filter" placeholder="All capture states" data={['capturing', 'pending', 'failed']} value={captureState} onChange={setCaptureState} />
+      <AxisSelect ariaLabel="Capture state filter" placeholder="All capture states" data={['capturing', 'captured', 'failed']} value={captureState} onChange={setCaptureState} />
       <AxisSelect ariaLabel="Finalization filter" placeholder="All finalization states" data={['not_requested', 'queued', 'running', 'finalized', 'failed', 'interrupted']} value={finalization} onChange={setFinalization} />
       <AxisSelect ariaLabel="Streaming filter" placeholder="Streaming or buffered" data={[{ value: 'streaming', label: 'Streaming' }, { value: 'buffered', label: 'Buffered' }]} value={streaming} onChange={setStreaming} />
       <AxisSelect ariaLabel="Capture time filter" placeholder="Any time" data={[{ value: 'hour', label: 'Last hour' }, { value: 'day', label: 'Last 24 hours' }, { value: 'week', label: 'Last 7 days' }]} value={time} onChange={setTime} /></div>}
@@ -522,11 +522,11 @@ function CaptureInspector({ api, capture, mobile, onBack, navigate }: { api: Loc
   if (detail.error) return <QueryError error={detail.error} title="Capture detail is unavailable" />;
   const value = detail.data;
   if (!value) return <ErrorState title="Capture detail is unavailable" onRetry={() => detail.refetch()} />;
-  const incompatibleProviderResponse = capture.capture_state === 'pending'
+  const incompatibleProviderResponse = capture.capture_state === 'captured'
     && capture.finalization_ineligibility_code === 'unsupported_provider_http_status';
-  const canFinalize = capture.capture_state === 'pending' && capture.finalization_state === 'not_requested'
+  const canFinalize = capture.capture_state === 'captured' && capture.finalization_state === 'not_requested'
     && capture.finalization_eligible;
-  const canRetry = capture.capture_state === 'pending' && capture.finalization_eligible
+  const canRetry = capture.capture_state === 'captured' && capture.finalization_eligible
     && Boolean(failedOperation?.retryable);
   return <article className="inspector capture-inspector">
     {mobile && <Button variant="subtle" leftSection={<ArrowLeft size={15} />} onClick={onBack}>All captures</Button>}
@@ -554,7 +554,7 @@ function FinalizationHistory({ operations, navigate }: { operations: Operation[]
 function Lifecycle({ capture }: { capture: Capture }) {
   const steps = [
     { label: 'Captured', state: capture.capture_state === 'capturing' ? 'active' : 'ready' },
-    { label: 'Bundle encrypted', state: capture.capture_state === 'pending' ? 'ready' : capture.capture_state === 'failed' ? 'danger' : 'muted' },
+    { label: 'Bundle encrypted', state: capture.capture_state === 'captured' ? 'ready' : capture.capture_state === 'failed' ? 'danger' : 'muted' },
     { label: 'Finalized', state: capture.finalization_state === 'finalized' ? 'ready' : ['running', 'queued'].includes(capture.finalization_state) ? 'active' : capture.finalization_state === 'failed' ? 'danger' : 'muted' }
   ];
   return <ol className="lifecycle" aria-label="Capture lifecycle">{steps.map((step) => <li key={step.label} className={`lifecycle--${step.state}`}><span aria-hidden="true" /><b>{step.label}</b></li>)}</ol>;
@@ -578,7 +578,7 @@ function FinalizationsView({ api, selectedId, navigate, fixture }: { api: LocalA
   });
   const active = operations.data?.items.find((item) => item.operation_id === selectedId)
     ?? selectedOperation.data ?? operations.data?.items[0];
-  return <div className="view-page">{operations.isLoading || (selectedId && selectedOperation.isLoading) ? <LoadingState /> : operations.error ? <QueryError error={operations.error} title="Finalizations are unavailable" /> : selectedOperation.error ? <QueryError error={selectedOperation.error} title="Finalization detail is unavailable" /> : !operations.data?.items.length && !active ? <EmptyState icon={ListChecks} title="No finalizations yet" copy="Queue one from a pending capture." />
+  return <div className="view-page">{operations.isLoading || (selectedId && selectedOperation.isLoading) ? <LoadingState /> : operations.error ? <QueryError error={operations.error} title="Finalizations are unavailable" /> : selectedOperation.error ? <QueryError error={selectedOperation.error} title="Finalization detail is unavailable" /> : !operations.data?.items.length && !active ? <EmptyState icon={ListChecks} title="No finalizations yet" copy="Queue one from a captured provider response." />
       : <ResizableSplit className="operations-layout">
         <ScrollArea className="operations-list-scroll" type="auto"><ul className="operations-list" aria-label="Finalizations">{(operations.data?.items ?? []).map((operation) => <li key={operation.operation_id}><OperationRow operation={operation} active={active?.operation_id === operation.operation_id} onClick={() => navigate({ view: 'finalizations', id: operation.operation_id })} /></li>)}</ul></ScrollArea>
         {active ? <OperationInspector api={api} operation={active} fixture={fixture} /> : <div />}
@@ -623,7 +623,7 @@ function TracesView({ api, selectedId, navigate }: { api: LocalApi; selectedId?:
   const activeId = selectedId ?? visible[0]?.capture_id;
   const showDetail = Boolean(mobile && selectedId);
   return <div className="view-page">{!showDetail && <div className="filter-bar filter-bar--short"><TextInput aria-label="Search finalized traces" placeholder="Search finalized traces" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} /></div>}
-    {captures.isLoading ? <LoadingState /> : captures.error ? <QueryError error={captures.error} title="Finalized traces are unavailable" /> : !visible.length && !selectedId ? <EmptyState icon={FileCheck2} title="No finalized traces" copy="Finalize a pending capture or clear the search." />
+    {captures.isLoading ? <LoadingState /> : captures.error ? <QueryError error={captures.error} title="Finalized traces are unavailable" /> : !visible.length && !selectedId ? <EmptyState icon={FileCheck2} title="No finalized traces" copy="Finalize a captured provider response or clear the search." />
       : <ResizableSplit className={`trace-layout ${showDetail ? 'show-detail' : ''}`}>
         {!showDetail ? <ul className="trace-list" aria-label="Finalized traces">{visible.map((capture) => <li key={capture.capture_id}><CaptureRow capture={capture} active={capture.capture_id === activeId} onClick={() => navigate({ view: 'traces', id: capture.capture_id })} /></li>)}</ul> : <div />}
         {activeId && (!mobile || selectedId) ? <TraceInspector api={api} captureId={activeId} mobile={Boolean(mobile)} onBack={() => navigate({ view: 'traces' })} /> : <div />}

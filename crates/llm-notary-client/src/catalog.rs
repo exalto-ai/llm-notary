@@ -11,7 +11,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{config::AgentConfig, sha256_hex};
 
-const CATALOG_SCHEMA_VERSION: i64 = 3;
+const CATALOG_SCHEMA_VERSION: i64 = 4;
 
 /// The durable capture fields that are safe and useful to query locally.
 #[derive(Clone, Debug)]
@@ -93,7 +93,7 @@ pub struct Event {
 pub struct CatalogCounts {
     pub total_captures: u64,
     pub capturing: u64,
-    pub pending: u64,
+    pub ready_to_finalize: u64,
     pub finalized: u64,
     pub failed: u64,
     pub active_operations: u64,
@@ -257,7 +257,7 @@ impl Catalog {
             "UPDATE captures SET
                 completed_at_unix_ms = ?, duration_ms = ?, http_status = ?, response_bytes = ?,
                 response_model = ?, output_preview = ?, output_preview_truncated = ?,
-                capture_state = 'pending', failure_code = NULL
+                capture_state = 'captured', failure_code = NULL
              WHERE capture_id = ?",
             params![
                 i64::try_from(completed_at_unix_ms)?,
@@ -324,7 +324,7 @@ impl Catalog {
     }
 
     /// Reconciles `capturing` rows from an earlier process. A present bundle is
-    /// made visible as pending evidence; a missing bundle is marked as an
+    /// made visible as captured evidence; a missing bundle is marked as an
     /// interrupted capture instead of appearing to run forever.
     pub fn reconcile_incomplete_captures(&self, bundle_dir: &Path) -> Result<RecoverySummary> {
         let capture_ids = {
@@ -355,7 +355,7 @@ impl Catalog {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let transaction = connection.unchecked_transaction()?;
         transaction.execute(
-            "UPDATE captures SET capture_state = 'pending', failure_code = NULL
+            "UPDATE captures SET capture_state = 'captured', failure_code = NULL
              WHERE capture_id = ?",
             params![capture_id],
         )?;
@@ -528,7 +528,8 @@ impl Catalog {
                 "SELECT
                     COUNT(*),
                     SUM(capture_state = 'capturing'),
-                    SUM(capture_state = 'pending' AND finalization_state = 'not_requested'),
+                    SUM(capture_state = 'captured' AND finalization_state = 'not_requested'
+                        AND http_status BETWEEN 200 AND 299),
                     SUM(finalization_state = 'finalized'),
                     SUM(capture_state = 'failed' OR finalization_state = 'failed'),
                     (SELECT COUNT(*) FROM operations WHERE state IN ('queued', 'running'))
@@ -542,7 +543,7 @@ impl Catalog {
                             .unwrap_or(0)
                             .try_into()
                             .unwrap_or(0),
-                        pending: row
+                        ready_to_finalize: row
                             .get::<_, Option<i64>>(2)?
                             .unwrap_or(0)
                             .try_into()
@@ -577,7 +578,7 @@ impl Catalog {
         let exists = transaction
             .query_row(
                 "SELECT 1 FROM captures
-                 WHERE capture_id = ? AND capture_state = 'pending'
+                 WHERE capture_id = ? AND capture_state = 'captured'
                    AND http_status BETWEEN 200 AND 299",
                 params![capture_id],
                 |_| Ok(()),
@@ -1076,6 +1077,15 @@ fn migrate(connection: &mut Connection) -> Result<()> {
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (3)", [])?;
         transaction.commit()?;
     }
+    if version < 4 {
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE captures SET capture_state = 'captured' WHERE capture_state = 'pending'",
+            [],
+        )?;
+        transaction.execute("INSERT INTO schema_migrations(version) VALUES (4)", [])?;
+        transaction.commit()?;
+    }
     Ok(())
 }
 
@@ -1329,9 +1339,50 @@ mod tests {
         let matches = catalog.list_captures(Some("quarterly"), None).unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].requested_model.as_deref(), Some("gpt-5"));
-        assert_eq!(matches[0].capture_state, "pending");
+        assert_eq!(matches[0].capture_state, "captured");
         assert!(matches[0].output_preview.contains("pricing"));
         assert_eq!(catalog.artifacts("cap-1").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn migrates_completed_capture_state_to_captured() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("catalog.db");
+        let bundle = directory.path().join("cap-1.llmbundle");
+        fs::write(&bundle, b"ciphertext").unwrap();
+        let catalog = Catalog::open(&path, true).unwrap();
+        catalog.begin_capture(&new_capture("cap-1")).unwrap();
+        catalog
+            .complete_capture("cap-1", 2, 1, 200, 24, None, "done", false, &bundle)
+            .unwrap();
+        {
+            let connection = catalog.connection.lock().unwrap();
+            connection
+                .execute(
+                    "UPDATE captures SET capture_state = 'pending' WHERE capture_id = 'cap-1'",
+                    [],
+                )
+                .unwrap();
+            connection
+                .execute("DELETE FROM schema_migrations WHERE version = 4", [])
+                .unwrap();
+        }
+        drop(catalog);
+
+        let migrated = Catalog::open(&path, true).unwrap();
+        assert_eq!(
+            migrated.capture("cap-1").unwrap().unwrap().capture_state,
+            "captured"
+        );
+        let version: i64 = migrated
+            .connection
+            .lock()
+            .unwrap()
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(version, CATALOG_SCHEMA_VERSION);
     }
 
     #[test]
@@ -1408,7 +1459,7 @@ mod tests {
             }
         );
         let capture = catalog.capture("cap-1").unwrap().unwrap();
-        assert_eq!(capture.capture_state, "pending");
+        assert_eq!(capture.capture_state, "captured");
         assert_eq!(catalog.artifacts("cap-1").unwrap().len(), 1);
         assert_eq!(
             catalog
@@ -1450,11 +1501,11 @@ mod tests {
         catalog
             .complete_capture("cap-1", 2, 1, 200, 10, None, "done", false, &bundle)
             .unwrap();
-        assert_eq!(catalog.counts().unwrap().pending, 1);
+        assert_eq!(catalog.counts().unwrap().ready_to_finalize, 1);
 
         let (queued, duplicate) = catalog.enqueue_finalization("cap-1", 3).unwrap().unwrap();
         assert!(!duplicate);
-        assert_eq!(catalog.counts().unwrap().pending, 0);
+        assert_eq!(catalog.counts().unwrap().ready_to_finalize, 0);
         let (same, duplicate) = catalog.enqueue_finalization("cap-1", 4).unwrap().unwrap();
         assert!(duplicate);
         assert_eq!(same.operation_id, queued.operation_id);
@@ -1558,6 +1609,7 @@ mod tests {
                 .finalization_state,
             "not_requested"
         );
+        assert_eq!(catalog.counts().unwrap().ready_to_finalize, 0);
         assert!(
             catalog
                 .operations_for_capture("cap-auth-error")
@@ -1604,7 +1656,7 @@ mod tests {
                     0
                 ))
                 .unwrap(),
-            3
+            CATALOG_SCHEMA_VERSION
         );
     }
 }
