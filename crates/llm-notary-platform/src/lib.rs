@@ -1962,6 +1962,12 @@ mod tests {
         .execute(&database.pool)
         .await
         .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0010_restore_service_plan_rollback_compat.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
         let accounting: (i64, i64, i64) = sqlx::query_as(
             "SELECT
                  (SELECT COALESCE(SUM(amount_bytes), 0)::BIGINT
@@ -1986,6 +1992,40 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(public, (1, 0));
+        let compatibility_plan: String =
+            sqlx::query_scalar("SELECT service_plan FROM users WHERE id = 'legacy-user'")
+                .fetch_one(&database.pool)
+                .await
+                .unwrap();
+        assert_eq!(compatibility_plan, "free");
+        let compatibility_ledger: (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(allowance_bytes), 0)::BIGINT
+             FROM notary_finalization_credit_ledger",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(compatibility_ledger, (2, (1 << 20) + 2048));
+        sqlx::query(
+            "INSERT INTO notary_admission_tickets
+             (token_hash, subject_id, access_pool, mode, directory_generation,
+              requested_allowance_bytes, session_timeout_secs, max_attestable_http_bytes,
+              max_frame_bytes, max_private_chunk_bytes, max_private_chunk_commitments,
+              issued_at, expires_at)
+             VALUES ('legacy-ticket', NULL, 'public', 'capture', 1,
+                     1, 300, 1, 1, 1, 1, 1, 2)",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let compatibility_subject: String = sqlx::query_scalar(
+            "SELECT credit_subject FROM notary_admission_tickets
+             WHERE token_hash = 'legacy-ticket'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(compatibility_subject, "public");
     }
 
     #[test]
