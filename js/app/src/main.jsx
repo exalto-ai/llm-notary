@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@fontsource-variable/instrument-sans';
 import '@fontsource-variable/space-grotesk';
@@ -6,7 +6,6 @@ import '@fontsource/dm-mono/400.css';
 import '@fontsource/dm-mono/500.css';
 import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
-import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Command, CommandDialog, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
@@ -53,6 +52,8 @@ import {
 } from './platform-api/client';
 import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries } from './notaryLifecycle';
 
+const loadCreditUtilizationChart = () => import('./CreditUtilizationChart');
+const CreditUtilizationChart = lazy(loadCreditUtilizationChart);
 const installCommand = 'curl -fsSL https://llm-notary.exalto.ai/install.sh | sh';
 const sourceInstallCommand = `git clone https://github.com/exalto-ai/llm-notary.git
 cd llm-notary
@@ -1101,25 +1102,6 @@ export function DeleteAccountPanel({ githubLogin, onDeleted, deleteAccount = del
   </section>;
 }
 
-function CreditUtilizationChart({ credits }) {
-  const data = [{ name: 'Active credits', used: credits.total_used_bytes, available: credits.total_remaining_bytes }];
-  return <section className="dashboard-utilization" aria-labelledby="dashboard-utilization-title">
-    <header><div><span className="eyebrow">Current allocation</span><h2 id="dashboard-utilization-title">Utilization</h2></div><span>{fileSize(credits.total_granted_bytes)} granted</span></header>
-    <div className="dashboard-utilization-plot" aria-label={`${fileSize(credits.total_used_bytes)} used and ${fileSize(credits.total_remaining_bytes)} available`}>
-      <ResponsiveContainer width="100%" height={92}>
-        <BarChart data={data} layout="vertical" margin={{ top: 20, right: 0, bottom: 20, left: 0 }} accessibilityLayer>
-          <XAxis type="number" domain={[0, Math.max(1, credits.total_granted_bytes)]} hide />
-          <YAxis type="category" dataKey="name" hide />
-          <Tooltip cursor={false} formatter={(value, name) => [fileSize(Number(value)), name === 'used' ? 'Used' : 'Available']} contentStyle={{ border: '1px solid var(--line)', borderRadius: 0, background: 'var(--white)', boxShadow: 'none', fontSize: 11 }} />
-          <Bar dataKey="used" stackId="credits" fill="var(--ink)" isAnimationActive={false} />
-          <Bar dataKey="available" stackId="credits" fill="var(--action)" isAnimationActive={false} />
-        </BarChart>
-      </ResponsiveContainer>
-    </div>
-    <dl><div><dt><i className="dashboard-utilization-used" />Used</dt><dd>{fileSize(credits.total_used_bytes)}</dd></div><div><dt><i className="dashboard-utilization-available" />Available</dt><dd>{fileSize(credits.total_remaining_bytes)}</dd></div></dl>
-  </section>;
-}
-
 function Dashboard({ user, view, theme, onThemeChange, onAccountDeleted }) {
   const [sessions, setSessions] = useState(null);
   const [sessionError, setSessionError] = useState(null);
@@ -1213,7 +1195,7 @@ function Dashboard({ user, view, theme, onThemeChange, onAccountDeleted }) {
             <div><span>Admitted traces</span><b>{shares === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>
-          {credits && <CreditUtilizationChart credits={credits} />}
+          {credits && <Suspense fallback={<section className="dashboard-utilization dashboard-utilization--loading" role="status" aria-label="Loading utilization"><header><div><span className="eyebrow">Current allocation</span><h2>Utilization</h2></div><i /></header><div className="dashboard-utilization-plot"><i /></div><dl><div><dt><i />Used</dt><dd><i /></dd></div><div><dt><i />Available</dt><dd><i /></dd></div></dl></section>}><CreditUtilizationChart credits={credits} /></Suspense>}
         </>}
         {activeView === 'credits' && <>
           <header className="dashboard-page-header"><span className="eyebrow">Usage</span><h1>Credits</h1><p>Review available finalization capacity, expirations, offers, and recent credit activity.</p></header>
@@ -1480,6 +1462,7 @@ function App() {
     if (nextSection !== 'docs') window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'instant' }));
   }, [route]);
   useEffect(() => { let cancelled = false; getCurrentUser().then((user) => { if (!cancelled) { setUser(user); setAuthPending(false); } }).catch(() => { if (!cancelled) { setUser(null); setAuthPending(false); } }); return () => { cancelled = true; }; }, []);
+  useEffect(() => { if (user) void loadCreditUtilizationChart(); }, [user]);
   const logout = async () => { await logoutBrowser(); setUser(null); if (window.location.hash === '#/dashboard') window.location.hash = '#/'; };
   const accountDeleted = () => { setUser(null); setAuthPending(false); window.location.hash = '#/'; };
   const path = route.replace(/^#\/?/, '');

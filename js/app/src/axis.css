@@ -151,6 +151,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dashboard-utilization dt i { width: 9px; height: 9px; border: 1px solid var(--ink); background: var(--ink); }
 .dashboard-utilization dt .dashboard-utilization-available { border-color: var(--action); background: var(--action); }
 .dashboard-utilization dd { margin: 0; font-size: 14px; font-weight: 600; }
+.dashboard-utilization--loading i { display: block; border: 0; background: var(--line-soft); }
+.dashboard-utilization--loading > header > i { width: 88px; height: 9px; }
+.dashboard-utilization--loading .dashboard-utilization-plot { display: grid; height: 92px; align-items: center; }
+.dashboard-utilization--loading .dashboard-utilization-plot > i { width: 100%; height: 43px; }
+.dashboard-utilization--loading dt > i { width: 9px; height: 9px; }
+.dashboard-utilization--loading dd > i { width: 64px; height: 13px; }
 .dashboard-credit-ledger { margin-top: -1px; border-top: 1px solid var(--line); }
 .dashboard-summary { grid-template-columns: minmax(0, 1.5fr) 1fr 1fr; margin: 28px 0 0; border: 1px solid var(--line); background: var(--white); }
 .dashboard-summary div { min-height: 84px; justify-content: center; gap: 6px; padding: 14px 16px; border-color: var(--line); }
