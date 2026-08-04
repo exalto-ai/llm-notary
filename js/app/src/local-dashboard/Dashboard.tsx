@@ -27,6 +27,7 @@ import {
 import { LocalApiError } from './api';
 import type { AccountConnectionStarted, Capture, CaptureDetail, Event, LocalApi, Notary, Operation, Share, ShareVisibility, Status, Verification } from './api';
 import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries } from '../notaryLifecycle';
+import { ProviderIdentity } from '../ProviderIdentity';
 
 const logoUrl = new URL('../../public/notary-mark.svg', import.meta.url).href;
 
@@ -34,7 +35,7 @@ export type DashboardView = 'overview' | 'captures' | 'finalizations' | 'traces'
 
 type Route = { view: DashboardView; id?: string };
 
-type AxisSelectOption = string | { value: string; label: string };
+type AxisSelectOption = string | { value: string; label: ReactNode };
 
 function AxisSelect({
   value,
@@ -467,7 +468,7 @@ function CapturesView({ api, selectedId, navigate }: { api: LocalApi; selectedId
   const showDetail = Boolean(mobile && selectedId);
   return <div className="view-page capture-page">{!showDetail && <div className="filter-bar filter-bar--captures"><TextInput aria-label="Search captures" placeholder="Search prompt and output previews" leftSection={<Search size={15} />} value={query} onChange={(event) => setQuery(event.currentTarget.value)} />
       <TextInput aria-label="Model filter" placeholder="All models" value={model} onChange={(event) => setModel(event.currentTarget.value)} />
-      <AxisSelect ariaLabel="Provider filter" placeholder="All providers" data={['openai', 'anthropic', 'deepseek', 'openrouter']} value={provider} onChange={setProvider} />
+      <AxisSelect ariaLabel="Provider filter" placeholder="All providers" data={['openai', 'anthropic', 'deepseek', 'openrouter'].map((value) => ({ value, label: <ProviderIdentity provider={value} /> }))} value={provider} onChange={setProvider} />
       <AxisSelect ariaLabel="Capture state filter" placeholder="All capture states" data={['capturing', 'pending', 'failed']} value={captureState} onChange={setCaptureState} />
       <AxisSelect ariaLabel="Finalization filter" placeholder="All finalization states" data={['not_requested', 'queued', 'running', 'finalized', 'failed', 'interrupted']} value={finalization} onChange={setFinalization} />
       <AxisSelect ariaLabel="Streaming filter" placeholder="Streaming or buffered" data={[{ value: 'streaming', label: 'Streaming' }, { value: 'buffered', label: 'Buffered' }]} value={streaming} onChange={setStreaming} />
@@ -483,7 +484,7 @@ function CapturesView({ api, selectedId, navigate }: { api: LocalApi; selectedId
 function CaptureRow({ capture, active, onClick }: { capture: Capture; active: boolean; onClick: () => void }) {
   return <UnstyledButton className={`capture-row ${active ? 'is-active' : ''}`} onClick={onClick}>
     <span className="capture-row-state"><StatusLabel state={capture.finalization_state === 'not_requested' ? capture.capture_state : capture.finalization_state} /></span>
-    <span className="capture-row-copy"><b>{capture.requested_model ?? 'Model not reported'}</b><small>{capture.provider} · {capture.operation}</small></span>
+    <span className="capture-row-copy"><b>{capture.requested_model ?? 'Model not reported'}</b><small><ProviderIdentity provider={capture.provider} detail={capture.operation} /></small></span>
     <time className="mono-time">{formatDate(capture.created_at_unix_ms)}</time>
   </UnstyledButton>;
 }
@@ -534,7 +535,7 @@ function CaptureInspector({ api, capture, mobile, onBack, navigate }: { api: Loc
         {canRetry && <Button loading={retry.isPending} leftSection={<RefreshCw size={15} />} onClick={() => retry.mutate()}>Retry finalization</Button>}</Group></div>
     <Lifecycle capture={capture} />
     {incompatibleProviderResponse && <div className="finalization-ineligible-note" role="status"><XCircle size={18} aria-hidden="true" /><div><b>Provider response cannot be finalized</b><Text>The provider returned HTTP {capture.http_status}. Finalization currently supports successful provider responses only.</Text><code>{capture.finalization_ineligibility_code}</code></div></div>}
-    <InspectorSection title="Safe metadata"><dl className="metadata-grid"><Fact label="Provider" value={capture.provider} /><Fact label="Operation" value={capture.operation} /><Fact label="HTTP status" value={capture.http_status?.toString() ?? 'In progress'} /><Fact label="Streaming" value={capture.streaming ? 'Yes' : 'No'} /><Fact label="Request" value={formatBytes(capture.request_bytes)} /><Fact label="Response" value={formatBytes(capture.response_bytes)} /></dl></InspectorSection>
+    <InspectorSection title="Safe metadata"><dl className="metadata-grid"><Fact label="Provider" value={<ProviderIdentity provider={capture.provider} />} /><Fact label="Operation" value={capture.operation} /><Fact label="HTTP status" value={capture.http_status?.toString() ?? 'In progress'} /><Fact label="Streaming" value={capture.streaming ? 'Yes' : 'No'} /><Fact label="Request" value={formatBytes(capture.request_bytes)} /><Fact label="Response" value={formatBytes(capture.response_bytes)} /></dl></InspectorSection>
     <InspectorSection title="Privacy-aware previews"><div className="preview-block"><Text className="eyebrow">Prompt {capture.prompt_preview_truncated && '· truncated'}</Text><Text>{capture.prompt_preview || 'Preview storage is disabled.'}</Text></div><div className="preview-block"><Text className="eyebrow">Output {capture.output_preview_truncated && '· truncated'}</Text><Text>{capture.output_preview || 'No output preview is available yet.'}</Text></div></InspectorSection>
     <InspectorSection title="Retained artifacts"><ArtifactList detail={value} /></InspectorSection>
     <InspectorSection title="Finalization history"><FinalizationHistory operations={value.finalizations} navigate={navigate} /></InspectorSection>
@@ -563,7 +564,7 @@ function InspectorSection({ title, children }: { title: string; children: ReactN
   return <section className="inspector-section"><Title order={3}>{title}</Title>{children}</section>;
 }
 
-function Fact({ label, value }: { label: string; value: string }) { return <div><dt>{label}</dt><dd>{value}</dd></div>; }
+function Fact({ label, value }: { label: string; value: ReactNode }) { return <div><dt>{label}</dt><dd>{value}</dd></div>; }
 
 function ArtifactList({ detail }: { detail: CaptureDetail }) {
   return <div className="artifact-list">{detail.artifacts.map((artifact) => <div key={artifact.kind}><FileJson2 size={17} aria-hidden="true" /><div><b>{artifact.kind.replaceAll('_', ' ')}</b><span>{formatBytes(artifact.size_bytes)}</span></div><code>{artifact.sha256.slice(0, 12)}…</code></div>)}</div>;
@@ -677,7 +678,7 @@ function TraceInspector({ api, captureId, mobile, onBack }: { api: LocalApi; cap
   return <article className="trace-inspector">{mobile && <Button variant="subtle" leftSection={<ArrowLeft size={15} />} onClick={onBack}>All finalized traces</Button>}<Group justify="space-between" align="flex-start"><div><Text className="eyebrow">Verified trace package</Text><Title order={2}>{captureId}</Title></div><Group><Button leftSection={<Download size={15} />} loading={download.isPending} onClick={() => download.mutate()}>Download verified package</Button><Button variant="outline" leftSection={<ShieldCheck size={15} />} loading={verify.isPending} onClick={() => verify.mutate()}>Verify locally</Button></Group></Group>
     <Tabs value={activeTab} onChange={setActiveTab} keepMounted={false}>
       <Tabs.List><Tabs.Tab value="summary">Summary</Tabs.Tab><Tabs.Tab value="evidence">Evidence</Tabs.Tab><Tabs.Tab value="trace">Trace</Tabs.Tab><Tabs.Tab value="verification">Verification</Tabs.Tab></Tabs.List>
-      <Tabs.Panel value="summary"><div className="document-panel"><Title order={3}>Authenticated inference</Title><Text>The package contains the disclosed provider exchange, its canonical OpenTelemetry trace, and the supporting TLSNotary evidence.</Text><dl className="metadata-grid"><Fact label="Capture" value={captureId} /><Fact label="Format" value={typeof manifest.format === 'string' ? manifest.format : 'Not reported'} /><Fact label="Normalizer" value={typeof manifest.normalizer_version === 'string' ? manifest.normalizer_version : 'Not reported'} /><Fact label="Provider" value={providerLabel} /></dl><TraceTranscriptView transcripts={transcripts} /></div></Tabs.Panel>
+      <Tabs.Panel value="summary"><div className="document-panel"><Title order={3}>Authenticated inference</Title><Text>The package contains the disclosed provider exchange, its canonical OpenTelemetry trace, and the supporting TLSNotary evidence.</Text><dl className="metadata-grid"><Fact label="Capture" value={captureId} /><Fact label="Format" value={typeof manifest.format === 'string' ? manifest.format : 'Not reported'} /><Fact label="Normalizer" value={typeof manifest.normalizer_version === 'string' ? manifest.normalizer_version : 'Not reported'} /><Fact label="Provider" value={<ProviderIdentity provider={providerName} fallback="Not reported" detail={providerHost} />} /></dl><TraceTranscriptView transcripts={transcripts} /></div></Tabs.Panel>
       <Tabs.Panel value="evidence"><Receipt title="Evidence receipt" fields={[
         ['Trace SHA-256', traceDigest], ['Provider', providerLabel], ['Source created', typeof source.created_at_unix_ms === 'number' ? formatDate(source.created_at_unix_ms) : 'Not reported'], ['Manifest format', typeof manifest.format === 'string' ? manifest.format : 'Not reported']
       ]} /></Tabs.Panel>
@@ -836,7 +837,7 @@ function SharingView({ api, fixture, navigate }: { api: LocalApi; fixture: boole
   return <div className="view-page share-flow">
     <section className="sharing-toolbar" aria-label="Share settings">
       {captures.error ? <QueryError error={captures.error} title="Finalized traces are unavailable" /> : captures.isLoading ? <Loader size="sm" /> : eligible.length ? <>
-        <AxisSelect label="Trace" placeholder="Choose a finalized trace" clearable={false} data={eligible.map((capture) => ({ value: capture.capture_id, label: `${capture.provider} · ${capture.requested_model}` }))} value={selectedId} onChange={setSelected} />
+        <AxisSelect label="Trace" placeholder="Choose a finalized trace" clearable={false} data={eligible.map((capture) => ({ value: capture.capture_id, label: <ProviderIdentity provider={capture.provider} detail={capture.requested_model} /> }))} value={selectedId} onChange={setSelected} />
         <div className="share-visibility" role="radiogroup" aria-label="Visibility">
           <span className="share-control-label">Visibility</span>
           <div>

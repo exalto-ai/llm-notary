@@ -37,6 +37,7 @@ Use the generated contract when prose and an installed service disagree.
 
 - [Development and validation](development.md)
 - [Design language](../DESIGN.md)
+- [Provider icon assets and usage terms](provider-icons.md)
 - [Repository agent instructions](../AGENTS.md)
 - [Contributing](../CONTRIBUTING.md)
 

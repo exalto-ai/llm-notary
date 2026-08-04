@@ -41,6 +41,14 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('cap-20260727-benchmark')).toBeVisible();
   });
 
+  test('uses the authenticated provider for icons instead of a namespaced model slug', async () => {
+    renderDashboard('/captures/cap-20260727-research-brief');
+    await expect.element(page.getByText('openai/gpt-5-mini', { exact: true }).first()).toBeVisible();
+    const inspector = document.querySelector('.capture-inspector');
+    expect(inspector?.querySelector('[data-provider-icon="openrouter"]')).not.toBeNull();
+    expect(inspector?.querySelector('[data-provider-icon="openai"]')).toBeNull();
+  });
+
   test('persists an explicit theme and can return to system mode', async () => {
     renderDashboard('/settings');
     await page.getByRole('button', { name: 'Dark color scheme' }).click();
@@ -144,7 +152,8 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('Verification passed')).toBeVisible();
     window.location.hash = '/traces/cap-20260726-direct-link';
     await expect.element(page.getByRole('heading', { name: 'cap-20260726-direct-link' })).toBeVisible();
-    await expect.element(page.getByText('anthropic · api.anthropic.com')).toBeVisible();
+    expect(document.querySelector('.document-panel [data-provider-icon="anthropic"]')).not.toBeNull();
+    await expect.element(page.getByText('api.anthropic.com', { exact: true })).toBeVisible();
     await page.getByRole('tab', { name: 'Verification' }).click();
     await expect.element(page.getByRole('heading', { name: 'Run an independent check' })).toBeVisible();
   });
@@ -214,7 +223,8 @@ describe('local evidence dashboard', () => {
 
     renderDashboard(`/traces/${captureId}`, api);
     await expect.element(page.getByRole('heading', { name: captureId })).toBeVisible();
-    await expect.element(page.getByText('openai · api.openai.com')).toBeVisible();
+    expect(document.querySelector('.document-panel [data-provider-icon="openai"]')).not.toBeNull();
+    await expect.element(page.getByText('api.openai.com', { exact: true })).toBeVisible();
     await expect.element(page.getByText(capture.prompt_preview)).toBeVisible();
     await expect.element(page.getByText(capture.output_preview)).toBeVisible();
   });
