@@ -16,7 +16,10 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use llm_notary_core::{
-    public_safety::{PUBLIC_PACKAGE_SAFETY_VERSION, validate_public_trace_package},
+    public_safety::{
+        PUBLIC_PACKAGE_SAFETY_VERSION, PublicPackageSafetyContext,
+        validate_public_trace_package_with_context,
+    },
     sha256_hex,
 };
 
@@ -492,9 +495,6 @@ fn verify_for_admission(
     archive: Vec<u8>,
     directory: &llm_notary_core::notary_directory::NotaryDirectory,
 ) -> std::result::Result<AdmittedArtifacts, AdmissionFailure> {
-    validate_public_trace_package(&archive).map_err(|error| {
-        AdmissionFailure::Reject(error.admission_code(), anyhow::anyhow!(error))
-    })?;
     let verified = verify_package(&archive, directory).map_err(|error| match error {
         HostedVerificationError::Service(error) => AdmissionFailure::Retry(error),
         error => AdmissionFailure::Reject(
@@ -505,6 +505,21 @@ fn verify_for_admission(
             anyhow::anyhow!(error.public_code()),
         ),
     })?;
+    finish_verified_admission(archive, verified)
+}
+
+fn finish_verified_admission(
+    archive: Vec<u8>,
+    verified: HostedVerifiedPackage,
+) -> std::result::Result<AdmittedArtifacts, AdmissionFailure> {
+    validate_public_trace_package_with_context(
+        &archive,
+        PublicPackageSafetyContext {
+            provider_host: &verified.provider_host,
+            request_path: &verified.request_path,
+        },
+    )
+    .map_err(|error| AdmissionFailure::Reject(error.admission_code(), anyhow::anyhow!(error)))?;
     let model = trace_model(&verified.trace)
         .map_err(|error| AdmissionFailure::Reject("package_invalid".to_owned(), error))?;
     Ok(AdmittedArtifacts {
@@ -674,9 +689,16 @@ async fn store_public_artifacts(
         let expected_trace = stored.trace_sha256.clone();
         let expected_package = stored.package_sha256.clone();
         tokio::task::spawn_blocking(move || -> Result<()> {
-            validate_public_trace_package(&downloaded).map_err(|error| anyhow::anyhow!(error))?;
             let verified = verify_package(&downloaded, &directory)
                 .map_err(|_| anyhow::anyhow!("stored package failed cryptographic verification"))?;
+            validate_public_trace_package_with_context(
+                &downloaded,
+                PublicPackageSafetyContext {
+                    provider_host: &verified.provider_host,
+                    request_path: &verified.request_path,
+                },
+            )
+            .map_err(|error| anyhow::anyhow!(error))?;
             if verified.trace_sha256 != expected_trace
                 || verified.package_sha256 != expected_package
             {
@@ -960,7 +982,34 @@ fn public_bytes(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use llm_notary_core::archive::{PACKAGE_FILES, build_trace_package_archive};
+
     use super::*;
+
+    fn package_with_openai_response_id(trace: &[u8]) -> Vec<u8> {
+        let directory = std::env::temp_dir().join(format!(
+            "llm-notary-hosted-admission-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir(&directory).unwrap();
+        for name in PACKAGE_FILES {
+            let bytes = match name {
+                "manifest.json" => {
+                    br#"{"format":"llm-notary/verified-trace-package/v2"}"#.to_vec()
+                }
+                "request.disclosed.http" => b"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: \0\0\0\0\r\n\r\n{\"model\":\"gpt-test\"}".to_vec(),
+                "response.disclosed.http" => b"HTTP/1.1 200 OK\r\nContent-Type: \0\0\0\r\n\r\n{\"id\":\"chatcmpl-7Qx9Za2Bc4De6Fg8Hi0Jk3Lm5Np\",\"choices\":[]}".to_vec(),
+                "trace.otlp.json" => trace.to_vec(),
+                _ => b"public TLSNotary evidence".to_vec(),
+            };
+            fs::write(directory.join(name), bytes).unwrap();
+        }
+        let archive = build_trace_package_archive(&directory).unwrap();
+        fs::remove_dir_all(directory).unwrap();
+        archive
+    }
 
     #[test]
     fn extracts_the_model_without_materialized_library_fields() {
@@ -971,6 +1020,41 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(trace_model(&trace).unwrap(), "gpt-test");
+    }
+
+    #[test]
+    fn hosted_admission_accepts_a_verified_openai_root_response_id() {
+        let trace = serde_json::to_vec(&serde_json::json!({
+            "resourceSpans": [{"scopeSpans": [{"spans": [{"attributes": [
+                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-test"}}
+            ]}]}]}]
+        }))
+        .unwrap();
+        let archive = package_with_openai_response_id(&trace);
+        let verified = HostedVerifiedPackage {
+            capture_id: "cap-test".to_owned(),
+            authenticated_at_unix_ms: 1_700_000_000_000,
+            provider_name: "openai".to_owned(),
+            provider_host: "api.openai.com".to_owned(),
+            request_path: "/v1/chat/completions".to_owned(),
+            notary_key_id: "sha256:test".to_owned(),
+            directory_generation: 7,
+            package_sha256: sha256_hex(&archive),
+            trace_sha256: sha256_hex(&trace),
+            trace,
+        };
+
+        let admitted = match finish_verified_admission(archive, verified) {
+            Ok(admitted) => admitted,
+            Err(AdmissionFailure::Reject(code, error)) => {
+                panic!("hosted admission rejected {code}: {error}")
+            }
+            Err(AdmissionFailure::Retry(error)) => {
+                panic!("hosted admission requested a retry: {error}")
+            }
+        };
+        assert_eq!(admitted.model, "gpt-test");
+        assert_eq!(admitted.verified.request_path, "/v1/chat/completions");
     }
 
     #[test]

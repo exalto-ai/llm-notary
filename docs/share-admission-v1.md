@@ -12,7 +12,7 @@ metadata, and model output. It never receives an encrypted `.llmbundle`, vault
 key, or provider credential value.
 
 Before a share can become reachable, the worker applies the versioned
-`llm-notary/public-package-safety/v1` contract to the exact archive bytes. It:
+`llm-notary/public-package-safety/v2` contract to the exact archive bytes. It:
 
 1. requires the strict canonical archive and manifest layout;
 2. rejects every visible request or response header value except the structural
@@ -25,8 +25,14 @@ Before a share can become reachable, the worker applies the versioned
 
 Known public hashes, signatures, public keys, and key identifiers are exempt
 from entropy rejection when their structure identifies them as public proof
-material. Hostile fixtures cover tokens split across parsing boundaries,
-nested tool data, signed queries, private keys, and high-entropy secrets.
+material. After cryptographic package verification, documented OpenAI response
+IDs are also exempt from entropy rejection only for `api.openai.com`, the exact
+`/v1/chat/completions` or `/v1/responses` request path, and the root response
+`/id` with the matching `chatcmpl-...` or `resp_...` format. Known-secret
+patterns still run on those IDs. Nested IDs, other providers and operations,
+tool data, and model content receive no exemption. Hostile fixtures cover
+tokens split across parsing boundaries, nested tool data, signed queries,
+private keys, and high-entropy secrets.
 
 ## Admission and storage
 
@@ -44,14 +50,16 @@ anonymous verifier. The worker then:
 
 1. downloads the immutable private intake object with a hard byte limit;
 2. compares its actual size and SHA-256 with the share declaration;
-3. runs the public-package safety contract;
-4. verifies the TLSNotary evidence, trusted notary record, provider hostname,
+3. verifies the TLSNotary evidence, trusted notary record, provider hostname,
    disclosed HTTP bytes, package hashes, and deterministic OTLP reproduction;
+4. runs the public-package safety contract with the authenticated provider host
+   and request path;
 5. extracts the model only for the small durable share summary;
 6. writes both canonical `trace.otlp.json` and the exact package to immutable
    content-addressed public keys;
 7. re-downloads the stored package through the recipient storage path;
-8. repeats exact-byte, size, hash, safety, and full cryptographic verification;
+8. repeats exact-byte, size, hash, full cryptographic verification, and safety
+   validation with the authenticated context;
 9. atomically records both artifacts and their verification metadata before
    deleting the private intake object.
 

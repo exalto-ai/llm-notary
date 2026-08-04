@@ -39,6 +39,8 @@ pub struct VerifiedTraceManifest {
 /// The authenticated result of fully verifying one canonical `.llmtrace`.
 pub struct VerifiedTracePackage {
     pub manifest: VerifiedTraceManifest,
+    /// Authenticated origin-form path from the provider request line.
+    pub request_path: String,
     pub package_sha256: String,
     pub trace_sha256: String,
     pub trace: Vec<u8>,
@@ -372,6 +374,7 @@ fn verify_trace_package_archive_with_provider(
     };
     let (source, request, response) =
         verify_capture_value_with_provider(&capture, trusted_notary_key, crypto_provider)?;
+    let request_path = verified_request_path(&request)?;
     let inference = verified_inference_from_capture(&source, &request, &response)?;
     let expected = render_public_trace(&[inference])?;
     let actual = files
@@ -383,10 +386,36 @@ fn verify_trace_package_archive_with_provider(
     let trace_sha256 = sha256_hex(&actual);
     Ok(VerifiedTracePackage {
         manifest,
+        request_path,
         package_sha256,
         trace_sha256,
         trace: actual,
     })
+}
+
+fn verified_request_path(request: &str) -> Result<String> {
+    let start_line = request
+        .lines()
+        .next()
+        .context("verified provider request has no start line")?;
+    let mut fields = start_line.split_ascii_whitespace();
+    let _method = fields
+        .next()
+        .context("verified provider request has no method")?;
+    let target = fields
+        .next()
+        .context("verified provider request has no target")?;
+    let _version = fields
+        .next()
+        .context("verified provider request has no HTTP version")?;
+    if fields.next().is_some() {
+        bail!("verified provider request has an invalid start line");
+    }
+    let path = target.split_once('?').map_or(target, |(path, _)| path);
+    if !path.starts_with('/') {
+        bail!("verified provider request target is not origin-form");
+    }
+    Ok(path.to_owned())
 }
 
 /// Test-only entry point for exercising the complete package verifier with a

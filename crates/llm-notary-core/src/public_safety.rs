@@ -13,7 +13,17 @@ use crate::{archive::read_trace_package_archive, validate_disclosed_http_redacti
 
 /// The admission record stores this value so an older share is never silently
 /// claimed to satisfy a newer public-package contract.
-pub const PUBLIC_PACKAGE_SAFETY_VERSION: &str = "llm-notary/public-package-safety/v1";
+pub const PUBLIC_PACKAGE_SAFETY_VERSION: &str = "llm-notary/public-package-safety/v2";
+
+/// Authenticated provider context for narrow, provider-defined public values.
+///
+/// Callers must construct this only from a fully verified trace package. An
+/// unverified manifest or request target must never select an exemption.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublicPackageSafetyContext<'a> {
+    pub provider_host: &'a str,
+    pub request_path: &'a str,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -87,6 +97,22 @@ pub struct PublicPackageSafetyResult {
 pub fn validate_public_trace_package(
     bytes: &[u8],
 ) -> Result<PublicPackageSafetyResult, PublicPackageSafetyError> {
+    validate_public_trace_package_inner(bytes, None)
+}
+
+/// Validates an archive using provider context authenticated by package
+/// verification.
+pub fn validate_public_trace_package_with_context(
+    bytes: &[u8],
+    context: PublicPackageSafetyContext<'_>,
+) -> Result<PublicPackageSafetyResult, PublicPackageSafetyError> {
+    validate_public_trace_package_inner(bytes, Some(context))
+}
+
+fn validate_public_trace_package_inner(
+    bytes: &[u8],
+    context: Option<PublicPackageSafetyContext<'_>>,
+) -> Result<PublicPackageSafetyResult, PublicPackageSafetyError> {
     let archive = read_trace_package_archive(bytes).map_err(|_| {
         PublicPackageSafetyError::new("archive_invalid", PublicPackageLocation::Archive)
     })?;
@@ -115,8 +141,8 @@ pub fn validate_public_trace_package(
     scan_request_target(request_head)?;
     scan_public_bytes(request_head, PublicPackageLocation::RequestHeaders)?;
     scan_public_bytes(response_head, PublicPackageLocation::ResponseHeaders)?;
-    scan_body(request_body, PublicPackageLocation::RequestBody)?;
-    scan_body(response_body, PublicPackageLocation::ResponseBody)?;
+    scan_body(request_body, PublicPackageLocation::RequestBody, None)?;
+    scan_body(response_body, PublicPackageLocation::ResponseBody, context)?;
 
     let archive_manifest = serde_json::to_vec(&archive.manifest).map_err(|_| {
         PublicPackageSafetyError::new("archive_invalid", PublicPackageLocation::Archive)
@@ -187,6 +213,7 @@ fn scan_request_target(head: &[u8]) -> Result<(), PublicPackageSafetyError> {
 fn scan_body(
     bytes: &[u8],
     location: PublicPackageLocation,
+    context: Option<PublicPackageSafetyContext<'_>>,
 ) -> Result<(), PublicPackageSafetyError> {
     if bytes
         .iter()
@@ -195,10 +222,10 @@ fn scan_body(
         return Ok(());
     }
     if serde_json::from_slice::<serde_json::Value>(bytes).is_ok() {
-        scan_json(bytes, location)
+        scan_json_with_context(bytes, location, context)
     } else {
         scan_public_bytes(bytes, location)?;
-        scan_entropy_tokens(bytes, None, location)
+        scan_entropy_tokens(bytes, None, false, location)
     }
 }
 
@@ -206,16 +233,42 @@ fn scan_json(
     bytes: &[u8],
     location: PublicPackageLocation,
 ) -> Result<(), PublicPackageSafetyError> {
+    scan_json_with_context(bytes, location, None)
+}
+
+fn scan_json_with_context(
+    bytes: &[u8],
+    location: PublicPackageLocation,
+    context: Option<PublicPackageSafetyContext<'_>>,
+) -> Result<(), PublicPackageSafetyError> {
     let value: serde_json::Value = serde_json::from_slice(bytes)
         .map_err(|_| PublicPackageSafetyError::new("public_json_invalid", location))?;
     let mut nested = BTreeSet::new();
-    scan_json_value(&value, None, location, &mut nested)
+    let mut path = Vec::new();
+    scan_json_value(
+        &value,
+        None,
+        location,
+        context,
+        true,
+        &mut path,
+        &mut nested,
+    )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum JsonPathSegment {
+    Key(String),
+    Index(usize),
 }
 
 fn scan_json_value(
     value: &serde_json::Value,
     key: Option<&str>,
     location: PublicPackageLocation,
+    context: Option<PublicPackageSafetyContext<'_>>,
+    provider_exemptions_allowed: bool,
+    path: &mut Vec<JsonPathSegment>,
     nested: &mut BTreeSet<String>,
 ) -> Result<(), PublicPackageSafetyError> {
     if key.is_some_and(is_credential_key) && has_public_value(value) {
@@ -228,7 +281,7 @@ fn scan_json_value(
                 .and_then(serde_json::Value::as_str)
                 .filter(|_| values.contains_key("value"));
             for (child_key, value) in values {
-                let context = if child_key == "value" {
+                let child_key_context = if child_key == "value" {
                     semantic_key.or(key).or(Some(child_key.as_str()))
                 } else if matches!(
                     child_key.as_str(),
@@ -238,29 +291,83 @@ fn scan_json_value(
                 } else {
                     Some(child_key.as_str())
                 };
-                scan_json_value(value, context, location, nested)?;
+                path.push(JsonPathSegment::Key(child_key.to_owned()));
+                scan_json_value(
+                    value,
+                    child_key_context,
+                    location,
+                    context,
+                    provider_exemptions_allowed,
+                    path,
+                    nested,
+                )?;
+                path.pop();
             }
         }
         serde_json::Value::Array(values) => {
-            for value in values {
-                scan_json_value(value, key, location, nested)?;
+            for (index, value) in values.iter().enumerate() {
+                path.push(JsonPathSegment::Index(index));
+                scan_json_value(
+                    value,
+                    key,
+                    location,
+                    context,
+                    provider_exemptions_allowed,
+                    path,
+                    nested,
+                )?;
+                path.pop();
             }
         }
         serde_json::Value::String(value) => {
             scan_public_bytes(value.as_bytes(), location)?;
-            scan_entropy_tokens(value.as_bytes(), key, location)?;
+            scan_entropy_tokens(
+                value.as_bytes(),
+                key,
+                provider_exemptions_allowed
+                    && is_documented_openai_response_id(value, context, path),
+                location,
+            )?;
             let trimmed = value.trim();
             if trimmed.len() <= 1_048_576
                 && matches!(trimmed.as_bytes().first(), Some(b'{') | Some(b'['))
                 && nested.insert(trimmed.to_owned())
                 && let Ok(inner) = serde_json::from_str::<serde_json::Value>(trimmed)
             {
-                scan_json_value(&inner, key, location, nested)?;
+                scan_json_value(&inner, key, location, context, false, path, nested)?;
             }
         }
         _ => {}
     }
     Ok(())
+}
+
+fn is_documented_openai_response_id(
+    value: &str,
+    context: Option<PublicPackageSafetyContext<'_>>,
+    path: &[JsonPathSegment],
+) -> bool {
+    let Some(context) = context else {
+        return false;
+    };
+    context.provider_host == "api.openai.com"
+        && path.len() == 1
+        && matches!(&path[0], JsonPathSegment::Key(key) if key == "id")
+        && match context.request_path {
+            "/v1/chat/completions" => has_public_id_format(value, "chatcmpl-"),
+            "/v1/responses" => has_public_id_format(value, "resp_"),
+            _ => false,
+        }
+}
+
+fn has_public_id_format(value: &str, prefix: &str) -> bool {
+    value.strip_prefix(prefix).is_some_and(|suffix| {
+        !suffix.is_empty()
+            && suffix.len() <= 128
+            && suffix
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
+    })
 }
 
 fn has_public_value(value: &serde_json::Value) -> bool {
@@ -336,9 +443,10 @@ fn is_intentionally_public_crypto_key(value: &str) -> bool {
 fn scan_entropy_tokens(
     bytes: &[u8],
     key: Option<&str>,
+    exempt: bool,
     location: PublicPackageLocation,
 ) -> Result<(), PublicPackageSafetyError> {
-    if key.is_some_and(is_intentionally_public_crypto_key) {
+    if exempt || key.is_some_and(is_intentionally_public_crypto_key) {
         return Ok(());
     }
     let suspicious = bytes
@@ -483,12 +591,21 @@ mod tests {
     use super::*;
 
     fn package_with(request_body: &str, response_body: &str, trace: serde_json::Value) -> Vec<u8> {
+        package_with_path("/v1/responses", request_body, response_body, trace)
+    }
+
+    fn package_with_path(
+        request_path: &str,
+        request_body: &str,
+        response_body: &str,
+        trace: serde_json::Value,
+    ) -> Vec<u8> {
         let directory = tempfile::tempdir().unwrap();
         for name in PACKAGE_FILES {
             let bytes = match name {
                 "manifest.json" => br#"{"format":"llm-notary/verified-trace-package/v2","notary_public_key":"04cafe"}"#.to_vec(),
                 "request.disclosed.http" => format!(
-                    "POST /v1/responses HTTP/1.1\r\nAuthorization: \0\0\0\0\r\nContent-Type: \0\0\0\r\n\r\n{request_body}"
+                    "POST {request_path} HTTP/1.1\r\nAuthorization: \0\0\0\0\r\nContent-Type: \0\0\0\r\n\r\n{request_body}"
                 )
                 .into_bytes(),
                 "response.disclosed.http" => format!(
@@ -501,6 +618,13 @@ mod tests {
             fs::write(directory.path().join(name), bytes).unwrap();
         }
         build_trace_package_archive(directory.path()).unwrap()
+    }
+
+    fn openai_context(request_path: &str) -> PublicPackageSafetyContext<'_> {
+        PublicPackageSafetyContext {
+            provider_host: "api.openai.com",
+            request_path,
+        }
     }
 
     fn safe_trace() -> serde_json::Value {
@@ -607,6 +731,130 @@ mod tests {
         let error = validate_public_trace_package(&archive).unwrap_err();
         assert_eq!(error.code, "high_entropy_value");
         assert!(!error.to_string().contains(opaque));
+    }
+
+    #[test]
+    fn accepts_verified_openai_root_response_ids() {
+        let fixtures = [
+            (
+                "/v1/chat/completions",
+                "chatcmpl-7Qx9Za2Bc4De6Fg8Hi0Jk3Lm5Np",
+            ),
+            ("/v1/responses", "resp_7Qx9Za2Bc4De6Fg8Hi0Jk3Lm5Np"),
+        ];
+        for (request_path, id) in fixtures {
+            let archive = package_with_path(
+                request_path,
+                r#"{"model":"gpt-test"}"#,
+                &serde_json::json!({"id": id, "output": []}).to_string(),
+                safe_trace(),
+            );
+            assert_eq!(
+                validate_public_trace_package(&archive).unwrap_err().code,
+                "high_entropy_value",
+                "the exemption must require verified context for {request_path}"
+            );
+            validate_public_trace_package_with_context(&archive, openai_context(request_path))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn openai_response_id_exemption_is_path_and_format_specific() {
+        let id = "chatcmpl-7Qx9Za2Bc4De6Fg8Hi0Jk3Lm5Np";
+        let fixtures = [
+            (
+                "/v1/chat/completions",
+                serde_json::json!({"nested": {"id": id}}),
+                openai_context("/v1/chat/completions"),
+            ),
+            (
+                "/v1/chat/completions",
+                serde_json::json!({"id": id}),
+                PublicPackageSafetyContext {
+                    provider_host: "openrouter.ai",
+                    request_path: "/v1/chat/completions",
+                },
+            ),
+            (
+                "/v1/embeddings",
+                serde_json::json!({"id": id}),
+                openai_context("/v1/embeddings"),
+            ),
+        ];
+        for (request_path, response, context) in fixtures {
+            let archive = package_with_path(
+                request_path,
+                r#"{"model":"gpt-test"}"#,
+                &response.to_string(),
+                safe_trace(),
+            );
+            assert_eq!(
+                validate_public_trace_package_with_context(&archive, context)
+                    .unwrap_err()
+                    .code,
+                "high_entropy_value"
+            );
+        }
+
+        let wrong_format = package_with_path(
+            "/v1/responses",
+            r#"{"model":"gpt-test"}"#,
+            &serde_json::json!({"id": id}).to_string(),
+            safe_trace(),
+        );
+        assert_eq!(
+            validate_public_trace_package_with_context(
+                &wrong_format,
+                openai_context("/v1/responses"),
+            )
+            .unwrap_err()
+            .code,
+            "high_entropy_value"
+        );
+    }
+
+    #[test]
+    fn openai_response_id_exemption_preserves_secret_and_nested_content_checks() {
+        let credential_id = package_with_path(
+            "/v1/chat/completions",
+            r#"{"model":"gpt-test"}"#,
+            r#"{"id":"chatcmpl-sk-proj-1234567890abcdefghijklmnop"}"#,
+            safe_trace(),
+        );
+        assert_eq!(
+            validate_public_trace_package_with_context(
+                &credential_id,
+                openai_context("/v1/chat/completions"),
+            )
+            .unwrap_err()
+            .code,
+            "secret_pattern"
+        );
+
+        let opaque = "Q2xvdWRDcmVkZW50aWFsX0ZpeHR1cmVfMTIzNDU2Nzg5MC1hYmNkZWY=";
+        let fixtures = [
+            serde_json::json!({"choices": [{"message": {"content": opaque}}]}),
+            serde_json::json!({"tool_call": {"arguments": {"value": opaque}}}),
+            serde_json::json!({"tool_result": opaque}),
+        ];
+        for response in fixtures {
+            let archive = package_with_path(
+                "/v1/chat/completions",
+                r#"{"model":"gpt-test"}"#,
+                &response.to_string(),
+                safe_trace(),
+            );
+            assert_eq!(
+                validate_public_trace_package_with_context(
+                    &archive,
+                    openai_context("/v1/chat/completions"),
+                )
+                .unwrap_err()
+                .code,
+                "high_entropy_value"
+            );
+        }
     }
 
     #[test]
