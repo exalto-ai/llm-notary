@@ -151,9 +151,12 @@ stores a prompted password.
 ## Command client
 
 Human-readable output is the default. `--json` prints one JSON value to
-standard output for automation. List filters map directly to server-side REST
-filters, and accepted mutations print the durable operation or job identifier
-without waiting indefinitely:
+standard output for automation on success or failure. A failure retains its
+nonzero exit status and uses the bounded
+`{"error":{"code":"...","message":"..."}}` envelope without a duplicate
+plain-text diagnostic. List filters map directly to server-side REST filters,
+and accepted mutations print the durable operation or job identifier without
+waiting indefinitely:
 
 ```bash
 llm-notary captures list --query sanitized --provider openai --limit 20
@@ -267,9 +270,11 @@ appropriate for the machine.
 ## Capture and finalization lifecycle
 
 A provider request begins as `capturing`. A successfully sealed encrypted
-bundle becomes `pending`; a capture failure becomes `failed`. Its finalization
+bundle becomes `captured`; a capture failure becomes `failed`. Its finalization
 state moves independently through `not_requested`, `queued`, `running`, and
-`finalized`, or ends in `failed` or `interrupted`.
+`finalized`, or ends in `failed` or `interrupted`. The status field
+`ready_to_finalize` counts eligible captured responses whose finalization state
+is still `not_requested`.
 
 The current provider normalizers support successful response schemas only.
 When capture completes with a non-`2xx` provider status, capture detail sets

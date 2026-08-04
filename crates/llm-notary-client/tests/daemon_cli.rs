@@ -112,6 +112,15 @@ async fn daemon_and_cli_use_the_versioned_loopback_api_for_reads_and_mutations()
     let status: serde_json::Value = serde_json::from_slice(&status.stdout).unwrap();
     assert_eq!(status["admin_listener"], admin.to_string());
     assert_eq!(status["counts"]["total_captures"], 1);
+    assert_eq!(status["counts"]["ready_to_finalize"], 1);
+
+    let capture = cli(
+        &config_path,
+        &["captures", "show", "cap-daemon-cli", "--json"],
+    );
+    assert!(capture.status.success());
+    let capture: serde_json::Value = serde_json::from_slice(&capture.stdout).unwrap();
+    assert_eq!(capture["capture"]["capture_state"], "captured");
 
     let finalize = cli(&config_path, &["finalize", "cap-daemon-cli", "--json"]);
     assert!(finalize.status.success());

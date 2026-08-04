@@ -7,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand, error::ErrorKind};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 use url::Url;
@@ -34,7 +34,9 @@ const EXIT_VERSION_MISMATCH: i32 = 8;
 #[derive(Debug)]
 pub struct CliError {
     exit_code: i32,
+    code: String,
     message: String,
+    reported: bool,
 }
 
 impl CliError {
@@ -42,11 +44,35 @@ impl CliError {
         self.exit_code
     }
 
+    pub fn is_reported(&self) -> bool {
+        self.reported
+    }
+
     fn new(exit_code: i32, message: impl Into<String>) -> Self {
+        Self::coded(exit_code, default_error_code(exit_code), message)
+    }
+
+    fn coded(exit_code: i32, code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             exit_code,
+            code: code.into(),
             message: message.into(),
+            reported: false,
         }
+    }
+
+    fn json_value(&self) -> Value {
+        json!({
+            "error": {
+                "code": &self.code,
+                "message": &self.message,
+            }
+        })
+    }
+
+    fn reported(mut self) -> Self {
+        self.reported = true;
+        self
     }
 
     fn invalid(message: impl Into<String>) -> Self {
@@ -55,6 +81,19 @@ impl CliError {
 
     fn unavailable(message: impl Into<String>) -> Self {
         Self::new(EXIT_UNAVAILABLE, message)
+    }
+}
+
+fn default_error_code(exit_code: i32) -> &'static str {
+    match exit_code {
+        EXIT_INVALID_INPUT => "invalid_input",
+        EXIT_UNAVAILABLE => "daemon_unavailable",
+        EXIT_AUTHENTICATION => "authentication_failed",
+        EXIT_NOT_FOUND => "not_found",
+        EXIT_CONFLICT => "conflict",
+        EXIT_RETRYABLE => "retryable",
+        EXIT_VERSION_MISMATCH => "version_mismatch",
+        _ => "command_failed",
     }
 }
 
@@ -249,10 +288,51 @@ struct AdminClient {
 }
 
 pub async fn run() -> Result<(), CliError> {
-    let cli = Cli::parse();
+    let json_requested = std::env::args_os().any(|argument| argument == "--json");
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
-    run_parsed(cli, &mut stdout, &mut stderr).await
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error)
+            if matches!(
+                error.kind(),
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion
+            ) =>
+        {
+            error
+                .print()
+                .map_err(|_| CliError::new(EXIT_ERROR, "could not write command help"))?;
+            return Ok(());
+        }
+        Err(error) => {
+            let error = CliError::coded(EXIT_INVALID_INPUT, "invalid_arguments", error.to_string());
+            if json_requested {
+                return report_json_error(error, &mut stdout);
+            }
+            return Err(error);
+        }
+    };
+    run_with_output(cli, &mut stdout, &mut stderr).await
+}
+
+fn report_json_error(error: CliError, stdout: &mut dyn io::Write) -> Result<(), CliError> {
+    let output = serde_json::to_string_pretty(&error.json_value())
+        .map_err(|_| CliError::new(EXIT_ERROR, "could not encode command error"))?;
+    writeln!(stdout, "{output}")
+        .map_err(|_| CliError::new(EXIT_ERROR, "could not write command error"))?;
+    Err(error.reported())
+}
+
+async fn run_with_output(
+    cli: Cli,
+    stdout: &mut dyn io::Write,
+    stderr: &mut dyn io::Write,
+) -> Result<(), CliError> {
+    let json = cli.json;
+    match run_parsed(cli, stdout, stderr).await {
+        Err(error) if json => report_json_error(error, stdout),
+        result => result,
+    }
 }
 
 async fn run_parsed(
@@ -533,29 +613,44 @@ fn api_error(status: StatusCode, bytes: &[u8]) -> CliError {
         .as_ref()
         .and_then(|value| value.pointer("/error/message"))
         .and_then(Value::as_str);
-    match status {
-        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => CliError::new(
+    let (exit_code, fallback_code, message) = match status {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => (
             EXIT_INVALID_INPUT,
-            message.unwrap_or("the daemon rejected the command input"),
+            "invalid_input",
+            message
+                .unwrap_or("the daemon rejected the command input")
+                .to_owned(),
         ),
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => CliError::new(
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => (
             EXIT_AUTHENTICATION,
-            "local admin authentication failed; check the configured username and password",
+            "authentication_failed",
+            "local admin authentication failed; check the configured username and password"
+                .to_owned(),
         ),
-        StatusCode::NOT_FOUND => CliError::new(
+        StatusCode::NOT_FOUND => (
             EXIT_NOT_FOUND,
-            message.unwrap_or("the requested local resource was not found"),
+            "not_found",
+            message
+                .unwrap_or("the requested local resource was not found")
+                .to_owned(),
         ),
-        StatusCode::CONFLICT => CliError::new(
+        StatusCode::CONFLICT => (
             EXIT_CONFLICT,
-            message.unwrap_or("the requested operation conflicts with current daemon state"),
+            "conflict",
+            message
+                .unwrap_or("the requested operation conflicts with current daemon state")
+                .to_owned(),
         ),
-        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => CliError::new(
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE => (
             EXIT_RETRYABLE,
-            message.unwrap_or("the daemon is temporarily unable to accept this operation"),
+            "retryable",
+            message
+                .unwrap_or("the daemon is temporarily unable to accept this operation")
+                .to_owned(),
         ),
-        status if status.is_server_error() => CliError::new(
+        status if status.is_server_error() => (
             EXIT_RETRYABLE,
+            "daemon_error",
             match code {
                 Some(code) => {
                     format!("the daemon could not complete the request ({code}); try again")
@@ -563,11 +658,15 @@ fn api_error(status: StatusCode, bytes: &[u8]) -> CliError {
                 None => "the daemon could not complete the request; try again".to_owned(),
             },
         ),
-        _ => CliError::new(
+        _ => (
             EXIT_ERROR,
-            message.unwrap_or("the daemon rejected the command"),
+            "command_rejected",
+            message
+                .unwrap_or("the daemon rejected the command")
+                .to_owned(),
         ),
-    }
+    };
+    CliError::coded(exit_code, code.unwrap_or(fallback_code), message)
 }
 
 async fn execute(
@@ -851,12 +950,12 @@ fn push_number<T: ToString>(query: &mut Vec<(String, String)>, key: &str, value:
 fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError> {
     match command {
         CliCommand::Status => Ok(format!(
-            "llm-notaryd {}\nproxy {}\nadmin {}\ncaptures {} total, {} pending, {} finalized, {} failed\noperations {} active",
+            "llm-notaryd {}\nproxy {}\nadmin {}\ncaptures {} total, {} ready to finalize, {} finalized, {} failed\noperations {} active",
             value_string(value, "/version"),
             value_string(value, "/proxy_listener"),
             value_string(value, "/admin_listener"),
             value_string(value, "/counts/total_captures"),
-            value_string(value, "/counts/pending"),
+            value_string(value, "/counts/ready_to_finalize"),
             value_string(value, "/counts/finalized"),
             value_string(value, "/counts/failed"),
             value_string(value, "/counts/active_operations"),
@@ -1115,6 +1214,39 @@ mod tests {
         assert!(stdout.is_empty());
     }
 
+    #[tokio::test]
+    async fn json_mode_emits_one_error_value_without_plain_text() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle = directory.path().join("capture.llmbundle");
+        fs::write(&bundle, b"encrypted private retry state").unwrap();
+        let cli = Cli::try_parse_from([
+            "llm-notary",
+            "--json",
+            "traces",
+            "verify",
+            bundle.to_str().unwrap(),
+        ])
+        .unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let error = run_with_output(cli, &mut stdout, &mut stderr)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.exit_code(), EXIT_ERROR);
+        assert!(error.is_reported());
+        assert!(stderr.is_empty());
+        let value: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(value["error"]["code"], "command_failed");
+        assert!(
+            value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("private retry state")
+        );
+    }
+
     #[test]
     fn human_and_json_output_are_deterministic() {
         let command = CliCommand::Finalize(IdArgs {
@@ -1170,6 +1302,7 @@ mod tests {
                 br#"{"error":{"code":"safe_code","message":"safe message"}}"#,
             );
             assert_eq!(error.exit_code(), expected);
+            assert_eq!(error.code, "safe_code");
             assert!(!error.to_string().contains("credential"));
         }
     }

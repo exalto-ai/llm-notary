@@ -502,7 +502,7 @@ async fn capture(
     }))
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/finalizations", summary = "Queue capture finalization", description = "Queues durable proof generation for an eligible pending capture or returns its existing finalization operation. Captures with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.", params(("capture_id" = String, Path)), responses((status = 202, body = FinalizationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/finalizations", summary = "Queue capture finalization", description = "Queues durable proof generation for an eligible captured provider response or returns its existing finalization operation. Captures with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.", params(("capture_id" = String, Path)), responses((status = 202, body = FinalizationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_finalization(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -514,8 +514,8 @@ async fn start_finalization(
         .await
         .map_err(|_| ApiError::internal("catalog_task_failed"))?
         .map_err(|_| ApiError::internal("catalog_query_failed"))?
-        .filter(|capture| capture.capture_state == "pending")
-        .ok_or_else(|| ApiError::not_found("pending_capture_not_found"))?;
+        .filter(|capture| capture.capture_state == "captured")
+        .ok_or_else(|| ApiError::not_found("captured_response_not_found"))?;
     if finalization_ineligibility_code(&capture).is_some() {
         return Err(ApiError::finalization_ineligible());
     }
@@ -532,7 +532,7 @@ async fn start_finalization(
         .await
         .map_err(|_| ApiError::internal("catalog_task_failed"))?
         .map_err(|_| ApiError::internal("finalization_queue_failed"))?
-        .ok_or_else(|| ApiError::not_found("pending_capture_not_found"))?;
+        .ok_or_else(|| ApiError::not_found("captured_response_not_found"))?;
     state.work_available.notify_one();
     Ok((
         StatusCode::ACCEPTED,
@@ -1209,7 +1209,7 @@ struct HealthResponse {
 struct CountsResponse {
     total_captures: u64,
     capturing: u64,
-    pending: u64,
+    ready_to_finalize: u64,
     finalized: u64,
     failed: u64,
     active_operations: u64,
@@ -1220,7 +1220,7 @@ impl From<crate::catalog::CatalogCounts> for CountsResponse {
         Self {
             total_captures: value.total_captures,
             capturing: value.capturing,
-            pending: value.pending,
+            ready_to_finalize: value.ready_to_finalize,
             finalized: value.finalized,
             failed: value.failed,
             active_operations: value.active_operations,
