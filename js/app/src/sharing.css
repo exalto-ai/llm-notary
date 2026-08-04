@@ -18,10 +18,10 @@
 
 .preview-share-list a:hover { background: var(--soft); }
 .share-verification-mark > i { width: 7px; height: 7px; background: var(--action); box-shadow: 0 0 0 3px color-mix(in srgb, var(--action) 14%, transparent); }
-.preview-share-list span { display: grid; gap: 3px; }
+.preview-share-list a > span { display: grid; gap: 3px; }
 .preview-share-list b { font: 600 15px 'Space Grotesk', sans-serif; }
 .preview-share-list small { overflow: hidden; color: var(--muted); text-overflow: ellipsis; white-space: nowrap; }
-.preview-share-list em { color: var(--action-dark); font: 500 10px 'DM Mono', monospace; text-transform: uppercase; }
+.preview-share-list em { color: var(--action-dark); font: 500 10px 'DM Mono', monospace; font-style: normal; text-transform: uppercase; }
 
 .collection-empty,
 .collection-pending {
@@ -74,9 +74,12 @@
   transition: background 120ms ease;
 }
 .share-index-row:hover { background: var(--soft); }
-.share-index-row > header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+.share-index-row > header { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 16px; }
+.share-index-heading { display: grid; min-width: 0; gap: 5px; }
 .share-index-row b { font: 600 17px 'Space Grotesk', sans-serif; letter-spacing: -.02em; }
 .share-index-row header small { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+.share-index-open { padding-bottom: 2px; border-bottom: 1px solid currentColor; color: var(--action-dark); font: 500 9px 'DM Mono', monospace; letter-spacing: .04em; text-transform: uppercase; }
+.share-index-row:hover .share-index-open { color: var(--ink); }
 .share-index-row time::before { content: '·'; margin-right: 7px; }
 .share-index-previews { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; }
 .share-index-previews p { display: -webkit-box; min-width: 0; margin: 0; overflow: hidden; color: var(--body-copy); font-size: 13px; line-height: 1.48; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
@@ -171,7 +174,7 @@
   .share-library-controls { grid-template-columns: 1fr; }
   .share-library-controls > span { padding: 4px 0 0; text-align: left; }
   .share-index-row { padding-inline: 2px; }
-  .share-index-row > header { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .share-index-row > header { gap: 12px; }
   .share-index-row header small { flex-wrap: wrap; }
   .share-index-previews { grid-template-columns: 1fr; gap: 8px; }
   .share-library-skeleton > div { padding-inline: 2px; }

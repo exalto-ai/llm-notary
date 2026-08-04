@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { ApiKeysPanel, CliApproval, Header, HostedNotaryRecord, Library, SharePage, VerificationPage } from './main';
+import { AccountSettings, ApiKeysPanel, CliApproval, Header, HostedNotaryRecord, Library, ListedSharesPreview, SharePage, VerificationPage } from './main';
 import { ProviderIdentity } from './ProviderIdentity';
 import { initialThemePreference } from './theme';
 
@@ -34,22 +34,25 @@ const loadLibraryTrace = async (id) => ({
 });
 
 describe('hosted site', () => {
-  test('defaults to light and keeps all appearance choices in the signed-in account menu', async () => {
-    let selectedTheme;
+  test('defaults to light and keeps appearance choices out of the signed-in account menu', async () => {
     expect(initialThemePreference()).toBe('light');
-    render(<Header
-      user={{ github_login: 'fixture-user' }}
-      theme="light"
-      onThemeChange={(theme) => { selectedTheme = theme; }}
-      onLogout={() => {}}
-    />);
+    render(<Header user={{ github_login: 'fixture-user' }} onLogout={() => {}} />);
 
     await page.getByRole('button', { name: 'Account menu for fixture-user' }).click();
-    const appearance = page.getByRole('group', { name: 'Appearance' });
-    await expect.element(appearance.getByRole('menuitemradio', { name: 'light' })).toHaveAttribute('aria-checked', 'true');
-    await appearance.getByRole('menuitemradio', { name: 'auto' }).click();
+    await expect.element(page.getByRole('menuitem', { name: 'Dashboard' })).toBeVisible();
+    await expect.element(page.getByRole('group', { name: 'Appearance' })).not.toBeInTheDocument();
+  });
+
+  test('offers Auto, Light, and Dark in Dashboard account settings', async () => {
+    let selectedTheme;
+    render(<AccountSettings theme="light" onThemeChange={(theme) => { selectedTheme = theme; }} />);
+
+    await expect.element(page.getByRole('heading', { name: 'Account settings' })).toBeVisible();
+    const appearance = page.getByRole('radiogroup', { name: 'Appearance' });
+    await expect.element(appearance.getByRole('radio', { name: 'light' })).toHaveAttribute('aria-checked', 'true');
+    await appearance.getByRole('radio', { name: 'auto' }).click();
     expect(selectedTheme).toBe('auto');
-    await expect.element(appearance.getByRole('menuitemradio', { name: 'dark' })).toBeVisible();
+    await expect.element(appearance.getByRole('radio', { name: 'dark' })).toBeVisible();
   });
 
   test('renders every known provider icon and neutral fallbacks beside provider text', async () => {
@@ -85,7 +88,7 @@ describe('hosted site', () => {
   test('makes local service authorization a clear two-step decision', async () => {
     window.location.hash = '#/authorize?request_id=request-123&approval_secret=secret-456';
     render(<>
-      <Header user={null} hideSignIn theme="light" onThemeChange={() => {}} />
+      <Header user={null} hideSignIn />
       <CliApproval route="authorize?request_id=request-123&approval_secret=secret-456" user={null} />
     </>);
 
@@ -182,9 +185,19 @@ describe('hosted site', () => {
     await expect.element(row).toBeVisible();
     expect(row.element().textContent).toContain('Prompt for share-12');
     expect(row.element().textContent).toContain('Response for share-12');
+    expect(row.element().textContent).toContain('Open session');
     expect(document.body.textContent).not.toContain('Verified');
     expect(document.body.textContent).not.toContain('↗');
     expect(document.body.textContent).not.toContain('Listed shares');
+  });
+
+  test('shows provider marks in the landing Library preview', async () => {
+    render(<ListedSharesPreview loadShares={async () => [libraryShares[0], libraryShares[11]]} />);
+
+    const preview = page.getByLabelText('Featured shared sessions');
+    await expect.element(preview).toBeVisible();
+    expect(preview.element().querySelectorAll('[data-provider-icon="openai"]')).toHaveLength(1);
+    expect(preview.element().querySelectorAll('[data-provider-icon="anthropic"]')).toHaveLength(1);
   });
 
   test('filters the Library by its public session summaries', async () => {
@@ -280,6 +293,7 @@ describe('hosted site', () => {
     await expect.element(page.getByRole('heading', { name: 'Verification passed.' })).toBeVisible();
     await expect.element(page.getByText('api.openai.com')).toBeVisible();
     await expect.element(page.getByText('Prompt for verified')).toBeVisible();
+    expect(document.body.textContent).not.toContain('Provider verified');
     expect(calls).toBe(1);
   });
 

@@ -52,7 +52,6 @@
 .span-kind,
 .span-summary small,
 .span-summary code,
-.span-summary em,
 .message-group-label,
 .message-role,
 .message-part > span,
@@ -121,23 +120,6 @@
 .span-summary small code {
   color: inherit;
   font-size: inherit;
-}
-
-.span-summary em {
-  grid-column: 3 / -1;
-  justify-self: start;
-  margin-top: 5px;
-  padding: 3px 5px;
-  border: 1px solid var(--line);
-  font-style: normal;
-  color: var(--muted);
-  text-transform: uppercase;
-}
-
-.span-row--source .span-summary em {
-  border-color: var(--green-ink);
-  background: color-mix(in srgb, var(--green) 22%, transparent);
-  color: var(--green-ink);
 }
 
 .span-evidence {
@@ -239,8 +221,7 @@
   .span-panel-head { align-items: flex-start; flex-direction: column; gap: 4px; }
   .span-summary { grid-template-columns: 10px 50px minmax(0, 1fr) 10px; }
   .span-disclosure { grid-column: 4; grid-row: 1; }
-  .span-summary small,
-  .span-summary em { grid-column: 3; }
+  .span-summary small { grid-column: 3; }
   .span-evidence { margin-left: 10px; padding: 11px; }
   .trace-message { grid-template-columns: 55px minmax(0, 1fr); gap: 8px; }
 }

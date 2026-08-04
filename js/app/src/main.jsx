@@ -85,7 +85,7 @@ function HeroSignalField() {
 function LinkIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.6 13.4a4 4 0 0 0 5.7.1l2-2a4 4 0 0 0-5.7-5.7l-1.1 1.1M13.4 10.6a4 4 0 0 0-5.7-.1l-2 2a4 4 0 0 0 5.7 5.7l1.1-1.1" /></svg>; }
 function CheckIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 4.2 4.2L19 6.5" /></svg>; }
 
-function AccountMenu({ user, onLogout, theme, onThemeChange }) {
+function AccountMenu({ user, onLogout }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef(null);
   const initials = user.github_login.slice(0, 2).toUpperCase();
@@ -101,17 +101,13 @@ function AccountMenu({ user, onLogout, theme, onThemeChange }) {
     <button type="button" className="account-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="menu" aria-label={`Account menu for ${user.github_login}`}>{user.avatar_url ? <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" /> : <span>{initials}</span>}</button>
     {open && <div className="account-popover" role="menu">
       <div className="account-identity"><div><b>{user.github_login}</b><span>Signed in with GitHub</span></div></div>
-      <div className="account-appearance">
-        <span>Appearance</span>
-        <div role="group" aria-label="Appearance">{themeOptions.map((option) => <button type="button" role="menuitemradio" aria-checked={theme === option} onClick={() => onThemeChange(option)} key={option}>{option}</button>)}</div>
-      </div>
       <div className="account-actions"><a href="/#/dashboard" role="menuitem" onClick={() => setOpen(false)}>Dashboard</a><button type="button" role="menuitem" onClick={() => { setOpen(false); onLogout(); }}>Log out</button></div>
     </div>}
   </div>;
 }
 
-export function Header({ user, onLogout, theme, onThemeChange, hideSignIn = false }) {
-  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} theme={theme} onThemeChange={onThemeChange} /> : !hideSignIn && <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
+export function Header({ user, onLogout, hideSignIn = false }) {
+  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} /> : !hideSignIn && <a className="sign-in-link" href="/api/auth/github">Sign in</a>}</nav></header>;
 }
 
 function Footer() {
@@ -165,18 +161,18 @@ function VerificationArchitecture() {
   return <section className="section architecture" id="how-it-works"><div className="section-head"><span className="eyebrow">How it works</span><h2>Don’t trust. Verify.</h2></div><TrustColumns /><div className="section-link"><a href="#/docs/how-it-works">Learn more about the trust model</a></div></section>;
 }
 
-function ListedSharesPreview() {
+export function ListedSharesPreview({ loadShares = getListedShares }) {
   const [shares, setShares] = useState(null);
   const [loadError, setLoadError] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    getListedShares()
+    loadShares()
       .then((payload) => { if (!cancelled) setShares(payload); })
       .catch(() => { if (!cancelled) setLoadError(true); });
     return () => { cancelled = true; };
-  }, []);
+  }, [loadShares]);
   const visible = (shares || []).slice(0, 5);
-  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Public sessions</span><h2>Open the conversation first.</h2></div></div>{shares === null && !loadError ? <div className="collection-pending" role="status"><b>Loading the Library…</b><span>Finding the latest public sessions.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library couldn’t load.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-share-list" aria-label="Featured shared sessions">{visible.map((share) => <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><span><b>{share.model}</b><small>{share.input_preview || <ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} />}</small></span><em>{share.provider}</em></a>)}</div> : <div className="collection-pending"><b>The Library is empty.</b><span>Public sessions will appear here after they’re shared.</span></div>}<a className="button button-dark" href="#/library">Open Library</a></section>;
+  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Public sessions</span><h2>Open the conversation first.</h2></div></div>{shares === null && !loadError ? <div className="collection-pending" role="status"><b>Loading the Library…</b><span>Finding the latest public sessions.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library couldn’t load.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-share-list" aria-label="Featured shared sessions">{visible.map((share) => <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><span><b>{share.model}</b><small>{share.input_preview || <ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} />}</small></span><em><ProviderIdentity provider={share.provider} /></em></a>)}</div> : <div className="collection-pending"><b>The Library is empty.</b><span>Public sessions will appear here after they’re shared.</span></div>}<a className="button button-dark" href="#/library">Open Library</a></section>;
 }
 
 const MAX_VERIFY_FILE_BYTES = 128 * 1024 * 1024 + 64 * 1024 + 16 * 1024;
@@ -746,7 +742,7 @@ function SpanTree({ spans }) {
   });
   return <div className="span-tree" aria-label="Trace spans">{spans.map((span, index) => {
     const open = expanded.has(index);
-    return <div className="span-row span-row--source" key={`${span.spanId}-${index}`}><button type="button" className="span-summary" aria-expanded={open} onClick={() => toggle(index)}><span className="span-branch" aria-hidden="true" /><span className="span-kind">{span.kind}</span><strong>{span.name}</strong><span className="span-disclosure" aria-hidden="true" /><small>span <code>{span.spanId}</code></small><em>Provider verified</em></button>{open && <>{span.attributes && <div className="span-evidence span-attributes"><span className="message-group-label">attributes</span><div className="trace-fields">{span.attributes.map(([name, value]) => <TraceField key={name} label={name} value={value} />)}</div></div>}{span.messages && <div className="span-evidence span-messages"><MessageGroup label="gen_ai.input.messages" messages={span.messages.input} /><MessageGroup label="gen_ai.output.messages" messages={span.messages.output} /></div>}</>}</div>;
+    return <div className="span-row span-row--source" key={`${span.spanId}-${index}`}><button type="button" className="span-summary" aria-expanded={open} onClick={() => toggle(index)}><span className="span-branch" aria-hidden="true" /><span className="span-kind">{span.kind}</span><strong>{span.name}</strong><span className="span-disclosure" aria-hidden="true" /><small>span <code>{span.spanId}</code></small></button>{open && <>{span.attributes && <div className="span-evidence span-attributes"><span className="message-group-label">attributes</span><div className="trace-fields">{span.attributes.map(([name, value]) => <TraceField key={name} label={name} value={value} />)}</div></div>}{span.messages && <div className="span-evidence span-messages"><MessageGroup label="gen_ai.input.messages" messages={span.messages.input} /><MessageGroup label="gen_ai.output.messages" messages={span.messages.output} /></div>}</>}</div>;
   })}</div>;
 }
 
@@ -848,7 +844,7 @@ function LibraryShareRow({ share, loadTrace }) {
   const inputPreview = share.input_preview || legacyPreview.input;
   const outputPreview = share.output_preview || legacyPreview.output;
   return <a className="share-index-row" href={`/s/${encodeURIComponent(share.id)}`} ref={rowRef}>
-    <header><b>{share.model}</b><small><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} />{captureDate && <time dateTime={new Date(share.authenticated_at_unix_ms).toISOString()}>{captureDate}</time>}</small></header>
+    <header><div className="share-index-heading"><b>{share.model}</b><small><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} />{captureDate && <time dateTime={new Date(share.authenticated_at_unix_ms).toISOString()}>{captureDate}</time>}</small></div><span className="share-index-open">Open session</span></header>
     <div className="share-index-previews">
       {inputPreview && <p><span>Input</span>{inputPreview}</p>}
       {outputPreview && <p><span>Response</span>{outputPreview}</p>}
@@ -1070,7 +1066,17 @@ export function ApiKeysPanel({ loadKeys = getApiKeys, createKey = createApiKey, 
   </section>;
 }
 
-function Dashboard({ user, view }) {
+export function AccountSettings({ theme, onThemeChange }) {
+  return <section className="dashboard-account-settings" aria-labelledby="account-settings-title">
+    <header><span className="eyebrow">Preferences</span><h2 id="account-settings-title">Account settings</h2></header>
+    <div className="dashboard-account-setting">
+      <div><b>Appearance</b><span>Use your device setting, or choose a theme for this browser.</span></div>
+      <div className="dashboard-appearance-options" role="radiogroup" aria-label="Appearance">{themeOptions.map((option) => <button type="button" role="radio" aria-checked={theme === option} onClick={() => onThemeChange(option)} key={option}>{option}</button>)}</div>
+    </div>
+  </section>;
+}
+
+function Dashboard({ user, view, theme, onThemeChange }) {
   const [sessions, setSessions] = useState(null);
   const [sessionError, setSessionError] = useState(null);
   const [revoking, setRevoking] = useState(null);
@@ -1162,6 +1168,7 @@ function Dashboard({ user, view }) {
             <div><span>Admitted shares</span><b>{shares === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>
+          <AccountSettings theme={theme} onThemeChange={onThemeChange} />
           {credits && <section className="dashboard-credits" aria-labelledby="credit-balance-title">
             <header><div><span className="eyebrow">Hosted finalization credits</span><h2 id="credit-balance-title">{fileSize(credits.total_remaining_bytes)} available</h2></div><div className="dashboard-credit-meta"><span className="dashboard-account-badge">Free account</span><span>Resets {sessionDate(credits.reset_at)}</span></div></header>
             <p className="dashboard-credit-note">Included credits reset monthly. Credits you purchase or receive are added separately and keep their own expiration.</p>
@@ -1426,7 +1433,7 @@ function App() {
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  return <><Header user={user} onLogout={logout} theme={theme} onThemeChange={setTheme} hideSignIn={section === 'authorize'} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} hideSignIn={section === 'authorize'} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} theme={theme} onThemeChange={setTheme} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 const applicationRoot = document.getElementById('root');
