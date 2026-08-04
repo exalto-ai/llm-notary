@@ -71,6 +71,9 @@ class EventParsingTests(unittest.TestCase):
 
 
 class GateAndClassificationTests(unittest.TestCase):
+    def test_canary_publications_are_listed(self) -> None:
+        self.assertEqual(run.PUBLICATION_VISIBILITY, "listed")
+
     def test_disclosure_scanner_reports_names_and_counts_only(self) -> None:
         value = {
             "header": "Authorization: Bearer token-value",
