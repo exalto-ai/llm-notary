@@ -226,7 +226,7 @@ describe('hosted site', () => {
       loadTrace={async (id) => { traceLoads += 1; return loadLibraryTrace(id); }}
     />);
 
-    await expect.element(page.getByText('No conversation excerpt was disclosed.')).toBeVisible();
+    await expect.element(page.getByText('No prompt or response preview.')).toBeVisible();
     expect(traceLoads).toBe(0);
   });
 

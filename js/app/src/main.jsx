@@ -184,7 +184,7 @@ export function ListedSharesPreview({ loadShares = getListedShares }) {
     return () => { cancelled = true; };
   }, [loadShares]);
   const visible = (shares || []).slice(0, 5);
-  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Public domain</span><h2>Traces from the community.</h2></div></div>{shares === null && !loadError ? <div className="collection-pending" role="status"><b>Loading the Library…</b><span>Finding the latest public traces.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library couldn’t load.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-share-list" aria-label="Featured public traces">{visible.map((share) => <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><header><b>{share.model}</b><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} /></header><div className="preview-share-snippets"><p><span>Prompt</span>{share.input_preview || 'No prompt excerpt disclosed.'}</p><p><span>Response</span>{share.output_preview || 'No response excerpt disclosed.'}</p></div></a>)}</div> : <div className="collection-pending"><b>The Library is empty.</b><span>Public traces will appear here after they’re shared.</span></div>}<a className="button button-dark" href="#/library">Browse the Library</a></section>;
+  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Public domain</span><h2>Traces from the community.</h2></div></div>{shares === null && !loadError ? <div className="collection-pending" role="status"><b>Loading the Library…</b><span>Finding the latest public traces.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library couldn’t load.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-share-list" aria-label="Featured public traces">{visible.map((share) => <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><header><b>{share.model}</b><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} /></header><div className="preview-share-snippets"><p><span>Prompt</span>{share.input_preview || 'No prompt preview.'}</p><p><span>Response</span>{share.output_preview || 'No response preview.'}</p></div></a>)}</div> : <div className="collection-pending"><b>The Library is empty.</b><span>Public traces will appear here after they’re shared.</span></div>}<a className="button button-dark" href="#/library">Browse the Library</a></section>;
 }
 
 const MAX_VERIFY_FILE_BYTES = 128 * 1024 * 1024 + 64 * 1024 + 16 * 1024;
@@ -304,7 +304,7 @@ export function VerificationPage({ verifyFile = verifyTracePackage }) {
     {!completed && errorCode && <VerificationError code={errorCode} />}
     {completed && <div ref={outcomeRef} className="verification-outcome" tabIndex={-1}>
       {status === 'error' && <VerificationError code={errorCode} onReset={resetVerification} />}
-      {result && <section className="verification-result verification-result--success" aria-labelledby="verification-success-title" aria-live="polite"><header><div><span className="eyebrow">Portable package</span><h2 id="verification-success-title">Verification passed.</h2></div><div className="verification-result-actions"><strong>Verified</strong><button type="button" className="button" onClick={resetVerification}>Verify another package</button></div></header><p className="verification-result-note">Checked from the package you selected.</p><dl className="verification-facts"><div><dt>Provider</dt><dd><ProviderIdentity provider={result.provider} /></dd></div><div><dt>Host</dt><dd>{result.host}</dd></div><div><dt>Capture time</dt><dd>{formatVerificationTime(result.authenticated_at_unix_ms)}</dd></div><div><dt>Notary key</dt><dd><code>{result.notary_key_id}</code></dd></div><div><dt>Trust source</dt><dd>{formatTrustSource(result.trust_source)} · generation {result.directory_generation}</dd></div><div><dt>Trace SHA-256</dt><dd><code>{result.trace_sha256}</code></dd></div><div><dt>Package SHA-256</dt><dd><code>{result.package_sha256}</code></dd></div></dl><section className="verification-trace"><div className="span-panel-head"><span>Normalized trace</span><small>{trace.length} {trace.length === 1 ? 'span' : 'spans'}</small></div>{trace.length ? <SpanTree spans={trace} /> : <p>No normalized spans were present.</p>}</section></section>}
+      {result && <section className="verification-result verification-result--success" aria-labelledby="verification-success-title" aria-live="polite"><header><div><span className="eyebrow">Portable package</span><h2 id="verification-success-title">Verification passed.</h2></div><div className="verification-result-actions"><strong>Verified</strong><button type="button" className="button" onClick={resetVerification}>Verify another package</button></div></header><dl className="verification-facts"><div><dt>Provider</dt><dd><ProviderIdentity provider={result.provider} /></dd></div><div><dt>Host</dt><dd>{result.host}</dd></div><div><dt>Capture time</dt><dd>{formatVerificationTime(result.authenticated_at_unix_ms)}</dd></div><div><dt>Notary key</dt><dd><code>{result.notary_key_id}</code></dd></div><div><dt>Trust source</dt><dd>{formatTrustSource(result.trust_source)} · generation {result.directory_generation}</dd></div><div><dt>Trace SHA-256</dt><dd><code>{result.trace_sha256}</code></dd></div><div><dt>Package SHA-256</dt><dd><code>{result.package_sha256}</code></dd></div></dl><section className="verification-trace"><div className="span-panel-head"><span>Normalized trace</span><small>{trace.length} {trace.length === 1 ? 'span' : 'spans'}</small></div>{trace.length ? <SpanTree spans={trace} /> : <p>No normalized spans were present.</p>}</section></section>}
     </div>}
   </main>;
 }
@@ -835,7 +835,7 @@ function LibraryShareRow({ share }) {
     <div className="share-index-previews">
       {inputPreview && <p><span>Input</span>{inputPreview}</p>}
       {outputPreview && <p><span>Response</span>{outputPreview}</p>}
-      {!inputPreview && !outputPreview && <p className="share-index-preview-missing">No conversation excerpt was disclosed.</p>}
+      {!inputPreview && !outputPreview && <p className="share-index-preview-missing">No prompt or response preview.</p>}
     </div>
   </a>;
 }
@@ -868,7 +868,7 @@ export function Library({ loadShares = getListedShares }) {
       <Select value={provider} onValueChange={setProvider}><SelectTrigger aria-label="Provider"><SelectValue /></SelectTrigger><SelectContent>{providers.map((value) => <SelectItem value={value} key={value}>{value === 'All' ? 'All providers' : <ProviderIdentity provider={value} />}</SelectItem>)}</SelectContent></Select>
       <span>{filtered.length} {filtered.length === 1 ? 'session' : 'sessions'}</span>
     </section>
-    {loadError ? <section className="collection-empty" role="alert"><b>The Library couldn’t load.</b><p>{loadError}</p><button type="button" onClick={() => setReload((value) => value + 1)}>Try again</button></section> : filtered.length ? <section className="share-index" aria-label="Public sessions">{filtered.map((share) => <LibraryShareRow share={share} key={share.id} />)}</section> : shares.length ? <section className="collection-empty"><b>Nothing matches.</b><p>Try a different search or provider.</p><button type="button" onClick={() => { setQuery(''); setProvider('All'); }}>Clear filters</button></section> : <section className="collection-empty"><b>The Library is empty.</b><p>Public sessions will appear here after they’re shared.</p><a href="#/docs/share">Learn how sharing works</a></section>}
+    {loadError ? <section className="collection-empty" role="alert"><b>The Library couldn’t load.</b><p>{loadError}</p><button type="button" onClick={() => setReload((value) => value + 1)}>Try again</button></section> : filtered.length ? <section className="share-index" aria-label="Public traces">{filtered.map((share) => <LibraryShareRow share={share} key={share.id} />)}</section> : shares.length ? <section className="collection-empty"><b>Nothing matches.</b><p>Try a different search or provider.</p><button type="button" onClick={() => { setQuery(''); setProvider('All'); }}>Clear filters</button></section> : <section className="collection-empty"><b>The Library is empty.</b><p>Public traces will appear here after they’re shared.</p><a href="#/docs/share">Learn how sharing works</a></section>}
   </main>;
 }
 
@@ -1096,9 +1096,17 @@ export function DeleteAccountPanel({ githubLogin, onDeleted, deleteAccount = del
     }
   };
   return <section className="dashboard-delete-account" aria-labelledby="delete-account-title">
-    <div><span className="eyebrow">Account deletion</span><h2 id="delete-account-title">Delete account</h2><p>Remove this account, its API keys and devices, credit records, and every hosted public or unlisted trace.</p></div>
+    <div><span className="eyebrow">Account deletion</span><h2 id="delete-account-title">Delete account</h2><p>Delete this account and its API keys, devices, credits, traces, and packages.</p></div>
     <button type="button" onClick={() => setOpen(true)}>Delete account</button>
-    <AlertDialog open={open} onOpenChange={close}><AlertDialogContent className="axis-alert-dialog axis-delete-account-dialog"><AlertDialogHeader><AlertDialogTitle>Delete {githubLogin}?</AlertDialogTitle><AlertDialogDescription>This permanently removes the account and disables its API keys, devices, trace links, and package downloads. This cannot be undone.</AlertDialogDescription></AlertDialogHeader><form id="delete-account-form" className="delete-account-form" onSubmit={remove}><label htmlFor="delete-account-confirmation">Type <b>{githubLogin}</b> to confirm.</label><Input id="delete-account-confirmation" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" disabled={deleting} />{error && <p role="alert">{error}</p>}</form><AlertDialogFooter><AlertDialogCancel disabled={deleting}>Keep account</AlertDialogCancel><AlertDialogAction type="button" disabled={confirmation !== githubLogin || deleting} onClick={remove}>{deleting ? 'Deleting…' : 'Delete account'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    <AlertDialog open={open} onOpenChange={close}><AlertDialogContent className="axis-alert-dialog axis-delete-account-dialog"><AlertDialogHeader><AlertDialogTitle>Delete {githubLogin}?</AlertDialogTitle><AlertDialogDescription>This deletes the account, API keys, devices, trace links, and packages. You cannot undo it.</AlertDialogDescription></AlertDialogHeader><form id="delete-account-form" className="delete-account-form" onSubmit={remove}><label htmlFor="delete-account-confirmation">Type <b>{githubLogin}</b> to confirm.</label><Input id="delete-account-confirmation" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" disabled={deleting} />{error && <p role="alert">{error}</p>}</form><AlertDialogFooter><AlertDialogCancel disabled={deleting}>Keep account</AlertDialogCancel><AlertDialogAction type="button" disabled={confirmation !== githubLogin || deleting} onClick={remove}>{deleting ? 'Deleting…' : 'Delete account'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+  </section>;
+}
+
+function CreditUtilizationFallback() {
+  return <section className="dashboard-utilization dashboard-utilization--loading" role="status" aria-label="Loading utilization">
+    <header><div><span className="eyebrow">Current allocation</span><h2>Utilization</h2></div><i /></header>
+    <div className="dashboard-utilization-plot"><i /></div>
+    <dl><div><dt><i />Used</dt><dd><i /></dd></div><div><dt><i />Available</dt><dd><i /></dd></div></dl>
   </section>;
 }
 
@@ -1189,16 +1197,16 @@ function Dashboard({ user, view, theme, onThemeChange, onAccountDeleted }) {
       </aside>
       <div className="dashboard-page">
         {activeView === 'overview' && <>
-          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Overview</h1><p>Your GitHub identity, admitted traces, current activity, and service utilization.</p></header>
+          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Overview</h1><p>Account details, trace activity, and credit use.</p></header>
           <div className="dashboard-summary">
             <div><span>GitHub account</span><b>{user.github_login}</b></div>
             <div><span>Admitted traces</span><b>{shares === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>
-          {credits && <Suspense fallback={<section className="dashboard-utilization dashboard-utilization--loading" role="status" aria-label="Loading utilization"><header><div><span className="eyebrow">Current allocation</span><h2>Utilization</h2></div><i /></header><div className="dashboard-utilization-plot"><i /></div><dl><div><dt><i />Used</dt><dd><i /></dd></div><div><dt><i />Available</dt><dd><i /></dd></div></dl></section>}><CreditUtilizationChart credits={credits} /></Suspense>}
+          {credits && <Suspense fallback={<CreditUtilizationFallback />}><CreditUtilizationChart credits={credits} formatBytes={fileSize} /></Suspense>}
         </>}
         {activeView === 'credits' && <>
-          <header className="dashboard-page-header"><span className="eyebrow">Usage</span><h1>Credits</h1><p>Review available finalization capacity, expirations, offers, and recent credit activity.</p></header>
+          <header className="dashboard-page-header"><span className="eyebrow">Usage</span><h1>Credits</h1><p>See what you’ve used, what remains, and when credits expire.</p></header>
           {credits && <section className="dashboard-credits" aria-labelledby="credit-balance-title">
             <header><div><span className="eyebrow">Utilization</span><h2 id="credit-balance-title">{fileSize(credits.total_remaining_bytes)} available</h2></div><div className="dashboard-credit-meta"><span>Resets {sessionDate(credits.reset_at)}</span></div></header>
             <p className="dashboard-credit-note">Included credits reset monthly. Credits you purchase or receive are added separately and keep their own expiration.</p>
@@ -1209,14 +1217,14 @@ function Dashboard({ user, view, theme, onThemeChange, onAccountDeleted }) {
           </section>}
         </>}
         {activeView === 'settings' && <>
-          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Settings</h1><p>Manage this browser, automation access, and the local services connected to your account.</p></header>
+          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Settings</h1><p>Manage appearance, API keys, connected devices, and account deletion.</p></header>
           <AccountSettings theme={theme} onThemeChange={onThemeChange} />
           <ApiKeysPanel />
           <section className="dashboard-sessions" aria-labelledby="connected-services-title"><header><div><span className="eyebrow">Local service access</span><h2 id="connected-services-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
           <DeleteAccountPanel githubLogin={user.github_login} onDeleted={onAccountDeleted} />
         </>}
         {activeView === 'traces' && <>
-          <header className="dashboard-page-header"><span className="eyebrow">Published evidence</span><h1>Your traces</h1><p>Review admission state, visibility, and the stable links created by your local service.</p></header>
+          <header className="dashboard-page-header"><span className="eyebrow">Published evidence</span><h1>Your traces</h1><p>See which traces are live, still processing, or unavailable.</p></header>
           <section className="dashboard-traces" aria-label="Your traces">
             {shareError && <p className="dashboard-session-error" role="alert">{shareError}</p>}
             {shares === null && !shareError ? <p className="dashboard-session-empty">Loading your traces…</p> : shares?.length ? <div className="dashboard-trace-list">{shares.map((share) => {
@@ -1233,7 +1241,7 @@ function Dashboard({ user, view, theme, onThemeChange, onAccountDeleted }) {
                   {share.package_url && <a href={share.package_url}>Package</a>}
                 </div>
               </article>;
-            })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No traces</span><b>Publish your first verified trace.</b><p>Finalize a capture in the local dashboard, preview its disclosed conversation, then create an Unlisted or Listed link.</p><a href="#/docs/share">Open the sharing guide</a></div>}
+            })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No traces</span><b>Publish your first verified trace.</b><p>Finalize a local capture, check the disclosed conversation, then publish it as Unlisted or Listed.</p><a href="#/docs/share">Open the sharing guide</a></div>}
           </section>
         </>}
       </div>

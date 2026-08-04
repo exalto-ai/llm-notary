@@ -226,12 +226,6 @@
 }
 .verification-result-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 
-.verification-result-note {
-  margin: 18px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-}
-
 .verification-facts {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
