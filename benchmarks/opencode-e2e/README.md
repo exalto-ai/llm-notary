@@ -1,0 +1,81 @@
+# OpenCode production canary
+
+This benchmark runs one bounded coding task through OpenCode and the LLM
+Notary OpenRouter proxy. It is an end-to-end product canary, not a model
+benchmark.
+
+The runner:
+
+1. preflights the exact `:free` OpenRouter model and tool support;
+2. starts `llm-notaryd` with isolated config, catalog, vault, and artifact paths;
+3. copies the failing Python fixture into a private `/tmp` directory;
+4. lets a six-step OpenCode agent modify only `retry_after.py`;
+5. checks the test result and exact diff allowlist;
+6. finalizes and locally verifies eligible captures;
+7. scans the public disclosure, explicitly accepts only entropy-heuristic false
+   positives, publishes it as Unlisted, and polls admission;
+8. downloads each public package and verifies it again; and
+9. deletes all private state and retains only sanitized metrics and public URLs.
+
+OpenCode raw events, prompts, model output, daemon logs, provider responses,
+encrypted bundles, and private finalized packages are never written to the
+result artifact or workflow log.
+
+## Local run
+
+The ignored repository `.env` must contain these dedicated values:
+
+```dotenv
+OPENROUTER_FREE_TIER_API_KEY=...
+LLM_NOTARY_E2E_API_KEY=...
+LLM_NOTARY_SLACK_WEBHOOK_URL=...
+```
+
+`OPENROUTER_FREE_TIER_API_KEY` is intentionally separate from a normal paid
+`OPENROUTER_API_KEY`. The runner maps the free key to OpenCode only inside the
+isolated child process.
+
+Build and run from the repository root:
+
+```bash
+cargo build --release --locked -p llm-notary-client --bins
+npm install --global opencode-ai@1.18.11
+
+set -a
+source .env
+set +a
+
+result=/tmp/llm-notary-opencode-e2e-result.json
+set +e
+python3 benchmarks/opencode-e2e/run.py \
+  --llm-notary target/release/llm-notary \
+  --llm-notaryd target/release/llm-notaryd \
+  --result "$result"
+status=$?
+python3 benchmarks/opencode-e2e/notify.py "$result" || true
+exit "$status"
+```
+
+This deliberately consumes hosted finalization capacity and publishes Unlisted
+public traces. The runner's `--force` publication decision cannot override a
+known secret, credential field, disclosed header, malformed package, or failed
+verification. Unit tests do neither:
+
+```bash
+python3 benchmarks/opencode-e2e/test_runner.py -v
+```
+
+## GitHub Actions
+
+`.github/workflows/opencode-e2e.yml` runs every Monday and supports manual
+dispatch. The reviewed default is `openrouter/cohere/north-mini-code:free`;
+changing it starts a new observational timing series. Configure these
+repository secrets:
+
+- `OPENROUTER_FREE_TIER_API_KEY`
+- `LLM_NOTARY_E2E_API_KEY`
+- `LLM_NOTARY_SLACK_WEBHOOK_URL`
+
+The workflow retains only `opencode-e2e-result.json`. The optional manual model
+override must still be an exact OpenRouter `:free` model with tool support and
+zero token and request pricing.

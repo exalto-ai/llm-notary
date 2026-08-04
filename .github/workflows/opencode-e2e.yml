@@ -1,0 +1,77 @@
+name: OpenCode E2E canary
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Reviewed OpenCode model ID; must be an exact OpenRouter :free model
+        required: false
+        default: openrouter/cohere/north-mini-code:free
+        type: string
+  schedule:
+    - cron: "17 16 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opencode-e2e-production
+  cancel-in-progress: false
+
+jobs:
+  canary:
+    name: Production canary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: opencode-e2e
+    env:
+      CANARY_MODEL: ${{ inputs.model || 'openrouter/cohere/north-mini-code:free' }}
+      CANARY_RESULT: ${{ runner.temp }}/opencode-e2e-result.json
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4.2.2
+
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Install Node 24.14.1
+        uses: actions/setup-node@v4.4.0
+        with:
+          node-version: 24.14.1
+
+      - name: Install OpenCode 1.18.11
+        run: npm install --global opencode-ai@1.18.11
+
+      - name: Build released LLM Notary binaries
+        run: cargo build --release --locked -p llm-notary-client --bins
+
+      - name: Test canary parser and safety gates
+        run: python3 benchmarks/opencode-e2e/test_runner.py -v
+
+      - name: Run production canary
+        env:
+          OPENROUTER_FREE_TIER_API_KEY: ${{ secrets.OPENROUTER_FREE_TIER_API_KEY }}
+          LLM_NOTARY_E2E_API_KEY: ${{ secrets.LLM_NOTARY_E2E_API_KEY }}
+        run: |
+          python3 benchmarks/opencode-e2e/run.py \
+            --model "$CANARY_MODEL" \
+            --opencode "$(command -v opencode)" \
+            --llm-notary "$GITHUB_WORKSPACE/target/release/llm-notary" \
+            --llm-notaryd "$GITHUB_WORKSPACE/target/release/llm-notaryd" \
+            --result "$CANARY_RESULT"
+
+      - name: Post sanitized Slack summary
+        if: always()
+        env:
+          LLM_NOTARY_SLACK_WEBHOOK_URL: ${{ secrets.LLM_NOTARY_SLACK_WEBHOOK_URL }}
+        run: python3 benchmarks/opencode-e2e/notify.py "$CANARY_RESULT"
+
+      - name: Upload sanitized metrics
+        if: always()
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: opencode-e2e-result
+          path: ${{ env.CANARY_RESULT }}
+          if-no-files-found: warn
+          retention-days: 14

@@ -38,6 +38,7 @@ Use the generated contract when prose and an installed service disagree.
 - [Development and validation](development.md)
 - [Design language](../DESIGN.md)
 - [Provider icon assets and usage terms](provider-icons.md)
+- [OpenCode production canary](../benchmarks/opencode-e2e/README.md)
 - [Repository agent instructions](../AGENTS.md)
 - [Contributing](../CONTRIBUTING.md)
 
