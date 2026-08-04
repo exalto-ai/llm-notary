@@ -347,6 +347,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/me/credits/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the signed-in account's credit activity */
+        get: operations["credit_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/shares": {
         parameters: {
             query?: never;
@@ -592,9 +609,6 @@ export interface components {
             revoked_at?: number | null;
             scopes: components["schemas"]["ApiScope"][];
         };
-        ApiKeysResponse: {
-            api_keys: components["schemas"]["ApiKeyResponse"][];
-        };
         /** @enum {string} */
         ApiScope: "account:read" | "notary:admit" | "publish:read" | "publish:write";
         ApprovalDetails: {
@@ -694,7 +708,6 @@ export interface components {
             offers: components["schemas"]["CreditOffer"][];
         };
         CreditSummary: {
-            history: components["schemas"]["CreditHistoryEntry"][];
             /** Format: int64 */
             included_monthly_remaining_bytes: number;
             /** Format: int64 */
@@ -742,11 +755,9 @@ export interface components {
             publisher: string;
             share_url: string;
         };
-        ListedSharesResponse: {
-            shares: components["schemas"]["ListedShareSummary"][];
-        };
         MeResponse: {
             credits: components["schemas"]["CreditSummary"];
+            share_stats: components["schemas"]["ShareStats"];
             user: components["schemas"]["PublicUser"];
         };
         NotaryDirectoryRecordResponse: {
@@ -775,6 +786,94 @@ export interface components {
         NotaryKeyStatusResponse: "active" | "retiring" | "retired" | "revoked";
         /** @enum {string} */
         NotaryTransportResponse: "tcp" | "tls";
+        /** @description Uniform response shape for every paginated list route. */
+        Page_ApiKeyResponse: {
+            items: {
+                /** Format: int64 */
+                created_at: number;
+                /** Format: int64 */
+                expires_at?: number | null;
+                id: string;
+                /** Format: int64 */
+                last_used_at?: number | null;
+                name: string;
+                prefix: string;
+                /** Format: int64 */
+                revoked_at?: number | null;
+                scopes: components["schemas"]["ApiScope"][];
+            }[];
+            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
+            next_cursor?: string | null;
+        };
+        /** @description Uniform response shape for every paginated list route. */
+        Page_CreditHistoryEntry: {
+            items: {
+                /** Format: int64 */
+                amount_bytes: number;
+                /** Format: int64 */
+                created_at: number;
+                display_label: string;
+                /** Format: int64 */
+                expires_at?: number | null;
+                id: string;
+                kind: components["schemas"]["CreditHistoryKind"];
+                source_kind?: string | null;
+            }[];
+            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
+            next_cursor?: string | null;
+        };
+        /** @description Uniform response shape for every paginated list route. */
+        Page_ListedShareSummary: {
+            items: {
+                /** Format: int64 */
+                authenticated_at_unix_ms?: number | null;
+                id: string;
+                input_preview?: string | null;
+                model: string;
+                output_preview?: string | null;
+                provider: string;
+                publisher: string;
+                share_url: string;
+            }[];
+            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
+            next_cursor?: string | null;
+        };
+        /** @description Uniform response shape for every paginated list route. */
+        Page_ShareResponse: {
+            items: {
+                /** Format: int64 */
+                admitted_at?: number | null;
+                /** Format: int64 */
+                created_at: number;
+                failure_code?: string | null;
+                force: boolean;
+                id: string;
+                package_url?: string | null;
+                share_url?: string | null;
+                state: string;
+                status_url: string;
+                /** Format: int64 */
+                updated_at: number;
+                visibility: components["schemas"]["ShareVisibility"];
+            }[];
+            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
+            next_cursor?: string | null;
+        };
+        /** @description Uniform response shape for every paginated list route. */
+        Page_WebCliSession: {
+            items: {
+                /** Format: int64 */
+                created_at: number;
+                device_name: string;
+                /** Format: int64 */
+                expires_at: number;
+                id: string;
+                /** Format: int64 */
+                last_used_at: number;
+            }[];
+            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
+            next_cursor?: string | null;
+        };
         PublicShareDetail: {
             /** Format: int64 */
             admitted_at: number;
@@ -852,6 +951,14 @@ export interface components {
             updated_at: number;
             visibility: components["schemas"]["ShareVisibility"];
         };
+        ShareStats: {
+            /** Format: int64 */
+            admitted: number;
+            /** Format: int64 */
+            in_progress: number;
+            /** Format: int64 */
+            total: number;
+        };
         /** @enum {string} */
         ShareVisibility: "unlisted" | "listed";
         /** Format: binary */
@@ -892,12 +999,6 @@ export interface components {
             id: string;
             /** Format: int64 */
             last_used_at: number;
-        };
-        WebCliSessionsResponse: {
-            sessions: components["schemas"]["WebCliSession"][];
-        };
-        WebSharesResponse: {
-            shares: components["schemas"]["ShareResponse"][];
         };
     };
     responses: never;
@@ -1282,7 +1383,11 @@ export interface operations {
     };
     list_cli_sessions: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Page size; defaults to 50 */
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1294,7 +1399,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WebCliSessionsResponse"];
+                    "application/json": components["schemas"]["Page_WebCliSession"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             401: {
@@ -1645,7 +1758,11 @@ export interface operations {
     };
     list_api_keys: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Page size; defaults to 50 */
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1657,7 +1774,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ApiKeysResponse"];
+                    "application/json": components["schemas"]["Page_ApiKeyResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             401: {
@@ -1857,9 +1982,13 @@ export interface operations {
             };
         };
     };
-    list_web_publish_jobs: {
+    credit_history: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Page size; defaults to 50 */
+                limit?: number;
+                cursor?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1871,7 +2000,62 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["WebSharesResponse"];
+                    "application/json": components["schemas"]["Page_CreditHistoryEntry"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_web_publish_jobs: {
+        parameters: {
+            query?: {
+                /** @description Page size; defaults to 50 */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_ShareResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             401: {
@@ -1992,7 +2176,13 @@ export interface operations {
     };
     listed_shares: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Page size; defaults to 50 */
+                limit?: number;
+                cursor?: string;
+                search?: string;
+                provider?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -2004,7 +2194,15 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ListedSharesResponse"];
+                    "application/json": components["schemas"]["Page_ListedShareSummary"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             500: {

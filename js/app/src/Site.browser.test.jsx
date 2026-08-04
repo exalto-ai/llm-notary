@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { AccountSettings, ApiKeysPanel, CliApproval, DeleteAccountPanel, Header, HostedNotaryRecord, Library, ListedSharesPreview, SharePage, VerificationPage } from './main';
+import { AccountSettings, ApiKeysPanel, CliApproval, Dashboard, DeleteAccountPanel, Header, HostedNotaryRecord, Library, ListedSharesPreview, SharePage, VerificationPage } from './main';
 import { ProviderIdentity } from './ProviderIdentity';
 import { initialThemePreference } from './theme';
 
@@ -23,7 +23,16 @@ const libraryShares = Array.from({ length: 20 }, (_, index) => ({
   share_url: `https://example.test/s/share-${index + 1}`,
 }));
 
-const loadLibrary = async () => structuredClone(libraryShares);
+const loadLibrary = async ({ limit = 20, cursor, search, provider } = {}) => {
+  const query = search?.toLowerCase() || '';
+  const matches = libraryShares.filter((share) => {
+    const text = `${share.provider} ${share.model} ${share.publisher} ${share.input_preview} ${share.output_preview}`.toLowerCase();
+    return (!query || text.includes(query)) && (!provider || share.provider === provider);
+  });
+  const offset = cursor ? Number(cursor) : 0;
+  const items = matches.slice(offset, offset + limit);
+  return { items: structuredClone(items), next_cursor: offset + limit < matches.length ? String(offset + limit) : null };
+};
 const loadLibraryTrace = async (id) => ({
   resourceSpans: [{ scopeSpans: [{ spans: [{
     name: 'gen_ai.inference', spanId: `${id}-span`, attributes: [
@@ -62,6 +71,53 @@ describe('hosted site', () => {
     await expect.element(appearance.getByRole('radio', { name: 'dark' })).toBeVisible();
   });
 
+  test('discards an old credit-history page after claiming an offer', async () => {
+    let rootRequests = 0;
+    let resolveOldPage;
+    let markOldPageStarted;
+    const oldPageStarted = new Promise((resolve) => { markOldPageStarted = resolve; });
+    const entry = (id, label, createdAt) => ({
+      id,
+      kind: 'grant',
+      amount_bytes: 1_024,
+      display_label: label,
+      created_at: createdAt,
+    });
+    const loadCreditHistory = async (options) => {
+      if (options.cursor) {
+        markOldPageStarted();
+        return new Promise((resolve) => { resolveOldPage = resolve; });
+      }
+      rootRequests += 1;
+      return rootRequests === 1
+        ? { items: [entry('initial', 'Initial credit', 100)], next_cursor: 'old-cursor' }
+        : { items: [entry('claimed', 'Claimed credit', 200), entry('initial', 'Initial credit', 100)], next_cursor: 'fresh-cursor' };
+    };
+    render(<Dashboard
+      user={{ github_login: 'fixture-user', credits: { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null }, share_stats: { total: 0, admitted: 0, in_progress: 0 } }}
+      view="credits"
+      theme="light"
+      onThemeChange={() => {}}
+      onAccountDeleted={() => {}}
+      loadCliSessions={async () => ({ items: [], next_cursor: null })}
+      loadMyShares={async () => ({ items: [], next_cursor: null })}
+      loadCreditOffers={async () => [{ id: 'offer-1', title: 'Test credit', description: 'One-time test credit.', amount_bytes: 1_024, claim_expires_at: 4_102_444_800, credit_expires_at: 4_102_444_800 }]}
+      loadCreditHistory={loadCreditHistory}
+      claimOfferRequest={async () => ({ credits: { included_monthly_remaining_bytes: 2_048, supplemental_remaining_bytes: 0, total_granted_bytes: 2_048, total_remaining_bytes: 2_048, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null } })}
+    />);
+
+    await expect.element(page.getByText('Initial credit')).toBeVisible();
+    await page.getByRole('button', { name: 'Load older activity' }).click();
+    await oldPageStarted;
+    await page.getByRole('button', { name: /^Claim / }).click();
+    await expect.element(page.getByText('Claimed credit')).toBeVisible();
+
+    resolveOldPage({ items: [entry('stale', 'Stale older credit', 50)], next_cursor: 'stale-cursor' });
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    await expect.element(page.getByText('Stale older credit')).not.toBeInTheDocument();
+    await expect.element(page.getByText('Claimed credit')).toBeVisible();
+  });
+
   test('renders every known provider icon and neutral fallbacks beside provider text', async () => {
     render(<div>
       {['openai', 'anthropic', 'deepseek', 'openrouter', 'future-provider'].map((provider) => <ProviderIdentity provider={provider} key={provider} />)}
@@ -79,12 +135,12 @@ describe('hosted site', () => {
   });
 
   test('keeps an OpenRouter icon when its model slug names an upstream vendor', async () => {
-    render(<Library loadShares={async () => [{
+    render(<Library loadShares={async () => ({ items: [{
       id: 'routed-share', provider: 'openrouter', model: 'openai/gpt-5-mini',
       publisher: 'fixture-user', authenticated_at_unix_ms: 1_786_000_000_000,
       input_preview: 'Compare these records.', output_preview: 'The second record is stronger.',
       share_url: 'https://example.test/s/routed-share'
-    }]} />);
+    }], next_cursor: null })} />);
 
     const row = page.getByRole('link', { name: /openai\/gpt-5-mini/ });
     await expect.element(row).toBeVisible();
@@ -135,7 +191,7 @@ describe('hosted site', () => {
     let createRequest;
     let revokedId;
     render(<ApiKeysPanel
-      loadKeys={async () => []}
+      loadKeys={async () => ({ items: [], next_cursor: null })}
       createKey={async (request) => {
         createRequest = request;
         return {
@@ -199,10 +255,12 @@ describe('hosted site', () => {
   });
 
   test('shows provider marks in the landing Library preview', async () => {
-    render(<ListedSharesPreview loadShares={async () => [libraryShares[0], libraryShares[11]]} />);
+    let request;
+    render(<ListedSharesPreview loadShares={async (options) => { request = options; return { items: [libraryShares[0], libraryShares[11]], next_cursor: null }; }} />);
 
     const preview = page.getByLabelText('Featured public traces');
     await expect.element(preview).toBeVisible();
+    expect(request).toEqual({ limit: 5 });
     expect(preview.element().querySelectorAll('[data-provider-icon="openai"]')).toHaveLength(1);
     expect(preview.element().querySelectorAll('[data-provider-icon="anthropic"]')).toHaveLength(1);
   });
@@ -216,13 +274,115 @@ describe('hosted site', () => {
     await expect.element(page.getByRole('link', { name: /gpt-5.2/ })).not.toBeInTheDocument();
   });
 
+  test('keeps Library controls and reports a failed filtered request', async () => {
+    const loadShares = async (options) => {
+      if (options.search) throw new Error('Search is temporarily unavailable.');
+      return { items: [libraryShares[0]], next_cursor: 'old-cursor' };
+    };
+    render(<Library loadShares={loadShares} />);
+    await expect.element(page.getByRole('link', { name: /gpt-5.2/ })).toBeVisible();
+
+    const search = page.getByPlaceholder('Search conversations or models');
+    await search.fill('claude');
+    await expect.element(search).toBeVisible();
+    await expect.element(page.getByText('Search is temporarily unavailable.')).toBeVisible();
+    await expect.element(page.getByRole('link', { name: /gpt-5.2/ })).not.toBeInTheDocument();
+  });
+
+  test('waits for an indexable Library search term', async () => {
+    let requests = 0;
+    render(<Library loadShares={async (options) => { requests += 1; return loadLibrary(options); }} />);
+    await expect.element(page.getByText('20 traces shown')).toBeVisible();
+    const beforeSearch = requests;
+
+    await page.getByPlaceholder('Search conversations or models').fill('ai');
+    await expect.element(page.getByText('Search needs three letters or numbers together.')).toBeVisible();
+    await new Promise((resolve) => window.setTimeout(resolve, 250));
+    expect(requests).toBe(beforeSearch);
+  });
+
+  test('keeps Library filters while loading the next page', async () => {
+    const requests = [];
+    const first = libraryShares[11];
+    const second = { ...libraryShares[11], id: 'share-continued', model: 'claude-haiku-4-5' };
+    const loadShares = async (options) => {
+      requests.push(options);
+      return options.cursor
+        ? { items: [second], next_cursor: null }
+        : { items: [first], next_cursor: 'next-library-page' };
+    };
+    render(<Library loadShares={loadShares} />);
+
+    const search = page.getByPlaceholder('Search conversations or models');
+    await search.fill('claude');
+    await expect.element(page.getByRole('link', { name: /claude-sonnet-4-6/ })).toBeVisible();
+    await page.getByRole('button', { name: 'Load more traces' }).click();
+    await expect.element(page.getByRole('link', { name: /claude-haiku-4-5/ })).toBeVisible();
+    expect(requests.at(-1)).toMatchObject({ cursor: 'next-library-page', search: 'claude', limit: 20 });
+  });
+
+  test('discards an old Library continuation after filters change', async () => {
+    let resolveOldPage;
+    let markLoadStarted;
+    const loadStarted = new Promise((resolve) => { markLoadStarted = resolve; });
+    const initial = libraryShares[0];
+    const filtered = libraryShares[11];
+    const stale = { ...libraryShares[0], id: 'stale-share', output_preview: 'Stale continuation' };
+    const loadShares = async (options) => {
+      if (options.cursor) {
+        markLoadStarted();
+        return new Promise((resolve) => { resolveOldPage = resolve; });
+      }
+      if (options.search === 'claude') return { items: [filtered], next_cursor: null };
+      return { items: [initial], next_cursor: 'old-cursor' };
+    };
+    render(<Library loadShares={loadShares} />);
+
+    await expect.element(page.getByRole('button', { name: 'Load more traces' })).toBeVisible();
+    await page.getByRole('button', { name: 'Load more traces' }).click();
+    await loadStarted;
+    await page.getByPlaceholder('Search conversations or models').fill('claude');
+    await expect.element(page.getByRole('button', { name: 'Load more traces' })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('link', { name: /claude-sonnet-4-6/ })).toBeVisible();
+
+    resolveOldPage({ items: [stale], next_cursor: 'stale-cursor' });
+    await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    await expect.element(page.getByText('Stale continuation')).not.toBeInTheDocument();
+    await expect.element(page.getByRole('button', { name: 'Load more traces' })).not.toBeInTheDocument();
+  });
+
+  test('loads older API keys without replacing the current page', async () => {
+    const key = (id, name) => ({
+      id, prefix: `llmn_v1_${id.slice(0, 12)}`, name,
+      scopes: ['account:read'], created_at: 1_786_000_000,
+      last_used_at: null, expires_at: null, revoked_at: null
+    });
+    const requests = [];
+    render(<ApiKeysPanel
+      loadKeys={async (options) => {
+        requests.push(options);
+        return options.cursor
+          ? { items: [key('b'.repeat(32), 'Older key')], next_cursor: null }
+          : { items: [key('a'.repeat(32), 'Current key')], next_cursor: 'next-key-page' };
+      }}
+      createKey={async () => { throw new Error('not used'); }}
+      revokeKey={async () => {}}
+    />);
+
+    await expect.element(page.getByText('Current key')).toBeVisible();
+    await page.getByRole('button', { name: 'Load more API keys' }).click();
+    await expect.element(page.getByText('Older key')).toBeVisible();
+    await expect.element(page.getByText('Current key')).toBeVisible();
+    expect(requests.at(-1)).toEqual({ limit: 20, cursor: 'next-key-page' });
+  });
+
   test('does not treat a bare legacy trace as a package-backed preview', async () => {
     let traceLoads = 0;
     render(<Library
-      loadShares={async () => [{
+      loadShares={async () => ({ items: [{
         id: 'legacy-share', provider: 'openai', model: 'gpt-4.1', publisher: 'fixture-user',
         authenticated_at_unix_ms: 1_786_000_000_000, share_url: 'https://example.test/s/legacy-share'
-      }]}
+      }], next_cursor: null })}
       loadTrace={async (id) => { traceLoads += 1; return loadLibraryTrace(id); }}
     />);
 

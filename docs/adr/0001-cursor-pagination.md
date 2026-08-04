@@ -47,11 +47,11 @@ separate field rather than overloading the backward-pagination cursor.
 | Local `GET /v1/notaries` and status `notaries` | configured notaries | Statically bounded | The trusted directory is configuration, not user data. |
 | Local capture detail `artifacts` and `finalizations` | child records | Embedded bounded | A capture has a fixed artifact set and one durable finalization lineage. |
 | Local operation `attempt_history` | child records | Embedded detail | Complete attempt history is returned only for one explicitly selected operation, never in list rows. |
-| Hosted `GET /api/public/shares` | public shares | Paginated | Migrate in #200; landing-page callers request five rows. |
-| Hosted `GET /api/me/shares` | account shares | Paginated | Migrate in #200. |
-| Hosted `GET /api/cli/sessions` | CLI sessions | Paginated | Migrate in #200. |
-| Hosted `GET /api/me/api-keys` | API keys | Paginated | Migrate in #200. |
-| Hosted account `credits.history` | credit ledger | Paginated | Move to a dedicated endpoint in #200; keep account totals as aggregates. |
+| Hosted `GET /api/public/shares` | public shares | Paginated | Uses authenticated provider time plus share ID; the landing page requests five rows. |
+| Hosted `GET /api/me/shares` | account shares | Paginated | Uses creation time plus share ID under the account predicate. |
+| Hosted `GET /api/cli/sessions` | CLI sessions | Paginated | Uses immutable creation time plus session ID under the account and active-session predicates. |
+| Hosted `GET /api/me/api-keys` | API keys | Paginated | Uses creation time plus key ID under the account predicate. |
+| Hosted `GET /api/me/credits/history` | credit ledger | Paginated | Dedicated account-scoped history; `/api/me` retains aggregate balances only. |
 | Hosted `GET /api/me/credit-offers` | configured offers | Statically bounded | Operators define the small offer catalog. |
 | Hosted notary directory `notaries` | configured notaries | Statically bounded | The signed trust directory has an operator-defined maximum. |
 | API-key `scopes`, verification diagnostics, trace spans, and package entries | value-object arrays | Embedded | These arrays describe one selected resource and are not independently listed. |

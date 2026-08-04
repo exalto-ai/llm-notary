@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::StatusCode,
 };
 use axum_extra::extract::cookie::CookieJar;
@@ -15,8 +15,9 @@ use uuid::Uuid;
 use super::{
     ApiError, ApiResult, AppState, authenticated_web_user,
     authn::{API_KEY_VERSION_PREFIX, ApiScope},
-    database_error, random_token, unix_timestamp,
+    database_error, pagination, random_token, unix_timestamp,
 };
+use llm_notary_core::pagination::{CursorScope, Page, PageQuery, decode_cursor};
 
 const MAX_API_KEY_NAME_BYTES: usize = 100;
 const DISPLAY_ID_BYTES: usize = 12;
@@ -35,9 +36,10 @@ struct CreateApiKeyResponse {
     secret: String,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-struct ApiKeysResponse {
-    api_keys: Vec<ApiKeyResponse>,
+#[derive(Deserialize, Serialize)]
+struct ApiKeyPagePosition {
+    created_at: i64,
+    id: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -153,8 +155,10 @@ async fn create_api_key(
     get,
     path = "/api/me/api-keys",
     summary = "List account API keys",
+    params(("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 100), ("cursor" = Option<String>, Query)),
     responses(
-        (status = 200, body = ApiKeysResponse),
+        (status = 200, body = Page<ApiKeyResponse>),
+        (status = 400, body = super::ErrorResponse),
         (status = 401, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse)
     ),
@@ -164,13 +168,31 @@ async fn create_api_key(
 async fn list_api_keys(
     State(state): State<AppState>,
     jar: CookieJar,
-) -> ApiResult<Json<ApiKeysResponse>> {
+    query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
+) -> ApiResult<Json<Page<ApiKeyResponse>>> {
+    let Query(query) = query.map_err(pagination::query_error)?;
     let user = authenticated_web_user(&state, &jar).await?;
+    let limit = query
+        .limit(pagination::DEFAULT_PAGE_LIMIT, pagination::MAX_PAGE_LIMIT)
+        .map_err(pagination::api_error)?;
+    let scope = CursorScope::new("/api/me/api-keys", &user.0, "created_at desc, id desc")
+        .map_err(pagination::api_error)?;
+    let position = query
+        .cursor
+        .as_deref()
+        .map(|cursor| decode_cursor::<ApiKeyPagePosition>(&scope, cursor))
+        .transpose()
+        .map_err(pagination::api_error)?;
     let rows = sqlx::query_as::<_, ApiKeyRow>(
         "SELECT id, display_prefix, name, scopes, created_at, last_used_at, expires_at, revoked_at
-         FROM api_keys WHERE user_id = $1 ORDER BY created_at DESC, id DESC",
+         FROM api_keys WHERE user_id = $1
+           AND ($2::TEXT IS NULL OR (created_at, id) < ($3, $2))
+         ORDER BY created_at DESC, id DESC LIMIT $4",
     )
     .bind(&user.0)
+    .bind(position.as_ref().map(|position| &position.id))
+    .bind(position.as_ref().map(|position| position.created_at))
+    .bind(i64::try_from(limit + 1).map_err(|error| ApiError::internal(error.into()))?)
     .fetch_all(&state.database)
     .await
     .map_err(database_error)?;
@@ -178,7 +200,12 @@ async fn list_api_keys(
         .into_iter()
         .map(api_key_response)
         .collect::<ApiResult<Vec<_>>>()?;
-    Ok(Json(ApiKeysResponse { api_keys }))
+    let page = Page::from_limit_plus_one(api_keys, limit, &scope, |api_key| ApiKeyPagePosition {
+        created_at: api_key.created_at,
+        id: api_key.id.clone(),
+    })
+    .map_err(pagination::api_error)?;
+    Ok(Json(page))
 }
 
 #[utoipa::path(
@@ -340,11 +367,95 @@ mod tests {
             .unwrap();
         assert_ne!(stored, first.secret.as_bytes());
 
-        let listed = list_api_keys(State(state.clone()), jar("web-one"))
-            .await
-            .unwrap();
-        assert_eq!(listed.api_keys.len(), 2);
-        assert!(listed.api_keys.iter().all(|key| key.revoked_at.is_none()));
+        let first_page = list_api_keys(
+            State(state.clone()),
+            jar("web-one"),
+            Ok(Query(PageQuery {
+                limit: Some(1),
+                cursor: None,
+            })),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first_page.items.len(), 1);
+        let cursor = first_page.next_cursor.clone().expect("next key page");
+
+        let (_, inserted_between_pages) =
+            create_api_key(State(state.clone()), jar("web-one"), Json(request()))
+                .await
+                .unwrap();
+        let second_page = list_api_keys(
+            State(state.clone()),
+            jar("web-one"),
+            Ok(Query(PageQuery {
+                limit: Some(100),
+                cursor: Some(cursor.clone()),
+            })),
+        )
+        .await
+        .unwrap();
+        assert!(
+            second_page
+                .items
+                .iter()
+                .all(|key| key.id != first_page.items[0].id)
+        );
+        assert!(
+            second_page
+                .items
+                .iter()
+                .any(|key| key.id == first.api_key.id || key.id == second.api_key.id)
+        );
+        assert!(second_page.next_cursor.is_none());
+
+        let cross_account = list_api_keys(
+            State(state.clone()),
+            jar("web-two"),
+            Ok(Query(PageQuery {
+                limit: Some(1),
+                cursor: Some(cursor),
+            })),
+        )
+        .await;
+        assert!(matches!(
+            cross_account,
+            Err(ApiError {
+                code: "cursor_scope_mismatch",
+                ..
+            })
+        ));
+        let malformed = list_api_keys(
+            State(state.clone()),
+            jar("web-one"),
+            Ok(Query(PageQuery {
+                limit: Some(1),
+                cursor: Some("not-a-cursor".to_owned()),
+            })),
+        )
+        .await;
+        assert!(matches!(
+            malformed,
+            Err(ApiError {
+                code: "invalid_cursor",
+                ..
+            })
+        ));
+
+        let listed = list_api_keys(
+            State(state.clone()),
+            jar("web-one"),
+            Ok(Query(PageQuery::default())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(listed.items.len(), 3);
+        assert!(listed.items.iter().all(|key| key.revoked_at.is_none()));
+        assert!(
+            listed
+                .items
+                .iter()
+                .any(|key| key.id == inserted_between_pages.api_key.id)
+        );
         assert!(
             !serde_json::to_string(&listed.0)
                 .unwrap()

@@ -96,17 +96,20 @@ Access-controlled private shares are outside this contract.
 
 ## Public API
 
-- `GET /api/public/shares` returns the Listed index with stable share facts and
-  short input/output excerpts derived from each disclosed public trace. Legacy
-  shares without stored excerpts return `null` preview fields.
+- `GET /api/public/shares` returns a cursor-paginated Listed index with stable
+  share facts and short input/output excerpts derived from each disclosed
+  public trace. The `search` and `provider` filters run before pagination.
+  Search terms require three consecutive letters or numbers, treat `%` and `_` literally,
+  and use the indexed public search document stored at admission. Legacy shares
+  without stored excerpts return `null` preview fields.
 - `GET /api/public/shares/{share_id}` returns one admitted share record for
   either visibility.
 - `GET /api/public/shares/{share_id}/trace.otlp.json` returns its
   integrity-checked canonical trace.
 - `GET /api/public/shares/{share_id}/package.llmtrace` returns the exact
   admitted package with immutable caching, byte size, and SHA-256 metadata.
-- Authenticated `GET /api/me/shares` returns the current account's small share
-  records.
+- Authenticated `GET /api/me/shares` returns the current account's share records
+  in cursor-paginated order.
 
 The direct page leads with a readable conversation. Tool calls and results are
 inline and collapsible; hashes, notary identity, and other proof details are

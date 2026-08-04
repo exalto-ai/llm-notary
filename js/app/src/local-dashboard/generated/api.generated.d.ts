@@ -481,20 +481,7 @@ export interface components {
             force?: boolean;
             visibility: components["schemas"]["ShareVisibility"];
         };
-        CreditHistoryEntry: {
-            /** Format: int64 */
-            amount_bytes: number;
-            /** Format: int64 */
-            created_at: number;
-            display_label: string;
-            /** Format: int64 */
-            expires_at?: number | null;
-            id: string;
-            kind: string;
-            source_kind?: string | null;
-        };
         CreditSummary: {
-            history: components["schemas"]["CreditHistoryEntry"][];
             /** Format: int64 */
             included_monthly_remaining_bytes: number;
             /** Format: int64 */

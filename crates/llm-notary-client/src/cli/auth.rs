@@ -77,24 +77,12 @@ pub(crate) struct AccountConnectionStatus {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
-pub(crate) struct CreditHistoryEntry {
-    pub(crate) id: String,
-    pub(crate) kind: String,
-    pub(crate) amount_bytes: i64,
-    pub(crate) source_kind: Option<String>,
-    pub(crate) display_label: String,
-    pub(crate) created_at: i64,
-    pub(crate) expires_at: Option<i64>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub(crate) struct CreditSummary {
     pub(crate) total_remaining_bytes: i64,
     pub(crate) included_monthly_remaining_bytes: i64,
     pub(crate) supplemental_remaining_bytes: i64,
     pub(crate) reset_at: i64,
     pub(crate) next_grant_expiration: Option<i64>,
-    pub(crate) history: Vec<CreditHistoryEntry>,
 }
 
 #[derive(Deserialize)]

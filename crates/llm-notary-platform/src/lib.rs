@@ -28,6 +28,7 @@ use uuid::Uuid;
 use llm_notary_core::notary_directory::{
     NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, NotaryTransport,
 };
+use llm_notary_core::pagination::{CursorScope, Page, PageQuery, decode_cursor};
 use llm_notary_core::sha256_hex;
 use llm_notary_core::telemetry;
 use opentelemetry::global;
@@ -43,6 +44,7 @@ mod config;
 mod hosted_verifier;
 mod intake;
 pub mod migrate;
+mod pagination;
 mod publish;
 mod service_admission;
 mod verify;
@@ -122,6 +124,14 @@ struct PublicUser {
 struct MeResponse {
     user: PublicUser,
     credits: service_admission::CreditSummary,
+    share_stats: ShareStats,
+}
+
+#[derive(Serialize, ToSchema)]
+struct ShareStats {
+    total: i64,
+    admitted: i64,
+    in_progress: i64,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -133,9 +143,10 @@ struct WebCliSession {
     expires_at: i64,
 }
 
-#[derive(Serialize, ToSchema)]
-struct WebCliSessionsResponse {
-    sessions: Vec<WebCliSession>,
+#[derive(Deserialize, Serialize)]
+struct CliSessionPagePosition {
+    created_at: i64,
+    id: String,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -926,6 +937,18 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
     .map_err(database_error)?
     .ok_or_else(ApiError::unauthorized)?;
     let credits = service_admission::account_access(&state, &user.0).await?;
+    let (total, admitted, in_progress) = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT COUNT(*)::BIGINT,
+                COUNT(*) FILTER (WHERE state = 'admitted')::BIGINT,
+                COUNT(*) FILTER (
+                    WHERE state IN ('uploading', 'queued', 'verifying')
+                )::BIGINT
+         FROM publish_jobs WHERE user_id = $1",
+    )
+    .bind(&user.0)
+    .fetch_one(&state.database)
+    .await
+    .map_err(database_error)?;
     Ok(Json(MeResponse {
         user: PublicUser {
             id: user.0,
@@ -933,6 +956,11 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
             avatar_url: user.2,
         },
         credits,
+        share_stats: ShareStats {
+            total,
+            admitted,
+            in_progress,
+        },
     }))
 }
 
@@ -1032,8 +1060,10 @@ async fn logout(
     get,
     path = "/api/cli/sessions",
     summary = "List the browser user's active CLI sessions",
+    params(("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 100), ("cursor" = Option<String>, Query)),
     responses(
-        (status = 200, body = WebCliSessionsResponse),
+        (status = 200, body = Page<WebCliSession>),
+        (status = 400, body = ErrorResponse),
         (status = 401, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
@@ -1043,17 +1073,35 @@ async fn logout(
 async fn list_cli_sessions(
     State(state): State<AppState>,
     jar: CookieJar,
-) -> ApiResult<Json<WebCliSessionsResponse>> {
+    query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
+) -> ApiResult<Json<Page<WebCliSession>>> {
+    let Query(query) = query.map_err(pagination::query_error)?;
     let user = authenticated_web_user(&state, &jar).await?;
     let now = unix_timestamp()?;
+    let limit = query
+        .limit(pagination::DEFAULT_PAGE_LIMIT, pagination::MAX_PAGE_LIMIT)
+        .map_err(pagination::api_error)?;
+    let scope = CursorScope::new("/api/cli/sessions", &user.0, "created_at desc, id desc")
+        .map_err(pagination::api_error)?;
+    let position = query
+        .cursor
+        .as_deref()
+        .map(|cursor| decode_cursor::<CliSessionPagePosition>(&scope, cursor))
+        .transpose()
+        .map_err(pagination::api_error)?;
     let sessions = sqlx::query_as::<_, (String, String, i64, i64, i64)>(
         "SELECT id, device_name, created_at, last_used_at, expires_at
          FROM cli_sessions
          WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > $2
-         ORDER BY last_used_at DESC, created_at DESC",
+           AND ($3::TEXT IS NULL OR (created_at, id) < ($4, $3))
+         ORDER BY created_at DESC, id DESC
+         LIMIT $5",
     )
-    .bind(user.0)
+    .bind(&user.0)
     .bind(now)
+    .bind(position.as_ref().map(|position| &position.id))
+    .bind(position.as_ref().map(|position| position.created_at))
+    .bind(i64::try_from(limit + 1).map_err(|error| ApiError::internal(anyhow!(error)))?)
     .fetch_all(&state.database)
     .await
     .map_err(database_error)?
@@ -1066,7 +1114,13 @@ async fn list_cli_sessions(
         expires_at: session.4,
     })
     .collect();
-    Ok(Json(WebCliSessionsResponse { sessions }))
+    let page =
+        Page::from_limit_plus_one(sessions, limit, &scope, |session| CliSessionPagePosition {
+            created_at: session.created_at,
+            id: session.id.clone(),
+        })
+        .map_err(pagination::api_error)?;
+    Ok(Json(page))
 }
 
 #[utoipa::path(
@@ -1786,6 +1840,7 @@ mod tests {
             "GET /api/healthz",
             "GET /api/me",
             "GET /api/me/api-keys",
+            "GET /api/me/credits/history",
             "GET /api/me/shares",
             "GET /api/me/credit-offers",
             "GET /api/notary",
@@ -2350,20 +2405,26 @@ mod tests {
         };
         let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
 
-        let sessions = match list_cli_sessions(State(state.clone()), jar()).await {
-            Ok(sessions) => sessions.0.sessions,
-            Err(_) => panic!("list CLI sessions"),
-        };
+        let sessions =
+            match list_cli_sessions(State(state.clone()), jar(), Ok(Query(PageQuery::default())))
+                .await
+            {
+                Ok(sessions) => sessions.0.items,
+                Err(_) => panic!("list CLI sessions"),
+            };
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].id, own_id);
 
         let revoked =
             revoke_web_cli_session(State(state.clone()), jar(), Path(own_id.clone())).await;
         assert!(matches!(revoked, Ok(StatusCode::NO_CONTENT)));
-        let sessions = match list_cli_sessions(State(state.clone()), jar()).await {
-            Ok(sessions) => sessions.0.sessions,
-            Err(_) => panic!("list CLI sessions after revoke"),
-        };
+        let sessions =
+            match list_cli_sessions(State(state.clone()), jar(), Ok(Query(PageQuery::default())))
+                .await
+            {
+                Ok(sessions) => sessions.0.items,
+                Err(_) => panic!("list CLI sessions after revoke"),
+            };
         assert!(sessions.is_empty());
 
         let cross_account = revoke_web_cli_session(State(state), jar(), Path(other_id)).await;
@@ -2374,6 +2435,103 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn cli_session_pagination_is_stable_when_last_used_changes() {
+        let database = fresh_database().await;
+        sqlx::query(
+            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
+             VALUES ('user-1', 1, 'one', 1, 1)",
+        )
+        .execute(&database.pool)
+        .await
+        .expect("user");
+        let now = unix_timestamp().expect("current time");
+        let web_token = "web-session-pagination";
+        sqlx::query(
+            "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
+             VALUES ($1, 'user-1', $2, $3)",
+        )
+        .bind(sha256_hex(web_token.as_bytes()))
+        .bind(now + SESSION_TTL_SECS)
+        .bind(now)
+        .execute(&database.pool)
+        .await
+        .expect("web session");
+        for (device, created_at) in [("Newest", now), ("Middle", now - 1), ("Oldest", now - 2)] {
+            issue_cli_session(&database, "user-1", device, created_at)
+                .await
+                .expect("CLI session");
+        }
+        let oldest_id: String =
+            sqlx::query_scalar("SELECT id FROM cli_sessions WHERE device_name = 'Oldest'")
+                .fetch_one(&database.pool)
+                .await
+                .expect("oldest session ID");
+        let state = AppState {
+            database: database.pool.clone(),
+            _test_database: Some(database),
+            http: reqwest::Client::new(),
+            github_client_id: "client-id".to_owned(),
+            github_client_secret: "secret".to_owned(),
+            callback_url: Url::parse("https://llm-notary.exalto.ai/api/auth/github/callback")
+                .expect("callback URL"),
+            app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
+            secure_cookies: true,
+            notary_directory: directory_key(),
+            publish: publish::PublishService::disabled_for_test(),
+            admission: Arc::new(AdmissionConfig::for_test()),
+        };
+        let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
+
+        let first = list_cli_sessions(
+            State(state.clone()),
+            jar(),
+            Ok(Query(PageQuery {
+                limit: Some(1),
+                cursor: None,
+            })),
+        )
+        .await
+        .expect("first page")
+        .0;
+        assert_eq!(first.items[0].device_name, "Newest");
+        let cursor = first.next_cursor.expect("second page cursor");
+
+        sqlx::query("UPDATE cli_sessions SET last_used_at = $1 WHERE id = $2")
+            .bind(now + 100)
+            .bind(&oldest_id)
+            .execute(&state.database)
+            .await
+            .expect("refresh oldest session");
+
+        let second = list_cli_sessions(
+            State(state.clone()),
+            jar(),
+            Ok(Query(PageQuery {
+                limit: Some(1),
+                cursor: Some(cursor),
+            })),
+        )
+        .await
+        .expect("second page")
+        .0;
+        assert_eq!(second.items[0].device_name, "Middle");
+        let third = list_cli_sessions(
+            State(state),
+            jar(),
+            Ok(Query(PageQuery {
+                limit: Some(1),
+                cursor: second.next_cursor,
+            })),
+        )
+        .await
+        .expect("third page")
+        .0;
+        assert_eq!(third.items[0].id, oldest_id);
+        assert!(third.next_cursor.is_none());
     }
 
     #[tokio::test]

@@ -1,6 +1,6 @@
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::{HeaderMap, StatusCode, header},
 };
 use hmac::{Hmac, Mac};
@@ -19,7 +19,10 @@ use super::{
     config::{AdmissionConfig, AdmissionPolicy},
     database_error, random_token, unix_timestamp,
 };
-use llm_notary_core::sha256_hex;
+use llm_notary_core::{
+    pagination::{CursorScope, Page, PageQuery, decode_cursor},
+    sha256_hex,
+};
 
 const ADMISSION_LOCK_NAMESPACE: i32 = 151;
 const ADMISSION_LOCK_KEY: i32 = 1;
@@ -34,7 +37,6 @@ const PROMOTIONAL_OFFER_ID: &str = "hosted-finalization-bonus-v1";
 const PROMOTIONAL_OFFER_AMOUNT_BYTES: i64 = 128 << 20;
 const PROMOTIONAL_OFFER_CLAIM_DEADLINE: i64 = 1_893_456_000; // 2030-01-01T00:00:00Z
 const PROMOTIONAL_GRANT_TTL_SECS: i64 = 90 * SECS_PER_DAY;
-const CREDIT_HISTORY_LIMIT: i64 = 20;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -105,7 +107,13 @@ pub struct CreditSummary {
     pub supplemental_remaining_bytes: i64,
     pub reset_at: i64,
     pub next_grant_expiration: Option<i64>,
-    pub history: Vec<CreditHistoryEntry>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct CreditHistoryPagePosition {
+    created_at: i64,
+    id: String,
+    kind: String,
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
@@ -197,13 +205,131 @@ pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(issue_admission))
         .routes(routes!(eligible_credit_offers))
+        .routes(routes!(credit_history))
         .routes(routes!(claim_credit_offer))
         .routes(routes!(redeem_admission))
         .routes(routes!(renew_lease))
         .routes(routes!(release_lease))
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/me/credits/history",
+    summary = "List the signed-in account's credit activity",
+    params(("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 100), ("cursor" = Option<String>, Query)),
+    responses(
+        (status = 200, body = Page<CreditHistoryEntry>),
+        (status = 400, body = ErrorResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    security(("browserSession" = [])),
+    tag = "browser-auth"
+)]
+async fn credit_history(
+    State(state): State<AppState>,
+    jar: axum_extra::extract::cookie::CookieJar,
+    query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
+) -> ApiResult<Json<Page<CreditHistoryEntry>>> {
+    let Query(query) = query.map_err(super::pagination::query_error)?;
+    let user = super::authenticated_web_user(&state, &jar).await?;
+    ensure_account_credit_grants(&state, &user.0).await?;
+    let limit = query
+        .limit(
+            super::pagination::DEFAULT_PAGE_LIMIT,
+            super::pagination::MAX_PAGE_LIMIT,
+        )
+        .map_err(super::pagination::api_error)?;
+    let scope = CursorScope::new(
+        "/api/me/credits/history",
+        &user.0,
+        "created_at desc, id desc, kind desc",
+    )
+    .map_err(super::pagination::api_error)?;
+    let position = query
+        .cursor
+        .as_deref()
+        .map(|cursor| decode_cursor::<CreditHistoryPagePosition>(&scope, cursor))
+        .transpose()
+        .map_err(super::pagination::api_error)?;
+    let credit_subject = account_credit_subject(&user.0);
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            i64,
+            Option<String>,
+            String,
+            i64,
+            Option<i64>,
+        ),
+    >(
+        "SELECT id, kind, amount_bytes, source_kind, display_label, created_at, expires_at
+         FROM (
+             SELECT id, 'grant'::TEXT AS kind, amount_bytes,
+                    source_kind::TEXT AS source_kind,
+                    COALESCE(display_label, 'Credits') AS display_label,
+                    created_at, expires_at
+             FROM notary_credit_grants WHERE credit_subject = $1
+             UNION ALL
+             SELECT id, 'debit'::TEXT AS kind, allowance_bytes AS amount_bytes,
+                    NULL::TEXT AS source_kind,
+                    'Hosted finalization'::TEXT AS display_label,
+                    created_at, NULL::BIGINT AS expires_at
+             FROM notary_credit_debits WHERE credit_subject = $1
+         ) AS history
+         WHERE ($2::TEXT IS NULL OR (created_at, id, kind) < ($3, $2, $4))
+         ORDER BY created_at DESC, id DESC, kind DESC
+         LIMIT $5",
+    )
+    .bind(&credit_subject)
+    .bind(position.as_ref().map(|position| &position.id))
+    .bind(position.as_ref().map(|position| position.created_at))
+    .bind(position.as_ref().map(|position| &position.kind))
+    .bind(i64::try_from(limit + 1).map_err(|error| ApiError::internal(anyhow::anyhow!(error)))?)
+    .fetch_all(&state.database)
+    .await
+    .map_err(database_error)?
+    .into_iter()
+    .map(
+        |(id, kind, amount_bytes, source_kind, display_label, created_at, expires_at)| {
+            CreditHistoryEntry {
+                id,
+                kind: if kind == "grant" {
+                    CreditHistoryKind::Grant
+                } else {
+                    CreditHistoryKind::Debit
+                },
+                amount_bytes,
+                source_kind,
+                display_label,
+                created_at,
+                expires_at,
+            }
+        },
+    )
+    .collect::<Vec<_>>();
+    let page = Page::from_limit_plus_one(rows, limit, &scope, |entry| CreditHistoryPagePosition {
+        created_at: entry.created_at,
+        id: entry.id.clone(),
+        kind: match entry.kind {
+            CreditHistoryKind::Grant => "grant",
+            CreditHistoryKind::Debit => "debit",
+        }
+        .to_owned(),
+    })
+    .map_err(super::pagination::api_error)?;
+    Ok(Json(page))
+}
+
 pub async fn account_access(state: &AppState, user_id: &str) -> ApiResult<CreditSummary> {
+    ensure_account_credit_grants(state, user_id).await?;
+    let now = unix_timestamp()?;
+    credit_summary(&state.database, &account_credit_subject(user_id), now).await
+}
+
+async fn ensure_account_credit_grants(state: &AppState, user_id: &str) -> ApiResult<()> {
     let now = unix_timestamp()?;
     let mut transaction = state.database.begin().await.map_err(database_error)?;
     admission_lock(&mut transaction).await?;
@@ -220,8 +346,7 @@ pub async fn account_access(state: &AppState, user_id: &str) -> ApiResult<Credit
     )
     .await?;
     transaction.commit().await.map_err(database_error)?;
-    let credits = credit_summary(&state.database, &credit_subject, now).await?;
-    Ok(credits)
+    Ok(())
 }
 
 #[utoipa::path(
@@ -1228,63 +1353,6 @@ async fn credit_summary(
         .sum::<i64>();
     let total_used_bytes = balances.iter().map(|grant| grant.used_bytes).sum::<i64>();
 
-    let mut history = sqlx::query_as::<_, (String, String, i64, String, i64, Option<i64>)>(
-        "SELECT id, source_kind, amount_bytes,
-                COALESCE(display_label, 'Hosted finalization credits'), created_at, expires_at
-         FROM notary_credit_grants
-         WHERE credit_subject = $1
-         ORDER BY created_at DESC, id DESC LIMIT $2",
-    )
-    .bind(credit_subject)
-    .bind(CREDIT_HISTORY_LIMIT)
-    .fetch_all(database)
-    .await
-    .map_err(database_error)?
-    .into_iter()
-    .map(
-        |(id, source_kind, amount_bytes, display_label, created_at, expires_at)| {
-            CreditHistoryEntry {
-                id,
-                kind: CreditHistoryKind::Grant,
-                amount_bytes,
-                source_kind: Some(source_kind),
-                display_label,
-                created_at,
-                expires_at,
-            }
-        },
-    )
-    .collect::<Vec<_>>();
-    let debits = sqlx::query_as::<_, (String, i64, i64)>(
-        "SELECT id, allowance_bytes, created_at FROM notary_credit_debits
-         WHERE credit_subject = $1
-         ORDER BY created_at DESC, id DESC LIMIT $2",
-    )
-    .bind(credit_subject)
-    .bind(CREDIT_HISTORY_LIMIT)
-    .fetch_all(database)
-    .await
-    .map_err(database_error)?;
-    history.extend(
-        debits
-            .into_iter()
-            .map(|(id, amount_bytes, created_at)| CreditHistoryEntry {
-                id,
-                kind: CreditHistoryKind::Debit,
-                amount_bytes,
-                source_kind: None,
-                display_label: "Hosted finalization".to_owned(),
-                created_at,
-                expires_at: None,
-            }),
-    );
-    history.sort_by(|left, right| {
-        right
-            .created_at
-            .cmp(&left.created_at)
-            .then_with(|| right.id.cmp(&left.id))
-    });
-    history.truncate(CREDIT_HISTORY_LIMIT as usize);
     Ok(CreditSummary {
         total_granted_bytes,
         total_used_bytes,
@@ -1294,7 +1362,6 @@ async fn credit_summary(
         supplemental_remaining_bytes,
         reset_at: period.end,
         next_grant_expiration,
-        history,
     })
 }
 
@@ -1510,6 +1577,82 @@ mod tests {
             address.parse().expect("test peer IP"),
             4242,
         ))
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn credit_history_is_paginated_and_account_scoped() {
+        let state = test_state().await;
+        let now = unix_timestamp().unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
+             VALUES ('history-1', 101, 'history-one', $1, $1),
+                    ('history-2', 102, 'history-two', $1, $1)",
+        )
+        .bind(now)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        for (token, user_id) in [
+            ("history-token-1", "history-1"),
+            ("history-token-2", "history-2"),
+        ] {
+            sqlx::query(
+                "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
+                 VALUES ($1, $2, $3, $4)",
+            )
+            .bind(sha256_hex(token.as_bytes()))
+            .bind(user_id)
+            .bind(now + 600)
+            .bind(now)
+            .execute(&state.database)
+            .await
+            .unwrap();
+        }
+        let jar = |token| CookieJar::new().add(Cookie::new(super::super::SESSION_COOKIE, token));
+        let first = credit_history(
+            State(state.clone()),
+            jar("history-token-1"),
+            Ok(Query(PageQuery {
+                limit: Some(1),
+                cursor: None,
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(first.items.len(), 1);
+        let cursor = first.next_cursor.expect("second credit-history page");
+        let second = credit_history(
+            State(state.clone()),
+            jar("history-token-1"),
+            Ok(Query(PageQuery {
+                limit: Some(1),
+                cursor: Some(cursor.clone()),
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(second.items.len(), 1);
+        assert_ne!(first.items[0].id, second.items[0].id);
+
+        let cross_account = credit_history(
+            State(state),
+            jar("history-token-2"),
+            Ok(Query(PageQuery {
+                limit: Some(1),
+                cursor: Some(cursor),
+            })),
+        )
+        .await;
+        assert!(matches!(
+            cross_account,
+            Err(ApiError {
+                code: "cursor_scope_mismatch",
+                ..
+            })
+        ));
     }
 
     struct TestNotaryInstance {

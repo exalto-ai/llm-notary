@@ -20,12 +20,16 @@ function errorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-export async function getListedShares() {
-  const { data, error, response } = await client.GET('/api/public/shares');
+type PageOptions = { limit?: number; cursor?: string };
+
+export async function getListedShares(options: PageOptions & { search?: string; provider?: string } = {}) {
+  const { data, error, response } = await client.GET('/api/public/shares', {
+    params: { query: options },
+  });
   if (!response.ok || !data) {
     throw new PlatformApiError(errorMessage(error, 'Could not load the Library.'), response.status);
   }
-  return data.shares;
+  return data;
 }
 
 export async function getNotaryDirectory() {
@@ -56,23 +60,27 @@ export async function getSharedTrace(shareId: string) {
   return data;
 }
 
-export async function getCliSessions() {
-  const { data, error, response } = await client.GET('/api/cli/sessions');
+export async function getCliSessions(options: PageOptions = {}) {
+  const { data, error, response } = await client.GET('/api/cli/sessions', {
+    params: { query: options },
+  });
   if (!response.ok || !data) {
     throw new PlatformApiError(errorMessage(error, 'Could not load connected local services.'), response.status);
   }
-  return data.sessions;
+  return data;
 }
 
 export type AccountApiKey = components['schemas']['ApiKeyResponse'];
 export type ApiKeyScope = components['schemas']['ApiScope'];
 
-export async function getApiKeys() {
-  const { data, error, response } = await client.GET('/api/me/api-keys');
+export async function getApiKeys(options: PageOptions = {}) {
+  const { data, error, response } = await client.GET('/api/me/api-keys', {
+    params: { query: options },
+  });
   if (!response.ok || !data) {
     throw new PlatformApiError(errorMessage(error, 'Could not load API keys.'), response.status);
   }
-  return data.api_keys;
+  return data;
 }
 
 export async function createApiKey(body: {
@@ -96,12 +104,24 @@ export async function revokeApiKey(apiKeyId: string) {
   }
 }
 
-export async function getMyShares() {
-  const { data, error, response } = await client.GET('/api/me/shares');
+export async function getMyShares(options: PageOptions = {}) {
+  const { data, error, response } = await client.GET('/api/me/shares', {
+    params: { query: options },
+  });
   if (!response.ok || !data) {
     throw new PlatformApiError(errorMessage(error, 'Could not load your shares.'), response.status);
   }
-  return data.shares;
+  return data;
+}
+
+export async function getCreditHistory(options: PageOptions = {}) {
+  const { data, error, response } = await client.GET('/api/me/credits/history', {
+    params: { query: options },
+  });
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not load credit activity.'), response.status);
+  }
+  return data;
 }
 
 export async function revokeCliSession(sessionId: string) {
@@ -138,7 +158,7 @@ export async function getCurrentUser() {
   if (!response.ok || !data) {
     throw new PlatformApiError(errorMessage(error, 'Could not load the current account.'), response.status);
   }
-  return { ...data.user, credits: data.credits };
+  return { ...data.user, credits: data.credits, share_stats: data.share_stats };
 }
 
 export async function getCreditOffers() {

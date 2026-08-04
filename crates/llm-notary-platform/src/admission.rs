@@ -4,11 +4,11 @@ use anyhow::{Result, bail};
 use axum::{
     Json,
     body::Body,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 use tracing::Span;
 use utoipa::ToSchema;
@@ -16,6 +16,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use llm_notary_core::{
+    pagination::{CursorScope, Page, PageQuery, decode_cursor},
     public_safety::{
         PUBLIC_PACKAGE_SAFETY_VERSION, PublicPackageSafetyContext,
         validate_public_trace_package_with_context_and_force,
@@ -29,6 +30,7 @@ use super::{
         HostedVerificationError, HostedVerifiedPackage, TRUST_SOURCE,
         acquire_verification_capacity, verify_package,
     },
+    pagination,
     publish::PublishJobRow,
     unix_timestamp,
 };
@@ -71,11 +73,21 @@ struct ListedShareRow {
     authenticated_provider_connection_unix_ms: Option<i64>,
     library_input_preview: Option<String>,
     library_output_preview: Option<String>,
+    page_authenticated_at_unix_ms: i64,
 }
 
-#[derive(Serialize, ToSchema)]
-struct ListedSharesResponse {
-    shares: Vec<ListedShareSummary>,
+#[derive(Deserialize, ToSchema)]
+struct ListedSharesQuery {
+    limit: Option<u32>,
+    cursor: Option<String>,
+    search: Option<String>,
+    provider: Option<String>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct ListedSharePagePosition {
+    authenticated_at_unix_ms: i64,
+    id: String,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -151,32 +163,88 @@ pub fn router() -> OpenApiRouter<AppState> {
     get,
     path = "/api/public/shares",
     summary = "List Listed verified-session shares",
+    params(("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 100), ("cursor" = Option<String>, Query), ("search" = Option<String>, Query), ("provider" = Option<String>, Query)),
     responses(
-        (status = 200, body = ListedSharesResponse),
+        (status = 200, body = Page<ListedShareSummary>),
+        (status = 400, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse)
     ),
     tag = "library"
 )]
-async fn listed_shares(State(state): State<AppState>) -> ApiResult<Json<ListedSharesResponse>> {
+async fn listed_shares(
+    State(state): State<AppState>,
+    query: Result<Query<ListedSharesQuery>, axum::extract::rejection::QueryRejection>,
+) -> ApiResult<Json<Page<ListedShareSummary>>> {
+    let Query(query) = query.map_err(pagination::query_error)?;
+    let search = normalize_library_search(query.search)?;
+    let search_pattern = search.as_deref().map(library_search_regex);
+    let provider = normalize_library_filter(query.provider, 100, "provider is too long")?;
+    let page_query = PageQuery {
+        limit: query.limit,
+        cursor: query.cursor,
+    };
+    let limit = page_query
+        .limit(pagination::DEFAULT_PAGE_LIMIT, pagination::MAX_PAGE_LIMIT)
+        .map_err(pagination::api_error)?;
+    let scope = CursorScope::new(
+        "/api/public/shares",
+        &(&search, &provider),
+        "authenticated_provider_connection_unix_ms desc nulls last, id desc",
+    )
+    .map_err(pagination::api_error)?;
+    let position = page_query
+        .cursor
+        .as_deref()
+        .map(|cursor| decode_cursor::<ListedSharePagePosition>(&scope, cursor))
+        .transpose()
+        .map_err(pagination::api_error)?;
     let rows: Vec<ListedShareRow> = sqlx::query_as(
         "SELECT publish_jobs.id, users.github_login, publish_jobs.provider,
                 publish_jobs.model,
                 publish_jobs.authenticated_provider_connection_unix_ms,
                 publish_jobs.library_input_preview,
-                publish_jobs.library_output_preview
+                publish_jobs.library_output_preview,
+                COALESCE(
+                    publish_jobs.authenticated_provider_connection_unix_ms,
+                    '-9223372036854775808'::BIGINT
+                ) AS page_authenticated_at_unix_ms
          FROM publish_jobs
          JOIN users ON users.id = publish_jobs.user_id
          WHERE publish_jobs.state = 'admitted'
            AND publish_jobs.visibility = 'listed'
            AND publish_jobs.public_trace_object_key IS NOT NULL
            AND publish_jobs.package_object_key IS NOT NULL
+           AND ($1::TEXT IS NULL OR publish_jobs.provider = $1)
+           AND ($2::TEXT IS NULL OR publish_jobs.library_search_text ~* $2)
+           AND ($3::TEXT IS NULL OR (
+                COALESCE(
+                    publish_jobs.authenticated_provider_connection_unix_ms,
+                    '-9223372036854775808'::BIGINT
+                ), publish_jobs.id
+           ) < ($4, $3))
          ORDER BY publish_jobs.authenticated_provider_connection_unix_ms DESC NULLS LAST,
-                  publish_jobs.id DESC",
+                  publish_jobs.id DESC
+         LIMIT $5",
     )
+    .bind(&provider)
+    .bind(&search_pattern)
+    .bind(position.as_ref().map(|position| &position.id))
+    .bind(
+        position
+            .as_ref()
+            .map(|position| position.authenticated_at_unix_ms),
+    )
+    .bind(i64::try_from(limit + 1).map_err(|error| ApiError::internal(error.into()))?)
     .fetch_all(&state.database)
     .await
     .map_err(database_error)?;
-    let shares = rows
+    let page = Page::from_limit_plus_one(rows, limit, &scope, |share| ListedSharePagePosition {
+        authenticated_at_unix_ms: share.page_authenticated_at_unix_ms,
+        id: share.id.clone(),
+    })
+    .map_err(pagination::api_error)?;
+    let items = page
+        .items
         .into_iter()
         .map(|share| ListedShareSummary {
             share_url: canonical_share_url(&state, &share.id),
@@ -189,7 +257,62 @@ async fn listed_shares(State(state): State<AppState>) -> ApiResult<Json<ListedSh
             output_preview: share.library_output_preview,
         })
         .collect();
-    Ok(Json(ListedSharesResponse { shares }))
+    Ok(Json(Page {
+        items,
+        next_cursor: page.next_cursor,
+    }))
+}
+
+fn normalize_library_filter(
+    value: Option<String>,
+    maximum: usize,
+    error: &'static str,
+) -> ApiResult<Option<String>> {
+    let value = value.map(|value| value.trim().to_lowercase());
+    match value {
+        Some(value) if value.len() > maximum => Err(ApiError::bad_request(error)),
+        Some(value) if value.is_empty() => Ok(None),
+        value => Ok(value),
+    }
+}
+
+fn normalize_library_search(value: Option<String>) -> ApiResult<Option<String>> {
+    let value = normalize_library_filter(value, 200, "search is too long")?;
+    match value {
+        Some(value) if !has_indexable_search_trigram(&value) => Err(ApiError::bad_request(
+            "search must include 3 consecutive letters or numbers",
+        )),
+        value => Ok(value),
+    }
+}
+
+fn has_indexable_search_trigram(value: &str) -> bool {
+    let mut run = 0;
+    for character in value.chars() {
+        if character.is_alphanumeric() {
+            run += 1;
+            if run == 3 {
+                return true;
+            }
+        } else {
+            run = 0;
+        }
+    }
+    false
+}
+
+fn library_search_regex(value: &str) -> String {
+    let mut pattern = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(
+            character,
+            '\\' | '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
+        ) {
+            pattern.push('\\');
+        }
+        pattern.push(character);
+    }
+    pattern
 }
 
 #[utoipa::path(
@@ -693,6 +816,11 @@ async fn admit_claim(
              public_package_safety_override = $12,
              provider = $13, provider_host = $14, model = $15,
              library_input_preview = $16, library_output_preview = $17,
+             library_search_text = LOWER(CONCAT_WS(
+                ' ', $13, $15,
+                (SELECT github_login FROM users WHERE id = publish_jobs.user_id),
+                $16, $17
+             )),
              authenticated_provider_connection_unix_ms = $18,
              verified_at = $19, verified_notary_key_id = $20,
              verified_directory_generation = $21, verified_trust_source = $22,
@@ -1117,6 +1245,225 @@ mod tests {
     use llm_notary_core::archive::{PACKAGE_FILES, build_trace_package_archive};
 
     use super::*;
+
+    #[test]
+    fn library_filters_are_normalized_and_bounded() {
+        assert_eq!(
+            normalize_library_filter(Some("  OpenAI  ".to_owned()), 100, "too long").unwrap(),
+            Some("openai".to_owned())
+        );
+        assert_eq!(
+            normalize_library_filter(Some("   ".to_owned()), 100, "too long").unwrap(),
+            None
+        );
+        assert!(normalize_library_filter(Some("x".repeat(101)), 100, "too long").is_err());
+        assert!(normalize_library_search(Some("ai".to_owned())).is_err());
+        assert!(normalize_library_search(Some("%%%".to_owned())).is_err());
+        assert!(normalize_library_search(Some("a-b-c".to_owned())).is_err());
+        assert_eq!(
+            normalize_library_search(Some("  GPT  ".to_owned())).unwrap(),
+            Some("gpt".to_owned())
+        );
+        assert_eq!(library_search_regex("100%_safe!"), "100%_safe!");
+        assert_eq!(library_search_regex("a.b[c]"), "a\\.b\\[c\\]");
+    }
+
+    async fn insert_library_share(
+        pool: &sqlx::PgPool,
+        id: &str,
+        visibility: &str,
+        provider: &str,
+        authenticated_at: Option<i64>,
+        search_text: &str,
+    ) {
+        sqlx::query(
+            "INSERT INTO publish_jobs (
+                 id, user_id, idempotency_key, state, archive_format,
+                 declared_size_bytes, declared_sha256, upload_object_key,
+                 intake_object_key, upload_expires_at, created_at, updated_at,
+                 admitted_at, actual_size_bytes, actual_sha256,
+                 public_trace_object_key, public_trace_size_bytes, public_trace_sha256,
+                 visibility, package_object_key, package_size_bytes, package_sha256,
+                 public_package_safety_version, provider, provider_host, model,
+                 authenticated_provider_connection_unix_ms,
+                 library_input_preview, library_output_preview, library_search_text
+             ) VALUES (
+                 $1, 'library-user', $1 || '-key', 'admitted', $2,
+                 1, $3, $1 || '-upload', $1 || '-intake', 10, 1, 1,
+                 1, 1, $3, $1 || '-trace', 1, $4, $5,
+                 $1 || '-package', 1, $6, 'llm-notary/public-package-safety/v1',
+                 $7, $7 || '.example.com', 'model-' || $1, $8,
+                 'input ' || $1, 'output ' || $1, $9
+             )",
+        )
+        .bind(id)
+        .bind(super::super::intake::ARCHIVE_FORMAT)
+        .bind("a".repeat(64))
+        .bind("b".repeat(64))
+        .bind(visibility)
+        .bind("c".repeat(64))
+        .bind(provider)
+        .bind(authenticated_at)
+        .bind(search_text)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn listed_share_route_pages_ties_nulls_filters_and_concurrent_inserts() {
+        let database = super::super::fresh_database().await;
+        sqlx::query(
+            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
+             VALUES ('library-user', 1, 'publisher', 1, 1)",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        insert_library_share(
+            &database.pool,
+            "share-c",
+            "listed",
+            "openai",
+            Some(100),
+            "openai publisher 100%_safe! prompt",
+        )
+        .await;
+        insert_library_share(
+            &database.pool,
+            "share-b",
+            "listed",
+            "openai",
+            Some(100),
+            "openai publisher 100xxsafe prompt",
+        )
+        .await;
+        insert_library_share(
+            &database.pool,
+            "share-a",
+            "listed",
+            "anthropic",
+            Some(90),
+            "anthropic publisher",
+        )
+        .await;
+        insert_library_share(
+            &database.pool,
+            "share-null",
+            "listed",
+            "openai",
+            None,
+            "openai publisher without timestamp",
+        )
+        .await;
+        insert_library_share(
+            &database.pool,
+            "hidden",
+            "unlisted",
+            "openai",
+            Some(95),
+            "openai publisher hidden",
+        )
+        .await;
+        let state = AppState {
+            database: database.pool.clone(),
+            _test_database: Some(database),
+            http: reqwest::Client::new(),
+            github_client_id: "client-id".to_owned(),
+            github_client_secret: "secret".to_owned(),
+            callback_url: url::Url::parse("https://llm-notary.exalto.ai/api/auth/github/callback")
+                .unwrap(),
+            app_url: url::Url::parse("https://llm-notary.exalto.ai").unwrap(),
+            secure_cookies: true,
+            notary_directory: super::super::tests::directory_key(),
+            publish: super::super::publish::PublishService::disabled_for_test(),
+            admission: std::sync::Arc::new(super::super::config::AdmissionConfig::for_test()),
+        };
+
+        let first = listed_shares(
+            State(state.clone()),
+            Ok(Query(ListedSharesQuery {
+                limit: Some(2),
+                cursor: None,
+                search: None,
+                provider: None,
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(
+            first
+                .items
+                .iter()
+                .map(|share| share.id.as_str())
+                .collect::<Vec<_>>(),
+            ["share-c", "share-b"]
+        );
+        let cursor = first.next_cursor.unwrap();
+
+        insert_library_share(
+            &state.database,
+            "share-new",
+            "listed",
+            "openai",
+            Some(200),
+            "openai publisher inserted later",
+        )
+        .await;
+        let second = listed_shares(
+            State(state.clone()),
+            Ok(Query(ListedSharesQuery {
+                limit: Some(2),
+                cursor: Some(cursor),
+                search: None,
+                provider: None,
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(
+            second
+                .items
+                .iter()
+                .map(|share| share.id.as_str())
+                .collect::<Vec<_>>(),
+            ["share-a", "share-null"]
+        );
+        assert!(second.next_cursor.is_none());
+
+        let literal_search = listed_shares(
+            State(state.clone()),
+            Ok(Query(ListedSharesQuery {
+                limit: None,
+                cursor: None,
+                search: Some("100%_safe!".to_owned()),
+                provider: None,
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(literal_search.items.len(), 1);
+        assert_eq!(literal_search.items[0].id, "share-c");
+
+        let provider_filter = listed_shares(
+            State(state),
+            Ok(Query(ListedSharesQuery {
+                limit: None,
+                cursor: None,
+                search: None,
+                provider: Some("ANTHROPIC".to_owned()),
+            })),
+        )
+        .await
+        .unwrap()
+        .0;
+        assert_eq!(provider_filter.items.len(), 1);
+        assert_eq!(provider_filter.items[0].id, "share-a");
+    }
 
     fn package_with_openai_response_id(trace: &[u8]) -> Vec<u8> {
         let directory = std::env::temp_dir().join(format!(
