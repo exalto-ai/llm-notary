@@ -10,7 +10,7 @@
 
 ## Non-negotiable trust boundaries
 
-- The local proxy handles plaintext and credentials; the remote notary must not receive either. Never log or publish API-key values. A deferred `.llmbundle` necessarily retains an encrypted client checkpoint that can reconstruct the original request, including credentials, so treat it as the most sensitive local artifact and never write it without vault encryption.
+- The local proxy handles plaintext and credentials; the remote notary must not receive either. Never log or publish API-key values. A deferred `.llmcapture` necessarily retains an encrypted client checkpoint that can reconstruct the original request, including credentials, so treat it as the most sensitive local artifact and never write it without vault encryption.
 - Keep the provider hostname allowlist explicit. The notary, not the local machine, resolves and opens the upstream provider connection.
 - A capture is private evidence. Its artifacts, hashes, selective-disclosure behavior, save/load logic, and verifier must evolve together.
 - Public artifacts must remain independently verifiable and must not silently claim cryptographic guarantees the implementation does not provide.

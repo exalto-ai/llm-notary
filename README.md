@@ -30,7 +30,7 @@ local llm-notaryd ── encrypted TLS records ── remote notary ── provi
     │                                              │
     │ encrypted private checkpoint                │ signed receipt / proof
     ▼                                              │
-<capture-id>.llmbundle ─── deferred finalization ─┘
+<capture-id>.llmcapture ─── deferred finalization ─┘
     │
     ▼
 <capture-id>.llmtrace ── local or hosted verification
@@ -43,7 +43,7 @@ key. The local TLS client validates the provider certificate.
 
 Capture stays on the interactive path; private proof generation does not. At
 the end of a provider response, the daemon vault-encrypts a deferred
-`.llmbundle`. Finalization later reconnects to a compatible notary and writes
+`.llmcapture`. Finalization later reconnects to a compatible notary and writes
 one deterministic `.llmtrace` ZIP:
 
 ```text
@@ -59,7 +59,7 @@ one deterministic `.llmtrace` ZIP:
 The package hides every HTTP header value except the exact structural value
 `Transfer-Encoding: chunked`. Header names and complete request and response
 bodies remain disclosed, so inspect a package before sharing or uploading it.
-The `.llmbundle` can reconstruct the original credential-bearing request and
+The `.llmcapture` can reconstruct the original credential-bearing request and
 must remain vault-encrypted and local.
 
 ## Current scope
@@ -151,7 +151,7 @@ llm-notary operations show op-example --json
 ```
 
 Finalization accepts only captured `2xx` provider responses. It creates
-`<capture-id>.llmtrace` without consuming the encrypted source bundle.
+`<capture-id>.llmtrace` without consuming the encrypted source capture.
 
 Verify a package without the daemon by using the locally cached notary trust
 history, or pass an explicit key for a self-hosted package:
@@ -215,7 +215,7 @@ and the key-distribution policy. Provider-native signatures would provide a
 stronger origin primitive.
 
 Never commit provider keys, notary signing keys, admission tokens, database
-URLs, `.env` files, `.llmbundle` files, captures, or decrypted transcript
+URLs, `.env` files, `.llmcapture` files, captures, or decrypted transcript
 material. See [Architecture and trust model](docs/architecture.md) before
 changing a trust boundary.
 

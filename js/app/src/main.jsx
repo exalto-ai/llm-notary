@@ -427,10 +427,10 @@ const docPages = {
       { heading: 'Use the command client', body: '`llm-notary` is a short-lived client for the daemon\'s versioned loopback API. It checks daemon health and never opens the catalog or vault directly. Add `--json` for automation.', code: 'llm-notary status\nllm-notary captures list --provider openai\nllm-notary operations list --state failed --json\nllm-notary open' },
       { heading: 'What it controls', body: '`config.toml` holds the listener address, optional admin authentication, an optional local or self-hosted notary endpoint, bundle and trace directories, the SQLite catalog path and preview limits, and the enabled provider routes. All built-in providers start enabled. The hostname and API behavior of each provider remain fixed; configuration cannot direct the proxy to an arbitrary upstream host.' },
       { heading: 'Optional admin sign-in', body: 'The loopback administration API is available to local processes without credentials by default. To require sign-in, configure a username and an Argon2id PHC password hash. Store the hash, including its salt and work parameters, rather than the plaintext password. A prompted tool such as caddy hash-password --algorithm argon2id can generate it.', code: '[admin.auth]\nusername = "local-admin"\npassword_hash = "$argon2id$v=19$m=32768,t=2,p=1$..."' },
-      { heading: 'Bundle encryption is automatic', body: 'On first use, the proxy creates a random bundle-encryption key and stores it in Keychain on macOS, Credential Manager on Windows, or the desktop secret service on Linux. The OS may ask you to unlock that credential. You do not need to run a separate initialization command.' },
-      { heading: 'Optional passphrase mode', body: 'If you prefer a passphrase instead of the operating-system credential service, point `LLM_NOTARY_VAULT_PASSPHRASE_FILE` at a private UTF-8 file before the first service start. An empty passphrase is accepted for low-friction local testing, but it provides no meaningful protection if someone obtains both your bundles and vault configuration.', code: 'export LLM_NOTARY_VAULT_PASSPHRASE_FILE=/private/local/path/vault-passphrase\nllm-notaryd' },
+      { heading: 'Capture encryption is automatic', body: 'On first use, the proxy creates a random capture-encryption key and stores it in Keychain on macOS, Credential Manager on Windows, or the desktop secret service on Linux. The OS may ask you to unlock that credential. You do not need to run a separate initialization command.' },
+      { heading: 'Optional passphrase mode', body: 'If you prefer a passphrase instead of the operating-system credential service, point `LLM_NOTARY_VAULT_PASSPHRASE_FILE` at a private UTF-8 file before the first service start. An empty passphrase is accepted for low-friction local testing, but it provides no meaningful protection if someone obtains both your captures and vault configuration.', code: 'export LLM_NOTARY_VAULT_PASSPHRASE_FILE=/private/local/path/vault-passphrase\nllm-notaryd' },
       { heading: 'What happens online', body: 'The local proxy handles plaintext while the notary participates in the provider TLS connection without seeing application data. Provider response bytes stream back to your agent as they arrive.' },
-      { heading: 'What happens at end-of-stream', body: 'The proxy seals encrypted deferred state into one `.llmbundle`. It does not perform the expensive final proof before returning control to your workflow.' },
+      { heading: 'What happens at end-of-stream', body: 'The proxy seals encrypted deferred state into one `.llmcapture`. It does not perform the expensive final proof before returning control to your workflow.' },
       {
         heading: 'Connect an SDK',
         definitions: [
@@ -468,10 +468,10 @@ const docPages = {
   },
   'trace-packages': {
     title: 'Finalize and verify.',
-    lead: 'Turn one encrypted bundle into a portable evidence package, inspect its canonical OpenTelemetry trace, and verify the entire package offline.',
+    lead: 'Turn one encrypted capture into a portable evidence package, inspect its canonical OpenTelemetry trace, and verify the entire package offline.',
     blocks: [
-      { heading: 'Finalize one interaction', body: 'Select a captured interaction in the dashboard or admin API. The service atomically writes storage.finalized_dir/<capture-id>.llmtrace by default, records that package in the catalog, and retains the encrypted source bundle.', code: 'curl -X POST http://127.0.0.1:8788/v1/captures/cap-example/finalizations' },
-      { heading: 'Notary discovery is automatic', body: 'For hosted use, the service refreshes the production notary directory, selects a worker compatible with the bundle, and verifies the resulting evidence against its locally pinned key history. For local or self-hosted use, set `notary.endpoint` and `notary.public_key` together in `config.toml`.' },
+      { heading: 'Finalize one interaction', body: 'Select a captured interaction in the dashboard or admin API. The service atomically writes storage.finalized_dir/<capture-id>.llmtrace by default, records that package in the catalog, and retains the encrypted source capture.', code: 'curl -X POST http://127.0.0.1:8788/v1/captures/cap-example/finalizations' },
+      { heading: 'Notary discovery is automatic', body: 'For hosted use, the service refreshes the production notary directory, selects a worker compatible with the capture, and verifies the resulting evidence against its locally pinned key history. For local or self-hosted use, set `notary.endpoint` and `notary.public_key` together in `config.toml`.' },
       { heading: 'Fresh notary connection', body: 'The original provider stream and proxy no longer need to be running. A new notary worker holding the same notary identity and key can complete finalization without a stored server-side checkpoint.' },
       { heading: 'Expect this step to take time', body: 'Private proof generation is slower than capture. Deferring it keeps the interactive agent response fast and makes proof work an explicit background or batch operation.' },
       { heading: 'Interruption behavior', body: 'The pending bundle is not consumed. If finalization fails or the service stops, retry the failed or interrupted durable operation through `POST /v1/operations/{operation_id}/retry`; proof work from the interrupted attempt is not resumed.' },
@@ -489,7 +489,7 @@ const docPages = {
       },
       { heading: 'Package versus shared view', body: 'The finalized `.llmtrace` package carries all cryptographic evidence and is independently verifiable. A shared session presents a readable view derived from that package and retains the exact admitted bytes for download and independent verification.' },
       { heading: 'Verify a portable package', code: 'llm-notary traces verify ./capture.llmtrace\nPOST /api/verify', body: 'Use the local CLI to verify locally, or upload the package on the public Verify page. The hosted page checks the package without saving it.' },
-      { heading: 'Complete context is intentional', body: 'A `.llmtrace` can include system context, tool definitions, session metadata, prompts, responses, and tool results. All HTTP header values are hidden by default, but request and response bodies remain disclosed. Inspect it before sharing; the encrypted `.llmbundle` is private retry state and must stay local.' },
+      { heading: 'Complete context is intentional', body: 'A `.llmtrace` can include system context, tool definitions, session metadata, prompts, responses, and tool results. All HTTP header values are hidden by default, but request and response bodies remain disclosed. Inspect it before sharing; the encrypted `.llmcapture` is private retry state and must stay local.' },
       { heading: 'Download or verify locally', code: 'GET /v1/captures/{capture_id}/package\nPOST /v1/captures/{capture_id}/trace:verify\nllm-notary traces verify ./capture.llmtrace' },
       {
         heading: 'What verification checks',
@@ -528,9 +528,9 @@ const docPages = {
           {
             title: 'Never uploaded',
             items: [
-              'encrypted .llmbundle checkpoints',
+              'encrypted .llmcapture checkpoints',
               'API-key or cookie values',
-              'unselected bundles from the same session',
+              'unselected captures from the same session',
               'extra files or symlink targets',
             ],
           },
@@ -538,7 +538,7 @@ const docPages = {
       },
       { heading: 'Admission checks', body: 'The local service and hosted admission service validate the deterministic archive, verify its evidence, require hidden header values, and scan every archive entry and nested disclosed body for credential patterns and high-entropy secrets. After storage, admission downloads the exact public bytes and repeats validation, scanning, and verification before exposing the link.' },
       { heading: 'Current consent boundary', body: 'The admission service inspects disclosed request and response bodies, system context, and tool data to verify and reproduce the shared view. Every HTTP header value is hidden except the exact structural value Transfer-Encoding: chunked.' },
-      { heading: 'Exact package retention', body: 'An admitted session keeps the exact verified `.llmtrace` bytes, size, and SHA-256 digest. The session page makes that package available for independent verification; the encrypted `.llmbundle` never leaves the local vault.' },
+      { heading: 'Exact package retention', body: 'An admitted session keeps the exact verified `.llmtrace` bytes, size, and SHA-256 digest. The session page makes that package available for independent verification; the encrypted `.llmcapture` never leaves the local vault.' },
       { heading: 'Retry behavior', body: 'An upload or API failure does not change or delete the local package. Submitting the same capture with the same visibility reuses the archive-derived idempotency key and resumes the retry-safe share job.' },
     ],
   },

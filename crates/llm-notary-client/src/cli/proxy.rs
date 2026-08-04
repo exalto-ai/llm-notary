@@ -750,7 +750,7 @@ fn save_bundle(
     vault: &Vault,
 ) -> Result<PathBuf> {
     std::fs::create_dir_all(bundle_dir)?;
-    let path = bundle_dir.join(format!("{}.llmbundle", bundle.capture_id()));
+    let path = bundle_dir.join(format!("{}.llmcapture", bundle.capture_id()));
     bundle.save(&path, vault)?;
     Ok(path)
 }

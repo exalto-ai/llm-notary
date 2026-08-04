@@ -798,11 +798,11 @@ fn verify_trace_file(args: &TraceVerifyArgs) -> Result<Value, CliError> {
     let path = Path::new(&args.target);
     if path
         .extension()
-        .is_some_and(|extension| extension == "llmbundle")
+        .is_some_and(|extension| extension == "llmcapture" || extension == "llmbundle")
     {
         return Err(CliError::new(
             EXIT_ERROR,
-            "encrypted .llmbundle files are private retry state and cannot be verified as finalized packages",
+            "encrypted capture files are private retry state and cannot be verified as finalized packages",
         ));
     }
     let metadata =
@@ -1278,24 +1278,27 @@ mod tests {
     #[tokio::test]
     async fn trace_file_verification_bypasses_the_daemon_and_rejects_private_bundles() {
         let directory = tempfile::tempdir().unwrap();
-        let bundle = directory.path().join("capture.llmbundle");
-        fs::write(&bundle, b"encrypted private retry state").unwrap();
-        let cli = Cli::try_parse_from(["llm-notary", "traces", "verify", bundle.to_str().unwrap()])
-            .unwrap();
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
+        for name in ["capture.llmcapture", "capture.llmbundle"] {
+            let bundle = directory.path().join(name);
+            fs::write(&bundle, b"encrypted private retry state").unwrap();
+            let cli =
+                Cli::try_parse_from(["llm-notary", "traces", "verify", bundle.to_str().unwrap()])
+                    .unwrap();
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
 
-        let error = run_parsed(cli, &mut stdout, &mut stderr).await.unwrap_err();
+            let error = run_parsed(cli, &mut stdout, &mut stderr).await.unwrap_err();
 
-        assert!(error.to_string().contains("private retry state"));
-        assert!(!error.to_string().contains("start the daemon"));
-        assert!(stdout.is_empty());
+            assert!(error.to_string().contains("private retry state"));
+            assert!(!error.to_string().contains("start the daemon"));
+            assert!(stdout.is_empty());
+        }
     }
 
     #[tokio::test]
     async fn json_mode_emits_one_error_value_without_plain_text() {
         let directory = tempfile::tempdir().unwrap();
-        let bundle = directory.path().join("capture.llmbundle");
+        let bundle = directory.path().join("capture.llmcapture");
         fs::write(&bundle, b"encrypted private retry state").unwrap();
         let cli = Cli::try_parse_from([
             "llm-notary",
@@ -1591,7 +1594,7 @@ mod tests {
             })
             .unwrap();
         fs::create_dir_all(&config.storage.bundle_dir).unwrap();
-        let bundle = config.storage.bundle_dir.join("cap-cli-e2e.llmbundle");
+        let bundle = config.storage.bundle_dir.join("cap-cli-e2e.llmcapture");
         fs::write(&bundle, b"encrypted fixture").unwrap();
         catalog
             .complete_capture(

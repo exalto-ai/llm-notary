@@ -462,10 +462,10 @@ pub fn trace_manifest_from_archive(
 fn read_trace_package_file(path: &Path) -> Result<Vec<u8>> {
     if path
         .extension()
-        .is_some_and(|extension| extension == "llmbundle")
+        .is_some_and(|extension| extension == "llmcapture" || extension == "llmbundle")
     {
         bail!(
-            "encrypted .llmbundle files are private retry state and cannot be verified as finalized packages"
+            "encrypted capture files are private retry state and cannot be verified as finalized packages"
         );
     }
     let metadata = fs::symlink_metadata(path)
@@ -486,11 +486,13 @@ mod tests {
     #[test]
     fn encrypted_bundle_is_never_accepted_as_a_verified_package() {
         let directory = tempfile::tempdir().unwrap();
-        let bundle = directory.path().join("capture.llmbundle");
-        fs::write(&bundle, b"encrypted private retry state").unwrap();
+        for name in ["capture.llmcapture", "capture.llmbundle"] {
+            let bundle = directory.path().join(name);
+            fs::write(&bundle, b"encrypted private retry state").unwrap();
 
-        let error = verify_trace_package(&bundle, &[0; 33]).unwrap_err();
+            let error = verify_trace_package(&bundle, &[0; 33]).unwrap_err();
 
-        assert!(error.to_string().contains("private retry state"));
+            assert!(error.to_string().contains("private retry state"));
+        }
     }
 }

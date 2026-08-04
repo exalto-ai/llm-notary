@@ -42,7 +42,7 @@ capture state, finalization state, streaming mode, or time. A result always has
 a textual state; color is only a second signal. The detail panel shows safe
 model and response metadata, a lifecycle, privacy-aware truncated previews,
 artifact availability, hashes, and prior finalization state. It never decrypts
-or renders the source bundle. The finalization history links every durable
+or renders the source capture. The finalization history links every durable
 operation for that capture to its detailed attempt history.
 
 ![Local dashboard in dark mode with Captures selected, provider and finalization filters, a running Anthropic capture selected in the results, privacy-aware previews, lifecycle, and artifact details.](images/local-dashboard/captures-dark.png)
@@ -89,7 +89,7 @@ views:
 `<capture-id>.llmtrace` bytes produced by finalization. It is the artifact to
 retain, share privately with an intended verifier, or submit for a public link. The
 package discloses request and response bodies; review that privacy boundary
-before sharing it. The source `.llmbundle` remains vault-encrypted private
+before sharing it. The source `.llmcapture` remains vault-encrypted private
 retry state and is never a shareable verification artifact.
 
 ![Finalized trace inspector in dark mode with the Verification tab selected and a passed verification result showing the capture, verification time, notary key identifier, and directory trust source.](images/local-dashboard/trace-verification.png)
@@ -103,7 +103,7 @@ disclosure, hashes, provider mapping, and canonical trace bytes agree.
 The Share view shows the disclosed conversation before upload, then asks for
 Unlisted (the default) or Listed visibility. Both are public to anyone with the
 link; Unlisted only stays out of the Library. The explicit confirmation repeats
-that this is not private access. The source `.llmbundle` is never an input, and
+that this is not private access. The source `.llmcapture` is never an input, and
 nothing is uploaded merely because a trace was finalized or verified. After
 submission, the dashboard polls `GET /v1/shares/{share_id}` through the local
 service. Successful admission makes **Copy link** the primary action and also

@@ -13,7 +13,7 @@ Before changing code, read:
 
 The local proxy handles credentials and plaintext; the remote notary must not.
 Never add sensitive values to logs, metrics, errors, fixtures, screenshots, or
-Git history. Never write a deferred `.llmbundle` without vault encryption.
+Git history. Never write a deferred `.llmcapture` without vault encryption.
 
 Run the checks relevant to the files you changed. The full validation set is
 documented in [Development and validation](docs/development.md#required-checks).

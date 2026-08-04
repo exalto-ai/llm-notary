@@ -40,7 +40,7 @@ async fn daemon_and_cli_use_the_versioned_loopback_api_for_reads_and_mutations()
     config.validate().unwrap();
 
     fs::create_dir_all(&config.storage.bundle_dir).unwrap();
-    let bundle = config.storage.bundle_dir.join("cap-daemon-cli.llmbundle");
+    let bundle = config.storage.bundle_dir.join("cap-daemon-cli.llmcapture");
     fs::write(&bundle, b"encrypted test fixture").unwrap();
     let catalog = Catalog::open_for_config(&config).unwrap();
     catalog

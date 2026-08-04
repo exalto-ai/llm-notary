@@ -19,7 +19,7 @@ use crate::{
 
 #[derive(Args, Debug)]
 pub struct FinalizeArgs {
-    /// Local `.llmbundle` file.
+    /// Local `.llmcapture` file.
     bundle: PathBuf,
     /// Destination `.llmtrace` file for the verified trace package.
     #[arg(long)]

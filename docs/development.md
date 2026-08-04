@@ -168,7 +168,7 @@ Never commit or log:
 - provider credentials or cookie values;
 - notary private keys or admission service tokens;
 - database URLs, presigned storage URLs, or `.env` files;
-- `.llmbundle` files, vault keys, decrypted checkpoints, or raw captures; or
+- `.llmcapture` files, vault keys, decrypted checkpoints, or raw captures; or
 - request and response bodies from real users.
 
 Fixtures must be synthetic and deterministic. Errors, events, metrics, and

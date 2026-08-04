@@ -3,6 +3,8 @@
 /bundles/
 /captures/
 /traces/
+*.llmcapture
+# Legacy private capture extension; keep existing artifacts out of Git.
 *.llmbundle
 .env
 *.key

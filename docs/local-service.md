@@ -334,9 +334,9 @@ aggregate state without searching an event page.
 
 ## Validation, verification, and sharing
 
-An encrypted `.llmbundle` is private retry state. Checking that the vault can
+An encrypted `.llmcapture` is private retry state. Checking that the vault can
 decrypt and parse it establishes only that the local artifact is structurally
-usable; it is not independent proof of the provider response. The bundle can
+usable; it is not independent proof of the provider response. The capture can
 reconstruct the original authenticated request, including credentials, so it
 must remain vault-encrypted and local.
 

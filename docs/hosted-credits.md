@@ -8,7 +8,7 @@ Credits are byte-denominated grants used only when a hosted finalization ticket
 is redeemed. Adding or using them never changes proof strength, notary identity,
 `.llmtrace` contents, verification, publication, sharing, downloads, or
 self-hosted use. Capture itself consumes no credits. Finalization uses the
-immutable authenticated TLS application-data allowance from the source bundle
+immutable authenticated TLS application-data allowance from the source capture
 receipt, not the size of the `.llmtrace` ZIP.
 
 ## Monthly and supplemental credits
