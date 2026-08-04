@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use axum::{
     Json,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
@@ -19,8 +19,9 @@ use super::{
     config::StorageConfig,
     database_error,
     intake::{ARCHIVE_FORMAT, IntakeStorage},
-    unix_timestamp,
+    pagination, unix_timestamp,
 };
+use llm_notary_core::pagination::{CursorScope, Page, PageQuery, decode_cursor};
 
 #[cfg(test)]
 use super::config::{DEFAULT_MAX_ARCHIVE_BYTES, DEFAULT_UPLOAD_TTL_SECS};
@@ -70,9 +71,10 @@ struct CreateShareResponse {
     upload: Option<UploadInstructions>,
 }
 
-#[derive(Serialize, ToSchema)]
-struct WebSharesResponse {
-    shares: Vec<ShareResponse>,
+#[derive(Deserialize, Serialize)]
+struct SharePagePosition {
+    created_at: i64,
+    id: String,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -457,8 +459,10 @@ async fn update_share_visibility(
     get,
     path = "/api/me/shares",
     summary = "List the browser user's shares",
+    params(("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 100), ("cursor" = Option<String>, Query)),
     responses(
-        (status = 200, body = WebSharesResponse),
+        (status = 200, body = Page<ShareResponse>),
+        (status = 400, body = super::ErrorResponse),
         (status = 401, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse)
     ),
@@ -468,22 +472,44 @@ async fn update_share_visibility(
 async fn list_web_publish_jobs(
     State(state): State<AppState>,
     jar: CookieJar,
-) -> ApiResult<Json<WebSharesResponse>> {
+    query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
+) -> ApiResult<Json<Page<ShareResponse>>> {
+    let Query(query) = query.map_err(pagination::query_error)?;
     let user = authenticated_web_user(&state, &jar).await?;
+    let limit = query
+        .limit(pagination::DEFAULT_PAGE_LIMIT, pagination::MAX_PAGE_LIMIT)
+        .map_err(pagination::api_error)?;
+    let scope = CursorScope::new("/api/me/shares", &user.0, "created_at desc, id desc")
+        .map_err(pagination::api_error)?;
+    let position = query
+        .cursor
+        .as_deref()
+        .map(|cursor| decode_cursor::<SharePagePosition>(&scope, cursor))
+        .transpose()
+        .map_err(pagination::api_error)?;
     let shares = sqlx::query_as::<_, PublishJobRow>(
         "SELECT * FROM publish_jobs
          WHERE user_id = $1
+           AND ($2::TEXT IS NULL OR (created_at, id) < ($3, $2))
          ORDER BY created_at DESC, id DESC
-         LIMIT 100",
+         LIMIT $4",
     )
-    .bind(user.0)
+    .bind(&user.0)
+    .bind(position.as_ref().map(|position| &position.id))
+    .bind(position.as_ref().map(|position| position.created_at))
+    .bind(i64::try_from(limit + 1).map_err(|error| ApiError::internal(error.into()))?)
     .fetch_all(&state.database)
     .await
     .map_err(database_error)?
-    .iter()
-    .map(|share| share_response(share, &state.app_url))
+    .into_iter()
+    .map(|share| share_response(&share, &state.app_url))
     .collect();
-    Ok(Json(WebSharesResponse { shares }))
+    let page = Page::from_limit_plus_one(shares, limit, &scope, |share| SharePagePosition {
+        created_at: share.created_at,
+        id: share.id.clone(),
+    })
+    .map_err(pagination::api_error)?;
+    Ok(Json(page))
 }
 
 #[utoipa::path(
@@ -1219,12 +1245,40 @@ mod tests {
     #[tokio::test]
     async fn web_users_list_only_their_publish_jobs() {
         let (state, _storage, headers_one, headers_two) = test_state().await;
-        create_publish_job(State(state.clone()), headers_one, Json(request()))
+        let with_key = |headers: &HeaderMap, key: &'static str| {
+            let mut headers = headers.clone();
+            headers.insert(
+                IDEMPOTENCY_KEY_HEADER,
+                key.parse().expect("idempotency key"),
+            );
+            headers
+        };
+        create_publish_job(State(state.clone()), headers_one.clone(), Json(request()))
             .await
             .expect("own publish job");
         create_publish_job(State(state.clone()), headers_two, Json(request()))
             .await
             .expect("other publish job");
+        for key in [
+            "11111111-1111-1111-1111-111111111111",
+            "22222222-2222-2222-2222-222222222222",
+            "33333333-3333-3333-3333-333333333333",
+        ] {
+            create_publish_job(
+                State(state.clone()),
+                with_key(&headers_one, key),
+                Json(request()),
+            )
+            .await
+            .expect("additional own publish job");
+        }
+        let expected_ids: std::collections::BTreeSet<String> =
+            sqlx::query_scalar("SELECT id FROM publish_jobs WHERE user_id = 'user-1'")
+                .fetch_all(&state.database)
+                .await
+                .expect("own publish job IDs")
+                .into_iter()
+                .collect();
 
         let now = unix_timestamp().expect("time");
         let web_token = "web-publish-session";
@@ -1243,10 +1297,57 @@ mod tests {
             web_token.to_owned(),
         ));
 
-        let response = list_web_publish_jobs(State(state), jar)
-            .await
-            .expect("publish jobs");
-        assert_eq!(response.0.shares.len(), 1);
+        let first = list_web_publish_jobs(
+            State(state.clone()),
+            jar.clone(),
+            Ok(Query(PageQuery {
+                limit: Some(2),
+                cursor: None,
+            })),
+        )
+        .await
+        .expect("publish jobs");
+        assert_eq!(first.0.items.len(), 2);
+        let cursor = first.0.next_cursor.clone().expect("second page cursor");
+
+        let concurrent_key = "44444444-4444-4444-4444-444444444444";
+        create_publish_job(
+            State(state.clone()),
+            with_key(&headers_one, concurrent_key),
+            Json(request()),
+        )
+        .await
+        .expect("concurrent own publish job");
+        sqlx::query(
+            "UPDATE publish_jobs SET created_at = $1
+             WHERE user_id = 'user-1' AND idempotency_key = $2",
+        )
+        .bind(now + 100)
+        .bind(concurrent_key)
+        .execute(&state.database)
+        .await
+        .expect("move concurrent job above cursor boundary");
+
+        let second = list_web_publish_jobs(
+            State(state),
+            jar,
+            Ok(Query(PageQuery {
+                limit: Some(2),
+                cursor: Some(cursor),
+            })),
+        )
+        .await
+        .expect("second publish jobs page");
+        assert_eq!(second.0.items.len(), 2);
+        assert!(second.0.next_cursor.is_none());
+        let actual_ids = first
+            .0
+            .items
+            .into_iter()
+            .chain(second.0.items)
+            .map(|share| share.id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(actual_ids, expected_ids);
     }
 
     #[tokio::test]

@@ -1621,64 +1621,15 @@
         },
         "additionalProperties": false
       },
-      "CreditHistoryEntry": {
-        "type": "object",
-        "required": [
-          "id",
-          "kind",
-          "amount_bytes",
-          "display_label",
-          "created_at"
-        ],
-        "properties": {
-          "amount_bytes": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "created_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "display_label": {
-            "type": "string"
-          },
-          "expires_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "id": {
-            "type": "string"
-          },
-          "kind": {
-            "type": "string"
-          },
-          "source_kind": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        }
-      },
       "CreditSummary": {
         "type": "object",
         "required": [
           "total_remaining_bytes",
           "included_monthly_remaining_bytes",
           "supplemental_remaining_bytes",
-          "reset_at",
-          "history"
+          "reset_at"
         ],
         "properties": {
-          "history": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/CreditHistoryEntry"
-            }
-          },
           "included_monthly_remaining_bytes": {
             "type": "integer",
             "format": "int64"

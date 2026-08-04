@@ -549,13 +549,45 @@
         ],
         "summary": "List the browser user's active CLI sessions",
         "operationId": "list_cli_sessions",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size; defaults to 50",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WebCliSessionsResponse"
+                  "$ref": "#/components/schemas/Page_WebCliSession"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1027,13 +1059,45 @@
         ],
         "summary": "List account API keys",
         "operationId": "list_api_keys",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size; defaults to 50",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApiKeysResponse"
+                  "$ref": "#/components/schemas/Page_ApiKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1311,6 +1375,84 @@
         ]
       }
     },
+    "/api/me/credits/history": {
+      "get": {
+        "tags": [
+          "browser-auth"
+        ],
+        "summary": "List the signed-in account's credit activity",
+        "operationId": "credit_history",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size; defaults to 50",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CreditHistoryEntry"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
     "/api/me/shares": {
       "get": {
         "tags": [
@@ -1318,13 +1460,45 @@
         ],
         "summary": "List the browser user's shares",
         "operationId": "list_web_publish_jobs",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size; defaults to 50",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/WebSharesResponse"
+                  "$ref": "#/components/schemas/Page_ShareResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -1492,13 +1666,61 @@
         ],
         "summary": "List Listed verified-session shares",
         "operationId": "listed_shares",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size; defaults to 50",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "search",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ListedSharesResponse"
+                  "$ref": "#/components/schemas/Page_ListedShareSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2339,20 +2561,6 @@
           }
         }
       },
-      "ApiKeysResponse": {
-        "type": "object",
-        "required": [
-          "api_keys"
-        ],
-        "properties": {
-          "api_keys": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ApiKeyResponse"
-            }
-          }
-        }
-      },
       "ApiScope": {
         "type": "string",
         "enum": [
@@ -2723,16 +2931,9 @@
           "total_remaining_bytes",
           "included_monthly_remaining_bytes",
           "supplemental_remaining_bytes",
-          "reset_at",
-          "history"
+          "reset_at"
         ],
         "properties": {
-          "history": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/CreditHistoryEntry"
-            }
-          },
           "included_monthly_remaining_bytes": {
             "type": "integer",
             "format": "int64"
@@ -2889,29 +3090,19 @@
           }
         }
       },
-      "ListedSharesResponse": {
-        "type": "object",
-        "required": [
-          "shares"
-        ],
-        "properties": {
-          "shares": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ListedShareSummary"
-            }
-          }
-        }
-      },
       "MeResponse": {
         "type": "object",
         "required": [
           "user",
-          "credits"
+          "credits",
+          "share_stats"
         ],
         "properties": {
           "credits": {
             "$ref": "#/components/schemas/CreditSummary"
+          },
+          "share_stats": {
+            "$ref": "#/components/schemas/ShareStats"
           },
           "user": {
             "$ref": "#/components/schemas/PublicUser"
@@ -3016,6 +3207,333 @@
           "tcp",
           "tls"
         ]
+      },
+      "Page_ApiKeyResponse": {
+        "type": "object",
+        "description": "Uniform response shape for every paginated list route.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "prefix",
+                "name",
+                "scopes",
+                "created_at"
+              ],
+              "properties": {
+                "created_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "expires_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "last_used_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "prefix": {
+                  "type": "string"
+                },
+                "revoked_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "scopes": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ApiScope"
+                  }
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor for the next page, or `null` when this page exhausts the query."
+          }
+        }
+      },
+      "Page_CreditHistoryEntry": {
+        "type": "object",
+        "description": "Uniform response shape for every paginated list route.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "kind",
+                "amount_bytes",
+                "display_label",
+                "created_at"
+              ],
+              "properties": {
+                "amount_bytes": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "created_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "display_label": {
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "$ref": "#/components/schemas/CreditHistoryKind"
+                },
+                "source_kind": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor for the next page, or `null` when this page exhausts the query."
+          }
+        }
+      },
+      "Page_ListedShareSummary": {
+        "type": "object",
+        "description": "Uniform response shape for every paginated list route.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "provider",
+                "model",
+                "publisher",
+                "share_url"
+              ],
+              "properties": {
+                "authenticated_at_unix_ms": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "input_preview": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "model": {
+                  "type": "string"
+                },
+                "output_preview": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "provider": {
+                  "type": "string"
+                },
+                "publisher": {
+                  "type": "string"
+                },
+                "share_url": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor for the next page, or `null` when this page exhausts the query."
+          }
+        }
+      },
+      "Page_ShareResponse": {
+        "type": "object",
+        "description": "Uniform response shape for every paginated list route.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "state",
+                "visibility",
+                "force",
+                "created_at",
+                "updated_at",
+                "status_url"
+              ],
+              "properties": {
+                "admitted_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
+                "created_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "failure_code": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "force": {
+                  "type": "boolean"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "package_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "share_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "state": {
+                  "type": "string"
+                },
+                "status_url": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "visibility": {
+                  "$ref": "#/components/schemas/ShareVisibility"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor for the next page, or `null` when this page exhausts the query."
+          }
+        }
+      },
+      "Page_WebCliSession": {
+        "type": "object",
+        "description": "Uniform response shape for every paginated list route.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "device_name",
+                "created_at",
+                "last_used_at",
+                "expires_at"
+              ],
+              "properties": {
+                "created_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "device_name": {
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "last_used_at": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor for the next page, or `null` when this page exhausts the query."
+          }
+        }
       },
       "PublicShareDetail": {
         "type": "object",
@@ -3305,6 +3823,28 @@
           }
         }
       },
+      "ShareStats": {
+        "type": "object",
+        "required": [
+          "total",
+          "admitted",
+          "in_progress"
+        ],
+        "properties": {
+          "admitted": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "in_progress": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
       "ShareVisibility": {
         "type": "string",
         "enum": [
@@ -3438,34 +3978,6 @@
           "last_used_at": {
             "type": "integer",
             "format": "int64"
-          }
-        }
-      },
-      "WebCliSessionsResponse": {
-        "type": "object",
-        "required": [
-          "sessions"
-        ],
-        "properties": {
-          "sessions": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/WebCliSession"
-            }
-          }
-        }
-      },
-      "WebSharesResponse": {
-        "type": "object",
-        "required": [
-          "shares"
-        ],
-        "properties": {
-          "shares": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ShareResponse"
-            }
           }
         }
       }

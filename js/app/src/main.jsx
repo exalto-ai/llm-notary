@@ -40,6 +40,7 @@ import {
   getCliSessions,
   getCurrentUser,
   getCreditOffers,
+  getCreditHistory,
   getNotaryDirectory,
   getListedShares,
   getMyShares,
@@ -178,12 +179,12 @@ export function ListedSharesPreview({ loadShares = getListedShares }) {
   const [loadError, setLoadError] = useState(false);
   useEffect(() => {
     let cancelled = false;
-    loadShares()
-      .then((payload) => { if (!cancelled) setShares(payload); })
+    loadShares({ limit: 5 })
+      .then((payload) => { if (!cancelled) setShares(payload.items); })
       .catch(() => { if (!cancelled) setLoadError(true); });
     return () => { cancelled = true; };
   }, [loadShares]);
-  const visible = (shares || []).slice(0, 5);
+  const visible = shares || [];
   return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Public domain</span><h2>Traces from the community.</h2></div></div>{shares === null && !loadError ? <div className="collection-pending" role="status"><b>Loading the Library…</b><span>Finding the latest public traces.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library couldn’t load.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-share-list" aria-label="Featured public traces">{visible.map((share) => <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><header><b>{share.model}</b><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} /></header><div className="preview-share-snippets"><p><span>Prompt</span>{share.input_preview || 'No prompt preview.'}</p><p><span>Response</span>{share.output_preview || 'No response preview.'}</p></div></a>)}</div> : <div className="collection-pending"><b>The Library is empty.</b><span>Public traces will appear here after they’re shared.</span></div>}<a className="button button-dark" href="#/library">Browse the Library</a></section>;
 }
 
@@ -461,7 +462,7 @@ const docPages = {
       { heading: 'Monthly and additional grants', body: 'Anonymous use receives 64 MiB each UTC month and a signed-in account receives 512 MiB. During prototype testing, every signed-in account also receives one automatic, non-expiring 128 MiB testing grant. Purchased and promotional credits remain separate grants, and finalization spends the grant that expires soonest before non-expiring credit.' },
       { heading: 'Anonymous allowances are scoped by network address', body: 'Public hosted use derives a rotating, keyed subject from the connection address: one IPv4 address or one IPv6 /64 prefix. Only explicitly trusted reverse proxies may supply the client address. The raw address is not stored in admission records or sent to a notary worker.' },
       { heading: 'An abuse control, not an identity claim', note: 'Network-address scoping is only a coarse abuse control. People behind the same NAT, corporate gateway, or VPN can share an allowance, while one person may appear under different addresses. The derived subject does not identify a person and is not a privacy guarantee.' },
-      { heading: 'Account summary', body: 'The hosted dashboard shows included and additional balances, the monthly reset, the next expiration, available offers, and a bounded recent history. A connected local service can retrieve the same credit summary with `llm-notary whoami --json`.' },
+      { heading: 'Account summary', body: 'The hosted dashboard shows included and additional balances, the monthly reset, the next expiration, available offers, and paginated credit activity. A connected local service can retrieve the current credit summary with `llm-notary whoami --json`.' },
       { heading: 'Evidence is unchanged', body: 'Admission and credit bookkeeping do not change TLSNotary evidence, trace-package verification, local bundle retention, or the trust claim. Self-hosted notaries do not need the hosted credit ledger unless their operator deliberately adopts it.' },
     ],
   },
@@ -842,33 +843,81 @@ function LibraryShareRow({ share }) {
 
 export function Library({ loadShares = getListedShares }) {
   const [shares, setShares] = useState(null);
+  const [loadingPage, setLoadingPage] = useState(true);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState('');
   const [query, setQuery] = useState('');
   const [provider, setProvider] = useState('All');
   const [reload, setReload] = useState(0);
+  const requestGeneration = useRef(0);
+  const normalizedQuery = query.trim();
+  const queryIsNotIndexable = normalizedQuery.length > 0 && !/[\p{L}\p{N}]{3}/u.test(normalizedQuery);
+  const changeQuery = (value) => {
+    requestGeneration.current += 1;
+    setLoadingMore(false);
+    setNextCursor(null);
+    setShares([]);
+    setLoadingPage(true);
+    setLoadError('');
+    setQuery(value);
+  };
+  const changeProvider = (value) => {
+    requestGeneration.current += 1;
+    setLoadingMore(false);
+    setNextCursor(null);
+    setShares([]);
+    setLoadingPage(true);
+    setLoadError('');
+    setProvider(value);
+  };
   useEffect(() => {
     let cancelled = false;
+    const generation = requestGeneration.current + 1;
+    requestGeneration.current = generation;
+    setLoadingMore(false);
+    if (queryIsNotIndexable) {
+      setLoadError('');
+      setShares([]);
+      setNextCursor(null);
+      setLoadingPage(false);
+      return () => { cancelled = true; };
+    }
+    setLoadingPage(true);
+    const timeout = window.setTimeout(() => {
+      setLoadError('');
+      loadShares({ limit: 20, search: normalizedQuery || undefined, provider: provider === 'All' ? undefined : provider })
+        .then((payload) => { if (!cancelled && generation === requestGeneration.current) { setShares(payload.items); setNextCursor(payload.next_cursor || null); setLoadingPage(false); } })
+        .catch((error) => { if (!cancelled && generation === requestGeneration.current) { setShares(null); setLoadError(error instanceof Error ? error.message : 'Could not load the Library.'); setLoadingPage(false); } });
+    }, 200);
+    return () => { cancelled = true; window.clearTimeout(timeout); };
+  }, [loadShares, normalizedQuery, provider, queryIsNotIndexable, reload]);
+  const providers = ['All', ...new Set(['openai', 'anthropic', 'deepseek', 'openrouter', ...(shares || []).map((share) => share.provider)])];
+  const loadMore = async () => {
+    if (!nextCursor || loadingMore) return;
+    const generation = requestGeneration.current;
+    setLoadingMore(true);
     setLoadError('');
-    setShares(null);
-    loadShares()
-      .then((payload) => { if (!cancelled) setShares(payload); })
-      .catch((error) => { if (!cancelled) setLoadError(error instanceof Error ? error.message : 'Could not load the Library.'); });
-    return () => { cancelled = true; };
-  }, [loadShares, reload]);
-  const providers = ['All', ...new Set((shares || []).map((share) => share.provider))];
-  const filtered = useMemo(() => (shares || []).filter((share) => {
-    const searchable = `${share.provider} ${share.model} ${share.publisher} ${share.input_preview || ''} ${share.output_preview || ''}`.toLowerCase();
-    return searchable.includes(query.toLowerCase()) && (provider === 'All' || share.provider === provider);
-  }), [provider, query, shares]);
+    try {
+      const payload = await loadShares({ limit: 20, cursor: nextCursor, search: normalizedQuery || undefined, provider: provider === 'All' ? undefined : provider });
+      if (generation !== requestGeneration.current) return;
+      setShares((current) => [...(current || []), ...payload.items]);
+      setNextCursor(payload.next_cursor || null);
+    } catch (error) {
+      if (generation === requestGeneration.current) setLoadError(error instanceof Error ? error.message : 'Could not load more traces.');
+    } finally {
+      if (generation === requestGeneration.current) setLoadingMore(false);
+    }
+  };
   if (shares === null && !loadError) return <LibraryLoading />;
   return <main className="share-library">
     <header className="share-library-titlebar"><h1>Library</h1></header>
     <section className="share-library-controls" aria-label="Browse public sessions">
-      <label><span>Search</span><Input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search conversations or models" /></label>
-      <Select value={provider} onValueChange={setProvider}><SelectTrigger aria-label="Provider"><SelectValue /></SelectTrigger><SelectContent>{providers.map((value) => <SelectItem value={value} key={value}>{value === 'All' ? 'All providers' : <ProviderIdentity provider={value} />}</SelectItem>)}</SelectContent></Select>
-      <span>{filtered.length} {filtered.length === 1 ? 'session' : 'sessions'}</span>
+      <label><span>Search</span><Input value={query} onChange={(event) => changeQuery(event.target.value)} placeholder="Search conversations or models" /></label>
+      <Select value={provider} onValueChange={changeProvider}><SelectTrigger aria-label="Provider"><SelectValue /></SelectTrigger><SelectContent>{providers.map((value) => <SelectItem value={value} key={value}>{value === 'All' ? 'All providers' : <ProviderIdentity provider={value} />}</SelectItem>)}</SelectContent></Select>
+      <span>{shares?.length || 0}{nextCursor ? '+' : ''} {(shares?.length || 0) === 1 ? 'trace' : 'traces'} shown</span>
     </section>
-    {loadError ? <section className="collection-empty" role="alert"><b>The Library couldn’t load.</b><p>{loadError}</p><button type="button" onClick={() => setReload((value) => value + 1)}>Try again</button></section> : filtered.length ? <section className="share-index" aria-label="Public traces">{filtered.map((share) => <LibraryShareRow share={share} key={share.id} />)}</section> : shares.length ? <section className="collection-empty"><b>Nothing matches.</b><p>Try a different search or provider.</p><button type="button" onClick={() => { setQuery(''); setProvider('All'); }}>Clear filters</button></section> : <section className="collection-empty"><b>The Library is empty.</b><p>Public traces will appear here after they’re shared.</p><a href="#/docs/share">Learn how sharing works</a></section>}
+    {queryIsNotIndexable ? <section className="collection-empty"><b>Keep typing.</b><p>Search needs three letters or numbers together.</p></section> : loadingPage ? <div className="share-library-skeleton" role="status" aria-label="Loading filtered traces">{[1, 2, 3].map((row) => <div key={row}><i /><span><i /><i /></span></div>)}</div> : loadError && shares === null ? <section className="collection-empty" role="alert"><b>The Library couldn’t load.</b><p>{loadError}</p><button type="button" onClick={() => setReload((value) => value + 1)}>Try again</button></section> : shares.length ? <><section className="share-index" aria-label="Public traces">{shares.map((share) => <LibraryShareRow share={share} key={share.id} />)}</section>{loadError && <p className="library-page-error" role="alert">{loadError}</p>}{nextCursor && <button className="library-load-more" type="button" onClick={loadMore} disabled={loadingMore}>{loadingMore ? 'Loading…' : 'Load more traces'}</button>}</> : query || provider !== 'All' ? <section className="collection-empty"><b>Nothing matches.</b><p>Try a different search or provider.</p><button type="button" onClick={() => { requestGeneration.current += 1; setLoadingMore(false); setNextCursor(null); setShares([]); setLoadingPage(true); setLoadError(''); setQuery(''); setProvider('All'); }}>Clear filters</button></section> : <section className="collection-empty"><b>The Library is empty.</b><p>Public traces will appear here after they’re shared.</p><a href="#/docs/share">Learn how sharing works</a></section>}
   </main>;
 }
 
@@ -980,6 +1029,8 @@ function apiKeyState(apiKey) {
 
 export function ApiKeysPanel({ loadKeys = getApiKeys, createKey = createApiKey, revokeKey = revokeApiKey }) {
   const [apiKeys, setApiKeys] = useState(null);
+  const [nextCursor, setNextCursor] = useState(null);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [name, setName] = useState('');
@@ -993,8 +1044,8 @@ export function ApiKeysPanel({ loadKeys = getApiKeys, createKey = createApiKey, 
 
   useEffect(() => {
     let cancelled = false;
-    loadKeys()
-      .then((keys) => { if (!cancelled) setApiKeys(keys); })
+    loadKeys({ limit: 20 })
+      .then((page) => { if (!cancelled) { setApiKeys(page.items); setNextCursor(page.next_cursor || null); } })
       .catch((reason) => { if (!cancelled) setError(reason.message); });
     return () => { cancelled = true; };
   }, [loadKeys]);
@@ -1048,11 +1099,25 @@ export function ApiKeysPanel({ loadKeys = getApiKeys, createKey = createApiKey, 
       setRevokeTarget(null);
     }
   };
+  const loadMore = async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const page = await loadKeys({ limit: 20, cursor: nextCursor });
+      setApiKeys((current) => [...(current || []), ...page.items]);
+      setNextCursor(page.next_cursor || null);
+    } catch (reason) {
+      setError(reason.message);
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   return <section className="dashboard-api-keys" aria-labelledby="api-keys-title">
     <header><div><span className="eyebrow">Automation access</span><h2 id="api-keys-title">API keys</h2></div><button type="button" onClick={() => setDialogOpen(true)}>Create API key</button></header>
     {error && <p className="dashboard-session-error" role="alert">{error}</p>}
-    {apiKeys === null && !error ? <p className="dashboard-session-empty">Loading API keys…</p> : apiKeys?.length ? <div className="dashboard-api-key-list">{apiKeys.map((apiKey) => <article key={apiKey.id} className={apiKeyState(apiKey).toLowerCase()}><div className="dashboard-api-key-copy"><div><b>{apiKey.name}</b><span className="dashboard-api-key-state"><i aria-hidden="true" />{apiKeyState(apiKey)}</span></div><code>{apiKey.prefix}</code><span>{apiKey.scopes.join(' · ')}</span><small>Created {sessionDate(apiKey.created_at)} · Last used {apiKey.last_used_at ? sessionDate(apiKey.last_used_at) : 'Never'} · Expires {apiKey.expires_at ? sessionDate(apiKey.expires_at) : 'Never'}</small></div>{!apiKey.revoked_at && <button type="button" onClick={() => setRevokeTarget(apiKey)}>Revoke</button>}</article>)}</div> : <div className="dashboard-api-key-empty"><b>No API keys</b><p>Create a scoped key for CI, cron jobs, or another unattended host.</p></div>}
+    {apiKeys === null && !error ? <p className="dashboard-session-empty">Loading API keys…</p> : apiKeys?.length ? <><div className="dashboard-api-key-list">{apiKeys.map((apiKey) => <article key={apiKey.id} className={apiKeyState(apiKey).toLowerCase()}><div className="dashboard-api-key-copy"><div><b>{apiKey.name}</b><span className="dashboard-api-key-state"><i aria-hidden="true" />{apiKeyState(apiKey)}</span></div><code>{apiKey.prefix}</code><span>{apiKey.scopes.join(' · ')}</span><small>Created {sessionDate(apiKey.created_at)} · Last used {apiKey.last_used_at ? sessionDate(apiKey.last_used_at) : 'Never'} · Expires {apiKey.expires_at ? sessionDate(apiKey.expires_at) : 'Never'}</small></div>{!apiKey.revoked_at && <button type="button" onClick={() => setRevokeTarget(apiKey)}>Revoke</button>}</article>)}</div>{nextCursor && <button className="dashboard-load-more" type="button" onClick={loadMore} disabled={loadingMore}>{loadingMore ? 'Loading…' : 'Load more API keys'}</button>}</> : <div className="dashboard-api-key-empty"><b>No API keys</b><p>Create a scoped key for CI, cron jobs, or another unattended host.</p></div>}
 
     <Dialog open={dialogOpen} onOpenChange={closeDialog}><DialogContent className="axis-api-key-dialog" showCloseButton={!creating}><DialogHeader><DialogTitle>{created ? 'Copy this API key now' : 'Create API key'}</DialogTitle><DialogDescription>{created ? 'The complete key is shown once. Store it in your CI or service secret manager before closing.' : 'Choose only the access this automation needs. The key remains valid until it expires or you revoke it.'}</DialogDescription></DialogHeader>{created ? <div className="api-key-receipt"><span className="eyebrow">API key</span><code>{created.secret}</code><button type="button" onClick={copySecret}>{copied ? 'Copied' : 'Copy API key'}</button></div> : <form id="create-api-key-form" className="api-key-form" onSubmit={create}><label><span>Name</span><Input value={name} onChange={(event) => setName(event.target.value)} maxLength={100} required placeholder="GitHub Actions release" /></label><fieldset><legend>Scopes</legend>{apiKeyScopeOptions.map(([scope, description]) => <label key={scope}><input type="checkbox" checked={scopes.includes(scope)} onChange={() => toggleScope(scope)} /><span><code>{scope}</code><small>{description}</small></span></label>)}</fieldset><label><span>Expiration</span><Input type="date" value={expiresOn} min={new Date(Date.now() + 86400000).toISOString().slice(0, 10)} onChange={(event) => setExpiresOn(event.target.value)} /><small>Leave blank to never expire.</small></label></form>}<DialogFooter>{created ? <button type="button" className="api-key-primary" onClick={() => closeDialog(false)}>I stored the key</button> : <><button type="button" className="api-key-secondary" onClick={() => closeDialog(false)} disabled={creating}>Cancel</button><button type="submit" form="create-api-key-form" className="api-key-primary" disabled={creating || !name.trim() || !scopes.length}>{creating ? 'Creating…' : 'Create API key'}</button></>}</DialogFooter></DialogContent></Dialog>
     <AlertDialog open={Boolean(revokeTarget)} onOpenChange={(open) => { if (!open && !revoking) setRevokeTarget(null); }}><AlertDialogContent className="axis-alert-dialog"><AlertDialogHeader><AlertDialogTitle>Revoke {revokeTarget?.name}?</AlertDialogTitle><AlertDialogDescription>Requests using this key will be rejected immediately. This action does not affect other keys or connected devices.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={revoking}>Keep key</AlertDialogCancel><AlertDialogAction disabled={revoking} onClick={revoke}>{revoking ? 'Revoking…' : 'Revoke API key'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
@@ -1110,33 +1175,62 @@ function CreditUtilizationFallback() {
   </section>;
 }
 
-function Dashboard({ user, view, theme, onThemeChange, onAccountDeleted }) {
+export function Dashboard({
+  user,
+  view,
+  theme,
+  onThemeChange,
+  onAccountDeleted,
+  loadCliSessions = getCliSessions,
+  loadMyShares = getMyShares,
+  loadCreditOffers = getCreditOffers,
+  loadCreditHistory = getCreditHistory,
+  claimOfferRequest = claimCreditOffer,
+}) {
   const [sessions, setSessions] = useState(null);
+  const [sessionCursor, setSessionCursor] = useState(null);
+  const [loadingMoreSessions, setLoadingMoreSessions] = useState(false);
   const [sessionError, setSessionError] = useState(null);
   const [revoking, setRevoking] = useState(null);
   const [revokeTarget, setRevokeTarget] = useState(null);
   const [shares, setShares] = useState(null);
+  const [shareCursor, setShareCursor] = useState(null);
+  const [loadingMoreShares, setLoadingMoreShares] = useState(false);
   const [shareError, setShareError] = useState(null);
   const [credits, setCredits] = useState(user.credits);
   const [creditOffers, setCreditOffers] = useState(null);
   const [creditError, setCreditError] = useState(null);
   const [claimingOffer, setClaimingOffer] = useState(null);
+  const [creditHistory, setCreditHistory] = useState(null);
+  const [creditHistoryCursor, setCreditHistoryCursor] = useState(null);
+  const [loadingMoreCreditHistory, setLoadingMoreCreditHistory] = useState(false);
+  const creditHistoryGeneration = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
-    getCliSessions()
-      .then((sessions) => { if (!cancelled) setSessions(sessions); })
+    loadCliSessions({ limit: 20 })
+      .then((page) => { if (!cancelled) { setSessions(page.items); setSessionCursor(page.next_cursor || null); } })
       .catch((reason) => { if (!cancelled) setSessionError(reason.message); });
     return () => { cancelled = true; };
-  }, []);
+  }, [loadCliSessions]);
 
   useEffect(() => {
     let cancelled = false;
-    getCreditOffers()
+    const generation = creditHistoryGeneration.current + 1;
+    creditHistoryGeneration.current = generation;
+    loadCreditHistory({ limit: 20 })
+      .then((page) => { if (!cancelled && generation === creditHistoryGeneration.current) { setCreditHistory(page.items); setCreditHistoryCursor(page.next_cursor || null); } })
+      .catch((reason) => { if (!cancelled && generation === creditHistoryGeneration.current) setCreditError(reason.message); });
+    return () => { cancelled = true; };
+  }, [loadCreditHistory]);
+
+  useEffect(() => {
+    let cancelled = false;
+    loadCreditOffers()
       .then((offers) => { if (!cancelled) setCreditOffers(offers); })
       .catch((reason) => { if (!cancelled) setCreditError(reason.message); });
     return () => { cancelled = true; };
-  }, []);
+  }, [loadCreditOffers]);
 
   useEffect(() => {
     if (!revokeTarget) return undefined;
@@ -1147,11 +1241,11 @@ function Dashboard({ user, view, theme, onThemeChange, onAccountDeleted }) {
 
   useEffect(() => {
     let cancelled = false;
-    getMyShares()
-      .then((payload) => { if (!cancelled) setShares(payload); })
+    loadMyShares({ limit: 20 })
+      .then((page) => { if (!cancelled) { setShares(page.items); setShareCursor(page.next_cursor || null); } })
       .catch((reason) => { if (!cancelled) setShareError(reason.message); });
     return () => { cancelled = true; };
-  }, []);
+  }, [loadMyShares]);
 
   const revoke = async (session) => {
     setRevoking(session.id);
@@ -1168,21 +1262,73 @@ function Dashboard({ user, view, theme, onThemeChange, onAccountDeleted }) {
   };
 
   const claimOffer = async (offer) => {
+    let refreshGeneration = null;
     setClaimingOffer(offer.id);
     setCreditError(null);
     try {
-      const response = await claimCreditOffer(offer.id);
+      const response = await claimOfferRequest(offer.id);
       setCredits(response.credits);
       setCreditOffers((current) => current?.filter((item) => item.id !== offer.id) || []);
+      refreshGeneration = creditHistoryGeneration.current + 1;
+      creditHistoryGeneration.current = refreshGeneration;
+      setLoadingMoreCreditHistory(true);
+      const historyPage = await loadCreditHistory({ limit: 20 });
+      if (refreshGeneration === creditHistoryGeneration.current) {
+        setCreditHistory(historyPage.items);
+        setCreditHistoryCursor(historyPage.next_cursor || null);
+      }
     } catch (reason) {
       setCreditError(reason.message);
     } finally {
+      if (refreshGeneration === creditHistoryGeneration.current) setLoadingMoreCreditHistory(false);
       setClaimingOffer(null);
     }
   };
 
-  const admittedCount = shares?.filter((share) => share.state === 'admitted').length || 0;
-  const activeCount = shares?.filter((share) => ['uploading', 'queued', 'verifying'].includes(share.state)).length || 0;
+  const loadMoreSessions = async () => {
+    if (!sessionCursor || loadingMoreSessions) return;
+    setLoadingMoreSessions(true);
+    try {
+      const page = await getCliSessions({ limit: 20, cursor: sessionCursor });
+      setSessions((current) => [...(current || []), ...page.items]);
+      setSessionCursor(page.next_cursor || null);
+    } catch (reason) {
+      setSessionError(reason.message);
+    } finally {
+      setLoadingMoreSessions(false);
+    }
+  };
+  const loadMoreShares = async () => {
+    if (!shareCursor || loadingMoreShares) return;
+    setLoadingMoreShares(true);
+    try {
+      const page = await getMyShares({ limit: 20, cursor: shareCursor });
+      setShares((current) => [...(current || []), ...page.items]);
+      setShareCursor(page.next_cursor || null);
+    } catch (reason) {
+      setShareError(reason.message);
+    } finally {
+      setLoadingMoreShares(false);
+    }
+  };
+  const loadMoreCreditHistory = async () => {
+    if (!creditHistoryCursor || loadingMoreCreditHistory) return;
+    const generation = creditHistoryGeneration.current;
+    setLoadingMoreCreditHistory(true);
+    try {
+      const page = await loadCreditHistory({ limit: 20, cursor: creditHistoryCursor });
+      if (generation !== creditHistoryGeneration.current) return;
+      setCreditHistory((current) => [...(current || []), ...page.items]);
+      setCreditHistoryCursor(page.next_cursor || null);
+    } catch (reason) {
+      if (generation === creditHistoryGeneration.current) setCreditError(reason.message);
+    } finally {
+      if (generation === creditHistoryGeneration.current) setLoadingMoreCreditHistory(false);
+    }
+  };
+
+  const admittedCount = user.share_stats?.admitted ?? 0;
+  const activeCount = user.share_stats?.in_progress ?? 0;
   const activeView = view === 'shares' ? 'traces' : ['overview', 'traces', 'credits', 'settings'].includes(view) ? view : 'overview';
 
   return <main className="dashboard-shell dashboard-shell--account">
@@ -1190,7 +1336,7 @@ function Dashboard({ user, view, theme, onThemeChange, onAccountDeleted }) {
       <aside className="dashboard-sidebar" aria-label="Dashboard navigation">
         <nav>
           <a className={activeView === 'overview' ? 'active' : ''} href="#/dashboard" aria-current={activeView === 'overview' ? 'page' : undefined}><span>Overview</span></a>
-          <a className={activeView === 'traces' ? 'active' : ''} href="#/dashboard/traces" aria-current={activeView === 'traces' ? 'page' : undefined}><span>Traces</span><small>{shares === null ? '—' : shares.length}</small></a>
+          <a className={activeView === 'traces' ? 'active' : ''} href="#/dashboard/traces" aria-current={activeView === 'traces' ? 'page' : undefined}><span>Traces</span><small>{user.share_stats?.total ?? '—'}</small></a>
           <a className={activeView === 'credits' ? 'active' : ''} href="#/dashboard/credits" aria-current={activeView === 'credits' ? 'page' : undefined}><span>Credits</span></a>
           <a className={activeView === 'settings' ? 'active' : ''} href="#/dashboard/settings" aria-current={activeView === 'settings' ? 'page' : undefined}><span>Settings</span></a>
         </nav>
@@ -1213,14 +1359,14 @@ function Dashboard({ user, view, theme, onThemeChange, onAccountDeleted }) {
             <div className="dashboard-credit-ledger" aria-label="Credit balance breakdown"><div><span>Included this month</span><b>{fileSize(credits.included_monthly_remaining_bytes)}</b></div><div><span>Additional credits</span><b>{fileSize(credits.supplemental_remaining_bytes)}</b></div><div><span>Next expiration</span><b>{credits.next_grant_expiration ? sessionDate(credits.next_grant_expiration) : 'None'}</b></div></div>
             {creditError && <p className="dashboard-session-error" role="alert">{creditError}</p>}
             {creditOffers?.map((offer) => <article className="dashboard-credit-offer" key={offer.id}><div><span className="eyebrow">Available offer</span><b>{offer.title}</b><p>{offer.description} Claim by {sessionDate(offer.claim_expires_at)}.</p></div><button type="button" onClick={() => claimOffer(offer)} disabled={claimingOffer === offer.id}>{claimingOffer === offer.id ? 'Claiming…' : `Claim ${fileSize(offer.amount_bytes)}`}</button></article>)}
-            {credits.history.length > 0 && <div className="dashboard-credit-history"><h3>Recent credit activity</h3>{credits.history.slice(0, 6).map((entry) => <div key={`${entry.kind}-${entry.id}`}><span className={`dashboard-credit-sign dashboard-credit-sign--${entry.kind}`}>{entry.kind === 'grant' ? '+' : '−'}{fileSize(entry.amount_bytes)}</span><span>{entry.display_label}</span><time>{sessionDate(entry.created_at)}</time></div>)}</div>}
+            {creditHistory?.length > 0 && <div className="dashboard-credit-history"><h3>Credit activity</h3>{creditHistory.map((entry) => <div key={`${entry.kind}-${entry.id}`}><span className={`dashboard-credit-sign dashboard-credit-sign--${entry.kind}`}>{entry.kind === 'grant' ? '+' : '−'}{fileSize(entry.amount_bytes)}</span><span>{entry.display_label}</span><time>{sessionDate(entry.created_at)}</time></div>)}{creditHistoryCursor && <button className="dashboard-load-more" type="button" onClick={loadMoreCreditHistory} disabled={loadingMoreCreditHistory}>{loadingMoreCreditHistory ? 'Loading…' : 'Load older activity'}</button>}</div>}
           </section>}
         </>}
         {activeView === 'settings' && <>
           <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Settings</h1><p>Manage appearance, API keys, connected devices, and account deletion.</p></header>
           <AccountSettings theme={theme} onThemeChange={onThemeChange} />
           <ApiKeysPanel />
-          <section className="dashboard-sessions" aria-labelledby="connected-services-title"><header><div><span className="eyebrow">Local service access</span><h2 id="connected-services-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
+          <section className="dashboard-sessions" aria-labelledby="connected-services-title"><header><div><span className="eyebrow">Local service access</span><h2 id="connected-services-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <><div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div>{sessionCursor && <button className="dashboard-load-more" type="button" onClick={loadMoreSessions} disabled={loadingMoreSessions}>{loadingMoreSessions ? 'Loading…' : 'Load more devices'}</button>}</> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
           <DeleteAccountPanel githubLogin={user.github_login} onDeleted={onAccountDeleted} />
         </>}
         {activeView === 'traces' && <>
@@ -1242,6 +1388,7 @@ function Dashboard({ user, view, theme, onThemeChange, onAccountDeleted }) {
                 </div>
               </article>;
             })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No traces</span><b>Publish your first verified trace.</b><p>Finalize a local capture, check the disclosed conversation, then publish it as Unlisted or Listed.</p><a href="#/docs/share">Open the sharing guide</a></div>}
+            {shareCursor && <button className="dashboard-load-more" type="button" onClick={loadMoreShares} disabled={loadingMoreShares}>{loadingMoreShares ? 'Loading…' : 'Load more traces'}</button>}
           </section>
         </>}
       </div>
