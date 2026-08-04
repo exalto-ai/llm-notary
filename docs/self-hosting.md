@@ -204,7 +204,7 @@ never trust all public peers. Rotate the HMAC key only together with an
 incremented `LLM_NOTARY_ANONYMOUS_SUBJECT_HMAC_KEY_VERSION`, knowing that a new
 version starts new anonymous subjects for the current period.
 
-See [Hosted finalization credits](hosted-credits.md) for the Free-account,
+See [Credits and utilization](hosted-credits.md) for the signed-in account,
 supplemental-credit, and address-scoping model.
 
 ## Storage and database operations

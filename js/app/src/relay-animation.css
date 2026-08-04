@@ -60,8 +60,8 @@
 @keyframes relay-agent-copy{0%,60%{opacity:0;transform:translateY(5px)}65%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-agent-one{0%,63%{opacity:0;transform:translateY(5px)}68%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-agent-two{0%,66%{opacity:0;transform:translateY(5px)}71%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-agent-three{0%,69%{opacity:0;transform:translateY(5px)}74%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}
 @keyframes relay-package-one{0%,68%{opacity:0;transform:translateY(5px)}73%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-package-two{0%,71%{opacity:0;transform:translateY(5px)}76%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-package-three{0%,74%{opacity:0;transform:translateY(5px)}79%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-package-ready{0%,75%{opacity:0;transform:translateY(5px)}80%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}@keyframes relay-package-footer{0%,80%{opacity:0;transform:translateY(5px)}85%,96%{opacity:1;transform:translateY(0)}100%{opacity:0}}
 @media(max-width:960px){
-  .relay-animation{padding:48px 0 36px;overflow:hidden}
-  .relay-animation__viewport{height:330px;overflow:hidden;touch-action:pan-y}
+  .relay-animation{min-height:150svh;padding:0;overflow:clip}
+  .relay-animation__viewport{position:sticky;top:calc(50svh - 165px);height:330px;overflow:hidden}
   .relay-animation__flow{width:881px;min-width:881px;grid-template-columns:150px 64px 145px 64px 155px 58px 245px;grid-template-rows:188px 188px;gap:16px 0;min-height:392px;transform-origin:top left;will-change:transform}
   .relay-node{grid-column:auto;grid-row:1/3;align-self:center;min-height:176px;padding:18px}
   .relay-track{grid-column:auto;grid-row:1/3;align-self:center;width:auto;height:1px;justify-self:stretch}
@@ -73,6 +73,7 @@
   .relay-output header{padding-bottom:10px}.relay-output header>span{display:inline}
   .relay-output--agent p{margin:15px 0 10px;font-size:11px;line-height:1.4}.relay-output--agent ul{gap:5px;font-size:9px;line-height:1.3}.relay-output--agent li:before{margin-right:6px}
   .package-ready{padding:5px 6px!important;font-size:8px!important}.relay-output dl{gap:6px;margin-top:10px}.relay-output dl div{padding-bottom:5px;font-size:8px}.relay-output footer{margin-top:9px;font-size:8px}.relay-output footer i{width:6px;height:6px;margin-right:5px}
+  .relay-packet--lock,.decrypt-display__waiting,.decrypt-display__cipher,.decrypt-display__unlocked,.decrypt-display__arrow,.relay-branch .relay-packet,.relay-output--agent p,.relay-output--agent li,.package-ready,.relay-output dl div,.relay-output footer{animation-play-state:paused;animation-delay:calc(var(--relay-progress,0) * -4.6s)}
 }
 @media(prefers-reduced-motion:reduce){.relay-animation *{animation:none!important}.relay-node--provider strong i{opacity:1}.decrypt-display__unlocked{opacity:1;transform:none}.relay-output--agent p,.relay-output--agent li,.relay-output dl div,.package-ready,.relay-output footer{opacity:1;transform:none}}
 @media(prefers-reduced-motion:reduce){.decrypt-display__waiting{display:none}.decrypt-display__cipher,.decrypt-display__arrow{opacity:1}}

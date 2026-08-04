@@ -175,6 +175,7 @@
   padding-top: 48px;
   padding-bottom: 64px;
 }
+.verification-outcome { scroll-margin-top: 54px; outline: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   .verification-progress > i { animation: none; }
@@ -204,6 +205,7 @@
   color: var(--muted);
   font-size: 11px;
 }
+.verification-result--error > button { display: block; margin-top: 24px; }
 
 .verification-result--success > header {
   display: flex;
@@ -222,12 +224,7 @@
   letter-spacing: .04em;
   text-transform: uppercase;
 }
-
-.verification-result-note {
-  margin: 18px 0 0;
-  color: var(--muted);
-  font-size: 12px;
-}
+.verification-result-actions { display: flex; align-items: center; justify-content: flex-end; gap: 12px; }
 
 .verification-facts {
   display: grid;
@@ -316,6 +313,9 @@
   .verification-facts {
     grid-template-columns: 1fr;
   }
+
+  .verification-result--success > header { align-items: start; flex-direction: column; }
+  .verification-result-actions { width: 100%; justify-content: space-between; }
 
   .verification-facts div,
   .verification-facts div:nth-child(even) {
