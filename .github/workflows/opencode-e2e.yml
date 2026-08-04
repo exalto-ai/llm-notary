@@ -26,7 +26,6 @@ jobs:
     environment: opencode-e2e
     env:
       CANARY_MODEL: ${{ inputs.model || 'openrouter/cohere/north-mini-code:free' }}
-      CANARY_RESULT: ${{ runner.temp }}/opencode-e2e-result.json
 
     steps:
       - name: Check out source
@@ -59,19 +58,19 @@ jobs:
             --opencode "$(command -v opencode)" \
             --llm-notary "$GITHUB_WORKSPACE/target/release/llm-notary" \
             --llm-notaryd "$GITHUB_WORKSPACE/target/release/llm-notaryd" \
-            --result "$CANARY_RESULT"
+            --result "$RUNNER_TEMP/opencode-e2e-result.json"
 
       - name: Post sanitized Slack summary
         if: always()
         env:
           LLM_NOTARY_SLACK_WEBHOOK_URL: ${{ secrets.LLM_NOTARY_SLACK_WEBHOOK_URL }}
-        run: python3 benchmarks/opencode-e2e/notify.py "$CANARY_RESULT"
+        run: python3 benchmarks/opencode-e2e/notify.py "$RUNNER_TEMP/opencode-e2e-result.json"
 
       - name: Upload sanitized metrics
         if: always()
         uses: actions/upload-artifact@v4.6.2
         with:
           name: opencode-e2e-result
-          path: ${{ env.CANARY_RESULT }}
+          path: ${{ runner.temp }}/opencode-e2e-result.json
           if-no-files-found: warn
           retention-days: 14
