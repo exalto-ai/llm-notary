@@ -1879,10 +1879,65 @@ mod test_database {
             .expect("apply PostgreSQL test migrations");
         database
     }
+
+    pub async fn database_through(target_version: i64) -> TestDatabase {
+        let database = blank_database().await;
+        let migrations = sqlx::migrate!("../../migrations-postgres");
+        for migration in migrations
+            .iter()
+            .filter(|migration| migration.version <= target_version)
+        {
+            let mut transaction = database.pool.begin().await.expect("begin migration");
+            sqlx::raw_sql(&migration.sql)
+                .execute(&mut *transaction)
+                .await
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "apply PostgreSQL migration {} ({}): {error}",
+                        migration.version, migration.description
+                    )
+                });
+            transaction.commit().await.expect("commit migration");
+        }
+        database
+    }
 }
 
 #[cfg(test)]
 use test_database::fresh_database;
+
+#[cfg(test)]
+pub(crate) async fn insert_test_github_user(
+    database: &DatabasePool,
+    user_id: &str,
+    provider_subject: i64,
+    display_name: &str,
+) {
+    let mut transaction = database.begin().await.expect("begin test user insert");
+    sqlx::query(
+        "INSERT INTO users (id, display_name, created_at, updated_at)
+         VALUES ($1, $2, 1, 1)",
+    )
+    .bind(user_id)
+    .bind(display_name)
+    .execute(&mut *transaction)
+    .await
+    .expect("insert test account");
+    sqlx::query(
+        "INSERT INTO user_identities
+         (id, user_id, provider, provider_subject, provider_display_name,
+          created_at, updated_at, last_used_at)
+         VALUES ($1, $2, 'github', $3, $4, 1, 1, 1)",
+    )
+    .bind(format!("test-github-{provider_subject}"))
+    .bind(user_id)
+    .bind(provider_subject.to_string())
+    .bind(display_name)
+    .execute(&mut *transaction)
+    .await
+    .expect("insert test GitHub identity");
+    transaction.commit().await.expect("commit test user insert");
+}
 
 #[cfg(test)]
 mod tests {
@@ -2507,7 +2562,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn provider_identity_cutover_uses_new_authority_and_preserves_rollback_compatibility() {
-        let database = fresh_database().await;
+        let database = super::test_database::database_through(17).await;
         let github_user = GitHubUser {
             id: 51,
             login: "first-login".to_owned(),
@@ -2655,15 +2710,130 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
-    async fn new_cli_session_is_usable_until_its_refresh_expiry() {
-        let database = fresh_database().await;
+    async fn provider_identity_cleanup_reconciles_and_preserves_account_ownership() {
+        let database = super::test_database::database_through(17).await;
+        insert_test_github_user(&database.pool, "durable-user", 61, "durable").await;
         sqlx::query(
-            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
-             VALUES ('user-1', 1, 'octo', 1, 1)",
+            "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
+             VALUES ('durable-session', 'durable-user', 100, 1)",
         )
         .execute(&database.pool)
         .await
-        .expect("user");
+        .unwrap();
+
+        sqlx::query(
+            "DELETE FROM user_identities
+             WHERE user_id = 'durable-user' AND provider = 'github'",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let error = sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0018_remove_legacy_github_identity.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .expect_err("cleanup must reject an account without its identity");
+        assert!(error.to_string().contains("accounts are not reconciled"));
+
+        sqlx::query(
+            "INSERT INTO user_identities
+             (id, user_id, provider, provider_subject, provider_display_name,
+              created_at, updated_at, last_used_at)
+             VALUES ('restored-identity', 'durable-user', 'github', '61',
+                     'durable', 1, 1, 1)",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0018_remove_legacy_github_identity.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+        let account: (String, String, String) = sqlx::query_as(
+            "SELECT users.id, users.display_name, sessions.user_id
+             FROM users JOIN sessions ON sessions.user_id = users.id
+             WHERE users.id = 'durable-user'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            account,
+            (
+                "durable-user".to_owned(),
+                "durable".to_owned(),
+                "durable-user".to_owned(),
+            )
+        );
+
+        let legacy_columns: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.columns
+             WHERE table_schema = current_schema()
+               AND table_name = 'users'
+               AND column_name IN ('github_id', 'github_login', 'avatar_url')",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(legacy_columns, 0);
+        let compatibility_triggers: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pg_trigger
+             WHERE NOT tgisinternal
+               AND tgname IN (
+                   'users_prepare_provider_neutral_profile_on_insert',
+                   'users_prepare_provider_neutral_profile_on_github_login_update',
+                   'users_sync_github_identity_on_insert',
+                   'users_sync_github_identity_on_update',
+                   'user_identities_sync_github_legacy_on_insert',
+                   'user_identities_sync_github_legacy_on_update'
+               )",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(compatibility_triggers, 0);
+        let compatibility_functions: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)
+             FROM pg_proc
+             JOIN pg_namespace ON pg_namespace.oid = pg_proc.pronamespace
+             WHERE pg_namespace.nspname = current_schema()
+               AND pg_proc.proname IN (
+                   'prepare_provider_neutral_user_profile',
+                   'sync_github_user_identity',
+                   'sync_github_identity_to_legacy_user'
+               )",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(compatibility_functions, 0);
+
+        sqlx::query("DELETE FROM users WHERE id = 'durable-user'")
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        let remaining: (i64, i64) = sqlx::query_as(
+            "SELECT
+                 (SELECT COUNT(*) FROM user_identities
+                  WHERE user_id = 'durable-user'),
+                 (SELECT COUNT(*) FROM sessions
+                  WHERE user_id = 'durable-user')",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining, (0, 0));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn new_cli_session_is_usable_until_its_refresh_expiry() {
+        let database = fresh_database().await;
+        insert_test_github_user(&database.pool, "user-1", 1, "octo").await;
 
         let now = match unix_timestamp() {
             Ok(now) => now,
@@ -2713,13 +2883,8 @@ mod tests {
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn web_users_can_list_and_revoke_only_their_cli_sessions() {
         let database = fresh_database().await;
-        sqlx::query(
-            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
-             VALUES ('user-1', 1, 'one', 1, 1), ('user-2', 2, 'two', 1, 1)",
-        )
-        .execute(&database.pool)
-        .await
-        .expect("users");
+        insert_test_github_user(&database.pool, "user-1", 1, "one").await;
+        insert_test_github_user(&database.pool, "user-2", 2, "two").await;
         let now = match unix_timestamp() {
             Ok(now) => now,
             Err(_) => panic!("current time"),
@@ -2807,13 +2972,7 @@ mod tests {
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn cli_session_pagination_is_stable_when_last_used_changes() {
         let database = fresh_database().await;
-        sqlx::query(
-            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
-             VALUES ('user-1', 1, 'one', 1, 1)",
-        )
-        .execute(&database.pool)
-        .await
-        .expect("user");
+        insert_test_github_user(&database.pool, "user-1", 1, "one").await;
         let now = unix_timestamp().expect("current time");
         let web_token = "web-session-pagination";
         sqlx::query(
@@ -2906,13 +3065,7 @@ mod tests {
         let database = fresh_database().await;
         let pool = database.pool.clone();
         let web_token = "delete-web-session";
-        sqlx::query(
-            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
-             VALUES ('delete-user', 44, 'delete-me', 1, 1)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        insert_test_github_user(&pool, "delete-user", 44, "delete-me").await;
         sqlx::query(
             "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
              VALUES ($1, 'delete-user', 4102444800, 1)",
@@ -3003,7 +3156,7 @@ mod tests {
             admission: Arc::new(AdmissionConfig::for_test()),
         };
         let jar = CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
-        let (_, status) = delete_account(State(state), jar).await.unwrap();
+        let (_, status) = delete_account(State(state.clone()), jar).await.unwrap();
         assert_eq!(status, StatusCode::NO_CONTENT);
 
         let remaining: (i64, i64, i64, i64, i64, i64, i64) = sqlx::query_as(

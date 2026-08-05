@@ -129,8 +129,10 @@ jobs:
           cargo test -p llm-notary-platform new_cli_session_is_usable_until_its_refresh_expiry -- --ignored
           cargo test -p llm-notary-platform provider_neutral_identity_migration_backfills_and_dual_writes -- --ignored
           cargo test -p llm-notary-platform provider_identity_cutover_uses_new_authority_and_preserves_rollback_compatibility -- --ignored
+          cargo test -p llm-notary-platform provider_identity_cleanup_reconciles_and_preserves_account_ownership -- --ignored
           cargo test -p llm-notary-platform web_users_can_list_and_revoke_only_their_cli_sessions -- --ignored
           cargo test -p llm-notary-platform cli_session_pagination_is_stable_when_last_used_changes -- --ignored
+          cargo test -p llm-notary-platform deleting_an_account_cascades_database_rows_and_queues_every_artifact -- --ignored
           cargo test -p llm-notary-platform keys_are_one_time_scoped_revocable_expiring_and_account_isolated -- --ignored
           cargo test -p llm-notary-platform listed_share_route_pages_ties_nulls_filters_and_concurrent_inserts -- --ignored
           cargo test -p llm-notary-platform service_admission::tests -- --ignored

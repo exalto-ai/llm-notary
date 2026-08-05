@@ -1315,13 +1315,7 @@ mod tests {
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn listed_share_route_pages_ties_nulls_filters_and_concurrent_inserts() {
         let database = super::super::fresh_database().await;
-        sqlx::query(
-            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
-             VALUES ('library-user', 1, 'publisher', 1, 1)",
-        )
-        .execute(&database.pool)
-        .await
-        .unwrap();
+        super::super::insert_test_github_user(&database.pool, "library-user", 1, "publisher").await;
         insert_library_share(
             &database.pool,
             "share-c",
