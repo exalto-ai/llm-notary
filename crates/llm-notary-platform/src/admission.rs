@@ -44,7 +44,7 @@ const LIBRARY_PREVIEW_CHARS: usize = 180;
 struct PublicShareRow {
     id: String,
     visibility: String,
-    github_login: String,
+    publisher: String,
     admitted_at: i64,
     provider: String,
     provider_host: String,
@@ -67,7 +67,7 @@ struct PublicShareRow {
 #[derive(FromRow)]
 struct ListedShareRow {
     id: String,
-    github_login: String,
+    publisher: String,
     provider: String,
     model: String,
     authenticated_provider_connection_unix_ms: Option<i64>,
@@ -199,7 +199,7 @@ async fn listed_shares(
         .transpose()
         .map_err(pagination::api_error)?;
     let rows: Vec<ListedShareRow> = sqlx::query_as(
-        "SELECT publish_jobs.id, users.github_login, publish_jobs.provider,
+        "SELECT publish_jobs.id, users.display_name AS publisher, publish_jobs.provider,
                 publish_jobs.model,
                 publish_jobs.authenticated_provider_connection_unix_ms,
                 publish_jobs.library_input_preview,
@@ -251,7 +251,7 @@ async fn listed_shares(
             id: share.id,
             provider: share.provider,
             model: share.model,
-            publisher: share.github_login,
+            publisher: share.publisher,
             authenticated_at_unix_ms: share.authenticated_provider_connection_unix_ms,
             input_preview: share.library_input_preview,
             output_preview: share.library_output_preview,
@@ -335,7 +335,7 @@ async fn public_share_detail(
     let detail = PublicShareDetail {
         id: share.id.clone(),
         visibility: share.visibility.clone(),
-        publisher: share.github_login,
+        publisher: share.publisher,
         admitted_at: share.admitted_at,
         authenticated_at_unix_ms: share.authenticated_provider_connection_unix_ms,
         verified_at: share.verified_at,
@@ -818,7 +818,7 @@ async fn admit_claim(
              library_input_preview = $16, library_output_preview = $17,
              library_search_text = LOWER(CONCAT_WS(
                 ' ', $13, $15,
-                (SELECT github_login FROM users WHERE id = publish_jobs.user_id),
+                (SELECT display_name FROM users WHERE id = publish_jobs.user_id),
                 $16, $17
              )),
              authenticated_provider_connection_unix_ms = $18,
@@ -1135,7 +1135,8 @@ async fn load_public_share_optional(
     share_id: &str,
 ) -> ApiResult<Option<PublicShareRow>> {
     sqlx::query_as(
-        "SELECT publish_jobs.id, publish_jobs.visibility, users.github_login,
+        "SELECT publish_jobs.id, publish_jobs.visibility,
+                users.display_name AS publisher,
                 publish_jobs.admitted_at, publish_jobs.provider,
                 publish_jobs.provider_host, publish_jobs.model,
                 publish_jobs.authenticated_provider_connection_unix_ms,
