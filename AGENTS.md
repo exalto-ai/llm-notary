@@ -59,6 +59,7 @@ gh stack view --json
 - Keep ordinary tests deterministic and offline. Real-provider and large proof profiles are explicit opt-in checks.
 - Preserve HTTP/1.1 and streaming behavior unless intentionally expanding the documented prototype scope.
 - The Cloudflare tunnel targets the stable `web` gateway. Do not rename or routinely recreate that service; replaceable SPA/API containers belong behind it.
+- Treat deployment-compatibility dual writes as temporary migration scaffolding. Before merging any change that introduces one, file a follow-up issue to remove it and link that issue from the migration, ADR, or pull request. The issue must name both data paths, the condition that makes removal safe, and the cleanup and validation required; do not leave an untracked second source of truth.
 - Treat generated OpenAPI as the exact HTTP contract. Regenerate clients and update every affected guide when a route, status, field, or authentication rule changes.
 - Keep `README.md` short; put task and reference depth under `docs/`, and keep public-site copy and `js/app/public/llms.txt` aligned with the same trust boundaries.
 - Prefer small, task-focused diffs. Update README or docs when CLI behavior, capture artifacts, trust assumptions, or deployment steps change.
