@@ -41,11 +41,12 @@ OAuth still reads and writes `users.github_id`, `users.github_login`, and
 login. Those columns and the synchronization triggers remain until all readers
 and writers have moved to the provider-neutral model.
 
-## Later cutover
+## Tracked cutover
 
-A follow-up can move GitHub lookup and linking to `user_identities`, expose
-account-level display fields, and make provider configuration optional. Only
-after that cutover is deployed everywhere may a later migration remove the
-GitHub-only columns and synchronization triggers. Adding Google or another
-provider requires an explicit authenticated linking flow; matching provider
-emails must never merge accounts automatically.
+[Issue #215](https://github.com/exalto-ai/llm-notary/issues/215) tracks moving
+GitHub lookup and linking to `user_identities`, exposing account-level display
+fields, and removing this compatibility dual write. Only after that cutover is
+deployed everywhere and old application images are outside the rollback window
+may a later migration remove the GitHub-only columns and synchronization
+triggers. Adding Google or another provider requires an explicit authenticated
+linking flow; matching provider emails must never merge accounts automatically.
