@@ -15,7 +15,7 @@ Use the generated contract when prose and an installed service disagree.
 | Build and run the local service | [Getting started](getting-started.md) |
 | Understand the proof and trust assumptions | [Architecture and trust model](architecture.md) |
 | Connect an SDK or agent | [Provider and agent setup](provider-setup.md) |
-| Understand `.llmbundle`, `.llmtrace`, and shared sessions | [Artifact formats and verification](artifact-formats.md) |
+| Understand `.llmcapture`, `.llmtrace`, and shared sessions | [Artifact formats and verification](artifact-formats.md) |
 | Operate the daemon, CLI, or local REST API | [Local service and REST API](local-service.md) |
 | Use the visual local workflow | [Local dashboard](local-dashboard.md) |
 | Run CI, cron, or unattended hosts | [API keys for automation](api-key-automation.md) |

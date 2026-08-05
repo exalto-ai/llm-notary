@@ -518,10 +518,10 @@ fn absolute_same_origin_url(origin: &ApiOrigin, value: &str) -> Result<String> {
 fn reject_bundle_path(path: &std::path::Path) -> Result<()> {
     if path
         .extension()
-        .is_some_and(|extension| extension == "llmbundle")
+        .is_some_and(|extension| extension == "llmcapture" || extension == "llmbundle")
     {
         bail!(
-            "encrypted .llmbundle files cannot be shared; finalize the capture through the local administration API first"
+            "encrypted capture files cannot be shared; finalize the capture through the local administration API first"
         );
     }
     Ok(())
@@ -630,6 +630,7 @@ mod tests {
 
     #[test]
     fn rejects_private_bundle_paths_and_cross_origin_status_urls() {
+        assert!(reject_bundle_path(PathBuf::from("secret.llmcapture").as_path()).is_err());
         assert!(reject_bundle_path(PathBuf::from("secret.llmbundle").as_path()).is_err());
         assert!(
             absolute_status_url(

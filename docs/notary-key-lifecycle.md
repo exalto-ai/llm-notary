@@ -57,7 +57,7 @@ endpoint with an explicit TLS requirement to raw TCP.
 | `retired` | no | no | within its validity window |
 | `revoked` | no | no | no after the client refreshes the directory |
 
-The active key is used for new proxy sessions. A deferred bundle contains a
+The active key is used for new proxy sessions. A deferred capture contains a
 notary-signed receipt, so the finalization worker tries cached active and
 retiring records and selects the endpoint whose key verifies that receipt.
 This lets a planned rotation drain old bundles without making the notary store

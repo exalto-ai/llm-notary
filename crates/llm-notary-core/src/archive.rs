@@ -509,9 +509,9 @@ impl Seek for CanonicalComparisonWriter<'_> {
 fn require_plain_directory(package: &Path) -> Result<()> {
     if package
         .extension()
-        .is_some_and(|extension| extension == "llmbundle")
+        .is_some_and(|extension| extension == "llmcapture" || extension == "llmbundle")
     {
-        bail!("encrypted .llmbundle files cannot be published; finalize the bundle first");
+        bail!("encrypted capture files cannot be published; finalize the capture first");
     }
     let metadata = fs::symlink_metadata(package)
         .with_context(|| format!("reading trace package {}", package.display()))?;

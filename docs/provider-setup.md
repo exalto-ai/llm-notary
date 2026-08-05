@@ -78,7 +78,7 @@ and `X-Title` are hidden in a finalized package.
 
 Server-Sent Events are relayed as they arrive. The proxy does not synthesize
 events or buffer the full response before returning it. After the provider
-stream ends, one short notary exchange seals the deferred bundle.
+stream ends, one short notary exchange seals the deferred capture.
 
 The proxy does not implement WebSocket transport. Configure clients to use
 HTTP streaming when they can select between HTTP and WebSockets.

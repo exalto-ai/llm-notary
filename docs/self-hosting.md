@@ -227,7 +227,7 @@ endpoint through the public gateway by accident.
 Both services emit structured operational logs and can export OTLP spans when
 standard OpenTelemetry environment variables are configured. Logs, metrics,
 and operational spans must never include request or response bodies, header
-values, credentials, presigned URLs, or `.llmbundle` paths.
+values, credentials, presigned URLs, or `.llmcapture` paths.
 
 ## Production-specific deployment
 

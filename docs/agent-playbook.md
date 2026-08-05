@@ -24,8 +24,8 @@ schema authority.
 6. Use `GET /v1/captures/{capture_id}/package` to download the exact canonical
    `.llmtrace` bytes, and `POST /v1/captures/{capture_id}/trace:verify` for
    cryptographic package verification. Decrypting or structurally validating
-   an encrypted bundle is not independent verification.
-7. Never request, decode, upload, or expose decrypted `.llmbundle` contents,
+   an encrypted capture is not independent verification.
+7. Never request, decode, upload, or expose decrypted `.llmcapture` contents,
    credentials, cookies, raw authenticated headers, authentication secrets,
    or vault material.
 8. Ask the user before sharing a finalized trace or changing service
@@ -116,7 +116,7 @@ curl --fail-with-body -X POST \
 
 For a portable file that is not cataloged by this daemon, use
 `llm-notary traces verify ./capture.llmtrace`. This is the one CLI verification
-flow that accepts a path; it reads no `.llmbundle` and writes no local state.
+flow that accepts a path; it reads no `.llmcapture` and writes no local state.
 
 Report `verified`, `verified_at_unix_ms`, `notary_key_id`, and `trust_source`.
 Do not translate a successful bundle read into a verification claim.

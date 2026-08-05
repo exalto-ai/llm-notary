@@ -5,22 +5,26 @@ Do not describe them interchangeably.
 
 | Artifact | Location | Contains proof? | Shareable? |
 | --- | --- | --- | --- |
-| `.llmbundle` | local vault-backed storage | no, deferred private state | no |
+| `.llmcapture` | local vault-backed storage | no, deferred private state | no |
 | `.llmtrace` | local finalized storage | yes, with an external trusted key | only after reviewing disclosed bodies |
 | Public `trace.otlp.json` | hosted Library | no portable evidence | yes, for inspection |
 
-## Encrypted deferred bundle
+## Encrypted deferred capture
 
 Format: `llm-notary/deferred-bundle/v1` inside vault encryption.
 
-The bundle contains the client checkpoint and signed receipt required to
+The capture contains the client checkpoint and signed receipt required to
 complete private proof generation later. That checkpoint can reconstruct the
 original request, including credentials and cookie values. The file is
 therefore more sensitive than the finalized package.
 
-A successful vault decrypt or bundle parse proves only local structural
+A successful vault decrypt or capture parse proves only local structural
 usability. It does not authenticate the provider response to another party.
-Never upload, publish, or log a `.llmbundle`.
+Never upload, publish, or log a `.llmcapture`.
+
+Existing `.llmbundle` files remain readable as legacy private captures. New
+captures use `.llmcapture`; renaming does not change the encrypted bytes or
+make either extension safe to share.
 
 ## Finalized trace package
 

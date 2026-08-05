@@ -2526,7 +2526,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let state = state(directory.path());
         for capture_id in ["cap-a", "cap-b"] {
-            let bundle = directory.path().join(format!("{capture_id}.llmbundle"));
+            let bundle = directory.path().join(format!("{capture_id}.llmcapture"));
             fs::write(&bundle, b"encrypted bundle").unwrap();
             state
                 .catalog
@@ -2576,7 +2576,7 @@ mod tests {
             serde_json::from_slice(&older.into_body().collect().await.unwrap().to_bytes()).unwrap();
         assert_eq!(older["items"].as_array().unwrap().len(), 1);
 
-        let bundle = directory.path().join("cap-c.llmbundle");
+        let bundle = directory.path().join("cap-c.llmcapture");
         fs::write(&bundle, b"encrypted bundle").unwrap();
         state
             .catalog
@@ -2618,7 +2618,7 @@ mod tests {
 
         let directory = tempfile::tempdir().unwrap();
         let state = state(directory.path());
-        let bundle = directory.path().join("bundles/cap-auth-error.llmbundle");
+        let bundle = directory.path().join("bundles/cap-auth-error.llmcapture");
         fs::create_dir_all(bundle.parent().unwrap()).unwrap();
         fs::write(&bundle, b"encrypted provider authentication error").unwrap();
         state

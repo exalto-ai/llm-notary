@@ -8,7 +8,7 @@ and verification never imply sharing.
 
 The worker may inspect every disclosed request and response body, including
 prompts, system context, tool definitions, tool calls, tool results, provider
-metadata, and model output. It never receives an encrypted `.llmbundle`, vault
+metadata, and model output. It never receives an encrypted `.llmcapture`, vault
 key, or provider credential value.
 
 Before a share can become reachable, the worker applies the versioned

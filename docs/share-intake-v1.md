@@ -3,7 +3,7 @@
 This contract uploads one locally finalized `.llmtrace` package to private
 object storage for verified-session admission. Sharing is a separate,
 consent-based action. The proxy never uploads a capture automatically, and an
-encrypted `.llmbundle` is never a valid input.
+encrypted `.llmcapture` is never a valid input.
 
 The intake API treats every uploaded byte as untrusted. Admission owns strict
 archive validation, secret scanning, cryptographic verification, public

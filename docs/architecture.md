@@ -33,7 +33,7 @@ allowlist before it resolves or connects upstream.
 5. The notary relays encrypted TLS records and witnesses the Proxy-TLS session.
 6. The local daemon streams provider response bytes back to the caller.
 7. After the final response, the notary signs a deferred receipt and the local
-   daemon vault-encrypts its client checkpoint as `.llmbundle`.
+   daemon vault-encrypts its client checkpoint as `.llmcapture`.
 
 The notary learns the selected provider hostname, ciphertext sizes, timing,
 and protocol metadata. It does not receive the provider credential, prompt, or
@@ -46,7 +46,7 @@ bundle unchanged.
 
 ## Deferred finalization
 
-The bundle contains the client state required to reconstruct and prove the
+The capture contains the client state required to reconstruct and prove the
 original session. It also contains a notary-signed receipt that binds it to the
 signing key and lets a later finalizer select a compatible notary.
 
@@ -56,7 +56,7 @@ key's drain deadline. The notary stores no per-bundle checkpoint.
 
 Finalization creates selective TLSNotary disclosure, verifies it locally,
 normalizes the authenticated provider exchange, and writes the deterministic
-`.llmtrace` archive atomically. It never consumes the source bundle.
+`.llmtrace` archive atomically. It never consumes the source capture.
 
 ## Trust anchors and key discovery
 
@@ -139,7 +139,7 @@ or Listed choice. Both modes are public to anyone with the stable link.
 
 The platform receives the complete `.llmtrace`, including disclosed request
 and response bodies, and may inspect them to scan and reproduce the trace. It never
-needs the encrypted `.llmbundle`, local vault material, or redacted credential
+needs the encrypted `.llmcapture`, local vault material, or redacted credential
 values. Admission stores the canonical trace and the exact safety-checked,
 verified `.llmtrace` package after re-downloading and re-verifying the stored
 bytes. The private intake object is then deleted, with failed deletions placed

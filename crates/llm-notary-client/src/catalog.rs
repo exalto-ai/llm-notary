@@ -375,7 +375,13 @@ impl Catalog {
 
         let mut summary = RecoverySummary::default();
         for capture_id in capture_ids {
-            let path = bundle_dir.join(format!("{capture_id}.llmbundle"));
+            let current_path = bundle_dir.join(format!("{capture_id}.llmcapture"));
+            let legacy_path = bundle_dir.join(format!("{capture_id}.llmbundle"));
+            let path = if current_path.is_file() {
+                current_path
+            } else {
+                legacy_path
+            };
             if path.is_file() {
                 self.recover_bundle(&capture_id, &path)?;
                 summary.recovered_bundles += 1;
@@ -1468,7 +1474,7 @@ mod tests {
     #[test]
     fn catalog_lists_and_searches_plain_text_previews() {
         let directory = tempfile::tempdir().unwrap();
-        let bundle = directory.path().join("cap-1.llmbundle");
+        let bundle = directory.path().join("cap-1.llmcapture");
         fs::write(&bundle, b"ciphertext").unwrap();
         let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
         catalog.begin_capture(&new_capture("cap-1")).unwrap();
@@ -1498,7 +1504,7 @@ mod tests {
     fn migrates_completed_capture_state_to_captured() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("catalog.db");
-        let bundle = directory.path().join("cap-1.llmbundle");
+        let bundle = directory.path().join("cap-1.llmcapture");
         fs::write(&bundle, b"ciphertext").unwrap();
         let catalog = Catalog::open(&path, true).unwrap();
         catalog.begin_capture(&new_capture("cap-1")).unwrap();
@@ -1538,7 +1544,7 @@ mod tests {
     #[test]
     fn capture_search_treats_punctuation_as_text_boundaries() {
         let directory = tempfile::tempdir().unwrap();
-        let bundle = directory.path().join("cap-1.llmbundle");
+        let bundle = directory.path().join("cap-1.llmcapture");
         fs::write(&bundle, b"ciphertext").unwrap();
         let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
         catalog.begin_capture(&new_capture("cap-1")).unwrap();
@@ -1596,7 +1602,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let bundle_dir = directory.path().join("bundles");
         fs::create_dir_all(&bundle_dir).unwrap();
-        let bundle = bundle_dir.join("cap-1.llmbundle");
+        let bundle = bundle_dir.join("cap-1.llmcapture");
         fs::write(&bundle, b"ciphertext").unwrap();
         let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
         catalog.begin_capture(&new_capture("cap-1")).unwrap();
@@ -1618,6 +1624,27 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn reconciliation_recovers_a_legacy_llmbundle() {
+        let directory = tempfile::tempdir().unwrap();
+        let bundle_dir = directory.path().join("bundles");
+        fs::create_dir_all(&bundle_dir).unwrap();
+        let bundle = bundle_dir.join("cap-legacy.llmbundle");
+        fs::write(&bundle, b"legacy ciphertext").unwrap();
+        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
+        catalog.begin_capture(&new_capture("cap-legacy")).unwrap();
+
+        assert_eq!(
+            catalog.reconcile_incomplete_captures(&bundle_dir).unwrap(),
+            RecoverySummary {
+                recovered_bundles: 1,
+                interrupted_captures: 0,
+            }
+        );
+        let artifact = catalog.artifacts("cap-legacy").unwrap().remove(0);
+        assert_eq!(artifact.path, bundle);
     }
 
     #[test]
@@ -1644,7 +1671,7 @@ mod tests {
     #[test]
     fn finalization_operations_are_deduplicated_recovered_and_retryable() {
         let directory = tempfile::tempdir().unwrap();
-        let bundle = directory.path().join("cap-1.llmbundle");
+        let bundle = directory.path().join("cap-1.llmcapture");
         fs::write(&bundle, b"encrypted bundle fixture").unwrap();
         let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
         catalog.begin_capture(&new_capture("cap-1")).unwrap();
@@ -1777,7 +1804,7 @@ mod tests {
     #[test]
     fn provider_error_capture_is_not_queued_or_retried_for_finalization() {
         let directory = tempfile::tempdir().unwrap();
-        let bundle = directory.path().join("cap-auth-error.llmbundle");
+        let bundle = directory.path().join("cap-auth-error.llmcapture");
         fs::write(&bundle, b"encrypted provider error fixture").unwrap();
         let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
         catalog

@@ -126,7 +126,7 @@ Use a model available to the provider account. See [Provider and agent
 setup](provider-setup.md) for every route and the Codex configuration.
 
 The response is relayed normally. After it ends, the daemon records a catalog
-row and vault-encrypts `<capture-id>.llmbundle`. The bundle is a private
+row and vault-encrypts `<capture-id>.llmcapture`. The capture file is a private
 checkpoint containing enough information to reconstruct the original request,
 including its credential. Do not inspect, copy, or upload it as though it were
 a proof.
