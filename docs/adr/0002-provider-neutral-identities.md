@@ -35,18 +35,24 @@ name follows GitHub login changes only while it has not been customized.
 
 ## Transitional authority
 
-This migration does not add another provider or change login behavior. GitHub
-OAuth still reads and writes `users.github_id`, `users.github_login`, and
-`users.avatar_url`; existing API and UI contracts continue to expose the GitHub
-login. Those columns and the synchronization triggers remain until all readers
-and writers have moved to the provider-neutral model.
+Migration 0017 changes GitHub OAuth lookup and profile reads to use
+`user_identities`. New accounts are written to `users` plus
+`user_identities`; the GitHub-only columns are no longer application authority.
+Existing API and UI contracts continue to expose the GitHub login.
+
+The migration temporarily mirrors GitHub identities back to the legacy columns
+so a pre-cutover API Machine can still serve traffic or be used for rollback
+during the rolling deployment. It also keeps the old-to-new mirror for those
+replicas. This compatibility dual write is deliberately limited to the rollout
+window and is covered by the follow-up issue below.
 
 ## Tracked cutover
 
-[Issue #215](https://github.com/exalto-ai/llm-notary/issues/215) tracks moving
-GitHub lookup and linking to `user_identities`, exposing account-level display
-fields, and removing this compatibility dual write. Only after that cutover is
-deployed everywhere and old application images are outside the rollback window
-may a later migration remove the GitHub-only columns and synchronization
-triggers. Adding Google or another provider requires an explicit authenticated
-linking flow; matching provider emails must never merge accounts automatically.
+[Issue #215](https://github.com/exalto-ai/llm-notary/issues/215) tracks this
+cutover through removal of the compatibility dual write. Only after migration
+0017 and its application release are deployed everywhere may the next migration
+remove the GitHub-only columns and synchronization triggers. That removal makes
+the provider-neutral application release the oldest safe rollback target.
+
+Adding Google or another provider requires an explicit authenticated linking
+flow; matching provider emails must never merge accounts automatically.

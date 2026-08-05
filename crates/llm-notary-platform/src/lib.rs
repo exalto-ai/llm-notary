@@ -926,8 +926,13 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
     let session_token = session_token(&jar)?;
     let now = unix_timestamp()?;
     let user = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT users.id, users.github_login, users.avatar_url
-         FROM sessions JOIN users ON users.id = sessions.user_id
+        "SELECT users.id, user_identities.provider_display_name,
+                user_identities.provider_avatar_url
+         FROM sessions
+         JOIN users ON users.id = sessions.user_id
+         JOIN user_identities
+           ON user_identities.user_id = users.id
+          AND user_identities.provider = 'github'
          WHERE sessions.token_hash = $1 AND sessions.expires_at > $2",
     )
     .bind(sha256_hex(session_token.as_bytes()))
@@ -1497,7 +1502,13 @@ async fn cli_me(
     let principal =
         authn::authenticated_principal(&state, &headers, authn::ApiScope::AccountRead).await?;
     let user = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT id, github_login, avatar_url FROM users WHERE id = $1",
+        "SELECT users.id, user_identities.provider_display_name,
+                user_identities.provider_avatar_url
+         FROM users
+         JOIN user_identities
+           ON user_identities.user_id = users.id
+          AND user_identities.provider = 'github'
+         WHERE users.id = $1",
     )
     .bind(&principal.user_id)
     .fetch_one(&state.database)
@@ -1532,8 +1543,13 @@ pub(crate) async fn authenticated_web_user(
     let token = session_token(jar)?;
     let now = unix_timestamp()?;
     sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT users.id, users.github_login, users.avatar_url
-         FROM sessions JOIN users ON users.id = sessions.user_id
+        "SELECT users.id, user_identities.provider_display_name,
+                user_identities.provider_avatar_url
+         FROM sessions
+         JOIN users ON users.id = sessions.user_id
+         JOIN user_identities
+           ON user_identities.user_id = users.id
+          AND user_identities.provider = 'github'
          WHERE sessions.token_hash = $1 AND sessions.expires_at > $2",
     )
     .bind(sha256_hex(token.as_bytes()))
@@ -1702,29 +1718,87 @@ async fn upsert_user(
     github_user: &GitHubUser,
     now: i64,
 ) -> ApiResult<String> {
-    let user_id = Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO users (id, github_id, github_login, avatar_url, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT(github_id) DO UPDATE SET
-            github_login = excluded.github_login,
-            avatar_url = excluded.avatar_url,
-            updated_at = excluded.updated_at",
+    let provider_subject = github_user.id.to_string();
+    let mut transaction = database.begin().await.map_err(database_error)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(format!("github:{provider_subject}"))
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+
+    let existing = sqlx::query_as::<_, (String, String, String)>(
+        "SELECT users.id, users.display_name,
+                user_identities.provider_display_name
+         FROM user_identities
+         JOIN users ON users.id = user_identities.user_id
+         WHERE user_identities.provider = 'github'
+           AND user_identities.provider_subject = $1
+         FOR UPDATE OF users, user_identities",
     )
-    .bind(&user_id)
-    .bind(github_user.id)
-    .bind(&github_user.login)
-    .bind(&github_user.avatar_url)
-    .bind(now)
-    .bind(now)
-    .execute(database)
+    .bind(&provider_subject)
+    .fetch_optional(&mut *transaction)
     .await
     .map_err(database_error)?;
-    sqlx::query_scalar("SELECT id FROM users WHERE github_id = $1")
-        .bind(github_user.id)
-        .fetch_one(database)
+
+    let user_id = if let Some((user_id, display_name, previous_provider_name)) = existing {
+        let account_display_name = if display_name == previous_provider_name {
+            &github_user.login
+        } else {
+            &display_name
+        };
+        sqlx::query("UPDATE users SET display_name = $1, updated_at = $2 WHERE id = $3")
+            .bind(account_display_name)
+            .bind(now)
+            .bind(&user_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(database_error)?;
+        sqlx::query(
+            "UPDATE user_identities
+             SET provider_display_name = $1, provider_avatar_url = $2,
+                 updated_at = $3, last_used_at = $3
+             WHERE provider = 'github' AND provider_subject = $4",
+        )
+        .bind(&github_user.login)
+        .bind(&github_user.avatar_url)
+        .bind(now)
+        .bind(&provider_subject)
+        .execute(&mut *transaction)
         .await
-        .map_err(database_error)
+        .map_err(database_error)?;
+        user_id
+    } else {
+        let user_id = Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO users (id, display_name, created_at, updated_at)
+             VALUES ($1, $2, $3, $3)",
+        )
+        .bind(&user_id)
+        .bind(&github_user.login)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        sqlx::query(
+            "INSERT INTO user_identities
+             (id, user_id, provider, provider_subject, provider_display_name,
+              provider_avatar_url, created_at, updated_at, last_used_at)
+             VALUES ($1, $2, 'github', $3, $4, $5, $6, $6, $6)",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(&user_id)
+        .bind(&provider_subject)
+        .bind(&github_user.login)
+        .bind(&github_user.avatar_url)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        user_id
+    };
+
+    transaction.commit().await.map_err(database_error)?;
+    Ok(user_id)
 }
 
 fn session_token(jar: &CookieJar) -> ApiResult<String> {
@@ -2428,6 +2502,155 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(remaining, 0);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn provider_identity_cutover_uses_new_authority_and_preserves_rollback_compatibility() {
+        let database = fresh_database().await;
+        let github_user = GitHubUser {
+            id: 51,
+            login: "first-login".to_owned(),
+            avatar_url: Some("https://example.test/first".to_owned()),
+        };
+
+        let user_id = upsert_user(&database.pool, &github_user, 10).await.unwrap();
+        let profile: (
+            String,
+            String,
+            Option<String>,
+            Option<i64>,
+            Option<String>,
+            Option<String>,
+        ) = sqlx::query_as(
+            "SELECT users.display_name,
+                    user_identities.provider_display_name,
+                    user_identities.provider_avatar_url,
+                    users.github_id, users.github_login, users.avatar_url
+             FROM users
+             JOIN user_identities ON user_identities.user_id = users.id
+             WHERE users.id = $1 AND user_identities.provider = 'github'",
+        )
+        .bind(&user_id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            profile,
+            (
+                "first-login".to_owned(),
+                "first-login".to_owned(),
+                Some("https://example.test/first".to_owned()),
+                Some(51),
+                Some("first-login".to_owned()),
+                Some("https://example.test/first".to_owned()),
+            )
+        );
+
+        let renamed = GitHubUser {
+            id: 51,
+            login: "renamed-login".to_owned(),
+            avatar_url: Some("https://example.test/renamed".to_owned()),
+        };
+        assert_eq!(
+            upsert_user(&database.pool, &renamed, 11).await.unwrap(),
+            user_id
+        );
+        let renamed_profile: (String, String, Option<String>) = sqlx::query_as(
+            "SELECT users.display_name, user_identities.provider_display_name,
+                    users.github_login
+             FROM users
+             JOIN user_identities ON user_identities.user_id = users.id
+             WHERE users.id = $1 AND user_identities.provider = 'github'",
+        )
+        .bind(&user_id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            renamed_profile,
+            (
+                "renamed-login".to_owned(),
+                "renamed-login".to_owned(),
+                Some("renamed-login".to_owned()),
+            )
+        );
+
+        sqlx::query("UPDATE users SET display_name = 'Custom name' WHERE id = $1")
+            .bind(&user_id)
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        let renamed_again = GitHubUser {
+            id: 51,
+            login: "renamed-again".to_owned(),
+            avatar_url: None,
+        };
+        upsert_user(&database.pool, &renamed_again, 12)
+            .await
+            .unwrap();
+        let customized: (String, String, Option<String>) = sqlx::query_as(
+            "SELECT users.display_name, user_identities.provider_display_name,
+                    users.github_login
+             FROM users
+             JOIN user_identities ON user_identities.user_id = users.id
+             WHERE users.id = $1 AND user_identities.provider = 'github'",
+        )
+        .bind(&user_id)
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            customized,
+            (
+                "Custom name".to_owned(),
+                "renamed-again".to_owned(),
+                Some("renamed-again".to_owned()),
+            )
+        );
+
+        sqlx::query(
+            "INSERT INTO users
+             (id, github_id, github_login, avatar_url, created_at, updated_at)
+             VALUES ('old-replica-user', 52, 'old-replica', NULL, 20, 20)",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let mirrored_identity: (String, String) = sqlx::query_as(
+            "SELECT provider_subject, provider_display_name
+             FROM user_identities WHERE user_id = 'old-replica-user'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            mirrored_identity,
+            ("52".to_owned(), "old-replica".to_owned())
+        );
+
+        let concurrent_user = GitHubUser {
+            id: 53,
+            login: "concurrent".to_owned(),
+            avatar_url: None,
+        };
+        let (first, second) = tokio::join!(
+            upsert_user(&database.pool, &concurrent_user, 30),
+            upsert_user(&database.pool, &concurrent_user, 30),
+        );
+        assert_eq!(first.unwrap(), second.unwrap());
+        let counts: (i64, i64) = sqlx::query_as(
+            "SELECT
+                 (SELECT COUNT(*) FROM user_identities
+                  WHERE provider = 'github' AND provider_subject = '53'),
+                 (SELECT COUNT(*) FROM users
+                  WHERE id IN (SELECT user_id FROM user_identities
+                               WHERE provider = 'github' AND provider_subject = '53'))",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(counts, (1, 1));
     }
 
     #[tokio::test]
