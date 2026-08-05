@@ -1,4 +1,4 @@
-# ADR 0002: Stage provider-neutral account identities
+# ADR 0002: Provider-neutral account identities
 
 Status: accepted
 
@@ -33,26 +33,33 @@ the new table, so old and new application replicas can run around the migration
 boundary without leaving the shadow identity data stale. The account display
 name follows GitHub login changes only while it has not been customized.
 
-## Transitional authority
+## Authority
 
 Migration 0017 changes GitHub OAuth lookup and profile reads to use
 `user_identities`. New accounts are written to `users` plus
 `user_identities`; the GitHub-only columns are no longer application authority.
 Existing API and UI contracts continue to expose the GitHub login.
 
-The migration temporarily mirrors GitHub identities back to the legacy columns
-so a pre-cutover API Machine can still serve traffic or be used for rollback
-during the rolling deployment. It also keeps the old-to-new mirror for those
-replicas. This compatibility dual write is deliberately limited to the rollout
-window and is covered by the follow-up issue below.
+Migration 0018 makes that authority permanent. It reconciles every account's
+legacy GitHub metadata against its GitHub identity and aborts if any row is
+missing or stale. After a successful reconciliation it removes both mirror
+directions and drops `users.github_id`, `users.github_login`, and
+`users.avatar_url`.
 
-## Tracked cutover
+The durable account ID and account-level `display_name` live in `users`.
+Authentication subjects and provider profile metadata live only in
+`user_identities`. The current `github_login` response field is a compatibility
+API name populated from the GitHub identity; it is not a database authority.
 
-[Issue #215](https://github.com/exalto-ai/llm-notary/issues/215) tracks this
-cutover through removal of the compatibility dual write. Only after migration
-0017 and its application release are deployed everywhere may the next migration
-remove the GitHub-only columns and synchronization triggers. That removal makes
-the provider-neutral application release the oldest safe rollback target.
+## Deployment and rollback boundary
+
+Migration 0017 temporarily mirrored GitHub identities back to the legacy
+columns so a pre-cutover API Machine could serve traffic or be used for rollback
+during its rolling deployment. Migration 0018 was released only after the 0017
+application image was healthy on every production API Machine. The deployment
+workflow may roll back to that identity-authoritative image because it does not
+query the removed columns. Images older than the 0017 application release are
+not safe rollback targets after migration 0018.
 
 Adding Google or another provider requires an explicit authenticated linking
 flow; matching provider emails must never merge accounts automatically.

@@ -37,7 +37,7 @@ Use the generated contract when prose and an installed service disagree.
 
 - [Development and validation](development.md)
 - [Cursor-pagination contract and array inventory](adr/0001-cursor-pagination.md)
-- [Provider-neutral account identity staging](adr/0002-provider-neutral-identities.md)
+- [Provider-neutral account identities](adr/0002-provider-neutral-identities.md)
 - [Design language](../DESIGN.md)
 - [Provider icon assets and usage terms](provider-icons.md)
 - [OpenCode production canary](../benchmarks/opencode-e2e/README.md)

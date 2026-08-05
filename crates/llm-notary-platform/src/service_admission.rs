@@ -1584,15 +1584,10 @@ mod tests {
     async fn credit_history_is_paginated_and_account_scoped() {
         let state = test_state().await;
         let now = unix_timestamp().unwrap();
-        sqlx::query(
-            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
-             VALUES ('history-1', 101, 'history-one', $1, $1),
-                    ('history-2', 102, 'history-two', $1, $1)",
-        )
-        .bind(now)
-        .execute(&state.database)
-        .await
-        .unwrap();
+        super::super::insert_test_github_user(&state.database, "history-1", 101, "history-one")
+            .await;
+        super::super::insert_test_github_user(&state.database, "history-2", 102, "history-two")
+            .await;
         for (token, user_id) in [
             ("history-token-1", "history-1"),
             ("history-token-2", "history-2"),
@@ -2579,14 +2574,7 @@ mod tests {
     async fn concurrent_promotional_claims_create_one_server_authored_grant() {
         let state = test_state().await;
         let now = unix_timestamp().unwrap();
-        sqlx::query(
-            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
-             VALUES ('promo-user', 44, 'promo', $1, $1)",
-        )
-        .bind(now)
-        .execute(&state.database)
-        .await
-        .unwrap();
+        super::super::insert_test_github_user(&state.database, "promo-user", 44, "promo").await;
         let session = "promo-browser-session";
         sqlx::query(
             "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
@@ -2639,13 +2627,7 @@ mod tests {
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn signed_in_accounts_always_receive_free_access_and_credits() {
         let state = test_state().await;
-        sqlx::query(
-            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
-             VALUES ('user-1', 1, 'octo', 1, 1)",
-        )
-        .execute(&state.database)
-        .await
-        .unwrap();
+        super::super::insert_test_github_user(&state.database, "user-1", 1, "octo").await;
         let free_credits = account_access(&state, "user-1").await.unwrap();
         assert_eq!(free_credits.total_remaining_bytes, 640 << 20);
         assert_eq!(free_credits.included_monthly_remaining_bytes, 512 << 20);

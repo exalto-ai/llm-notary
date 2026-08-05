@@ -977,13 +977,8 @@ mod tests {
 
     async fn test_state() -> (AppState, MockIntakeStorage, HeaderMap, HeaderMap) {
         let database = super::super::fresh_database().await;
-        sqlx::query(
-            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
-             VALUES ('user-1', 1, 'one', 1, 1), ('user-2', 2, 'two', 1, 1)",
-        )
-        .execute(&database.pool)
-        .await
-        .expect("users");
+        super::super::insert_test_github_user(&database.pool, "user-1", 1, "one").await;
+        super::super::insert_test_github_user(&database.pool, "user-2", 2, "two").await;
         let now = unix_timestamp().expect("time");
         let tokens_one = super::super::issue_cli_session(&database, "user-1", "One", now)
             .await

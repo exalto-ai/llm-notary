@@ -311,13 +311,8 @@ mod tests {
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn keys_are_one_time_scoped_revocable_expiring_and_account_isolated() {
         let database = super::super::fresh_database().await;
-        sqlx::query(
-            "INSERT INTO users (id, github_id, github_login, created_at, updated_at)
-             VALUES ('user-1', 1, 'one', 1, 1), ('user-2', 2, 'two', 1, 1)",
-        )
-        .execute(&database.pool)
-        .await
-        .unwrap();
+        super::super::insert_test_github_user(&database.pool, "user-1", 1, "one").await;
+        super::super::insert_test_github_user(&database.pool, "user-2", 2, "two").await;
         let now = unix_timestamp().unwrap();
         for (token, user_id) in [("web-one", "user-1"), ("web-two", "user-2")] {
             sqlx::query(
