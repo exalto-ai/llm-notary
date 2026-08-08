@@ -196,9 +196,11 @@ jobs:
           cache: npm
           cache-dependency-path: js/desktop/package-lock.json
       - run: npm ci
+      - name: Prepare bundled daemon
+        run: npm run prepare:sidecar:debug
       - run: cargo clippy -p llm-notary-desktop --all-targets -- -D warnings
       - name: Build debug application bundle with bundled daemon
-        run: npm run tauri:build:debug
+        run: npm exec -- tauri build --debug --bundles app
 
   docs:
     name: Local workflow documentation
