@@ -55,6 +55,8 @@ const API_VERSION: &str = "v1";
 const SESSION_COOKIE: &str = "llm_notary_admin_session";
 const SESSION_MAX_AGE_SECONDS: u64 = 43_200;
 const DASHBOARD_HEADER: &str = "x-llm-notary-request";
+const DASHBOARD_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
+const DESKTOP_DASHBOARD_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self' tauri://localhost http://tauri.localhost https://tauri.localhost";
 
 #[derive(RustEmbed)]
 #[folder = "dashboard/"]
@@ -149,15 +151,21 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
         .with_state(state))
 }
 
-async fn dashboard_index() -> Response {
-    embedded_dashboard_response("local.html")
+#[derive(Deserialize)]
+struct DashboardQuery {
+    embedded: Option<String>,
+}
+
+async fn dashboard_index(Query(query): Query<DashboardQuery>) -> Response {
+    let desktop_embed = query.embedded.as_deref() == Some("desktop");
+    embedded_dashboard_response("local.html", desktop_embed)
 }
 
 async fn dashboard_asset(Path(path): Path<String>) -> Response {
-    embedded_dashboard_response(&format!("assets/{path}"))
+    embedded_dashboard_response(&format!("assets/{path}"), false)
 }
 
-fn embedded_dashboard_response(path: &str) -> Response {
+fn embedded_dashboard_response(path: &str, desktop_embed: bool) -> Response {
     let Some(asset) = DashboardAssets::get(path) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -181,9 +189,11 @@ fn embedded_dashboard_response(path: &str) -> Response {
     );
     response.headers_mut().insert(
         header::CONTENT_SECURITY_POLICY,
-        HeaderValue::from_static(
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
-        ),
+        HeaderValue::from_static(if desktop_embed {
+            DESKTOP_DASHBOARD_CSP
+        } else {
+            DASHBOARD_CSP
+        }),
     );
     response
 }
@@ -2763,7 +2773,7 @@ mod tests {
                 .headers()
                 .get(header::CONTENT_SECURITY_POLICY)
                 .unwrap(),
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
+            DASHBOARD_CSP
         );
         let body = index.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("/assets/dashboard.js"));
@@ -2780,6 +2790,23 @@ mod tests {
         assert_eq!(
             script.headers().get(header::CONTENT_TYPE).unwrap(),
             "text/javascript"
+        );
+
+        let embedded = router(state(directory.path()))
+            .unwrap()
+            .oneshot(
+                Request::get("/dashboard?embedded=desktop")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            embedded
+                .headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .unwrap(),
+            DESKTOP_DASHBOARD_CSP
         );
     }
 }

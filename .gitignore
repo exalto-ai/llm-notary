@@ -1,4 +1,5 @@
 /target/
+.DS_Store
 # Local evidence may include prompts, responses, and authentication material.
 /bundles/
 /captures/
@@ -15,5 +16,11 @@ llm-notary-api.db
 js/app/node_modules/
 js/app/dist/
 js/app/.vitest-attachments/
+js/desktop/node_modules/
+js/desktop/dist/
+js/desktop/src-tauri/binaries/llm-notaryd-*
+js/desktop/src-tauri/gen/
+js/desktop/src-tauri/icons/android/
+js/desktop/src-tauri/icons/ios/
 .playwright-cli/
 output/playwright/
