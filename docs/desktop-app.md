@@ -7,9 +7,10 @@ replacing the application shell.
 The app provides a four-stage first run, supervises the bundled `llm-notaryd`
 process, exposes its status from the menu bar, and contains the complete local
 capture workspace. Users do not need to open a localhost page in a browser.
-Closing the window leaves the menu-bar controller running; quitting the app
-stops a daemon that the app started. Once onboarding is complete, later app
-launches start the bundled service automatically.
+Closing the window removes the app from the Dock and leaves the menu-bar
+controller running; opening it from the menu bar restores the regular app
+window. Quitting the app stops a daemon that the app started. Once onboarding
+is complete, later app launches start the bundled service automatically.
 
 First run detects the local agent config, capture vault, and service before it
 changes anything. It then guides the user through capture protection, choosing
