@@ -86,8 +86,14 @@ jobs:
           path: release/*
           if-no-files-found: error
 
+  desktop:
+    uses: ./.github/workflows/desktop-dmg.yml
+    with:
+      sign: true
+    secrets: inherit
+
   publish:
-    needs: build
+    needs: [build, desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v8
