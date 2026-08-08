@@ -178,8 +178,8 @@ function App() {
     <div className="native-window">
       <Sidebar state={state} view={view} onNavigate={setView} />
       <section className="window-content">
-        <header className="native-toolbar" data-tauri-drag-region>
-          <div className="toolbar-title" data-tauri-drag-region>
+        <header className="native-toolbar" data-tauri-drag-region="deep">
+          <div className="toolbar-title" data-tauri-drag-region="deep">
             <strong>{meta.title}</strong>
             <span>{meta.subtitle}</span>
           </div>
@@ -523,7 +523,7 @@ function Onboarding({ state, refresh, onFinish }: {
   };
 
   return <div className="onboarding-window">
-    <header className="onboarding-toolbar" data-tauri-drag-region>
+    <header className="onboarding-toolbar" data-tauri-drag-region="deep">
       <div className="traffic-light-space" data-tauri-drag-region />
       <strong className="onboarding-window-title" data-tauri-drag-region>LLM Notary</strong>
       <span className="onboarding-window-context">Setup</span>
