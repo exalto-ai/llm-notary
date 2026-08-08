@@ -61,5 +61,7 @@ workflow may roll back to that identity-authoritative image because it does not
 query the removed columns. Images older than the 0017 application release are
 not safe rollback targets after migration 0018.
 
-Adding Google or another provider requires an explicit authenticated linking
-flow; matching provider emails must never merge accounts automatically.
+Signing in with a new provider creates a separate account. Attaching Google or
+another provider to an existing account requires an explicit authenticated
+linking flow; matching provider emails must never merge accounts automatically.
+Google email is checked for verification during sign-in and then discarded.

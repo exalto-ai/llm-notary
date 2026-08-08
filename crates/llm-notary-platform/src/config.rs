@@ -58,12 +58,15 @@ pub struct AdmissionPolicy {
     pub monthly_finalization_bytes: i64,
 }
 
-/// GitHub OAuth and public-origin configuration.
+/// Browser OAuth providers and public-origin configuration.
 pub struct AuthConfig {
     pub github_client_id: String,
     pub github_client_secret: String,
+    pub google_client_id: String,
+    pub google_client_secret: String,
     pub app_url: Url,
-    pub callback_url: Url,
+    pub github_callback_url: Url,
+    pub google_callback_url: Url,
 }
 
 /// PostgreSQL connection-pool configuration for the API.
@@ -252,16 +255,44 @@ impl AuthConfig {
         if app_url.path() != "/" || app_url.query().is_some() || app_url.fragment().is_some() {
             bail!("LLM_NOTARY_PUBLIC_ORIGIN must be an origin without a path, query, or fragment");
         }
-        let callback_url = app_url
+        let github_callback_url = app_url
             .join("/api/auth/github/callback")
             .context("building GitHub OAuth callback URL")?;
+        let google_callback_url = app_url
+            .join("/api/auth/google/callback")
+            .context("building Google OAuth callback URL")?;
+        let (github_client_id, github_client_secret) = oauth_client_pair(
+            "GITHUB_OAUTH_CLIENT_ID",
+            "GITHUB_OAUTH_CLIENT_SECRET",
+            "GitHub",
+        )?;
+        let (google_client_id, google_client_secret) = oauth_client_pair(
+            "GOOGLE_OAUTH_CLIENT_ID",
+            "GOOGLE_OAUTH_CLIENT_SECRET",
+            "Google",
+        )?;
+        if github_client_id.is_empty() && google_client_id.is_empty() {
+            bail!("at least one browser OAuth provider must be configured");
+        }
         Ok(Self {
-            github_client_id: required_env("GITHUB_OAUTH_CLIENT_ID")?,
-            github_client_secret: required_env("GITHUB_OAUTH_CLIENT_SECRET")?,
+            github_client_id,
+            github_client_secret,
+            google_client_id,
+            google_client_secret,
             app_url,
-            callback_url,
+            github_callback_url,
+            google_callback_url,
         })
     }
+}
+
+fn oauth_client_pair(id_name: &str, secret_name: &str, provider: &str) -> Result<(String, String)> {
+    let id = optional_env(id_name)?.unwrap_or_default();
+    let secret = optional_env(secret_name)?.unwrap_or_default();
+    if id.is_empty() != secret.is_empty() {
+        bail!("{provider} OAuth requires both {id_name} and {secret_name}");
+    }
+    Ok((id, secret))
 }
 
 impl DatabaseConfig {

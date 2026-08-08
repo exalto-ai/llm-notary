@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { AccountSettings, ApiKeysPanel, CliApproval, Dashboard, DeleteAccountPanel, Header, HostedNotaryRecord, Landing, Library, ListedSharesPreview, SharePage, VerificationPage } from './main';
+import { AccountSettings, ApiKeysPanel, CliApproval, Dashboard, DeleteAccountPanel, Header, HostedNotaryRecord, Landing, Library, ListedSharesPreview, SharePage, SignInPage, VerificationPage } from './main';
 import { ProviderIdentity } from './ProviderIdentity';
 import { latestMacosDownloadHref } from './releaseDownloads';
 import { initialThemePreference } from './theme';
@@ -79,6 +79,28 @@ describe('hosted site', () => {
 
     await expect.element(page.getByRole('status', { name: 'Checking sign-in status' })).toBeVisible();
     await expect.element(page.getByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
+  });
+
+  test('offers Google first and preserves a local-service return route', async () => {
+    render(<SignInPage
+      route="signin?return_to=%23%2Fauthorize%3Frequest_id%3Drequest-123"
+      loadProviders={async () => ({ google: true, github: true })}
+    />);
+
+    const google = page.getByRole('link', { name: 'Sign in with Google' });
+    await expect.element(google).toBeVisible();
+    await expect.element(google).toHaveAttribute('href', '/api/auth/google?return_to=%23%2Fauthorize%3Frequest_id%3Drequest-123');
+    await expect.element(page.getByRole('link', { name: 'Sign in with GitHub' })).toBeVisible();
+    await expect.element(page.getByText('Google access')).toBeVisible();
+    await expect.element(page.getByText('Provider tokens')).toBeVisible();
+  });
+
+  test('hides Google-specific facts when only GitHub is configured', async () => {
+    render(<SignInPage loadProviders={async () => ({ google: false, github: true })} />);
+
+    await expect.element(page.getByRole('link', { name: 'Sign in with GitHub' })).toBeVisible();
+    await expect.element(page.getByText('Google access')).not.toBeInTheDocument();
+    await expect.element(page.getByText('Provider tokens')).toBeVisible();
   });
 
   test('offers Auto, Light, and Dark in Dashboard account settings', async () => {
@@ -178,9 +200,9 @@ describe('hosted site', () => {
     </>);
 
     await expect.element(page.getByRole('heading', { name: 'Sign in to continue' })).toBeVisible();
-    await expect.element(page.getByRole('link', { name: 'Continue with GitHub' })).toBeVisible();
-    await expect.element(page.getByText('Repository access')).toBeVisible();
-    await expect.element(page.getByText('Not requested')).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Choose sign-in method' })).toBeVisible();
+    await expect.element(page.getByText('Google access')).toBeVisible();
+    await expect.element(page.getByText('Provider tokens')).toBeVisible();
     await expect.element(page.getByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
   });
 
@@ -412,10 +434,10 @@ describe('hosted site', () => {
     expect(traceLoads).toBe(0);
   });
 
-  test('requires the GitHub login before deleting an account', async () => {
+  test('requires the account identifier before deleting an account', async () => {
     let deleted = false;
     let completed = false;
-    render(<DeleteAccountPanel githubLogin="fixture-user" deleteAccount={async () => { deleted = true; }} onDeleted={() => { completed = true; }} />);
+    render(<DeleteAccountPanel identifier="fixture-user" deleteAccount={async () => { deleted = true; }} onDeleted={() => { completed = true; }} />);
 
     await page.getByRole('button', { name: 'Delete account' }).click();
     const dialog = page.getByRole('alertdialog');

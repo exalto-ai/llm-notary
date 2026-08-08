@@ -71,7 +71,7 @@ reviewed, staged rollout and recovery procedure before it is merged.
    curl --fail https://llm-notary.exalto.ai/api/readyz
    ```
 
-4. Exercise GitHub sign-in, local-service refresh-token rotation, and one complete
+4. Exercise each configured sign-in provider, local-service refresh-token rotation, and one complete
    share-admission cycle. Confirm the admitted trace and exact-package object keys,
    sizes, and SHA-256 values match their private objects.
 
