@@ -1,11 +1,12 @@
 use std::{
     env, fmt, fs,
     path::{Path, PathBuf},
-    process::Command,
     sync::OnceLock,
     time::Duration,
 };
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::process::Command;
 #[cfg(target_os = "linux")]
 use std::{io::Write, process::Stdio};
 

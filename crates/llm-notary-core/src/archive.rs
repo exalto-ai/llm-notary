@@ -266,12 +266,15 @@ pub(crate) fn create_staging_directory(output_dir: &Path) -> Result<PathBuf> {
             std::process::id(),
             rand::random::<u64>()
         ));
-        let mut builder = fs::DirBuilder::new();
         #[cfg(unix)]
-        {
+        let builder = {
             use std::os::unix::fs::DirBuilderExt as _;
+            let mut builder = fs::DirBuilder::new();
             builder.mode(0o700);
-        }
+            builder
+        };
+        #[cfg(not(unix))]
+        let builder = fs::DirBuilder::new();
         match builder.create(&staging) {
             Ok(()) => return Ok(staging),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,

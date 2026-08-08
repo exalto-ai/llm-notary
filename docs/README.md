@@ -12,7 +12,7 @@ Use the generated contract when prose and an installed service disagree.
 
 | Goal | Guide |
 | --- | --- |
-| Build and run the local service | [Getting started](getting-started.md) |
+| Install and run the local service | [Getting started](getting-started.md) |
 | Understand the proof and trust assumptions | [Architecture and trust model](architecture.md) |
 | Connect an SDK or agent | [Provider and agent setup](provider-setup.md) |
 | Understand `.llmcapture`, `.llmtrace`, and shared sessions | [Artifact formats and verification](artifact-formats.md) |

@@ -43,6 +43,9 @@ url = "2.5"
 utoipa = { version = "5.5", features = ["axum_extras", "uuid"] }
 uuid = { version = "1.16", features = ["v4"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 llm-notary-core = { path = "../llm-notary-core", features = ["test-utils"] }
 tower = { version = "0.5", features = ["util"] }

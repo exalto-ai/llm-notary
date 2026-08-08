@@ -1,16 +1,31 @@
-name: Release CLI
+name: Publish CLI
 
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_call:
+    inputs:
+      channel:
+        description: Website release pointer to move
+        required: false
+        default: latest
+        type: string
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: Non-production channel for an end-to-end publication test
+        required: true
+        type: string
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: publish-cli-${{ github.workflow }}-${{ inputs.channel }}
+  cancel-in-progress: false
 
 jobs:
   build:
     name: ${{ matrix.asset }}
+    timeout-minutes: 90
     env:
       LLM_NOTARY_PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://llm-notary.exalto.ai' }}
     strategy:
@@ -44,21 +59,24 @@ jobs:
         with:
           toolchain: 1.95.0
           targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: cli-${{ matrix.target }}
       - name: Build release binaries
-        run: cargo build --release --target ${{ matrix.target }} -p llm-notary-client --bin llm-notary --bin llm-notaryd
+        run: cargo build --locked --release --target ${{ matrix.target }} -p llm-notary-client --bin llm-notary --bin llm-notaryd
       - name: Exercise Windows trust-store replacement
         if: runner.os == 'Windows'
-        run: cargo test --target ${{ matrix.target }} -p llm-notary-client cli::notary::tests::write_store_atomically_replaces_an_existing_file
+        run: cargo test --locked --release --target ${{ matrix.target }} -p llm-notary-client cli::notary::tests::write_store_atomically_replaces_an_existing_file
       - name: Package archive
         shell: bash
         env:
           ASSET: ${{ matrix.asset }}
           ARCHIVE: ${{ matrix.archive }}
-          VERSION: ${{ github.ref_name }}
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          version="${VERSION#v}"
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/llm-notary-client/Cargo.toml | head -1)"
+          test -n "$version"
           folder="llm-notary-${version}-${ASSET}"
           mkdir "$folder"
           suffix=""
@@ -82,26 +100,133 @@ jobs:
           mv "$archive" "${archive}.sha256" release/
       - uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.asset }}
+          name: cli-${{ matrix.asset }}
           path: release/*
           if-no-files-found: error
+          retention-days: 7
 
   desktop:
     uses: ./.github/workflows/desktop-dmg.yml
     with:
-      sign: true
+      sign: ${{ github.ref == 'refs/heads/main' }}
     secrets: inherit
 
   publish:
+    name: Publish ${{ inputs.channel }}
     needs: [build, desktop]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.LLM_NOTARY_DOWNLOADS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.LLM_NOTARY_DOWNLOADS_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      AWS_EC2_METADATA_DISABLED: true
+      BUCKET: llm-notary-prod-downloads
+      ENDPOINT: https://t3.storage.dev
+      PUBLIC_BUCKET_ORIGIN: https://llm-notary-prod-downloads.t3.tigrisfiles.io
     steps:
+      - uses: actions/checkout@v6
       - uses: actions/download-artifact@v8
         with:
           path: release
           merge-multiple: true
-      - name: Create GitHub release
+      - name: Validate complete release set
+        id: release
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" release/* --generate-notes --title "LLM Notary $TAG"
+          CHANNEL: ${{ inputs.channel }}
+        run: |
+          set -euo pipefail
+          case "$CHANNEL" in
+            ""|.*|*..*|*[!a-zA-Z0-9._-]*)
+              echo "invalid release channel: $CHANNEL" >&2
+              exit 1
+              ;;
+          esac
+          if test "$CHANNEL" = latest && test "$GITHUB_REF" != refs/heads/main; then
+            echo "the latest pointer may be published only from main" >&2
+            exit 1
+          fi
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/llm-notary-client/Cargo.toml | head -1)"
+          test -n "$version"
+          for asset in \
+            "llm-notary-${version}-linux-x86_64.tar.gz" \
+            "llm-notary-${version}-linux-aarch64.tar.gz" \
+            "llm-notary-${version}-darwin-x86_64.tar.gz" \
+            "llm-notary-${version}-darwin-aarch64.tar.gz" \
+            "llm-notary-${version}-windows-x86_64.zip" \
+            "LLM-Notary-macos-arm64.dmg"; do
+            test -f "release/$asset"
+            test -f "release/$asset.sha256"
+            (cd release && sha256sum --check "$asset.sha256")
+          done
+          build_id="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          prefix="cli/builds/$build_id"
+          {
+            echo "version=$version"
+            echo "build_id=$build_id"
+            echo "prefix=$prefix"
+          } >> "$GITHUB_OUTPUT"
+      - name: Upload immutable build
+        env:
+          PREFIX: ${{ steps.release.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          for file in release/*; do
+            name="${file#release/}"
+            case "$name" in
+              *.tar.gz) content_type=application/gzip ;;
+              *.zip) content_type=application/zip ;;
+              *.dmg) content_type=application/x-apple-diskimage ;;
+              *.sha256) content_type='text/plain; charset=utf-8' ;;
+              *) echo "unexpected release file: $name" >&2; exit 1 ;;
+            esac
+            aws s3 cp "$file" "s3://$BUCKET/$PREFIX/$name" \
+              --endpoint-url "$ENDPOINT" \
+              --cache-control 'public, max-age=31536000, immutable' \
+              --content-type "$content_type" \
+              --only-show-errors
+          done
+      - name: Verify public immutable build
+        env:
+          PREFIX: ${{ steps.release.outputs.prefix }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/public-release"
+          for checksum in release/*.sha256; do
+            checksum_name="${checksum#release/}"
+            archive_name="${checksum_name%.sha256}"
+            curl --fail --silent --show-error --location \
+              --retry 8 --retry-all-errors --retry-delay 2 \
+              "$PUBLIC_BUCKET_ORIGIN/$PREFIX/$archive_name" \
+              -o "$RUNNER_TEMP/public-release/$archive_name"
+            curl --fail --silent --show-error --location \
+              --retry 8 --retry-all-errors --retry-delay 2 \
+              "$PUBLIC_BUCKET_ORIGIN/$PREFIX/$checksum_name" \
+              -o "$RUNNER_TEMP/public-release/$checksum_name"
+            (cd "$RUNNER_TEMP/public-release" && sha256sum --check "$checksum_name")
+          done
+      - name: Move channel pointer
+        env:
+          BUILD_ID: ${{ steps.release.outputs.build_id }}
+          CHANNEL: ${{ inputs.channel }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          set -euo pipefail
+          printf '%s %s\n' "$BUILD_ID" "$VERSION" > "$RUNNER_TEMP/current"
+          aws s3 cp "$RUNNER_TEMP/current" "s3://$BUCKET/cli/$CHANNEL" \
+            --endpoint-url "$ENDPOINT" \
+            --cache-control 'no-store' \
+            --content-type 'text/plain; charset=utf-8' \
+            --only-show-errors
+          expected="$(cat "$RUNNER_TEMP/current")"
+          actual="$(curl --fail --silent --show-error --location \
+            --retry 8 --retry-all-errors --retry-delay 2 \
+            "$PUBLIC_BUCKET_ORIGIN/cli/$CHANNEL")"
+          test "$actual" = "$expected"
+          if test "$CHANNEL" = latest; then
+            website="$(curl --fail --silent --show-error --location \
+              --retry 8 --retry-all-errors --retry-delay 2 \
+              "https://llm-notary.exalto.ai/downloads/cli/$CHANNEL")"
+            test "$website" = "$expected"
+          fi

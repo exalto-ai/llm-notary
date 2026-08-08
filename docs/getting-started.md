@@ -1,27 +1,40 @@
 # Getting started
 
-This guide builds the pre-release local service from source, captures one
-provider call, and explains the next finalization and verification steps.
+This guide installs the pre-release local service, captures one provider call,
+and explains the next finalization and verification steps.
 
-LLM Notary has not published a release or stable file-format promise. The
-checked-in installer becomes usable only after a version tag creates matching
-GitHub release assets.
+LLM Notary has no stable compatibility or file-format promise. The website's
+`latest` channel is deliberately moving: each successful publication replaces
+that pointer.
 
 ## Requirements
 
-- Rust 1.95.0. The repository's `rust-toolchain.toml` selects it.
-- A C toolchain for the vendored cryptographic dependencies.
+- macOS or Linux on x86-64 or ARM64 for the website installer.
+- `curl`, `tar`, and either `sha256sum` or `shasum`.
 - A provider API key for an optional real capture. Ordinary tests do not need
   one.
-- Node.js 24 and npm only for the public site and dashboard source.
 
-## Install the local programs from source
+## Install the local programs
+
+```bash
+curl -fsSL https://llm-notary.exalto.ai/install.sh | sh
+```
+
+The installer selects the current complete `latest` build, verifies the selected
+archive against its published SHA-256 value, and places `llm-notaryd` and
+`llm-notary` in `~/.local/bin`. Set `LLM_NOTARY_INSTALL_DIR` to choose another
+destination. The checksum detects corruption in transit or storage; it is not
+an independent signature because the archive and checksum share a publisher.
+
+To build from source instead, install Rust 1.95.0 and a C toolchain, then run:
 
 ```bash
 git clone https://github.com/exalto-ai/llm-notary.git
 cd llm-notary
 cargo install --locked --path crates/llm-notary-client
 ```
+
+Node.js 24 and npm are needed only for public-site and dashboard development.
 
 The two programs have separate jobs:
 

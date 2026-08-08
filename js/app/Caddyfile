@@ -9,6 +9,9 @@ http:// {
 		@favicon path /favicon.ico
 		header @favicon Cache-Control "public, max-age=0, must-revalidate"
 
+		@installer path /install.sh
+		header @installer Cache-Control "no-store"
+
 		@legacy_docs path_regexp legacy_docs ^/docs/?(.*)$
 		redir @legacy_docs /#/docs/{re.legacy_docs.1} 308
 

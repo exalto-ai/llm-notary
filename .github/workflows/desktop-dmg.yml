@@ -36,7 +36,7 @@ jobs:
   build:
     name: macos-arm64
     runs-on: macos-14
-    environment: ${{ github.event_name == 'pull_request' && 'desktop-preview' || 'macos-release' }}
+    environment: ${{ inputs.sign && 'macos-release' || 'desktop-preview' }}
     env:
       ASSET: macos-arm64
       TARGET: aarch64-apple-darwin
@@ -99,7 +99,7 @@ jobs:
           hdiutil verify "$dmg"
           mkdir -p release
           cp "$dmg" "release/LLM-Notary-${ASSET}.dmg"
-          shasum -a 256 "release/LLM-Notary-${ASSET}.dmg" > "release/LLM-Notary-${ASSET}.dmg.sha256"
+          (cd release && shasum -a 256 "LLM-Notary-${ASSET}.dmg" > "LLM-Notary-${ASSET}.dmg.sha256")
       - name: Verify Developer ID and notarization
         if: github.event_name != 'pull_request' && inputs.sign
         run: |

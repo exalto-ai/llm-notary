@@ -419,8 +419,9 @@ const docPages = {
     title: 'Install and capture.',
     lead: 'Install one local service, start its foreground process, and point each existing client at its provider path. You keep using the same API key and request shape.',
     blocks: [
-      { heading: 'Build from source', body: 'LLM Notary is a pre-release prototype and has no published binary release yet. Build the two local programs from a source checkout with Rust 1.95.0; the repository toolchain file selects that version.', code: sourceInstallCommand },
-      { heading: 'Programs', body: '`llm-notaryd` is the long-running local service. `llm-notary` is its short-lived REST client. The checked-in installer becomes usable only after a version tag publishes matching release assets.' },
+      { heading: 'Install latest', body: 'The macOS and Linux installer selects the current complete latest website build and checks the archive against its published SHA-256 value. This is a moving pre-release pointer. The checksum detects corruption but is not an independent signature because it shares the archive publisher.', code: installCommand },
+      { heading: 'Build from source', body: 'To build the same two local programs yourself, use Rust 1.95.0 and the repository toolchain file.', code: sourceInstallCommand },
+      { heading: 'Programs', body: '`llm-notaryd` is the long-running local service. `llm-notary` is its short-lived REST client. The website archive installs both together.' },
       { heading: 'Start the service', code: 'llm-notaryd' },
       { heading: 'Open the local dashboard', body: 'Visit `http://127.0.0.1:8788` and use the tabs for captures, finalizations, trace verification, sharing, activity, and settings. The default loopback configuration opens directly. If `admin.auth` is enabled, sign in with its configured username and password; the dashboard exchanges them for an `HttpOnly` session and does not store the password.' },
       { heading: 'Configuration file', body: 'The first service start creates an editable `config.toml` at the standard user location: `~/.config/llm-notary/config.toml` on Linux, `%APPDATA%\\llm-notary\\config.toml` on Windows, and `~/Library/Application Support/llm-notary/config.toml` on macOS. It is written once and never replaced. Start with an explicit file when needed:', code: 'llm-notaryd --config /path/to/config.toml' },

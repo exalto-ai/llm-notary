@@ -176,8 +176,14 @@ operational spans use bounded safe codes and metadata only.
 
 ## Release state
 
-No version tag or GitHub release exists yet. A future `v*` tag triggers the
-release workflow for macOS, Linux, and Windows assets and their SHA-256 files.
-Until that happens, documentation must describe source builds as the current
-installation path and must not imply that `install.sh` can resolve a latest
-release.
+There are no GitHub Releases or immutable semantic-version releases yet.
+After the normal production deployment succeeds, client-affecting changes on
+`main` build macOS, Linux, and Windows archives and their SHA-256 files. The
+publisher uploads one immutable build directory, verifies every public object,
+and moves `cli/latest` last. The website installer supports macOS and Linux and
+resolves that moving pointer.
+
+Keep the download bucket separate from private capture intake. Never expose
+its upload credential to a deployed application. SHA-256 files share the same
+publisher as their archives and must be described as corruption checks, not
+independent release authentication.
