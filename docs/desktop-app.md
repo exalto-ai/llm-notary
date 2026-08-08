@@ -71,11 +71,11 @@ identity and Apple notarization credentials from the environment when they are
 present.
 
 GitHub's **Desktop DMG** workflow builds an Apple Silicon package. Pull requests
-build an unsigned DMG so unreviewed code never receives production signing
-credentials. A manual run signs, notarizes, staples, and checks the package
-before uploading it as a workflow artifact. Version-tag releases call the same
-workflow and add the DMG and its SHA-256 checksum to the GitHub Release
-alongside the CLI archives.
+and non-production download tests build an unsigned DMG so unreviewed code never
+receives production signing credentials. A successful main build signs,
+notarizes, staples, and checks the package, then publishes the DMG and its
+SHA-256 checksum in the same immutable website build selected by the `latest`
+pointer as the CLI archives.
 
 The signed workflow reads these secrets from the branch-restricted
 `macos-release` GitHub environment:

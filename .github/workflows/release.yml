@@ -66,7 +66,7 @@ jobs:
         run: cargo build --locked --release --target ${{ matrix.target }} -p llm-notary-client --bin llm-notary --bin llm-notaryd
       - name: Exercise Windows trust-store replacement
         if: runner.os == 'Windows'
-        run: cargo test --locked --target ${{ matrix.target }} -p llm-notary-client cli::notary::tests::write_store_atomically_replaces_an_existing_file
+        run: cargo test --locked --release --target ${{ matrix.target }} -p llm-notary-client cli::notary::tests::write_store_atomically_replaces_an_existing_file
       - name: Package archive
         shell: bash
         env:
@@ -108,7 +108,7 @@ jobs:
   desktop:
     uses: ./.github/workflows/desktop-dmg.yml
     with:
-      sign: true
+      sign: ${{ github.ref == 'refs/heads/main' }}
     secrets: inherit
 
   publish:
@@ -129,7 +129,6 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/download-artifact@v8
         with:
-          pattern: cli-*
           path: release
           merge-multiple: true
       - name: Validate complete release set
@@ -155,7 +154,8 @@ jobs:
             "llm-notary-${version}-linux-aarch64.tar.gz" \
             "llm-notary-${version}-darwin-x86_64.tar.gz" \
             "llm-notary-${version}-darwin-aarch64.tar.gz" \
-            "llm-notary-${version}-windows-x86_64.zip"; do
+            "llm-notary-${version}-windows-x86_64.zip" \
+            "LLM-Notary-macos-arm64.dmg"; do
             test -f "release/$asset"
             test -f "release/$asset.sha256"
             (cd release && sha256sum --check "$asset.sha256")
@@ -177,6 +177,7 @@ jobs:
             case "$name" in
               *.tar.gz) content_type=application/gzip ;;
               *.zip) content_type=application/zip ;;
+              *.dmg) content_type=application/x-apple-diskimage ;;
               *.sha256) content_type='text/plain; charset=utf-8' ;;
               *) echo "unexpected release file: $name" >&2; exit 1 ;;
             esac
