@@ -1,0 +1,119 @@
+name: Desktop DMG
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/desktop-dmg.yml"
+      - ".github/workflows/release.yml"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "crates/llm-notary-client/**"
+      - "crates/llm-notary-core/**"
+      - "js/app/**"
+      - "js/desktop/**"
+  workflow_dispatch:
+    inputs:
+      sign:
+        description: Sign and notarize the DMGs
+        type: boolean
+        default: true
+  workflow_call:
+    inputs:
+      sign:
+        description: Sign and notarize the DMGs
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-dmg-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: macos-arm64
+    runs-on: macos-14
+    environment: ${{ github.event_name == 'pull_request' && 'desktop-preview' || 'macos-release' }}
+    env:
+      ASSET: macos-arm64
+      TARGET: aarch64-apple-darwin
+    defaults:
+      run:
+        working-directory: js/desktop
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: js/desktop/package-lock.json
+      - run: npm ci
+
+      # Pull requests must prove that the release package works without ever
+      # receiving production signing or notarization credentials.
+      - name: Prepare bundled daemon
+        run: npm run prepare:sidecar:release
+      - name: Build unsigned DMG for pull request
+        if: github.event_name == 'pull_request' || !inputs.sign
+        run: npm exec -- tauri build --target "$TARGET" --bundles app,dmg --no-sign --ci
+
+      - name: Import Developer ID certificate
+        if: github.event_name != 'pull_request' && inputs.sign
+        uses: apple-actions/import-codesign-certs@v7
+        with:
+          p12-file-base64: ${{ secrets.APPLE_CERTIFICATE }}
+          p12-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      - name: Prepare App Store Connect API key
+        if: github.event_name != 'pull_request' && inputs.sign
+        env:
+          NOTARIZATION_KEY_BASE64: ${{ secrets.APPLE_NOTARIZATION_KEY_BASE64 }}
+          NOTARIZATION_KEY_ID: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+        run: |
+          set -euo pipefail
+          key_path="$RUNNER_TEMP/AuthKey_${NOTARIZATION_KEY_ID}.p8"
+          printf '%s' "$NOTARIZATION_KEY_BASE64" | base64 --decode > "$key_path"
+          chmod 600 "$key_path"
+          echo "APPLE_API_KEY_PATH=$key_path" >> "$GITHUB_ENV"
+      - name: Build signed and notarized DMG
+        if: github.event_name != 'pull_request' && inputs.sign
+        env:
+          APPLE_API_ISSUER: ${{ secrets.APPLE_NOTARIZATION_ISSUER_ID }}
+          APPLE_API_KEY: ${{ secrets.APPLE_NOTARIZATION_KEY_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm exec -- tauri build --target "$TARGET" --bundles app,dmg --ci
+
+      - name: Verify package
+        run: |
+          set -euo pipefail
+          dmg=$(find "../../target/$TARGET/release/bundle/dmg" -maxdepth 1 -name '*.dmg' -print -quit)
+          test -n "$dmg"
+          hdiutil verify "$dmg"
+          mkdir -p release
+          cp "$dmg" "release/LLM-Notary-${ASSET}.dmg"
+          shasum -a 256 "release/LLM-Notary-${ASSET}.dmg" > "release/LLM-Notary-${ASSET}.dmg.sha256"
+      - name: Verify Developer ID and notarization
+        if: github.event_name != 'pull_request' && inputs.sign
+        run: |
+          set -euo pipefail
+          app=$(find "../../target/$TARGET/release/bundle/macos" -maxdepth 1 -name '*.app' -print -quit)
+          dmg=$(find "../../target/$TARGET/release/bundle/dmg" -maxdepth 1 -name '*.dmg' -print -quit)
+          test -n "$app"
+          test -n "$dmg"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          codesign --verify --strict --verbose=2 "$dmg"
+          xcrun stapler validate "$app"
+          spctl --assess --type execute --verbose=4 "$app"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: desktop-macos-arm64
+          path: js/desktop/release/*
+          if-no-files-found: error

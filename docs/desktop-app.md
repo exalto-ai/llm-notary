@@ -60,14 +60,33 @@ Start the Tauri development app with a debug `llm-notaryd` sidecar:
 npm --prefix js/desktop run tauri:dev
 ```
 
-Build a release application bundle with a release sidecar:
+Build a release application bundle and DMG with a release sidecar:
 
 ```bash
 npm --prefix js/desktop run tauri:build
 ```
 
-The command creates the native bundle; release signing and notarization still
-need to be configured before distributing it to users outside development.
+The command creates the native bundle and DMG. Local builds use a Developer ID
+identity and Apple notarization credentials from the environment when they are
+present.
+
+GitHub's **Desktop DMG** workflow builds an Apple Silicon package. Pull requests
+build an unsigned DMG so unreviewed code never receives production signing
+credentials. A manual run signs, notarizes, staples, and checks the package
+before uploading it as a workflow artifact. Version-tag releases call the same
+workflow and add the DMG and its SHA-256 checksum to the GitHub Release
+alongside the CLI archives.
+
+The signed workflow reads these secrets from the branch-restricted
+`macos-release` GitHub environment:
+
+- `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD` contain an encrypted,
+  base64-encoded Developer ID Application identity and its password.
+- `APPLE_SIGNING_IDENTITY` and `APPLE_TEAM_ID` select the certificate and Apple
+  developer team.
+- `APPLE_NOTARIZATION_KEY_BASE64`, `APPLE_NOTARIZATION_KEY_ID`, and
+  `APPLE_NOTARIZATION_ISSUER_ID` provide a dedicated App Store Connect API key
+  for notarization.
 
 The sidecar preparation script asks Cargo for the active target triple and
 copies the matching daemon binary to Tauri's target-specific external-binary
