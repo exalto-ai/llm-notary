@@ -15,6 +15,10 @@ FROM chef AS planner
 # This image needs only the Rust workspace packages and vendored TLSNotary dependencies.
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+# Cargo metadata must be able to load every workspace member, even though the
+# production targets do not compile the desktop crate.
+COPY js/desktop/src-tauri/Cargo.toml ./js/desktop/src-tauri/Cargo.toml
+RUN mkdir -p js/desktop/src-tauri/src && touch js/desktop/src-tauri/src/lib.rs
 COPY vendor/tlsn ./vendor/tlsn
 COPY vendor/tlsn-utils ./vendor/tlsn-utils
 COPY migrations-postgres ./migrations-postgres
@@ -32,6 +36,8 @@ RUN cargo chef cook --release --recipe-path recipe.json --package llm-notary-ser
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY js/desktop/src-tauri/Cargo.toml ./js/desktop/src-tauri/Cargo.toml
+RUN mkdir -p js/desktop/src-tauri/src && touch js/desktop/src-tauri/src/lib.rs
 COPY vendor/tlsn ./vendor/tlsn
 COPY vendor/tlsn-utils ./vendor/tlsn-utils
 COPY migrations-postgres ./migrations-postgres
