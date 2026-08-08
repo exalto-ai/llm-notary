@@ -8,6 +8,10 @@
 !crates/**
 !migrations-postgres/
 !migrations-postgres/**
+!js/
+!js/desktop/
+!js/desktop/src-tauri/
+!js/desktop/src-tauri/Cargo.toml
 !vendor/
 !vendor/tlsn/
 !vendor/tlsn/**

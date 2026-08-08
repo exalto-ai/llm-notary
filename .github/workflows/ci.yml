@@ -241,6 +241,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: docker/setup-compose-action@v1
+      - name: Validate production container workspace planning
+        run: docker build --target planner .
       - name: Test Fly image digest resolution
         run: bash deploy/fly/test-resolve-image-digest.sh
       - name: Test Fly active Machine restart
