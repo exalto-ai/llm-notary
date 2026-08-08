@@ -93,7 +93,7 @@ It therefore neither rebuilds nor promotes a different image:
    the new API.
 3. Deploy the web gateway and check the public readiness route again.
 4. For a client-affecting change, build every CLI platform, upload and verify
-   one immutable object set, then move the website's `v0.1` pointer.
+   one immutable object set, then move the website's `latest` pointer.
 
 Before the first change, the workflow records every app's current Fly image.
 If a deploy or compatibility check fails, it restores each attempted app in

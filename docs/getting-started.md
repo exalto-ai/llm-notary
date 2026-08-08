@@ -4,8 +4,8 @@ This guide installs the pre-release local service, captures one provider call,
 and explains the next finalization and verification steps.
 
 LLM Notary has no stable compatibility or file-format promise. The website's
-`v0.1` channel is deliberately moving: each successful publication replaces
-the channel pointer without changing its version number.
+`latest` channel is deliberately moving: each successful publication replaces
+that pointer.
 
 ## Requirements
 
@@ -20,7 +20,7 @@ the channel pointer without changing its version number.
 curl -fsSL https://llm-notary.exalto.ai/install.sh | sh
 ```
 
-The installer selects the current complete `v0.1` build, verifies the selected
+The installer selects the current complete `latest` build, verifies the selected
 archive against its published SHA-256 value, and places `llm-notaryd` and
 `llm-notary` in `~/.local/bin`. Set `LLM_NOTARY_INSTALL_DIR` to choose another
 destination. The checksum detects corruption in transit or storage; it is not

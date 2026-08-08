@@ -419,7 +419,7 @@ const docPages = {
     title: 'Install and capture.',
     lead: 'Install one local service, start its foreground process, and point each existing client at its provider path. You keep using the same API key and request shape.',
     blocks: [
-      { heading: 'Install v0.1', body: 'The macOS and Linux installer selects the current complete v0.1 website build and checks the archive against its published SHA-256 value. This is a moving pre-release channel, so its contents change without a new version number. The checksum detects corruption but is not an independent signature because it shares the archive publisher.', code: installCommand },
+      { heading: 'Install latest', body: 'The macOS and Linux installer selects the current complete latest website build and checks the archive against its published SHA-256 value. This is a moving pre-release pointer. The checksum detects corruption but is not an independent signature because it shares the archive publisher.', code: installCommand },
       { heading: 'Build from source', body: 'To build the same two local programs yourself, use Rust 1.95.0 and the repository toolchain file.', code: sourceInstallCommand },
       { heading: 'Programs', body: '`llm-notaryd` is the long-running local service. `llm-notary` is its short-lived REST client. The website archive installs both together.' },
       { heading: 'Start the service', code: 'llm-notaryd' },

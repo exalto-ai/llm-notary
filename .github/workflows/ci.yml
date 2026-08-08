@@ -341,5 +341,5 @@ jobs:
       needs.deploy.result == 'success'
     uses: ./.github/workflows/release.yml
     with:
-      channel: v0.1
+      channel: latest
     secrets: inherit

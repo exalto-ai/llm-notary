@@ -4,9 +4,9 @@ on:
   workflow_call:
     inputs:
       channel:
-        description: Stable website release channel to publish
+        description: Website release pointer to move
         required: false
-        default: v0.1
+        default: latest
         type: string
   workflow_dispatch:
     inputs:
@@ -144,8 +144,8 @@ jobs:
               exit 1
               ;;
           esac
-          if test "$CHANNEL" = v0.1 && test "$GITHUB_REF" != refs/heads/main; then
-            echo "the stable v0.1 channel may be published only from main" >&2
+          if test "$CHANNEL" = latest && test "$GITHUB_REF" != refs/heads/main; then
+            echo "the latest pointer may be published only from main" >&2
             exit 1
           fi
           version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/llm-notary-client/Cargo.toml | head -1)"
@@ -161,7 +161,7 @@ jobs:
             (cd release && sha256sum --check "$asset.sha256")
           done
           build_id="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          prefix="cli/$CHANNEL/builds/$build_id"
+          prefix="cli/builds/$build_id"
           {
             echo "version=$version"
             echo "build_id=$build_id"
@@ -213,7 +213,7 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s %s\n' "$BUILD_ID" "$VERSION" > "$RUNNER_TEMP/current"
-          aws s3 cp "$RUNNER_TEMP/current" "s3://$BUCKET/cli/$CHANNEL/current" \
+          aws s3 cp "$RUNNER_TEMP/current" "s3://$BUCKET/cli/$CHANNEL" \
             --endpoint-url "$ENDPOINT" \
             --cache-control 'no-store' \
             --content-type 'text/plain; charset=utf-8' \
@@ -221,11 +221,11 @@ jobs:
           expected="$(cat "$RUNNER_TEMP/current")"
           actual="$(curl --fail --silent --show-error --location \
             --retry 8 --retry-all-errors --retry-delay 2 \
-            "$PUBLIC_BUCKET_ORIGIN/cli/$CHANNEL/current")"
+            "$PUBLIC_BUCKET_ORIGIN/cli/$CHANNEL")"
           test "$actual" = "$expected"
-          if test "$CHANNEL" = v0.1; then
+          if test "$CHANNEL" = latest; then
             website="$(curl --fail --silent --show-error --location \
               --retry 8 --retry-all-errors --retry-delay 2 \
-              "https://llm-notary.exalto.ai/downloads/cli/$CHANNEL/current")"
+              "https://llm-notary.exalto.ai/downloads/cli/$CHANNEL")"
             test "$website" = "$expected"
           fi

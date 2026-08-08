@@ -180,8 +180,8 @@ There are no GitHub Releases or immutable semantic-version releases yet.
 After the normal production deployment succeeds, client-affecting changes on
 `main` build macOS, Linux, and Windows archives and their SHA-256 files. The
 publisher uploads one immutable build directory, verifies every public object,
-and moves `cli/v0.1/current` last. The website installer supports macOS and
-Linux and resolves that moving pointer.
+and moves `cli/latest` last. The website installer supports macOS and Linux and
+resolves that moving pointer.
 
 Keep the download bucket separate from private capture intake. Never expose
 its upload credential to a deployed application. SHA-256 files share the same

@@ -6,12 +6,12 @@ trap 'rm -rf "$test_root"' EXIT INT TERM
 
 build_id="0123456789abcdef0123456789abcdef01234567-test"
 version="0.1.0"
-fixture_root="$test_root/downloads/cli/v0.1"
+fixture_root="$test_root/downloads/cli"
 build_root="$fixture_root/builds/$build_id"
 package="llm-notary-${version}-linux-x86_64"
 archive="$package.tar.gz"
 mkdir -p "$build_root" "$test_root/package/$package" "$test_root/fake-bin"
-printf '%s %s\n' "$build_id" "$version" > "$fixture_root/current"
+printf '%s %s\n' "$build_id" "$version" > "$fixture_root/latest"
 
 for program in llm-notary llm-notaryd; do
   printf '#!/bin/sh\nprintf "%%s fixture\\n" "%s"\n' "$program" > "$test_root/package/$package/$program"
@@ -53,7 +53,7 @@ if PATH="$test_root/fake-bin:$PATH" \
 fi
 grep -q 'Checksum verification failed' "$test_root/tampered.out"
 
-printf '../escape 0.1.0\n' > "$fixture_root/current"
+printf '../escape 0.1.0\n' > "$fixture_root/latest"
 if PATH="$test_root/fake-bin:$PATH" \
     LLM_NOTARY_DOWNLOAD_ROOT="file://$test_root/downloads/cli" \
     LLM_NOTARY_INSTALL_DIR="$test_root/escaped-bin" \
@@ -63,4 +63,4 @@ if PATH="$test_root/fake-bin:$PATH" \
 fi
 grep -q 'build identifier is malformed' "$test_root/escape.out"
 
-echo "Installer selects, verifies, and rejects unsafe v0.1 artifacts."
+echo "Installer selects, verifies, and rejects unsafe latest artifacts."

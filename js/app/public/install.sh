@@ -1,9 +1,9 @@
 #!/bin/sh
-# Install the current LLM Notary v0.1 CLI for macOS or Linux.
+# Install the latest LLM Notary CLI for macOS or Linux.
 set -eu
 
 download_root="${LLM_NOTARY_DOWNLOAD_ROOT:-https://llm-notary.exalto.ai/downloads/cli}"
-channel="${LLM_NOTARY_VERSION:-v0.1}"
+channel="${LLM_NOTARY_CHANNEL:-latest}"
 install_dir="${LLM_NOTARY_INSTALL_DIR:-${HOME}/.local/bin}"
 
 case "$channel" in
@@ -25,7 +25,7 @@ case "$(uname -m)" in
   *) echo "Unsupported CPU architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-pointer="$(curl -fsSL "$download_root/$channel/current")"
+pointer="$(curl -fsSL "$download_root/$channel")"
 case "$pointer" in
   *" "*) ;;
   *) echo "The $channel release pointer is malformed" >&2; exit 1 ;;
@@ -46,7 +46,7 @@ case "$version" in
 esac
 
 archive="llm-notary-${version}-${platform}-${architecture}.tar.gz"
-build_url="$download_root/$channel/builds/$build_id"
+build_url="$download_root/builds/$build_id"
 temporary_dir="$(mktemp -d)"
 trap 'rm -rf "$temporary_dir"' EXIT INT TERM
 

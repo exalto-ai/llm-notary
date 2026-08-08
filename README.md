@@ -6,7 +6,7 @@ packages.
 
 > [!IMPORTANT]
 > LLM Notary is a pre-release prototype with no stable compatibility promise.
-> The website's `v0.1` binaries track the latest published `main` build, so
+> The website's `latest` binaries track the latest published `main` build, so
 > expect artifact, API, and configuration formats to change without a new
 > version number.
 
@@ -82,7 +82,7 @@ and a public transparency log are outside the current prototype.
 
 ## Install
 
-The moving `v0.1` website channel supports macOS and Linux on x86-64 and
+The moving `latest` website channel supports macOS and Linux on x86-64 and
 ARM64. It installs both `llm-notaryd` and `llm-notary` into `~/.local/bin` by
 default:
 
