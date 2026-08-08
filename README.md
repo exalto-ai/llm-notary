@@ -82,7 +82,15 @@ and a public transparency log are outside the current prototype.
 
 ## Install
 
-The moving `latest` website channel supports macOS and Linux on x86-64 and
+For a guided setup on an Apple silicon Mac running macOS 12 or later, choose
+**Download for macOS** on the [LLM Notary website](https://llm-notary.exalto.ai/),
+open the DMG, and move LLM Notary to Applications. Production downloads are
+Developer ID signed, notarized by Apple, and stapled for Gatekeeper checks. See
+[Desktop app](docs/desktop-app.md) for the supported workflow and development
+details.
+
+For SDK integrations, coding agents, scripts, and servers, the moving `latest`
+website channel provides command-line builds for macOS and Linux on x86-64 and
 ARM64. It installs both `llm-notaryd` and `llm-notary` into `~/.local/bin` by
 default:
 

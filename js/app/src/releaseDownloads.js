@@ -1,0 +1,20 @@
+const latestDownloadsRoot = '/downloads/cli';
+
+export const macosDmgName = 'LLM-Notary-macos-arm64.dmg';
+
+export function latestMacosDownloadHref(pointer) {
+  const fields = String(pointer).trim().split(/\s+/);
+  if (fields.length !== 2 || fields.some((field) => !/^[a-zA-Z0-9._-]+$/.test(field))) {
+    throw new Error('The latest download pointer is invalid.');
+  }
+  return `${latestDownloadsRoot}/builds/${fields[0]}/${macosDmgName}`;
+}
+
+export async function loadLatestPointer() {
+  const response = await fetch(`${latestDownloadsRoot}/latest`, {
+    cache: 'no-store',
+    headers: { Accept: 'text/plain' },
+  });
+  if (!response.ok) throw new Error('The latest download is unavailable.');
+  return response.text();
+}

@@ -1,8 +1,24 @@
 # Desktop app
 
-The desktop app is an initial macOS implementation built with Tauri 2. Its
-source stays portable so Windows and Linux packaging can follow without
-replacing the application shell.
+The macOS app is the guided way to run LLM Notary. It packages setup, service
+controls, and the local capture workspace in one native application. Normal use
+does not require a terminal or a separate browser window.
+
+## Install
+
+The current app requires an Apple silicon Mac (M1 or newer) running macOS 12
+Monterey or later.
+
+1. Choose **Download for macOS** on the [LLM Notary website](https://llm-notary.exalto.ai/).
+2. Open the downloaded DMG.
+3. Move LLM Notary to Applications, then launch it.
+
+Production downloads are signed with a Developer ID certificate, notarized by
+Apple, and stapled for offline Gatekeeper checks. Each successful production
+build replaces the website's moving `latest` pointer; no stable compatibility
+or file-format promise applies yet.
+
+## What the app does
 
 The app provides a four-stage first run, supervises the bundled `llm-notaryd`
 process, exposes its status from the menu bar, and contains the complete local
@@ -46,7 +62,10 @@ cannot yet be unlocked in the desktop UI. Vault migration also remains a
 future workflow; the current settings screen explains this instead of silently
 changing protection for existing captures.
 
-## Run from source
+## Develop from source
+
+The desktop app is built with Tauri 2. Its source stays portable so Windows and
+Linux packaging can follow without replacing the application shell.
 
 Install the desktop dependencies once:
 
