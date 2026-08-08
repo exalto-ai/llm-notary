@@ -409,9 +409,14 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
     let quit = MenuItem::with_id(app, "quit", "Quit LLM Notary", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open_app, &separator, &quit])?;
 
+    #[cfg(target_os = "macos")]
+    let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
+    #[cfg(not(target_os = "macos"))]
+    let tray_icon = app.default_window_icon().expect("application icon").clone();
+
     TrayIconBuilder::with_id("llm-notary")
-        .icon(app.default_window_icon().expect("application icon").clone())
-        .icon_as_template(false)
+        .icon(tray_icon)
+        .icon_as_template(cfg!(target_os = "macos"))
         .tooltip("LLM Notary")
         .menu(&menu)
         .show_menu_on_left_click(true)

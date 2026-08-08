@@ -16,7 +16,7 @@ tauri-build = { version = "2", features = [] }
 llm-notary-core = { path = "../../../crates/llm-notary-core", features = ["cli"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["image-png", "tray-icon"] }
 tauri-plugin-autostart = "2"
 tauri-plugin-shell = "2"
 tokio = { version = "1", features = ["time"] }
