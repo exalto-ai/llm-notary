@@ -30,6 +30,7 @@ jobs:
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
       app: ${{ steps.filter.outputs.app }}
+      desktop: ${{ steps.filter.outputs.desktop }}
       docs: ${{ steps.filter.outputs.docs }}
       containers: ${{ steps.filter.outputs.containers }}
     steps:
@@ -63,6 +64,15 @@ jobs:
               - 'crates/llm-notary-platform/src/**'
               - 'crates/llm-notary-platform/examples/export-hosted-openapi.rs'
               - 'js/app/**'
+            desktop:
+              - '.github/workflows/ci.yml'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'crates/llm-notary-client/**'
+              - 'crates/llm-notary-core/**'
+              - 'js/app/**'
+              - 'js/desktop/**'
             docs:
               - '.github/workflows/ci.yml'
               - 'AGENTS.md'
@@ -165,6 +175,33 @@ jobs:
       - run: npm run test:dashboard
       - run: npm run test:site
 
+  desktop:
+    name: macOS desktop bundle
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: js/desktop
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.95.0
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: js/desktop/package-lock.json
+      - run: npm ci
+      - name: Prepare bundled daemon
+        run: npm run prepare:sidecar:debug
+      - run: cargo clippy -p llm-notary-desktop --all-targets -- -D warnings
+      - name: Build debug application bundle with bundled daemon
+        run: npm exec -- tauri build --debug --bundles app
+
   docs:
     name: Local workflow documentation
     needs: changes
@@ -215,7 +252,7 @@ jobs:
   required:
     name: Required checks
     if: always()
-    needs: [changes, rust, postgres-integration, app, docs, containers]
+    needs: [changes, rust, postgres-integration, app, desktop, docs, containers]
     runs-on: ubuntu-24.04
     env:
       CHANGES_RESULT: ${{ needs.changes.result }}
@@ -224,6 +261,8 @@ jobs:
       POSTGRES_RESULT: ${{ needs.postgres-integration.result }}
       APP_CHANGED: ${{ needs.changes.outputs.app }}
       APP_RESULT: ${{ needs.app.result }}
+      DESKTOP_CHANGED: ${{ needs.changes.outputs.desktop }}
+      DESKTOP_RESULT: ${{ needs.desktop.result }}
       DOCS_CHANGED: ${{ needs.changes.outputs.docs }}
       DOCS_RESULT: ${{ needs.docs.result }}
       CONTAINERS_CHANGED: ${{ needs.changes.outputs.containers }}
@@ -255,6 +294,7 @@ jobs:
           require_selected Rust "$RUST_CHANGED" "$RUST_RESULT"
           require_selected PostgreSQL "$RUST_CHANGED" "$POSTGRES_RESULT"
           require_selected SPA "$APP_CHANGED" "$APP_RESULT"
+          require_selected Desktop "$DESKTOP_CHANGED" "$DESKTOP_RESULT"
           require_selected Documentation "$DOCS_CHANGED" "$DOCS_RESULT"
           require_selected Deployment "$CONTAINERS_CHANGED" "$CONTAINERS_RESULT"
 

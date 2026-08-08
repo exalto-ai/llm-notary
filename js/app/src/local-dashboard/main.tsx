@@ -42,6 +42,7 @@ const queryClient = new QueryClient({
 });
 const params = new URLSearchParams(window.location.search);
 const fixture = params.get('fixture') === 'docs';
+const embedded = params.get('embedded') === 'desktop';
 const requestedFixtureClock = Number(params.get('fixture_now'));
 const fixtureClock = Number.isFinite(requestedFixtureClock) && requestedFixtureClock > 0
   ? requestedFixtureClock : Date.now();
@@ -55,7 +56,7 @@ createRoot(document.getElementById('local-root')!).render(
     <MantineProvider theme={theme} defaultColorScheme="auto" colorSchemeManager={colorSchemeManager}>
       <Notifications position="bottom-right" />
       <QueryClientProvider client={queryClient}>
-        <Dashboard api={fixture ? createFixtureApi({ nowUnixMs: fixtureClock }) : localApi} fixture={fixture} />
+        <Dashboard api={fixture ? createFixtureApi({ nowUnixMs: fixtureClock }) : localApi} fixture={fixture} embedded={embedded} />
       </QueryClientProvider>
     </MantineProvider>
   </StrictMode>

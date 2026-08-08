@@ -373,7 +373,7 @@ function TopNav({ route, status, onNavigate, opened, onOpenNavigation, fixture }
   </nav><div className="local-topbar-status">{fixture && <span className="sample-data-label" title="This preview uses synthetic sample data">Sample data</span>}<Burger opened={opened} onClick={onOpenNavigation} size="sm" aria-label="Open navigation" /></div></header>;
 }
 
-export function Dashboard({ api, fixture = false }: { api: LocalApi; fixture?: boolean }) {
+export function Dashboard({ api, fixture = false, embedded = false }: { api: LocalApi; fixture?: boolean; embedded?: boolean }) {
   const route = useRoute();
   const queryClient = useQueryClient();
   const [navOpened, { open: openNav, close: closeNav }] = useDisclosure(false);
@@ -387,6 +387,11 @@ export function Dashboard({ api, fixture = false }: { api: LocalApi; fixture?: b
   if (statusQuery.error) return <ErrorState onRetry={() => statusQuery.refetch()} />;
   if (!statusQuery.data) return <ErrorState onRetry={() => statusQuery.refetch()} />;
   const status = statusQuery.data;
+  if (embedded) {
+    return <main className="dashboard-shell dashboard-shell--embedded dashboard-main">
+      <View route={route} status={status} api={api} navigate={navigate} fixture={fixture} />
+    </main>;
+  }
   return <AppShell header={{ height: 50 }} padding={0} className="dashboard-shell">
     <AppShell.Header className="dashboard-header"><TopNav route={route} status={status} onNavigate={navigate} opened={navOpened} onOpenNavigation={openNav} fixture={fixture} /></AppShell.Header>
     <Drawer opened={navOpened} onClose={closeNav} title="Navigation" size="min(88vw, 340px)" classNames={{ body: 'mobile-nav-body' }}>

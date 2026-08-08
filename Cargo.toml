@@ -4,6 +4,7 @@ members = [
     "crates/llm-notary-core",
     "crates/llm-notary-platform",
     "crates/llm-notary-server",
+    "js/desktop/src-tauri",
 ]
 exclude = ["vendor/tlsn", "vendor/tlsn-utils"]
 resolver = "2"

@@ -135,6 +135,19 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline-color:
 .local-topbar nav button:hover,
 .capture-row:hover { background: var(--subtle); }
 .dashboard-main { height: calc(100dvh - 50px); }
+.dashboard-shell--embedded.dashboard-main {
+  height: 100dvh;
+  min-height: 100dvh;
+}
+.dashboard-shell--embedded .view-page { max-width: none; padding-top: 24px; }
+.dashboard-shell--embedded .view-page.share-flow {
+  min-height: 100%;
+  margin-top: 0;
+  padding-top: 0;
+}
+.dashboard-shell--embedded .master-detail,
+.dashboard-shell--embedded .trace-layout { height: calc(100dvh - 88px); }
+.dashboard-shell--embedded .operations-layout { min-height: 100dvh; }
 .filter-bar .axis-select-field { min-width: 0; }
 .filter-bar--captures { grid-template-columns: minmax(230px, 1fr) minmax(140px, .58fr) repeat(5, minmax(112px, .45fr)); }
 .master-detail {
