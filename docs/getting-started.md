@@ -1,20 +1,49 @@
 # Getting started
 
-This guide installs the pre-release local service, captures one provider call,
-and explains the next finalization and verification steps.
+Choose the macOS app for a guided experience, or install the command-line tools
+when you need to connect an SDK, coding agent, server, or automated workflow.
+Both run the same local capture service and keep private capture material on
+your machine.
 
-LLM Notary has no stable compatibility or file-format promise. The website's
-`latest` channel is deliberately moving: each successful publication replaces
-that pointer.
+LLM Notary is pre-release and does not yet promise stable compatibility or file
+formats. The website's `latest` channel is deliberately moving: each successful
+publication replaces the previous release.
 
-## Requirements
+## Choose an interface
 
-- macOS or Linux on x86-64 or ARM64 for the website installer.
-- `curl`, `tar`, and either `sha256sum` or `shasum`.
-- A provider API key for an optional real capture. Ordinary tests do not need
-  one.
+| | macOS app | CLI and local service |
+| --- | --- | --- |
+| Best for | Most people using a supported Mac | Developers, system administrators, and automation |
+| Setup | Guided first run | Shell installer and explicit service control |
+| Daily use | Native window and menu-bar controls | Terminal, local REST API, or embedded dashboard |
+| Integrations | Supported coding tools and providers | SDK routing, coding agents, scripts, CI, and servers |
 
-## Install the local programs
+## Install the macOS app
+
+The app currently supports Apple silicon Macs (M1 or newer) running macOS 12
+Monterey or later.
+
+1. Choose **Download for macOS** on the [LLM Notary website](https://llm-notary.exalto.ai/).
+2. Open the downloaded DMG.
+3. Move LLM Notary to Applications, then launch it.
+
+Production downloads are signed with a Developer ID certificate, notarized by
+Apple, and stapled for offline Gatekeeper checks. The app walks through capture
+protection, provider selection, and service setup. It then supervises its
+bundled local service and opens the complete capture workspace. Normal use does
+not require a terminal.
+
+Provider credentials remain in the SDK or coding tool that sends the model
+request. The app does not ask for or store them.
+
+See [Desktop app](desktop-app.md) for lifecycle, capture-protection, and
+development details.
+
+## Install the CLI and local service
+
+Use this path for SDK and agent integration, scripting, unattended systems, or
+direct control of the local API. The installer supports macOS and Linux on
+x86-64 and ARM64. It requires `curl`, `tar`, and either `sha256sum` or `shasum`.
 
 ```bash
 curl -fsSL https://llm-notary.exalto.ai/install.sh | sh
@@ -36,7 +65,7 @@ cargo install --locked --path crates/llm-notary-client
 
 Node.js 24 and npm are needed only for public-site and dashboard development.
 
-The two programs have separate jobs:
+The two installed programs have separate jobs:
 
 - `llm-notaryd` is the long-running local proxy and administration daemon.
 - `llm-notary` is a short-lived REST client for that daemon.

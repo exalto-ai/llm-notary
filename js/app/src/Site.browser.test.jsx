@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { AccountSettings, ApiKeysPanel, CliApproval, Dashboard, DeleteAccountPanel, Header, HostedNotaryRecord, Library, ListedSharesPreview, SharePage, VerificationPage } from './main';
+import { AccountSettings, ApiKeysPanel, CliApproval, Dashboard, DeleteAccountPanel, Header, HostedNotaryRecord, Landing, Library, ListedSharesPreview, SharePage, VerificationPage } from './main';
 import { ProviderIdentity } from './ProviderIdentity';
+import { latestMacosDownloadHref } from './releaseDownloads';
 import { initialThemePreference } from './theme';
 
 afterEach(async () => {
@@ -43,6 +44,27 @@ const loadLibraryTrace = async (id) => ({
 });
 
 describe('hosted site', () => {
+  test('makes the current macOS app the primary landing action', async () => {
+    expect(latestMacosDownloadHref('build-123 0.1.0')).toBe('/downloads/cli/builds/build-123/LLM-Notary-macos-arm64.dmg');
+    expect(() => latestMacosDownloadHref('../build 0.1.0')).toThrow('latest download pointer is invalid');
+    render(<Landing loadLatestPointer={async () => 'build-123 0.1.0'} />);
+
+    const download = page.getByRole('link', { name: /Download for macOS/ });
+    await expect.element(download).toHaveAttribute('href', '/downloads/cli/builds/build-123/LLM-Notary-macos-arm64.dmg');
+    await expect.element(download).toHaveAttribute('download', 'LLM-Notary-macos-arm64.dmg');
+    await expect.element(page.getByRole('link', { name: 'build on the LLM Notary stack' })).toHaveAttribute('href', '#/docs/getting-started');
+    await expect.element(page.getByRole('link', { name: 'Get started' })).not.toBeInTheDocument();
+    await expect.element(page.getByRole('link', { name: 'Browse Library' })).not.toBeInTheDocument();
+  });
+
+  test('sends the macOS action to install options when the latest pointer is unavailable', async () => {
+    render(<Landing loadLatestPointer={async () => { throw new Error('offline'); }} />);
+
+    const download = page.getByRole('link', { name: /Download for macOS/ });
+    await expect.element(download).toHaveAttribute('href', '#/docs/getting-started');
+    await expect.element(page.getByText('View install options')).toBeVisible();
+  });
+
   test('defaults to light and keeps appearance choices out of the signed-in account menu', async () => {
     expect(initialThemePreference()).toBe('light');
     render(<Header user={{ github_login: 'fixture-user' }} onLogout={() => {}} />);

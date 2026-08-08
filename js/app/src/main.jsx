@@ -4,7 +4,7 @@ import '@fontsource-variable/instrument-sans';
 import '@fontsource-variable/space-grotesk';
 import '@fontsource/dm-mono/400.css';
 import '@fontsource/dm-mono/500.css';
-import { ChevronDown } from 'lucide-react';
+import { Apple, ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -30,6 +30,7 @@ import './axis.css';
 import './verification.css';
 import './sharing.css';
 import { RelayAnimation } from './RelayAnimation';
+import { latestMacosDownloadHref, loadLatestPointer, macosDmgName } from './releaseDownloads';
 import {
   approveCli,
   createApiKey,
@@ -59,6 +60,25 @@ const installCommand = 'curl -fsSL https://llm-notary.exalto.ai/install.sh | sh'
 const sourceInstallCommand = `git clone https://github.com/exalto-ai/llm-notary.git
 cd llm-notary
 cargo install --locked --path crates/llm-notary-client`;
+export function MacosDownloadLink({ loadPointer = loadLatestPointer }) {
+  const [downloadHref, setDownloadHref] = useState(null);
+  const [unavailable, setUnavailable] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    loadPointer()
+      .then((pointer) => {
+        if (!cancelled) setDownloadHref(latestMacosDownloadHref(pointer));
+      })
+      .catch(() => {
+        if (!cancelled) setUnavailable(true);
+      });
+    return () => { cancelled = true; };
+  }, [loadPointer]);
+  return <a className="button button-dark hero-download" href={downloadHref || '#/docs/getting-started'} download={downloadHref ? macosDmgName : undefined} aria-busy={!downloadHref && !unavailable}>
+    <Apple aria-hidden="true" />
+    <span><b>Download for macOS</b><small>{unavailable ? 'View install options' : 'Apple silicon · macOS 12+'}</small></span>
+  </a>;
+}
 function PenMark() {
   return <span className="pen-mark" aria-hidden="true"><img src="/notary-mark.svg" alt="" /></span>;
 }
@@ -314,13 +334,13 @@ function MotionStudies() {
   return <RelayAnimation />;
 }
 
-function Landing() {
+export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) {
   return <main id="top">
     <section className="hero">
       <HeroSignalField />
       <h1>Verifiable intelligence</h1>
       <p>Privacy-preserving LLM trace packages for open research and independent verification.</p>
-      <div className="hero-actions"><a className="button button-dark" href="#/docs/getting-started">Get started</a><a className="button button-plain" href="#/library">Browse Library</a></div>
+      <div className="hero-actions"><MacosDownloadLink loadPointer={loadPointer} /><p className="hero-developer-path">Or, <a href="#/docs/getting-started">build on the LLM Notary stack</a> with the CLI and local service.</p></div>
     </section>
     <MotionStudies />
     <VerificationArchitecture />
@@ -416,10 +436,20 @@ const docPages = {
     ],
   },
   'getting-started': {
-    title: 'Install and capture.',
-    lead: 'Install one local service, start its foreground process, and point each existing client at its provider path. You keep using the same API key and request shape.',
+    title: 'Choose how to run LLM Notary.',
+    lead: 'Use the guided macOS app for everyday capture and review. Use the CLI and local service when you are integrating an SDK, coding agent, server, or automated workflow.',
     blocks: [
-      { heading: 'Install latest', body: 'The macOS and Linux installer selects the current complete latest website build and checks the archive against its published SHA-256 value. This is a moving pre-release pointer. The checksum detects corruption but is not an independent signature because it shares the archive publisher.', code: installCommand },
+      {
+        heading: 'Choose an interface',
+        cards: [
+          { meta: 'Most Mac users', title: 'macOS app', body: 'Guided setup, menu-bar service controls, and the complete capture workspace in one signed application. No terminal is required for normal use.' },
+          { meta: 'Developers and operators', title: 'CLI + local service', body: 'Two command-line programs for SDK routing, coding-agent configuration, scripting, automation, and explicit service supervision.' },
+        ],
+      },
+      { heading: 'Install the macOS app', body: 'On the home page, choose Download for macOS. Open the downloaded DMG, move LLM Notary to Applications, then launch it. The app guides first-time setup and supervises its bundled local service.' },
+      { heading: 'System requirements', items: ['A Mac with Apple silicon (M1 or newer).', 'macOS 12 Monterey or later.', 'A supported model provider account when you are ready to capture a real interaction.'] },
+      { heading: 'What the app manages', body: 'The app configures capture protection, helps connect a provider or coding tool, starts and stops its bundled `llm-notaryd`, and embeds the local capture workspace. Provider credentials stay in the tool that sends the model request; the app does not ask for or store them.' },
+      { heading: 'Install the CLI and local service', body: 'The shell installer supports macOS and Linux on x86-64 and ARM64. It selects the complete `latest` website build and checks the archive against its published SHA-256 value. This is a moving pre-release pointer. The checksum detects corruption but is not an independent signature because it shares the archive publisher.', code: installCommand },
       { heading: 'Build from source', body: 'To build the same two local programs yourself, use Rust 1.95.0 and the repository toolchain file.', code: sourceInstallCommand },
       { heading: 'Programs', body: '`llm-notaryd` is the long-running local service. `llm-notary` is its short-lived REST client. The website archive installs both together.' },
       { heading: 'Start the service', code: 'llm-notaryd' },
@@ -547,10 +577,17 @@ const docPages = {
 
 const docSubheadings = {
   'getting-started': new Set([
+    'System requirements',
+    'What the app manages',
+    'Build from source',
     'Programs',
+    'Start the service',
+    'Open the local dashboard',
     'Configuration file',
+    'Use the command client',
     'What it controls',
-    'Bundle encryption is automatic',
+    'Optional admin sign-in',
+    'Capture encryption is automatic',
     'Optional passphrase mode',
     'What happens online',
     'What happens at end-of-stream',
@@ -595,7 +632,7 @@ const docSubheadings = {
 };
 
 const docNavigation = [
-  { label: 'Start', pages: [['overview', 'Overview'], ['getting-started', 'Install and capture']] },
+  { label: 'Start', pages: [['overview', 'Overview'], ['getting-started', 'Install options']] },
   { label: 'Understand', pages: [['how-it-works', 'Trust model'], ['hosted-credits', 'Credits and utilization'], ['trace-packages', 'Trace packages']] },
   { label: 'Share', pages: [['share', 'Share a session']] },
 ];
