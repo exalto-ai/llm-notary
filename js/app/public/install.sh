@@ -1,22 +1,22 @@
 #!/bin/sh
-# Install the latest LLM Notary CLI for macOS or Linux.
+# Install the current LLM Notary v0.1 CLI for macOS or Linux.
 set -eu
 
-repo="exalto-ai/llm-notary"
-base_url="https://github.com/$repo/releases/download"
+download_root="${LLM_NOTARY_DOWNLOAD_ROOT:-https://llm-notary.exalto.ai/downloads/cli}"
+channel="${LLM_NOTARY_VERSION:-v0.1}"
 install_dir="${LLM_NOTARY_INSTALL_DIR:-${HOME}/.local/bin}"
 
-if [ -n "${LLM_NOTARY_VERSION:-}" ]; then
-  tag="${LLM_NOTARY_VERSION}"
-  case "$tag" in v*) ;; *) tag="v$tag";; esac
-else
-  tag="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$repo/releases/latest" | sed 's#.*/##')"
-fi
+case "$channel" in
+  ""|.*|*..*|*[!a-zA-Z0-9._-]*)
+    echo "Invalid LLM Notary release channel: $channel" >&2
+    exit 1
+    ;;
+esac
 
 case "$(uname -s)" in
   Darwin) platform="darwin" ;;
   Linux) platform="linux" ;;
-  *) echo "LLM Notary supports macOS and Linux through this installer. Download the Windows archive from GitHub Releases." >&2; exit 1 ;;
+  *) echo "LLM Notary supports macOS and Linux through this installer." >&2; exit 1 ;;
 esac
 
 case "$(uname -m)" in
@@ -25,13 +25,33 @@ case "$(uname -m)" in
   *) echo "Unsupported CPU architecture: $(uname -m)" >&2; exit 1 ;;
 esac
 
-version="${tag#v}"
+pointer="$(curl -fsSL "$download_root/$channel/current")"
+case "$pointer" in
+  *" "*) ;;
+  *) echo "The $channel release pointer is malformed" >&2; exit 1 ;;
+esac
+build_id="${pointer%% *}"
+version="${pointer#* }"
+case "$build_id" in
+  ""|.*|*..*|*[!a-zA-Z0-9._-]*)
+    echo "The $channel build identifier is malformed" >&2
+    exit 1
+    ;;
+esac
+case "$version" in
+  ""|.*|*..*|*" "*|*[!a-zA-Z0-9._-]*)
+    echo "The $channel version is malformed" >&2
+    exit 1
+    ;;
+esac
+
 archive="llm-notary-${version}-${platform}-${architecture}.tar.gz"
+build_url="$download_root/$channel/builds/$build_id"
 temporary_dir="$(mktemp -d)"
 trap 'rm -rf "$temporary_dir"' EXIT INT TERM
 
-curl -fsSL "$base_url/$tag/$archive" -o "$temporary_dir/$archive"
-curl -fsSL "$base_url/$tag/$archive.sha256" -o "$temporary_dir/$archive.sha256"
+curl -fsSL "$build_url/$archive" -o "$temporary_dir/$archive"
+curl -fsSL "$build_url/$archive.sha256" -o "$temporary_dir/$archive.sha256"
 expected="$(awk '{print $1}' "$temporary_dir/$archive.sha256")"
 if command -v sha256sum >/dev/null 2>&1; then
   actual="$(sha256sum "$temporary_dir/$archive" | awk '{print $1}')"
@@ -48,7 +68,7 @@ mkdir -p "$install_dir"
 install -m 0755 "$temporary_dir/llm-notary-${version}-${platform}-${architecture}/llm-notary" "$install_dir/llm-notary"
 install -m 0755 "$temporary_dir/llm-notary-${version}-${platform}-${architecture}/llm-notaryd" "$install_dir/llm-notaryd"
 
-echo "Installed LLM Notary $tag (llm-notary and llm-notaryd) to $install_dir"
+echo "Installed LLM Notary $version from $channel (llm-notary and llm-notaryd) to $install_dir"
 case ":$PATH:" in
   *":$install_dir:"*) ;;
   *) echo "Add $install_dir to your PATH, then run: llm-notaryd" ;;

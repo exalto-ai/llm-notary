@@ -173,10 +173,11 @@ for (const file of consistencySources) {
 }
 
 const publicDocs = readFileSync(resolve(appRoot, 'src/main.jsx'), 'utf8');
-if (!publicDocs.includes('cargo install --locked --path crates/llm-notary-client')
+if (!publicDocs.includes('curl -fsSL https://llm-notary.exalto.ai/install.sh | sh')
+  || !publicDocs.includes('cargo install --locked --path crates/llm-notary-client')
   || !publicDocs.includes('The JSON directory is not separately signed')
   || !publicDocs.includes('"status_url":"/v1/shares/…"')) {
-  throw new Error('Public-site documentation is missing the source-install, trust-directory, or local share-status boundary');
+  throw new Error('Public-site documentation is missing the website/source install, trust-directory, or local share-status boundary');
 }
 
 for (const required of ['llm-notaryd', 'llm-notary status', 'llm-notary captures list', '--json']) {

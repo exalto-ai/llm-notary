@@ -5,9 +5,10 @@ selected calls into portable, independently verifiable OpenTelemetry trace
 packages.
 
 > [!IMPORTANT]
-> LLM Notary is a pre-release prototype. There is no published release or
-> stable compatibility promise yet. Build it from source and expect artifact,
-> API, and configuration formats to change before the first release.
+> LLM Notary is a pre-release prototype with no stable compatibility promise.
+> The website's `v0.1` binaries track the latest published `main` build, so
+> expect artifact, API, and configuration formats to change without a new
+> version number.
 
 ## What it proves
 
@@ -79,15 +80,27 @@ must remain vault-encrypted and local.
 WebSocket proxying, provider-native response signatures, multi-notary proofs,
 and a public transparency log are outside the current prototype.
 
-## Build from source
+## Install
 
-Requirements:
+The moving `v0.1` website channel supports macOS and Linux on x86-64 and
+ARM64. It installs both `llm-notaryd` and `llm-notary` into `~/.local/bin` by
+default:
+
+```bash
+curl -fsSL https://llm-notary.exalto.ai/install.sh | sh
+```
+
+Set `LLM_NOTARY_INSTALL_DIR` to choose another destination. The installer
+downloads the platform archive and its SHA-256 file from the website and
+rejects a mismatch. Because both files come from the same publishing system,
+that checksum detects download corruption but is not an independent release
+signature.
+
+Building the current source instead requires:
 
 - Rust 1.95.0, selected automatically by `rust-toolchain.toml`.
 - A C toolchain required by the vendored cryptographic dependencies.
 - Node.js 24 and npm only when building or testing the web applications.
-
-Install the local daemon and command client from the source checkout:
 
 ```bash
 git clone https://github.com/exalto-ai/llm-notary.git
@@ -117,10 +130,6 @@ command client:
 llm-notary status
 llm-notary captures list --limit 20
 ```
-
-The source checkout is the supported installation path until a release is
-published. The checked-in release workflow and `install.sh` are release
-infrastructure, not evidence that downloadable binaries currently exist.
 
 ## Connect a provider client
 

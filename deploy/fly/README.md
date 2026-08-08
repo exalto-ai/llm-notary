@@ -29,6 +29,14 @@ Tigris bucket for the API; the service accepts the standard `AWS_*` and
 `BUCKET_NAME` variables that `fly storage create` sets, as well as the portable
 `LLM_NOTARY_S3_*` variables used by self-hosted container deployments.
 
+CLI archives use a separate public Tigris bucket named
+`llm-notary-prod-downloads`. The web app maps that bucket to `/downloads`; do
+not make the private intake bucket public or reuse either bucket's credential
+for the other. The GitHub `production` environment holds the download bucket's
+`LLM_NOTARY_DOWNLOADS_ACCESS_KEY_ID` and
+`LLM_NOTARY_DOWNLOADS_SECRET_ACCESS_KEY`. No deployed Fly app needs that
+upload credential.
+
 Three base64-encoded file secrets are required:
 
 - `NOTARY_SIGNING_KEY_B64` on the notary.
@@ -84,6 +92,8 @@ It therefore neither rebuilds nor promotes a different image:
 2. Deploy the notary and check the v3 one-time-ticket admission prelude against
    the new API.
 3. Deploy the web gateway and check the public readiness route again.
+4. For a client-affecting change, build every CLI platform, upload and verify
+   one immutable object set, then move the website's `v0.1` pointer.
 
 Before the first change, the workflow records every app's current Fly image.
 If a deploy or compatibility check fails, it restores each attempted app in

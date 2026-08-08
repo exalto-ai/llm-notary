@@ -19,6 +19,11 @@ primary_region = "sjc"
     soft_limit = 25
     hard_limit = 50
 
+[[statics]]
+  guest_path = "/"
+  url_prefix = "/downloads"
+  tigris_bucket = "llm-notary-prod-downloads"
+
 [[vm]]
   memory = "256mb"
   cpu_kind = "shared"

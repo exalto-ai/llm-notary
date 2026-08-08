@@ -33,6 +33,7 @@ jobs:
       desktop: ${{ steps.filter.outputs.desktop }}
       docs: ${{ steps.filter.outputs.docs }}
       containers: ${{ steps.filter.outputs.containers }}
+      cli: ${{ steps.filter.outputs.cli }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -55,6 +56,7 @@ jobs:
               - 'vendor/tlsn-utils/**'
             app:
               - '.github/workflows/ci.yml'
+              - '.github/workflows/release.yml'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'crates/llm-notary-client/Cargo.toml'
@@ -88,6 +90,7 @@ jobs:
             containers:
               - '.github/workflows/ci.yml'
               - '.github/workflows/deploy.yml'
+              - '.github/workflows/release.yml'
               - '.dockerignore'
               - 'Dockerfile'
               - 'build.rs'
@@ -102,6 +105,21 @@ jobs:
               - 'compose.yml'
               - 'deploy/**'
               - 'js/app/**'
+            cli:
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/release.yml'
+              - 'build.rs'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'LICENSE*'
+              - 'THIRD-PARTY-NOTICES.md'
+              - 'crates/llm-notary-client/**'
+              - 'crates/llm-notary-core/**'
+              - 'vendor/tlsn/**'
+              - 'vendor/tlsn-utils/**'
+              - 'js/app/public/install.sh'
+              - 'js/app/scripts/test-install.sh'
 
   rust:
     name: Rust
@@ -174,6 +192,7 @@ jobs:
         run: npx playwright install --with-deps chromium
       - run: npm run test:dashboard
       - run: npm run test:site
+      - run: npm run test:install
 
   desktop:
     name: macOS desktop bundle
@@ -308,4 +327,19 @@ jobs:
       needs.changes.outputs.containers == 'true' &&
       needs.required.result == 'success'
     uses: ./.github/workflows/deploy.yml
+    secrets: inherit
+
+  publish-cli:
+    name: Publish website CLI
+    needs: [changes, required, deploy]
+    if: >-
+      always() &&
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.changes.outputs.cli == 'true' &&
+      needs.required.result == 'success' &&
+      needs.deploy.result == 'success'
+    uses: ./.github/workflows/release.yml
+    with:
+      channel: v0.1
     secrets: inherit

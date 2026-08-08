@@ -6,7 +6,7 @@
 
 - [Overview](%PUBLIC_ORIGIN%/docs): Capture, deferred finalization, portable packages, and shared verified sessions.
 - [Trust and guarantees](%PUBLIC_ORIGIN%/docs/how-it-works): The exact provenance claim, participants, authenticated versus observed data, and limits.
-- [Install and capture](%PUBLIC_ORIGIN%/docs/getting-started): Build the pre-release service from source, start both loopback listeners, configure providers, and inspect captures.
+- [Install and capture](%PUBLIC_ORIGIN%/docs/getting-started): Install the moving v0.1 website build, start both loopback listeners, configure providers, and inspect captures.
 - [Credits and utilization](%PUBLIC_ORIGIN%/docs/hosted-credits): Monthly credits, automatic testing grants, additional purchases and promotions, account summaries, and IP-scoped anonymous allowances.
 - [Trace packages](%PUBLIC_ORIGIN%/docs/trace-packages): Finalization, package layout, disclosure, and offline verification.
 - [Verify online](%PUBLIC_ORIGIN%/#/verify): Explicitly upload one finalized package for retention-free hosted verification.
@@ -23,6 +23,13 @@ On first use, the daemon creates a user-editable `config.toml` at the standard p
 ## Local service and API
 
 ```sh
+curl -fsSL %PUBLIC_ORIGIN%/install.sh | sh
+llm-notaryd
+```
+
+To build from source instead:
+
+```sh
 git clone https://github.com/exalto-ai/llm-notary.git
 cd llm-notary
 cargo install --locked --path crates/llm-notary-client
@@ -33,7 +40,7 @@ curl http://127.0.0.1:8788/openapi.json
 curl "http://127.0.0.1:8788/v1/captures?query=pricing"
 ```
 
-LLM Notary is pre-release and has no published binary release yet; `install.sh` becomes usable only after a version tag publishes matching assets. Open `http://127.0.0.1:8788` for the local dashboard. Use `llm-notary status`, `llm-notary captures list`, or another CLI command to operate the daemon through its versioned REST API; add `--json` for automation. The loopback admin API is open to local processes by default; an installation can require HTTP Basic credentials by setting `admin.auth` to a username and Argon2id password hash. Use `llm-notaryd --config /path/to/config.toml` to start the daemon with a non-standard local configuration, and pass the same `--config` option to CLI commands. For a self-hosted notary, set `notary.endpoint` and `notary.public_key` together in that file. Hosted services discover the notary endpoint and key from a versioned directory served over authenticated HTTPS; the directory JSON is not separately signed.
+LLM Notary is pre-release. The website's v0.1 channel tracks the latest successfully published main build without changing its version number. The installer verifies the downloaded archive against a SHA-256 value from the same publisher, which detects corruption but is not an independent release signature. Open `http://127.0.0.1:8788` for the local dashboard. Use `llm-notary status`, `llm-notary captures list`, or another CLI command to operate the daemon through its versioned REST API; add `--json` for automation. The loopback admin API is open to local processes by default; an installation can require HTTP Basic credentials by setting `admin.auth` to a username and Argon2id password hash. Use `llm-notaryd --config /path/to/config.toml` to start the daemon with a non-standard local configuration, and pass the same `--config` option to CLI commands. For a self-hosted notary, set `notary.endpoint` and `notary.public_key` together in that file. Hosted services discover the notary endpoint and key from a versioned directory served over authenticated HTTPS; the directory JSON is not separately signed.
 
 ## Package layout
 
