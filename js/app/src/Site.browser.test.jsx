@@ -56,6 +56,7 @@ describe('hosted site', () => {
     expect(document.querySelector('.hero-developer-path')?.textContent).toBe('or, build on the LLM Notary stack');
     await expect.element(page.getByRole('link', { name: 'Get started' })).not.toBeInTheDocument();
     await expect.element(page.getByRole('link', { name: 'Browse Library' })).not.toBeInTheDocument();
+    expect(document.querySelector('.receipt [data-provider-icon="openai"]')).not.toBeNull();
   });
 
   test('sends the macOS action to install options when the latest pointer is unavailable', async () => {
@@ -88,20 +89,24 @@ describe('hosted site', () => {
       loadProviders={async () => ({ google: true, github: true })}
     />);
 
-    const google = page.getByRole('link', { name: 'Sign in with Google' });
+    const google = page.getByRole('link', { name: 'Continue with Google' });
     await expect.element(google).toBeVisible();
     await expect.element(google).toHaveAttribute('href', '/api/auth/google?return_to=%23%2Fauthorize%3Frequest_id%3Drequest-123');
-    await expect.element(page.getByRole('link', { name: 'Sign in with GitHub' })).toBeVisible();
-    await expect.element(page.getByText('Google access')).toBeVisible();
-    await expect.element(page.getByText('Provider tokens')).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Continue with GitHub' })).toBeVisible();
+    expect(document.querySelectorAll('[data-auth-provider-icon]')).toHaveLength(2);
+    expect(document.querySelector('[data-auth-provider-icon="google"]')).not.toBeNull();
+    expect(document.querySelector('[data-auth-provider-icon="github"]')).not.toBeNull();
+    expect(document.querySelector('.auth-provider')?.textContent).toContain('Google');
+    await expect.element(page.getByText('Google access')).not.toBeInTheDocument();
+    await expect.element(page.getByText('Provider tokens')).not.toBeInTheDocument();
   });
 
-  test('hides Google-specific facts when only GitHub is configured', async () => {
+  test('shows only the configured sign-in provider', async () => {
     render(<SignInPage loadProviders={async () => ({ google: false, github: true })} />);
 
-    await expect.element(page.getByRole('link', { name: 'Sign in with GitHub' })).toBeVisible();
-    await expect.element(page.getByText('Google access')).not.toBeInTheDocument();
-    await expect.element(page.getByText('Provider tokens')).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Continue with GitHub' })).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Continue with Google' })).not.toBeInTheDocument();
+    expect(document.querySelectorAll('[data-auth-provider-icon="github"]')).toHaveLength(1);
   });
 
   test('offers Auto, Light, and Dark in Dashboard account settings', async () => {
@@ -202,8 +207,9 @@ describe('hosted site', () => {
 
     await expect.element(page.getByRole('heading', { name: 'Sign in to continue' })).toBeVisible();
     await expect.element(page.getByRole('link', { name: 'Choose sign-in method' })).toBeVisible();
-    await expect.element(page.getByText('Google access')).toBeVisible();
-    await expect.element(page.getByText('Provider tokens')).toBeVisible();
+    await expect.element(page.getByText('Google access')).not.toBeInTheDocument();
+    await expect.element(page.getByText('Provider tokens')).not.toBeInTheDocument();
+    await expect.element(page.getByText('Review and approve the device')).toBeVisible();
     await expect.element(page.getByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
   });
 

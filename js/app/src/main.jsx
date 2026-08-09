@@ -11,6 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Command, CommandDialog, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { AuthProviderIcon } from './AuthProviderIcon';
 import { ProviderIdentity } from './ProviderIdentity';
 import { initialThemePreference, resolvedTheme, themeOptions } from './theme';
 import './shadcn.css';
@@ -166,15 +167,14 @@ export function SignInPage({ route = 'signin', user = null, loadProviders = getA
   const requestedReturn = new URLSearchParams(route.split('?')[1] || '').get('return_to');
   const returnTo = requestedReturn?.startsWith('#/authorize?') ? requestedReturn : null;
   const providerHref = (provider) => `/api/auth/${provider}${returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : ''}`;
-  if (user) return <main className="auth-page"><section className="auth-panel"><span className="eyebrow">Account</span><h1>Already signed in</h1><p>You’re signed in as <b>{accountName(user)}</b>.</p><a className="button button-dark" href="/#/dashboard">Open dashboard</a></section></main>;
+  if (user) return <main className="auth-page"><section className="auth-panel"><h1>Already signed in</h1><p className="auth-intro">You’re signed in as <b>{accountName(user)}</b>.</p><a className="button button-dark" href="/#/dashboard">Open dashboard</a></section></main>;
   return <main className="auth-page"><section className="auth-panel" aria-labelledby="sign-in-title">
-    <span className="eyebrow">Hosted account</span><h1 id="sign-in-title">Sign in to LLM Notary</h1><p>Use an identity provider to access hosted credits, connect a local service, and manage shared traces.</p>
+    <h1 id="sign-in-title">Sign in</h1><p className="auth-intro">Continue to LLM Notary.</p>
     {error ? <div className="auth-state" role="alert"><b>Sign-in options are unavailable</b><span>{error}</span></div> : providers === null ? <div className="auth-state" role="status"><b>Loading sign-in options</b></div> : <div className="auth-provider-list">
-      {providers.google && <a className="google-sign-in" href={providerHref('google')}><img src="/sign-in-with-google.svg" alt="Sign in with Google" width="180" height="40" /></a>}
-      {providers.github && <a className="auth-provider" href={providerHref('github')}><span className="auth-provider-mark" aria-hidden="true">GH</span><b>Sign in with GitHub</b></a>}
+      {providers.google && <a className="auth-provider" href={providerHref('google')}><AuthProviderIcon provider="google" /><b>Continue with Google</b></a>}
+      {providers.github && <a className="auth-provider" href={providerHref('github')}><AuthProviderIcon provider="github" /><b>Continue with GitHub</b></a>}
       {!providers.google && !providers.github && <div className="auth-state" role="alert"><b>No sign-in provider is configured</b></div>}
     </div>}
-    <dl className="auth-facts">{providers?.google && <><div><dt>Google access</dt><dd>Email verification and basic profile only</dd></div><div><dt>Email address</dt><dd>Checked, not retained</dd></div></>}<div><dt>Provider tokens</dt><dd>Not retained</dd></div></dl>
     <p className="auth-legal">By continuing, you agree to the <a href="/#/terms">Terms</a> and acknowledge the <a href="/#/privacy">Privacy Policy</a>.</p>
   </section></main>;
 }
@@ -387,7 +387,7 @@ export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) 
     <ListedSharesPreview />
     <section className="section verify" id="verify">
       <div><span className="eyebrow">Independent verification</span><h2>Proof travels with the package.</h2><p>A finalized .llmtrace contains the notary-signed TLS evidence, disclosed exchange, canonical trace, and hashes needed for portable verification.</p><div className="verify-points"><span>Notary evidence</span><span>Canonical OTLP</span><span>Portable package</span></div><div className="button-row"><a className="button button-dark" href="#/verify">Verify a package</a></div></div>
-      <div className="receipt"><header><PenMark /><b>Portable package</b></header><h3>Verified</h3><dl><div><dt>Provider</dt><dd>api.openai.com</dd></div><div><dt>Artifact</dt><dd>capture.llmtrace</dd></div><div><dt>Trace hash</dt><dd>9b44f8…c21d</dd></div></dl><div className="receipt-contents"><span>Notary evidence <i>•••</i></span><span>Disclosed exchange <i>•••</i></span><span>Canonical trace <i>•••</i></span></div><footer>VERIFIED FROM SOURCE PACKAGE</footer></div>
+      <div className="receipt"><header><PenMark /><b>Portable package</b></header><h3>Verified</h3><dl><div><dt>Provider</dt><dd><ProviderIdentity provider="OpenAI" detail="api.openai.com" /></dd></div><div><dt>Artifact</dt><dd>capture.llmtrace</dd></div><div><dt>Trace hash</dt><dd>9b44f8…c21d</dd></div></dl><div className="receipt-contents"><span>Notary evidence <i>•••</i></span><span>Disclosed exchange <i>•••</i></span><span>Canonical trace <i>•••</i></span></div><footer>VERIFIED FROM SOURCE PACKAGE</footer></div>
     </section>
   </main>;
 }
@@ -1534,8 +1534,6 @@ export function CliApproval({ route, user, loadApproval = getCliApproval, approv
     action={<a className="button button-dark" href={`/#/signin?return_to=${encodeURIComponent(window.location.hash)}`}>Choose sign-in method</a>}
     facts={[
       ['Next step', 'Review and approve the device'],
-      ['Google access', 'Email verification and basic profile only'],
-      ['Provider tokens', 'Not retained'],
       ['Control', 'Revoke later from Account'],
     ]}
   />;
