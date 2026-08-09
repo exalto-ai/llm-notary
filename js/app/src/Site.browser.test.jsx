@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { AccountSettings, ApiKeysPanel, CliApproval, Dashboard, DeleteAccountPanel, Footer, Header, HostedNotaryRecord, Landing, Library, ListedSharesPreview, SharePage, SignInPage, VerificationPage } from './main';
+import CreditUtilizationChart from './CreditUtilizationChart';
 import { ProviderIdentity } from './ProviderIdentity';
 import { latestMacosDownloadHref } from './releaseDownloads';
 import { initialThemePreference } from './theme';
@@ -757,5 +758,25 @@ describe('hosted site', () => {
 
     expect(document.body.textContent).not.toContain('Verification passed.');
     await expect.element(page.getByText('second.llmtrace')).toBeVisible();
+  });
+
+  test('renders daily utilization in decimal MB with an accessible seven-day summary', async () => {
+    const today = Date.now() / 1000;
+    render(<CreditUtilizationChart historyDebits={[
+      { id: 'd1', kind: 'debit', amount_bytes: 1_000_000, display_label: 'Capture A', created_at: today },
+      { id: 'd2', kind: 'debit', amount_bytes: 250_000, display_label: 'Capture B', created_at: today - 86400 },
+    ]} />);
+
+    await expect.element(page.getByRole('heading', { name: 'Last 7 days' })).toBeVisible();
+    await expect.element(page.getByRole('img', { name: /Daily utilization in MB.*1 MB/i })).toBeVisible();
+    expect(document.querySelectorAll('.recharts-bar-rectangle')).toHaveLength(2);
+  });
+
+  test('distinguishes loading history from seven zero-usage days', async () => {
+    const rendered = render(<CreditUtilizationChart historyDebits={null} />);
+    await expect.element(page.getByRole('status', { name: 'Loading daily utilization' })).toBeVisible();
+
+    rendered.rerender(<CreditUtilizationChart historyDebits={[]} />);
+    await expect.element(page.getByRole('img', { name: /No utilization recorded for the last seven UTC days/i })).toBeVisible();
   });
 });

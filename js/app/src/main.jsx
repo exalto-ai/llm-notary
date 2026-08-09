@@ -58,6 +58,7 @@ import {
   revokeCliSession,
   verifyTracePackage,
 } from './platform-api/client';
+import { loadRecentDebits } from './creditUtilization';
 import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries } from './notaryLifecycle';
 
 const loadCreditUtilizationChart = () => import('./CreditUtilizationChart');
@@ -1279,10 +1280,9 @@ export function DeleteAccountPanel({ identifier, onDeleted, deleteAccount = dele
 }
 
 function CreditUtilizationFallback() {
-  return <section className="dashboard-utilization dashboard-utilization--loading" role="status" aria-label="Loading credit usage">
-    <header><div><span className="eyebrow">Current balance</span><h2>Credit usage</h2></div><i /></header>
-    <div className="dashboard-utilization-plot"><i /></div>
-    <dl><div><dt><i />Used</dt><dd><i /></dd></div><div><dt><i />Available</dt><dd><i /></dd></div></dl>
+  return <section className="dashboard-utilization dashboard-utilization--loading" role="status" aria-label="Loading daily utilization">
+    <header><div><span className="eyebrow">Daily utilization</span><h2>Last 7 days</h2></div><span>MB · UTC</span></header>
+    <div className="dashboard-utilization-plot dashboard-utilization-plot--loading"><i /></div>
   </section>;
 }
 
@@ -1346,6 +1346,7 @@ export function Dashboard({
   checkoutPollBaseDelay = 1_000,
   checkoutPollMaxAttempts = 8,
 }) {
+  const activeView = view === 'shares' ? 'traces' : ['overview', 'traces', 'credits', 'settings'].includes(view) ? view : 'overview';
   const [sessions, setSessions] = useState(null);
   const [sessionCursor, setSessionCursor] = useState(null);
   const [loadingMoreSessions, setLoadingMoreSessions] = useState(false);
@@ -1370,6 +1371,8 @@ export function Dashboard({
   const [quantityGb, setQuantityGb] = useState(5);
   const [checkoutAttemptKey, setCheckoutAttemptKey] = useState(null);
   const [startingCheckout, setStartingCheckout] = useState(false);
+  const [creditUtilizationHistory, setCreditUtilizationHistory] = useState(null);
+  const [creditUtilizationError, setCreditUtilizationError] = useState(false);
   const creditHistoryGeneration = useRef(0);
   const purchaseListGeneration = useRef(0);
   const checkoutQuery = useMemo(() => new URLSearchParams(route.split('?')[1] || ''), [route]);
@@ -1393,6 +1396,17 @@ export function Dashboard({
       .catch((reason) => { if (!cancelled && generation === creditHistoryGeneration.current) setCreditError(reason.message); });
     return () => { cancelled = true; };
   }, [loadCreditHistory]);
+
+  useEffect(() => {
+    if (activeView !== 'overview') return undefined;
+    let cancelled = false;
+    setCreditUtilizationHistory(null);
+    setCreditUtilizationError(false);
+    loadRecentDebits(loadCreditHistory, Date.now(), () => cancelled)
+      .then((entries) => { if (!cancelled && entries) setCreditUtilizationHistory(entries); })
+      .catch(() => { if (!cancelled) setCreditUtilizationError(true); });
+    return () => { cancelled = true; };
+  }, [activeView, loadCreditHistory]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1583,11 +1597,9 @@ export function Dashboard({
 
   const admittedCount = user.share_stats?.admitted ?? 0;
   const activeCount = user.share_stats?.in_progress ?? 0;
-  const activeView = view === 'shares' ? 'traces' : ['overview', 'traces', 'credits', 'settings'].includes(view) ? view : 'overview';
   const purchaseMode = billing.purchase_mode || 'disabled';
   const checkoutEnabled = purchaseMode === 'test' || purchaseMode === 'live';
   const displayedCheckoutStatus = checkoutReturnStatus || (returnedCheckout === 'success' ? 'waiting' : returnedCheckout === 'cancelled' ? 'cancelled' : null);
-
   return <main className="dashboard-shell dashboard-shell--account">
     <DashboardMobileNavigation activeView={activeView} traceCount={user.share_stats?.total ?? '—'} />
     <div className="dashboard-layout">
@@ -1607,7 +1619,7 @@ export function Dashboard({
             <div><span>Admitted traces</span><b>{shares === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>
-          {credits && <Suspense fallback={<CreditUtilizationFallback />}><CreditUtilizationChart credits={credits} formatBytes={fileSize} /></Suspense>}
+          {credits && <Suspense fallback={<CreditUtilizationFallback />}><CreditUtilizationChart historyDebits={creditUtilizationHistory} historyError={creditUtilizationError} /></Suspense>}
         </>}
         {activeView === 'credits' && <>
           <header className="dashboard-page-header"><span className="eyebrow">Usage</span><h1>Credits</h1><p>See what you’ve used, what remains, and when credits expire.</p></header>
