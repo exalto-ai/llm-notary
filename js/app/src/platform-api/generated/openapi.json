@@ -53,6 +53,16 @@
                 }
               }
             }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
         }
       }
@@ -139,6 +149,155 @@
         }
       }
     },
+    "/api/auth/google": {
+      "get": {
+        "tags": [
+          "browser-auth"
+        ],
+        "summary": "Start Google browser sign-in",
+        "operationId": "start_google_login",
+        "parameters": [
+          {
+            "name": "return_to",
+            "in": "query",
+            "description": "Allowed in-app hash route after sign-in",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "307": {
+            "description": "Temporary redirect to Google",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/auth/google/callback": {
+      "get": {
+        "tags": [
+          "browser-auth"
+        ],
+        "summary": "Finish Google browser sign-in",
+        "operationId": "finish_google_login",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "303": {
+            "description": "Redirect to the hosted application",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/auth/logout": {
       "post": {
         "tags": [
@@ -174,6 +333,27 @@
             "browserSession": []
           }
         ]
+      }
+    },
+    "/api/auth/providers": {
+      "get": {
+        "tags": [
+          "browser-auth"
+        ],
+        "summary": "List configured browser sign-in providers",
+        "operationId": "auth_providers",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthProvidersResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/cli/authorizations": {
@@ -2590,6 +2770,28 @@
           }
         }
       },
+      "AuthProvidersResponse": {
+        "type": "object",
+        "required": [
+          "github",
+          "google"
+        ],
+        "properties": {
+          "github": {
+            "type": "boolean"
+          },
+          "google": {
+            "type": "boolean"
+          }
+        }
+      },
+      "BrowserAuthProvider": {
+        "type": "string",
+        "enum": [
+          "github",
+          "google"
+        ]
+      },
       "ClaimCreditOfferResponse": {
         "type": "object",
         "required": [
@@ -3657,14 +3859,22 @@
         "type": "object",
         "required": [
           "id",
-          "github_login"
+          "github_login",
+          "auth_provider",
+          "display_name"
         ],
         "properties": {
+          "auth_provider": {
+            "$ref": "#/components/schemas/BrowserAuthProvider"
+          },
           "avatar_url": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "display_name": {
+            "type": "string"
           },
           "github_login": {
             "type": "string"
@@ -4016,7 +4226,7 @@
     },
     {
       "name": "browser-auth",
-      "description": "GitHub-backed browser sessions"
+      "description": "Google- or GitHub-backed browser sessions"
     },
     {
       "name": "cli-auth",

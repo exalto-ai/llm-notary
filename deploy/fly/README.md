@@ -47,10 +47,29 @@ Three base64-encoded file secrets are required:
   opaque Public credit subjects and must be independent of the admission and
   signing keys. Increment the configured key version when rotating it.
 
-The API also needs its normal GitHub OAuth credentials, the notary public key,
-and its signing-key directory. The production endpoint is
-`https://llm-notary.exalto.ai`; keep the GitHub OAuth App callback at
-`https://llm-notary.exalto.ai/api/auth/github/callback`.
+The API also needs at least one browser OAuth client, the notary public key,
+and its signing-key directory. Google is the primary sign-in path; stage
+`GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` on the API and set
+its Web application callback to
+`https://llm-notary.exalto.ai/api/auth/google/callback`. The requested Google
+scopes are only `openid`, `email`, and `profile`. Keep the existing GitHub
+credentials and `https://llm-notary.exalto.ai/api/auth/github/callback` while
+GitHub-backed accounts still need access.
+
+These are Fly runtime secrets, not GitHub Actions secrets. Stage them before
+merging so the current release is not restarted. When Google supplies a
+downloaded Web-client JSON file, import only its client fields over stdin so
+the secret does not appear in the process arguments:
+
+```bash
+jq -r '(.web // .installed) |
+  "GOOGLE_OAUTH_CLIENT_ID=\(.client_id)\nGOOGLE_OAUTH_CLIENT_SECRET=\(.client_secret)"' \
+  /secure/path/google-oauth-client.json |
+  flyctl secrets import --stage -a llm-notary-prod-api
+```
+
+Treat a client secret pasted into chat, logs, or shell arguments as compromised:
+delete it in Google Cloud, create a replacement, and import only the replacement.
 
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private

@@ -161,6 +161,14 @@ export async function getCurrentUser() {
   return { ...data.user, credits: data.credits, share_stats: data.share_stats };
 }
 
+export async function getAuthProviders() {
+  const { data, error, response } = await client.GET('/api/auth/providers');
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not load sign-in options.'), response.status);
+  }
+  return data;
+}
+
 export async function getCreditOffers() {
   const { data, error, response } = await client.GET('/api/me/credit-offers');
   if (!response.ok || !data) {

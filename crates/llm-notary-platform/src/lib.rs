@@ -16,9 +16,11 @@ use axum::{
     routing::get,
 };
 use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::RngCore;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use time::Duration as CookieDuration;
 use tracing::Instrument as _;
@@ -56,6 +58,7 @@ pub use config::{
 
 const SESSION_COOKIE: &str = "llm_notary_session";
 const OAUTH_STATE_COOKIE: &str = "llm_notary_oauth_state";
+const GOOGLE_PKCE_COOKIE: &str = "llm_notary_google_pkce";
 const LOGIN_TTL_SECS: i64 = 10 * 60;
 const SESSION_TTL_SECS: i64 = 30 * 24 * 60 * 60;
 const CLI_AUTHORIZATION_TTL_SECS: i64 = 10 * 60;
@@ -76,7 +79,10 @@ struct AppState {
     http: reqwest::Client,
     github_client_id: String,
     github_client_secret: String,
-    callback_url: Url,
+    github_callback_url: Url,
+    google_client_id: String,
+    google_client_secret: String,
+    google_callback_url: Url,
     app_url: Url,
     secure_cookies: bool,
     notary_directory: NotaryDirectory,
@@ -85,14 +91,14 @@ struct AppState {
 }
 
 #[derive(Deserialize, ToSchema)]
-struct GitHubCallback {
+struct OAuthCallback {
     code: Option<String>,
     state: Option<String>,
     error: Option<String>,
 }
 
 #[derive(Deserialize, ToSchema)]
-struct GitHubLoginQuery {
+struct OAuthLoginQuery {
     return_to: Option<String>,
 }
 
@@ -108,6 +114,20 @@ struct GitHubUser {
     avatar_url: Option<String>,
 }
 
+#[derive(Deserialize)]
+struct GoogleToken {
+    access_token: String,
+}
+
+#[derive(Deserialize)]
+struct GoogleUser {
+    sub: String,
+    email: Option<String>,
+    email_verified: Option<bool>,
+    name: Option<String>,
+    picture: Option<String>,
+}
+
 #[derive(Serialize, ToSchema)]
 struct Health {
     status: &'static str,
@@ -118,6 +138,33 @@ struct PublicUser {
     id: String,
     github_login: String,
     avatar_url: Option<String>,
+    auth_provider: BrowserAuthProvider,
+    display_name: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+enum BrowserAuthProvider {
+    Github,
+    Google,
+}
+
+impl BrowserAuthProvider {
+    fn from_database(value: &str) -> ApiResult<Self> {
+        match value {
+            "github" => Ok(Self::Github),
+            "google" => Ok(Self::Google),
+            _ => Err(ApiError::internal(anyhow!(
+                "database contains an invalid browser authentication provider"
+            ))),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+struct AuthProvidersResponse {
+    github: bool,
+    google: bool,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -318,6 +365,14 @@ impl ApiError {
         }
     }
 
+    fn forbidden_message(message: &'static str) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: message,
+            message,
+        }
+    }
+
     fn not_found(message: &'static str) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -369,8 +424,8 @@ impl ApiError {
     fn upstream() -> Self {
         Self {
             status: StatusCode::BAD_GATEWAY,
-            code: "GitHub sign-in failed",
-            message: "GitHub sign-in failed",
+            code: "identity provider sign-in failed",
+            message: "identity provider sign-in failed",
         }
     }
 
@@ -417,7 +472,7 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
     modifiers(&SecurityAddon),
     tags(
         (name = "health", description = "Hosted API health and discovery"),
-        (name = "browser-auth", description = "GitHub-backed browser sessions"),
+        (name = "browser-auth", description = "Google- or GitHub-backed browser sessions"),
         (name = "cli-auth", description = "Local service authorization and CLI sessions"),
         (name = "notary-admission", description = "Hosted notary tickets and distributed leases"),
         (name = "verification", description = "Anonymous, retention-free portable package verification"),
@@ -481,8 +536,11 @@ fn hosted_router() -> OpenApiRouter<AppState> {
         .routes(routes!(health))
         .routes(routes!(readiness))
         .routes(routes!(notary))
+        .routes(routes!(auth_providers))
         .routes(routes!(start_github_login))
         .routes(routes!(finish_github_login))
+        .routes(routes!(start_google_login))
+        .routes(routes!(finish_google_login))
         .routes(routes!(logout))
         .routes(routes!(me, delete_account))
         .routes(routes!(list_cli_sessions))
@@ -699,10 +757,13 @@ impl AppState {
             http: reqwest::Client::builder()
                 .user_agent("LLM-Notary/0.1")
                 .build()
-                .context("building GitHub client")?,
+                .context("building OAuth HTTP client")?,
             github_client_id: config.auth.github_client_id.clone(),
             github_client_secret: config.auth.github_client_secret.clone(),
-            callback_url: config.auth.callback_url.clone(),
+            github_callback_url: config.auth.github_callback_url.clone(),
+            google_client_id: config.auth.google_client_id.clone(),
+            google_client_secret: config.auth.google_client_secret.clone(),
+            google_callback_url: config.auth.google_callback_url.clone(),
             secure_cookies: config.auth.app_url.scheme() == "https",
             app_url: config.auth.app_url.clone(),
             notary_directory: config.notary_directory.directory.clone(),
@@ -712,11 +773,31 @@ impl AppState {
     }
 
     fn authorization_url(&self, state: &str) -> Result<Url> {
+        if self.github_client_id.is_empty() {
+            return Err(anyhow!("GitHub OAuth is not configured"));
+        }
         let mut url = Url::parse("https://github.com/login/oauth/authorize")?;
         url.query_pairs_mut()
             .append_pair("client_id", &self.github_client_id)
-            .append_pair("redirect_uri", self.callback_url.as_str())
+            .append_pair("redirect_uri", self.github_callback_url.as_str())
             .append_pair("state", state);
+        Ok(url)
+    }
+
+    fn google_authorization_url(&self, state: &str, code_challenge: &str) -> Result<Url> {
+        if self.google_client_id.is_empty() {
+            return Err(anyhow!("Google OAuth is not configured"));
+        }
+        let mut url = Url::parse("https://accounts.google.com/o/oauth2/v2/auth")?;
+        url.query_pairs_mut()
+            .append_pair("client_id", &self.google_client_id)
+            .append_pair("redirect_uri", self.google_callback_url.as_str())
+            .append_pair("response_type", "code")
+            .append_pair("scope", "openid email profile")
+            .append_pair("state", state)
+            .append_pair("code_challenge", code_challenge)
+            .append_pair("code_challenge_method", "S256")
+            .append_pair("prompt", "select_account");
         Ok(url)
     }
 
@@ -777,11 +858,26 @@ async fn readiness(State(state): State<AppState>) -> ApiResult<Json<Health>> {
 
 #[utoipa::path(
     get,
+    path = "/api/auth/providers",
+    summary = "List configured browser sign-in providers",
+    responses((status = 200, body = AuthProvidersResponse)),
+    tag = "browser-auth"
+)]
+async fn auth_providers(State(state): State<AppState>) -> Json<AuthProvidersResponse> {
+    Json(AuthProvidersResponse {
+        github: !state.github_client_id.is_empty(),
+        google: !state.google_client_id.is_empty(),
+    })
+}
+
+#[utoipa::path(
+    get,
     path = "/api/auth/github",
     summary = "Start GitHub browser sign-in",
     params(("return_to" = Option<String>, Query, description = "Allowed in-app hash route after sign-in")),
     responses(
         (status = 307, description = "Temporary redirect to GitHub", headers(("Location" = String), ("Set-Cookie" = String))),
+        (status = 503, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
     tag = "browser-auth"
@@ -789,8 +885,13 @@ async fn readiness(State(state): State<AppState>) -> ApiResult<Json<Health>> {
 async fn start_github_login(
     State(state): State<AppState>,
     jar: CookieJar,
-    Query(query): Query<GitHubLoginQuery>,
+    Query(query): Query<OAuthLoginQuery>,
 ) -> ApiResult<(CookieJar, Redirect)> {
+    if state.github_client_id.is_empty() {
+        return Err(ApiError::service_unavailable(
+            "GitHub sign-in is not configured",
+        ));
+    }
     let state_token = Uuid::new_v4().to_string();
     let now = unix_timestamp()?;
     sqlx::query("DELETE FROM oauth_login_states WHERE expires_at <= $1")
@@ -802,7 +903,8 @@ async fn start_github_login(
         .return_to
         .filter(|value| value.starts_with("#/authorize?"));
     sqlx::query(
-        "INSERT INTO oauth_login_states (state_hash, expires_at, return_to) VALUES ($1, $2, $3)",
+        "INSERT INTO oauth_login_states (state_hash, expires_at, return_to, provider)
+         VALUES ($1, $2, $3, 'github')",
     )
     .bind(sha256_hex(state_token.as_bytes()))
     .bind(now + LOGIN_TTL_SECS)
@@ -839,7 +941,7 @@ async fn start_github_login(
 async fn finish_github_login(
     State(state): State<AppState>,
     jar: CookieJar,
-    Query(callback): Query<GitHubCallback>,
+    Query(callback): Query<OAuthCallback>,
 ) -> ApiResult<(CookieJar, Redirect)> {
     if callback.error.is_some() {
         return Err(ApiError::bad_request("GitHub sign-in was cancelled"));
@@ -861,7 +963,8 @@ async fn finish_github_login(
     let now = unix_timestamp()?;
     let state_hash = sha256_hex(cookie_state.as_bytes());
     let return_to = sqlx::query_scalar::<_, Option<String>>(
-        "SELECT return_to FROM oauth_login_states WHERE state_hash = $1 AND expires_at > $2",
+        "SELECT return_to FROM oauth_login_states
+         WHERE state_hash = $1 AND expires_at > $2 AND provider = 'github'",
     )
     .bind(&state_hash)
     .bind(now)
@@ -869,13 +972,15 @@ async fn finish_github_login(
     .await
     .map_err(database_error)?
     .flatten();
-    let consumed =
-        sqlx::query("DELETE FROM oauth_login_states WHERE state_hash = $1 AND expires_at > $2")
-            .bind(state_hash)
-            .bind(now)
-            .execute(&state.database)
-            .await
-            .map_err(database_error)?;
+    let consumed = sqlx::query(
+        "DELETE FROM oauth_login_states
+         WHERE state_hash = $1 AND expires_at > $2 AND provider = 'github'",
+    )
+    .bind(state_hash)
+    .bind(now)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
     if consumed.rows_affected() != 1 {
         return Err(ApiError::bad_request(
             "OAuth login state is invalid or expired",
@@ -912,6 +1017,155 @@ async fn finish_github_login(
 
 #[utoipa::path(
     get,
+    path = "/api/auth/google",
+    summary = "Start Google browser sign-in",
+    params(("return_to" = Option<String>, Query, description = "Allowed in-app hash route after sign-in")),
+    responses(
+        (status = 307, description = "Temporary redirect to Google", headers(("Location" = String), ("Set-Cookie" = String))),
+        (status = 503, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    tag = "browser-auth"
+)]
+async fn start_google_login(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(query): Query<OAuthLoginQuery>,
+) -> ApiResult<(CookieJar, Redirect)> {
+    if state.google_client_id.is_empty() {
+        return Err(ApiError::service_unavailable(
+            "Google sign-in is not configured",
+        ));
+    }
+    let state_token = random_token();
+    let pkce_verifier = random_token();
+    let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(pkce_verifier.as_bytes()));
+    let now = unix_timestamp()?;
+    sqlx::query("DELETE FROM oauth_login_states WHERE expires_at <= $1")
+        .bind(now)
+        .execute(&state.database)
+        .await
+        .map_err(database_error)?;
+    let return_to = query
+        .return_to
+        .filter(|value| value.starts_with("#/authorize?"));
+    sqlx::query(
+        "INSERT INTO oauth_login_states (state_hash, expires_at, return_to, provider)
+         VALUES ($1, $2, $3, 'google')",
+    )
+    .bind(sha256_hex(state_token.as_bytes()))
+    .bind(now + LOGIN_TTL_SECS)
+    .bind(return_to)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    let authorization_url = state
+        .google_authorization_url(&state_token, &code_challenge)
+        .map_err(ApiError::internal)?;
+    Ok((
+        jar.add(state.cookie(OAUTH_STATE_COOKIE, state_token, LOGIN_TTL_SECS))
+            .add(state.cookie(GOOGLE_PKCE_COOKIE, pkce_verifier, LOGIN_TTL_SECS)),
+        Redirect::temporary(authorization_url.as_str()),
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/auth/google/callback",
+    summary = "Finish Google browser sign-in",
+    params(
+        ("code" = Option<String>, Query),
+        ("state" = Option<String>, Query),
+        ("error" = Option<String>, Query)
+    ),
+    responses(
+        (status = 303, description = "Redirect to the hosted application", headers(("Location" = String), ("Set-Cookie" = String))),
+        (status = 400, body = ErrorResponse),
+        (status = 403, body = ErrorResponse),
+        (status = 502, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    tag = "browser-auth"
+)]
+async fn finish_google_login(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Query(callback): Query<OAuthCallback>,
+) -> ApiResult<(CookieJar, Redirect)> {
+    if callback.error.is_some() {
+        return Err(ApiError::bad_request("Google sign-in was cancelled"));
+    }
+    let code = callback
+        .code
+        .ok_or_else(|| ApiError::bad_request("Google did not return an authorization code"))?;
+    let callback_state = callback
+        .state
+        .ok_or_else(|| ApiError::bad_request("Google did not return OAuth state"))?;
+    let cookie_state = jar
+        .get(OAUTH_STATE_COOKIE)
+        .map(|cookie| cookie.value().to_owned())
+        .ok_or_else(|| ApiError::bad_request("OAuth login state is missing or expired"))?;
+    let pkce_verifier = jar
+        .get(GOOGLE_PKCE_COOKIE)
+        .map(|cookie| cookie.value().to_owned())
+        .ok_or_else(|| ApiError::bad_request("Google sign-in verifier is missing or expired"))?;
+    if callback_state != cookie_state {
+        return Err(ApiError::bad_request("OAuth login state did not match"));
+    }
+
+    let now = unix_timestamp()?;
+    let state_hash = sha256_hex(cookie_state.as_bytes());
+    let return_to = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT return_to FROM oauth_login_states
+         WHERE state_hash = $1 AND expires_at > $2 AND provider = 'google'",
+    )
+    .bind(&state_hash)
+    .bind(now)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?
+    .flatten();
+    let consumed = sqlx::query(
+        "DELETE FROM oauth_login_states
+         WHERE state_hash = $1 AND expires_at > $2 AND provider = 'google'",
+    )
+    .bind(state_hash)
+    .bind(now)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    if consumed.rows_affected() != 1 {
+        return Err(ApiError::bad_request(
+            "OAuth login state is invalid or expired",
+        ));
+    }
+
+    let token = exchange_google_code(&state, &code, &pkce_verifier).await?;
+    let google_user = fetch_google_user(&state, &token.access_token).await?;
+    if google_user.email_verified != Some(true) || google_user.email.is_none() {
+        return Err(ApiError::forbidden_message(
+            "Google account email is not verified",
+        ));
+    }
+    let user_id = upsert_google_user(&state.database, &google_user, now).await?;
+    let session_token = issue_web_session(&state.database, &user_id, now).await?;
+
+    Ok((
+        jar.remove(state.expired_cookie(OAUTH_STATE_COOKIE))
+            .remove(state.expired_cookie(GOOGLE_PKCE_COOKIE))
+            .add(state.cookie(SESSION_COOKIE, session_token, SESSION_TTL_SECS)),
+        Redirect::to(
+            return_to
+                .as_deref()
+                .and_then(|value| state.app_url.join(value).ok())
+                .unwrap_or_else(|| state.app_url.clone())
+                .as_str(),
+        ),
+    ))
+}
+
+#[utoipa::path(
+    get,
     path = "/api/me",
     summary = "Get the signed-in browser user",
     responses(
@@ -925,14 +1179,18 @@ async fn finish_github_login(
 async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeResponse>> {
     let session_token = session_token(&jar)?;
     let now = unix_timestamp()?;
-    let user = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT users.id, user_identities.provider_display_name,
-                user_identities.provider_avatar_url
+    let user = sqlx::query_as::<_, (String, String, String, Option<String>, String)>(
+        "SELECT users.id, users.display_name, identity.provider_display_name,
+                identity.provider_avatar_url, identity.provider
          FROM sessions
          JOIN users ON users.id = sessions.user_id
-         JOIN user_identities
-           ON user_identities.user_id = users.id
-          AND user_identities.provider = 'github'
+         JOIN LATERAL (
+             SELECT provider, provider_display_name, provider_avatar_url
+             FROM user_identities
+             WHERE user_id = users.id
+             ORDER BY last_used_at DESC, id
+             LIMIT 1
+         ) AS identity ON TRUE
          WHERE sessions.token_hash = $1 AND sessions.expires_at > $2",
     )
     .bind(sha256_hex(session_token.as_bytes()))
@@ -957,8 +1215,10 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
     Ok(Json(MeResponse {
         user: PublicUser {
             id: user.0,
-            github_login: user.1,
-            avatar_url: user.2,
+            github_login: user.2,
+            avatar_url: user.3,
+            auth_provider: BrowserAuthProvider::from_database(&user.4)?,
+            display_name: user.1,
         },
         credits,
         share_stats: ShareStats {
@@ -1501,13 +1761,17 @@ async fn cli_me(
 ) -> ApiResult<Json<CliMeResponse>> {
     let principal =
         authn::authenticated_principal(&state, &headers, authn::ApiScope::AccountRead).await?;
-    let user = sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT users.id, user_identities.provider_display_name,
-                user_identities.provider_avatar_url
+    let user = sqlx::query_as::<_, (String, String, String, Option<String>, String)>(
+        "SELECT users.id, users.display_name, identity.provider_display_name,
+                identity.provider_avatar_url, identity.provider
          FROM users
-         JOIN user_identities
-           ON user_identities.user_id = users.id
-          AND user_identities.provider = 'github'
+         JOIN LATERAL (
+             SELECT provider, provider_display_name, provider_avatar_url
+             FROM user_identities
+             WHERE user_id = users.id
+             ORDER BY last_used_at DESC, id
+             LIMIT 1
+         ) AS identity ON TRUE
          WHERE users.id = $1",
     )
     .bind(&principal.user_id)
@@ -1523,8 +1787,10 @@ async fn cli_me(
     Ok(Json(CliMeResponse {
         user: PublicUser {
             id: user.0,
-            github_login: user.1,
-            avatar_url: user.2,
+            github_login: user.2,
+            avatar_url: user.3,
+            auth_provider: BrowserAuthProvider::from_database(&user.4)?,
+            display_name: user.1,
         },
         credential: CliCredentialResponse {
             kind: principal.credential_kind,
@@ -1543,13 +1809,17 @@ pub(crate) async fn authenticated_web_user(
     let token = session_token(jar)?;
     let now = unix_timestamp()?;
     sqlx::query_as::<_, (String, String, Option<String>)>(
-        "SELECT users.id, user_identities.provider_display_name,
-                user_identities.provider_avatar_url
+        "SELECT users.id, identity.provider_display_name,
+                identity.provider_avatar_url
          FROM sessions
          JOIN users ON users.id = sessions.user_id
-         JOIN user_identities
-           ON user_identities.user_id = users.id
-          AND user_identities.provider = 'github'
+         JOIN LATERAL (
+             SELECT provider_display_name, provider_avatar_url
+             FROM user_identities
+             WHERE user_id = users.id
+             ORDER BY last_used_at DESC, id
+             LIMIT 1
+         ) AS identity ON TRUE
          WHERE sessions.token_hash = $1 AND sessions.expires_at > $2",
     )
     .bind(sha256_hex(token.as_bytes()))
@@ -1666,7 +1936,7 @@ async fn exchange_github_code(state: &AppState, code: &str) -> ApiResult<GitHubT
             "client_id": state.github_client_id,
             "client_secret": state.github_client_secret,
             "code": code,
-            "redirect_uri": state.callback_url.as_str(),
+            "redirect_uri": state.github_callback_url.as_str(),
         }))
         .send()
         .await
@@ -1713,15 +1983,130 @@ async fn fetch_github_user(state: &AppState, access_token: &str) -> ApiResult<Gi
         })
 }
 
+async fn exchange_google_code(
+    state: &AppState,
+    code: &str,
+    pkce_verifier: &str,
+) -> ApiResult<GoogleToken> {
+    state
+        .http
+        .post("https://oauth2.googleapis.com/token")
+        .form(&[
+            ("client_id", state.google_client_id.as_str()),
+            ("client_secret", state.google_client_secret.as_str()),
+            ("code", code),
+            ("code_verifier", pkce_verifier),
+            ("grant_type", "authorization_code"),
+            ("redirect_uri", state.google_callback_url.as_str()),
+        ])
+        .send()
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "exchanging Google OAuth code failed");
+            ApiError::upstream()
+        })?
+        .error_for_status()
+        .map_err(|error| {
+            tracing::warn!(%error, "Google OAuth token endpoint rejected code");
+            ApiError::upstream()
+        })?
+        .json::<GoogleToken>()
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "parsing Google OAuth token response failed");
+            ApiError::upstream()
+        })
+}
+
+async fn fetch_google_user(state: &AppState, access_token: &str) -> ApiResult<GoogleUser> {
+    state
+        .http
+        .get("https://openidconnect.googleapis.com/v1/userinfo")
+        .bearer_auth(access_token)
+        .send()
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "fetching Google user failed");
+            ApiError::upstream()
+        })?
+        .error_for_status()
+        .map_err(|error| {
+            tracing::warn!(%error, "Google userinfo endpoint rejected token");
+            ApiError::upstream()
+        })?
+        .json::<GoogleUser>()
+        .await
+        .map_err(|error| {
+            tracing::warn!(%error, "parsing Google user response failed");
+            ApiError::upstream()
+        })
+}
+
 async fn upsert_user(
     database: &DatabasePool,
     github_user: &GitHubUser,
     now: i64,
 ) -> ApiResult<String> {
     let provider_subject = github_user.id.to_string();
+    upsert_identity(
+        database,
+        "github",
+        &provider_subject,
+        Some(&github_user.login),
+        github_user.avatar_url.as_deref(),
+        now,
+    )
+    .await
+}
+
+async fn upsert_google_user(
+    database: &DatabasePool,
+    google_user: &GoogleUser,
+    now: i64,
+) -> ApiResult<String> {
+    let email = google_user
+        .email
+        .as_deref()
+        .ok_or_else(|| ApiError::forbidden_message("Google account email is not available"))?;
+    let display_name = google_user
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty());
+    if google_user.sub.is_empty()
+        || google_user.sub.len() > 255
+        || email.is_empty()
+        || email.len() > 320
+        || display_name.is_some_and(|name| name.len() > 255)
+        || google_user
+            .picture
+            .as_ref()
+            .is_some_and(|picture| picture.len() > 2_048)
+    {
+        return Err(ApiError::upstream());
+    }
+    upsert_identity(
+        database,
+        "google",
+        &google_user.sub,
+        display_name,
+        google_user.picture.as_deref(),
+        now,
+    )
+    .await
+}
+
+async fn upsert_identity(
+    database: &DatabasePool,
+    provider: &'static str,
+    provider_subject: &str,
+    provider_display_name: Option<&str>,
+    provider_avatar_url: Option<&str>,
+    now: i64,
+) -> ApiResult<String> {
     let mut transaction = database.begin().await.map_err(database_error)?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-        .bind(format!("github:{provider_subject}"))
+        .bind(format!("{provider}:{provider_subject}"))
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
@@ -1731,18 +2116,20 @@ async fn upsert_user(
                 user_identities.provider_display_name
          FROM user_identities
          JOIN users ON users.id = user_identities.user_id
-         WHERE user_identities.provider = 'github'
-           AND user_identities.provider_subject = $1
+         WHERE user_identities.provider = $1
+           AND user_identities.provider_subject = $2
          FOR UPDATE OF users, user_identities",
     )
-    .bind(&provider_subject)
+    .bind(provider)
+    .bind(provider_subject)
     .fetch_optional(&mut *transaction)
     .await
     .map_err(database_error)?;
 
     let user_id = if let Some((user_id, display_name, previous_provider_name)) = existing {
+        let provider_display_name = provider_display_name.unwrap_or(&previous_provider_name);
         let account_display_name = if display_name == previous_provider_name {
-            &github_user.login
+            provider_display_name
         } else {
             &display_name
         };
@@ -1757,24 +2144,28 @@ async fn upsert_user(
             "UPDATE user_identities
              SET provider_display_name = $1, provider_avatar_url = $2,
                  updated_at = $3, last_used_at = $3
-             WHERE provider = 'github' AND provider_subject = $4",
+             WHERE provider = $4 AND provider_subject = $5",
         )
-        .bind(&github_user.login)
-        .bind(&github_user.avatar_url)
+        .bind(provider_display_name)
+        .bind(provider_avatar_url)
         .bind(now)
-        .bind(&provider_subject)
+        .bind(provider)
+        .bind(provider_subject)
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
         user_id
     } else {
         let user_id = Uuid::new_v4().to_string();
+        let provider_display_name = provider_display_name
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("{provider}-{}", &user_id[..12]));
         sqlx::query(
             "INSERT INTO users (id, display_name, created_at, updated_at)
              VALUES ($1, $2, $3, $3)",
         )
         .bind(&user_id)
-        .bind(&github_user.login)
+        .bind(&provider_display_name)
         .bind(now)
         .execute(&mut *transaction)
         .await
@@ -1783,13 +2174,14 @@ async fn upsert_user(
             "INSERT INTO user_identities
              (id, user_id, provider, provider_subject, provider_display_name,
               provider_avatar_url, created_at, updated_at, last_used_at)
-             VALUES ($1, $2, 'github', $3, $4, $5, $6, $6, $6)",
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $7)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(&user_id)
-        .bind(&provider_subject)
-        .bind(&github_user.login)
-        .bind(&github_user.avatar_url)
+        .bind(provider)
+        .bind(provider_subject)
+        .bind(&provider_display_name)
+        .bind(provider_avatar_url)
         .bind(now)
         .execute(&mut *transaction)
         .await
@@ -1799,6 +2191,22 @@ async fn upsert_user(
 
     transaction.commit().await.map_err(database_error)?;
     Ok(user_id)
+}
+
+async fn issue_web_session(database: &DatabasePool, user_id: &str, now: i64) -> ApiResult<String> {
+    let session_token = random_token();
+    sqlx::query(
+        "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(sha256_hex(session_token.as_bytes()))
+    .bind(user_id)
+    .bind(now + SESSION_TTL_SECS)
+    .bind(now)
+    .execute(database)
+    .await
+    .map_err(database_error)?;
+    Ok(session_token)
 }
 
 fn session_token(jar: &CookieJar) -> ApiResult<String> {
@@ -1961,8 +2369,11 @@ mod tests {
             "DELETE /api/cli/sessions/{session_id}",
             "DELETE /api/me",
             "DELETE /api/me/api-keys/{api_key_id}",
+            "GET /api/auth/google",
+            "GET /api/auth/google/callback",
             "GET /api/auth/github",
             "GET /api/auth/github/callback",
+            "GET /api/auth/providers",
             "GET /api/cli/authorizations/{request_id}/approval",
             "GET /api/cli/me",
             "GET /api/cli/sessions",
@@ -2388,8 +2799,16 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            callback_url: Url::parse("https://llm-notary.exalto.ai/api/auth/github/callback")
-                .expect("callback URL"),
+            github_callback_url: Url::parse(
+                "https://llm-notary.exalto.ai/api/auth/github/callback",
+            )
+            .expect("callback URL"),
+            google_client_id: "google-client-id".to_owned(),
+            google_client_secret: "google-secret".to_owned(),
+            google_callback_url: Url::parse(
+                "https://llm-notary.exalto.ai/api/auth/google/callback",
+            )
+            .expect("Google callback URL"),
             app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
             notary_directory: directory_key(),
@@ -2414,6 +2833,122 @@ mod tests {
                 && value == "https://llm-notary.exalto.ai/api/auth/github/callback"
         }));
         assert!(!url.query_pairs().any(|(key, _)| key == "scope"));
+
+        let google = state
+            .google_authorization_url("google-state", "pkce-challenge")
+            .expect("Google authorization URL");
+        assert_eq!(
+            google.origin().ascii_serialization(),
+            "https://accounts.google.com"
+        );
+        assert_eq!(google.path(), "/o/oauth2/v2/auth");
+        for (key, expected) in [
+            ("client_id", "google-client-id"),
+            (
+                "redirect_uri",
+                "https://llm-notary.exalto.ai/api/auth/google/callback",
+            ),
+            ("response_type", "code"),
+            ("scope", "openid email profile"),
+            ("state", "google-state"),
+            ("code_challenge", "pkce-challenge"),
+            ("code_challenge_method", "S256"),
+        ] {
+            assert!(
+                google
+                    .query_pairs()
+                    .any(|(name, value)| name == key && value == expected),
+                "missing {key}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn google_identity_uses_sub_and_does_not_retain_email() {
+        let database = fresh_database().await;
+        let google_user = GoogleUser {
+            sub: "google-subject-123".to_owned(),
+            email: Some("person@example.com".to_owned()),
+            email_verified: Some(true),
+            name: Some("Example Person".to_owned()),
+            picture: Some("https://example.com/avatar.png".to_owned()),
+        };
+        let first = upsert_google_user(&database.pool, &google_user, 10)
+            .await
+            .expect("create Google user");
+        let second = upsert_google_user(&database.pool, &google_user, 20)
+            .await
+            .expect("refresh Google user");
+        assert_eq!(first, second);
+        let row = sqlx::query_as::<_, (String, String, String, Option<String>, i64, i64)>(
+            "SELECT users.display_name, user_identities.provider_subject,
+                    user_identities.provider_display_name,
+                    user_identities.provider_avatar_url,
+                    users.updated_at, user_identities.last_used_at
+             FROM users
+             JOIN user_identities ON user_identities.user_id = users.id
+             WHERE users.id = $1 AND user_identities.provider = 'google'",
+        )
+        .bind(&first)
+        .fetch_one(&database.pool)
+        .await
+        .expect("stored Google identity");
+        assert_eq!(row.0, "Example Person");
+        assert_eq!(row.1, "google-subject-123");
+        assert_eq!(row.2, "Example Person");
+        assert_eq!(row.3.as_deref(), Some("https://example.com/avatar.png"));
+        assert_eq!((row.4, row.5), (20, 20));
+        let retained_email_columns: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM information_schema.columns
+             WHERE table_schema = 'public'
+               AND table_name IN ('users', 'user_identities')
+               AND column_name IN ('email', 'provider_email')",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .expect("inspect identity schema");
+        assert_eq!(retained_email_columns, 0);
+
+        let session_token = issue_web_session(
+            &database.pool,
+            &first,
+            unix_timestamp().expect("current timestamp"),
+        )
+        .await
+        .expect("issue Google web session");
+        let state = AppState {
+            database: database.pool.clone(),
+            _test_database: Some(database),
+            http: reqwest::Client::new(),
+            github_client_id: "client-id".to_owned(),
+            github_client_secret: "secret".to_owned(),
+            github_callback_url: Url::parse(
+                "https://llm-notary.exalto.ai/api/auth/github/callback",
+            )
+            .expect("GitHub callback URL"),
+            google_client_id: "google-client-id".to_owned(),
+            google_client_secret: "google-secret".to_owned(),
+            google_callback_url: Url::parse(
+                "https://llm-notary.exalto.ai/api/auth/google/callback",
+            )
+            .expect("Google callback URL"),
+            app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
+            secure_cookies: true,
+            notary_directory: directory_key(),
+            publish: publish::PublishService::disabled_for_test(),
+            admission: Arc::new(AdmissionConfig::for_test()),
+        };
+        let response = me(
+            State(state),
+            CookieJar::new().add(Cookie::new(SESSION_COOKIE, session_token)),
+        )
+        .await
+        .expect("load Google-backed account")
+        .0;
+        assert_eq!(response.user.auth_provider, BrowserAuthProvider::Google);
+        assert_eq!(response.user.display_name, "Example Person");
+        assert_eq!(response.user.github_login, "Example Person");
     }
 
     #[tokio::test]
@@ -2859,8 +3394,16 @@ mod tests {
                 http: reqwest::Client::new(),
                 github_client_id: "client-id".to_owned(),
                 github_client_secret: "secret".to_owned(),
-                callback_url: Url::parse("https://llm-notary.exalto.ai/api/auth/github/callback")
-                    .expect("callback URL"),
+                github_callback_url: Url::parse(
+                    "https://llm-notary.exalto.ai/api/auth/github/callback",
+                )
+                .expect("callback URL"),
+                google_client_id: "google-client-id".to_owned(),
+                google_client_secret: "google-secret".to_owned(),
+                google_callback_url: Url::parse(
+                    "https://llm-notary.exalto.ai/api/auth/google/callback",
+                )
+                .expect("Google callback URL"),
                 app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
                 secure_cookies: true,
                 notary_directory: directory_key(),
@@ -2926,8 +3469,16 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            callback_url: Url::parse("https://llm-notary.exalto.ai/api/auth/github/callback")
-                .expect("callback URL"),
+            github_callback_url: Url::parse(
+                "https://llm-notary.exalto.ai/api/auth/github/callback",
+            )
+            .expect("callback URL"),
+            google_client_id: "google-client-id".to_owned(),
+            google_client_secret: "google-secret".to_owned(),
+            google_callback_url: Url::parse(
+                "https://llm-notary.exalto.ai/api/auth/google/callback",
+            )
+            .expect("Google callback URL"),
             app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
             notary_directory: directory_key(),
@@ -3001,8 +3552,16 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            callback_url: Url::parse("https://llm-notary.exalto.ai/api/auth/github/callback")
-                .expect("callback URL"),
+            github_callback_url: Url::parse(
+                "https://llm-notary.exalto.ai/api/auth/github/callback",
+            )
+            .expect("callback URL"),
+            google_client_id: "google-client-id".to_owned(),
+            google_client_secret: "google-secret".to_owned(),
+            google_callback_url: Url::parse(
+                "https://llm-notary.exalto.ai/api/auth/google/callback",
+            )
+            .expect("Google callback URL"),
             app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
             notary_directory: directory_key(),
@@ -3147,8 +3706,16 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            callback_url: Url::parse("https://llm-notary.exalto.ai/api/auth/github/callback")
-                .unwrap(),
+            github_callback_url: Url::parse(
+                "https://llm-notary.exalto.ai/api/auth/github/callback",
+            )
+            .unwrap(),
+            google_client_id: "google-client-id".to_owned(),
+            google_client_secret: "google-secret".to_owned(),
+            google_callback_url: Url::parse(
+                "https://llm-notary.exalto.ai/api/auth/google/callback",
+            )
+            .unwrap(),
             app_url: Url::parse("https://llm-notary.exalto.ai").unwrap(),
             secure_cookies: true,
             notary_directory: directory_key(),

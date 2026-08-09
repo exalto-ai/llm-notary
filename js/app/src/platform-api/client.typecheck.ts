@@ -25,8 +25,12 @@ async function contractAssertions() {
   const { data } = await typedClient.GET('/api/me');
   if (data) {
     data.user.github_login;
-    // @ts-expect-error The generated response has no display_name property.
     data.user.display_name;
+    data.user.auth_provider;
+    // @ts-expect-error Verified Google email addresses are not retained.
+    data.user.email;
+    // @ts-expect-error Provider access tokens are never part of the account response.
+    data.user.access_token;
   }
 }
 

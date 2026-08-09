@@ -34,8 +34,12 @@ services:
       # external so every API replica shares one durable source of truth.
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the PostgreSQL connection URL}
       LLM_NOTARY_DATABASE_MAX_CONNECTIONS: ${LLM_NOTARY_DATABASE_MAX_CONNECTIONS:-5}
-      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:?Set GITHUB_OAUTH_CLIENT_ID to the GitHub OAuth App client ID}
-      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:?Set GITHUB_OAUTH_CLIENT_SECRET to the GitHub OAuth App client secret}
+      # Configure Google, GitHub, or both. The API requires at least one
+      # complete client ID/secret pair and exposes only configured providers.
+      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
+      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
       LLM_NOTARY_API_LISTEN: 0.0.0.0:8080
       LLM_NOTARY_PUBLIC_ORIGIN: ${LLM_NOTARY_PUBLIC_ORIGIN:?Set LLM_NOTARY_PUBLIC_ORIGIN to the public site origin}
       LLM_NOTARY_NOTARY_HOST: ${LLM_NOTARY_NOTARY_HOST:?Set LLM_NOTARY_NOTARY_HOST to the public notary hostname or IP}

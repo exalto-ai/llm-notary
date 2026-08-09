@@ -491,7 +491,12 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            callback_url: Url::parse("https://example.com/callback").unwrap(),
+            github_callback_url: Url::parse("https://example.com/api/auth/github/callback")
+                .unwrap(),
+            google_client_id: "google-client-id".to_owned(),
+            google_client_secret: "google-secret".to_owned(),
+            google_callback_url: Url::parse("https://example.com/api/auth/google/callback")
+                .unwrap(),
             app_url: Url::parse("https://example.com").unwrap(),
             secure_cookies: true,
             notary_directory: super::super::tests::directory_key(),

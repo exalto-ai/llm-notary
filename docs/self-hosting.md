@@ -80,7 +80,10 @@ Prepare:
    `DATABASE_MIGRATIONS_URL` for SQLx migrations. They may be identical for a
    direct local PostgreSQL server.
 2. A private S3-compatible bucket and bucket-scoped credentials.
-3. A GitHub OAuth App whose callback is
+3. At least one browser OAuth client. For Google, create a Web application
+   client with `<LLM_NOTARY_PUBLIC_ORIGIN>/api/auth/google/callback` as an
+   authorized redirect URI. Its consent screen needs only `openid`, `email`,
+   and `profile`. GitHub remains supported with the callback
    `<LLM_NOTARY_PUBLIC_ORIGIN>/api/auth/github/callback`.
 4. A named Cloudflare Tunnel targeting the stable `web` service, or an
    equivalent private ingress arrangement if Compose is adapted.
@@ -123,6 +126,9 @@ LLM_NOTARY_PUBLIC_ORIGIN=https://notary.example.com
 DATABASE_URL=postgresql://...
 DATABASE_MIGRATIONS_URL=postgresql://...
 
+# Configure Google, GitHub, or both. Each configured provider needs both values.
+GOOGLE_OAUTH_CLIENT_ID=...
+GOOGLE_OAUTH_CLIENT_SECRET=...
 GITHUB_OAUTH_CLIENT_ID=...
 GITHUB_OAUTH_CLIENT_SECRET=...
 

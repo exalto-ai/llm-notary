@@ -259,6 +259,8 @@ jobs:
             CLOUDFLARE_TUNNEL_TOKEN=ci-placeholder \
             GITHUB_OAUTH_CLIENT_ID=ci-placeholder \
             GITHUB_OAUTH_CLIENT_SECRET=ci-placeholder \
+            GOOGLE_OAUTH_CLIENT_ID=ci-placeholder \
+            GOOGLE_OAUTH_CLIENT_SECRET=ci-placeholder \
             DATABASE_URL=postgresql://ci-placeholder:ci-placeholder@db.example.com/llm_notary?sslmode=require \
             DATABASE_MIGRATIONS_URL=postgresql://ci-placeholder:ci-placeholder@db.example.com/llm_notary?sslmode=require \
             LLM_NOTARY_NOTARY_HOST=203.0.113.10 \

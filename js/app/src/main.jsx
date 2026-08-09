@@ -20,6 +20,7 @@ import './trust-grid.css';
 import './commons.css';
 import './branding.css';
 import './account.css';
+import './auth.css';
 import './trace.css';
 import './docs.css';
 import './legal.css';
@@ -36,6 +37,7 @@ import {
   createApiKey,
   deleteCurrentAccount,
   getApiKeys,
+  getAuthProviders,
   claimCreditOffer,
   getCliApproval,
   getCliSessions,
@@ -83,6 +85,18 @@ function PenMark() {
   return <span className="pen-mark" aria-hidden="true"><img src="/notary-mark.svg" alt="" /></span>;
 }
 
+function accountName(user) {
+  return user.display_name || user.github_login;
+}
+
+function accountIdentifier(user) {
+  return user.github_login;
+}
+
+function authProviderName(user) {
+  return user.auth_provider === 'google' ? 'Google' : 'GitHub';
+}
+
 function HeroSignalField() {
   const xLines = Array.from({ length: 11 }, (_, index) => -80 + index * 160);
   const yLines = Array.from({ length: 9 }, (_, index) => -30 + index * 120);
@@ -115,7 +129,9 @@ function CheckIcon() { return <svg viewBox="0 0 24 24" aria-hidden="true"><path 
 function AccountMenu({ user, onLogout }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef(null);
-  const initials = user.github_login.slice(0, 2).toUpperCase();
+  const name = accountName(user);
+  const identifier = accountIdentifier(user);
+  const initials = name.slice(0, 2).toUpperCase();
   useEffect(() => {
     const close = (event) => {
       if (event.key === 'Escape' || (event.type === 'mousedown' && !menuRef.current?.contains(event.target))) setOpen(false);
@@ -125,22 +141,42 @@ function AccountMenu({ user, onLogout }) {
     return () => { document.removeEventListener('mousedown', close); window.removeEventListener('keydown', close); };
   }, []);
   return <div className="account-menu" ref={menuRef}>
-    <button type="button" className="account-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="menu" aria-label={`Account menu for ${user.github_login}`}>{user.avatar_url ? <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" /> : <span>{initials}</span>}</button>
+    <button type="button" className="account-trigger" onClick={() => setOpen((value) => !value)} aria-expanded={open} aria-haspopup="menu" aria-label={`Account menu for ${name}`}>{user.avatar_url ? <img src={user.avatar_url} alt="" referrerPolicy="no-referrer" /> : <span>{initials}</span>}</button>
     {open && <div className="account-popover" role="menu">
-      <div className="account-identity"><div><b>{user.github_login}</b><span>Signed in with GitHub</span></div></div>
+      <div className="account-identity"><div><b>{name}</b><span>{identifier} · {authProviderName(user)}</span></div></div>
       <div className="account-actions"><a href="/#/dashboard" role="menuitem" onClick={() => setOpen(false)}>Dashboard</a><button type="button" role="menuitem" onClick={() => { setOpen(false); onLogout(); }}>Log out</button></div>
     </div>}
   </div>;
 }
 
 export function Header({ user, onLogout, hideSignIn = false, authPending = false }) {
-  const [signingIn, setSigningIn] = useState(false);
+  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} /> : !hideSignIn && authPending ? <span className="account-auth-placeholder" role="status" aria-label="Checking sign-in status"><i /></span> : !hideSignIn && <a className="sign-in-link" href="/#/signin"><span>Sign in</span></a>}</nav></header>;
+}
+
+export function SignInPage({ route = 'signin', user = null, loadProviders = getAuthProviders }) {
+  const [providers, setProviders] = useState(null);
+  const [error, setError] = useState(null);
   useEffect(() => {
-    const reset = () => setSigningIn(false);
-    window.addEventListener('pageshow', reset);
-    return () => window.removeEventListener('pageshow', reset);
-  }, []);
-  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} /> : !hideSignIn && authPending ? <span className="account-auth-placeholder" role="status" aria-label="Checking sign-in status"><i /></span> : !hideSignIn && <a className={`sign-in-link${signingIn ? ' sign-in-link--pending' : ''}`} href="/api/auth/github" aria-busy={signingIn || undefined} onClick={() => setSigningIn(true)}><span>{signingIn ? 'Opening GitHub…' : 'Sign in'}</span>{signingIn && <i aria-hidden="true" />}</a>}</nav></header>;
+    let cancelled = false;
+    loadProviders()
+      .then((next) => { if (!cancelled) setProviders(next); })
+      .catch((reason) => { if (!cancelled) setError(reason instanceof Error ? reason.message : 'Could not load sign-in options.'); });
+    return () => { cancelled = true; };
+  }, [loadProviders]);
+  const requestedReturn = new URLSearchParams(route.split('?')[1] || '').get('return_to');
+  const returnTo = requestedReturn?.startsWith('#/authorize?') ? requestedReturn : null;
+  const providerHref = (provider) => `/api/auth/${provider}${returnTo ? `?return_to=${encodeURIComponent(returnTo)}` : ''}`;
+  if (user) return <main className="auth-page"><section className="auth-panel"><span className="eyebrow">Account</span><h1>Already signed in</h1><p>You’re signed in as <b>{accountName(user)}</b>.</p><a className="button button-dark" href="/#/dashboard">Open dashboard</a></section></main>;
+  return <main className="auth-page"><section className="auth-panel" aria-labelledby="sign-in-title">
+    <span className="eyebrow">Hosted account</span><h1 id="sign-in-title">Sign in to LLM Notary</h1><p>Use an identity provider to access hosted credits, connect a local service, and manage shared traces.</p>
+    {error ? <div className="auth-state" role="alert"><b>Sign-in options are unavailable</b><span>{error}</span></div> : providers === null ? <div className="auth-state" role="status"><b>Loading sign-in options</b></div> : <div className="auth-provider-list">
+      {providers.google && <a className="google-sign-in" href={providerHref('google')}><img src="/sign-in-with-google.svg" alt="Sign in with Google" width="180" height="40" /></a>}
+      {providers.github && <a className="auth-provider" href={providerHref('github')}><span className="auth-provider-mark" aria-hidden="true">GH</span><b>Sign in with GitHub</b></a>}
+      {!providers.google && !providers.github && <div className="auth-state" role="alert"><b>No sign-in provider is configured</b></div>}
+    </div>}
+    <dl className="auth-facts">{providers?.google && <><div><dt>Google access</dt><dd>Email verification and basic profile only</dd></div><div><dt>Email address</dt><dd>Checked, not retained</dd></div></>}<div><dt>Provider tokens</dt><dd>Not retained</dd></div></dl>
+    <p className="auth-legal">By continuing, you agree to the <a href="/#/terms">Terms</a> and acknowledge the <a href="/#/privacy">Privacy Policy</a>.</p>
+  </section></main>;
 }
 
 function Footer() {
@@ -154,7 +190,7 @@ const legalPages = {
     intro: 'This policy explains the information handled by the LLM Notary website, session-sharing service, and local tooling.',
     sections: [
       ['Local capture stays local', 'The local proxy handles application plaintext and provider credentials. Within the protocol, the remote notary witnesses encrypted traffic and protocol metadata; it does not receive your API key, prompt, or response plaintext.'],
-      ['Account information', 'If you sign in with GitHub, we use the identity information required to operate your account, including your GitHub login and account identifier. The GitHub authorization flow is limited to identity and does not request repository, organization, or email access.'],
+      ['Account information', 'If you sign in with Google, we use your stable Google account identifier, display name, and profile image to operate your account. We check that Google reports a verified email address but do not retain the address. Google access is limited to openid, email, and profile. If configured, GitHub sign-in remains available for existing accounts and requests identity only, without repository, organization, or email access. Provider access tokens are not retained.'],
       ['Shared sessions', 'Sharing is an explicit action. The service verifies and safety-scans a submitted .llmtrace package before admission, then makes the disclosed conversation and exact admitted package public. Header values are hidden by the package’s default disclosure policy, but request and response bodies—including prompts, responses, tool definitions, and tool results—may be public. Do not share content you are not permitted to disclose.'],
       ['Service processing', 'One-off verification does not retain an uploaded package. Sharing retains the exact admitted package and its normalized trace so visitors can inspect the session and independently verify the original bytes. Temporary intake objects are removed after admission or rejection.'],
       ['Your choices', 'You choose whether a shared session is Unlisted or Listed. Both are public to anyone with the link; Unlisted only keeps it out of the Library. Keep private capture bundles and credentials under your control. For privacy questions or requests, contact the LLM Notary operator through the project’s support channel.'],
@@ -1172,7 +1208,7 @@ export function AccountSettings({ theme, onThemeChange }) {
   </section>;
 }
 
-export function DeleteAccountPanel({ githubLogin, onDeleted, deleteAccount = deleteCurrentAccount }) {
+export function DeleteAccountPanel({ identifier, onDeleted, deleteAccount = deleteCurrentAccount }) {
   const [open, setOpen] = useState(false);
   const [confirmation, setConfirmation] = useState('');
   const [deleting, setDeleting] = useState(false);
@@ -1187,7 +1223,7 @@ export function DeleteAccountPanel({ githubLogin, onDeleted, deleteAccount = del
   };
   const remove = async (event) => {
     event.preventDefault();
-    if (confirmation !== githubLogin || deleting) return;
+    if (confirmation !== identifier || deleting) return;
     setDeleting(true);
     setError('');
     try {
@@ -1201,7 +1237,7 @@ export function DeleteAccountPanel({ githubLogin, onDeleted, deleteAccount = del
   return <section className="dashboard-delete-account" aria-labelledby="delete-account-title">
     <div><span className="eyebrow">Account deletion</span><h2 id="delete-account-title">Delete account</h2><p>Delete this account and its API keys, devices, credits, traces, and packages.</p></div>
     <button type="button" onClick={() => setOpen(true)}>Delete account</button>
-    <AlertDialog open={open} onOpenChange={close}><AlertDialogContent className="axis-alert-dialog axis-delete-account-dialog"><AlertDialogHeader><AlertDialogTitle>Delete {githubLogin}?</AlertDialogTitle><AlertDialogDescription>This deletes the account, API keys, devices, trace links, and packages. You cannot undo it.</AlertDialogDescription></AlertDialogHeader><form id="delete-account-form" className="delete-account-form" onSubmit={remove}><label htmlFor="delete-account-confirmation">Type <b>{githubLogin}</b> to confirm.</label><Input id="delete-account-confirmation" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" disabled={deleting} />{error && <p role="alert">{error}</p>}</form><AlertDialogFooter><AlertDialogCancel disabled={deleting}>Keep account</AlertDialogCancel><AlertDialogAction type="button" disabled={confirmation !== githubLogin || deleting} onClick={remove}>{deleting ? 'Deleting…' : 'Delete account'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    <AlertDialog open={open} onOpenChange={close}><AlertDialogContent className="axis-alert-dialog axis-delete-account-dialog"><AlertDialogHeader><AlertDialogTitle>Delete {identifier}?</AlertDialogTitle><AlertDialogDescription>This deletes the account, API keys, devices, trace links, and packages. You cannot undo it.</AlertDialogDescription></AlertDialogHeader><form id="delete-account-form" className="delete-account-form" onSubmit={remove}><label htmlFor="delete-account-confirmation">Type <b>{identifier}</b> to confirm.</label><Input id="delete-account-confirmation" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} autoComplete="off" disabled={deleting} />{error && <p role="alert">{error}</p>}</form><AlertDialogFooter><AlertDialogCancel disabled={deleting}>Keep account</AlertDialogCancel><AlertDialogAction type="button" disabled={confirmation !== identifier || deleting} onClick={remove}>{deleting ? 'Deleting…' : 'Delete account'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </section>;
 }
 
@@ -1383,7 +1419,7 @@ export function Dashboard({
         {activeView === 'overview' && <>
           <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Overview</h1><p>Account details, trace activity, and credit use.</p></header>
           <div className="dashboard-summary">
-            <div><span>GitHub account</span><b>{user.github_login}</b></div>
+            <div><span>{authProviderName(user)} account</span><b>{accountIdentifier(user)}</b></div>
             <div><span>Admitted traces</span><b>{shares === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>
@@ -1405,7 +1441,7 @@ export function Dashboard({
           <AccountSettings theme={theme} onThemeChange={onThemeChange} />
           <ApiKeysPanel />
           <section className="dashboard-sessions" aria-labelledby="connected-services-title"><header><div><span className="eyebrow">Local service access</span><h2 id="connected-services-title">Connected devices</h2></div></header>{sessionError && <p className="dashboard-session-error" role="alert">{sessionError}</p>}{sessions === null && !sessionError ? <p className="dashboard-session-empty">Loading connected devices…</p> : sessions?.length ? <><div className="dashboard-session-list">{sessions.map((session) => <article key={session.id}><div><b>{session.device_name}</b><span>Created {sessionDate(session.created_at)} · Last used {sessionDate(session.last_used_at)} · Expires {sessionDate(session.expires_at)}</span></div><button type="button" onClick={() => setRevokeTarget(session)} disabled={revoking === session.id}>{revoking === session.id ? 'Revoking…' : 'Revoke'}</button></article>)}</div>{sessionCursor && <button className="dashboard-load-more" type="button" onClick={loadMoreSessions} disabled={loadingMoreSessions}>{loadingMoreSessions ? 'Loading…' : 'Load more devices'}</button>}</> : <p className="dashboard-session-empty">No local services are connected.</p>}</section>
-          <DeleteAccountPanel githubLogin={user.github_login} onDeleted={onAccountDeleted} />
+          <DeleteAccountPanel identifier={accountIdentifier(user)} onDeleted={onAccountDeleted} />
         </>}
         {activeView === 'traces' && <>
           <header className="dashboard-page-header"><span className="eyebrow">Published evidence</span><h1>Your traces</h1><p>See which traces are live, still processing, or unavailable.</p></header>
@@ -1494,12 +1530,12 @@ export function CliApproval({ route, user, loadApproval = getCliApproval, approv
   />;
   if (!user) return <AuthorizationPage
     title="Sign in to continue"
-    description={<p>Use the GitHub account that should own this local service. You’ll review the device name and approve the connection next.</p>}
-    action={<a className="button button-dark" href={`/api/auth/github?return_to=${encodeURIComponent(window.location.hash)}`}>Continue with GitHub</a>}
+    description={<p>Sign in to the account that should own this local service. You’ll review the device name and approve the connection next.</p>}
+    action={<a className="button button-dark" href={`/#/signin?return_to=${encodeURIComponent(window.location.hash)}`}>Choose sign-in method</a>}
     facts={[
       ['Next step', 'Review and approve the device'],
-      ['GitHub access', 'Identity only'],
-      ['Repository access', 'Not requested'],
+      ['Google access', 'Email verification and basic profile only'],
+      ['Provider tokens', 'Not retained'],
       ['Control', 'Revoke later from Account'],
     ]}
   />;
@@ -1509,7 +1545,7 @@ export function CliApproval({ route, user, loadApproval = getCliApproval, approv
     description={<p>Your local dashboard will finish connecting to this account shortly. You can close this page.</p>}
     facts={[
       ['Device', details?.device_name || 'Local service'],
-      ['Account', user.github_login],
+      ['Account', accountName(user)],
       ['Status', 'Approved'],
     ]}
   />;
@@ -1519,7 +1555,7 @@ export function CliApproval({ route, user, loadApproval = getCliApproval, approv
     description={<p role="alert">{error} Return to the local dashboard and start again.</p>}
     facts={[
       ['Request', 'Needs attention'],
-      ['Account', user.github_login],
+      ['Account', accountName(user)],
       ['Next step', 'Start again in the local dashboard'],
     ]}
   />;
@@ -1528,7 +1564,7 @@ export function CliApproval({ route, user, loadApproval = getCliApproval, approv
     description={<p role="status">Retrieving the device and account details before you approve anything.</p>}
     facts={[
       ['Request', 'Checking'],
-      ['Account', user.github_login],
+      ['Account', accountName(user)],
       ['Changes', 'None until you approve'],
     ]}
   />;
@@ -1539,7 +1575,7 @@ export function CliApproval({ route, user, loadApproval = getCliApproval, approv
     action={<button className="button button-dark" type="button" onClick={approve}>Approve service</button>}
     facts={[
       ['Device', details.device_name],
-      ['Account', user.github_login],
+      ['Account', accountName(user)],
       ['Authorization code', details.user_code],
       ['Expires', sessionDate(details.expires_at)],
     ]}
@@ -1665,7 +1701,7 @@ function App() {
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  return <><Header user={user} onLogout={logout} hideSignIn={section === 'authorize'} authPending={authPending} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} theme={theme} onThemeChange={setTheme} onAccountDeleted={accountDeleted} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} hideSignIn={section === 'authorize' || section === 'signin'} authPending={authPending} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'signin' ? <SignInPage route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} theme={theme} onThemeChange={setTheme} onAccountDeleted={accountDeleted} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 const applicationRoot = document.getElementById('root');
