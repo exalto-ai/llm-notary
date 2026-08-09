@@ -99,6 +99,20 @@ printf '%s\n' 'LLM_NOTARY_STRIPE_PRICE_ID=price_...' | \
 unset STRIPE_VALUE
 ```
 
+The account API exposes the configured purchase mode as `disabled`, `test`, or
+`live`. Verify that the dashboard hides Checkout when disabled and shows its
+test-mode warning before exercising a test Price. Do not promote a test secret,
+Price, or webhook endpoint into a live configuration.
+
+Billing must be rolled out in two stages. First deploy the billing-foundation
+migration and admission code to every API Machine, then verify that every
+Machine runs that release before deploying or enabling Stripe Checkout and
+webhook processing. Once a paid ticket, refund, or dispute adjustment has been
+written, the billing-foundation release is the minimum safe rollback version:
+older API images do not understand paid pools or adjustment rows and must not
+serve traffic. A later release may be rolled back only to a version at or above
+that foundation.
+
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private
 `llm-notary-prod-api.flycast` origin and renews the returned PostgreSQL-backed

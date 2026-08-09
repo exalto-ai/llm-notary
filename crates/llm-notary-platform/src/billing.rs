@@ -39,6 +39,14 @@ const STRIPE_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 type HmacSha256 = Hmac<Sha256>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum BillingPurchaseMode {
+    Disabled,
+    Test,
+    Live,
+}
+
 #[derive(Clone)]
 pub struct BillingService {
     stripe: Option<StripeClient>,
@@ -106,6 +114,14 @@ impl BillingService {
                 "Hosted credit purchases are not configured",
             )
         })
+    }
+
+    pub(crate) fn purchase_mode(&self) -> BillingPurchaseMode {
+        match self.stripe.as_ref() {
+            None => BillingPurchaseMode::Disabled,
+            Some(stripe) if stripe.livemode => BillingPurchaseMode::Live,
+            Some(_) => BillingPurchaseMode::Test,
+        }
     }
 }
 

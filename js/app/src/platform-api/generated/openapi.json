@@ -2882,15 +2882,19 @@
           "paid"
         ]
       },
-      "AccountBillingState": {
+      "AccountBillingResponse": {
         "type": "object",
         "required": [
           "service_plan",
-          "billing_status"
+          "billing_status",
+          "purchase_mode"
         ],
         "properties": {
           "billing_status": {
             "$ref": "#/components/schemas/BillingStatus"
+          },
+          "purchase_mode": {
+            "$ref": "#/components/schemas/BillingPurchaseMode"
           },
           "service_plan": {
             "$ref": "#/components/schemas/ServicePlan"
@@ -3120,6 +3124,14 @@
           }
         }
       },
+      "BillingPurchaseMode": {
+        "type": "string",
+        "enum": [
+          "disabled",
+          "test",
+          "live"
+        ]
+      },
       "BillingPurchasesResponse": {
         "type": "object",
         "required": [
@@ -3225,7 +3237,7 @@
         ],
         "properties": {
           "billing": {
-            "$ref": "#/components/schemas/AccountBillingState"
+            "$ref": "#/components/schemas/AccountBillingResponse"
           },
           "credential": {
             "$ref": "#/components/schemas/CliCredentialResponse"
@@ -3712,7 +3724,7 @@
         ],
         "properties": {
           "billing": {
-            "$ref": "#/components/schemas/AccountBillingState"
+            "$ref": "#/components/schemas/AccountBillingResponse"
           },
           "credits": {
             "$ref": "#/components/schemas/CreditSummary"

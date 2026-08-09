@@ -117,7 +117,8 @@ struct WhoamiResponse {
     user: CliUser,
     credential: CliCredential,
     session: Option<CliSession>,
-    billing: BillingState,
+    #[serde(default)]
+    billing: Option<BillingState>,
     credits: CreditSummary,
 }
 
@@ -436,7 +437,7 @@ pub(crate) async fn account_connection_status() -> Result<AccountConnectionStatu
         device_name: response.session.map(|session| session.device_name),
         credential_kind: Some(response.credential.kind),
         credential_name: Some(response.credential.name),
-        billing: Some(response.billing),
+        billing: response.billing,
         credits: Some(response.credits),
     })
 }
@@ -1072,6 +1073,24 @@ mod tests {
         assert!(validate_api_key_shape(&key).is_ok());
         assert!(validate_api_key_shape("not-a-key").is_err());
         assert!(validate_api_key_shape(&format!("{key}\n")).is_err());
+    }
+
+    #[test]
+    fn whoami_accepts_older_servers_without_billing_fields() {
+        let response: WhoamiResponse = serde_json::from_value(serde_json::json!({
+            "user": { "github_login": "fixture-user" },
+            "credential": { "kind": "cli_session", "name": "fixture device" },
+            "session": { "device_name": "fixture device" },
+            "credits": {
+                "total_remaining_bytes": 1024,
+                "included_monthly_remaining_bytes": 1024,
+                "supplemental_remaining_bytes": 0,
+                "reset_at": 4102444800_i64,
+                "next_grant_expiration": null
+            }
+        }))
+        .unwrap();
+        assert!(response.billing.is_none());
     }
 
     #[test]

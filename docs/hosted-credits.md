@@ -87,6 +87,11 @@ monthly reset, next grant expiration, and bounded grant/debit/adjustment
 history. History labels and errors omit address subjects, record digests,
 tickets, credentials, and other users' activity.
 
+The hosted account response also reports whether purchases are `disabled`, in
+Stripe `test` mode, or `live`. The dashboard hides Checkout controls when
+purchases are disabled and labels test mode prominently; test Checkout never
+represents a real charge.
+
 ## Operator configuration
 
 Stripe support is disabled when all three settings are absent. Enabling it

@@ -694,8 +694,9 @@ export interface components {
     schemas: {
         /** @enum {string} */
         AccessPool: "public" | "free" | "paid";
-        AccountBillingState: {
+        AccountBillingResponse: {
             billing_status: components["schemas"]["BillingStatus"];
+            purchase_mode: components["schemas"]["BillingPurchaseMode"];
             service_plan: components["schemas"]["ServicePlan"];
         };
         AdmissionLimits: {
@@ -766,6 +767,8 @@ export interface components {
             /** Format: int64 */
             updated_at: number;
         };
+        /** @enum {string} */
+        BillingPurchaseMode: "disabled" | "test" | "live";
         BillingPurchasesResponse: {
             purchases: components["schemas"]["BillingPurchase"][];
         };
@@ -793,7 +796,7 @@ export interface components {
             name: string;
         };
         CliMeResponse: {
-            billing: components["schemas"]["AccountBillingState"];
+            billing: components["schemas"]["AccountBillingResponse"];
             credential: components["schemas"]["CliCredentialResponse"];
             credits: components["schemas"]["CreditSummary"];
             session?: null | components["schemas"]["CliSessionResponse"];
@@ -925,7 +928,7 @@ export interface components {
             share_url: string;
         };
         MeResponse: {
-            billing: components["schemas"]["AccountBillingState"];
+            billing: components["schemas"]["AccountBillingResponse"];
             credits: components["schemas"]["CreditSummary"];
             share_stats: components["schemas"]["ShareStats"];
             user: components["schemas"]["PublicUser"];

@@ -172,9 +172,29 @@ struct AuthProvidersResponse {
 #[derive(Serialize, ToSchema)]
 struct MeResponse {
     user: PublicUser,
-    billing: service_admission::AccountBillingState,
+    billing: AccountBillingResponse,
     credits: service_admission::CreditSummary,
     share_stats: ShareStats,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema)]
+struct AccountBillingResponse {
+    service_plan: service_admission::ServicePlan,
+    billing_status: service_admission::BillingStatus,
+    purchase_mode: billing::BillingPurchaseMode,
+}
+
+impl AccountBillingResponse {
+    fn new(
+        state: service_admission::AccountBillingState,
+        purchase_mode: billing::BillingPurchaseMode,
+    ) -> Self {
+        Self {
+            service_plan: state.service_plan,
+            billing_status: state.billing_status,
+            purchase_mode,
+        }
+    }
 }
 
 #[derive(Serialize, ToSchema)]
@@ -255,7 +275,7 @@ struct CliMeResponse {
     user: PublicUser,
     credential: CliCredentialResponse,
     session: Option<CliSessionResponse>,
-    billing: service_admission::AccountBillingState,
+    billing: AccountBillingResponse,
     credits: service_admission::CreditSummary,
 }
 
@@ -1234,7 +1254,7 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
             auth_provider: BrowserAuthProvider::from_database(&user.4)?,
             display_name: user.1,
         },
-        billing,
+        billing: AccountBillingResponse::new(billing, state.billing.purchase_mode()),
         credits,
         share_stats: ShareStats {
             total,
@@ -1815,7 +1835,7 @@ async fn cli_me(
             name: principal.credential_name,
         },
         session,
-        billing,
+        billing: AccountBillingResponse::new(billing, state.billing.purchase_mode()),
         credits,
     }))
 }
