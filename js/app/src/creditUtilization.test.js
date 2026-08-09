@@ -17,12 +17,12 @@ function entry({ daysAgo = 0, bytes, kind = 'debit', milliseconds = false }) {
 }
 
 describe('daily credit utilization', () => {
-  test('returns seven consecutive UTC days including zero-usage days', () => {
+  test('returns 30 consecutive UTC days including zero-usage days', () => {
     const result = aggregateDailyDebits([], NOW);
 
-    expect(result).toHaveLength(7);
-    expect(result[0].timestamp).toBe(TODAY - 6 * DAY_MS);
-    expect(result[6].timestamp).toBe(TODAY);
+    expect(result).toHaveLength(30);
+    expect(result[0].timestamp).toBe(TODAY - 29 * DAY_MS);
+    expect(result[29].timestamp).toBe(TODAY);
     expect(result.every((day) => day.mb === 0)).toBe(true);
   });
 
@@ -60,7 +60,7 @@ describe('daily credit utilization', () => {
   test('ignores grants, invalid values, and entries outside the window', () => {
     const result = aggregateDailyDebits([
       entry({ bytes: 9_000_000, kind: 'grant' }),
-      entry({ daysAgo: 7, bytes: 1_000_000 }),
+      entry({ daysAgo: 30, bytes: 1_000_000 }),
       { ...entry({ bytes: 1_000_000 }), amount_bytes: Number.NaN },
     ], NOW);
 
@@ -69,14 +69,14 @@ describe('daily credit utilization', () => {
 
   test('treats a signed debit amount as utilization', () => {
     const result = aggregateDailyDebits([entry({ bytes: -125_000 })], NOW);
-    expect(result[6].mb).toBe(0.125);
+    expect(result[29].mb).toBe(0.125);
   });
 
-  test('loads paginated history until it crosses the seven-day boundary', async () => {
+  test('loads paginated history until it crosses the 30-day boundary', async () => {
     const requests = [];
     const pages = [
       { items: [entry({ bytes: 500_000 }), entry({ kind: 'grant', bytes: 2_000_000 })], next_cursor: 'page-2' },
-      { items: [entry({ daysAgo: 3, bytes: 250_000 }), entry({ daysAgo: 7, bytes: 1_000_000 })], next_cursor: 'page-3' },
+      { items: [entry({ daysAgo: 29, bytes: 250_000 }), entry({ daysAgo: 30, bytes: 1_000_000 })], next_cursor: 'page-3' },
     ];
     const result = await loadRecentDebits(async (options) => {
       requests.push(options);

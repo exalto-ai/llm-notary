@@ -1279,10 +1279,11 @@ export function DeleteAccountPanel({ identifier, onDeleted, deleteAccount = dele
   </section>;
 }
 
-function CreditUtilizationFallback() {
+function CreditUtilizationFallback({ credits }) {
   return <section className="dashboard-utilization dashboard-utilization--loading" role="status" aria-label="Loading daily utilization">
-    <header><div><span className="eyebrow">Daily utilization</span><h2>Last 7 days</h2></div><span>MB · UTC</span></header>
+    <header><div><span className="eyebrow">Daily utilization</span><h2>Last 30 days</h2></div><span>MB · UTC</span></header>
     <div className="dashboard-utilization-plot dashboard-utilization-plot--loading"><i /></div>
+    <dl><div><dt><i className="dashboard-utilization-period" />30-day use</dt><dd>—</dd></div><div><dt>Available</dt><dd>{fileSize(credits.total_remaining_bytes)}</dd></div><div><dt>Overall budget</dt><dd>{fileSize(credits.total_granted_bytes)}</dd></div></dl>
   </section>;
 }
 
@@ -1619,7 +1620,7 @@ export function Dashboard({
             <div><span>Admitted traces</span><b>{shares === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>
-          {credits && <Suspense fallback={<CreditUtilizationFallback />}><CreditUtilizationChart historyDebits={creditUtilizationHistory} historyError={creditUtilizationError} /></Suspense>}
+          {credits && <Suspense fallback={<CreditUtilizationFallback credits={credits} />}><CreditUtilizationChart credits={credits} formatBytes={fileSize} historyDebits={creditUtilizationHistory} historyError={creditUtilizationError} /></Suspense>}
         </>}
         {activeView === 'credits' && <>
           <header className="dashboard-page-header"><span className="eyebrow">Usage</span><h1>Credits</h1><p>See what you’ve used, what remains, and when credits expire.</p></header>

@@ -1,5 +1,6 @@
 const BYTES_PER_MB = 1_000_000;
 const DAY_MS = 86_400_000;
+const UTILIZATION_DAYS = 30;
 
 function utcDayStart(timestamp) {
   const date = new Date(timestamp);
@@ -12,7 +13,7 @@ function entryTimestampMs(entry) {
 }
 
 export async function loadRecentDebits(loadPage, now = Date.now(), cancelled = () => false) {
-  const cutoff = utcDayStart(now) - 6 * DAY_MS;
+  const cutoff = utcDayStart(now) - (UTILIZATION_DAYS - 1) * DAY_MS;
   const entries = [];
   const seenCursors = new Set();
   let cursor;
@@ -37,8 +38,8 @@ export async function loadRecentDebits(loadPage, now = Date.now(), cancelled = (
 
 export function aggregateDailyDebits(debitEntries, now = Date.now()) {
   const today = utcDayStart(now);
-  const days = Array.from({ length: 7 }, (_, index) => {
-    const timestamp = today - (6 - index) * DAY_MS;
+  const days = Array.from({ length: UTILIZATION_DAYS }, (_, index) => {
+    const timestamp = today - (UTILIZATION_DAYS - 1 - index) * DAY_MS;
     return {
       key: new Date(timestamp).toISOString().slice(0, 10),
       timestamp,
