@@ -90,9 +90,9 @@ Developer ID signed, notarized by Apple, and stapled for Gatekeeper checks. See
 details.
 
 For SDK integrations, coding agents, scripts, and servers, the moving `latest`
-website channel provides command-line builds for macOS and Linux on x86-64 and
-ARM64. It installs both `llm-notaryd` and `llm-notary` into `~/.local/bin` by
-default:
+website channel provides command-line builds for Apple silicon Macs and x86-64
+or ARM64 Linux systems. It installs both `llm-notaryd` and `llm-notary` into
+`~/.local/bin` by default:
 
 ```bash
 curl -fsSL https://llm-notary.exalto.ai/install.sh | sh

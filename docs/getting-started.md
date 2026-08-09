@@ -42,8 +42,9 @@ development details.
 ## Install the CLI and local service
 
 Use this path for SDK and agent integration, scripting, unattended systems, or
-direct control of the local API. The installer supports macOS and Linux on
-x86-64 and ARM64. It requires `curl`, `tar`, and either `sha256sum` or `shasum`.
+direct control of the local API. The installer supports Apple silicon Macs and
+x86-64 or ARM64 Linux systems. It requires `curl`, `tar`, and either
+`sha256sum` or `shasum`.
 
 ```bash
 curl -fsSL https://llm-notary.exalto.ai/install.sh | sh

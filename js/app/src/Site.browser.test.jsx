@@ -53,6 +53,7 @@ describe('hosted site', () => {
     await expect.element(download).toHaveAttribute('href', '/downloads/cli/builds/build-123/LLM-Notary-macos-arm64.dmg');
     await expect.element(download).toHaveAttribute('download', 'LLM-Notary-macos-arm64.dmg');
     await expect.element(page.getByRole('link', { name: 'build on the LLM Notary stack' })).toHaveAttribute('href', '#/docs/getting-started');
+    expect(document.querySelector('.hero-developer-path')?.textContent).toBe('or, build on the LLM Notary stack');
     await expect.element(page.getByRole('link', { name: 'Get started' })).not.toBeInTheDocument();
     await expect.element(page.getByRole('link', { name: 'Browse Library' })).not.toBeInTheDocument();
   });

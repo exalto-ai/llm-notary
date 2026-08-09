@@ -63,4 +63,21 @@ if PATH="$test_root/fake-bin:$PATH" \
 fi
 grep -q 'build identifier is malformed' "$test_root/escape.out"
 
-echo "Installer selects, verifies, and rejects unsafe latest artifacts."
+printf '%s\n' \
+  '#!/bin/sh' \
+  'case "${1:-}" in' \
+  "  -s) printf '%s\\n' Darwin ;;" \
+  "  -m) printf '%s\\n' x86_64 ;;" \
+  "  *) exec \"$real_uname\" \"\$@\" ;;" \
+  'esac' > "$test_root/fake-bin/uname"
+chmod 0755 "$test_root/fake-bin/uname"
+if PATH="$test_root/fake-bin:$PATH" \
+    LLM_NOTARY_DOWNLOAD_ROOT="file://$test_root/downloads/cli" \
+    LLM_NOTARY_INSTALL_DIR="$test_root/intel-mac-bin" \
+    sh "$(dirname "$0")/../public/install.sh" >"$test_root/intel-mac.out" 2>&1; then
+  echo "installer accepted an Intel Mac" >&2
+  exit 1
+fi
+grep -q 'Intel Macs are not supported' "$test_root/intel-mac.out"
+
+echo "Installer selects, verifies, and rejects unsafe or unsupported latest artifacts."
