@@ -20,7 +20,7 @@
     "test:dashboard": "vitest run --config vitest.dashboard.config.js",
     "test:site": "vitest run --config vitest.site.config.js",
     "test:install": "sh scripts/test-install.sh",
-    "test:unit": "vitest run --environment node src/notaryLifecycle.test.ts",
+    "test:unit": "vitest run --environment node src/notaryLifecycle.test.ts src/creditUtilization.test.js",
     "preview": "vite preview --host 127.0.0.1",
     "preview:dashboard": "vite preview --outDir ../../crates/llm-notary-client/dashboard --host 127.0.0.1"
   },

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
 import { AccountSettings, ApiKeysPanel, CliApproval, Dashboard, DeleteAccountPanel, Footer, Header, HostedNotaryRecord, Landing, Library, ListedSharesPreview, SharePage, SignInPage, VerificationPage } from './main';
+import CreditUtilizationChart from './CreditUtilizationChart';
 import { ProviderIdentity } from './ProviderIdentity';
 import { latestMacosDownloadHref } from './releaseDownloads';
 import { initialThemePreference } from './theme';
@@ -757,5 +758,31 @@ describe('hosted site', () => {
 
     expect(document.body.textContent).not.toContain('Verification passed.');
     await expect.element(page.getByText('second.llmtrace')).toBeVisible();
+  });
+
+  test('renders 30 days of utilization in decimal MB with an accessible summary and overall budget', async () => {
+    const today = Date.now() / 1000;
+    render(<CreditUtilizationChart credits={{ total_remaining_bytes: 500_000_000, total_granted_bytes: 750_000_000 }} formatBytes={(bytes) => `${bytes / 1_000_000} MB`} historyDebits={[
+      { id: 'd1', kind: 'debit', amount_bytes: 1_000_000, display_label: 'Capture A', created_at: today },
+      { id: 'd2', kind: 'debit', amount_bytes: 250_000, display_label: 'Capture B', created_at: today - 86400 },
+    ]} />);
+
+    await expect.element(page.getByRole('heading', { name: 'Last 30 days' })).toBeVisible();
+    await expect.element(page.getByRole('img', { name: /Daily utilization in MB.*Total 1.25 MB/i })).toBeVisible();
+    await expect.element(page.getByText('750 MB')).toBeVisible();
+    expect(document.querySelector('.recharts-bar-rectangle path')?.getAttribute('fill')).toBe('var(--action)');
+    expect(document.querySelectorAll('.recharts-bar-rectangle')).toHaveLength(2);
+  });
+
+  test('distinguishes loading, zero-usage, and unavailable utilization states', async () => {
+    const props = { credits: { total_remaining_bytes: 500_000_000, total_granted_bytes: 750_000_000 }, formatBytes: (bytes) => `${bytes / 1_000_000} MB` };
+    const rendered = render(<CreditUtilizationChart {...props} historyDebits={null} />);
+    await expect.element(page.getByRole('status', { name: 'Loading daily utilization' })).toBeVisible();
+
+    rendered.rerender(<CreditUtilizationChart {...props} historyDebits={[]} />);
+    await expect.element(page.getByRole('status').getByText('No utilization in the last 30 days')).toBeVisible();
+
+    rendered.rerender(<CreditUtilizationChart {...props} historyDebits={[]} historyError />);
+    await expect.element(page.getByRole('alert').getByText('Daily utilization unavailable')).toBeVisible();
   });
 });
