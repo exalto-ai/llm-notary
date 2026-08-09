@@ -396,12 +396,12 @@ function MotionStudies() {
 
 function PricingSection() {
   return <section className="section pricing" id="pricing" aria-labelledby="pricing-title">
-    <header className="pricing-intro"><span className="eyebrow">Hosted finalization</span><h2 id="pricing-title">Start included. Add only what you need.</h2><p>Credits pay for finalizing private captures through the hosted notary. They do not change proof strength or what a finished package can verify.</p></header>
+    <header className="pricing-intro"><span className="eyebrow">Pricing</span><h2 id="pricing-title">Pay as you go.</h2><p>Pay for every megabyte of data you get notarized. One balance works across every supported provider.</p></header>
     <div className="pricing-ledger">
-      <article><header><span>Signed-in account</span><div><b>$0</b><small>per month</small></div></header><h3>512 MiB included</h3><p>Renews at the start of each UTC month. Every account also begins with a non-expiring 128 MiB testing grant.</p><dl><div><dt>Public access</dt><dd>64 MiB monthly</dd></div><div><dt>Commitment</dt><dd>None</dd></div></dl></article>
-      <article><header><span>Additional credits</span><div><b>$5</b><small>per GB</small></div></header><h3>One-time purchase</h3><p>Buy 1–20 decimal GB per Stripe Checkout. Purchased credits do not expire.</p><dl><div><dt>Billing</dt><dd>One time</dd></div><div><dt>Subscription</dt><dd>Not required</dd></div></dl></article>
+      <article><header><span>Free tier</span><div><b>$0</b><small>per month</small></div></header><h3>512 MB included every month</h3><ul><li>No credit card required</li><li>Refreshes automatically every month</li><li>Produces the same verifiable package as paid credits</li></ul></article>
+      <article><header><span>One-time purchase</span><div><b>$5</b><small>per GB</small></div></header><h3>Buy additional credits through Stripe.</h3><ul><li>Credits never expire</li><li>Added to your balance after payment</li><li>Use them whenever your free credits run out</li></ul></article>
     </div>
-    <aside className="pricing-scope"><div><span className="eyebrow">Credit boundary</span><p>Capture, local and hosted verification, package downloads, public Library browsing, and self-hosted use do not consume hosted credits.</p></div><a href="/#/docs/hosted-credits">Read the full credit policy</a></aside>
+    <a className="pricing-details-link" href="/#/docs/hosted-credits">See how credits work</a>
   </section>;
 }
 
@@ -558,15 +558,15 @@ const docPages = {
     ],
   },
   'hosted-credits': {
-    title: 'Credits and utilization',
-    lead: 'Signed-in accounts receive included monthly credits and can add purchased or promotional credits for hosted use.',
+    title: 'Credits and usage',
+    lead: 'Signed-in users get free monthly credits and can buy more for hosted notarization.',
     blocks: [
-      { heading: 'How credits work', body: 'Every signed-in account receives an included monthly grant and can add credits through purchases, promotions, or manual adjustments. Capturing locally, retrying an unchanged finalization, verifying a package, and sharing an already-finalized session do not spend credits.' },
-      { heading: 'Monthly and additional grants', body: 'Anonymous use receives 64 MiB each UTC month and a signed-in account receives 512 MiB. During prototype testing, every signed-in account also receives one automatic, non-expiring 128 MiB testing grant. Purchased and promotional credits remain separate grants, and finalization spends the grant that expires soonest before non-expiring credit.' },
-      { heading: 'Buy additional credits', body: 'The account dashboard sells one-time increments at $5 USD per decimal GB through Stripe-hosted Checkout. The server fixes the price and grants non-expiring credits only after reconciling a signed webhook with Stripe. Refunds and disputes remove the corresponding credit; a reinstatement restores it.' },
+      { heading: 'How credits work', body: 'You spend credits only when LLM Notary notarizes a capture through the hosted service. Capturing locally, retrying the same notarization, verifying a package, and sharing an existing package do not spend credits.' },
+      { heading: 'Free and extra credits', body: 'Public users get 64 MiB each month, while signed-in users get 512 MiB. During prototype testing, every signed-in user also gets a one-time 128 MiB credit that does not expire. LLM Notary uses credits that expire sooner before credits that never expire.' },
+      { heading: 'Buy more credits', body: 'The account dashboard sells credits in one-time increments at $5 USD per GB through Stripe Checkout. Purchased credits never expire and appear in your balance after Stripe confirms the payment. Refunds and disputes remove the corresponding credits; reinstated payments restore them.' },
       { heading: 'Anonymous allowances are scoped by network address', body: 'Public hosted use derives a rotating, keyed subject from the connection address: one IPv4 address or one IPv6 /64 prefix. Only explicitly trusted reverse proxies may supply the client address. The raw address is not stored in admission records or sent to a notary worker.' },
       { heading: 'An abuse control, not an identity claim', note: 'Network-address scoping is only a coarse abuse control. People behind the same NAT, corporate gateway, or VPN can share an allowance, while one person may appear under different addresses. The derived subject does not identify a person and is not a privacy guarantee.' },
-      { heading: 'Account summary', body: 'The hosted dashboard shows plan and billing status, included and additional balances, the monthly reset, the next expiration, purchases, offers, and paginated credit activity. A connected local service can retrieve the same account summary with `llm-notary whoami --json`.' },
+      { heading: 'Your balance', body: 'The hosted dashboard shows your included and extra credits, monthly reset, next expiration, purchases, offers, and credit activity. A connected local service can retrieve the same account summary with `llm-notary whoami --json`.' },
       { heading: 'Evidence is unchanged', body: 'Admission and credit bookkeeping do not change TLSNotary evidence, trace-package verification, local bundle retention, or the trust claim. Self-hosted notaries do not need the hosted credit ledger unless their operator deliberately adopts it.' },
     ],
   },
@@ -706,7 +706,7 @@ const docSubheadings = {
 
 const docNavigation = [
   { label: 'Start', pages: [['overview', 'Overview'], ['getting-started', 'Install options']] },
-  { label: 'Understand', pages: [['how-it-works', 'Trust model'], ['hosted-credits', 'Credits and utilization'], ['trace-packages', 'Trace packages']] },
+  { label: 'Understand', pages: [['how-it-works', 'Trust model'], ['hosted-credits', 'Credits and usage'], ['trace-packages', 'Trace packages']] },
   { label: 'Share', pages: [['share', 'Share a session']] },
 ];
 const docOrder = docNavigation.flatMap((group) => group.pages.map(([key]) => key));
@@ -1279,8 +1279,8 @@ export function DeleteAccountPanel({ identifier, onDeleted, deleteAccount = dele
 }
 
 function CreditUtilizationFallback() {
-  return <section className="dashboard-utilization dashboard-utilization--loading" role="status" aria-label="Loading utilization">
-    <header><div><span className="eyebrow">Current allocation</span><h2>Utilization</h2></div><i /></header>
+  return <section className="dashboard-utilization dashboard-utilization--loading" role="status" aria-label="Loading credit usage">
+    <header><div><span className="eyebrow">Current balance</span><h2>Credit usage</h2></div><i /></header>
     <div className="dashboard-utilization-plot"><i /></div>
     <dl><div><dt><i />Used</dt><dd><i /></dd></div><div><dt><i />Available</dt><dd><i /></dd></div></dl>
   </section>;
@@ -1612,16 +1612,16 @@ export function Dashboard({
         {activeView === 'credits' && <>
           <header className="dashboard-page-header"><span className="eyebrow">Usage</span><h1>Credits</h1><p>See what you’ve used, what remains, and when credits expire.</p></header>
           {credits && <section className="dashboard-credits" aria-labelledby="credit-balance-title">
-            <header><div><span className="eyebrow">Utilization</span><h2 id="credit-balance-title">{fileSize(credits.total_remaining_bytes)} available</h2></div><div className="dashboard-credit-meta"><span>{billing.service_plan} plan · {billing.billing_status}</span><span>Resets {sessionDate(credits.reset_at)}</span></div></header>
+            <header><div><span className="eyebrow">Credit usage</span><h2 id="credit-balance-title">{fileSize(credits.total_remaining_bytes)} available</h2></div><div className="dashboard-credit-meta"><span>{billing.service_plan} plan · {billing.billing_status}</span><span>Resets {sessionDate(credits.reset_at)}</span></div></header>
             <p className="dashboard-credit-note">Included credits reset monthly. Purchased credits are added separately and do not expire.</p>
-            <div className="dashboard-credit-ledger" aria-label="Credit balance breakdown"><div><span>Included this month</span><b>{fileSize(credits.included_monthly_remaining_bytes)}</b></div><div><span>Additional credits</span><b>{fileSize(credits.supplemental_remaining_bytes)}</b></div><div><span>Next expiration</span><b>{credits.next_grant_expiration ? sessionDate(credits.next_grant_expiration) : 'None'}</b></div></div>
+            <div className="dashboard-credit-ledger" aria-label="Credit balance breakdown"><div><span>Included this month</span><b>{fileSize(credits.included_monthly_remaining_bytes)}</b></div><div><span>Extra credits</span><b>{fileSize(credits.supplemental_remaining_bytes)}</b></div><div><span>Next expiration</span><b>{credits.next_grant_expiration ? sessionDate(credits.next_grant_expiration) : 'None'}</b></div></div>
             {creditError && <p className="dashboard-session-error" role="alert">{creditError}</p>}
             {creditOffers?.map((offer) => <article className="dashboard-credit-offer" key={offer.id}><div><span className="eyebrow">Available offer</span><b>{offer.title}</b><p>{offer.description} Claim by {sessionDate(offer.claim_expires_at)}.</p></div><button type="button" onClick={() => claimOffer(offer)} disabled={claimingOffer === offer.id}>{claimingOffer === offer.id ? 'Claiming…' : `Claim ${fileSize(offer.amount_bytes)}`}</button></article>)}
             {checkoutEnabled ? <section className="dashboard-credit-purchase" aria-labelledby="buy-credit-title">
-              <div className="dashboard-credit-purchase-copy"><span className="eyebrow">Additional credits · $5 per GB</span><h3 id="buy-credit-title">Buy {quantityGb} GB</h3>{purchaseMode === 'test' && <strong className="dashboard-billing-mode" role="status">Stripe test mode · no real charges</strong>}<p>{purchaseMode === 'test' ? `$${quantityGb * 5}.00 USD test purchase · use a Stripe test card` : `$${quantityGb * 5}.00 USD · one-time payment through Stripe`}</p></div>
+              <div className="dashboard-credit-purchase-copy"><span className="eyebrow">Extra credits · $5 per GB</span><h3 id="buy-credit-title">Buy {quantityGb} GB</h3>{purchaseMode === 'test' && <strong className="dashboard-billing-mode" role="status">Stripe test mode · no real charges</strong>}<p>{purchaseMode === 'test' ? `$${quantityGb * 5}.00 USD test purchase · use a Stripe test card` : `$${quantityGb * 5}.00 USD · one-time payment through Stripe`}</p></div>
               <div className="dashboard-credit-quantity" role="group" aria-label="Credit quantity">{[1, 5, 10, 20].map((quantity) => <button key={quantity} type="button" aria-label={`${quantity} GB`} aria-pressed={quantityGb === quantity} onClick={() => { setQuantityGb(quantity); setCheckoutAttemptKey(null); }}>{quantity}<small aria-hidden="true">GB</small></button>)}</div>
               <button className="dashboard-credit-buy" type="button" onClick={buyCredits} disabled={startingCheckout}>{startingCheckout ? 'Opening Checkout…' : purchaseMode === 'test' ? `Open test Checkout · ${quantityGb} GB for $${quantityGb * 5}` : `Buy ${quantityGb} GB for $${quantityGb * 5}`}</button>
-            </section> : <section className="dashboard-credit-purchase dashboard-credit-purchase--disabled" aria-labelledby="buy-credit-title"><div className="dashboard-credit-purchase-copy"><span className="eyebrow">Additional credits</span><h3 id="buy-credit-title">Purchases unavailable</h3><p>Hosted credit purchases are not configured for this service.</p></div></section>}
+            </section> : <section className="dashboard-credit-purchase dashboard-credit-purchase--disabled" aria-labelledby="buy-credit-title"><div className="dashboard-credit-purchase-copy"><span className="eyebrow">Extra credits</span><h3 id="buy-credit-title">Purchases unavailable</h3><p>You can’t buy more credits right now.</p></div></section>}
             {displayedCheckoutStatus === 'cancelled' && <p className="dashboard-checkout-state">Checkout was cancelled. No credits were added.</p>}
             {checkoutReturnMessages[displayedCheckoutStatus] && <p className="dashboard-checkout-state" role="status">{checkoutReturnMessages[displayedCheckoutStatus]}</p>}
             {purchaseError && <p className="dashboard-session-error" role="alert">{purchaseError}</p>}

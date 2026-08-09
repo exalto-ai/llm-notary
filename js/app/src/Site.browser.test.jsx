@@ -71,15 +71,17 @@ describe('hosted site', () => {
     await expect.element(footer.getByRole('link', { name: 'Library' })).toHaveAttribute('href', '/#/library');
   });
 
-  test('publishes exact hosted-finalization pricing on the landing page', async () => {
+  test('explains hosted pricing in plain language on the landing page', async () => {
     render(<Landing loadLatestPointer={async () => 'build-123 0.1.0'} />);
 
     const pricing = document.getElementById('pricing');
     expect(pricing).not.toBeNull();
-    await expect.element(page.getByRole('heading', { name: 'Start included. Add only what you need.' })).toBeVisible();
-    await expect.element(page.getByText('512 MiB included')).toBeVisible();
-    await expect.element(page.getByText('Purchased credits do not expire.')).toBeVisible();
-    await expect.element(page.getByRole('link', { name: 'Read the full credit policy' })).toHaveAttribute('href', '/#/docs/hosted-credits');
+    await expect.element(page.getByRole('heading', { name: 'Pay as you go.' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: '512 MB included every month' })).toBeVisible();
+    await expect.element(page.getByText('No credit card required')).toBeVisible();
+    await expect.element(page.getByText('Credits never expire')).toBeVisible();
+    await expect.element(page.getByText('Credit boundary')).not.toBeInTheDocument();
+    await expect.element(page.getByRole('link', { name: 'See how credits work' })).toHaveAttribute('href', '/#/docs/hosted-credits');
   });
 
   test('sends the macOS action to install options when the latest pointer is unavailable', async () => {
@@ -271,6 +273,7 @@ describe('hosted site', () => {
     };
     render(<Dashboard {...common} user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'disabled' }, credits, share_stats: { total: 0, admitted: 0, in_progress: 0 } }} />);
     await expect.element(page.getByRole('heading', { name: 'Purchases unavailable' })).toBeVisible();
+    await expect.element(page.getByText('You can’t buy more credits right now.')).toBeVisible();
     await expect.element(page.getByRole('group', { name: 'Credit quantity' })).not.toBeInTheDocument();
 
     cleanup();
