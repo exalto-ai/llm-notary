@@ -80,7 +80,7 @@ export function MacosDownloadLink({ loadPointer = loadLatestPointer }) {
   }, [loadPointer]);
   return <a className="button button-dark hero-download" href={downloadHref || '#/docs/getting-started'} download={downloadHref ? macosDmgName : undefined} aria-busy={!downloadHref && !unavailable}>
     <img src={appleLogoUrl} alt="" aria-hidden="true" />
-    <span><b>Download for macOS</b><small>{unavailable ? 'View install options' : 'Apple silicon · macOS 12+'}</small></span>
+    <span><b>Download for macOS</b>{unavailable && <small>View install options</small>}</span>
   </a>;
 }
 function PenMark() {
@@ -155,9 +155,29 @@ export function Header({ user, onLogout, hideSignIn = false, authPending = false
   return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} /> : !hideSignIn && authPending ? <span className="account-auth-placeholder" role="status" aria-label="Checking sign-in status"><i /></span> : !hideSignIn && <a className="sign-in-link" href="/#/signin"><span>Sign in</span></a>}</nav></header>;
 }
 
+function AuthProviderLink({ provider, href, pendingProvider, onStart }) {
+  const name = provider === 'google' ? 'Google' : 'GitHub';
+  const pending = pendingProvider === provider;
+  const disabled = pendingProvider !== null && !pending;
+  const className = `auth-provider${pending ? ' auth-provider--pending' : ''}${disabled ? ' auth-provider--disabled' : ''}`;
+  const start = (event) => {
+    if (pendingProvider !== null) {
+      event.preventDefault();
+      return;
+    }
+    onStart(provider);
+  };
+  return <a className={className} href={href} onClick={start} aria-busy={pending || undefined} aria-disabled={disabled || undefined} tabIndex={disabled ? -1 : undefined}>
+    <AuthProviderIcon provider={provider} />
+    <b>{pending ? `Connecting to ${name}…` : `Continue with ${name}`}</b>
+    <span className="auth-provider-progress" aria-hidden="true">{pending && <><i /><i /><i /></>}</span>
+  </a>;
+}
+
 export function SignInPage({ route = 'signin', user = null, loadProviders = getAuthProviders }) {
   const [providers, setProviders] = useState(null);
   const [error, setError] = useState(null);
+  const [pendingProvider, setPendingProvider] = useState(null);
   useEffect(() => {
     let cancelled = false;
     loadProviders()
@@ -172,8 +192,8 @@ export function SignInPage({ route = 'signin', user = null, loadProviders = getA
   return <main className="auth-page"><section className="auth-panel" aria-labelledby="sign-in-title">
     <h1 id="sign-in-title">Sign in</h1><p className="auth-intro">Continue to LLM Notary.</p>
     {error ? <div className="auth-state" role="alert"><b>Sign-in options are unavailable</b><span>{error}</span></div> : providers === null ? <div className="auth-state" role="status"><b>Loading sign-in options</b></div> : <div className="auth-provider-list">
-      {providers.google && <a className="auth-provider" href={providerHref('google')}><AuthProviderIcon provider="google" /><b>Continue with Google</b></a>}
-      {providers.github && <a className="auth-provider" href={providerHref('github')}><AuthProviderIcon provider="github" /><b>Continue with GitHub</b></a>}
+      {providers.google && <AuthProviderLink provider="google" href={providerHref('google')} pendingProvider={pendingProvider} onStart={setPendingProvider} />}
+      {providers.github && <AuthProviderLink provider="github" href={providerHref('github')} pendingProvider={pendingProvider} onStart={setPendingProvider} />}
       {!providers.google && !providers.github && <div className="auth-state" role="alert"><b>No sign-in provider is configured</b></div>}
     </div>}
     <p className="auth-legal">By continuing, you agree to the <a href="/#/terms">Terms</a> and acknowledge the <a href="/#/privacy">Privacy Policy</a>.</p>
