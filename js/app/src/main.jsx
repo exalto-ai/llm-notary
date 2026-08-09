@@ -155,7 +155,7 @@ function AccountMenu({ user, onLogout }) {
 }
 
 export function Header({ user, onLogout, hideSignIn = false, authPending = false }) {
-  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/verify">Verify</a><a href="/#/library">Library</a>{user ? <AccountMenu user={user} onLogout={onLogout} /> : !hideSignIn && authPending ? <span className="account-auth-placeholder" role="status" aria-label="Checking sign-in status"><i /></span> : !hideSignIn && <a className="sign-in-link" href="/#/signin"><span>Sign in</span></a>}</nav></header>;
+  return <header className="nav-wrap"><a className="brand" href="/#/"><PenMark /> <span>LLM Notary</span></a><nav className="product-nav"><a href="/#/docs">Docs</a><a href="/#/pricing">Pricing</a>{user ? <AccountMenu user={user} onLogout={onLogout} /> : !hideSignIn && authPending ? <span className="account-auth-placeholder" role="status" aria-label="Checking sign-in status"><i /></span> : !hideSignIn && <a className="sign-in-link" href="/#/signin"><span>Sign in</span></a>}</nav></header>;
 }
 
 function AuthProviderLink({ provider, href, pendingProvider, onStart }) {
@@ -203,8 +203,8 @@ export function SignInPage({ route = 'signin', user = null, loadProviders = getA
   </section></main>;
 }
 
-function Footer() {
-  return <footer className="site-footer"><span className="footer-copyright">© 2026 LLM Notary</span><nav aria-label="Footer"><a href="/#/notaries">Notaries</a><a href="/#/privacy">Privacy</a><a href="/#/terms">Terms</a></nav></footer>;
+export function Footer() {
+  return <footer className="site-footer"><span className="footer-copyright">© 2026 LLM Notary</span><nav aria-label="Footer"><a href="/#/verify">Verify</a><a href="/#/library">Library</a><a href="/#/notaries">Notaries</a><a href="/#/privacy">Privacy</a><a href="/#/terms">Terms</a></nav></footer>;
 }
 
 const legalPages = {
@@ -394,6 +394,17 @@ function MotionStudies() {
   return <RelayAnimation />;
 }
 
+function PricingSection() {
+  return <section className="section pricing" id="pricing" aria-labelledby="pricing-title">
+    <header className="pricing-intro"><span className="eyebrow">Hosted finalization</span><h2 id="pricing-title">Start included. Add only what you need.</h2><p>Credits pay for finalizing private captures through the hosted notary. They do not change proof strength or what a finished package can verify.</p></header>
+    <div className="pricing-ledger">
+      <article><header><span>Signed-in account</span><div><b>$0</b><small>per month</small></div></header><h3>512 MiB included</h3><p>Renews at the start of each UTC month. Every account also begins with a non-expiring 128 MiB testing grant.</p><dl><div><dt>Public access</dt><dd>64 MiB monthly</dd></div><div><dt>Commitment</dt><dd>None</dd></div></dl></article>
+      <article><header><span>Additional credits</span><div><b>$5</b><small>per GB</small></div></header><h3>One-time purchase</h3><p>Buy 1–20 decimal GB per Stripe Checkout. Purchased credits do not expire.</p><dl><div><dt>Billing</dt><dd>One time</dd></div><div><dt>Subscription</dt><dd>Not required</dd></div></dl></article>
+    </div>
+    <aside className="pricing-scope"><div><span className="eyebrow">Credit boundary</span><p>Capture, local and hosted verification, package downloads, public Library browsing, and self-hosted use do not consume hosted credits.</p></div><a href="/#/docs/hosted-credits">Read the full credit policy</a></aside>
+  </section>;
+}
+
 export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) {
   return <main id="top">
     <section className="hero">
@@ -408,6 +419,7 @@ export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) 
       <div><span className="eyebrow">Local capture</span><h2>Capture locally.</h2><p>Point your existing tools at the local proxy. Provider calls keep streaming normally while encrypted bundles stay on your machine.</p></div>
       <div className="terminal"><div><i /><i /><i /></div><pre><code><b>$</b> {installCommand}{'\n\n'}<b>$</b> llm-notaryd{'\n\n'}proxy  <em>127.0.0.1:8787</em>{'\n'}admin  <em>127.0.0.1:8788</em></code></pre><a href="#/docs/getting-started">Installation and setup</a></div>
     </section>
+    <PricingSection />
     <ListedSharesPreview />
     <section className="section verify" id="verify">
       <div><span className="eyebrow">Independent verification</span><h2>Proof travels with the package.</h2><p>A finalized .llmtrace contains the notary-signed TLS evidence, disclosed exchange, canonical trace, and hashes needed for portable verification.</p><div className="verify-points"><span>Notary evidence</span><span>Canonical OTLP</span><span>Portable package</span></div><div className="button-row"><a className="button button-dark" href="#/verify">Verify a package</a></div></div>
@@ -1867,7 +1879,13 @@ function App() {
   useEffect(() => { const update = () => setRoute(window.location.hash || '#/'); window.addEventListener('hashchange', update); return () => window.removeEventListener('hashchange', update); }, []);
   useEffect(() => {
     const nextSection = route.replace(/^#\/?/, '').split(/[/?]/)[0];
-    if (nextSection !== 'docs') window.requestAnimationFrame(() => window.scrollTo({ top: 0, behavior: 'instant' }));
+    window.requestAnimationFrame(() => {
+      if (nextSection === 'pricing') {
+        document.getElementById('pricing')?.scrollIntoView({ block: 'start', behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+      } else if (nextSection !== 'docs') {
+        window.scrollTo({ top: 0, behavior: 'instant' });
+      }
+    });
   }, [route]);
   useEffect(() => { let cancelled = false; getCurrentUser().then((user) => { if (!cancelled) { setUser(user); setAuthPending(false); } }).catch(() => { if (!cancelled) { setUser(null); setAuthPending(false); } }); return () => { cancelled = true; }; }, []);
   useEffect(() => { if (user) void loadCreditUtilizationChart(); }, [user]);

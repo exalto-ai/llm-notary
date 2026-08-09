@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { AccountSettings, ApiKeysPanel, CliApproval, Dashboard, DeleteAccountPanel, Header, HostedNotaryRecord, Landing, Library, ListedSharesPreview, SharePage, SignInPage, VerificationPage } from './main';
+import { AccountSettings, ApiKeysPanel, CliApproval, Dashboard, DeleteAccountPanel, Footer, Header, HostedNotaryRecord, Landing, Library, ListedSharesPreview, SharePage, SignInPage, VerificationPage } from './main';
 import { ProviderIdentity } from './ProviderIdentity';
 import { latestMacosDownloadHref } from './releaseDownloads';
 import { initialThemePreference } from './theme';
@@ -58,6 +58,28 @@ describe('hosted site', () => {
     await expect.element(page.getByRole('link', { name: 'Get started' })).not.toBeInTheDocument();
     await expect.element(page.getByRole('link', { name: 'Browse Library' })).not.toBeInTheDocument();
     expect(document.querySelector('.receipt [data-provider-icon="openai"]')).not.toBeNull();
+  });
+
+  test('puts Pricing in the header and product destinations in the footer', async () => {
+    render(<><Header user={null} onLogout={() => {}} /><Footer /></>);
+
+    const productNav = document.querySelector('.product-nav');
+    expect(Array.from(productNav.querySelectorAll('a'), (link) => link.textContent)).toEqual(['Docs', 'Pricing', 'Sign in']);
+    await expect.element(page.getByRole('link', { name: 'Pricing' })).toHaveAttribute('href', '/#/pricing');
+    const footer = page.getByRole('navigation', { name: 'Footer' });
+    await expect.element(footer.getByRole('link', { name: 'Verify' })).toHaveAttribute('href', '/#/verify');
+    await expect.element(footer.getByRole('link', { name: 'Library' })).toHaveAttribute('href', '/#/library');
+  });
+
+  test('publishes exact hosted-finalization pricing on the landing page', async () => {
+    render(<Landing loadLatestPointer={async () => 'build-123 0.1.0'} />);
+
+    const pricing = document.getElementById('pricing');
+    expect(pricing).not.toBeNull();
+    await expect.element(page.getByRole('heading', { name: 'Start included. Add only what you need.' })).toBeVisible();
+    await expect.element(page.getByText('512 MiB included')).toBeVisible();
+    await expect.element(page.getByText('Purchased credits do not expire.')).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Read the full credit policy' })).toHaveAttribute('href', '/#/docs/hosted-credits');
   });
 
   test('sends the macOS action to install options when the latest pointer is unavailable', async () => {
