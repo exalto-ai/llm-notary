@@ -113,6 +113,48 @@ const NOTARY_REJECTION_FINALIZE_AT_CAPACITY: u8 = 2;
 const NOTARY_REJECTION_CAPTURE_DISABLED: u8 = 3;
 const NOTARY_REJECTION_ADMISSION_DENIED: u8 = 4;
 const NOTARY_REJECTION_COORDINATOR_UNAVAILABLE: u8 = 5;
+
+/// Stable milestones emitted while a deferred capture is finalized.
+///
+/// These stages describe completed transitions in the proof pipeline. They do
+/// not imply equal work or provide a time estimate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinalizationPhase {
+    Proving,
+    Signing,
+    Packaging,
+}
+
+impl FinalizationPhase {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Proving => "proving",
+            Self::Signing => "signing",
+            Self::Packaging => "packaging",
+        }
+    }
+}
+
+/// Concrete private-proof work completed inside the dominant finalization
+/// phase. Byte counts advance after bounded authentication batches; commitment
+/// counts advance after each complete child proof.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FinalizationProofProgress {
+    pub bytes_completed: u64,
+    pub bytes_total: u64,
+    pub commitments_completed: u64,
+    pub commitments_total: u64,
+}
+
+/// One non-secret progress update emitted during finalization.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinalizationProgress {
+    Phase(FinalizationPhase),
+    Proof(FinalizationProofProgress),
+}
+
+/// Receives best-effort progress from the finalization pipeline.
+pub type FinalizationProgressObserver<'a> = &'a (dyn Fn(FinalizationProgress) + Send + Sync);
 const NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED: u8 = 6;
 pub const NOTARY_CAPACITY_RETRY_AFTER_SECS: u64 = 5;
 
@@ -1176,6 +1218,26 @@ pub async fn finalize_deferred_bundle_to(
     max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
 ) -> Result<LocalProof> {
+    finalize_deferred_bundle_to_with_progress(
+        notary,
+        bundle,
+        trusted_notary_key,
+        max_attestable_http_bytes,
+        max_frame_bytes,
+        &|_| {},
+    )
+    .await
+}
+
+/// Completes a deferred proof and reports stable proof-pipeline milestones.
+pub async fn finalize_deferred_bundle_to_with_progress(
+    notary: &NotaryEndpoint,
+    bundle: &DeferredBundle,
+    trusted_notary_key: &[u8],
+    max_attestable_http_bytes: usize,
+    max_frame_bytes: usize,
+    progress: FinalizationProgressObserver<'_>,
+) -> Result<LocalProof> {
     finalize_deferred_bundle_to_with_admission(
         notary,
         bundle,
@@ -1183,6 +1245,7 @@ pub async fn finalize_deferred_bundle_to(
         max_attestable_http_bytes,
         max_frame_bytes,
         None,
+        progress,
     )
     .await
 }
@@ -1197,6 +1260,28 @@ pub async fn finalize_deferred_bundle_to_admitted(
     max_frame_bytes: usize,
     admission_ticket: &str,
 ) -> Result<LocalProof> {
+    finalize_deferred_bundle_to_admitted_with_progress(
+        notary,
+        bundle,
+        trusted_notary_key,
+        max_attestable_http_bytes,
+        max_frame_bytes,
+        admission_ticket,
+        &|_| {},
+    )
+    .await
+}
+
+/// Completes an admitted deferred proof and reports stable milestones.
+pub async fn finalize_deferred_bundle_to_admitted_with_progress(
+    notary: &NotaryEndpoint,
+    bundle: &DeferredBundle,
+    trusted_notary_key: &[u8],
+    max_attestable_http_bytes: usize,
+    max_frame_bytes: usize,
+    admission_ticket: &str,
+    progress: FinalizationProgressObserver<'_>,
+) -> Result<LocalProof> {
     finalize_deferred_bundle_to_with_admission(
         notary,
         bundle,
@@ -1204,6 +1289,7 @@ pub async fn finalize_deferred_bundle_to_admitted(
         max_attestable_http_bytes,
         max_frame_bytes,
         Some(admission_ticket),
+        progress,
     )
     .await
 }
@@ -1215,6 +1301,7 @@ async fn finalize_deferred_bundle_to_with_admission(
     max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
     admission_ticket: Option<&str>,
+    progress: FinalizationProgressObserver<'_>,
 ) -> Result<LocalProof> {
     validate_notary_frame_limit(max_frame_bytes)?;
     AttestableHttpBudget::new(max_attestable_http_bytes)?;
@@ -1242,14 +1329,28 @@ async fn finalize_deferred_bundle_to_with_admission(
     let mut prover_context = session.new_context()?;
     let (driver, handle) = session.split();
     let driver_task = tokio::spawn(driver);
+    progress(FinalizationProgress::Phase(FinalizationPhase::Proving));
     let ProverOutput {
         transcript_commitments,
         transcript_secrets,
         ..
     } = state
-        .prove(&mut prover_context, &prove_config, CHUNKED_PROOF_BYTES)
+        .prove_with_progress(
+            &mut prover_context,
+            &prove_config,
+            CHUNKED_PROOF_BYTES,
+            &|value| {
+                progress(FinalizationProgress::Proof(FinalizationProofProgress {
+                    bytes_completed: value.bytes_completed as u64,
+                    bytes_total: value.bytes_total as u64,
+                    commitments_completed: value.commitments_completed as u64,
+                    commitments_total: value.commitments_total as u64,
+                }));
+            },
+        )
         .await?;
 
+    progress(FinalizationProgress::Phase(FinalizationPhase::Signing));
     let mut attestation_builder = AttestationRequest::builder(&request_config);
     attestation_builder
         .server_name(ServerName::Dns(
@@ -2974,16 +3075,63 @@ mod tests {
             .await
             .unwrap();
         });
-        let proof = finalize_deferred_bundle(
-            notary_addr,
+        let endpoint = NotaryEndpoint::new(
+            notary_addr.ip().to_string(),
+            notary_addr.port(),
+            NotaryTransport::Tcp,
+        )
+        .unwrap();
+        let progress_updates = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let record_progress = {
+            let progress_updates = progress_updates.clone();
+            move |progress| progress_updates.lock().unwrap().push(progress)
+        };
+        let proof = finalize_deferred_bundle_to_with_progress(
+            &endpoint,
             &bundle,
             &trusted_public_key,
             DEFAULT_MAX_ATTESTABLE_HTTP_BYTES,
             DEFAULT_NOTARY_MAX_FRAME_BYTES,
+            &record_progress,
         )
         .await
         .unwrap();
         finalizer.await.unwrap();
+
+        let progress_updates = progress_updates.lock().unwrap();
+        assert_eq!(
+            progress_updates.first(),
+            Some(&FinalizationProgress::Phase(FinalizationPhase::Proving))
+        );
+        assert_eq!(
+            progress_updates.last(),
+            Some(&FinalizationProgress::Phase(FinalizationPhase::Signing))
+        );
+        let proof_updates = progress_updates
+            .iter()
+            .filter_map(|progress| match progress {
+                FinalizationProgress::Proof(progress) => Some(*progress),
+                FinalizationProgress::Phase(_) => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(proof_updates.len() > 2);
+        assert!(proof_updates.windows(2).all(|updates| {
+            updates[0].bytes_completed <= updates[1].bytes_completed
+                && updates[0].commitments_completed <= updates[1].commitments_completed
+                && updates[0].bytes_total == updates[1].bytes_total
+                && updates[0].commitments_total == updates[1].commitments_total
+        }));
+        let final_proof_progress = proof_updates.last().unwrap();
+        assert!(final_proof_progress.bytes_total > 0);
+        assert_eq!(
+            final_proof_progress.bytes_completed,
+            final_proof_progress.bytes_total
+        );
+        assert!(final_proof_progress.commitments_total > 0);
+        assert_eq!(
+            final_proof_progress.commitments_completed,
+            final_proof_progress.commitments_total
+        );
 
         let crypto_provider = CryptoProvider {
             cert: tlsn::verifier::ServerCertVerifier::new(&fixture_roots()).unwrap(),

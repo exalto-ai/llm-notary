@@ -281,7 +281,7 @@ export interface paths {
         };
         /**
          * List background operations
-         * @description Lists bounded operation summaries with opaque cursor pagination and optional state, kind, and capture filters. Fetch one operation for its complete attempt history.
+         * @description Lists bounded operation summaries, including milestone progress, with opaque cursor pagination and optional state, kind, and capture filters. Fetch one operation for its complete attempt history.
          */
         get: operations["operations"];
         put?: never;
@@ -301,7 +301,7 @@ export interface paths {
         };
         /**
          * Get an operation
-         * @description Returns the current state and complete attempt history for one durable operation.
+         * @description Returns the current state, milestone progress, and complete attempt history for one durable operation.
          */
         get: operations["operation"];
         put?: never;
@@ -566,6 +566,26 @@ export interface components {
             started_at_unix_ms: number;
             state: string;
         };
+        OperationProgressResponse: {
+            /**
+             * @description Current milestone: queued, preparing, proving, signing, packaging,
+             *     complete, or unknown for an operation migrated from an older catalog.
+             */
+            phase: string;
+            proof?: null | components["schemas"]["OperationProofProgressResponse"];
+            /** Format: int64 */
+            updated_at_unix_ms: number;
+        };
+        OperationProofProgressResponse: {
+            /** Format: int64 */
+            bytes_completed: number;
+            /** Format: int64 */
+            bytes_total: number;
+            /** Format: int64 */
+            commitments_completed: number;
+            /** Format: int64 */
+            commitments_total: number;
+        };
         OperationResponse: {
             /** Format: int32 */
             attempt: number;
@@ -578,6 +598,7 @@ export interface components {
             failure_code?: string | null;
             kind: string;
             operation_id: string;
+            progress: components["schemas"]["OperationProgressResponse"];
             retryable: boolean;
             /** Format: int64 */
             started_at_unix_ms?: number | null;
@@ -594,6 +615,7 @@ export interface components {
             failure_code?: string | null;
             kind: string;
             operation_id: string;
+            progress: components["schemas"]["OperationProgressResponse"];
             /** Format: int64 */
             started_at_unix_ms?: number | null;
             state: string;
@@ -655,6 +677,7 @@ export interface components {
                 failure_code?: string | null;
                 kind: string;
                 operation_id: string;
+                progress: components["schemas"]["OperationProgressResponse"];
                 /** Format: int64 */
                 started_at_unix_ms?: number | null;
                 state: string;

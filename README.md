@@ -163,12 +163,13 @@ Find a completed capture, queue finalization, and poll the returned operation:
 
 ```bash
 llm-notary captures list --provider openai
-llm-notary finalize cap-example
-llm-notary operations show op-example --json
+llm-notary finalize cap-example --wait
 ```
 
 Finalization accepts only captured `2xx` provider responses. It creates
-`<capture-id>.llmtrace` without consuming the encrypted source capture.
+`<capture-id>.llmtrace` without consuming the encrypted source capture. While
+the proof is running, the CLI reports authenticated transcript bytes and
+completed commitments instead of treating unequal stages as equal progress.
 
 Verify a package without the daemon by using the locally cached notary trust
 history, or pass an explicit key for a self-hosted package:

@@ -17,6 +17,21 @@ use tlsn_core::{
 
 use crate::{Result, proxy::PlainSessionKeys};
 
+/// Observable work completed by the client while building a deferred private
+/// proof. Counts describe real authenticated transcript work, not elapsed-time
+/// estimates.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeferredProofProgress {
+    /// Private transcript bytes authenticated so far.
+    pub bytes_completed: usize,
+    /// Total private transcript bytes that must be authenticated.
+    pub bytes_total: usize,
+    /// Complete child proof commitments produced so far.
+    pub commitments_completed: usize,
+    /// Total child proof commitments requested by the proof configuration.
+    pub commitments_total: usize,
+}
+
 /// Client-only state retained after the original proxy TLS session ends.
 #[derive(Serialize, Deserialize)]
 pub struct DeferredProverState {
@@ -55,6 +70,19 @@ impl DeferredProverState {
         config: &ProveConfig,
         chunk_bytes: usize,
     ) -> Result<ProverOutput> {
+        self.prove_with_progress(ctx, config, chunk_bytes, &|_| {})
+            .await
+    }
+
+    /// Completes a private proof and reports authenticated transcript work as
+    /// each bounded batch and commitment finishes.
+    pub async fn prove_with_progress(
+        &self,
+        ctx: &mut Context,
+        config: &ProveConfig,
+        chunk_bytes: usize,
+        progress: &(dyn Fn(DeferredProofProgress) + Send + Sync),
+    ) -> Result<ProverOutput> {
         let sent_records = self.records.sent_records();
         let recv_records = self.records.recv_records();
         let sent_record_refs = sent_records.iter().collect::<Vec<_>>();
@@ -69,6 +97,7 @@ impl DeferredProverState {
             config,
             chunk_bytes,
             self.salt,
+            progress,
         )
         .await
     }

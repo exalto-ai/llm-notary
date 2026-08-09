@@ -14,6 +14,7 @@ use tlsn_core::{
 
 use crate::{
     Error, Result,
+    deferred::DeferredProofProgress,
     deps::new_prover_zk_vm,
     proxy::PlainSessionKeys,
     transcript_internal::{
@@ -69,6 +70,7 @@ pub(crate) async fn prove_ephemeral_chunks<T: Vm<Binary> + Send + Sync>(
         config,
         chunk_bytes,
         salt,
+        &|_| {},
     )
     .await
 }
@@ -89,6 +91,7 @@ pub(crate) async fn prove_ephemeral_chunks_from_binding(
     config: &ProveConfig,
     chunk_bytes: usize,
     salt: [u8; 16],
+    progress: &(dyn Fn(DeferredProofProgress) + Send + Sync),
 ) -> Result<ProverOutput> {
     if config
         .reveal()
@@ -110,6 +113,15 @@ pub(crate) async fn prove_ephemeral_chunks_from_binding(
     if hash_idxs.is_empty() {
         return Err(Error::user().with_msg("private chunk proofs require hash commitments"));
     }
+
+    let bytes_total = hash_idxs.iter().map(|(_, idx, _)| idx.len()).sum();
+    let commitments_total = hash_idxs.len();
+    let mut current = DeferredProofProgress {
+        bytes_total,
+        commitments_total,
+        ..DeferredProofProgress::default()
+    };
+    progress(current);
 
     let mut seen_sent = RangeSet::default();
     let mut seen_recv = RangeSet::default();
@@ -160,6 +172,10 @@ pub(crate) async fn prove_ephemeral_chunks_from_binding(
                 child_ivs[1],
             ),
         };
+        let mut batch_progress = |bytes| {
+            current.bytes_completed = current.bytes_completed.saturating_add(bytes);
+            progress(current);
+        };
         let refs = prove_plaintext_batched(
             ctx,
             &mut child_vm,
@@ -170,6 +186,7 @@ pub(crate) async fn prove_ephemeral_chunks_from_binding(
             &RangeSet::default(),
             &idx,
             EPHEMERAL_PLAINTEXT_AUTH_BATCH_BYTES,
+            Some(&mut batch_progress),
         )
         .await
         .map_err(|e| {
@@ -213,6 +230,8 @@ pub(crate) async fn prove_ephemeral_chunks_from_binding(
                 .push(TranscriptSecret::Hash(secret));
         }
         let hash_ms = chunk_start.elapsed().as_millis() - binding_ms - authentication_ms;
+        current.commitments_completed += 1;
+        progress(current);
         profile_chunk_timing(direction, chunk_len, binding_ms, authentication_ms, hash_ms);
     }
 
@@ -271,6 +290,7 @@ async fn prove_plaintext_batched<T: Vm<Binary> + Send + Sync>(
     reveal: &RangeSet<usize>,
     commit: &RangeSet<usize>,
     batch_bytes: usize,
+    mut progress: Option<&mut (dyn FnMut(usize) + Send)>,
 ) -> Result<ReferenceMap> {
     // The full-reveal path is already cheap and relies on disclosing the
     // direction's write key, so keep its existing single execution semantics.
@@ -311,6 +331,15 @@ async fn prove_plaintext_batched<T: Vm<Binary> + Send + Sync>(
                 .with_msg("proving failed during batched zk execution")
                 .with_source(e)
         })?;
+        if let Some(progress) = progress.as_deref_mut() {
+            progress(
+                batch_reveal
+                    .iter()
+                    .chain(batch_commit.iter())
+                    .map(|range| range.len())
+                    .sum(),
+            );
+        }
         parts.push(refs);
     }
 
@@ -362,6 +391,7 @@ pub(crate) async fn prove<T: Vm<Binary> + Send + Sync>(
             &reveal_sent,
             &commit_sent,
             STANDARD_PLAINTEXT_AUTH_BATCH_BYTES,
+            None,
         )
         .await?,
         recv: prove_plaintext_batched(
@@ -374,6 +404,7 @@ pub(crate) async fn prove<T: Vm<Binary> + Send + Sync>(
             &reveal_recv,
             &commit_recv,
             STANDARD_PLAINTEXT_AUTH_BATCH_BYTES,
+            None,
         )
         .await?,
     };

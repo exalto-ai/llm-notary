@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{config::AgentConfig, sha256_hex};
 
-const CATALOG_SCHEMA_VERSION: i64 = 5;
+const CATALOG_SCHEMA_VERSION: i64 = 6;
 
 /// The durable capture fields that are safe and useful to query locally.
 #[derive(Clone, Debug)]
@@ -66,6 +66,12 @@ pub struct Operation {
     pub started_at_unix_ms: Option<u64>,
     pub completed_at_unix_ms: Option<u64>,
     pub failure_code: Option<String>,
+    pub progress_phase: String,
+    pub progress_updated_at_unix_ms: u64,
+    pub proof_bytes_completed: u64,
+    pub proof_bytes_total: u64,
+    pub proof_commitments_completed: u64,
+    pub proof_commitments_total: u64,
 }
 
 /// One durable attempt belonging to an operation. Attempt history is kept
@@ -660,8 +666,16 @@ impl Catalog {
         }
         let operation_id = format!("op-{}", uuid::Uuid::new_v4().simple());
         transaction.execute(
-            "INSERT INTO operations (operation_id, kind, capture_id, state, attempt, created_at_unix_ms) VALUES (?, 'finalization', ?, 'queued', 0, ?)",
-            params![operation_id, capture_id, i64::try_from(now)?],
+            "INSERT INTO operations (
+                operation_id, kind, capture_id, state, attempt,
+                created_at_unix_ms, progress_phase, progress_updated_at_unix_ms
+             ) VALUES (?, 'finalization', ?, 'queued', 0, ?, 'queued', ?)",
+            params![
+                operation_id,
+                capture_id,
+                i64::try_from(now)?,
+                i64::try_from(now)?
+            ],
         )?;
         transaction.execute(
             "UPDATE captures SET finalization_state = 'queued' WHERE capture_id = ?",
@@ -699,8 +713,15 @@ impl Catalog {
             return Ok(None);
         };
         transaction.execute(
-            "UPDATE operations SET state = 'running', attempt = attempt + 1, started_at_unix_ms = ?, completed_at_unix_ms = NULL, failure_code = NULL WHERE operation_id = ? AND state = 'queued'",
-            params![i64::try_from(now)?, operation_id],
+            "UPDATE operations
+             SET state = 'running', attempt = attempt + 1,
+                 started_at_unix_ms = ?, completed_at_unix_ms = NULL,
+                 failure_code = NULL, progress_phase = 'preparing',
+                 progress_updated_at_unix_ms = ?, proof_bytes_completed = 0,
+                 proof_bytes_total = 0, proof_commitments_completed = 0,
+                 proof_commitments_total = 0
+             WHERE operation_id = ? AND state = 'queued'",
+            params![i64::try_from(now)?, i64::try_from(now)?, operation_id],
         )?;
         transaction.execute(
             "UPDATE captures SET finalization_state = 'running' WHERE capture_id = (SELECT capture_id FROM operations WHERE operation_id = ?)",
@@ -728,12 +749,117 @@ impl Catalog {
         Ok(Some(operation))
     }
 
+    /// Records one stable finalization milestone. The update is ignored if the
+    /// operation is no longer running, which keeps a late callback from
+    /// changing terminal state after interruption or failure.
+    pub fn update_operation_progress(
+        &self,
+        operation_id: &str,
+        phase: crate::FinalizationPhase,
+        now: u64,
+    ) -> Result<bool> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let transaction = connection.unchecked_transaction()?;
+        let phase = phase.as_str();
+        let changed = transaction.execute(
+            "UPDATE operations
+             SET progress_phase = ?, progress_updated_at_unix_ms = ?
+             WHERE operation_id = ? AND state = 'running' AND progress_phase <> ?",
+            params![phase, i64::try_from(now)?, operation_id, phase],
+        )?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        let capture_id: Option<String> = transaction.query_row(
+            "SELECT capture_id FROM operations WHERE operation_id = ?",
+            params![operation_id],
+            |row| row.get(0),
+        )?;
+        let message = match phase {
+            "proving" => "Generating private proof",
+            "signing" => "Requesting notary signature",
+            "packaging" => "Building verified package",
+            _ => "Finalization advanced",
+        };
+        insert_event(
+            &transaction,
+            now,
+            "finalization_progress",
+            capture_id.as_deref(),
+            Some(operation_id),
+            "info",
+            message,
+        )?;
+        transaction.commit()?;
+        Ok(true)
+    }
+
+    /// Persists throttled proof-work counters without emitting one activity
+    /// event per batch. The first update also records entry into the proving
+    /// phase for the activity feed.
+    pub fn update_operation_proof_progress(
+        &self,
+        operation_id: &str,
+        progress: crate::FinalizationProofProgress,
+        now: u64,
+    ) -> Result<bool> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let transaction = connection.unchecked_transaction()?;
+        let previous_phase = transaction
+            .query_row(
+                "SELECT progress_phase FROM operations
+                 WHERE operation_id = ? AND state = 'running'",
+                params![operation_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let Some(previous_phase) = previous_phase else {
+            return Ok(false);
+        };
+        transaction.execute(
+            "UPDATE operations
+             SET progress_phase = 'proving', progress_updated_at_unix_ms = ?,
+                 proof_bytes_completed = ?, proof_bytes_total = ?,
+                 proof_commitments_completed = ?, proof_commitments_total = ?
+             WHERE operation_id = ? AND state = 'running'",
+            params![
+                i64::try_from(now)?,
+                i64::try_from(progress.bytes_completed)?,
+                i64::try_from(progress.bytes_total)?,
+                i64::try_from(progress.commitments_completed)?,
+                i64::try_from(progress.commitments_total)?,
+                operation_id,
+            ],
+        )?;
+        if previous_phase != "proving" {
+            let capture_id: Option<String> = transaction.query_row(
+                "SELECT capture_id FROM operations WHERE operation_id = ?",
+                params![operation_id],
+                |row| row.get(0),
+            )?;
+            insert_event(
+                &transaction,
+                now,
+                "finalization_progress",
+                capture_id.as_deref(),
+                Some(operation_id),
+                "info",
+                "Generating private proof",
+            )?;
+        }
+        transaction.commit()?;
+        Ok(true)
+    }
+
     pub fn finish_operation(&self, operation_id: &str, now: u64) -> Result<()> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let transaction = connection.unchecked_transaction()?;
         transaction.execute(
-            "UPDATE operations SET state = 'finalized', completed_at_unix_ms = ?, failure_code = NULL WHERE operation_id = ?",
-            params![i64::try_from(now)?, operation_id],
+            "UPDATE operations
+             SET state = 'finalized', completed_at_unix_ms = ?, failure_code = NULL,
+                 progress_phase = 'complete', progress_updated_at_unix_ms = ?
+             WHERE operation_id = ?",
+            params![i64::try_from(now)?, i64::try_from(now)?, operation_id],
         )?;
         transaction.execute(
             "UPDATE operation_attempts SET state = 'finalized', completed_at_unix_ms = ?, failure_code = NULL WHERE operation_id = ? AND attempt = (SELECT attempt FROM operations WHERE operation_id = ?)",
@@ -832,14 +958,17 @@ impl Catalog {
         let changed = transaction.execute(
             "UPDATE operations
              SET state = 'queued', started_at_unix_ms = NULL,
-                 completed_at_unix_ms = NULL, failure_code = NULL
+                 completed_at_unix_ms = NULL, failure_code = NULL,
+                 progress_phase = 'queued', progress_updated_at_unix_ms = ?,
+                 proof_bytes_completed = 0, proof_bytes_total = 0,
+                 proof_commitments_completed = 0, proof_commitments_total = 0
              WHERE operation_id = ? AND state IN ('failed', 'interrupted')
                AND EXISTS (
                    SELECT 1 FROM captures
                    WHERE captures.capture_id = operations.capture_id
                      AND captures.http_status BETWEEN 200 AND 299
                )",
-            params![operation_id],
+            params![i64::try_from(now)?, operation_id],
         )?;
         if changed == 0 {
             return Ok(None);
@@ -1242,6 +1371,35 @@ fn migrate(connection: &mut Connection) -> Result<()> {
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (5)", [])?;
         transaction.commit()?;
     }
+    if version < 6 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "ALTER TABLE operations
+                ADD COLUMN progress_phase TEXT NOT NULL DEFAULT 'queued';
+             ALTER TABLE operations
+                ADD COLUMN progress_updated_at_unix_ms INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE operations
+                ADD COLUMN proof_bytes_completed INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE operations
+                ADD COLUMN proof_bytes_total INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE operations
+                ADD COLUMN proof_commitments_completed INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE operations
+                ADD COLUMN proof_commitments_total INTEGER NOT NULL DEFAULT 0;
+             UPDATE operations
+             SET progress_phase = CASE state
+                    WHEN 'finalized' THEN 'complete'
+                    WHEN 'running' THEN 'preparing'
+                    WHEN 'queued' THEN 'queued'
+                    ELSE 'unknown'
+                 END,
+                 progress_updated_at_unix_ms = COALESCE(
+                    completed_at_unix_ms, started_at_unix_ms, created_at_unix_ms
+                 );",
+        )?;
+        transaction.execute("INSERT INTO schema_migrations(version) VALUES (6)", [])?;
+        transaction.commit()?;
+    }
     Ok(())
 }
 
@@ -1403,6 +1561,27 @@ fn operation_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Operation> {
             .get::<_, Option<i64>>("completed_at_unix_ms")?
             .and_then(|value| value.try_into().ok()),
         failure_code: row.get("failure_code")?,
+        progress_phase: row.get("progress_phase")?,
+        progress_updated_at_unix_ms: row
+            .get::<_, i64>("progress_updated_at_unix_ms")?
+            .try_into()
+            .unwrap_or(0),
+        proof_bytes_completed: row
+            .get::<_, i64>("proof_bytes_completed")?
+            .try_into()
+            .unwrap_or(0),
+        proof_bytes_total: row
+            .get::<_, i64>("proof_bytes_total")?
+            .try_into()
+            .unwrap_or(0),
+        proof_commitments_completed: row
+            .get::<_, i64>("proof_commitments_completed")?
+            .try_into()
+            .unwrap_or(0),
+        proof_commitments_total: row
+            .get::<_, i64>("proof_commitments_total")?
+            .try_into()
+            .unwrap_or(0),
     })
 }
 
@@ -1520,7 +1699,15 @@ mod tests {
                 )
                 .unwrap();
             connection
-                .execute("DELETE FROM schema_migrations WHERE version >= 4", [])
+                .execute_batch(
+                    "ALTER TABLE operations DROP COLUMN progress_phase;
+                     ALTER TABLE operations DROP COLUMN progress_updated_at_unix_ms;
+                     ALTER TABLE operations DROP COLUMN proof_bytes_completed;
+                     ALTER TABLE operations DROP COLUMN proof_bytes_total;
+                     ALTER TABLE operations DROP COLUMN proof_commitments_completed;
+                     ALTER TABLE operations DROP COLUMN proof_commitments_total;
+                     DELETE FROM schema_migrations WHERE version >= 4;",
+                )
                 .unwrap();
         }
         drop(catalog);
@@ -1690,7 +1877,51 @@ mod tests {
         let running = catalog.claim_next_finalization(5).unwrap().unwrap();
         assert_eq!(running.state, "running");
         assert_eq!(running.attempt, 1);
-        assert_eq!(catalog.recover_operations(6).unwrap(), 1);
+        assert_eq!(running.progress_phase, "preparing");
+        assert!(
+            catalog
+                .update_operation_proof_progress(
+                    &running.operation_id,
+                    crate::FinalizationProofProgress {
+                        bytes_completed: 2_048,
+                        bytes_total: 8_192,
+                        commitments_completed: 0,
+                        commitments_total: 2,
+                    },
+                    6,
+                )
+                .unwrap()
+        );
+        assert!(
+            catalog
+                .update_operation_proof_progress(
+                    &running.operation_id,
+                    crate::FinalizationProofProgress {
+                        bytes_completed: 8_192,
+                        bytes_total: 8_192,
+                        commitments_completed: 2,
+                        commitments_total: 2,
+                    },
+                    7,
+                )
+                .unwrap()
+        );
+        assert!(
+            catalog
+                .update_operation_progress(
+                    &running.operation_id,
+                    crate::FinalizationPhase::Signing,
+                    8
+                )
+                .unwrap()
+        );
+        let progressed = catalog.operation(&running.operation_id).unwrap().unwrap();
+        assert_eq!(progressed.progress_phase, "signing");
+        assert_eq!(progressed.proof_bytes_completed, 8_192);
+        assert_eq!(progressed.proof_bytes_total, 8_192);
+        assert_eq!(progressed.proof_commitments_completed, 2);
+        assert_eq!(progressed.proof_commitments_total, 2);
+        assert_eq!(catalog.recover_operations(9).unwrap(), 1);
         assert_eq!(
             catalog
                 .operation(&running.operation_id)
@@ -1699,19 +1930,21 @@ mod tests {
                 .state,
             "interrupted"
         );
-        let (same, duplicate) = catalog.enqueue_finalization("cap-1", 7).unwrap().unwrap();
+        let (same, duplicate) = catalog.enqueue_finalization("cap-1", 10).unwrap().unwrap();
         assert!(duplicate);
         assert_eq!(same.operation_id, running.operation_id);
         assert_eq!(same.state, "interrupted");
         let retried = catalog
-            .retry_operation(&running.operation_id, 8)
+            .retry_operation(&running.operation_id, 11)
             .unwrap()
             .unwrap();
         assert_eq!(retried.state, "queued");
-        let second_attempt = catalog.claim_next_finalization(9).unwrap().unwrap();
+        assert_eq!(retried.progress_phase, "queued");
+        assert_eq!(retried.proof_bytes_total, 0);
+        let second_attempt = catalog.claim_next_finalization(12).unwrap().unwrap();
         assert_eq!(second_attempt.attempt, 2);
         catalog
-            .fail_operation(&running.operation_id, 10, "proof_generation_failed")
+            .fail_operation(&running.operation_id, 13, "proof_generation_failed")
             .unwrap();
         assert_eq!(
             catalog
@@ -1731,7 +1964,7 @@ mod tests {
                 event_type: Some("finalization_failed"),
                 capture_id: Some("cap-1"),
                 operation_id: Some(&running.operation_id),
-                created_after_unix_ms: Some(10),
+                created_after_unix_ms: Some(13),
                 limit: 20,
                 ..EventFilters::default()
             })
@@ -1744,20 +1977,20 @@ mod tests {
                 OperationAttempt {
                     attempt: 2,
                     state: "failed".into(),
-                    started_at_unix_ms: 9,
-                    completed_at_unix_ms: Some(10),
+                    started_at_unix_ms: 12,
+                    completed_at_unix_ms: Some(13),
                     failure_code: Some("proof_generation_failed".into()),
                 },
                 OperationAttempt {
                     attempt: 1,
                     state: "interrupted".into(),
                     started_at_unix_ms: 5,
-                    completed_at_unix_ms: Some(6),
+                    completed_at_unix_ms: Some(9),
                     failure_code: Some("service_restarted".into()),
                 },
             ]
         );
-        assert_eq!(catalog.events(None, 20).unwrap().len(), 6);
+        assert_eq!(catalog.events(None, 20).unwrap().len(), 8);
     }
 
     #[test]

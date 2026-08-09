@@ -91,7 +91,10 @@ const expectedRequiredFields = {
   NotariesResponse: ['source', 'notaries'],
   NotaryResponse: ['endpoint', 'transport', 'key_id', 'status'],
   OperationAttemptResponse: ['attempt', 'state', 'started_at_unix_ms'],
-  OperationResponse: ['operation_id', 'kind', 'state', 'attempt', 'attempt_history', 'created_at_unix_ms', 'retryable'],
+  OperationResponse: ['operation_id', 'kind', 'state', 'attempt', 'attempt_history', 'created_at_unix_ms', 'progress', 'retryable'],
+  OperationSummaryResponse: ['operation_id', 'kind', 'state', 'attempt', 'created_at_unix_ms', 'progress'],
+  OperationProgressResponse: ['phase', 'updated_at_unix_ms'],
+  OperationProofProgressResponse: ['bytes_completed', 'bytes_total', 'commitments_completed', 'commitments_total'],
   AccountConnectionStartedResponse: ['request_id', 'user_code', 'verification_uri_complete', 'expires_in_seconds', 'poll_interval_seconds', 'state'],
   ShareResponse: ['capture_id', 'share_id', 'state', 'visibility', 'status_url'],
   ShareStatusResponse: ['share_id', 'state', 'visibility'],
@@ -105,7 +108,7 @@ for (const [schema, expected] of Object.entries(expectedRequiredFields)) {
   }
 }
 
-for (const term of ['202 Accepted', 'deduplicated', 'attempt_history', 'finalization_eligible', 'retryable', 'next_cursor', 'high_water_cursor', 'poll_interval_seconds', 'notary_key_id', 'trust_source']) {
+for (const term of ['202 Accepted', 'deduplicated', 'attempt_history', 'finalization_eligible', 'retryable', 'progress.proof', 'bytes_completed', 'commitments_completed', 'next_cursor', 'high_water_cursor', 'poll_interval_seconds', 'notary_key_id', 'trust_source']) {
   if (!workflowContent.includes(term)) throw new Error(`Workflow documentation is missing contract term: ${term}`);
 }
 

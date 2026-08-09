@@ -4,7 +4,10 @@ use std::{
     collections::HashMap,
     fs,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -38,8 +41,8 @@ use crate::{
     DeferredBundle,
     archive::{ARCHIVE_CONTENT_TYPE, read_trace_package_archive},
     bundle::{
-        finalize_bundle, finalize_bundle_admitted, trace_package_created_at_unix_ms,
-        trace_package_notary_key, verify_trace_package,
+        finalize_bundle_admitted_with_progress, finalize_bundle_with_progress,
+        trace_package_created_at_unix_ms, trace_package_notary_key, verify_trace_package,
     },
     catalog::{
         CaptureFilters, CapturePagePosition, CaptureSummary, Catalog, Event, EventFilters,
@@ -215,7 +218,8 @@ fn embedded_dashboard_response(path: &str, desktop_embed: bool) -> Response {
     components(schemas(
         HealthResponse, StatusResponse, CountsResponse, NotariesResponse, NotaryResponse,
         PageQuery, CaptureResponse, CaptureDetailResponse, ArtifactResponse,
-        OperationSummaryResponse, OperationResponse, OperationAttemptResponse,
+        OperationSummaryResponse, OperationResponse, OperationProgressResponse,
+        OperationProofProgressResponse, OperationAttemptResponse,
         FinalizationResponse, EventResponse,
         EventListResponse, TraceResponse, VerificationResponse, AccountConnectionResponse,
         AccountConnectionRequest, AccountConnectionStartedResponse, CreateShareRequest,
@@ -608,7 +612,7 @@ struct OperationQuery {
     cursor: Option<String>,
 }
 
-#[utoipa::path(get, path = "/v1/operations", summary = "List background operations", description = "Lists bounded operation summaries with opaque cursor pagination and optional state, kind, and capture filters. Fetch one operation for its complete attempt history.", params(("state" = Option<String>, Query), ("kind" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200), ("cursor" = Option<String>, Query)), responses((status = 200, body = Page<OperationSummaryResponse>), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/operations", summary = "List background operations", description = "Lists bounded operation summaries, including milestone progress, with opaque cursor pagination and optional state, kind, and capture filters. Fetch one operation for its complete attempt history.", params(("state" = Option<String>, Query), ("kind" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200), ("cursor" = Option<String>, Query)), responses((status = 200, body = Page<OperationSummaryResponse>), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn operations(
     State(state): State<AdminState>,
     query: Result<Query<OperationQuery>, QueryRejection>,
@@ -664,7 +668,7 @@ async fn operations(
     Ok(Json(page))
 }
 
-#[utoipa::path(get, path = "/v1/operations/{operation_id}", summary = "Get an operation", description = "Returns the current state and complete attempt history for one durable operation.", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/operations/{operation_id}", summary = "Get an operation", description = "Returns the current state, milestone progress, and complete attempt history for one durable operation.", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn operation(
     State(state): State<AdminState>,
     Path(operation_id): Path<String>,
@@ -1202,6 +1206,35 @@ async fn finalize_operation(
     vault: &Vault,
     operation: &Operation,
 ) -> Result<()> {
+    let last_proof_update = AtomicU64::new(0);
+    let report_progress = |progress| {
+        let result = match progress {
+            crate::FinalizationProgress::Phase(phase) => now_ms().and_then(|now| {
+                catalog
+                    .update_operation_progress(&operation.operation_id, phase, now)
+                    .map(|_| ())
+            }),
+            crate::FinalizationProgress::Proof(proof) => now_ms().and_then(|now| {
+                let last = last_proof_update.load(Ordering::Relaxed);
+                let complete = proof.bytes_completed == proof.bytes_total
+                    && proof.commitments_completed == proof.commitments_total;
+                if last != 0 && !complete && now.saturating_sub(last) < 1_000 {
+                    return Ok(());
+                }
+                last_proof_update.store(now, Ordering::Relaxed);
+                catalog
+                    .update_operation_proof_progress(&operation.operation_id, proof, now)
+                    .map(|_| ())
+            }),
+        };
+        if let Err(error) = result {
+            tracing::warn!(
+                operation_id = %operation.operation_id,
+                error = %error,
+                "could not persist finalization progress"
+            );
+        }
+    };
     let capture_id = operation
         .capture_id
         .as_deref()
@@ -1252,7 +1285,7 @@ async fn finalize_operation(
         }
         let admission =
             auth::issue_finalization_admission(&bundle.record_digest_hex(), allowance).await?;
-        finalize_bundle_admitted(
+        finalize_bundle_admitted_with_progress(
             &bundle_path,
             &output,
             &key,
@@ -1264,10 +1297,11 @@ async fn finalize_operation(
                 .min(admission.max_attestable_http_bytes),
             config.notary.max_frame_bytes.min(admission.max_frame_bytes),
             &admission.ticket,
+            &report_progress,
         )
         .await?
     } else {
-        finalize_bundle(
+        finalize_bundle_with_progress(
             &bundle_path,
             &output,
             &key,
@@ -1275,6 +1309,7 @@ async fn finalize_operation(
             &endpoint,
             config.proxy.max_attestable_http_bytes,
             config.notary.max_frame_bytes,
+            &report_progress,
         )
         .await?
     };
@@ -1538,6 +1573,7 @@ struct OperationResponse {
     started_at_unix_ms: Option<u64>,
     completed_at_unix_ms: Option<u64>,
     failure_code: Option<String>,
+    progress: OperationProgressResponse,
     retryable: bool,
     attempt_history: Vec<OperationAttemptResponse>,
 }
@@ -1553,10 +1589,12 @@ struct OperationSummaryResponse {
     started_at_unix_ms: Option<u64>,
     completed_at_unix_ms: Option<u64>,
     failure_code: Option<String>,
+    progress: OperationProgressResponse,
 }
 
 impl From<Operation> for OperationSummaryResponse {
     fn from(value: Operation) -> Self {
+        let progress = OperationProgressResponse::from(&value);
         Self {
             operation_id: value.operation_id,
             kind: value.kind,
@@ -1567,6 +1605,40 @@ impl From<Operation> for OperationSummaryResponse {
             started_at_unix_ms: value.started_at_unix_ms,
             completed_at_unix_ms: value.completed_at_unix_ms,
             failure_code: value.failure_code,
+            progress,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct OperationProgressResponse {
+    /// Current milestone: queued, preparing, proving, signing, packaging,
+    /// complete, or unknown for an operation migrated from an older catalog.
+    phase: String,
+    /// Concrete work counters while the private proof is being generated.
+    proof: Option<OperationProofProgressResponse>,
+    updated_at_unix_ms: u64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct OperationProofProgressResponse {
+    bytes_completed: u64,
+    bytes_total: u64,
+    commitments_completed: u64,
+    commitments_total: u64,
+}
+
+impl From<&Operation> for OperationProgressResponse {
+    fn from(value: &Operation) -> Self {
+        Self {
+            phase: value.progress_phase.clone(),
+            proof: (value.proof_commitments_total > 0).then_some(OperationProofProgressResponse {
+                bytes_completed: value.proof_bytes_completed,
+                bytes_total: value.proof_bytes_total,
+                commitments_completed: value.proof_commitments_completed,
+                commitments_total: value.proof_commitments_total,
+            }),
+            updated_at_unix_ms: value.progress_updated_at_unix_ms,
         }
     }
 }
@@ -1584,6 +1656,7 @@ fn operation_response(catalog: &Catalog, value: Operation) -> Result<OperationRe
         None => false,
     };
     let retryable = ["failed", "interrupted"].contains(&value.state.as_str()) && eligible_capture;
+    let progress = OperationProgressResponse::from(&value);
     Ok(OperationResponse {
         operation_id: value.operation_id,
         kind: value.kind,
@@ -1594,6 +1667,7 @@ fn operation_response(catalog: &Catalog, value: Operation) -> Result<OperationRe
         started_at_unix_ms: value.started_at_unix_ms,
         completed_at_unix_ms: value.completed_at_unix_ms,
         failure_code: value.failure_code,
+        progress,
         retryable,
         attempt_history,
     })

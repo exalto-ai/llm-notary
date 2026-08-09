@@ -187,13 +187,16 @@ Only captured `2xx` responses are currently eligible for finalization.
 Finalization is asynchronous and can take much longer than capture:
 
 ```bash
-llm-notary finalize cap-example
-llm-notary operations show op-example --json
+llm-notary finalize cap-example --wait
 ```
 
-Poll while the operation is `queued` or `running`. Its terminal state is
-`finalized`, `failed`, or `interrupted`. A successful operation writes one
-deterministic `<capture-id>.llmtrace` package and retains the encrypted bundle.
+Without `--wait`, save the returned operation identifier and poll it while the
+operation is `queued` or `running`. With `--wait`, the CLI follows the operation
+and reports authenticated transcript bytes and completed commitments. Its
+terminal state is `finalized`, `failed`, or `interrupted`. A successful
+operation writes one deterministic `<capture-id>.llmtrace` package and retains
+the encrypted bundle. `--json --wait` suppresses intermediate lines so standard
+output remains one JSON value.
 
 ```bash
 llm-notary traces verify cap-example

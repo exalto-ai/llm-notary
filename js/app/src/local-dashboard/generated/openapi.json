@@ -923,7 +923,7 @@
           "local-admin"
         ],
         "summary": "List background operations",
-        "description": "Lists bounded operation summaries with opaque cursor pagination and optional state, kind, and capture filters. Fetch one operation for its complete attempt history.",
+        "description": "Lists bounded operation summaries, including milestone progress, with opaque cursor pagination and optional state, kind, and capture filters. Fetch one operation for its complete attempt history.",
         "operationId": "operations",
         "parameters": [
           {
@@ -1017,7 +1017,7 @@
           "local-admin"
         ],
         "summary": "Get an operation",
-        "description": "Returns the current state and complete attempt history for one durable operation.",
+        "description": "Returns the current state, milestone progress, and complete attempt history for one durable operation.",
         "operationId": "operation",
         "parameters": [
           {
@@ -1911,6 +1911,66 @@
           }
         }
       },
+      "OperationProgressResponse": {
+        "type": "object",
+        "required": [
+          "phase",
+          "updated_at_unix_ms"
+        ],
+        "properties": {
+          "phase": {
+            "type": "string",
+            "description": "Current milestone: queued, preparing, proving, signing, packaging,\ncomplete, or unknown for an operation migrated from an older catalog."
+          },
+          "proof": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OperationProofProgressResponse",
+                "description": "Concrete work counters while the private proof is being generated."
+              }
+            ]
+          },
+          "updated_at_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "OperationProofProgressResponse": {
+        "type": "object",
+        "required": [
+          "bytes_completed",
+          "bytes_total",
+          "commitments_completed",
+          "commitments_total"
+        ],
+        "properties": {
+          "bytes_completed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "bytes_total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "commitments_completed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "commitments_total": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "OperationResponse": {
         "type": "object",
         "required": [
@@ -1919,6 +1979,7 @@
           "state",
           "attempt",
           "created_at_unix_ms",
+          "progress",
           "retryable",
           "attempt_history"
         ],
@@ -1965,6 +2026,9 @@
           "operation_id": {
             "type": "string"
           },
+          "progress": {
+            "$ref": "#/components/schemas/OperationProgressResponse"
+          },
           "retryable": {
             "type": "boolean"
           },
@@ -1988,7 +2052,8 @@
           "kind",
           "state",
           "attempt",
-          "created_at_unix_ms"
+          "created_at_unix_ms",
+          "progress"
         ],
         "properties": {
           "attempt": {
@@ -2026,6 +2091,9 @@
           },
           "operation_id": {
             "type": "string"
+          },
+          "progress": {
+            "$ref": "#/components/schemas/OperationProgressResponse"
           },
           "started_at_unix_ms": {
             "type": [
@@ -2216,7 +2284,8 @@
                 "kind",
                 "state",
                 "attempt",
-                "created_at_unix_ms"
+                "created_at_unix_ms",
+                "progress"
               ],
               "properties": {
                 "attempt": {
@@ -2254,6 +2323,9 @@
                 },
                 "operation_id": {
                   "type": "string"
+                },
+                "progress": {
+                  "$ref": "#/components/schemas/OperationProgressResponse"
                 },
                 "started_at_unix_ms": {
                   "type": [

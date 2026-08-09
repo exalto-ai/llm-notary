@@ -97,6 +97,9 @@ while :; do
   operation=$(curl --fail-with-body \
     "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations/$operation_id") || exit 1
   state=$(printf '%s' "$operation" | jq -r '.state')
+  progress=$(printf '%s' "$operation" | jq -r \
+    'if .progress.proof then "\(.progress.proof.bytes_completed)/\(.progress.proof.bytes_total) bytes, \(.progress.proof.commitments_completed)/\(.progress.proof.commitments_total) commitments" else .progress.phase end')
+  printf 'Finalization progress: %s\n' "$progress"
   case "$state" in
     finalized|failed|interrupted) break ;;
     queued|running) sleep 3 ;;

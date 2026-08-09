@@ -163,7 +163,7 @@ llm-notary captures list --query sanitized --provider openai --limit 20
 llm-notary captures list --cursor "$next_cursor"
 llm-notary captures list --provider openai --all --json
 llm-notary captures show cap-example
-llm-notary finalize cap-example
+llm-notary finalize cap-example --wait
 llm-notary operations list --state failed --kind finalization
 llm-notary operations retry op-example
 llm-notary traces show cap-example --json
@@ -312,8 +312,16 @@ curl --fail-with-body \
 If the same capture is submitted while an operation already exists, the
 service returns that operation and sets `deduplicated` to `true`. It does not
 start a competing proof. Poll while `state` is `queued` or `running`; terminal
-states are `finalized`, `failed`, and `interrupted`. The service reports a
-stage, not a made-up percentage.
+states are `finalized`, `failed`, and `interrupted`.
+
+Every operation response includes `progress.phase`. The values are `queued`,
+`preparing`, `proving`, `signing`, `packaging`, and `complete`; these are named
+milestones, not equal portions of elapsed time. During `proving`,
+`progress.proof` reports `bytes_completed`, `bytes_total`,
+`commitments_completed`, and `commitments_total`. The byte ratio measures
+private transcript authentication inside the dominant proof loop. It is not an
+overall ETA, and the service retains the last proof counters while signing or
+packaging. The daemon updates durable counters at most about once per second.
 
 After a restart, work that was `running` is recorded as `interrupted` with the
 safe code `service_restarted`. Queued work remains durable. Retry only a

@@ -7,6 +7,20 @@ import type {
 const hour = 60 * 60 * 1000;
 const fixtureNow = Date.UTC(2026, 6, 28, 16, 42, 0);
 
+const proofProgress = (
+  bytesCompleted: number,
+  bytesTotal: number,
+  commitmentsCompleted: number,
+  commitmentsTotal: number,
+  updatedAt: number
+) => ({
+  phase: 'proving', updated_at_unix_ms: updatedAt,
+  proof: {
+    bytes_completed: bytesCompleted, bytes_total: bytesTotal,
+    commitments_completed: commitmentsCompleted, commitments_total: commitmentsTotal
+  }
+});
+
 export const fixtureCaptures: Capture[] = [
   {
     capture_id: 'cap-20260728-knowledge-eval', created_at_unix_ms: fixtureNow - hour * 2,
@@ -83,6 +97,7 @@ export const fixtureOperations: Operation[] = [
     operation_id: 'op-finalize-safety-review', kind: 'finalization',
     capture_id: 'cap-20260728-safety-review', state: 'running', attempt: 1,
     created_at_unix_ms: fixtureNow - 112_000, started_at_unix_ms: fixtureNow - 108_000,
+    progress: proofProgress(612_352, 1_284_096, 4, 10, fixtureNow - 28_000),
     retryable: false,
     attempt_history: [{ attempt: 1, state: 'running', started_at_unix_ms: fixtureNow - 108_000 }]
   },
@@ -91,6 +106,7 @@ export const fixtureOperations: Operation[] = [
     capture_id: 'cap-20260727-benchmark', state: 'failed', attempt: 2,
     created_at_unix_ms: fixtureNow - hour, started_at_unix_ms: fixtureNow - hour + 2_000,
     completed_at_unix_ms: fixtureNow - hour + 18_000, failure_code: 'notary_capacity',
+    progress: proofProgress(262_144, 731_480, 2, 6, fixtureNow - hour + 17_000),
     retryable: true,
     attempt_history: [
       { attempt: 2, state: 'failed', started_at_unix_ms: fixtureNow - hour + 2_000,
@@ -104,6 +120,8 @@ export const fixtureOperations: Operation[] = [
     capture_id: 'cap-20260727-research-brief', state: 'finalized', attempt: 1,
     created_at_unix_ms: fixtureNow - hour * 17, started_at_unix_ms: fixtureNow - hour * 17 + 1_000,
     completed_at_unix_ms: fixtureNow - hour * 17 + 184_000,
+    progress: { phase: 'complete', updated_at_unix_ms: fixtureNow - hour * 17 + 184_000,
+      proof: { bytes_completed: 1_934_120, bytes_total: 1_934_120, commitments_completed: 16, commitments_total: 16 } },
     retryable: false,
     attempt_history: [{ attempt: 1, state: 'finalized', started_at_unix_ms: fixtureNow - hour * 17 + 1_000,
       completed_at_unix_ms: fixtureNow - hour * 17 + 184_000 }]
@@ -113,6 +131,8 @@ export const fixtureOperations: Operation[] = [
     capture_id: 'cap-20260726-direct-link', state: 'finalized', attempt: 1,
     created_at_unix_ms: fixtureNow - hour * 30, started_at_unix_ms: fixtureNow - hour * 30 + 1_000,
     completed_at_unix_ms: fixtureNow - hour * 30 + 161_000, retryable: false,
+    progress: { phase: 'complete', updated_at_unix_ms: fixtureNow - hour * 30 + 161_000,
+      proof: { bytes_completed: 1_224_930, bytes_total: 1_224_930, commitments_completed: 10, commitments_total: 10 } },
     attempt_history: [{ attempt: 1, state: 'finalized', started_at_unix_ms: fixtureNow - hour * 30 + 1_000,
       completed_at_unix_ms: fixtureNow - hour * 30 + 161_000 }]
   }
@@ -341,6 +361,7 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       const startedAt = actionTimestamp();
       operations = operations.map((item) => item.operation_id === operationId ? {
         ...item, state: 'running', attempt, started_at_unix_ms: startedAt, completed_at_unix_ms: null,
+        progress: proofProgress(384_000, 1_120_000, 3, 9, startedAt),
         retryable: false,
         attempt_history: [{ attempt, state: 'running', started_at_unix_ms: startedAt }, ...item.attempt_history]
       } : item);
@@ -350,6 +371,12 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       const completedAt = actionTimestamp();
       operations = operations.map((item) => item.operation_id === operationId ? {
         ...item, state: 'finalized', completed_at_unix_ms: completedAt,
+        progress: { ...item.progress, phase: 'complete', updated_at_unix_ms: completedAt,
+          proof: item.progress.proof ? {
+            ...item.progress.proof,
+            bytes_completed: item.progress.proof.bytes_total,
+            commitments_completed: item.progress.proof.commitments_total
+          } : null },
         retryable: false,
         attempt_history: item.attempt_history.map((attempt, index) => index === 0
           ? { ...attempt, state: 'finalized', completed_at_unix_ms: completedAt } : attempt)
@@ -420,7 +447,9 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       const existing = operations.find((operation) => operation.capture_id === captureId);
       if (existing) return { operation: existing, deduplicated: true };
       const operation: Operation = { operation_id: 'op-finalize-queued-fixture', kind: 'finalization',
-        capture_id: captureId, state: 'queued', attempt: 0, created_at_unix_ms: actionTimestamp(), retryable: false, attempt_history: [] };
+        capture_id: captureId, state: 'queued', attempt: 0, created_at_unix_ms: actionTimestamp(),
+        progress: { phase: 'queued', updated_at_unix_ms: nextActionTime, proof: null },
+        retryable: false, attempt_history: [] };
       operations = [operation, ...operations];
       setCaptureFinalization(captureId, 'queued');
       progressingOperations.add(operation.operation_id);
@@ -448,7 +477,8 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       const existing = operations.find((operation) => operation.operation_id === operationId);
       if (!existing?.retryable) throw new LocalApiError(409, 'operation_not_retryable', 'Operation is not retryable');
       operations = operations.map((operation) => operation.operation_id === operationId
-        ? { ...operation, state: 'queued', failure_code: null, completed_at_unix_ms: null, retryable: false } : operation);
+        ? { ...operation, state: 'queued', failure_code: null, completed_at_unix_ms: null,
+          progress: { phase: 'queued', updated_at_unix_ms: actionTimestamp(), proof: null }, retryable: false } : operation);
       const operation = operations.find((item) => item.operation_id === operationId)!;
       if (operation.capture_id) {
         setCaptureFinalization(operation.capture_id, 'queued');
