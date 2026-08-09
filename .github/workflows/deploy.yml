@@ -197,6 +197,16 @@ jobs:
         run: >-
           curl --fail --retry 5 --retry-all-errors --retry-delay 2
           --max-time 20 https://llm-notary.exalto.ai/api/readyz
+      - name: Verify website download proxy
+        run: |
+          set -euo pipefail
+          pointer="$(curl --fail --silent --show-error --location \
+            --retry 15 --retry-all-errors --retry-delay 2 --retry-max-time 60 \
+            https://llm-notary.exalto.ai/downloads/cli/latest)"
+          case "$pointer" in
+            *" "*) ;;
+            *) echo "the website latest pointer is malformed" >&2; exit 1 ;;
+          esac
 
       - name: Restore previous images after a failed rollout
         if: ${{ failure() && steps.previous.outcome == 'success' }}
