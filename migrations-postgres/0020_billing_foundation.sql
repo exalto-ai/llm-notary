@@ -40,7 +40,8 @@ CREATE TABLE billing_purchases (
     CHECK (amount_refunded_cents <= amount_paid_cents),
     CHECK (amount_disputed_cents <= amount_paid_cents),
     CHECK (amount_refunded_cents + amount_disputed_cents <= amount_paid_cents),
-    UNIQUE (account_id, client_idempotency_key)
+    UNIQUE (account_id, client_idempotency_key),
+    UNIQUE (id, account_id)
 );
 
 CREATE INDEX billing_purchases_account_created_idx
@@ -72,8 +73,8 @@ CREATE TABLE notary_credit_adjustments (
     id TEXT PRIMARY KEY NOT NULL,
     credit_subject TEXT NOT NULL CHECK (octet_length(credit_subject) BETWEEN 1 AND 160),
     account_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    purchase_id TEXT NOT NULL REFERENCES billing_purchases(id) ON DELETE CASCADE,
-    amount_bytes BIGINT NOT NULL CHECK (amount_bytes <> 0),
+    purchase_id TEXT NOT NULL,
+    amount_bytes BIGINT NOT NULL,
     source_kind TEXT NOT NULL CHECK (
         source_kind IN ('purchase_refund', 'purchase_dispute', 'dispute_reinstatement')
     ),
@@ -82,6 +83,12 @@ CREATE TABLE notary_credit_adjustments (
     display_label TEXT NOT NULL CHECK (octet_length(display_label) BETWEEN 1 AND 120),
     created_at BIGINT NOT NULL,
     CHECK (credit_subject = 'user:' || account_id),
+    CHECK (
+        (source_kind IN ('purchase_refund', 'purchase_dispute') AND amount_bytes < 0)
+        OR (source_kind = 'dispute_reinstatement' AND amount_bytes > 0)
+    ),
+    FOREIGN KEY (purchase_id, account_id)
+        REFERENCES billing_purchases(id, account_id) ON DELETE CASCADE,
     UNIQUE (credit_subject, source_kind, source_reference),
     UNIQUE (credit_subject, idempotency_key)
 );
@@ -114,3 +121,17 @@ ALTER TABLE notary_admission_leases
     ADD COLUMN completion_outcome TEXT CHECK (
         completion_outcome IN ('completed', 'client_failed', 'service_failed')
     );
+
+-- Tie every finalization attempt to the debit it consumed. A retry after an
+-- explicit service failure consumes the restoration grant and records a child
+-- debit, so a later successful retry cannot leave the restored credit usable.
+ALTER TABLE notary_credit_debits
+    ADD COLUMN retry_of_debit_id TEXT REFERENCES notary_credit_debits(id) ON DELETE CASCADE;
+CREATE INDEX notary_credit_debits_retry_idx
+    ON notary_credit_debits (retry_of_debit_id, created_at, id);
+
+ALTER TABLE notary_admission_tickets
+    ADD COLUMN credit_debit_id TEXT REFERENCES notary_credit_debits(id) ON DELETE SET NULL,
+    ADD COLUMN credit_debit_refundable BOOLEAN NOT NULL DEFAULT FALSE;
+CREATE INDEX notary_admission_tickets_credit_debit_idx
+    ON notary_admission_tickets (credit_debit_id);

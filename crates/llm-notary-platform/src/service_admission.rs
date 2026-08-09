@@ -243,6 +243,11 @@ struct TicketRow {
     consumed_at: Option<i64>,
 }
 
+struct DebitReservation {
+    id: String,
+    restore_on_service_failure: bool,
+}
+
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(issue_admission))
@@ -742,21 +747,32 @@ async fn redeem_admission(
     }
     let pool = parse_pool(&ticket.access_pool)?;
     let policy = policy_for_pool(&state.admission, pool);
-    if request.mode == AdmissionMode::Finalize
-        && let Some(account_id) = ticket.subject_id.as_deref()
-    {
-        let billing_status = sqlx::query_scalar::<_, String>(
-            "SELECT billing_status FROM account_billing_profiles WHERE account_id = $1",
+    if let Some(account_id) = ticket.subject_id.as_deref() {
+        let current_billing = sqlx::query_as::<_, (String, String)>(
+            "SELECT service_plan, billing_status
+             FROM account_billing_profiles WHERE account_id = $1
+             FOR SHARE",
         )
         .bind(account_id)
         .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?;
-        if billing_status.as_deref() == Some("review") {
+        let (service_plan, billing_status) = current_billing
+            .as_ref()
+            .map(|(plan, status)| (plan.as_str(), status.as_str()))
+            .unwrap_or(("free", "active"));
+        if request.mode == AdmissionMode::Finalize && billing_status == "review" {
             return Err(ApiError::coded(
                 StatusCode::PAYMENT_REQUIRED,
                 "billing_review",
                 "Paid finalization is unavailable while the account billing status is under review",
+            ));
+        }
+        if pool == AccessPool::Paid && service_plan != "paid" {
+            return Err(ApiError::coded(
+                StatusCode::PAYMENT_REQUIRED,
+                "billing_plan_changed",
+                "The account plan changed after this admission ticket was issued",
             ));
         }
     }
@@ -771,9 +787,11 @@ async fn redeem_admission(
     )
     .await?;
     enforce_concurrency(&mut transaction, &state.admission, policy, &ticket, now).await?;
-    if request.mode == AdmissionMode::Finalize {
-        debit_finalization_credits(&mut transaction, &ticket, now).await?;
-    }
+    let credit_debit = if request.mode == AdmissionMode::Finalize {
+        Some(debit_finalization_credits(&mut transaction, &ticket, now).await?)
+    } else {
+        None
+    };
     let lease_id = Uuid::new_v4().to_string();
     let lease_expires_at = now + state.admission.lease_ttl_secs;
     sqlx::query(
@@ -794,12 +812,19 @@ async fn redeem_admission(
     .map_err(database_error)?;
     sqlx::query(
         "UPDATE notary_admission_tickets
-         SET consumed_at = $1, consumed_by_instance = $2, lease_id = $3
-         WHERE token_hash = $4 AND consumed_at IS NULL",
+         SET consumed_at = $1, consumed_by_instance = $2, lease_id = $3,
+             credit_debit_id = $4, credit_debit_refundable = $5
+         WHERE token_hash = $6 AND consumed_at IS NULL",
     )
     .bind(now)
     .bind(&request.notary_instance_id)
     .bind(&lease_id)
+    .bind(credit_debit.as_ref().map(|debit| debit.id.as_str()))
+    .bind(
+        credit_debit
+            .as_ref()
+            .is_some_and(|debit| debit.restore_on_service_failure),
+    )
     .bind(sha256_hex(request.ticket.as_bytes()))
     .execute(&mut *transaction)
     .await
@@ -930,13 +955,12 @@ async fn restore_purchased_credits_for_service_failure(
                     WHERE grants.source_kind IN ('external_purchase', 'service_refund')
                 ), 0)::BIGINT AS purchased_bytes
          FROM notary_admission_tickets AS tickets
-         JOIN notary_credit_debits AS debits
-           ON debits.credit_subject = tickets.credit_subject
-          AND debits.record_digest = tickets.record_digest
+         JOIN notary_credit_debits AS debits ON debits.id = tickets.credit_debit_id
          JOIN notary_credit_debit_allocations AS allocations
            ON allocations.debit_id = debits.id
          JOIN notary_credit_grants AS grants ON grants.id = allocations.grant_id
-         WHERE tickets.lease_id = $1 AND debits.account_id IS NOT NULL
+         WHERE tickets.lease_id = $1 AND tickets.credit_debit_refundable
+           AND debits.account_id IS NOT NULL
          GROUP BY debits.id",
     )
     .bind(lease_id)
@@ -1330,14 +1354,14 @@ async fn debit_finalization_credits(
     transaction: &mut Transaction<'_, Postgres>,
     ticket: &TicketRow,
     now: i64,
-) -> ApiResult<()> {
+) -> ApiResult<DebitReservation> {
     let digest = ticket
         .record_digest
         .as_deref()
         .ok_or_else(|| ApiError::internal(anyhow::anyhow!("finalization ticket has no digest")))?;
     let credit_subject = ticket.credit_subject.clone();
-    if let Some(previous) = sqlx::query_scalar::<_, i64>(
-        "SELECT allowance_bytes FROM notary_credit_debits
+    if let Some((previous_debit_id, previous_allowance)) = sqlx::query_as::<_, (String, i64)>(
+        "SELECT id, allowance_bytes FROM notary_credit_debits
          WHERE credit_subject = $1 AND record_digest = $2",
     )
     .bind(&credit_subject)
@@ -1346,12 +1370,115 @@ async fn debit_finalization_credits(
     .await
     .map_err(database_error)?
     {
-        if previous != ticket.requested_allowance_bytes {
+        if previous_allowance != ticket.requested_allowance_bytes {
             return Err(ApiError::conflict(
                 "a retry must use the original finalization allowance",
             ));
         }
-        return Ok(());
+        let attempt_active: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM notary_credit_debits AS attempts
+                 JOIN notary_admission_tickets AS tickets
+                   ON tickets.credit_debit_id = attempts.id
+                 JOIN notary_admission_leases AS leases ON leases.id = tickets.lease_id
+                 WHERE (attempts.id = $1 OR attempts.retry_of_debit_id = $1)
+                   AND leases.released_at IS NULL AND leases.terminal_state IS NULL
+                   AND leases.expires_at > $2
+             )",
+        )
+        .bind(&previous_debit_id)
+        .bind(now)
+        .fetch_one(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        if attempt_active {
+            return Err(ApiError::conflict(
+                "a retry for this finalization is already in progress",
+            ));
+        }
+        let restoration = sqlx::query_as::<_, (String, i64)>(
+            "SELECT grants.id,
+                    grants.amount_bytes - COALESCE((
+                        SELECT SUM(allocations.amount_bytes)
+                        FROM notary_credit_debit_allocations AS allocations
+                        WHERE allocations.grant_id = grants.id
+                    ), 0)::BIGINT AS remaining_bytes
+             FROM notary_credit_grants AS grants
+             JOIN notary_credit_debits AS attempts
+               ON grants.source_reference = 'service-failure:' || attempts.id
+             WHERE grants.credit_subject = $1 AND grants.source_kind = 'service_refund'
+               AND (attempts.id = $2 OR attempts.retry_of_debit_id = $2)
+               AND grants.available_at <= $3
+               AND (grants.expires_at IS NULL OR grants.expires_at > $3)
+               AND grants.amount_bytes - COALESCE((
+                       SELECT SUM(allocations.amount_bytes)
+                       FROM notary_credit_debit_allocations AS allocations
+                       WHERE allocations.grant_id = grants.id
+                   ), 0)::BIGINT > 0
+             ORDER BY grants.available_at, grants.created_at, grants.id
+             LIMIT 1
+             FOR UPDATE OF grants",
+        )
+        .bind(&credit_subject)
+        .bind(&previous_debit_id)
+        .bind(now)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        let Some((restoration_grant_id, restored_bytes)) = restoration else {
+            let latest_retry = sqlx::query_scalar::<_, String>(
+                "SELECT retries.id FROM notary_credit_debits AS retries
+                 WHERE retries.retry_of_debit_id = $1
+                 ORDER BY retries.created_at DESC, retries.id DESC
+                 LIMIT 1",
+            )
+            .bind(&previous_debit_id)
+            .fetch_optional(&mut **transaction)
+            .await
+            .map_err(database_error)?;
+            if let Some(retry_id) = latest_retry {
+                return Ok(DebitReservation {
+                    id: retry_id,
+                    restore_on_service_failure: false,
+                });
+            }
+            return Ok(DebitReservation {
+                id: previous_debit_id,
+                restore_on_service_failure: false,
+            });
+        };
+        let debit_id = Uuid::new_v4().to_string();
+        let retry_digest = sha256_hex(
+            format!("service-retry:{previous_debit_id}:{restoration_grant_id}").as_bytes(),
+        );
+        sqlx::query(
+            "INSERT INTO notary_credit_debits
+                 (id, credit_subject, account_id, record_digest, allowance_bytes, created_at,
+                  retry_of_debit_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(&debit_id)
+        .bind(&credit_subject)
+        .bind(ticket.subject_id.as_deref())
+        .bind(retry_digest)
+        .bind(restored_bytes)
+        .bind(now)
+        .bind(&previous_debit_id)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        allocate_debit(
+            transaction,
+            &debit_id,
+            restored_bytes,
+            &[(restoration_grant_id, restored_bytes)],
+        )
+        .await?;
+        return Ok(DebitReservation {
+            id: debit_id,
+            restore_on_service_failure: true,
+        });
     }
     let grants = available_grants(transaction, &credit_subject, now).await?;
     let available = grants
@@ -1389,7 +1516,10 @@ async fn debit_finalization_credits(
         &grants,
     )
     .await?;
-    Ok(())
+    Ok(DebitReservation {
+        id: debit_id,
+        restore_on_service_failure: true,
+    })
 }
 
 async fn preflight_finalization_credits(
@@ -1539,38 +1669,50 @@ async fn credit_summary(
     .fetch_all(database)
     .await
     .map_err(database_error)?;
-    let included_monthly_remaining_bytes = balances
+    let gross_included_remaining_bytes = balances
         .iter()
         .filter(|grant| grant.source_kind == "included_monthly")
         .map(|grant| grant.remaining_bytes)
         .sum::<i64>();
     let adjustment_bytes = credit_adjustment_total(database, credit_subject).await?;
-    let supplemental_remaining_bytes = balances
+    let adjusted_supplemental_bytes = balances
         .iter()
         .filter(|grant| grant.source_kind != "included_monthly")
         .map(|grant| grant.remaining_bytes)
         .sum::<i64>()
         .saturating_add(adjustment_bytes);
-    let next_grant_expiration = balances
-        .iter()
-        .filter(|grant| grant.remaining_bytes > 0)
-        .filter_map(|grant| grant.expires_at)
-        .min();
+    let (included_monthly_remaining_bytes, supplemental_remaining_bytes) =
+        if adjusted_supplemental_bytes >= 0 {
+            (gross_included_remaining_bytes, adjusted_supplemental_bytes)
+        } else {
+            (
+                gross_included_remaining_bytes
+                    .saturating_add(adjusted_supplemental_bytes)
+                    .max(0),
+                0,
+            )
+        };
+    let total_remaining_bytes =
+        included_monthly_remaining_bytes.saturating_add(supplemental_remaining_bytes);
+    let next_grant_expiration = if total_remaining_bytes > 0 {
+        balances
+            .iter()
+            .filter(|grant| grant.remaining_bytes > 0)
+            .filter_map(|grant| grant.expires_at)
+            .min()
+    } else {
+        None
+    };
     let total_granted_bytes = balances
         .iter()
         .map(|grant| grant.granted_bytes)
         .sum::<i64>();
-    let total_used_bytes = balances
-        .iter()
-        .map(|grant| grant.used_bytes)
-        .sum::<i64>()
-        .saturating_sub(adjustment_bytes);
+    let total_used_bytes = balances.iter().map(|grant| grant.used_bytes).sum::<i64>();
 
     Ok(CreditSummary {
         total_granted_bytes,
         total_used_bytes,
-        total_remaining_bytes: included_monthly_remaining_bytes
-            .saturating_add(supplemental_remaining_bytes),
+        total_remaining_bytes,
         included_monthly_remaining_bytes,
         supplemental_remaining_bytes,
         reset_at: period.end,
@@ -3020,6 +3162,30 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(paid_access_pool, "paid");
+
+        sqlx::query(
+            "UPDATE account_billing_profiles
+             SET service_plan = 'free', updated_at = $1 WHERE account_id = 'user-1'",
+        )
+        .bind(now + 1)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        let stale_paid_ticket = redeem_admission(
+            State(state.clone()),
+            service_headers(&state),
+            Json(RedeemAdmissionRequest {
+                ticket: paid_ticket.ticket,
+                notary_instance_id: "notary-stale-plan".to_owned(),
+                mode: AdmissionMode::Capture,
+                directory_generation: paid_ticket.directory_generation,
+            }),
+        )
+        .await
+        .err()
+        .expect("stale paid ticket should be rejected");
+        assert_eq!(stale_paid_ticket.status, StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(stale_paid_ticket.code, "billing_plan_changed");
     }
 
     #[tokio::test]
@@ -3065,10 +3231,12 @@ mod tests {
                   directory_generation, record_digest, requested_allowance_bytes,
                   session_timeout_secs, max_attestable_http_bytes, max_frame_bytes,
                   max_private_chunk_bytes, max_private_chunk_commitments, issued_at,
-                  expires_at, consumed_at, consumed_by_instance, lease_id)
+                  expires_at, consumed_at, consumed_by_instance, lease_id, credit_debit_id,
+                  credit_debit_refundable)
              VALUES ('settlement-ticket', 'settlement-user', 'user:settlement-user', 'paid',
                      'finalize', 1, $1, 1000, 900, 1000, 2000, 1000, 1,
-                     $2, $3, $2, 'notary-settlement', 'settlement-lease')",
+                     $2, $3, $2, 'notary-settlement', 'settlement-lease',
+                     'settlement-debit', TRUE)",
         )
         .bind(&digest)
         .bind(now)
@@ -3123,5 +3291,259 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(outcome, "service_failed");
+
+        sqlx::query(
+            "INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest, requested_allowance_bytes,
+                  session_timeout_secs, max_attestable_http_bytes, max_frame_bytes,
+                  max_private_chunk_bytes, max_private_chunk_commitments, issued_at,
+                  expires_at, consumed_at, consumed_by_instance, lease_id, credit_debit_id,
+                  credit_debit_refundable)
+             VALUES ('root-active-ticket', 'settlement-user', 'user:settlement-user', 'paid',
+                     'finalize', 1, $1, 1000, 900, 1000, 2000, 1000, 1,
+                     $2, $3, $2, 'notary-root-retry', 'root-active-lease',
+                     'settlement-debit', FALSE)",
+        )
+        .bind(&digest)
+        .bind(now + 1)
+        .bind(now + 60)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notary_admission_leases
+                 (id, notary_instance_id, subject_id, credit_subject, access_pool, mode,
+                  acquired_at, expires_at)
+             VALUES ('root-active-lease', 'notary-root-retry', 'settlement-user',
+                     'user:settlement-user', 'paid', 'finalize', $1, $2)",
+        )
+        .bind(now + 1)
+        .bind(now + 60)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        let mut active_root_transaction = state.database.begin().await.unwrap();
+        let active_root_retry = debit_finalization_credits(
+            &mut active_root_transaction,
+            &TicketRow {
+                subject_id: Some("settlement-user".to_owned()),
+                credit_subject: "user:settlement-user".to_owned(),
+                access_pool: "paid".to_owned(),
+                mode: "finalize".to_owned(),
+                directory_generation: 1,
+                record_digest: Some(digest.clone()),
+                requested_allowance_bytes: 1000,
+                max_attestable_http_bytes: 1000,
+                max_frame_bytes: 2000,
+                max_private_chunk_bytes: 1000,
+                max_private_chunk_commitments: 1,
+                expires_at: now + 60,
+                consumed_at: None,
+            },
+            now + 2,
+        )
+        .await
+        .err()
+        .expect("an active root-debit attempt must serialize same-digest retries");
+        assert_eq!(active_root_retry.status, StatusCode::CONFLICT);
+        active_root_transaction.rollback().await.unwrap();
+        sqlx::query(
+            "UPDATE notary_admission_leases
+             SET released_at = $1, terminal_state = 'released',
+                 completion_outcome = 'completed'
+             WHERE id = 'root-active-lease'",
+        )
+        .bind(now + 2)
+        .execute(&state.database)
+        .await
+        .unwrap();
+
+        let mut transaction = state.database.begin().await.unwrap();
+        let retry_debit = debit_finalization_credits(
+            &mut transaction,
+            &TicketRow {
+                subject_id: Some("settlement-user".to_owned()),
+                credit_subject: "user:settlement-user".to_owned(),
+                access_pool: "paid".to_owned(),
+                mode: "finalize".to_owned(),
+                directory_generation: 1,
+                record_digest: Some(digest),
+                requested_allowance_bytes: 1000,
+                max_attestable_http_bytes: 1000,
+                max_frame_bytes: 2000,
+                max_private_chunk_bytes: 1000,
+                max_private_chunk_commitments: 1,
+                expires_at: now + 60,
+                consumed_at: None,
+            },
+            now + 1,
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
+        assert_ne!(retry_debit.id, "settlement-debit");
+        assert!(retry_debit.restore_on_service_failure);
+        let retry: (i64, String) = sqlx::query_as(
+            "SELECT allowance_bytes, retry_of_debit_id
+             FROM notary_credit_debits WHERE id = $1",
+        )
+        .bind(&retry_debit.id)
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(retry, (1000, "settlement-debit".to_owned()));
+        let restored_remaining: i64 = sqlx::query_scalar(
+            "SELECT grants.amount_bytes - COALESCE(SUM(allocations.amount_bytes), 0)::BIGINT
+             FROM notary_credit_grants AS grants
+             LEFT JOIN notary_credit_debit_allocations AS allocations
+               ON allocations.grant_id = grants.id
+             WHERE grants.credit_subject = 'user:settlement-user'
+               AND grants.source_kind = 'service_refund'
+             GROUP BY grants.id",
+        )
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(restored_remaining, 0);
+
+        sqlx::query(
+            "INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest, requested_allowance_bytes,
+                  session_timeout_secs, max_attestable_http_bytes, max_frame_bytes,
+                  max_private_chunk_bytes, max_private_chunk_commitments, issued_at,
+                  expires_at, consumed_at, consumed_by_instance, lease_id, credit_debit_id,
+                  credit_debit_refundable)
+             VALUES ('retry-active-ticket', 'settlement-user', 'user:settlement-user', 'paid',
+                     'finalize', 1, $1, 1000, 900, 1000, 2000, 1000, 1,
+                     $2, $3, $2, 'notary-retry', 'retry-active-lease', $4, TRUE)",
+        )
+        .bind("a".repeat(64))
+        .bind(now + 1)
+        .bind(now + 60)
+        .bind(&retry_debit.id)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notary_admission_leases
+                 (id, notary_instance_id, subject_id, credit_subject, access_pool, mode,
+                  acquired_at, expires_at)
+             VALUES ('retry-active-lease', 'notary-retry', 'settlement-user',
+                     'user:settlement-user', 'paid', 'finalize', $1, $2)",
+        )
+        .bind(now + 1)
+        .bind(now + 60)
+        .execute(&state.database)
+        .await
+        .unwrap();
+
+        let mut duplicate_transaction = state.database.begin().await.unwrap();
+        let duplicate_retry = debit_finalization_credits(
+            &mut duplicate_transaction,
+            &TicketRow {
+                subject_id: Some("settlement-user".to_owned()),
+                credit_subject: "user:settlement-user".to_owned(),
+                access_pool: "paid".to_owned(),
+                mode: "finalize".to_owned(),
+                directory_generation: 1,
+                record_digest: Some("a".repeat(64)),
+                requested_allowance_bytes: 1000,
+                max_attestable_http_bytes: 1000,
+                max_frame_bytes: 2000,
+                max_private_chunk_bytes: 1000,
+                max_private_chunk_commitments: 1,
+                expires_at: now + 60,
+                consumed_at: None,
+            },
+            now + 2,
+        )
+        .await
+        .err()
+        .expect("a consumed service-failure retry must not be reused concurrently");
+        assert_eq!(duplicate_retry.status, StatusCode::CONFLICT);
+        duplicate_transaction.rollback().await.unwrap();
+
+        sqlx::query(
+            "UPDATE notary_admission_leases
+             SET released_at = $1, terminal_state = 'released',
+                 completion_outcome = 'client_failed'
+             WHERE id = 'retry-active-lease'",
+        )
+        .bind(now + 2)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        let mut terminal_transaction = state.database.begin().await.unwrap();
+        let terminal_retry = debit_finalization_credits(
+            &mut terminal_transaction,
+            &TicketRow {
+                subject_id: Some("settlement-user".to_owned()),
+                credit_subject: "user:settlement-user".to_owned(),
+                access_pool: "paid".to_owned(),
+                mode: "finalize".to_owned(),
+                directory_generation: 1,
+                record_digest: Some("a".repeat(64)),
+                requested_allowance_bytes: 1000,
+                max_attestable_http_bytes: 1000,
+                max_frame_bytes: 2000,
+                max_private_chunk_bytes: 1000,
+                max_private_chunk_commitments: 1,
+                expires_at: now + 60,
+                consumed_at: None,
+            },
+            now + 3,
+        )
+        .await
+        .unwrap();
+        assert_eq!(terminal_retry.id, retry_debit.id);
+        assert!(!terminal_retry.restore_on_service_failure);
+        terminal_transaction.rollback().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn billing_adjustments_enforce_purchase_ownership_and_signs() {
+        let state = test_state().await;
+        super::super::insert_test_github_user(&state.database, "buyer", 3, "buyer").await;
+        super::super::insert_test_github_user(&state.database, "other", 4, "other").await;
+        let now = unix_timestamp().unwrap();
+        sqlx::query(
+            "INSERT INTO billing_purchases
+                 (id, account_id, client_idempotency_key, provider, state, currency,
+                  unit_amount_cents, quantity_gb, credit_bytes, expected_amount_cents,
+                  provider_price_id, livemode, created_at, updated_at)
+             VALUES ('purchase-1', 'buyer', 'checkout-1', 'stripe', 'paid', 'usd',
+                     500, 1, 1000000000, 500, 'price_test', FALSE, $1, $1)",
+        )
+        .bind(now)
+        .execute(&state.database)
+        .await
+        .unwrap();
+
+        let wrong_sign = sqlx::query(
+            "INSERT INTO notary_credit_adjustments
+                 (id, credit_subject, account_id, purchase_id, amount_bytes, source_kind,
+                  source_reference, idempotency_key, display_label, created_at)
+             VALUES ('adjustment-sign', 'user:buyer', 'buyer', 'purchase-1', 1,
+                     'purchase_refund', 'refund-sign', 'refund-sign', 'Refund', $1)",
+        )
+        .bind(now)
+        .execute(&state.database)
+        .await;
+        assert!(wrong_sign.is_err());
+
+        let wrong_owner = sqlx::query(
+            "INSERT INTO notary_credit_adjustments
+                 (id, credit_subject, account_id, purchase_id, amount_bytes, source_kind,
+                  source_reference, idempotency_key, display_label, created_at)
+             VALUES ('adjustment-owner', 'user:other', 'other', 'purchase-1', -1,
+                     'purchase_refund', 'refund-owner', 'refund-owner', 'Refund', $1)",
+        )
+        .bind(now)
+        .execute(&state.database)
+        .await;
+        assert!(wrong_owner.is_err());
     }
 }
