@@ -109,7 +109,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .hero > p { max-width: 470px; margin: 0; color: var(--body-copy); font-size: 16px; line-height: 1.5; }
 .hero-actions { flex-direction: column; align-items: flex-start; gap: 14px; margin-top: 30px; }
 .hero-download { min-width: 286px; min-height: 56px; gap: 12px; padding: 9px 14px; }
-.hero-download > svg { width: 23px; height: 23px; flex: none; stroke-width: 1.75; }
+.hero-download > img { width: 18px; height: 24px; flex: none; }
 .hero-download > span { display: grid; gap: 3px; text-align: left; }
 .hero-download b { font-size: 14px; font-weight: 600; line-height: 1.1; }
 .hero-download small { color: rgba(255, 255, 255, .78); font: 500 9px/1.2 'DM Mono', monospace; letter-spacing: .025em; }

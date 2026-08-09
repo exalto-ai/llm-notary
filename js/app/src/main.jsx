@@ -4,7 +4,7 @@ import '@fontsource-variable/instrument-sans';
 import '@fontsource-variable/space-grotesk';
 import '@fontsource/dm-mono/400.css';
 import '@fontsource/dm-mono/500.css';
-import { Apple, ChevronDown } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -59,6 +59,7 @@ import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries 
 
 const loadCreditUtilizationChart = () => import('./CreditUtilizationChart');
 const CreditUtilizationChart = lazy(loadCreditUtilizationChart);
+const appleLogoUrl = new URL('./assets/platforms/apple.svg', import.meta.url).href;
 const installCommand = 'curl -fsSL https://llm-notary.exalto.ai/install.sh | sh';
 const sourceInstallCommand = `git clone https://github.com/exalto-ai/llm-notary.git
 cd llm-notary
@@ -78,7 +79,7 @@ export function MacosDownloadLink({ loadPointer = loadLatestPointer }) {
     return () => { cancelled = true; };
   }, [loadPointer]);
   return <a className="button button-dark hero-download" href={downloadHref || '#/docs/getting-started'} download={downloadHref ? macosDmgName : undefined} aria-busy={!downloadHref && !unavailable}>
-    <Apple aria-hidden="true" />
+    <img src={appleLogoUrl} alt="" aria-hidden="true" />
     <span><b>Download for macOS</b><small>{unavailable ? 'View install options' : 'Apple silicon · macOS 12+'}</small></span>
   </a>;
 }
