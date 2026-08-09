@@ -30,6 +30,21 @@ pub struct PlatformConfig {
     pub notary_directory: NotaryDirectoryConfig,
     pub storage: StorageConfig,
     pub admission: AdmissionConfig,
+    pub billing: BillingConfig,
+}
+
+/// Optional hosted-purchase configuration.
+pub struct BillingConfig {
+    pub stripe: Option<StripeConfig>,
+}
+
+/// Stripe secrets and the single authoritative hosted-credit Price.
+#[derive(Clone)]
+pub struct StripeConfig {
+    pub(crate) secret_key: String,
+    pub(crate) webhook_secret: String,
+    pub(crate) price_id: String,
+    pub(crate) livemode: bool,
 }
 
 /// Admission coordinator authentication and effective hosted-service policy.
@@ -109,8 +124,82 @@ impl PlatformConfig {
             notary_directory: NotaryDirectoryConfig::from_env()?,
             storage: StorageConfig::from_env()?,
             admission: AdmissionConfig::from_env()?,
+            billing: BillingConfig::from_env()?,
         })
     }
+}
+
+impl BillingConfig {
+    fn from_env() -> Result<Self> {
+        let secret_key = read_secret_setting(
+            "LLM_NOTARY_STRIPE_SECRET_KEY",
+            "LLM_NOTARY_STRIPE_SECRET_KEY_FILE",
+        )?;
+        let webhook_secret = read_secret_setting(
+            "LLM_NOTARY_STRIPE_WEBHOOK_SECRET",
+            "LLM_NOTARY_STRIPE_WEBHOOK_SECRET_FILE",
+        )?;
+        let price_id = optional_env("LLM_NOTARY_STRIPE_PRICE_ID")?;
+        if secret_key.is_none() && webhook_secret.is_none() && price_id.is_none() {
+            return Ok(Self { stripe: None });
+        }
+        let secret_key = secret_key.ok_or_else(|| {
+            anyhow!("LLM_NOTARY_STRIPE_SECRET_KEY or LLM_NOTARY_STRIPE_SECRET_KEY_FILE must be set")
+        })?;
+        let webhook_secret = webhook_secret.ok_or_else(|| {
+            anyhow!(
+                "LLM_NOTARY_STRIPE_WEBHOOK_SECRET or LLM_NOTARY_STRIPE_WEBHOOK_SECRET_FILE must be set"
+            )
+        })?;
+        let price_id = price_id.ok_or_else(|| anyhow!("LLM_NOTARY_STRIPE_PRICE_ID must be set"))?;
+        let livemode = if secret_key.starts_with("sk_test_") {
+            false
+        } else if secret_key.starts_with("sk_live_") {
+            true
+        } else {
+            bail!("Stripe secret key must be an sk_test_ or sk_live_ key");
+        };
+        if secret_key.len() > 256 {
+            bail!("Stripe secret key is too long");
+        }
+        if !webhook_secret.starts_with("whsec_") || webhook_secret.len() > 256 {
+            bail!("Stripe webhook secret must be a bounded whsec_ secret");
+        }
+        if !price_id.starts_with("price_") || price_id.len() > 255 {
+            bail!("LLM_NOTARY_STRIPE_PRICE_ID must be a bounded Stripe Price identifier");
+        }
+        Ok(Self {
+            stripe: Some(StripeConfig {
+                secret_key,
+                webhook_secret,
+                price_id,
+                livemode,
+            }),
+        })
+    }
+}
+
+fn read_secret_setting(value_name: &str, file_name: &str) -> Result<Option<String>> {
+    let value = optional_env(value_name)?;
+    let path = optional_env(file_name)?;
+    if value.is_some() && path.is_some() {
+        bail!("{value_name} and {file_name} are mutually exclusive");
+    }
+    if value.is_some() {
+        return Ok(value);
+    }
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let path = PathBuf::from(path);
+    let secret = std::fs::read_to_string(&path)
+        .with_context(|| format!("reading {}", path.display()))?
+        .trim()
+        .to_owned();
+    if secret.is_empty() {
+        bail!("{} must not be empty", path.display());
+    }
+    Ok(Some(secret))
 }
 
 impl AdmissionConfig {

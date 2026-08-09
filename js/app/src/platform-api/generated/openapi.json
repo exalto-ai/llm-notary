@@ -356,6 +356,60 @@
         }
       }
     },
+    "/api/billing/stripe/webhook": {
+      "post": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "Receive signed Stripe billing events",
+        "operationId": "stripe_webhook",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Event processed or safely ignored"
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/cli/authorizations": {
       "post": {
         "tags": [
@@ -1394,6 +1448,204 @@
         "responses": {
           "204": {
             "description": "API key revoked"
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/me/billing/checkout-sessions": {
+      "post": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "Create a Stripe-hosted credit purchase",
+        "operationId": "create_checkout_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCheckoutSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateCheckoutSessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/me/billing/purchases": {
+      "get": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "List recent hosted-credit purchases",
+        "operationId": "list_purchases",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingPurchasesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/me/billing/purchases/{purchase_id}": {
+      "get": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "Get one hosted-credit purchase",
+        "operationId": "get_purchase",
+        "parameters": [
+          {
+            "name": "purchase_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingPurchase"
+                }
+              }
+            }
           },
           "401": {
             "description": "",
@@ -2786,6 +3038,87 @@
           }
         }
       },
+      "BillingPurchase": {
+        "type": "object",
+        "required": [
+          "id",
+          "state",
+          "quantity_gb",
+          "credit_bytes",
+          "amount_cents",
+          "currency",
+          "amount_refunded_cents",
+          "amount_disputed_cents",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "amount_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "amount_disputed_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "amount_refunded_cents": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "credit_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "paid_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "quantity_gb": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "receipt_reference": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "state": {
+            "$ref": "#/components/schemas/PurchaseState"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "BillingPurchasesResponse": {
+        "type": "object",
+        "required": [
+          "purchases"
+        ],
+        "properties": {
+          "purchases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BillingPurchase"
+            }
+          }
+        }
+      },
       "BrowserAuthProvider": {
         "type": "string",
         "enum": [
@@ -2958,6 +3291,37 @@
           },
           "secret": {
             "type": "string"
+          }
+        }
+      },
+      "CreateCheckoutSessionRequest": {
+        "type": "object",
+        "required": [
+          "quantity_gb",
+          "idempotency_key"
+        ],
+        "properties": {
+          "idempotency_key": {
+            "type": "string"
+          },
+          "quantity_gb": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "CreateCheckoutSessionResponse": {
+        "type": "object",
+        "required": [
+          "purchase",
+          "checkout_url"
+        ],
+        "properties": {
+          "checkout_url": {
+            "type": "string"
+          },
+          "purchase": {
+            "$ref": "#/components/schemas/BillingPurchase"
           }
         }
       },
@@ -3903,6 +4267,17 @@
           }
         }
       },
+      "PurchaseState": {
+        "type": "string",
+        "enum": [
+          "creating",
+          "checkout_open",
+          "paid",
+          "failed",
+          "refunded",
+          "disputed"
+        ]
+      },
       "RedeemAdmissionRequest": {
         "type": "object",
         "required": [
@@ -4254,6 +4629,10 @@
     {
       "name": "notary-admission",
       "description": "Hosted notary tickets and distributed leases"
+    },
+    {
+      "name": "billing",
+      "description": "Stripe-hosted finalization credit purchases"
     },
     {
       "name": "verification",

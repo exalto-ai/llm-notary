@@ -348,6 +348,7 @@ mod tests {
             notary_directory: super::super::tests::directory_key(),
             publish: super::super::publish::PublishService::disabled_for_test(),
             admission: std::sync::Arc::new(super::super::config::AdmissionConfig::for_test()),
+            billing: super::super::billing::BillingService::disabled_for_test(),
         };
         let jar = |token| CookieJar::new().add(Cookie::new(SESSION_COOKIE, token));
         let request = || CreateApiKeyRequest {
