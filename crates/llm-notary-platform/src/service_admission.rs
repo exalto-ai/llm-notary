@@ -81,11 +81,29 @@ pub enum ServicePlan {
     Paid,
 }
 
+impl ServicePlan {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Free => "free",
+            Self::Paid => "paid",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Serialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum BillingStatus {
     Active,
     Review,
+}
+
+impl BillingStatus {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Review => "review",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Serialize, ToSchema, PartialEq, Eq)]
@@ -1155,6 +1173,18 @@ struct ExistingGrantRow {
     display_label: Option<String>,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct PurchaseAdjustmentSpec<'a> {
+    pub account_id: &'a str,
+    pub purchase_id: &'a str,
+    pub amount_bytes: i64,
+    pub source_kind: &'a str,
+    pub source_reference: &'a str,
+    pub idempotency_key: &'a str,
+    pub display_label: &'a str,
+    pub created_at: i64,
+}
+
 #[derive(FromRow)]
 struct GrantBalanceRow {
     source_kind: String,
@@ -1242,6 +1272,145 @@ async fn create_credit_grant(
     .bind(spec.available_at)
     .bind(spec.expires_at)
     .bind(spec.display_label)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(id)
+}
+
+pub(crate) async fn grant_external_purchase(
+    transaction: &mut Transaction<'_, Postgres>,
+    account_id: &str,
+    payment_reference: &str,
+    amount_bytes: i64,
+    created_at: i64,
+) -> ApiResult<String> {
+    let credit_subject = account_credit_subject(account_id);
+    let idempotency_key = format!("external-purchase:{payment_reference}");
+    create_credit_grant(
+        transaction,
+        CreditGrantSpec {
+            credit_subject: &credit_subject,
+            account_id: Some(account_id),
+            amount_bytes,
+            source_kind: "external_purchase",
+            source_reference: payment_reference,
+            idempotency_key: &idempotency_key,
+            period_start: None,
+            period_end: None,
+            created_at,
+            available_at: created_at,
+            expires_at: None,
+            display_label: "Purchased hosted finalization credits",
+        },
+    )
+    .await
+}
+
+pub(crate) async fn set_account_billing_state(
+    transaction: &mut Transaction<'_, Postgres>,
+    account_id: &str,
+    service_plan: ServicePlan,
+    billing_status: BillingStatus,
+    updated_at: i64,
+) -> ApiResult<()> {
+    sqlx::query(
+        "INSERT INTO account_billing_profiles
+             (account_id, service_plan, billing_status, updated_at)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (account_id) DO UPDATE
+         SET service_plan = EXCLUDED.service_plan,
+             billing_status = EXCLUDED.billing_status,
+             updated_at = GREATEST(account_billing_profiles.updated_at, EXCLUDED.updated_at)",
+    )
+    .bind(account_id)
+    .bind(service_plan.as_str())
+    .bind(billing_status.as_str())
+    .bind(updated_at)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    Ok(())
+}
+
+pub(crate) async fn apply_purchase_adjustment(
+    transaction: &mut Transaction<'_, Postgres>,
+    spec: PurchaseAdjustmentSpec<'_>,
+) -> ApiResult<String> {
+    let valid_kind_and_sign = matches!(
+        (spec.source_kind, spec.amount_bytes.signum()),
+        ("purchase_refund", -1) | ("purchase_dispute", -1) | ("dispute_reinstatement", 1)
+    );
+    if !valid_kind_and_sign
+        || spec.source_reference.is_empty()
+        || spec.source_reference.len() > 256
+        || spec.idempotency_key.is_empty()
+        || spec.idempotency_key.len() > 256
+        || spec.display_label.is_empty()
+        || spec.display_label.len() > 120
+    {
+        return Err(ApiError::internal(anyhow::anyhow!(
+            "invalid server-authored credit adjustment"
+        )));
+    }
+    let credit_subject = account_credit_subject(spec.account_id);
+    let existing = sqlx::query_as::<_, (String, String, i64, String, String, String, String, i64)>(
+        "SELECT id, purchase_id, amount_bytes, source_kind, source_reference,
+                idempotency_key, display_label, created_at
+         FROM notary_credit_adjustments
+         WHERE credit_subject = $1
+           AND ((source_kind = $2 AND source_reference = $3) OR idempotency_key = $4)
+         FOR UPDATE",
+    )
+    .bind(&credit_subject)
+    .bind(spec.source_kind)
+    .bind(spec.source_reference)
+    .bind(spec.idempotency_key)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    if let Some((
+        id,
+        purchase_id,
+        amount_bytes,
+        source_kind,
+        source_reference,
+        idempotency_key,
+        label,
+        created_at,
+    )) = existing
+    {
+        if purchase_id != spec.purchase_id
+            || amount_bytes != spec.amount_bytes
+            || source_kind != spec.source_kind
+            || source_reference != spec.source_reference
+            || idempotency_key != spec.idempotency_key
+            || label != spec.display_label
+            || created_at != spec.created_at
+        {
+            return Err(ApiError::conflict(
+                "credit adjustment idempotency key was already used for different data",
+            ));
+        }
+        return Ok(id);
+    }
+    let id = Uuid::new_v4().to_string();
+    sqlx::query(
+        "INSERT INTO notary_credit_adjustments
+             (id, credit_subject, account_id, purchase_id, amount_bytes, source_kind,
+              source_reference, idempotency_key, display_label, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+    )
+    .bind(&id)
+    .bind(&credit_subject)
+    .bind(spec.account_id)
+    .bind(spec.purchase_id)
+    .bind(spec.amount_bytes)
+    .bind(spec.source_kind)
+    .bind(spec.source_reference)
+    .bind(spec.idempotency_key)
+    .bind(spec.display_label)
+    .bind(spec.created_at)
     .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
@@ -1936,6 +2105,7 @@ mod tests {
             notary_directory: super::super::tests::directory_key(),
             publish: super::super::publish::PublishService::disabled_for_test(),
             admission: std::sync::Arc::new(AdmissionConfig::for_test()),
+            billing: super::super::billing::BillingService::disabled_for_test(),
         }
     }
 

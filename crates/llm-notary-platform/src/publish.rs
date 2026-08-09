@@ -1022,6 +1022,7 @@ mod tests {
             notary_directory: super::super::tests::directory_key(),
             publish: PublishService::mock(storage.clone()),
             admission: std::sync::Arc::new(super::super::config::AdmissionConfig::for_test()),
+            billing: super::super::billing::BillingService::disabled_for_test(),
         };
         (
             state,

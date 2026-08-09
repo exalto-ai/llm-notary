@@ -42,6 +42,7 @@ use utoipa_axum::{router::OpenApiRouter, routes};
 mod admission;
 mod api_keys;
 mod authn;
+mod billing;
 mod config;
 mod hosted_verifier;
 mod intake;
@@ -52,8 +53,8 @@ mod service_admission;
 mod verify;
 
 pub use config::{
-    AdmissionConfig, AdmissionPolicy, AuthConfig, DatabaseConfig, NotaryDirectoryConfig,
-    PlatformConfig, S3StorageConfig, StorageConfig,
+    AdmissionConfig, AdmissionPolicy, AuthConfig, BillingConfig, DatabaseConfig,
+    NotaryDirectoryConfig, PlatformConfig, S3StorageConfig, StorageConfig, StripeConfig,
 };
 
 const SESSION_COOKIE: &str = "llm_notary_session";
@@ -88,6 +89,7 @@ struct AppState {
     notary_directory: NotaryDirectory,
     publish: publish::PublishService,
     admission: Arc<AdmissionConfig>,
+    billing: billing::BillingService,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -475,6 +477,7 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
         (name = "browser-auth", description = "Google- or GitHub-backed browser sessions"),
         (name = "cli-auth", description = "Local service authorization and CLI sessions"),
         (name = "notary-admission", description = "Hosted notary tickets and distributed leases"),
+        (name = "billing", description = "Stripe-hosted finalization credit purchases"),
         (name = "verification", description = "Anonymous, retention-free portable package verification"),
         (name = "sharing", description = "Authenticated share intake and stable direct links"),
         (name = "library", description = "Small catalog of Listed shares")
@@ -556,6 +559,7 @@ fn hosted_router() -> OpenApiRouter<AppState> {
         .merge(admission::router())
         .merge(verify::router())
         .merge(service_admission::router())
+        .merge(billing::router())
 }
 
 /// Returns the deterministic public hosted-platform contract.
@@ -745,6 +749,15 @@ impl AppState {
     async fn from_config(config: &PlatformConfig) -> Result<Self> {
         let publish = publish::PublishService::from_config(&config.storage)?;
         publish.validate().await?;
+        let http = reqwest::Client::builder()
+            .user_agent("LLM-Notary/0.1")
+            .build()
+            .context("building hosted API HTTP client")?;
+        let billing = billing::BillingService::from_config(
+            &config.billing,
+            &config.auth.app_url,
+            http.clone(),
+        )?;
         let database = PgPoolOptions::new()
             .max_connections(config.database.max_connections)
             .connect_with(config.database.connect_options.clone())
@@ -754,10 +767,7 @@ impl AppState {
             database,
             #[cfg(test)]
             _test_database: None,
-            http: reqwest::Client::builder()
-                .user_agent("LLM-Notary/0.1")
-                .build()
-                .context("building OAuth HTTP client")?,
+            http,
             github_client_id: config.auth.github_client_id.clone(),
             github_client_secret: config.auth.github_client_secret.clone(),
             github_callback_url: config.auth.github_callback_url.clone(),
@@ -769,6 +779,7 @@ impl AppState {
             notary_directory: config.notary_directory.directory.clone(),
             publish,
             admission: Arc::new(config.admission.clone()),
+            billing,
         })
     }
 
@@ -2380,6 +2391,8 @@ mod tests {
             "GET /api/healthz",
             "GET /api/me",
             "GET /api/me/api-keys",
+            "GET /api/me/billing/purchases",
+            "GET /api/me/billing/purchases/{purchase_id}",
             "GET /api/me/credits/history",
             "GET /api/me/shares",
             "GET /api/me/credit-offers",
@@ -2392,12 +2405,14 @@ mod tests {
             "PATCH /api/shares/{share_id}",
             "GET /api/readyz",
             "POST /api/auth/logout",
+            "POST /api/billing/stripe/webhook",
             "POST /api/cli/authorizations",
             "POST /api/cli/authorizations/{request_id}/approval",
             "POST /api/cli/authorizations/{request_id}/token",
             "POST /api/cli/logout",
             "POST /api/cli/token",
             "POST /api/me/api-keys",
+            "POST /api/me/billing/checkout-sessions",
             "POST /api/verify",
             "POST /api/shares",
             "POST /api/shares/{share_id}/complete",
@@ -2814,6 +2829,7 @@ mod tests {
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
             admission: Arc::new(AdmissionConfig::for_test()),
+            billing: billing::BillingService::disabled_for_test(),
         };
         let url = state
             .authorization_url("state-token")
@@ -2938,6 +2954,7 @@ mod tests {
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
             admission: Arc::new(AdmissionConfig::for_test()),
+            billing: billing::BillingService::disabled_for_test(),
         };
         let response = me(
             State(state),
@@ -3409,6 +3426,7 @@ mod tests {
                 notary_directory: directory_key(),
                 publish: publish::PublishService::disabled_for_test(),
                 admission: Arc::new(AdmissionConfig::for_test()),
+                billing: billing::BillingService::disabled_for_test(),
             }),
             Json(RefreshRequest {
                 refresh_token: tokens.refresh_token,
@@ -3484,6 +3502,7 @@ mod tests {
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
             admission: Arc::new(AdmissionConfig::for_test()),
+            billing: billing::BillingService::disabled_for_test(),
         };
         let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
 
@@ -3567,6 +3586,7 @@ mod tests {
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
             admission: Arc::new(AdmissionConfig::for_test()),
+            billing: billing::BillingService::disabled_for_test(),
         };
         let jar = || CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
 
@@ -3721,6 +3741,7 @@ mod tests {
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
             admission: Arc::new(AdmissionConfig::for_test()),
+            billing: billing::BillingService::disabled_for_test(),
         };
         let jar = CookieJar::new().add(Cookie::new(SESSION_COOKIE, web_token));
         let (_, status) = delete_account(State(state.clone()), jar).await.unwrap();

@@ -106,6 +106,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/billing/stripe/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Receive signed Stripe billing events */
+        post: operations["stripe_webhook"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/cli/authorizations": {
         parameters: {
             query?: never;
@@ -359,6 +376,57 @@ export interface paths {
         post?: never;
         /** Revoke an account API key */
         delete: operations["revoke_api_key"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/billing/checkout-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a Stripe-hosted credit purchase */
+        post: operations["create_checkout_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/billing/purchases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List recent hosted-credit purchases */
+        get: operations["list_purchases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/billing/purchases/{purchase_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one hosted-credit purchase */
+        get: operations["get_purchase"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -672,6 +740,31 @@ export interface components {
             github: boolean;
             google: boolean;
         };
+        BillingPurchase: {
+            /** Format: int64 */
+            amount_cents: number;
+            /** Format: int64 */
+            amount_disputed_cents: number;
+            /** Format: int64 */
+            amount_refunded_cents: number;
+            /** Format: int64 */
+            created_at: number;
+            /** Format: int64 */
+            credit_bytes: number;
+            currency: string;
+            id: string;
+            /** Format: int64 */
+            paid_at?: number | null;
+            /** Format: int64 */
+            quantity_gb: number;
+            receipt_reference?: string | null;
+            state: components["schemas"]["PurchaseState"];
+            /** Format: int64 */
+            updated_at: number;
+        };
+        BillingPurchasesResponse: {
+            purchases: components["schemas"]["BillingPurchase"][];
+        };
         /** @enum {string} */
         BrowserAuthProvider: "github" | "google";
         ClaimCreditOfferResponse: {
@@ -717,6 +810,15 @@ export interface components {
         CreateApiKeyResponse: {
             api_key: components["schemas"]["ApiKeyResponse"];
             secret: string;
+        };
+        CreateCheckoutSessionRequest: {
+            idempotency_key: string;
+            /** Format: int64 */
+            quantity_gb: number;
+        };
+        CreateCheckoutSessionResponse: {
+            checkout_url: string;
+            purchase: components["schemas"]["BillingPurchase"];
         };
         CreateCliAuthorization: {
             device_name: string;
@@ -970,6 +1072,8 @@ export interface components {
             github_login: string;
             id: string;
         };
+        /** @enum {string} */
+        PurchaseState: "creating" | "checkout_open" | "paid" | "failed" | "refunded" | "disputed";
         RedeemAdmissionRequest: {
             /** Format: int64 */
             directory_generation: number;
@@ -1295,6 +1399,52 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AuthProvidersResponse"];
+                };
+            };
+        };
+    };
+    stripe_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": string;
+            };
+        };
+        responses: {
+            /** @description Event processed or safely ignored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };
@@ -2051,6 +2201,149 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_checkout_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCheckoutSessionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateCheckoutSessionResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_purchases: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingPurchasesResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_purchase: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                purchase_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillingPurchase"];
+                };
             };
             401: {
                 headers: {
