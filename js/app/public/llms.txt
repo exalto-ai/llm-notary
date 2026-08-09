@@ -7,7 +7,8 @@
 - [Overview](%PUBLIC_ORIGIN%/docs): Capture, deferred finalization, portable packages, and shared verified sessions.
 - [Trust and guarantees](%PUBLIC_ORIGIN%/docs/how-it-works): The exact provenance claim, participants, authenticated versus observed data, and limits.
 - [Install options](%PUBLIC_ORIGIN%/docs/getting-started): Choose the guided Apple silicon macOS app or install the CLI and local service for SDKs, coding agents, servers, and automation.
-- [Credits and utilization](%PUBLIC_ORIGIN%/docs/hosted-credits): Monthly credits, Stripe purchases, refund and dispute adjustments, promotions, account summaries, and IP-scoped anonymous allowances.
+- [Pricing](%PUBLIC_ORIGIN%/#/pricing): Free monthly notarization and pay-as-you-go credits.
+- [Credits and usage](%PUBLIC_ORIGIN%/docs/hosted-credits): Monthly credits, Stripe purchases, refunds and disputes, promotions, account balances, and public allowances.
 - [Trace packages](%PUBLIC_ORIGIN%/docs/trace-packages): Finalization, package layout, disclosure, and offline verification.
 - [Verify online](%PUBLIC_ORIGIN%/#/verify): Explicitly upload one finalized package for retention-free hosted verification.
 - [Share](%PUBLIC_ORIGIN%/docs/share): Preview and deliberately share an already-finalized trace package as Unlisted or Listed.
@@ -17,6 +18,8 @@
 The local proxy handles plaintext and provider credentials. The remote notary participates in the authenticated provider TLS connection without receiving API-key values, prompts, or responses. A pending encrypted bundle is private retry state, not public proof. A finalized `.llmtrace` package is independently verifiable with the trusted notary public key. It hides every HTTP header value except the exact structural value `Transfer-Encoding: chunked`, but its authenticated request and response bodies remain disclosed.
 
 Public hosted allowances are scoped by a keyed, rotating subject derived from one IPv4 address or one IPv6 /64 prefix. This is a coarse abuse control, not a claim about a person's identity and not a privacy guarantee. Users behind the same NAT, gateway, or VPN may share an allowance.
+
+Signed-in users get 512 MiB to notarize each month, plus 128 MiB that does not expire. Public users get 64 MiB each month. Extra credits cost $5 USD per GB, are purchased through Stripe, and do not expire. Credits are used only when a capture is notarized; capturing, verification, downloads, Library browsing, and self-hosting do not use them.
 
 On first use, the daemon creates a user-editable `config.toml` at the standard platform configuration location. It enables the OpenAI, Anthropic, DeepSeek, and OpenRouter routes by default; keeps encrypted bundles and finalized packages under the platform data directory; and creates a local SQLite catalog. The catalog indexes short, plain-text prompt and output previews for search, along with provider, model, status, size, duration, and artifact metadata. It does not store header values, cookies, or credentials.
 

@@ -3,7 +3,7 @@ import { Bar, BarChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recha
 export default function CreditUtilizationChart({ credits, formatBytes }) {
   const data = [{ name: 'Active credits', used: credits.total_used_bytes, available: credits.total_remaining_bytes }];
   return <section className="dashboard-utilization" aria-labelledby="dashboard-utilization-title">
-    <header><div><span className="eyebrow">Current allocation</span><h2 id="dashboard-utilization-title">Utilization</h2></div><span>{formatBytes(credits.total_granted_bytes)} granted</span></header>
+    <header><div><span className="eyebrow">Current balance</span><h2 id="dashboard-utilization-title">Credit usage</h2></div><span>{formatBytes(credits.total_granted_bytes)} total</span></header>
     <div className="dashboard-utilization-plot" aria-label={`${formatBytes(credits.total_used_bytes)} used and ${formatBytes(credits.total_remaining_bytes)} available`}>
       <ResponsiveContainer width="100%" height={92}>
         <BarChart data={data} layout="vertical" margin={{ top: 20, right: 0, bottom: 20, left: 0 }} accessibilityLayer>
