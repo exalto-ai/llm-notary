@@ -2626,7 +2626,8 @@
         "type": "string",
         "enum": [
           "public",
-          "free"
+          "free",
+          "paid"
         ]
       },
       "AdmissionLimits": {
@@ -3219,6 +3220,14 @@
           }
         }
       },
+      "LeaseCompletionOutcome": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "client_failed",
+          "service_failed"
+        ]
+      },
       "LeaseRenewedResponse": {
         "type": "object",
         "required": [
@@ -3243,6 +3252,16 @@
           },
           "notary_instance_id": {
             "type": "string"
+          },
+          "outcome": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/LeaseCompletionOutcome"
+              }
+            ]
           }
         }
       },

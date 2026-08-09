@@ -65,6 +65,16 @@ struct RedeemedLease {
 struct LeaseRequest<'a> {
     lease_id: &'a str,
     notary_instance_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome: Option<LeaseCompletionOutcome>,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum LeaseCompletionOutcome {
+    Completed,
+    ClientFailed,
+    ServiceFailed,
 }
 
 #[derive(Deserialize)]
@@ -285,6 +295,7 @@ impl AdmissionCoordinator {
             .json(&LeaseRequest {
                 lease_id,
                 notary_instance_id: self.instance_id.as_ref(),
+                outcome: None,
             })
             .send()
             .await?
@@ -292,13 +303,14 @@ impl AdmissionCoordinator {
         Ok(response.json::<LeaseRenewed>().await?.lease_expires_at)
     }
 
-    async fn release(&self, lease_id: &str) -> Result<()> {
+    async fn release(&self, lease_id: &str, outcome: LeaseCompletionOutcome) -> Result<()> {
         self.http
             .post(self.endpoint("/api/internal/notary/leases/release")?)
             .bearer_auth(self.service_token.as_ref())
             .json(&LeaseRequest {
                 lease_id,
                 notary_instance_id: self.instance_id.as_ref(),
+                outcome: Some(outcome),
             })
             .send()
             .await?
@@ -975,7 +987,9 @@ pub async fn run() -> Result<()> {
                 Ok(limits) => limits,
                 Err(error) => {
                     tracing::error!(%error, "coordinator returned invalid notary limits");
-                    let _ = admission.release(&lease.lease_id).await;
+                    let _ = admission
+                        .release(&lease.lease_id, LeaseCompletionOutcome::ServiceFailed)
+                        .await;
                     let _ = write_notary_admission(
                         &mut stream,
                         &prelude,
@@ -990,7 +1004,9 @@ pub async fn run() -> Result<()> {
                 Ok(deadline) => deadline,
                 Err(error) => {
                     tracing::error!(%error, "coordinator returned an expired notary lease");
-                    let _ = admission.release(&lease.lease_id).await;
+                    let _ = admission
+                        .release(&lease.lease_id, LeaseCompletionOutcome::ServiceFailed)
+                        .await;
                     let _ = write_notary_admission(
                         &mut stream,
                         &prelude,
@@ -1002,7 +1018,9 @@ pub async fn run() -> Result<()> {
             };
             if let Err(error) = write_notary_admission(&mut stream, &prelude, Ok(())).await {
                 tracing::debug!(%error, "could not send notary admission acceptance");
-                let _ = admission.release(&lease.lease_id).await;
+                let _ = admission
+                    .release(&lease.lease_id, LeaseCompletionOutcome::ClientFailed)
+                    .await;
                 return;
             }
             let max_concurrent_sessions = match mode {
@@ -1035,21 +1053,24 @@ pub async fn run() -> Result<()> {
             let result = timeout(effective_session_timeout, session_and_lease)
                 .instrument(session_span)
                 .await;
-            let outcome = match result {
-                Ok(Ok(())) => "completed",
+            let (outcome, lease_outcome) = match result {
+                Ok(Ok(())) => ("completed", LeaseCompletionOutcome::Completed),
                 Ok(Err(error)) => {
                     tracing::warn!(%error, "notary session failed");
-                    "failed"
+                    // Once the client-controlled proof stream begins, protocol,
+                    // validation, and transport errors cannot safely be called a
+                    // service failure. Do not mint a restoration for them.
+                    ("failed", LeaseCompletionOutcome::ClientFailed)
                 }
                 Err(_) => {
                     tracing::warn!("notary session timed out");
-                    "timed_out"
+                    ("timed_out", LeaseCompletionOutcome::ClientFailed)
                 }
             };
             if let Some(profile) = profile {
                 profile.finish(outcome).await;
             }
-            if let Err(error) = admission.release(&lease.lease_id).await {
+            if let Err(error) = admission.release(&lease.lease_id, lease_outcome).await {
                 counter!("llm_notary_notary_lease_release_failures_total", "mode" => session_mode_label(mode)).increment(1);
                 tracing::warn!(%error, "admission lease release failed; expiry will recover capacity");
             }

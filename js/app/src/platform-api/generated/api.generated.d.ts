@@ -625,7 +625,7 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /** @enum {string} */
-        AccessPool: "public" | "free";
+        AccessPool: "public" | "free" | "paid";
         AdmissionLimits: {
             /** Format: int64 */
             max_attestable_http_bytes: number;
@@ -793,6 +793,8 @@ export interface components {
             /** Format: int64 */
             requested_allowance_bytes?: number | null;
         };
+        /** @enum {string} */
+        LeaseCompletionOutcome: "completed" | "client_failed" | "service_failed";
         LeaseRenewedResponse: {
             /** Format: int64 */
             lease_expires_at: number;
@@ -800,6 +802,7 @@ export interface components {
         LeaseRequest: {
             lease_id: string;
             notary_instance_id: string;
+            outcome?: null | components["schemas"]["LeaseCompletionOutcome"];
         };
         ListedShareSummary: {
             /** Format: int64 */

@@ -45,6 +45,7 @@ pub struct AdmissionConfig {
     pub global_finalize_concurrency: i64,
     pub public: AdmissionPolicy,
     pub free: AdmissionPolicy,
+    pub paid: AdmissionPolicy,
 }
 
 #[derive(Clone, Debug)]
@@ -172,6 +173,7 @@ impl AdmissionConfig {
             )?,
             public: AdmissionPolicy::from_env("PUBLIC", AdmissionPolicy::public())?,
             free: AdmissionPolicy::from_env("FREE", AdmissionPolicy::free())?,
+            paid: AdmissionPolicy::from_env("PAID", AdmissionPolicy::paid())?,
         })
     }
 
@@ -188,6 +190,7 @@ impl AdmissionConfig {
             global_finalize_concurrency: 2,
             public: AdmissionPolicy::public(),
             free: AdmissionPolicy::free(),
+            paid: AdmissionPolicy::paid(),
         }
     }
 }
@@ -213,6 +216,20 @@ impl AdmissionPolicy {
             max_frame_bytes: 64 << 20,
             max_private_chunk_bytes: 128 << 10,
             max_private_chunk_commitments: 64,
+            monthly_finalization_bytes: 512 << 20,
+        }
+    }
+
+    pub(crate) fn paid() -> Self {
+        Self {
+            capture_concurrency: 8,
+            finalize_concurrency: 4,
+            max_attestable_http_bytes: 32 << 20,
+            max_frame_bytes: 128 << 20,
+            max_private_chunk_bytes: 256 << 10,
+            max_private_chunk_commitments: 128,
+            // Paying increases service limits; it does not replace the Free
+            // monthly allowance or silently mint purchased credits.
             monthly_finalization_bytes: 512 << 20,
         }
     }

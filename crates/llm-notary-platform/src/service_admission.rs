@@ -61,6 +61,7 @@ impl AdmissionMode {
 pub enum AccessPool {
     Public,
     Free,
+    Paid,
 }
 
 impl AccessPool {
@@ -68,8 +69,29 @@ impl AccessPool {
         match self {
             Self::Public => "public",
             Self::Free => "free",
+            Self::Paid => "paid",
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Serialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ServicePlan {
+    Free,
+    Paid,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BillingStatus {
+    Active,
+    Review,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, ToSchema, PartialEq, Eq)]
+pub struct AccountBillingState {
+    pub service_plan: ServicePlan,
+    pub billing_status: BillingStatus,
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
@@ -177,6 +199,26 @@ pub struct RedeemAdmissionResponse {
 pub struct LeaseRequest {
     pub lease_id: String,
     pub notary_instance_id: String,
+    #[serde(default)]
+    pub outcome: Option<LeaseCompletionOutcome>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseCompletionOutcome {
+    Completed,
+    ClientFailed,
+    ServiceFailed,
+}
+
+impl LeaseCompletionOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::ClientFailed => "client_failed",
+            Self::ServiceFailed => "service_failed",
+        }
+    }
 }
 
 #[derive(Serialize, ToSchema)]
@@ -329,11 +371,47 @@ pub async fn account_access(state: &AppState, user_id: &str) -> ApiResult<Credit
     credit_summary(&state.database, &account_credit_subject(user_id), now).await
 }
 
+pub async fn account_billing_state(
+    database: &super::DatabasePool,
+    user_id: &str,
+) -> ApiResult<AccountBillingState> {
+    let row = sqlx::query_as::<_, (String, String)>(
+        "SELECT service_plan, billing_status
+         FROM account_billing_profiles WHERE account_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(database)
+    .await
+    .map_err(database_error)?;
+    match row {
+        Some((plan, status)) => Ok(AccountBillingState {
+            service_plan: parse_service_plan(&plan)?,
+            billing_status: parse_billing_status(&status)?,
+        }),
+        None => Ok(AccountBillingState {
+            service_plan: ServicePlan::Free,
+            billing_status: BillingStatus::Active,
+        }),
+    }
+}
+
+async fn account_access_pool(
+    database: &super::DatabasePool,
+    user_id: &str,
+) -> ApiResult<AccessPool> {
+    Ok(
+        match account_billing_state(database, user_id).await?.service_plan {
+            ServicePlan::Free => AccessPool::Free,
+            ServicePlan::Paid => AccessPool::Paid,
+        },
+    )
+}
+
 async fn ensure_account_credit_grants(state: &AppState, user_id: &str) -> ApiResult<()> {
     let now = unix_timestamp()?;
+    let pool = account_access_pool(&state.database, user_id).await?;
     let mut transaction = state.database.begin().await.map_err(database_error)?;
     admission_lock(&mut transaction).await?;
-    let pool = AccessPool::Free;
     let policy = policy_for_pool(&state.admission, pool);
     let credit_subject = account_credit_subject(user_id);
     ensure_credit_grants(
@@ -409,10 +487,10 @@ async fn claim_credit_offer(
 ) -> ApiResult<Json<ClaimCreditOfferResponse>> {
     let user = super::authenticated_web_user(&state, &jar).await?;
     let now = unix_timestamp()?;
+    let pool = account_access_pool(&state.database, &user.0).await?;
     let mut transaction = state.database.begin().await.map_err(database_error)?;
     admission_lock(&mut transaction).await?;
     let credit_subject = account_credit_subject(&user.0);
-    let pool = AccessPool::Free;
     ensure_credit_grants(
         &mut transaction,
         &credit_subject,
@@ -499,10 +577,20 @@ async fn issue_admission(
         optional_authenticated_principal(&state, &headers, ApiScope::NotaryAdmit).await?;
     let now = unix_timestamp()?;
     let period = monthly_credit_period(&state.database, now).await?;
-    let (subject_id, credit_subject, pool) = match identity {
+    let (subject_id, credit_subject, pool, billing_status) = match identity {
         Some(principal) => {
+            let billing = account_billing_state(&state.database, &principal.user_id).await?;
             let credit_subject = account_credit_subject(&principal.user_id);
-            (Some(principal.user_id), credit_subject, AccessPool::Free)
+            let pool = match billing.service_plan {
+                ServicePlan::Free => AccessPool::Free,
+                ServicePlan::Paid => AccessPool::Paid,
+            };
+            (
+                Some(principal.user_id),
+                credit_subject,
+                pool,
+                billing.billing_status,
+            )
         }
         None => {
             let client_ip = resolve_client_ip(&headers, Some(peer), &state.admission)?;
@@ -512,9 +600,21 @@ async fn issue_admission(
                 &state.admission.anonymous_subject_hmac_key,
                 state.admission.anonymous_subject_key_version,
             )?;
-            (None, credit_subject, AccessPool::Public)
+            (
+                None,
+                credit_subject,
+                AccessPool::Public,
+                BillingStatus::Active,
+            )
         }
     };
+    if request.mode == AdmissionMode::Finalize && billing_status == BillingStatus::Review {
+        return Err(ApiError::coded(
+            StatusCode::PAYMENT_REQUIRED,
+            "billing_review",
+            "Paid finalization is unavailable while the account billing status is under review",
+        ));
+    }
     let policy = policy_for_pool(&state.admission, pool);
     let (record_digest, allowance) = validate_ticket_request(&request, policy)?;
     let token = random_token();
@@ -642,6 +742,24 @@ async fn redeem_admission(
     }
     let pool = parse_pool(&ticket.access_pool)?;
     let policy = policy_for_pool(&state.admission, pool);
+    if request.mode == AdmissionMode::Finalize
+        && let Some(account_id) = ticket.subject_id.as_deref()
+    {
+        let billing_status = sqlx::query_scalar::<_, String>(
+            "SELECT billing_status FROM account_billing_profiles WHERE account_id = $1",
+        )
+        .bind(account_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if billing_status.as_deref() == Some("review") {
+            return Err(ApiError::coded(
+                StatusCode::PAYMENT_REQUIRED,
+                "billing_review",
+                "Paid finalization is unavailable while the account billing status is under review",
+            ));
+        }
+    }
     let credit_subject = ticket.credit_subject.clone();
     ensure_credit_grants(
         &mut transaction,
@@ -769,18 +887,88 @@ async fn release_lease(
     authenticate_service(&state, &headers)?;
     validate_lease_request(&request)?;
     let now = unix_timestamp()?;
-    sqlx::query(
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    admission_lock(&mut transaction).await?;
+    let released = sqlx::query_as::<_, (String, Option<String>, i64)>(
         "UPDATE notary_admission_leases
-         SET released_at = COALESCE(released_at, $1), terminal_state = COALESCE(terminal_state, 'released')
-         WHERE id = $2 AND notary_instance_id = $3",
+         SET released_at = COALESCE(released_at, $1),
+             terminal_state = COALESCE(terminal_state, 'released'),
+             completion_outcome = COALESCE(completion_outcome, $4)
+         WHERE id = $2 AND notary_instance_id = $3
+         RETURNING mode, completion_outcome, released_at",
     )
     .bind(now)
     .bind(&request.lease_id)
     .bind(&request.notary_instance_id)
-    .execute(&state.database)
+    .bind(request.outcome.map(LeaseCompletionOutcome::as_str))
+    .fetch_optional(&mut *transaction)
     .await
     .map_err(database_error)?;
+    if let Some((mode, outcome, released_at)) = released
+        && mode == AdmissionMode::Finalize.as_str()
+        && outcome.as_deref() == Some(LeaseCompletionOutcome::ServiceFailed.as_str())
+    {
+        restore_purchased_credits_for_service_failure(
+            &mut transaction,
+            &request.lease_id,
+            released_at,
+        )
+        .await?;
+    }
+    transaction.commit().await.map_err(database_error)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn restore_purchased_credits_for_service_failure(
+    transaction: &mut Transaction<'_, Postgres>,
+    lease_id: &str,
+    created_at: i64,
+) -> ApiResult<()> {
+    let debit = sqlx::query_as::<_, (String, String, String, i64)>(
+        "SELECT debits.id, debits.credit_subject, debits.account_id,
+                COALESCE(SUM(allocations.amount_bytes) FILTER (
+                    WHERE grants.source_kind IN ('external_purchase', 'service_refund')
+                ), 0)::BIGINT AS purchased_bytes
+         FROM notary_admission_tickets AS tickets
+         JOIN notary_credit_debits AS debits
+           ON debits.credit_subject = tickets.credit_subject
+          AND debits.record_digest = tickets.record_digest
+         JOIN notary_credit_debit_allocations AS allocations
+           ON allocations.debit_id = debits.id
+         JOIN notary_credit_grants AS grants ON grants.id = allocations.grant_id
+         WHERE tickets.lease_id = $1 AND debits.account_id IS NOT NULL
+         GROUP BY debits.id",
+    )
+    .bind(lease_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let Some((debit_id, credit_subject, account_id, purchased_bytes)) = debit else {
+        return Ok(());
+    };
+    if purchased_bytes == 0 {
+        return Ok(());
+    }
+    let reference = format!("service-failure:{debit_id}");
+    create_credit_grant(
+        transaction,
+        CreditGrantSpec {
+            credit_subject: &credit_subject,
+            account_id: Some(&account_id),
+            amount_bytes: purchased_bytes,
+            source_kind: "service_refund",
+            source_reference: &reference,
+            idempotency_key: &reference,
+            period_start: None,
+            period_end: None,
+            created_at,
+            available_at: created_at,
+            expires_at: None,
+            display_label: "Service failure credit restoration",
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 fn validate_ticket_request(
@@ -1067,6 +1255,7 @@ async fn ensure_monthly_grant(
     let label = match pool {
         AccessPool::Public => "Monthly Public credits",
         AccessPool::Free => "Monthly Free credits",
+        AccessPool::Paid => "Monthly included credits",
     };
     create_credit_grant(
         transaction,
@@ -1165,9 +1354,12 @@ async fn debit_finalization_credits(
         return Ok(());
     }
     let grants = available_grants(transaction, &credit_subject, now).await?;
-    let available = grants.iter().fold(0_i64, |total, (_, remaining)| {
-        total.saturating_add(*remaining)
-    });
+    let available = grants
+        .iter()
+        .fold(0_i64, |total, (_, remaining)| {
+            total.saturating_add(*remaining)
+        })
+        .saturating_add(credit_adjustment_total(&mut **transaction, &credit_subject).await?);
     if available < ticket.requested_allowance_bytes {
         return Err(ApiError::coded(
             StatusCode::PAYMENT_REQUIRED,
@@ -1229,7 +1421,8 @@ async fn preflight_finalization_credits(
         .await?
         .iter()
         .map(|(_, remaining)| *remaining)
-        .sum::<i64>();
+        .sum::<i64>()
+        .saturating_add(credit_adjustment_total(&mut **transaction, credit_subject).await?);
     if available < allowance {
         return Err(ApiError::coded(
             StatusCode::PAYMENT_REQUIRED,
@@ -1267,6 +1460,20 @@ async fn available_grants(
     .bind(credit_subject)
     .bind(now)
     .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)
+}
+
+async fn credit_adjustment_total<'e, E>(executor: E, credit_subject: &str) -> ApiResult<i64>
+where
+    E: sqlx::Executor<'e, Database = Postgres>,
+{
+    sqlx::query_scalar(
+        "SELECT COALESCE(SUM(amount_bytes), 0)::BIGINT
+         FROM notary_credit_adjustments WHERE credit_subject = $1",
+    )
+    .bind(credit_subject)
+    .fetch_one(executor)
     .await
     .map_err(database_error)
 }
@@ -1337,11 +1544,13 @@ async fn credit_summary(
         .filter(|grant| grant.source_kind == "included_monthly")
         .map(|grant| grant.remaining_bytes)
         .sum::<i64>();
+    let adjustment_bytes = credit_adjustment_total(database, credit_subject).await?;
     let supplemental_remaining_bytes = balances
         .iter()
         .filter(|grant| grant.source_kind != "included_monthly")
         .map(|grant| grant.remaining_bytes)
-        .sum::<i64>();
+        .sum::<i64>()
+        .saturating_add(adjustment_bytes);
     let next_grant_expiration = balances
         .iter()
         .filter(|grant| grant.remaining_bytes > 0)
@@ -1351,7 +1560,11 @@ async fn credit_summary(
         .iter()
         .map(|grant| grant.granted_bytes)
         .sum::<i64>();
-    let total_used_bytes = balances.iter().map(|grant| grant.used_bytes).sum::<i64>();
+    let total_used_bytes = balances
+        .iter()
+        .map(|grant| grant.used_bytes)
+        .sum::<i64>()
+        .saturating_sub(adjustment_bytes);
 
     Ok(CreditSummary {
         total_granted_bytes,
@@ -1391,6 +1604,7 @@ fn policy_for_pool(config: &AdmissionConfig, pool: AccessPool) -> &AdmissionPoli
     match pool {
         AccessPool::Public => &config.public,
         AccessPool::Free => &config.free,
+        AccessPool::Paid => &config.paid,
     }
 }
 
@@ -1505,8 +1719,29 @@ fn parse_pool(value: &str) -> ApiResult<AccessPool> {
     match value {
         "public" => Ok(AccessPool::Public),
         "free" => Ok(AccessPool::Free),
+        "paid" => Ok(AccessPool::Paid),
         _ => Err(ApiError::internal(anyhow::anyhow!(
             "invalid admission pool"
+        ))),
+    }
+}
+
+fn parse_service_plan(value: &str) -> ApiResult<ServicePlan> {
+    match value {
+        "free" => Ok(ServicePlan::Free),
+        "paid" => Ok(ServicePlan::Paid),
+        _ => Err(ApiError::internal(anyhow::anyhow!(
+            "invalid account service plan"
+        ))),
+    }
+}
+
+fn parse_billing_status(value: &str) -> ApiResult<BillingStatus> {
+    match value {
+        "active" => Ok(BillingStatus::Active),
+        "review" => Ok(BillingStatus::Review),
+        _ => Err(ApiError::internal(anyhow::anyhow!(
+            "invalid account billing status"
         ))),
     }
 }
@@ -1710,10 +1945,12 @@ mod tests {
     }
 
     #[test]
-    fn public_and_free_access_have_distinct_credit_and_capture_limits() {
+    fn public_free_and_paid_access_have_distinct_capture_limits() {
         let config = AdmissionConfig::for_test();
         assert!(config.public.max_attestable_http_bytes < config.free.max_attestable_http_bytes);
         assert!(config.public.monthly_finalization_bytes < config.free.monthly_finalization_bytes);
+        assert!(config.free.max_attestable_http_bytes < config.paid.max_attestable_http_bytes);
+        assert!(config.free.capture_concurrency < config.paid.capture_concurrency);
     }
 
     #[test]
@@ -1966,6 +2203,7 @@ mod tests {
                 Json(LeaseRequest {
                     lease_id,
                     notary_instance_id: instance.to_owned(),
+                    outcome: None,
                 }),
             )
             .await
@@ -2045,6 +2283,7 @@ mod tests {
             Json(LeaseRequest {
                 lease_id: recovered.lease_id.clone(),
                 notary_instance_id: "notary-two".into(),
+                outcome: None,
             }),
         )
         .await
@@ -2057,6 +2296,7 @@ mod tests {
             Json(LeaseRequest {
                 lease_id: recovered.lease_id,
                 notary_instance_id: "notary-two".into(),
+                outcome: None,
             }),
         )
         .await
@@ -2123,6 +2363,7 @@ mod tests {
             Json(LeaseRequest {
                 lease_id: global_lease.lease_id,
                 notary_instance_id: "notary-global-one".into(),
+                outcome: None,
             }),
         )
         .await
@@ -2243,6 +2484,7 @@ mod tests {
                 Json(LeaseRequest {
                     lease_id: lease.lease_id,
                     notary_instance_id: instance.into(),
+                    outcome: None,
                 }),
             )
             .await
@@ -2630,7 +2872,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
-    async fn signed_in_accounts_always_receive_free_access_and_credits() {
+    async fn signed_in_accounts_default_to_free_and_paid_profiles_select_paid_access() {
         let state = test_state().await;
         super::super::insert_test_github_user(&state.database, "user-1", 1, "octo").await;
         let free_credits = account_access(&state, "user-1").await.unwrap();
@@ -2729,5 +2971,157 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(access_pool, "free");
+
+        sqlx::query(
+            "INSERT INTO account_billing_profiles
+                 (account_id, service_plan, billing_status, updated_at)
+             VALUES ('user-1', 'paid', 'active', $1)",
+        )
+        .bind(now)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(
+            account_billing_state(&state.database, "user-1")
+                .await
+                .unwrap(),
+            AccountBillingState {
+                service_plan: ServicePlan::Paid,
+                billing_status: BillingStatus::Active,
+            }
+        );
+        let mut paid_headers = HeaderMap::new();
+        paid_headers.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {access_token}").parse().unwrap(),
+        );
+        let paid_ticket = issue_admission(
+            State(state.clone()),
+            test_peer(),
+            paid_headers,
+            Json(IssueAdmissionRequest {
+                mode: AdmissionMode::Capture,
+                record_digest: None,
+                requested_allowance_bytes: None,
+            }),
+        )
+        .await
+        .expect("paid account admission")
+        .0;
+        assert_eq!(
+            paid_ticket.limits.max_attestable_http_bytes,
+            state.admission.paid.max_attestable_http_bytes
+        );
+        let paid_access_pool: String = sqlx::query_scalar(
+            "SELECT access_pool FROM notary_admission_tickets WHERE token_hash = $1",
+        )
+        .bind(sha256_hex(paid_ticket.ticket.as_bytes()))
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(paid_access_pool, "paid");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn explicit_service_failures_restore_only_purchased_credit_allocations_once() {
+        let state = test_state().await;
+        super::super::insert_test_github_user(&state.database, "settlement-user", 2, "settlement")
+            .await;
+        let now = unix_timestamp().unwrap();
+        let digest = "a".repeat(64);
+        sqlx::query(
+            "INSERT INTO notary_credit_grants
+                 (id, credit_subject, account_id, amount_bytes, source_kind,
+                  source_reference, idempotency_key, created_at, available_at, display_label)
+             VALUES ('purchased-grant', 'user:settlement-user', 'settlement-user', 1000,
+                     'external_purchase', 'pi_test', 'purchase:pi_test', $1, $1, 'Purchased')",
+        )
+        .bind(now)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notary_credit_debits
+                 (id, credit_subject, account_id, record_digest, allowance_bytes, created_at)
+             VALUES ('settlement-debit', 'user:settlement-user', 'settlement-user', $1, 1000, $2)",
+        )
+        .bind(&digest)
+        .bind(now)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notary_credit_debit_allocations
+                 (debit_id, grant_id, amount_bytes, allocation_order)
+             VALUES ('settlement-debit', 'purchased-grant', 1000, 0)",
+        )
+        .execute(&state.database)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest, requested_allowance_bytes,
+                  session_timeout_secs, max_attestable_http_bytes, max_frame_bytes,
+                  max_private_chunk_bytes, max_private_chunk_commitments, issued_at,
+                  expires_at, consumed_at, consumed_by_instance, lease_id)
+             VALUES ('settlement-ticket', 'settlement-user', 'user:settlement-user', 'paid',
+                     'finalize', 1, $1, 1000, 900, 1000, 2000, 1000, 1,
+                     $2, $3, $2, 'notary-settlement', 'settlement-lease')",
+        )
+        .bind(&digest)
+        .bind(now)
+        .bind(now + 60)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notary_admission_leases
+                 (id, notary_instance_id, subject_id, credit_subject, access_pool, mode,
+                  acquired_at, expires_at)
+             VALUES ('settlement-lease', 'notary-settlement', 'settlement-user',
+                     'user:settlement-user', 'paid', 'finalize', $1, $2)",
+        )
+        .bind(now)
+        .bind(now + 60)
+        .execute(&state.database)
+        .await
+        .unwrap();
+
+        for outcome in [
+            LeaseCompletionOutcome::ServiceFailed,
+            LeaseCompletionOutcome::ClientFailed,
+        ] {
+            release_lease(
+                State(state.clone()),
+                service_headers(&state),
+                Json(LeaseRequest {
+                    lease_id: "settlement-lease".to_owned(),
+                    notary_instance_id: "notary-settlement".to_owned(),
+                    outcome: Some(outcome),
+                }),
+            )
+            .await
+            .unwrap();
+        }
+        let restored: (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COALESCE(SUM(amount_bytes), 0)::BIGINT
+             FROM notary_credit_grants
+             WHERE credit_subject = 'user:settlement-user'
+               AND source_kind = 'service_refund'",
+        )
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(restored, (1, 1000));
+        let outcome: String = sqlx::query_scalar(
+            "SELECT completion_outcome FROM notary_admission_leases
+             WHERE id = 'settlement-lease'",
+        )
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(outcome, "service_failed");
     }
 }
