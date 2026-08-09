@@ -193,6 +193,7 @@ describe('hosted site', () => {
       loadMyShares={async () => ({ items: [], next_cursor: null })}
       loadCreditOffers={async () => [{ id: 'offer-1', title: 'Test credit', description: 'One-time test credit.', amount_bytes: 1_024, claim_expires_at: 4_102_444_800, credit_expires_at: 4_102_444_800 }]}
       loadCreditHistory={loadCreditHistory}
+      loadBillingPurchases={async () => []}
       claimOfferRequest={async () => ({ credits: { included_monthly_remaining_bytes: 2_048, supplemental_remaining_bytes: 0, total_granted_bytes: 2_048, total_remaining_bytes: 2_048, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null } })}
     />);
 
@@ -206,6 +207,137 @@ describe('hosted site', () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     await expect.element(page.getByText('Stale older credit')).not.toBeInTheDocument();
     await expect.element(page.getByText('Claimed credit')).toBeVisible();
+  });
+
+  test('starts a fixed-price Stripe Checkout from the credit quantity rail', async () => {
+    let checkoutRequest;
+    let checkoutUrl;
+    render(<Dashboard
+      user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'live' }, credits: { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null }, share_stats: { total: 0, admitted: 0, in_progress: 0 } }}
+      view="credits"
+      theme="light"
+      onThemeChange={() => {}}
+      onAccountDeleted={() => {}}
+      loadCliSessions={async () => ({ items: [], next_cursor: null })}
+      loadMyShares={async () => ({ items: [], next_cursor: null })}
+      loadCreditOffers={async () => []}
+      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+      loadBillingPurchases={async () => []}
+      startCheckout={async (quantityGb, idempotencyKey) => {
+        checkoutRequest = { quantityGb, idempotencyKey };
+        return { checkout_url: 'https://checkout.stripe.com/c/pay/test' };
+      }}
+      openCheckout={(url) => { checkoutUrl = url; }}
+    />);
+
+    await page.getByRole('button', { name: '10 GB' }).click();
+    await page.getByRole('button', { name: 'Buy 10 GB for $50' }).click();
+    expect(checkoutRequest.quantityGb).toBe(10);
+    expect(checkoutRequest.idempotencyKey).toMatch(/^[a-zA-Z0-9_-]+$/);
+    expect(checkoutUrl).toBe('https://checkout.stripe.com/c/pay/test');
+  });
+
+  test('hides Checkout when disabled and labels Stripe test mode unmistakably', async () => {
+    const credits = { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null };
+    const common = {
+      view: 'credits', theme: 'light', onThemeChange: () => {}, onAccountDeleted: () => {},
+      loadCliSessions: async () => ({ items: [], next_cursor: null }),
+      loadMyShares: async () => ({ items: [], next_cursor: null }),
+      loadCreditOffers: async () => [],
+      loadCreditHistory: async () => ({ items: [], next_cursor: null }),
+      loadBillingPurchases: async () => [],
+    };
+    render(<Dashboard {...common} user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'disabled' }, credits, share_stats: { total: 0, admitted: 0, in_progress: 0 } }} />);
+    await expect.element(page.getByRole('heading', { name: 'Purchases unavailable' })).toBeVisible();
+    await expect.element(page.getByRole('group', { name: 'Credit quantity' })).not.toBeInTheDocument();
+
+    cleanup();
+    render(<Dashboard {...common} user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'test' }, credits, share_stats: { total: 0, admitted: 0, in_progress: 0 } }} />);
+    await expect.element(page.getByText('Stripe test mode · no real charges')).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Open test Checkout · 5 GB for $25' })).toBeVisible();
+  });
+
+  test('retries Checkout confirmation and keeps a fresher purchase than the initial list', async () => {
+    const credits = { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null };
+    let resolveInitialList;
+    let pollCalls = 0;
+    const purchase = (state) => ({ id: 'purchase-1', state, quantity_gb: 1, amount_cents: 500, created_at: 1_786_000_000 });
+    render(<Dashboard
+      user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'test' }, credits, share_stats: { total: 0, admitted: 0, in_progress: 0 } }}
+      view="credits"
+      route="credits?checkout=success&purchase_id=purchase-1"
+      theme="light"
+      onThemeChange={() => {}}
+      onAccountDeleted={() => {}}
+      loadCliSessions={async () => ({ items: [], next_cursor: null })}
+      loadMyShares={async () => ({ items: [], next_cursor: null })}
+      loadCreditOffers={async () => []}
+      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+      loadBillingPurchases={() => new Promise((resolve) => { resolveInitialList = resolve; })}
+      loadBillingPurchase={async () => {
+        pollCalls += 1;
+        if (pollCalls === 1) throw new Error('temporary network failure');
+        return purchase(pollCalls === 2 ? 'checkout_open' : 'paid');
+      }}
+      loadCurrentUser={async () => ({ billing: { service_plan: 'paid', billing_status: 'active', purchase_mode: 'test' }, credits })}
+      checkoutPollBaseDelay={0}
+      checkoutPollMaxAttempts={4}
+    />);
+
+    await expect.element(page.getByText('Payment confirmed. Your credits are ready.')).toBeVisible();
+    resolveInitialList([purchase('checkout_open')]);
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    await expect.element(page.getByText('paid', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('checkout open', { exact: true })).not.toBeInTheDocument();
+    expect(pollCalls).toBe(3);
+  });
+
+  test('shows a bounded timeout when Stripe confirmation stays nonterminal', async () => {
+    const credits = { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null };
+    render(<Dashboard
+      user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'test' }, credits, share_stats: { total: 0, admitted: 0, in_progress: 0 } }}
+      view="credits"
+      route="credits?checkout=success&purchase_id=purchase-1"
+      theme="light"
+      onThemeChange={() => {}}
+      onAccountDeleted={() => {}}
+      loadCliSessions={async () => ({ items: [], next_cursor: null })}
+      loadMyShares={async () => ({ items: [], next_cursor: null })}
+      loadCreditOffers={async () => []}
+      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+      loadBillingPurchases={async () => []}
+      loadBillingPurchase={async () => ({ id: 'purchase-1', state: 'checkout_open', quantity_gb: 1, amount_cents: 500, created_at: 1_786_000_000 })}
+      checkoutPollBaseDelay={0}
+      checkoutPollMaxAttempts={2}
+    />);
+
+    await expect.element(page.getByText('We could not confirm the payment yet. Check purchase history or refresh this page.')).toBeVisible();
+  });
+
+  test.each([
+    ['failed', 'Payment was not completed. No credits were added.'],
+    ['refunded', 'This payment was refunded. Its purchased credits are no longer available.'],
+    ['disputed', 'This payment is under dispute. Its purchased credits are temporarily unavailable.'],
+  ])('renders the %s Checkout terminal state explicitly', async (state, message) => {
+    const credits = { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null };
+    render(<Dashboard
+      user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'test' }, credits, share_stats: { total: 0, admitted: 0, in_progress: 0 } }}
+      view="credits"
+      route="credits?checkout=success&purchase_id=purchase-1"
+      theme="light"
+      onThemeChange={() => {}}
+      onAccountDeleted={() => {}}
+      loadCliSessions={async () => ({ items: [], next_cursor: null })}
+      loadMyShares={async () => ({ items: [], next_cursor: null })}
+      loadCreditOffers={async () => []}
+      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+      loadBillingPurchases={async () => []}
+      loadBillingPurchase={async () => ({ id: 'purchase-1', state, quantity_gb: 1, amount_cents: 500, created_at: 1_786_000_000 })}
+      loadCurrentUser={async () => ({ billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'test' }, credits })}
+      checkoutPollBaseDelay={0}
+    />);
+
+    await expect.element(page.getByText(message)).toBeVisible();
   });
 
   test('renders every known provider icon and neutral fallbacks beside provider text', async () => {

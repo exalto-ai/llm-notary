@@ -71,6 +71,48 @@ jq -r '(.web // .installed) |
 Treat a client secret pasted into chat, logs, or shell arguments as compromised:
 delete it in Google Cloud, create a replacement, and import only the replacement.
 
+Create the Stripe webhook endpoint at
+`https://llm-notary.exalto.ai/api/billing/stripe/webhook` and pin it to API
+version `2026-02-25.clover`. Subscribe only to these events:
+
+- `checkout.session.completed`
+- `checkout.session.async_payment_succeeded`
+- `checkout.session.async_payment_failed`
+- `checkout.session.expired`
+- `refund.created`, `refund.updated`, and `refund.failed`
+- `charge.dispute.funds_withdrawn`, `charge.dispute.funds_reinstated`, and
+  `charge.dispute.closed`
+
+Stage all three Stripe settings before merging a release that enables billing.
+The secret key, Price, and webhook endpoint must all use the same test or live
+environment. Send values over stdin so neither secret enters shell history:
+
+```bash
+read -rs STRIPE_VALUE
+printf 'LLM_NOTARY_STRIPE_SECRET_KEY=%s\n' "$STRIPE_VALUE" | \
+  flyctl secrets import --stage -a llm-notary-prod-api
+read -rs STRIPE_VALUE
+printf 'LLM_NOTARY_STRIPE_WEBHOOK_SECRET=%s\n' "$STRIPE_VALUE" | \
+  flyctl secrets import --stage -a llm-notary-prod-api
+printf '%s\n' 'LLM_NOTARY_STRIPE_PRICE_ID=price_...' | \
+  flyctl secrets import --stage -a llm-notary-prod-api
+unset STRIPE_VALUE
+```
+
+The account API exposes the configured purchase mode as `disabled`, `test`, or
+`live`. Verify that the dashboard hides Checkout when disabled and shows its
+test-mode warning before exercising a test Price. Do not promote a test secret,
+Price, or webhook endpoint into a live configuration.
+
+Billing must be rolled out in two stages. First deploy the billing-foundation
+migration and admission code to every API Machine, then verify that every
+Machine runs that release before deploying or enabling Stripe Checkout and
+webhook processing. Once a paid ticket, refund, or dispute adjustment has been
+written, the billing-foundation release is the minimum safe rollback version:
+older API images do not understand paid pools or adjustment rows and must not
+serve traffic. A later release may be rolled back only to a version at or above
+that foundation.
+
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private
 `llm-notary-prod-api.flycast` origin and renews the returned PostgreSQL-backed

@@ -35,10 +35,13 @@ import { RelayAnimation } from './RelayAnimation';
 import { latestMacosDownloadHref, loadLatestPointer, macosDmgName } from './releaseDownloads';
 import {
   approveCli,
+  createCheckoutSession,
   createApiKey,
   deleteCurrentAccount,
   getApiKeys,
   getAuthProviders,
+  getBillingPurchase,
+  getBillingPurchases,
   claimCreditOffer,
   getCliApproval,
   getCliSessions,
@@ -548,9 +551,10 @@ const docPages = {
     blocks: [
       { heading: 'How credits work', body: 'Every signed-in account receives an included monthly grant and can add credits through purchases, promotions, or manual adjustments. Capturing locally, retrying an unchanged finalization, verifying a package, and sharing an already-finalized session do not spend credits.' },
       { heading: 'Monthly and additional grants', body: 'Anonymous use receives 64 MiB each UTC month and a signed-in account receives 512 MiB. During prototype testing, every signed-in account also receives one automatic, non-expiring 128 MiB testing grant. Purchased and promotional credits remain separate grants, and finalization spends the grant that expires soonest before non-expiring credit.' },
+      { heading: 'Buy additional credits', body: 'The account dashboard sells one-time increments at $5 USD per decimal GB through Stripe-hosted Checkout. The server fixes the price and grants non-expiring credits only after reconciling a signed webhook with Stripe. Refunds and disputes remove the corresponding credit; a reinstatement restores it.' },
       { heading: 'Anonymous allowances are scoped by network address', body: 'Public hosted use derives a rotating, keyed subject from the connection address: one IPv4 address or one IPv6 /64 prefix. Only explicitly trusted reverse proxies may supply the client address. The raw address is not stored in admission records or sent to a notary worker.' },
       { heading: 'An abuse control, not an identity claim', note: 'Network-address scoping is only a coarse abuse control. People behind the same NAT, corporate gateway, or VPN can share an allowance, while one person may appear under different addresses. The derived subject does not identify a person and is not a privacy guarantee.' },
-      { heading: 'Account summary', body: 'The hosted dashboard shows included and additional balances, the monthly reset, the next expiration, available offers, and paginated credit activity. A connected local service can retrieve the current credit summary with `llm-notary whoami --json`.' },
+      { heading: 'Account summary', body: 'The hosted dashboard shows plan and billing status, included and additional balances, the monthly reset, the next expiration, purchases, offers, and paginated credit activity. A connected local service can retrieve the same account summary with `llm-notary whoami --json`.' },
       { heading: 'Evidence is unchanged', body: 'Admission and credit bookkeeping do not change TLSNotary evidence, trace-package verification, local bundle retention, or the trust claim. Self-hosted notaries do not need the hosted credit ledger unless their operator deliberately adopts it.' },
     ],
   },
@@ -1277,6 +1281,15 @@ const dashboardSections = [
   { key: 'settings', label: 'Settings', href: '#/dashboard/settings' },
 ];
 
+const checkoutReturnMessages = {
+  waiting: 'Payment received. Waiting for Stripe confirmation…',
+  paid: 'Payment confirmed. Your credits are ready.',
+  failed: 'Payment was not completed. No credits were added.',
+  refunded: 'This payment was refunded. Its purchased credits are no longer available.',
+  disputed: 'This payment is under dispute. Its purchased credits are temporarily unavailable.',
+  timeout: 'We could not confirm the payment yet. Check purchase history or refresh this page.',
+};
+
 function DashboardMobileNavigation({ activeView, traceCount }) {
   const [open, setOpen] = useState(false);
   const navigationRef = useRef(null);
@@ -1311,7 +1324,15 @@ export function Dashboard({
   loadMyShares = getMyShares,
   loadCreditOffers = getCreditOffers,
   loadCreditHistory = getCreditHistory,
+  loadBillingPurchases = getBillingPurchases,
+  loadBillingPurchase = getBillingPurchase,
+  startCheckout = createCheckoutSession,
+  openCheckout = (url) => window.location.assign(url),
+  loadCurrentUser = getCurrentUser,
   claimOfferRequest = claimCreditOffer,
+  route = '',
+  checkoutPollBaseDelay = 1_000,
+  checkoutPollMaxAttempts = 8,
 }) {
   const [sessions, setSessions] = useState(null);
   const [sessionCursor, setSessionCursor] = useState(null);
@@ -1330,7 +1351,18 @@ export function Dashboard({
   const [creditHistory, setCreditHistory] = useState(null);
   const [creditHistoryCursor, setCreditHistoryCursor] = useState(null);
   const [loadingMoreCreditHistory, setLoadingMoreCreditHistory] = useState(false);
+  const [billing, setBilling] = useState(user.billing || { service_plan: 'free', billing_status: 'active', purchase_mode: 'disabled' });
+  const [purchases, setPurchases] = useState(null);
+  const [purchaseError, setPurchaseError] = useState(null);
+  const [checkoutReturnStatus, setCheckoutReturnStatus] = useState(null);
+  const [quantityGb, setQuantityGb] = useState(5);
+  const [checkoutAttemptKey, setCheckoutAttemptKey] = useState(null);
+  const [startingCheckout, setStartingCheckout] = useState(false);
   const creditHistoryGeneration = useRef(0);
+  const purchaseListGeneration = useRef(0);
+  const checkoutQuery = useMemo(() => new URLSearchParams(route.split('?')[1] || ''), [route]);
+  const returnedCheckout = checkoutQuery.get('checkout');
+  const returnedPurchaseId = checkoutQuery.get('purchase_id');
 
   useEffect(() => {
     let cancelled = false;
@@ -1349,6 +1381,75 @@ export function Dashboard({
       .catch((reason) => { if (!cancelled && generation === creditHistoryGeneration.current) setCreditError(reason.message); });
     return () => { cancelled = true; };
   }, [loadCreditHistory]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const generation = purchaseListGeneration.current;
+    loadBillingPurchases()
+      .then((items) => { if (!cancelled && generation === purchaseListGeneration.current) setPurchases(items); })
+      .catch((reason) => { if (!cancelled && generation === purchaseListGeneration.current) setPurchaseError(reason.message); });
+    return () => { cancelled = true; };
+  }, [loadBillingPurchases]);
+
+  useEffect(() => {
+    if (returnedCheckout !== 'success' || !returnedPurchaseId) {
+      setCheckoutReturnStatus(returnedCheckout === 'cancelled' ? 'cancelled' : null);
+      return undefined;
+    }
+    let cancelled = false;
+    let timer;
+    let attempts = 0;
+    setCheckoutReturnStatus('waiting');
+    const scheduleNext = (poll) => {
+      if (attempts >= checkoutPollMaxAttempts) {
+        setCheckoutReturnStatus('timeout');
+        return;
+      }
+      const delay = Math.min(checkoutPollBaseDelay * (2 ** Math.min(attempts - 1, 3)), 5_000);
+      timer = window.setTimeout(poll, delay);
+    };
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const purchase = await loadBillingPurchase(returnedPurchaseId);
+        if (cancelled) return;
+        setPurchaseError(null);
+        purchaseListGeneration.current += 1;
+        setPurchases((current) => [purchase, ...(current || []).filter((item) => item.id !== purchase.id)]);
+        if (['paid', 'refunded', 'disputed', 'failed'].includes(purchase.state)) {
+          setCheckoutReturnStatus(purchase.state);
+          try {
+            const account = await loadCurrentUser();
+            if (!cancelled && account) {
+              setCredits(account.credits);
+              setBilling(account.billing);
+              const generation = creditHistoryGeneration.current + 1;
+              creditHistoryGeneration.current = generation;
+              const history = await loadCreditHistory({ limit: 20 });
+              if (!cancelled && generation === creditHistoryGeneration.current) {
+                setCreditHistory(history.items);
+                setCreditHistoryCursor(history.next_cursor || null);
+              }
+            }
+          } catch (reason) {
+            if (!cancelled) setPurchaseError(reason.message);
+          }
+          return;
+        }
+        scheduleNext(poll);
+      } catch (reason) {
+        if (cancelled) return;
+        if (attempts >= checkoutPollMaxAttempts) {
+          setCheckoutReturnStatus('timeout');
+          setPurchaseError(`Stripe confirmation could not be refreshed: ${reason.message}`);
+        } else {
+          scheduleNext(poll);
+        }
+      }
+    };
+    void poll();
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
+  }, [checkoutPollBaseDelay, checkoutPollMaxAttempts, loadBillingPurchase, loadCreditHistory, loadCurrentUser, returnedCheckout, returnedPurchaseId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1411,6 +1512,21 @@ export function Dashboard({
     }
   };
 
+  const buyCredits = async () => {
+    if (!['test', 'live'].includes(billing.purchase_mode)) return;
+    const attemptKey = checkoutAttemptKey || globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setCheckoutAttemptKey(attemptKey);
+    setStartingCheckout(true);
+    setPurchaseError(null);
+    try {
+      const response = await startCheckout(quantityGb, attemptKey);
+      openCheckout(response.checkout_url);
+    } catch (reason) {
+      setPurchaseError(reason.message);
+      setStartingCheckout(false);
+    }
+  };
+
   const loadMoreSessions = async () => {
     if (!sessionCursor || loadingMoreSessions) return;
     setLoadingMoreSessions(true);
@@ -1456,6 +1572,9 @@ export function Dashboard({
   const admittedCount = user.share_stats?.admitted ?? 0;
   const activeCount = user.share_stats?.in_progress ?? 0;
   const activeView = view === 'shares' ? 'traces' : ['overview', 'traces', 'credits', 'settings'].includes(view) ? view : 'overview';
+  const purchaseMode = billing.purchase_mode || 'disabled';
+  const checkoutEnabled = purchaseMode === 'test' || purchaseMode === 'live';
+  const displayedCheckoutStatus = checkoutReturnStatus || (returnedCheckout === 'success' ? 'waiting' : returnedCheckout === 'cancelled' ? 'cancelled' : null);
 
   return <main className="dashboard-shell dashboard-shell--account">
     <DashboardMobileNavigation activeView={activeView} traceCount={user.share_stats?.total ?? '—'} />
@@ -1481,12 +1600,21 @@ export function Dashboard({
         {activeView === 'credits' && <>
           <header className="dashboard-page-header"><span className="eyebrow">Usage</span><h1>Credits</h1><p>See what you’ve used, what remains, and when credits expire.</p></header>
           {credits && <section className="dashboard-credits" aria-labelledby="credit-balance-title">
-            <header><div><span className="eyebrow">Utilization</span><h2 id="credit-balance-title">{fileSize(credits.total_remaining_bytes)} available</h2></div><div className="dashboard-credit-meta"><span>Resets {sessionDate(credits.reset_at)}</span></div></header>
-            <p className="dashboard-credit-note">Included credits reset monthly. Credits you purchase or receive are added separately and keep their own expiration.</p>
+            <header><div><span className="eyebrow">Utilization</span><h2 id="credit-balance-title">{fileSize(credits.total_remaining_bytes)} available</h2></div><div className="dashboard-credit-meta"><span>{billing.service_plan} plan · {billing.billing_status}</span><span>Resets {sessionDate(credits.reset_at)}</span></div></header>
+            <p className="dashboard-credit-note">Included credits reset monthly. Purchased credits are added separately and do not expire.</p>
             <div className="dashboard-credit-ledger" aria-label="Credit balance breakdown"><div><span>Included this month</span><b>{fileSize(credits.included_monthly_remaining_bytes)}</b></div><div><span>Additional credits</span><b>{fileSize(credits.supplemental_remaining_bytes)}</b></div><div><span>Next expiration</span><b>{credits.next_grant_expiration ? sessionDate(credits.next_grant_expiration) : 'None'}</b></div></div>
             {creditError && <p className="dashboard-session-error" role="alert">{creditError}</p>}
             {creditOffers?.map((offer) => <article className="dashboard-credit-offer" key={offer.id}><div><span className="eyebrow">Available offer</span><b>{offer.title}</b><p>{offer.description} Claim by {sessionDate(offer.claim_expires_at)}.</p></div><button type="button" onClick={() => claimOffer(offer)} disabled={claimingOffer === offer.id}>{claimingOffer === offer.id ? 'Claiming…' : `Claim ${fileSize(offer.amount_bytes)}`}</button></article>)}
-            {creditHistory?.length > 0 && <div className="dashboard-credit-history"><h3>Credit activity</h3>{creditHistory.map((entry) => <div key={`${entry.kind}-${entry.id}`}><span className={`dashboard-credit-sign dashboard-credit-sign--${entry.kind}`}>{entry.kind === 'grant' ? '+' : '−'}{fileSize(entry.amount_bytes)}</span><span>{entry.display_label}</span><time>{sessionDate(entry.created_at)}</time></div>)}{creditHistoryCursor && <button className="dashboard-load-more" type="button" onClick={loadMoreCreditHistory} disabled={loadingMoreCreditHistory}>{loadingMoreCreditHistory ? 'Loading…' : 'Load older activity'}</button>}</div>}
+            {checkoutEnabled ? <section className="dashboard-credit-purchase" aria-labelledby="buy-credit-title">
+              <div className="dashboard-credit-purchase-copy"><span className="eyebrow">Additional credits · $5 per GB</span><h3 id="buy-credit-title">Buy {quantityGb} GB</h3>{purchaseMode === 'test' && <strong className="dashboard-billing-mode" role="status">Stripe test mode · no real charges</strong>}<p>{purchaseMode === 'test' ? `$${quantityGb * 5}.00 USD test purchase · use a Stripe test card` : `$${quantityGb * 5}.00 USD · one-time payment through Stripe`}</p></div>
+              <div className="dashboard-credit-quantity" role="group" aria-label="Credit quantity">{[1, 5, 10, 20].map((quantity) => <button key={quantity} type="button" aria-label={`${quantity} GB`} aria-pressed={quantityGb === quantity} onClick={() => { setQuantityGb(quantity); setCheckoutAttemptKey(null); }}>{quantity}<small aria-hidden="true">GB</small></button>)}</div>
+              <button className="dashboard-credit-buy" type="button" onClick={buyCredits} disabled={startingCheckout}>{startingCheckout ? 'Opening Checkout…' : purchaseMode === 'test' ? `Open test Checkout · ${quantityGb} GB for $${quantityGb * 5}` : `Buy ${quantityGb} GB for $${quantityGb * 5}`}</button>
+            </section> : <section className="dashboard-credit-purchase dashboard-credit-purchase--disabled" aria-labelledby="buy-credit-title"><div className="dashboard-credit-purchase-copy"><span className="eyebrow">Additional credits</span><h3 id="buy-credit-title">Purchases unavailable</h3><p>Hosted credit purchases are not configured for this service.</p></div></section>}
+            {displayedCheckoutStatus === 'cancelled' && <p className="dashboard-checkout-state">Checkout was cancelled. No credits were added.</p>}
+            {checkoutReturnMessages[displayedCheckoutStatus] && <p className="dashboard-checkout-state" role="status">{checkoutReturnMessages[displayedCheckoutStatus]}</p>}
+            {purchaseError && <p className="dashboard-session-error" role="alert">{purchaseError}</p>}
+            <div className="dashboard-purchase-history"><h3>Purchases</h3>{purchases === null && !purchaseError ? <p>Loading purchases…</p> : purchases?.length ? purchases.map((purchase) => <div key={purchase.id}><span className={`dashboard-purchase-state dashboard-purchase-state--${purchase.state}`}><i aria-hidden="true" />{purchase.state.replaceAll('_', ' ')}</span><b>{purchase.quantity_gb} GB · ${(purchase.amount_cents / 100).toFixed(2)}</b><time>{sessionDate(purchase.created_at)}</time></div>) : <p>No credit purchases yet.</p>}</div>
+            {creditHistory?.length > 0 && <div className="dashboard-credit-history"><h3>Credit activity</h3>{creditHistory.map((entry) => { const addsCredit = entry.kind === 'grant' || (entry.kind === 'adjustment' && entry.amount_bytes > 0); return <div key={`${entry.kind}-${entry.id}`}><span className={`dashboard-credit-sign dashboard-credit-sign--${entry.kind}`}>{addsCredit ? '+' : '−'}{fileSize(Math.abs(entry.amount_bytes))}</span><span>{entry.display_label}</span><time>{sessionDate(entry.created_at)}</time></div>; })}{creditHistoryCursor && <button className="dashboard-load-more" type="button" onClick={loadMoreCreditHistory} disabled={loadingMoreCreditHistory}>{loadingMoreCreditHistory ? 'Loading…' : 'Load older activity'}</button>}</div>}
           </section>}
         </>}
         {activeView === 'settings' && <>
@@ -1752,7 +1880,7 @@ function App() {
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  return <><Header user={user} onLogout={logout} hideSignIn={section === 'authorize' || section === 'signin'} authPending={authPending} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'signin' ? <SignInPage route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} theme={theme} onThemeChange={setTheme} onAccountDeleted={accountDeleted} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  return <><Header user={user} onLogout={logout} hideSignIn={section === 'authorize' || section === 'signin'} authPending={authPending} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'signin' ? <SignInPage route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} route={path} theme={theme} onThemeChange={setTheme} onAccountDeleted={accountDeleted} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
 }
 
 const applicationRoot = document.getElementById('root');

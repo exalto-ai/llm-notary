@@ -125,6 +125,7 @@ pub struct AdmissionLimits {
 pub enum CreditHistoryKind {
     Grant,
     Debit,
+    Adjustment,
 }
 
 #[derive(Clone, Debug, Serialize, ToSchema)]
@@ -343,6 +344,11 @@ async fn credit_history(
                     'Hosted finalization'::TEXT AS display_label,
                     created_at, NULL::BIGINT AS expires_at
              FROM notary_credit_debits WHERE credit_subject = $1
+             UNION ALL
+             SELECT id, 'adjustment'::TEXT AS kind, amount_bytes,
+                    source_kind::TEXT AS source_kind, display_label,
+                    created_at, NULL::BIGINT AS expires_at
+             FROM notary_credit_adjustments WHERE credit_subject = $1
          ) AS history
          WHERE ($2::TEXT IS NULL OR (created_at, id, kind) < ($3, $2, $4))
          ORDER BY created_at DESC, id DESC, kind DESC
@@ -361,10 +367,11 @@ async fn credit_history(
         |(id, kind, amount_bytes, source_kind, display_label, created_at, expires_at)| {
             CreditHistoryEntry {
                 id,
-                kind: if kind == "grant" {
-                    CreditHistoryKind::Grant
-                } else {
-                    CreditHistoryKind::Debit
+                kind: match kind.as_str() {
+                    "grant" => CreditHistoryKind::Grant,
+                    "debit" => CreditHistoryKind::Debit,
+                    "adjustment" => CreditHistoryKind::Adjustment,
+                    _ => unreachable!("credit history query emits only known kinds"),
                 },
                 amount_bytes,
                 source_kind,
@@ -381,6 +388,7 @@ async fn credit_history(
         kind: match entry.kind {
             CreditHistoryKind::Grant => "grant",
             CreditHistoryKind::Debit => "debit",
+            CreditHistoryKind::Adjustment => "adjustment",
         }
         .to_owned(),
     })

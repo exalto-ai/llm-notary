@@ -124,6 +124,34 @@ export async function getCreditHistory(options: PageOptions = {}) {
   return data;
 }
 
+export async function getBillingPurchases() {
+  const { data, error, response } = await client.GET('/api/me/billing/purchases');
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not load credit purchases.'), response.status);
+  }
+  return data.purchases;
+}
+
+export async function getBillingPurchase(purchaseId: string) {
+  const { data, error, response } = await client.GET('/api/me/billing/purchases/{purchase_id}', {
+    params: { path: { purchase_id: purchaseId } },
+  });
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not load this credit purchase.'), response.status);
+  }
+  return data;
+}
+
+export async function createCheckoutSession(quantityGb: number, idempotencyKey: string) {
+  const { data, error, response } = await client.POST('/api/me/billing/checkout-sessions', {
+    body: { quantity_gb: quantityGb, idempotency_key: idempotencyKey },
+  });
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not start Stripe Checkout.'), response.status);
+  }
+  return data;
+}
+
 export async function revokeCliSession(sessionId: string) {
   const { error, response } = await client.DELETE('/api/cli/sessions/{session_id}', {
     params: { path: { session_id: sessionId } },
@@ -158,7 +186,7 @@ export async function getCurrentUser() {
   if (!response.ok || !data) {
     throw new PlatformApiError(errorMessage(error, 'Could not load the current account.'), response.status);
   }
-  return { ...data.user, credits: data.credits, share_stats: data.share_stats };
+  return { ...data.user, billing: data.billing, credits: data.credits, share_stats: data.share_stats };
 }
 
 export async function getAuthProviders() {

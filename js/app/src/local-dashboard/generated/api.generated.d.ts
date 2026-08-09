@@ -405,6 +405,7 @@ export interface components {
             device_name?: string;
         };
         AccountConnectionResponse: {
+            billing?: null | components["schemas"]["BillingState"];
             credential_kind?: string | null;
             credential_name?: string | null;
             credits?: null | components["schemas"]["CreditSummary"];
@@ -427,6 +428,10 @@ export interface components {
             sha256: string;
             /** Format: int64 */
             size_bytes: number;
+        };
+        BillingState: {
+            billing_status: string;
+            service_plan: string;
         };
         CaptureDetailResponse: {
             artifacts: components["schemas"]["ArtifactResponse"][];
