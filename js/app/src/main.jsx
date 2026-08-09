@@ -1270,6 +1270,37 @@ function CreditUtilizationFallback() {
   </section>;
 }
 
+const dashboardSections = [
+  { key: 'overview', label: 'Overview', href: '#/dashboard' },
+  { key: 'traces', label: 'Traces', href: '#/dashboard/traces' },
+  { key: 'credits', label: 'Credits', href: '#/dashboard/credits' },
+  { key: 'settings', label: 'Settings', href: '#/dashboard/settings' },
+];
+
+function DashboardMobileNavigation({ activeView, traceCount }) {
+  const [open, setOpen] = useState(false);
+  const navigationRef = useRef(null);
+  const currentLabel = dashboardSections.find(({ key }) => key === activeView)?.label || 'Overview';
+  useEffect(() => setOpen(false), [activeView]);
+  useEffect(() => {
+    const close = (event) => {
+      if (event.key === 'Escape' || (event.type === 'mousedown' && !navigationRef.current?.contains(event.target))) setOpen(false);
+    };
+    document.addEventListener('mousedown', close);
+    window.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      window.removeEventListener('keydown', close);
+    };
+  }, []);
+  return <nav className="dashboard-mobile-toolbar" aria-label="Dashboard navigation" ref={navigationRef}>
+    <button type="button" className={open ? 'active' : ''} onClick={() => setOpen((current) => !current)} aria-label={`Dashboard menu: ${currentLabel}`} aria-expanded={open} aria-controls="dashboard-mobile-panel">
+      <span><small>Dashboard</small>{currentLabel}</span><ChevronDown aria-hidden="true" />
+    </button>
+    {open && <div className="dashboard-mobile-panel" id="dashboard-mobile-panel"><span>Account</span>{dashboardSections.map(({ key, label, href }) => <a className={activeView === key ? 'active' : ''} href={href} aria-current={activeView === key ? 'page' : undefined} onClick={() => setOpen(false)} key={key}><span>{label}</span>{key === 'traces' && <small>{traceCount}</small>}</a>)}</div>}
+  </nav>;
+}
+
 export function Dashboard({
   user,
   view,
@@ -1427,6 +1458,7 @@ export function Dashboard({
   const activeView = view === 'shares' ? 'traces' : ['overview', 'traces', 'credits', 'settings'].includes(view) ? view : 'overview';
 
   return <main className="dashboard-shell dashboard-shell--account">
+    <DashboardMobileNavigation activeView={activeView} traceCount={user.share_stats?.total ?? '—'} />
     <div className="dashboard-layout">
       <aside className="dashboard-sidebar" aria-label="Dashboard navigation">
         <nav>
