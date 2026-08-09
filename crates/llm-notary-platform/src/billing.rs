@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, anyhow, bail};
 use axum::{
@@ -35,6 +35,7 @@ const BYTES_PER_CENT: i64 = BYTES_PER_GB / CENTS_PER_GB;
 const MAX_QUANTITY_GB: i64 = 20;
 const MAX_WEBHOOK_BYTES: usize = 1 << 20;
 const WEBHOOK_TOLERANCE_SECS: i64 = 5 * 60;
+const STRIPE_REQUEST_TIMEOUT: Duration = Duration::from_secs(5);
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -117,6 +118,7 @@ struct StripeClient {
     price_id: Arc<str>,
     livemode: bool,
     allow_local_checkout_url: bool,
+    request_timeout: Duration,
 }
 
 impl StripeClient {
@@ -137,7 +139,13 @@ impl StripeClient {
             price_id: Arc::from(config.price_id),
             livemode: config.livemode,
             allow_local_checkout_url,
+            request_timeout: STRIPE_REQUEST_TIMEOUT,
         })
+    }
+
+    async fn retrieve_configured_price(&self) -> Result<StripeConfiguredPrice> {
+        self.retrieve_object("prices", self.price_id.as_ref(), "price_")
+            .await
     }
 
     async fn create_checkout_session(
@@ -233,7 +241,11 @@ impl StripeClient {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<T> {
-        let response = request.send().await.context("Stripe request failed")?;
+        let response = request
+            .timeout(self.request_timeout)
+            .send()
+            .await
+            .context("Stripe request failed")?;
         if !response.status().is_success() {
             bail!("Stripe returned HTTP {}", response.status().as_u16());
         }
@@ -378,6 +390,20 @@ struct StripeLineItem {
 #[derive(Debug, Deserialize)]
 struct StripePrice {
     id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StripeConfiguredPrice {
+    id: String,
+    active: bool,
+    livemode: bool,
+    currency: String,
+    unit_amount: Option<i64>,
+    billing_scheme: String,
+    #[serde(rename = "type")]
+    price_type: String,
+    custom_unit_amount: Option<Value>,
+    transform_quantity: Option<Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -538,6 +564,11 @@ async fn create_checkout_session(
     let stripe = state.billing.stripe()?.clone();
     let user = authenticated_web_user(&state, &jar).await?;
     validate_checkout_request(&request)?;
+    let price = stripe
+        .retrieve_configured_price()
+        .await
+        .map_err(stripe_api_error)?;
+    validate_configured_price(&stripe, &price).map_err(stripe_invalid_error)?;
     let now = unix_timestamp()?;
     let purchase_id = Uuid::new_v4().to_string();
     sqlx::query(
@@ -605,28 +636,45 @@ async fn create_checkout_session(
     let checkout_url = stripe
         .validate_checkout_url(checkout_url)
         .map_err(stripe_invalid_error)?;
-    let updated = sqlx::query(
-        "UPDATE billing_purchases
-         SET state = 'checkout_open', provider_checkout_session_id = $1, updated_at = $2
-         WHERE id = $3
-           AND (provider_checkout_session_id IS NULL OR provider_checkout_session_id = $1)",
-    )
-    .bind(&session.id)
-    .bind(now)
-    .bind(&purchase.id)
-    .execute(&state.database)
-    .await
-    .map_err(database_error)?;
-    if updated.rows_affected() != 1 {
-        return Err(ApiError::conflict(
-            "billing purchase is already bound to another Checkout Session",
-        ));
-    }
-    purchase = select_purchase(&state.database, &purchase.id, Some(&user.0)).await?;
+    purchase =
+        bind_checkout_session(&state.database, &purchase.id, &user.0, &session.id, now).await?;
     Ok(Json(CreateCheckoutSessionResponse {
         purchase: purchase.public()?,
         checkout_url: checkout_url.to_string(),
     }))
+}
+
+async fn bind_checkout_session(
+    database: &super::DatabasePool,
+    purchase_id: &str,
+    account_id: &str,
+    session_id: &str,
+    now: i64,
+) -> ApiResult<PurchaseRow> {
+    let updated = sqlx::query(
+        "UPDATE billing_purchases
+         SET state = 'checkout_open', provider_checkout_session_id = $1, updated_at = $2
+         WHERE id = $3
+           AND amount_paid_cents = 0 AND state IN ('creating', 'checkout_open')
+           AND (provider_checkout_session_id IS NULL OR provider_checkout_session_id = $1)",
+    )
+    .bind(session_id)
+    .bind(now)
+    .bind(purchase_id)
+    .execute(database)
+    .await
+    .map_err(database_error)?;
+    let purchase = select_purchase(database, purchase_id, Some(account_id)).await?;
+    if updated.rows_affected() != 1
+        && !(purchase.provider_checkout_session_id.as_deref() == Some(session_id)
+            && purchase.amount_paid_cents > 0
+            && matches!(purchase.state.as_str(), "paid" | "refunded" | "disputed"))
+    {
+        return Err(ApiError::conflict(
+            "billing purchase is already bound to another Checkout Session",
+        ));
+    }
+    Ok(purchase)
 }
 
 #[utoipa::path(
@@ -695,6 +743,25 @@ fn validate_checkout_request(request: &CreateCheckoutSessionRequest) -> ApiResul
     validate_idempotency_key(&request.idempotency_key)
 }
 
+fn validate_configured_price(stripe: &StripeClient, price: &StripeConfiguredPrice) -> Result<()> {
+    validate_stripe_id(&price.id, "price_")?;
+    if price.id != stripe.price_id.as_ref()
+        || !price.active
+        || price.livemode != stripe.livemode
+        || price.currency != "usd"
+        || price.unit_amount != Some(CENTS_PER_GB)
+        || price.billing_scheme != "per_unit"
+        || price.price_type != "one_time"
+        || price.custom_unit_amount.is_some()
+        || price.transform_quantity.is_some()
+    {
+        bail!(
+            "configured Stripe Price must be an active, matching-environment, one-time USD Price at {CENTS_PER_GB} cents per GB"
+        );
+    }
+    Ok(())
+}
+
 fn validate_idempotency_key(value: &str) -> ApiResult<()> {
     if value.is_empty()
         || value.len() > 128
@@ -731,15 +798,11 @@ fn validate_created_session(
 ) -> ApiResult<()> {
     validate_stripe_id(&session.id, "cs_").map_err(stripe_invalid_error)?;
     if session.livemode != stripe.livemode
-        || session
-            .mode
-            .as_deref()
-            .is_some_and(|mode| mode != "payment")
-        || session
-            .status
-            .as_deref()
-            .is_some_and(|status| status != "open")
+        || session.mode.as_deref() != Some("payment")
+        || session.status.as_deref() != Some("open")
         || session.payment_status != "unpaid"
+        || session.amount_total != Some(purchase.expected_amount_cents)
+        || session.currency.as_deref() != Some(purchase.currency.as_str())
         || session.client_reference_id.as_deref() != Some(&purchase.id)
         || session.metadata.get("purchase_id").map(String::as_str) != Some(&purchase.id)
         || session.metadata.get("schema_version").map(String::as_str) != Some("1")
@@ -1328,8 +1391,13 @@ fn validate_paid_session(
     validate_stripe_id(&payment_intent.id, "pi_")?;
     if payment_intent.amount_received != purchase.expected_amount_cents
         || payment_intent.currency != purchase.currency
+        || payment_intent
+            .metadata
+            .get("purchase_id")
+            .map(String::as_str)
+            != Some(purchase.id.as_str())
     {
-        bail!("PaymentIntent amount differs from the local purchase");
+        bail!("PaymentIntent differs from the local purchase");
     }
     let charge_id = payment_intent
         .latest_charge
@@ -1802,6 +1870,63 @@ mod tests {
             "https://llm-notary.example/#/dashboard/credits?checkout=cancelled&purchase_id=purchase-id"
         );
     }
+
+    #[test]
+    fn configured_price_must_match_the_fixed_credit_offer() {
+        let billing = BillingService::for_test(
+            Url::parse("http://127.0.0.1:1/v1/").unwrap(),
+            Url::parse("https://example.test").unwrap(),
+        );
+        let stripe = billing.stripe().unwrap();
+        let mut price = StripeConfiguredPrice {
+            id: "price_fixture".to_owned(),
+            active: true,
+            livemode: false,
+            currency: "usd".to_owned(),
+            unit_amount: Some(CENTS_PER_GB),
+            billing_scheme: "per_unit".to_owned(),
+            price_type: "one_time".to_owned(),
+            custom_unit_amount: None,
+            transform_quantity: None,
+        };
+        validate_configured_price(stripe, &price).unwrap();
+        price.unit_amount = Some(CENTS_PER_GB + 1);
+        assert!(validate_configured_price(stripe, &price).is_err());
+    }
+
+    #[tokio::test]
+    async fn stripe_requests_have_a_total_deadline() {
+        async fn slow_refund(AxumPath(id): AxumPath<String>) -> Json<Value> {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            Json(serde_json::json!({
+                "id": id, "amount": 100, "currency": "usd", "status": "succeeded",
+                "charge": "ch_fixture", "payment_intent": "pi_fixture"
+            }))
+        }
+
+        let app = Router::new().route("/v1/refunds/{id}", get(slow_refund));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut stripe = StripeClient::new(
+            reqwest::Client::new(),
+            Url::parse(&format!("http://{address}/v1/")).unwrap(),
+            StripeConfig {
+                secret_key: "sk_test_fixture".to_owned(),
+                webhook_secret: "whsec_fixture_secret".to_owned(),
+                price_id: "price_fixture".to_owned(),
+                livemode: false,
+            },
+            true,
+        )
+        .unwrap();
+        stripe.request_timeout = Duration::from_millis(25);
+        let error = stripe
+            .retrieve_refund("re_slow")
+            .await
+            .expect_err("slow Stripe request must time out");
+        assert!(format!("{error:#}").contains("timed out"));
+    }
     use crate::{
         AdmissionConfig, SESSION_COOKIE, fresh_database, insert_test_github_user, sha256_hex,
         tests::directory_key,
@@ -1811,6 +1936,7 @@ mod tests {
     struct MockStripeState {
         purchase_id: Option<String>,
         paid: bool,
+        payment_intent_metadata_valid: bool,
         amount_refunded: i64,
         dispute_status: String,
     }
@@ -1851,6 +1977,20 @@ mod tests {
         Json(checkout_json(&state, &purchase_id, false))
     }
 
+    async fn mock_price(AxumPath(id): AxumPath<String>) -> Json<Value> {
+        Json(serde_json::json!({
+            "id": id,
+            "active": true,
+            "livemode": false,
+            "currency": "usd",
+            "unit_amount": CENTS_PER_GB,
+            "billing_scheme": "per_unit",
+            "type": "one_time",
+            "custom_unit_amount": null,
+            "transform_quantity": null
+        }))
+    }
+
     async fn mock_retrieve_checkout(
         AxumPath(_session_id): AxumPath<String>,
         AxumState(state): AxumState<Arc<Mutex<MockStripeState>>>,
@@ -1860,7 +2000,12 @@ mod tests {
         Json(checkout_json(&state, &purchase_id, paid))
     }
 
-    fn checkout_json(_state: &Arc<Mutex<MockStripeState>>, purchase_id: &str, paid: bool) -> Value {
+    fn checkout_json(state: &Arc<Mutex<MockStripeState>>, purchase_id: &str, paid: bool) -> Value {
+        let payment_intent_purchase_id = if state.lock().unwrap().payment_intent_metadata_valid {
+            purchase_id
+        } else {
+            "wrong-purchase"
+        };
         serde_json::json!({
             "id": "cs_fixture",
             "url": "http://127.0.0.1/checkout/cs_fixture",
@@ -1868,8 +2013,8 @@ mod tests {
             "status": if paid { "complete" } else { "open" },
             "livemode": false,
             "payment_status": if paid { "paid" } else { "unpaid" },
-            "amount_total": if paid { Some(1000) } else { None::<i64> },
-            "currency": if paid { Some("usd") } else { None::<&str> },
+            "amount_total": 1000,
+            "currency": "usd",
             "client_reference_id": purchase_id,
             "metadata": { "purchase_id": purchase_id, "schema_version": "1" },
             "customer": if paid { serde_json::json!({ "id": "cus_fixture" }) } else { Value::Null },
@@ -1878,7 +2023,7 @@ mod tests {
                     "id": "pi_fixture",
                     "amount_received": 1000,
                     "currency": "usd",
-                    "metadata": { "purchase_id": purchase_id },
+                    "metadata": { "purchase_id": payment_intent_purchase_id },
                     "latest_charge": { "id": "ch_fixture", "amount": 1000,
                         "amount_refunded": 0, "currency": "usd", "livemode": false,
                         "payment_intent": "pi_fixture" }
@@ -1992,9 +2137,11 @@ mod tests {
     async fn checkout_webhooks_are_idempotent_and_reconcile_refunds_and_disputes() {
         let mock = Arc::new(Mutex::new(MockStripeState {
             dispute_status: "needs_response".to_owned(),
+            payment_intent_metadata_valid: true,
             ..Default::default()
         }));
         let app = Router::new()
+            .route("/v1/prices/{id}", get(mock_price))
             .route("/v1/checkout/sessions", post(mock_checkout))
             .route("/v1/checkout/sessions/{id}", get(mock_retrieve_checkout))
             .route("/v1/refunds/{id}", get(mock_refund))
@@ -2062,6 +2209,26 @@ mod tests {
             "livemode": false, "created": now,
             "data": { "object": { "id": "cs_fixture" } }
         });
+        mock.lock().unwrap().payment_intent_metadata_valid = false;
+        let mismatched = serde_json::json!({
+            "id": "evt_checkout_bad_metadata", "api_version": STRIPE_API_VERSION,
+            "type": "checkout.session.completed",
+            "livemode": false, "created": now,
+            "data": { "object": { "id": "cs_fixture" } }
+        });
+        let mismatch = deliver_event(&state, mismatched, now)
+            .await
+            .expect_err("mismatched PaymentIntent metadata must be rejected");
+        assert_eq!(mismatch.status, StatusCode::BAD_REQUEST);
+        let premature_grants: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM notary_credit_grants
+             WHERE account_id = 'billing-user' AND source_kind = 'external_purchase'",
+        )
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(premature_grants, 0);
+        mock.lock().unwrap().payment_intent_metadata_valid = true;
         deliver_event(&state, completed.clone(), now).await.unwrap();
         deliver_event(&state, completed, now).await.unwrap();
         let grants: (i64, i64) = sqlx::query_as(
@@ -2073,6 +2240,17 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(grants, (1, 2 * BYTES_PER_GB));
+        let raced_binding = bind_checkout_session(
+            &state.database,
+            &checkout.purchase.id,
+            "billing-user",
+            "cs_fixture",
+            now + 1,
+        )
+        .await
+        .unwrap();
+        assert_eq!(raced_binding.state, "paid");
+        assert_eq!(raced_binding.amount_paid_cents, 2 * CENTS_PER_GB);
 
         deliver_event(&state, refund_event, now).await.unwrap();
         deliver_event(
