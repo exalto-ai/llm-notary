@@ -67,13 +67,14 @@ jobs:
               - 'crates/llm-notary-platform/examples/export-hosted-openapi.rs'
               - 'js/app/**'
             desktop:
+              # Website-only changes are validated by the Linux SPA job. The
+              # packaged dashboard output enters through the Rust client tree.
               - '.github/workflows/ci.yml'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - 'crates/llm-notary-client/**'
               - 'crates/llm-notary-core/**'
-              - 'js/app/**'
               - 'js/desktop/**'
             docs:
               - '.github/workflows/ci.yml'
@@ -197,7 +198,7 @@ jobs:
   desktop:
     name: macOS desktop bundle
     needs: changes
-    if: needs.changes.outputs.desktop == 'true'
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.desktop == 'true' }}
     runs-on: macos-14
     defaults:
       run:
@@ -284,7 +285,7 @@ jobs:
       POSTGRES_RESULT: ${{ needs.postgres-integration.result }}
       APP_CHANGED: ${{ needs.changes.outputs.app }}
       APP_RESULT: ${{ needs.app.result }}
-      DESKTOP_CHANGED: ${{ needs.changes.outputs.desktop }}
+      DESKTOP_REQUIRED: ${{ github.event_name == 'pull_request' && needs.changes.outputs.desktop == 'true' }}
       DESKTOP_RESULT: ${{ needs.desktop.result }}
       DOCS_CHANGED: ${{ needs.changes.outputs.docs }}
       DOCS_RESULT: ${{ needs.docs.result }}
@@ -317,7 +318,7 @@ jobs:
           require_selected Rust "$RUST_CHANGED" "$RUST_RESULT"
           require_selected PostgreSQL "$RUST_CHANGED" "$POSTGRES_RESULT"
           require_selected SPA "$APP_CHANGED" "$APP_RESULT"
-          require_selected Desktop "$DESKTOP_CHANGED" "$DESKTOP_RESULT"
+          require_selected Desktop "$DESKTOP_REQUIRED" "$DESKTOP_RESULT"
           require_selected Documentation "$DOCS_CHANGED" "$DOCS_RESULT"
           require_selected Deployment "$CONTAINERS_CHANGED" "$CONTAINERS_RESULT"
 

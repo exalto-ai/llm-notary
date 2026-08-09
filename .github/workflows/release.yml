@@ -99,7 +99,7 @@ jobs:
           name: cli-${{ matrix.asset }}
           path: release/*
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 1
 
   desktop:
     uses: ./.github/workflows/desktop-dmg.yml
