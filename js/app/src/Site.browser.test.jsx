@@ -193,6 +193,7 @@ describe('hosted site', () => {
       loadMyShares={async () => ({ items: [], next_cursor: null })}
       loadCreditOffers={async () => [{ id: 'offer-1', title: 'Test credit', description: 'One-time test credit.', amount_bytes: 1_024, claim_expires_at: 4_102_444_800, credit_expires_at: 4_102_444_800 }]}
       loadCreditHistory={loadCreditHistory}
+      loadBillingPurchases={async () => []}
       claimOfferRequest={async () => ({ credits: { included_monthly_remaining_bytes: 2_048, supplemental_remaining_bytes: 0, total_granted_bytes: 2_048, total_remaining_bytes: 2_048, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null } })}
     />);
 
@@ -206,6 +207,34 @@ describe('hosted site', () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     await expect.element(page.getByText('Stale older credit')).not.toBeInTheDocument();
     await expect.element(page.getByText('Claimed credit')).toBeVisible();
+  });
+
+  test('starts a fixed-price Stripe Checkout from the credit quantity rail', async () => {
+    let checkoutRequest;
+    let checkoutUrl;
+    render(<Dashboard
+      user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active' }, credits: { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null }, share_stats: { total: 0, admitted: 0, in_progress: 0 } }}
+      view="credits"
+      theme="light"
+      onThemeChange={() => {}}
+      onAccountDeleted={() => {}}
+      loadCliSessions={async () => ({ items: [], next_cursor: null })}
+      loadMyShares={async () => ({ items: [], next_cursor: null })}
+      loadCreditOffers={async () => []}
+      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+      loadBillingPurchases={async () => []}
+      startCheckout={async (quantityGb, idempotencyKey) => {
+        checkoutRequest = { quantityGb, idempotencyKey };
+        return { checkout_url: 'https://checkout.stripe.com/c/pay/test' };
+      }}
+      openCheckout={(url) => { checkoutUrl = url; }}
+    />);
+
+    await page.getByRole('button', { name: '10 GB' }).click();
+    await page.getByRole('button', { name: 'Buy 10 GB for $50' }).click();
+    expect(checkoutRequest.quantityGb).toBe(10);
+    expect(checkoutRequest.idempotencyKey).toMatch(/^[a-zA-Z0-9_-]+$/);
+    expect(checkoutUrl).toBe('https://checkout.stripe.com/c/pay/test');
   });
 
   test('renders every known provider icon and neutral fallbacks beside provider text', async () => {

@@ -29,6 +29,28 @@ operation. There is no browser endpoint that accepts an arbitrary credit amount
 or source; purchase settlement must create a server-authored `external_purchase`
 grant.
 
+## Stripe purchases
+
+The hosted dashboard sells one-time credit increments at a fixed price of
+$5 USD per decimal GB (1,000,000,000 bytes). A purchase can contain 1–20 GB.
+The browser chooses only the quantity and supplies an idempotency key; the API
+fixes the currency, unit price, byte amount, Stripe Price, account, and payment
+mode. Payment details are collected on Stripe-hosted Checkout and never pass
+through LLM Notary.
+
+Credits are granted only after a signed webhook is reconciled against the
+current Checkout Session, its one line item, PaymentIntent, and Charge. Duplicate
+and out-of-order deliveries are safe. The platform stores provider identifiers
+and processing outcomes, not raw webhook bodies, signatures, payment methods,
+or customer details. The browser's return from Checkout is only a status hint;
+it cannot grant credits.
+
+Purchased credits do not expire. A refund removes the corresponding fraction
+of purchased bytes. A dispute temporarily removes disputed credit and places
+hosted finalization under review; reinstatement restores both. These changes are
+signed, append-only credit activity entries. A full refund returns the account
+to the Free plan when it has no other unrefunded purchase.
+
 Finalization debits consume grants that expire soonest, then grants without an
 expiration. Each debit is allocated immutably to its source grants. Retrying
 the same subject and bundle digest does not debit twice, and changing the
@@ -59,8 +81,27 @@ or another customer's activity.
 ## Account and CLI views
 
 The hosted account response, dashboard, local-service account response, and
-`llm-notary whoami --json` report the same credit summary: total remaining,
-included monthly remaining, additional remaining, monthly reset, next grant
-expiration, and bounded grant/debit history. History labels and errors omit
-address subjects, record digests, tickets, credentials, and other users'
-activity.
+`llm-notary whoami --json` report the same plan, billing status, and credit
+summary: total remaining, included monthly remaining, additional remaining,
+monthly reset, next grant expiration, and bounded grant/debit/adjustment
+history. History labels and errors omit address subjects, record digests,
+tickets, credentials, and other users' activity.
+
+## Operator configuration
+
+Stripe support is disabled when all three settings are absent. Enabling it
+requires the complete set:
+
+- `LLM_NOTARY_STRIPE_SECRET_KEY` or `LLM_NOTARY_STRIPE_SECRET_KEY_FILE`: an
+  `sk_test_...` or `sk_live_...` key, supplied directly or through a private
+  file (but never both).
+- `LLM_NOTARY_STRIPE_WEBHOOK_SECRET` or
+  `LLM_NOTARY_STRIPE_WEBHOOK_SECRET_FILE`: the matching endpoint's `whsec_...`
+  signing secret, supplied directly or through a private file (but never both).
+- `LLM_NOTARY_STRIPE_PRICE_ID`: the single authoritative `price_...` identifier.
+
+The webhook URL is `/api/billing/stripe/webhook` and its API version is pinned
+to `2026-02-25.clover`. Test keys accept only test-mode Prices and events; live
+keys accept only live-mode data. The publishable key is not required because
+the dashboard redirects to Stripe-hosted Checkout rather than embedding Stripe
+Elements.

@@ -1323,6 +1323,16 @@
           "signed_in"
         ],
         "properties": {
+          "billing": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/BillingState"
+              }
+            ]
+          },
           "credential_kind": {
             "type": [
               "string",
@@ -1415,6 +1425,21 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          }
+        }
+      },
+      "BillingState": {
+        "type": "object",
+        "required": [
+          "service_plan",
+          "billing_status"
+        ],
+        "properties": {
+          "billing_status": {
+            "type": "string"
+          },
+          "service_plan": {
+            "type": "string"
           }
         }
       },

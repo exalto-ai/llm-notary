@@ -2882,6 +2882,21 @@
           "paid"
         ]
       },
+      "AccountBillingState": {
+        "type": "object",
+        "required": [
+          "service_plan",
+          "billing_status"
+        ],
+        "properties": {
+          "billing_status": {
+            "$ref": "#/components/schemas/BillingStatus"
+          },
+          "service_plan": {
+            "$ref": "#/components/schemas/ServicePlan"
+          }
+        }
+      },
       "AdmissionLimits": {
         "type": "object",
         "required": [
@@ -3119,6 +3134,13 @@
           }
         }
       },
+      "BillingStatus": {
+        "type": "string",
+        "enum": [
+          "active",
+          "review"
+        ]
+      },
       "BrowserAuthProvider": {
         "type": "string",
         "enum": [
@@ -3198,9 +3220,13 @@
         "required": [
           "user",
           "credential",
+          "billing",
           "credits"
         ],
         "properties": {
+          "billing": {
+            "$ref": "#/components/schemas/AccountBillingState"
+          },
           "credential": {
             "$ref": "#/components/schemas/CliCredentialResponse"
           },
@@ -3439,7 +3465,8 @@
         "type": "string",
         "enum": [
           "grant",
-          "debit"
+          "debit",
+          "adjustment"
         ]
       },
       "CreditOffer": {
@@ -3679,10 +3706,14 @@
         "type": "object",
         "required": [
           "user",
+          "billing",
           "credits",
           "share_stats"
         ],
         "properties": {
+          "billing": {
+            "$ref": "#/components/schemas/AccountBillingState"
+          },
           "credits": {
             "$ref": "#/components/schemas/CreditSummary"
           },
@@ -4364,6 +4395,13 @@
             "type": "string"
           }
         }
+      },
+      "ServicePlan": {
+        "type": "string",
+        "enum": [
+          "free",
+          "paid"
+        ]
       },
       "ShareResponse": {
         "type": "object",

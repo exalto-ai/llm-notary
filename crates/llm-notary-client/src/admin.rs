@@ -941,6 +941,7 @@ async fn load_account_status() -> Result<Json<AccountConnectionResponse>, ApiErr
         device_name: status.device_name,
         credential_kind: status.credential_kind,
         credential_name: status.credential_name,
+        billing: status.billing,
         credits: status.credits,
     }))
 }
@@ -1021,6 +1022,7 @@ async fn poll_account_connection(
             device_name: None,
             credential_kind: None,
             credential_name: None,
+            billing: None,
             credits: None,
         })),
         auth::AuthorizationPoll::Complete => {
@@ -1776,6 +1778,7 @@ struct AccountConnectionResponse {
     device_name: Option<String>,
     credential_kind: Option<String>,
     credential_name: Option<String>,
+    billing: Option<auth::BillingState>,
     credits: Option<auth::CreditSummary>,
 }
 

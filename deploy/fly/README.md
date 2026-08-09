@@ -71,6 +71,34 @@ jq -r '(.web // .installed) |
 Treat a client secret pasted into chat, logs, or shell arguments as compromised:
 delete it in Google Cloud, create a replacement, and import only the replacement.
 
+Create the Stripe webhook endpoint at
+`https://llm-notary.exalto.ai/api/billing/stripe/webhook` and pin it to API
+version `2026-02-25.clover`. Subscribe only to these events:
+
+- `checkout.session.completed`
+- `checkout.session.async_payment_succeeded`
+- `checkout.session.async_payment_failed`
+- `checkout.session.expired`
+- `refund.created`, `refund.updated`, and `refund.failed`
+- `charge.dispute.funds_withdrawn`, `charge.dispute.funds_reinstated`, and
+  `charge.dispute.closed`
+
+Stage all three Stripe settings before merging a release that enables billing.
+The secret key, Price, and webhook endpoint must all use the same test or live
+environment. Send values over stdin so neither secret enters shell history:
+
+```bash
+read -rs STRIPE_VALUE
+printf 'LLM_NOTARY_STRIPE_SECRET_KEY=%s\n' "$STRIPE_VALUE" | \
+  flyctl secrets import --stage -a llm-notary-prod-api
+read -rs STRIPE_VALUE
+printf 'LLM_NOTARY_STRIPE_WEBHOOK_SECRET=%s\n' "$STRIPE_VALUE" | \
+  flyctl secrets import --stage -a llm-notary-prod-api
+printf '%s\n' 'LLM_NOTARY_STRIPE_PRICE_ID=price_...' | \
+  flyctl secrets import --stage -a llm-notary-prod-api
+unset STRIPE_VALUE
+```
+
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private
 `llm-notary-prod-api.flycast` origin and renews the returned PostgreSQL-backed

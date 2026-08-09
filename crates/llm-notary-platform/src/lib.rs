@@ -172,6 +172,7 @@ struct AuthProvidersResponse {
 #[derive(Serialize, ToSchema)]
 struct MeResponse {
     user: PublicUser,
+    billing: service_admission::AccountBillingState,
     credits: service_admission::CreditSummary,
     share_stats: ShareStats,
 }
@@ -254,6 +255,7 @@ struct CliMeResponse {
     user: PublicUser,
     credential: CliCredentialResponse,
     session: Option<CliSessionResponse>,
+    billing: service_admission::AccountBillingState,
     credits: service_admission::CreditSummary,
 }
 
@@ -1211,6 +1213,7 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
     .map_err(database_error)?
     .ok_or_else(ApiError::unauthorized)?;
     let credits = service_admission::account_access(&state, &user.0).await?;
+    let billing = service_admission::account_billing_state(&state.database, &user.0).await?;
     let (total, admitted, in_progress) = sqlx::query_as::<_, (i64, i64, i64)>(
         "SELECT COUNT(*)::BIGINT,
                 COUNT(*) FILTER (WHERE state = 'admitted')::BIGINT,
@@ -1231,6 +1234,7 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
             auth_provider: BrowserAuthProvider::from_database(&user.4)?,
             display_name: user.1,
         },
+        billing,
         credits,
         share_stats: ShareStats {
             total,
@@ -1795,6 +1799,8 @@ async fn cli_me(
         }
     });
     let credits = service_admission::account_access(&state, &principal.user_id).await?;
+    let billing =
+        service_admission::account_billing_state(&state.database, &principal.user_id).await?;
     Ok(Json(CliMeResponse {
         user: PublicUser {
             id: user.0,
@@ -1809,6 +1815,7 @@ async fn cli_me(
             name: principal.credential_name,
         },
         session,
+        billing,
         credits,
     }))
 }

@@ -694,6 +694,10 @@ export interface components {
     schemas: {
         /** @enum {string} */
         AccessPool: "public" | "free" | "paid";
+        AccountBillingState: {
+            billing_status: components["schemas"]["BillingStatus"];
+            service_plan: components["schemas"]["ServicePlan"];
+        };
         AdmissionLimits: {
             /** Format: int64 */
             max_attestable_http_bytes: number;
@@ -766,6 +770,8 @@ export interface components {
             purchases: components["schemas"]["BillingPurchase"][];
         };
         /** @enum {string} */
+        BillingStatus: "active" | "review";
+        /** @enum {string} */
         BrowserAuthProvider: "github" | "google";
         ClaimCreditOfferResponse: {
             credits: components["schemas"]["CreditSummary"];
@@ -787,6 +793,7 @@ export interface components {
             name: string;
         };
         CliMeResponse: {
+            billing: components["schemas"]["AccountBillingState"];
             credential: components["schemas"]["CliCredentialResponse"];
             credits: components["schemas"]["CreditSummary"];
             session?: null | components["schemas"]["CliSessionResponse"];
@@ -851,7 +858,7 @@ export interface components {
             source_kind?: string | null;
         };
         /** @enum {string} */
-        CreditHistoryKind: "grant" | "debit";
+        CreditHistoryKind: "grant" | "debit" | "adjustment";
         CreditOffer: {
             /** Format: int64 */
             amount_bytes: number;
@@ -918,6 +925,7 @@ export interface components {
             share_url: string;
         };
         MeResponse: {
+            billing: components["schemas"]["AccountBillingState"];
             credits: components["schemas"]["CreditSummary"];
             share_stats: components["schemas"]["ShareStats"];
             user: components["schemas"]["PublicUser"];
@@ -1101,6 +1109,8 @@ export interface components {
         RefreshRequest: {
             refresh_token: string;
         };
+        /** @enum {string} */
+        ServicePlan: "free" | "paid";
         ShareResponse: {
             /** Format: int64 */
             admitted_at?: number | null;

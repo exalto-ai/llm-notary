@@ -1197,6 +1197,13 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
                     value_string(value, "/credential_kind"),
                     value_string(value, "/credential_name"),
                 );
+                if let Some(billing) = value.get("billing") {
+                    output.push_str(&format!(
+                        "\nplan {} ({})",
+                        value_string(billing, "/service_plan"),
+                        value_string(billing, "/billing_status"),
+                    ));
+                }
                 if let Some(credits) = value.get("credits") {
                     output.push_str(&format!(
                         "\ncredits {} available ({} included, {} additional)",
