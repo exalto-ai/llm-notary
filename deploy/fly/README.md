@@ -30,10 +30,10 @@ Tigris bucket for the API; the service accepts the standard `AWS_*` and
 `LLM_NOTARY_S3_*` variables used by self-hosted container deployments.
 
 CLI archives use a separate public Tigris bucket named
-`llm-notary-prod-downloads`. The web app maps that bucket to `/downloads`; do
-not make the private intake bucket public or reuse either bucket's credential
-for the other. The GitHub `production` environment holds the download bucket's
-`LLM_NOTARY_DOWNLOADS_ACCESS_KEY_ID` and
+`llm-notary-prod-downloads`. The web gateway proxies `/downloads` to that
+bucket's fixed public origin; do not make the private intake bucket public or
+reuse either bucket's credential for the other. The GitHub `production`
+environment holds the download bucket's `LLM_NOTARY_DOWNLOADS_ACCESS_KEY_ID` and
 `LLM_NOTARY_DOWNLOADS_SECRET_ACCESS_KEY`. No deployed Fly app needs that
 upload credential.
 

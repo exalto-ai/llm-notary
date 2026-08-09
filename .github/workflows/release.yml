@@ -216,12 +216,12 @@ jobs:
             --only-show-errors
           expected="$(cat "$RUNNER_TEMP/current")"
           actual="$(curl --fail --silent --show-error --location \
-            --retry 8 --retry-all-errors --retry-delay 2 \
+            --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
             "$PUBLIC_BUCKET_ORIGIN/cli/$CHANNEL")"
           test "$actual" = "$expected"
           if test "$CHANNEL" = latest; then
             website="$(curl --fail --silent --show-error --location \
-              --retry 8 --retry-all-errors --retry-delay 2 \
+              --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
               "https://llm-notary.exalto.ai/downloads/cli/$CHANNEL")"
             test "$website" = "$expected"
           fi
