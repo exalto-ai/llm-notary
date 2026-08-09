@@ -13,7 +13,7 @@ import { notifications } from '@mantine/notifications';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Activity, Archive, ArrowLeft, Check, CheckCircle2, CodeXml,
-  ChevronRight, CircleDot, Clock3, Copy, Database, FileCheck2, FileJson2, Gauge,
+  ChevronRight, CircleDot, Copy, Database, FileCheck2, FileJson2, Gauge,
   KeyRound, ListChecks, Moon, PanelLeft, Play, RefreshCw, Search, Download,
   Send, Settings, ShieldCheck, Sun, TerminalSquare, Unplug, XCircle
 } from 'lucide-react';
@@ -124,6 +124,24 @@ function StatusLabel({ state }: { state: string }) {
   return <span className={`status-label status-label--${stateTone(state)}`}>
     <span aria-hidden="true" />{state.replaceAll('_', ' ')}
   </span>;
+}
+
+function finalizationPhaseLabel(phase: string) {
+  switch (phase) {
+    case 'queued': return 'Waiting for proof worker';
+    case 'preparing': return 'Preparing proof inputs';
+    case 'proving': return 'Generating private proof';
+    case 'signing': return 'Requesting notary signature';
+    case 'packaging': return 'Building verified package';
+    case 'complete': return 'Verified package complete';
+    default: return phase.replaceAll('_', ' ');
+  }
+}
+
+function proofPercent(operation: Operation | OperationSummary) {
+  const proof = operation.progress.proof;
+  if (!proof?.bytes_total) return null;
+  return Math.min(100, Math.floor((proof.bytes_completed / proof.bytes_total) * 100));
 }
 
 function EmptyState({ icon: Icon = Archive, title, copy }: { icon?: typeof Archive; title: string; copy: string }) {
@@ -586,7 +604,8 @@ function FinalizationsView({ api, selectedId, navigate, fixture }: { api: LocalA
   const activeId = selectedId ?? operations.data?.pages[0]?.items[0]?.operation_id;
   const selectedOperation = useQuery({
     queryKey: ['operation', activeId], queryFn: () => api.operation(activeId!),
-    enabled: Boolean(activeId), refetchInterval: 3_000
+    enabled: Boolean(activeId),
+    refetchInterval: (query) => ['queued', 'running'].includes(query.state.data?.state ?? '') ? 1_000 : false
   });
   const items = operations.data?.pages.flatMap((page) => page.items) ?? [];
   const active = selectedOperation.data;
@@ -599,11 +618,36 @@ function FinalizationsView({ api, selectedId, navigate, fixture }: { api: LocalA
 }
 
 function OperationRow({ operation, active, onClick }: { operation: OperationSummary; active: boolean; onClick: () => void }) {
+  const percent = proofPercent(operation);
   return <UnstyledButton className={`operation-row ${active ? 'is-active' : ''}`} onClick={onClick} aria-label={`Inspect ${operation.operation_id}`}>
     <span className="operation-row-top"><StatusLabel state={operation.state} /><time>{formatDate(operation.created_at_unix_ms)}</time></span>
     <code>{operation.capture_id ?? 'Capture not reported'}</code>
-    <small>Attempt {operation.attempt} · {operation.operation_id}</small>
+    <small>{percent === null ? finalizationPhaseLabel(operation.progress.phase) : `${percent}% transcript authenticated`} · Attempt {operation.attempt}</small>
   </UnstyledButton>;
+}
+
+function ProofProgress({ operation }: { operation: Operation }) {
+  const proof = operation.progress.proof;
+  if (!proof?.bytes_total) {
+    if (!['queued', 'running'].includes(operation.state)) return null;
+    return <div className="proof-phase-status" role="status"><i className="proof-phase-marker" aria-hidden="true" /><div>
+      <b>{finalizationPhaseLabel(operation.progress.phase)}</b>
+      <span>Proof-work totals will appear when transcript authentication starts.</span>
+    </div></div>;
+  }
+  const percent = proofPercent(operation) ?? 0;
+  return <section className="proof-work" aria-label="Private proof progress">
+    <header><div><Text className="eyebrow">Authenticated transcript</Text>
+      <b>{formatBytes(proof.bytes_completed)} <span>/ {formatBytes(proof.bytes_total)}</span></b></div>
+      <strong>{percent}%</strong></header>
+    <div className="proof-work-track" role="progressbar" aria-label="Private transcript bytes authenticated"
+      aria-valuemin={0} aria-valuemax={proof.bytes_total} aria-valuenow={proof.bytes_completed}
+      aria-valuetext={`${formatBytes(proof.bytes_completed)} of ${formatBytes(proof.bytes_total)}`}>
+      <i style={{ width: `${percent}%` }} />
+    </div>
+    <footer><span>{proof.commitments_completed} / {proof.commitments_total} commitments sealed</span>
+      <span>{finalizationPhaseLabel(operation.progress.phase)}</span></footer>
+  </section>;
 }
 
 function OperationInspector({ api, operation, fixture }: { api: LocalApi; operation: Operation; fixture: boolean }) {
@@ -617,12 +661,11 @@ function OperationInspector({ api, operation, fixture }: { api: LocalApi; operat
     queryClient.invalidateQueries({ queryKey: ['events'] });
   }, onError: (error) => mutationError('Could not retry finalization', error) });
   const retryable = operation.retryable;
-  return <Paper className="operation-inspector"><Text className="eyebrow">Selected operation</Text><Group justify="space-between" align="flex-start"><div><Title order={2}>{operation.state === 'running' ? fixture ? 'Simulated proof generation' : 'Generating private proof' : operation.state.replaceAll('_', ' ')}</Title><Text className="mono-id">{operation.operation_id}</Text></div><StatusLabel state={operation.state} /></Group>
+  return <Paper className="operation-inspector"><Text className="eyebrow">Selected operation</Text><Group justify="space-between" align="flex-start"><div><Title order={2}>{operation.state === 'running' ? fixture ? 'Simulated proof generation' : finalizationPhaseLabel(operation.progress.phase) : operation.state.replaceAll('_', ' ')}</Title><Text className="mono-id">{operation.operation_id}</Text></div><StatusLabel state={operation.state} /></Group>
     {fixture && <div className="fixture-flow-note operation-fixture-note"><Database size={16} aria-hidden="true" /><Text><b>Simulation only.</b> No proof worker is running. Times are relative to when this preview was opened.</Text></div>}
-    <div className="operation-stage"><span className={['queued', 'running', 'finalized'].includes(operation.state) ? 'complete' : ''}>Queued</span><i /><span className={['running', 'finalized'].includes(operation.state) ? 'complete' : ''}>Proof generation</span><i /><span className={operation.state === 'finalized' ? 'complete' : ''}>Verified package</span></div>
+    <ProofProgress operation={operation} />
     <dl className="receipt-list"><Fact label="Capture" value={operation.capture_id ?? '—'} /><Fact label="Attempt" value={String(operation.attempt)} /><Fact label="Started" value={formatDate(operation.started_at_unix_ms)} /><Fact label="Finished" value={formatDate(operation.completed_at_unix_ms)} />{operation.failure_code && <Fact label="Safe failure code" value={operation.failure_code} />}</dl>
     <div className="attempt-history"><Text className="eyebrow">Attempt history</Text>{operation.attempt_history.length ? <ol className="history-list">{operation.attempt_history.map((attempt) => <li key={attempt.attempt}><div><Group gap="xs"><b>Attempt {attempt.attempt}</b><StatusLabel state={attempt.state} /></Group><Text>{formatDate(attempt.started_at_unix_ms)} → {formatDate(attempt.completed_at_unix_ms)}</Text>{attempt.failure_code && <code>{attempt.failure_code}</code>}</div></li>)}</ol> : <Text className="empty-copy">No proof attempt has started yet.</Text>}</div>
-    {operation.state === 'running' && <div className="no-progress-note"><Clock3 size={16} /><Text>Proof generation can take several minutes. The service does not report a meaningful percentage.</Text></div>}
     {retryable && <Button leftSection={<RefreshCw size={15} />} loading={retry.isPending} onClick={() => retry.mutate()}>Retry finalization</Button>}
   </Paper>;
 }

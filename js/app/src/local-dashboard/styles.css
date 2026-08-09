@@ -116,14 +116,23 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'DM Mono', ui-monospace
 .operations-layout { display: grid; gap: 24px; grid-template-columns: minmax(600px, 1.2fr) minmax(320px, .8fr); margin-top: 26px; }
 .operation-inspector { background: var(--raised); border: 1px solid var(--rule); padding: 24px; }
 .operation-inspector h2 { font-size: 26px; letter-spacing: -.055em; margin: 20px 0 8px; text-transform: capitalize; }
-.operation-stage { align-items: center; display: grid; grid-template-columns: auto 1fr auto 1fr auto; margin: 38px 0; }
-.operation-stage span { color: var(--muted); font-family: 'DM Mono', monospace; font-size: 9px; text-align: center; text-transform: uppercase; }
-.operation-stage span.complete { color: var(--accent-ink); font-weight: 700; }
-.operation-stage i { border-top: 1px solid var(--rule); }
+.proof-work { border-bottom: 1px solid var(--rule); border-top: 1px solid var(--rule); margin: 25px 0; padding: 16px 0 13px; }
+.proof-work header { align-items: end; display: flex; justify-content: space-between; }
+.proof-work header b { display: block; font: 500 16px 'DM Mono', monospace; letter-spacing: -.035em; margin-top: 6px; }
+.proof-work header b span { color: var(--muted); font-weight: 400; }
+.proof-work header strong { font: 500 26px 'DM Mono', monospace; letter-spacing: -.045em; }
+.proof-work-track { background: var(--subtle); border: 1px solid var(--rule); height: 10px; margin: 13px 0 10px; overflow: hidden; }
+.proof-work-track i { background: var(--accent); display: block; height: 100%; transition: width 140ms ease-out; }
+.proof-work footer { color: var(--muted); display: flex; font: 9px 'DM Mono', monospace; justify-content: space-between; text-transform: uppercase; }
+.proof-phase-status { align-items: center; border-bottom: 1px solid var(--rule); border-top: 1px solid var(--rule); display: flex; gap: 11px; margin: 25px 0; padding: 15px 0; }
+.proof-phase-marker { border: 1px solid var(--accent); display: block; height: 8px; width: 8px; }
+.proof-phase-status b, .proof-phase-status span { display: block; }
+.proof-phase-status b { font-size: 12px; }
+.proof-phase-status span { color: var(--muted); font-size: 10px; margin-top: 3px; }
 .receipt-list { display: grid; gap: 14px; grid-template-columns: repeat(2, 1fr); margin: 0 0 24px; }
 .attempt-history { border-top: 1px solid var(--rule); margin: 22px 0; padding-top: 20px; }
-.no-progress-note, .consent-copy, .safe-note { align-items: flex-start; background: var(--subtle); display: flex; gap: 10px; margin: 18px 0; padding: 13px; }
-.no-progress-note p, .consent-copy p { color: var(--muted); font-size: 11px; line-height: 1.55; }
+.consent-copy, .safe-note { align-items: flex-start; background: var(--subtle); display: flex; gap: 10px; margin: 18px 0; padding: 13px; }
+.consent-copy p { color: var(--muted); font-size: 11px; line-height: 1.55; }
 
 .trace-layout { display: grid; gap: 24px; grid-template-columns: minmax(290px, .65fr) minmax(600px, 1.35fr); margin-top: 26px; }
 .trace-list { background: var(--raised); border: 1px solid var(--rule); list-style: none; margin-bottom: 0; margin-top: 0; padding: 0; }

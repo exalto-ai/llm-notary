@@ -59,11 +59,14 @@ that deterministic incompatibility.
 
 ## Monitor and retry finalization
 
-The operation queue shows state, capture identifier, attempt, and enqueue time.
-The inspector shows the known stage, timestamps, and `attempt_history`, with
-one durable record for each worker attempt. Proof generation may take minutes.
-The dashboard does not show a percentage because the service does not report
-one.
+The operation queue shows state, capture identifier, attempt, enqueue time, and
+the current finalization milestone. The inspector shows timestamps and
+`attempt_history`, with one durable record for each worker attempt. Proof
+generation may take minutes and usually dominates finalization, so the UI does
+not divide the milestones into equal segments. While proving, its bar shows the
+actual ratio of authenticated private-transcript bytes and a separate completed
+commitment count. Signing and packaging remain named milestones rather than
+invented percentages.
 
 Failed and restart-interrupted operations show only a safe failure code.
 **Retry finalization** appears only when the service marks the operation

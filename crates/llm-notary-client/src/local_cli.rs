@@ -139,7 +139,7 @@ enum CliCommand {
         command: CapturesCommand,
     },
     /// Queue proof generation for a capture.
-    Finalize(IdArgs),
+    Finalize(FinalizeArgs),
     /// List, inspect, or retry daemon-owned operations.
     Operations {
         #[command(subcommand)]
@@ -216,6 +216,16 @@ enum NotariesCommand {
 struct IdArgs {
     /// Opaque capture or operation identifier.
     id: String,
+}
+
+#[derive(Args, Debug)]
+struct FinalizeArgs {
+    /// Opaque capture identifier.
+    id: String,
+
+    /// Follow the operation and print proof-work progress until it finishes.
+    #[arg(long)]
+    wait: bool,
 }
 
 #[derive(Args, Debug)]
@@ -389,7 +399,7 @@ async fn run_parsed(
     } else {
         client.credentials = load_admin_credentials(&config, cli.admin_password_file.as_deref())?;
     }
-    let value = execute(&client, &cli.command, stderr).await?;
+    let value = execute(&client, &cli.command, stderr, !cli.json).await?;
     let output = if cli.json {
         serde_json::to_string_pretty(&value)
             .map_err(|_| CliError::new(EXIT_ERROR, "could not encode command output"))?
@@ -694,6 +704,7 @@ async fn execute(
     client: &AdminClient,
     command: &CliCommand,
     stderr: &mut dyn io::Write,
+    show_progress: bool,
 ) -> Result<Value, CliError> {
     match command {
         CliCommand::Status => client.request(Method::GET, "/v1/status", &[]).await,
@@ -710,13 +721,30 @@ async fn execute(
         },
         CliCommand::Finalize(args) => {
             validate_identifier(&args.id, "cap-")?;
-            client
+            let mut response = client
                 .request(
                     Method::POST,
                     &format!("/v1/captures/{}/finalizations", args.id),
                     &[],
                 )
-                .await
+                .await?;
+            if args.wait {
+                let operation_id =
+                    required_string(&response, "/operation/operation_id")?.to_owned();
+                let operation = wait_for_finalization(
+                    client,
+                    &operation_id,
+                    stderr,
+                    show_progress,
+                    response.get("operation").cloned(),
+                )
+                .await?;
+                response
+                    .as_object_mut()
+                    .ok_or_else(incomplete_page_error)?
+                    .insert("operation".to_owned(), operation);
+            }
+            Ok(response)
         }
         CliCommand::Operations { command } => match command {
             OperationsCommand::List(args) => {
@@ -787,6 +815,61 @@ async fn execute(
             open_dashboard(client.origin.as_str())?;
             Ok(json!({ "opened": client.origin.as_str() }))
         }
+    }
+}
+
+async fn wait_for_finalization(
+    client: &AdminClient,
+    operation_id: &str,
+    stderr: &mut dyn io::Write,
+    show_progress: bool,
+    mut operation: Option<Value>,
+) -> Result<Value, CliError> {
+    let mut last_progress = String::new();
+    loop {
+        let current = match operation.take() {
+            Some(operation) => operation,
+            None => {
+                client
+                    .request(Method::GET, &format!("/v1/operations/{operation_id}"), &[])
+                    .await?
+            }
+        };
+        let state = required_string(&current, "/state")?;
+        let progress = operation_progress(&current);
+        if show_progress && progress != last_progress {
+            writeln!(stderr, "{progress}").ok();
+            last_progress = progress;
+        }
+        if ["finalized", "failed", "interrupted"].contains(&state) {
+            return Ok(current);
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+fn operation_progress(value: &Value) -> String {
+    let phase = value_string(value, "/progress/phase");
+    if phase == "proving" {
+        let bytes_completed = value_i64(value, "/progress/proof/bytes_completed");
+        let bytes_total = value_i64(value, "/progress/proof/bytes_total");
+        let commitments_completed = value_i64(value, "/progress/proof/commitments_completed");
+        let commitments_total = value_i64(value, "/progress/proof/commitments_total");
+        if bytes_total > 0 && commitments_total > 0 {
+            return format!(
+                "Private proof: {} / {} authenticated; {commitments_completed} / {commitments_total} commitments sealed",
+                format_bytes(bytes_completed),
+                format_bytes(bytes_total),
+            );
+        }
+    }
+    match phase.as_str() {
+        "queued" => "Finalization queued".to_owned(),
+        "preparing" => "Preparing proof inputs".to_owned(),
+        "signing" => "Requesting notary signature".to_owned(),
+        "packaging" => "Building verified package".to_owned(),
+        "complete" => "Verified package complete".to_owned(),
+        _ => format!("Finalization {phase}"),
     }
 }
 
@@ -1051,9 +1134,11 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             value_string(value, "/capture/request_bytes"),
             value_string(value, "/capture/response_bytes"),
         )),
-        CliCommand::Finalize(_) => Ok(format!(
+        CliCommand::Finalize(args) => Ok(format!(
             "{} operation {} ({})",
-            if value
+            if args.wait {
+                "Finalization"
+            } else if value
                 .get("deduplicated")
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
@@ -1069,21 +1154,23 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             command: OperationsCommand::List(_),
         } => list_lines(value, "/items", |item| {
             format!(
-                "{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}",
                 value_string(item, "/operation_id"),
                 value_string(item, "/kind"),
                 value_string(item, "/state"),
+                value_string(item, "/progress/phase"),
                 value_string(item, "/capture_id"),
             )
         }),
         CliCommand::Operations {
             command: OperationsCommand::Show(_) | OperationsCommand::Retry(_),
         } => Ok(format!(
-            "operation {}\nkind {}\ncapture {}\nstate {}\nattempt {}",
+            "operation {}\nkind {}\ncapture {}\nstate {}\nprogress {}\nattempt {}",
             value_string(value, "/operation_id"),
             value_string(value, "/kind"),
             value_string(value, "/capture_id"),
             value_string(value, "/state"),
+            operation_progress(value),
             value_string(value, "/attempt"),
         )),
         CliCommand::Traces {
@@ -1246,6 +1333,7 @@ mod tests {
             ],
             vec!["llm-notary", "captures", "show", "cap-example"],
             vec!["llm-notary", "finalize", "cap-example"],
+            vec!["llm-notary", "finalize", "cap-example", "--wait"],
             vec!["llm-notary", "operations", "list"],
             vec!["llm-notary", "operations", "list", "--all"],
             vec!["llm-notary", "operations", "show", "op-example"],
@@ -1330,11 +1418,16 @@ mod tests {
 
     #[test]
     fn human_and_json_output_are_deterministic() {
-        let command = CliCommand::Finalize(IdArgs {
+        let command = CliCommand::Finalize(FinalizeArgs {
             id: "cap-example".to_owned(),
+            wait: false,
         });
         let value = json!({
-            "operation": { "operation_id": "op-example", "state": "queued" },
+            "operation": {
+                "operation_id": "op-example",
+                "state": "queued",
+                "progress": { "phase": "queued", "updated_at_unix_ms": 1 }
+            },
             "deduplicated": false
         });
         assert_eq!(
@@ -1343,7 +1436,7 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string_pretty(&value).unwrap(),
-            "{\n  \"deduplicated\": false,\n  \"operation\": {\n    \"operation_id\": \"op-example\",\n    \"state\": \"queued\"\n  }\n}"
+            "{\n  \"deduplicated\": false,\n  \"operation\": {\n    \"operation_id\": \"op-example\",\n    \"progress\": {\n      \"phase\": \"queued\",\n      \"updated_at_unix_ms\": 1\n    },\n    \"state\": \"queued\"\n  }\n}"
         );
 
         let connected = json!({
@@ -1364,6 +1457,27 @@ mod tests {
         assert_eq!(
             human_output(&CliCommand::Logout, &json!({ "signed_in": false })).unwrap(),
             "Disconnected from LLM Notary. Future hosted sessions use public access."
+        );
+    }
+
+    #[test]
+    fn proof_progress_reports_concrete_work_without_an_elapsed_time_guess() {
+        let value = json!({
+            "state": "running",
+            "progress": {
+                "phase": "proving",
+                "proof": {
+                    "bytes_completed": 614_400,
+                    "bytes_total": 1_258_291,
+                    "commitments_completed": 4,
+                    "commitments_total": 10
+                }
+            }
+        });
+
+        assert_eq!(
+            operation_progress(&value),
+            "Private proof: 600.0 KiB / 1.2 MiB authenticated; 4 / 10 commitments sealed"
         );
     }
 

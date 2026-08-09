@@ -141,6 +141,15 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('queued', { exact: true }).first()).toBeVisible();
   });
 
+  test('shows concrete proof work instead of equal-sized stage progress', async () => {
+    renderDashboard('/finalizations/op-finalize-safety-review');
+    await expect.element(page.getByRole('progressbar', { name: 'Private transcript bytes authenticated' }))
+      .toHaveAttribute('aria-valuenow', '612352');
+    await expect.element(page.getByText('598.0 KB / 1.2 MB', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('4 / 10 commitments sealed', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('47%', { exact: true })).toBeVisible();
+  });
+
   test('explains why a provider authentication error cannot be finalized', async () => {
     renderDashboard('/captures/cap-20260728-auth-error');
     await expect.element(page.getByText('Provider response cannot be finalized')).toBeVisible();

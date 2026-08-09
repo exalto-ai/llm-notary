@@ -19,9 +19,10 @@ use crate::{
 };
 #[cfg(feature = "cli")]
 use crate::{
-    DeferredBundle,
+    DeferredBundle, FinalizationPhase, FinalizationProgress, FinalizationProgressObserver,
     archive::{build_trace_package_archive, create_staging_directory},
-    finalize_deferred_bundle_to, finalize_deferred_bundle_to_admitted, make_capture,
+    finalize_deferred_bundle_to_admitted_with_progress, finalize_deferred_bundle_to_with_progress,
+    make_capture,
     notary_directory::NotaryEndpoint,
     vault::Vault,
 };
@@ -109,15 +110,43 @@ pub async fn finalize_bundle(
     max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
 ) -> Result<PathBuf> {
+    finalize_bundle_with_progress(
+        bundle_path,
+        output_path,
+        trusted_notary_key,
+        vault,
+        notary,
+        max_attestable_http_bytes,
+        max_frame_bytes,
+        &|_| {},
+    )
+    .await
+}
+
+/// Completes a deferred proof, reports milestones, and atomically writes it.
+#[cfg(feature = "cli")]
+#[allow(clippy::too_many_arguments)]
+pub async fn finalize_bundle_with_progress(
+    bundle_path: &Path,
+    output_path: &Path,
+    trusted_notary_key: &[u8],
+    vault: &Vault,
+    notary: &NotaryEndpoint,
+    max_attestable_http_bytes: usize,
+    max_frame_bytes: usize,
+    progress: FinalizationProgressObserver<'_>,
+) -> Result<PathBuf> {
     let bundle = DeferredBundle::load(bundle_path, vault)?;
-    let proof = finalize_deferred_bundle_to(
+    let proof = finalize_deferred_bundle_to_with_progress(
         notary,
         &bundle,
         trusted_notary_key,
         max_attestable_http_bytes,
         max_frame_bytes,
+        progress,
     )
     .await?;
+    progress(FinalizationProgress::Phase(FinalizationPhase::Packaging));
     let capture = make_capture(
         &proof,
         bundle.capture_id().to_owned(),
@@ -139,16 +168,46 @@ pub async fn finalize_bundle_admitted(
     max_frame_bytes: usize,
     admission_ticket: &str,
 ) -> Result<PathBuf> {
+    finalize_bundle_admitted_with_progress(
+        bundle_path,
+        output_path,
+        trusted_notary_key,
+        vault,
+        notary,
+        max_attestable_http_bytes,
+        max_frame_bytes,
+        admission_ticket,
+        &|_| {},
+    )
+    .await
+}
+
+/// Completes admitted finalization, reports milestones, and writes the package.
+#[cfg(feature = "cli")]
+#[allow(clippy::too_many_arguments)]
+pub async fn finalize_bundle_admitted_with_progress(
+    bundle_path: &Path,
+    output_path: &Path,
+    trusted_notary_key: &[u8],
+    vault: &Vault,
+    notary: &NotaryEndpoint,
+    max_attestable_http_bytes: usize,
+    max_frame_bytes: usize,
+    admission_ticket: &str,
+    progress: FinalizationProgressObserver<'_>,
+) -> Result<PathBuf> {
     let bundle = DeferredBundle::load(bundle_path, vault)?;
-    let proof = finalize_deferred_bundle_to_admitted(
+    let proof = finalize_deferred_bundle_to_admitted_with_progress(
         notary,
         &bundle,
         trusted_notary_key,
         max_attestable_http_bytes,
         max_frame_bytes,
         admission_ticket,
+        progress,
     )
     .await?;
+    progress(FinalizationProgress::Phase(FinalizationPhase::Packaging));
     let capture = make_capture(
         &proof,
         bundle.capture_id().to_owned(),
