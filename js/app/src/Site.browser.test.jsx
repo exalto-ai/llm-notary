@@ -135,6 +135,32 @@ describe('hosted site', () => {
     await expect.element(appearance.getByRole('radio', { name: 'dark' })).toBeVisible();
   });
 
+  test('collapses Dashboard navigation into a mobile dropdown', async () => {
+    await page.viewport(390, 844);
+    render(<Dashboard
+      user={{ github_login: 'fixture-user', credits: null, share_stats: { total: 3, admitted: 2, in_progress: 1 } }}
+      view="credits"
+      theme="light"
+      onThemeChange={() => {}}
+      onAccountDeleted={() => {}}
+      loadCliSessions={async () => ({ items: [], next_cursor: null })}
+      loadMyShares={async () => ({ items: [], next_cursor: null })}
+      loadCreditOffers={async () => []}
+      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+      loadBillingPurchases={async () => []}
+    />);
+
+    const navigation = page.getByRole('navigation', { name: 'Dashboard navigation' });
+    const trigger = navigation.getByRole('button', { name: 'Dashboard menu: Credits' });
+    await expect.element(trigger).toHaveAttribute('aria-expanded', 'false');
+    await trigger.click();
+    await expect.element(trigger).toHaveAttribute('aria-expanded', 'true');
+    await expect.element(navigation.getByRole('link', { name: /^Traces\s*3$/ })).toBeVisible();
+    await expect.element(navigation.getByRole('link', { name: 'Credits' })).toHaveAttribute('aria-current', 'page');
+    fireEvent.keyDown(window, { key: 'Escape' });
+    await expect.element(trigger).toHaveAttribute('aria-expanded', 'false');
+  });
+
   test('discards an old credit-history page after claiming an offer', async () => {
     let rootRequests = 0;
     let resolveOldPage;
