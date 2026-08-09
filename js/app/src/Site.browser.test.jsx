@@ -52,6 +52,7 @@ describe('hosted site', () => {
     const download = page.getByRole('link', { name: /Download for macOS/ });
     await expect.element(download).toHaveAttribute('href', '/downloads/cli/builds/build-123/LLM-Notary-macos-arm64.dmg');
     await expect.element(download).toHaveAttribute('download', 'LLM-Notary-macos-arm64.dmg');
+    await expect.element(page.getByText('Apple silicon · macOS 12+')).not.toBeInTheDocument();
     await expect.element(page.getByRole('link', { name: 'build on the LLM Notary stack' })).toHaveAttribute('href', '#/docs/getting-started');
     expect(document.querySelector('.hero-developer-path')?.textContent).toBe('or, build on the LLM Notary stack');
     await expect.element(page.getByRole('link', { name: 'Get started' })).not.toBeInTheDocument();
@@ -107,6 +108,19 @@ describe('hosted site', () => {
     await expect.element(page.getByRole('link', { name: 'Continue with GitHub' })).toBeVisible();
     await expect.element(page.getByRole('link', { name: 'Continue with Google' })).not.toBeInTheDocument();
     expect(document.querySelectorAll('[data-auth-provider-icon="github"]')).toHaveLength(1);
+  });
+
+  test('shows progress while handing off to an auth provider', async () => {
+    render(<SignInPage loadProviders={async () => ({ google: true, github: true })} />);
+
+    const google = page.getByRole('link', { name: 'Continue with Google' });
+    await expect.element(google).toBeVisible();
+    google.element().addEventListener('click', (event) => event.preventDefault());
+    await google.click();
+
+    await expect.element(page.getByRole('link', { name: 'Connecting to Google…' })).toHaveAttribute('aria-busy', 'true');
+    await expect.element(page.getByRole('link', { name: 'Continue with GitHub' })).toHaveAttribute('aria-disabled', 'true');
+    expect(document.querySelectorAll('.auth-provider-progress i')).toHaveLength(3);
   });
 
   test('offers Auto, Light, and Dark in Dashboard account settings', async () => {
