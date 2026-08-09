@@ -1,5 +1,5 @@
 #!/bin/sh
-# Install the latest LLM Notary CLI for macOS or Linux.
+# Install the latest LLM Notary CLI for Apple silicon macOS or Linux.
 set -eu
 
 download_root="${LLM_NOTARY_DOWNLOAD_ROOT:-https://llm-notary.exalto.ai/downloads/cli}"
@@ -13,17 +13,25 @@ case "$channel" in
     ;;
 esac
 
-case "$(uname -s)" in
+system="$(uname -s)"
+machine="$(uname -m)"
+
+case "$system" in
   Darwin) platform="darwin" ;;
   Linux) platform="linux" ;;
   *) echo "LLM Notary supports macOS and Linux through this installer." >&2; exit 1 ;;
 esac
 
-case "$(uname -m)" in
+case "$machine" in
   x86_64|amd64) architecture="x86_64" ;;
   arm64|aarch64) architecture="aarch64" ;;
-  *) echo "Unsupported CPU architecture: $(uname -m)" >&2; exit 1 ;;
+  *) echo "Unsupported CPU architecture: $machine" >&2; exit 1 ;;
 esac
+
+if [ "$platform" = "darwin" ] && [ "$architecture" != "aarch64" ]; then
+  echo "LLM Notary supports Apple silicon Macs; Intel Macs are not supported." >&2
+  exit 1
+fi
 
 pointer="$(curl -fsSL "$download_root/$channel")"
 case "$pointer" in

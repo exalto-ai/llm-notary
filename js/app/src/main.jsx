@@ -376,7 +376,7 @@ export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) 
       <HeroSignalField />
       <h1>Verifiable intelligence</h1>
       <p>Privacy-preserving LLM trace packages for open research and independent verification.</p>
-      <div className="hero-actions"><MacosDownloadLink loadPointer={loadPointer} /><p className="hero-developer-path">Or, <a href="#/docs/getting-started">build on the LLM Notary stack</a> with the CLI and local service.</p></div>
+      <div className="hero-actions"><MacosDownloadLink loadPointer={loadPointer} /><p className="hero-developer-path">or, <a href="#/docs/getting-started">build on the LLM Notary stack</a></p></div>
     </section>
     <MotionStudies />
     <VerificationArchitecture />
@@ -485,7 +485,7 @@ const docPages = {
       { heading: 'Install the macOS app', body: 'On the home page, choose Download for macOS. Open the downloaded DMG, move LLM Notary to Applications, then launch it. The app guides first-time setup and supervises its bundled local service.' },
       { heading: 'System requirements', items: ['A Mac with Apple silicon (M1 or newer).', 'macOS 12 Monterey or later.', 'A supported model provider account when you are ready to capture a real interaction.'] },
       { heading: 'What the app manages', body: 'The app configures capture protection, helps connect a provider or coding tool, starts and stops its bundled `llm-notaryd`, and embeds the local capture workspace. Provider credentials stay in the tool that sends the model request; the app does not ask for or store them.' },
-      { heading: 'Install the CLI and local service', body: 'The shell installer supports macOS and Linux on x86-64 and ARM64. It selects the complete `latest` website build and checks the archive against its published SHA-256 value. This is a moving pre-release pointer. The checksum detects corruption but is not an independent signature because it shares the archive publisher.', code: installCommand },
+      { heading: 'Install the CLI and local service', body: 'The shell installer supports Apple silicon Macs and x86-64 or ARM64 Linux systems. It selects the complete `latest` website build and checks the archive against its published SHA-256 value. This is a moving pre-release pointer. The checksum detects corruption but is not an independent signature because it shares the archive publisher.', code: installCommand },
       { heading: 'Build from source', body: 'To build the same two local programs yourself, use Rust 1.95.0 and the repository toolchain file.', code: sourceInstallCommand },
       { heading: 'Programs', body: '`llm-notaryd` is the long-running local service. `llm-notary` is its short-lived REST client. The website archive installs both together.' },
       { heading: 'Start the service', code: 'llm-notaryd' },
