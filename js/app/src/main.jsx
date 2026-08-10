@@ -1,9 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@fontsource-variable/instrument-sans';
-import '@fontsource-variable/space-grotesk';
-import '@fontsource/dm-mono/400.css';
-import '@fontsource/dm-mono/500.css';
+import '@fontsource/ibm-plex-mono/latin-400.css';
+import '@fontsource/ibm-plex-mono/latin-ext-400.css';
+import '@fontsource/ibm-plex-mono/latin-500.css';
+import '@fontsource/ibm-plex-mono/latin-ext-500.css';
 import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Input } from '@/components/ui/input';

@@ -17,7 +17,7 @@
 .trust-columns article > span,
 .trust-columns article > b {
   color: var(--muted);
-  font: 500 10px 'DM Mono', monospace;
+  font: 500 10px 'IBM Plex Mono', monospace;
   letter-spacing: .06em;
   text-transform: uppercase;
 }

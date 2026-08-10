@@ -23,7 +23,7 @@
 .legal-updated {
   margin: 32px 0 62px;
   color: var(--muted);
-  font: 11px/1.4 'DM Mono', monospace;
+  font: 11px/1.4 'IBM Plex Mono', monospace;
   text-transform: uppercase;
   letter-spacing: .05em;
 }

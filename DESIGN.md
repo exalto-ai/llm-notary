@@ -36,16 +36,16 @@ colors:
   dark-inverse-accent: "#B9D8FF"
 typography:
   display:
-    fontFamily: "Space Grotesk"
+    fontFamily: "Instrument Sans Variable"
     fontWeight: 600
     letterSpacing: "-0.05em"
     lineHeight: 0.93
   interface:
-    fontFamily: "Instrument Sans"
+    fontFamily: "Instrument Sans Variable"
     fontWeight: 400
     lineHeight: 1.45
   data:
-    fontFamily: "DM Mono"
+    fontFamily: "IBM Plex Mono"
     fontWeight: 500
     letterSpacing: "0.05em"
     lineHeight: 1.3
@@ -105,11 +105,10 @@ Do not put black text on a saturated blue control. Do not darken text just to ma
 
 ## Typography
 
-Use three roles, each with a narrow job:
+Use two families across three roles, each with a narrow job:
 
-- **Space Grotesk** is the display face. Use it for a page thesis, an inspector record name, and a small number of section headings. Set it tightly and confidently; it should never be used for dense operational tables.
-- **Instrument Sans** is the interface and reading face. Use it for navigation, controls, labels that a person reads in sequence, body copy, and buttons.
-- **DM Mono** is the evidence face. Use it for identifiers, status, provider/model strings, timestamps, field names, counts, code, and compact contextual labels.
+- **Instrument Sans Variable** is both the display and interface face. Use scale, weight, and spacing—not a second sans-serif—to distinguish a page thesis or record title from navigation, controls, body copy, and buttons. It should never be set like dense operational data.
+- **IBM Plex Mono** is the evidence face. Use it for identifiers, status, provider/model strings, timestamps, field names, counts, code, and compact contextual labels.
 
 Typical sizes:
 
@@ -150,7 +149,7 @@ Construct grids from one outer 1px `rule` and one 1px internal rule between adja
 
 ### Brand and navigation
 
-Use the rounded-square pen mark on the blue action background with a light pen. Preserve visible breathing room around the pen and increase it further at favicon sizes. The public wordmark is `LLM Notary` in Space Grotesk. The installed local workspace does not repeat the mark or product name in its header; the browser title is simply `LLM Notary`.
+Use the rounded-square pen mark on the blue action background with a light pen. Preserve visible breathing room around the pen and increase it further at favicon sizes. The public wordmark is `LLM Notary` in Instrument Sans Variable. The installed local workspace does not repeat the mark or product name in its header; the browser title is simply `LLM Notary`.
 
 Navigation is a single horizontal band. Active items use an indigo bottom rule or left rule, never a pill. A count may appear in mono when it changes a decision. Do not add a second sidebar when the top navigation already exposes the relevant destinations.
 
@@ -206,7 +205,7 @@ Footer links remain visually quiet on pointer hover: no underline, color flash, 
 
 Motion explains an evidence transition; it does not make the product feel alive.
 
-- The landing hero may use the animated grid, but the animation is clipped to the hero and ends at that section boundary. The hero thesis sits below center but with roughly 15vh of space beneath it—low enough to preserve the signal field above, high enough that it does not feel pinned to the bottom. At display scale, use Space Grotesk around `-0.05em`; tighter tracking makes “Verifiable intelligence” visibly cramped.
+- The landing hero may use the animated grid, but the animation is clipped to the hero and ends at that section boundary. The hero thesis sits below center but with roughly 15vh of space beneath it—low enough to preserve the signal field above, high enough that it does not feel pinned to the bottom. At display scale, use Instrument Sans Variable around `-0.025em`; tighter tracking makes “Verifiable intelligence” visibly cramped.
 - The relay diagram must not inherit the hero grid. It presents only the motion needed to explain the request, notary, provider, and evidence path.
 - The relay diagram keeps its data flow, but packets move in one deliberate pass and then rest. Avoid infinite typewriter effects, spinning controls, or repeated sealing theatrics.
 - Selection, filters, menus, and dialogs may fade or change surface color over 120–160ms. They do not spring, scale, or float.

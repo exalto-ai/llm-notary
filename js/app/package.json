@@ -26,8 +26,7 @@
   },
   "dependencies": {
     "@fontsource-variable/instrument-sans": "^5.3.0",
-    "@fontsource-variable/space-grotesk": "^5.3.0",
-    "@fontsource/dm-mono": "^5.3.0",
+    "@fontsource/ibm-plex-mono": "^5.3.0",
     "@mantine/core": "^9.5.0",
     "@mantine/hooks": "^9.5.0",
     "@mantine/notifications": "^9.5.0",

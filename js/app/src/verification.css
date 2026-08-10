@@ -22,7 +22,7 @@
 .verification-intro h1 {
   max-width: 880px;
   margin: 13px 0 17px;
-  font-family: 'Space Grotesk', Arial, sans-serif;
+  font-family: 'Instrument Sans Variable', Arial, sans-serif;
   font-size: clamp(42px, 6vw, 76px);
   font-weight: 600;
   line-height: .94;
@@ -55,7 +55,7 @@
   max-width: 470px;
   margin: 15px 0 16px;
   color: var(--attention);
-  font-family: 'Space Grotesk', Arial, sans-serif;
+  font-family: 'Instrument Sans Variable', Arial, sans-serif;
   font-size: clamp(26px, 3vw, 39px);
   line-height: 1.02;
   letter-spacing: -.045em;
@@ -103,7 +103,7 @@
 .verification-drop span,
 .verification-drop small {
   color: var(--muted);
-  font: 500 10px/1.4 'DM Mono', monospace;
+  font: 500 10px/1.4 'IBM Plex Mono', monospace;
   letter-spacing: .025em;
   text-transform: uppercase;
 }
@@ -111,7 +111,7 @@
 .verification-drop strong {
   margin: 9px 0 18px;
   overflow-wrap: anywhere;
-  font-family: 'Space Grotesk', Arial, sans-serif;
+  font-family: 'Instrument Sans Variable', Arial, sans-serif;
   font-size: clamp(21px, 2.3vw, 30px);
   line-height: 1.05;
 }
@@ -188,7 +188,7 @@
 .verification-result--error h2,
 .verification-result--success h2 {
   margin: 11px 0 10px;
-  font-family: 'Space Grotesk', Arial, sans-serif;
+  font-family: 'Instrument Sans Variable', Arial, sans-serif;
   font-size: clamp(30px, 4vw, 48px);
   line-height: 1;
   letter-spacing: -.045em;
@@ -220,7 +220,7 @@
   padding: 7px 9px;
   border: 1px solid var(--action);
   color: var(--action-dark);
-  font: 500 10px/1 'DM Mono', monospace;
+  font: 500 10px/1 'IBM Plex Mono', monospace;
   letter-spacing: .04em;
   text-transform: uppercase;
 }

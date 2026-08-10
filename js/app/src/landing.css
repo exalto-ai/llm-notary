@@ -30,7 +30,7 @@
   padding: 7px 0;
   border-bottom: 1px solid #444;
   color: #b6b6b6;
-  font: 10px 'DM Mono', monospace;
+  font: 10px 'IBM Plex Mono', monospace;
 }
 
 .receipt-contents i {
@@ -50,7 +50,7 @@
   margin: 0;
   overflow: hidden;
   color: var(--body-copy-soft);
-  font: 12px/1.5 'Instrument Sans', Arial, sans-serif;
+  font: 12px/1.5 'Instrument Sans Variable', Arial, sans-serif;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }

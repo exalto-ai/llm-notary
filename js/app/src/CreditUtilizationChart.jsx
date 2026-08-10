@@ -45,9 +45,9 @@ export default function CreditUtilizationChart({ credits, formatBytes, historyDe
       <div className="dashboard-utilization-plot" role="img" aria-label={summary}>
         <ResponsiveContainer width="100%" height={190}>
           <BarChart data={data} margin={{ top: 14, right: 8, bottom: 0, left: 0 }} barCategoryGap="24%" accessibilityLayer>
-            <XAxis type="category" dataKey="key" ticks={axisTicks} tickFormatter={(key) => axisLabels.get(key) || key} axisLine={false} tickLine={false} interval={0} fontSize={10} fill="var(--muted)" fontFamily="'DM Mono', monospace" />
-            <YAxis type="number" domain={[0, maxMb > 0 ? 'auto' : 1]} axisLine={false} tickLine={false} width={64} tickFormatter={(value) => formatMb(Number(value))} fontSize={9} fill="var(--muted)" fontFamily="'DM Mono', monospace" />
-            <Tooltip cursor={{ fill: 'var(--line-soft)' }} labelFormatter={(_, payload) => payload?.[0]?.payload?.fullLabel || ''} formatter={(value) => [formatMb(Number(value)), 'Utilization']} contentStyle={{ border: '1px solid var(--line)', borderRadius: 0, background: 'var(--white)', boxShadow: 'none', fontSize: 11, fontFamily: "'DM Mono', monospace" }} />
+            <XAxis type="category" dataKey="key" ticks={axisTicks} tickFormatter={(key) => axisLabels.get(key) || key} axisLine={false} tickLine={false} interval={0} fontSize={10} fill="var(--muted)" fontFamily="'IBM Plex Mono', monospace" />
+            <YAxis type="number" domain={[0, maxMb > 0 ? 'auto' : 1]} axisLine={false} tickLine={false} width={64} tickFormatter={(value) => formatMb(Number(value))} fontSize={9} fill="var(--muted)" fontFamily="'IBM Plex Mono', monospace" />
+            <Tooltip cursor={{ fill: 'var(--line-soft)' }} labelFormatter={(_, payload) => payload?.[0]?.payload?.fullLabel || ''} formatter={(value) => [formatMb(Number(value)), 'Utilization']} contentStyle={{ border: '1px solid var(--line)', borderRadius: 0, background: 'var(--white)', boxShadow: 'none', fontSize: 11, fontFamily: "'IBM Plex Mono', monospace" }} />
             <Bar dataKey="mb" fill="var(--action)" isAnimationActive={false} maxBarSize={28} />
           </BarChart>
         </ResponsiveContainer>
