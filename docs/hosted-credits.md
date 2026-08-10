@@ -18,12 +18,10 @@ The default monthly included grants are 64 MiB for anonymous Public use and
 UTC month.
 
 Supplemental grants are separate from monthly included credits. The hosted API
-automatically gives every account one non-expiring 128 MiB testing grant.
-It is labeled as testing credit in account history and uses a versioned source
-reference so migration, sign-in, account refresh, and admission requests cannot
-issue it twice. The API also offers an eligible account one server-defined,
-one-time 128 MiB bonus. The browser sends only the offer identifier; the server
-fixes the eligibility, amount, expiration, source, and per-account claim limit.
+offers an eligible account one server-defined, one-time 128 MiB bonus. The
+browser sends only the offer identifier; the server fixes the eligibility,
+amount, expiration, source, and per-account claim limit. Previously issued
+non-expiring testing grants remain usable, but the API no longer creates them.
 Manual adjustments and completed purchases use the same append-only grant
 operation. There is no browser endpoint that accepts an arbitrary credit amount
 or source; purchase settlement must create a server-authored `external_purchase`

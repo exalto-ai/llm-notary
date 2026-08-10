@@ -31,8 +31,6 @@ const MAX_INSTANCE_ID_BYTES: usize = 128;
 const SECS_PER_DAY: i64 = 24 * 60 * 60;
 const CLIENT_IP_HEADER: &str = "x-llm-notary-client-ip";
 const PUBLIC_SUBJECT_PURPOSE: &str = "hosted-finalization-public-subject";
-const ACCOUNT_TESTING_GRANT_ID: &str = "hosted-finalization-testing-v1";
-const ACCOUNT_TESTING_GRANT_AMOUNT_BYTES: i64 = 128 << 20;
 const PROMOTIONAL_OFFER_ID: &str = "hosted-finalization-bonus-v1";
 const PROMOTIONAL_OFFER_AMOUNT_BYTES: i64 = 128 << 20;
 const PROMOTIONAL_OFFER_CLAIM_DEADLINE: i64 = 1_893_456_000; // 2030-01-01T00:00:00Z
@@ -299,7 +297,7 @@ async fn credit_history(
 ) -> ApiResult<Json<Page<CreditHistoryEntry>>> {
     let Query(query) = query.map_err(super::pagination::query_error)?;
     let user = super::authenticated_web_user(&state, &jar).await?;
-    ensure_account_credit_grants(&state, &user.0).await?;
+    ensure_account_monthly_grant(&state, &user.0).await?;
     let limit = query
         .limit(
             super::pagination::DEFAULT_PAGE_LIMIT,
@@ -397,7 +395,7 @@ async fn credit_history(
 }
 
 pub async fn account_access(state: &AppState, user_id: &str) -> ApiResult<CreditSummary> {
-    ensure_account_credit_grants(state, user_id).await?;
+    ensure_account_monthly_grant(state, user_id).await?;
     let now = unix_timestamp()?;
     credit_summary(&state.database, &account_credit_subject(user_id), now).await
 }
@@ -438,14 +436,14 @@ async fn account_access_pool(
     )
 }
 
-async fn ensure_account_credit_grants(state: &AppState, user_id: &str) -> ApiResult<()> {
+async fn ensure_account_monthly_grant(state: &AppState, user_id: &str) -> ApiResult<()> {
     let now = unix_timestamp()?;
     let pool = account_access_pool(&state.database, user_id).await?;
     let mut transaction = state.database.begin().await.map_err(database_error)?;
     admission_lock(&mut transaction).await?;
     let policy = policy_for_pool(&state.admission, pool);
     let credit_subject = account_credit_subject(user_id);
-    ensure_credit_grants(
+    ensure_monthly_grant(
         &mut transaction,
         &credit_subject,
         Some(user_id),
@@ -522,7 +520,7 @@ async fn claim_credit_offer(
     let mut transaction = state.database.begin().await.map_err(database_error)?;
     admission_lock(&mut transaction).await?;
     let credit_subject = account_credit_subject(&user.0);
-    ensure_credit_grants(
+    ensure_monthly_grant(
         &mut transaction,
         &credit_subject,
         Some(&user.0),
@@ -653,7 +651,7 @@ async fn issue_admission(
         .map_err(|_| ApiError::internal(anyhow::anyhow!("directory generation is too large")))?;
     let mut transaction = state.database.begin().await.map_err(database_error)?;
     admission_lock(&mut transaction).await?;
-    ensure_credit_grants(
+    ensure_monthly_grant(
         &mut transaction,
         &credit_subject,
         subject_id.as_deref(),
@@ -803,7 +801,7 @@ async fn redeem_admission(
         }
     }
     let credit_subject = ticket.credit_subject.clone();
-    ensure_credit_grants(
+    ensure_monthly_grant(
         &mut transaction,
         &credit_subject,
         ticket.subject_id.as_deref(),
@@ -1473,54 +1471,6 @@ async fn ensure_monthly_grant(
             available_at: period.start,
             expires_at: Some(period.end),
             display_label: label,
-        },
-    )
-    .await?;
-    Ok(())
-}
-
-async fn ensure_credit_grants(
-    transaction: &mut Transaction<'_, Postgres>,
-    credit_subject: &str,
-    account_id: Option<&str>,
-    pool: AccessPool,
-    policy: &AdmissionPolicy,
-    now: i64,
-) -> ApiResult<()> {
-    ensure_monthly_grant(transaction, credit_subject, account_id, pool, policy, now).await?;
-    let Some(account_id) = account_id else {
-        return Ok(());
-    };
-    let already_issued: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-             SELECT 1 FROM notary_credit_grants
-             WHERE credit_subject = $1 AND source_kind = 'manual_adjustment'
-               AND source_reference = $2
-         )",
-    )
-    .bind(credit_subject)
-    .bind(ACCOUNT_TESTING_GRANT_ID)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    if already_issued {
-        return Ok(());
-    }
-    create_credit_grant(
-        transaction,
-        CreditGrantSpec {
-            credit_subject,
-            account_id: Some(account_id),
-            amount_bytes: ACCOUNT_TESTING_GRANT_AMOUNT_BYTES,
-            source_kind: "manual_adjustment",
-            source_reference: ACCOUNT_TESTING_GRANT_ID,
-            idempotency_key: ACCOUNT_TESTING_GRANT_ID,
-            period_start: None,
-            period_end: None,
-            created_at: now,
-            available_at: now,
-            expires_at: None,
-            display_label: "Automatic testing credits",
         },
     )
     .await?;
@@ -3173,9 +3123,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             successful.0.credits.total_remaining_bytes,
-            state.admission.free.monthly_finalization_bytes
-                + ACCOUNT_TESTING_GRANT_AMOUNT_BYTES
-                + PROMOTIONAL_OFFER_AMOUNT_BYTES
+            state.admission.free.monthly_finalization_bytes + PROMOTIONAL_OFFER_AMOUNT_BYTES
         );
         let rejected = first.err().or_else(|| second.err()).unwrap();
         assert_eq!(rejected.code, "credit_offer_already_claimed");
@@ -3196,22 +3144,11 @@ mod tests {
         let state = test_state().await;
         super::super::insert_test_github_user(&state.database, "user-1", 1, "octo").await;
         let free_credits = account_access(&state, "user-1").await.unwrap();
-        assert_eq!(free_credits.total_remaining_bytes, 640 << 20);
+        assert_eq!(free_credits.total_remaining_bytes, 512 << 20);
         assert_eq!(free_credits.included_monthly_remaining_bytes, 512 << 20);
-        assert_eq!(free_credits.supplemental_remaining_bytes, 128 << 20);
-        let testing_grant: (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*), COALESCE(SUM(amount_bytes), 0)::BIGINT
-             FROM notary_credit_grants
-             WHERE credit_subject = 'user:user-1' AND source_kind = 'manual_adjustment'
-               AND source_reference = $1",
-        )
-        .bind(ACCOUNT_TESTING_GRANT_ID)
-        .fetch_one(&state.database)
-        .await
-        .unwrap();
-        assert_eq!(testing_grant, (1, ACCOUNT_TESTING_GRANT_AMOUNT_BYTES));
+        assert_eq!(free_credits.supplemental_remaining_bytes, 0);
         let repeated_access = account_access(&state, "user-1").await.unwrap();
-        assert_eq!(repeated_access.total_remaining_bytes, 640 << 20);
+        assert_eq!(repeated_access.total_remaining_bytes, 512 << 20);
         let compatibility_columns: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM information_schema.columns
              WHERE table_schema = current_schema()
