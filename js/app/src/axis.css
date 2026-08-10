@@ -183,7 +183,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dashboard-utilization-plot--message strong { font-size: 13px; }
 .dashboard-utilization-plot--message span { color: var(--muted); font-size: 12px; line-height: 1.45; }
 .dashboard-credit-ledger { margin-top: -1px; border-top: 1px solid var(--line); }
-.dashboard-summary { grid-template-columns: minmax(0, 1.5fr) 1fr 1fr; margin: 28px 0 0; border: 1px solid var(--line); background: var(--white); }
+.dashboard-summary { grid-template-columns: minmax(0, 1.5fr) repeat(4, minmax(0, 1fr)); margin: 28px 0 0; border: 1px solid var(--line); background: var(--white); }
 .dashboard-summary div { min-height: 84px; justify-content: center; gap: 6px; padding: 14px 16px; border-color: var(--line); }
 .dashboard-summary span { color: var(--muted); }
 .dashboard-summary b { font-family: 'Instrument Sans Variable', Arial, sans-serif; font-size: 19px; font-weight: 600; letter-spacing: -.025em; }
@@ -348,8 +348,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .cli-approval-context > header { padding-inline: 20px; }
   .cli-approval-context dl > div { grid-template-columns: 108px minmax(0, 1fr); padding-inline: 20px; }
   .dashboard-summary { grid-template-columns: 1fr 1fr; margin-top: 22px; }
-  .dashboard-summary div { padding-inline: 12px; }
+  .dashboard-summary div { padding-inline: 12px; border-bottom: 1px solid var(--line); }
   .dashboard-summary div:first-child { grid-column: 1 / -1; }
+  .dashboard-summary div:nth-child(odd) { border-right: 0; }
+  .dashboard-summary div:nth-last-child(-n + 2) { border-bottom: 0; }
   .dashboard-account-setting { grid-template-columns: 1fr; gap: 12px; }
   .dashboard-delete-account { grid-template-columns: 1fr; gap: 16px; }
   .dashboard-delete-account > button { justify-self: start; }
