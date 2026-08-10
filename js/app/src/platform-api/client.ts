@@ -186,7 +186,13 @@ export async function getCurrentUser() {
   if (!response.ok || !data) {
     throw new PlatformApiError(errorMessage(error, 'Could not load the current account.'), response.status);
   }
-  return { ...data.user, billing: data.billing, credits: data.credits, share_stats: data.share_stats };
+  return {
+    ...data.user,
+    billing: data.billing,
+    credits: data.credits,
+    notary_stats: data.notary_stats,
+    share_stats: data.share_stats,
+  };
 }
 
 export async function getAuthProviders() {

@@ -174,6 +174,7 @@ struct MeResponse {
     user: PublicUser,
     billing: AccountBillingResponse,
     credits: service_admission::CreditSummary,
+    notary_stats: NotaryStats,
     share_stats: ShareStats,
 }
 
@@ -202,6 +203,37 @@ struct ShareStats {
     total: i64,
     admitted: i64,
     in_progress: i64,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize, ToSchema)]
+struct NotaryStats {
+    /// Successfully completed capture sessions.
+    captures: i64,
+    /// Successfully completed finalization sessions.
+    finalizations: i64,
+}
+
+async fn account_notary_stats(database: &DatabasePool, user_id: &str) -> ApiResult<NotaryStats> {
+    let (captures, finalizations) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT
+             COUNT(*) FILTER (WHERE tickets.mode = 'capture')::BIGINT,
+             COUNT(*) FILTER (WHERE tickets.mode = 'finalize')::BIGINT
+         FROM notary_admission_tickets AS tickets
+         JOIN notary_admission_leases AS leases
+           ON leases.id = tickets.lease_id
+          AND leases.subject_id = tickets.subject_id
+          AND leases.mode = tickets.mode
+         WHERE tickets.subject_id = $1
+           AND leases.completion_outcome = 'completed'",
+    )
+    .bind(user_id)
+    .fetch_one(database)
+    .await
+    .map_err(database_error)?;
+    Ok(NotaryStats {
+        captures,
+        finalizations,
+    })
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1234,6 +1266,7 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
     .ok_or_else(ApiError::unauthorized)?;
     let credits = service_admission::account_access(&state, &user.0).await?;
     let billing = service_admission::account_billing_state(&state.database, &user.0).await?;
+    let notary_stats = account_notary_stats(&state.database, &user.0).await?;
     let (total, admitted, in_progress) = sqlx::query_as::<_, (i64, i64, i64)>(
         "SELECT COUNT(*)::BIGINT,
                 COUNT(*) FILTER (WHERE state = 'admitted')::BIGINT,
@@ -1256,6 +1289,7 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
         },
         billing: AccountBillingResponse::new(billing, state.billing.purchase_mode()),
         credits,
+        notary_stats,
         share_stats: ShareStats {
             total,
             admitted,
@@ -2399,6 +2433,63 @@ mod tests {
         assert!(!counts_as_request_activity("/api/healthz"));
         assert!(!counts_as_request_activity("/api/readyz"));
         assert!(counts_as_request_activity("/api/notary"));
+    }
+
+    #[tokio::test]
+    async fn account_notary_stats_count_only_completed_account_sessions() {
+        let database = fresh_database().await;
+        insert_test_github_user(&database, "user-1", 1, "User One").await;
+        insert_test_github_user(&database, "user-2", 2, "User Two").await;
+        sqlx::query(
+            "INSERT INTO notary_admission_leases
+                 (id, notary_instance_id, subject_id, credit_subject, access_pool, mode,
+                  acquired_at, expires_at, released_at, terminal_state, completion_outcome)
+             VALUES
+                 ('capture-completed', 'notary-1', 'user-1', 'user:user-1', 'free',
+                  'capture', 1, 2, 2, 'released', 'completed'),
+                 ('finalize-completed', 'notary-1', 'user-1', 'user:user-1', 'free',
+                  'finalize', 1, 2, 2, 'released', 'completed'),
+                 ('capture-failed', 'notary-1', 'user-1', 'user:user-1', 'free',
+                  'capture', 1, 2, 2, 'released', 'client_failed'),
+                 ('finalize-active', 'notary-1', 'user-1', 'user:user-1', 'free',
+                  'finalize', 1, 2, NULL, NULL, NULL),
+                 ('other-capture', 'notary-1', 'user-2', 'user:user-2', 'free',
+                  'capture', 1, 2, 2, 'released', 'completed')",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest, requested_allowance_bytes,
+                  max_attestable_http_bytes, max_frame_bytes, max_private_chunk_bytes,
+                  max_private_chunk_commitments, issued_at, expires_at, consumed_at, lease_id)
+             VALUES
+                 ('ticket-capture-completed', 'user-1', 'user:user-1', 'free', 'capture',
+                  1, NULL, 1, 1, 1, 1, 1, 1, 2, 1, 'capture-completed'),
+                 ('ticket-finalize-completed', 'user-1', 'user:user-1', 'free', 'finalize',
+                  1, $1, 1, 1, 1, 1, 1, 1, 2, 1, 'finalize-completed'),
+                 ('ticket-capture-failed', 'user-1', 'user:user-1', 'free', 'capture',
+                  1, NULL, 1, 1, 1, 1, 1, 1, 2, 1, 'capture-failed'),
+                 ('ticket-finalize-active', 'user-1', 'user:user-1', 'free', 'finalize',
+                  1, $2, 1, 1, 1, 1, 1, 1, 2, 1, 'finalize-active'),
+                 ('ticket-other-capture', 'user-2', 'user:user-2', 'free', 'capture',
+                  1, NULL, 1, 1, 1, 1, 1, 1, 2, 1, 'other-capture')",
+        )
+        .bind("a".repeat(64))
+        .bind("b".repeat(64))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(
+            account_notary_stats(&database, "user-1").await.unwrap(),
+            NotaryStats {
+                captures: 1,
+                finalizations: 1,
+            }
+        );
     }
 
     #[test]

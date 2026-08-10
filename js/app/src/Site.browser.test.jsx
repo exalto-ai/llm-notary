@@ -186,6 +186,25 @@ describe('hosted site', () => {
     await expect.element(trigger).toHaveAttribute('aria-expanded', 'false');
   });
 
+  test('shows completed captures and finalizations in the account overview', async () => {
+    render(<Dashboard
+      user={{ github_login: 'fixture-user', credits: null, notary_stats: { captures: 12, finalizations: 7 }, share_stats: { total: 3, admitted: 2, in_progress: 1 } }}
+      view="overview"
+      theme="light"
+      onThemeChange={() => {}}
+      onAccountDeleted={() => {}}
+      loadCliSessions={async () => ({ items: [], next_cursor: null })}
+      loadMyShares={async () => ({ items: [], next_cursor: null })}
+      loadCreditOffers={async () => []}
+      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+      loadBillingPurchases={async () => []}
+    />);
+
+    const summary = document.querySelector('.dashboard-summary');
+    expect(summary?.textContent).toContain('Completed captures12');
+    expect(summary?.textContent).toContain('Completed finalizations7');
+  });
+
   test('discards an old credit-history page after claiming an offer', async () => {
     let rootRequests = 0;
     let resolveOldPage;

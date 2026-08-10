@@ -1615,9 +1615,11 @@ export function Dashboard({
       </aside>
       <div className="dashboard-page">
         {activeView === 'overview' && <>
-          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Overview</h1><p>Account details, trace activity, and credit use.</p></header>
+          <header className="dashboard-page-header"><span className="eyebrow">Account</span><h1>Overview</h1><p>Account details, completed notary work, trace activity, and credit use.</p></header>
           <div className="dashboard-summary">
             <div><span>{authProviderName(user)} account</span><b>{accountIdentifier(user)}</b></div>
+            <div><span>Completed captures</span><b>{user.notary_stats?.captures ?? '—'}</b></div>
+            <div><span>Completed finalizations</span><b>{user.notary_stats?.finalizations ?? '—'}</b></div>
             <div><span>Admitted traces</span><b>{shares === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>

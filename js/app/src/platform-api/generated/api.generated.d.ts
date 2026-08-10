@@ -930,6 +930,7 @@ export interface components {
         MeResponse: {
             billing: components["schemas"]["AccountBillingResponse"];
             credits: components["schemas"]["CreditSummary"];
+            notary_stats: components["schemas"]["NotaryStats"];
             share_stats: components["schemas"]["ShareStats"];
             user: components["schemas"]["PublicUser"];
         };
@@ -957,6 +958,18 @@ export interface components {
         };
         /** @enum {string} */
         NotaryKeyStatusResponse: "active" | "retiring" | "retired" | "revoked";
+        NotaryStats: {
+            /**
+             * Format: int64
+             * @description Successfully completed capture sessions.
+             */
+            captures: number;
+            /**
+             * Format: int64
+             * @description Successfully completed finalization sessions.
+             */
+            finalizations: number;
+        };
         /** @enum {string} */
         NotaryTransportResponse: "tcp" | "tls";
         /** @description Uniform response shape for every paginated list route. */

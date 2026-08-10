@@ -3720,6 +3720,7 @@
           "user",
           "billing",
           "credits",
+          "notary_stats",
           "share_stats"
         ],
         "properties": {
@@ -3728,6 +3729,9 @@
           },
           "credits": {
             "$ref": "#/components/schemas/CreditSummary"
+          },
+          "notary_stats": {
+            "$ref": "#/components/schemas/NotaryStats"
           },
           "share_stats": {
             "$ref": "#/components/schemas/ShareStats"
@@ -3828,6 +3832,25 @@
           "retired",
           "revoked"
         ]
+      },
+      "NotaryStats": {
+        "type": "object",
+        "required": [
+          "captures",
+          "finalizations"
+        ],
+        "properties": {
+          "captures": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Successfully completed capture sessions."
+          },
+          "finalizations": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Successfully completed finalization sessions."
+          }
+        }
       },
       "NotaryTransportResponse": {
         "type": "string",
