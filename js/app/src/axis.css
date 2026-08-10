@@ -384,8 +384,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 .dashboard-credits { margin-top: 40px; border: 0; background: transparent; }
 .dashboard-credits > header { padding: 0 0 20px; border-bottom: 1px solid var(--line); }
-.dashboard-credit-note { padding: 17px 0; border-bottom-color: var(--line-soft); }
-.dashboard-credit-ledger { margin-top: 0; border-top: 0; border-bottom: 1px solid var(--line); }
+.dashboard-credit-note { padding: 17px 0; border-bottom: 0; }
+.dashboard-credit-ledger { margin-top: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 .dashboard-credit-ledger > div { padding-inline: 16px; }
 .dashboard-credit-offer { padding-inline: 0; }
 .dashboard-credit-purchase { margin-top: 34px; padding: 20px 0; border-top: 1px solid var(--line); border-bottom: 0; }
