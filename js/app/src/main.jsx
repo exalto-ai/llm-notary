@@ -1874,7 +1874,17 @@ function NotariesPage() {
   </main>;
 }
 
-function App() {
+export function DashboardAuthLoading() {
+  return <main className="dashboard-auth-loading" role="status" aria-live="polite" aria-label="Loading dashboard">
+    <div>
+      <span className="eyebrow">Dashboard</span>
+      <h1>Loading your account</h1>
+      <p>Checking your sign-in status.</p>
+    </div>
+  </main>;
+}
+
+export function App({ loadCurrentUser = getCurrentUser } = {}) {
   const [route, setRoute] = useState(window.location.hash || '#/');
   const [user, setUser] = useState(null);
   const [authPending, setAuthPending] = useState(true);
@@ -1903,7 +1913,7 @@ function App() {
       }
     });
   }, [route]);
-  useEffect(() => { let cancelled = false; getCurrentUser().then((user) => { if (!cancelled) { setUser(user); setAuthPending(false); } }).catch(() => { if (!cancelled) { setUser(null); setAuthPending(false); } }); return () => { cancelled = true; }; }, []);
+  useEffect(() => { let cancelled = false; loadCurrentUser().then((user) => { if (!cancelled) { setUser(user); setAuthPending(false); } }).catch(() => { if (!cancelled) { setUser(null); setAuthPending(false); } }); return () => { cancelled = true; }; }, [loadCurrentUser]);
   useEffect(() => { if (user) void loadCreditUtilizationChart(); }, [user]);
   const logout = async () => { await logoutBrowser(); setUser(null); if (window.location.hash === '#/dashboard') window.location.hash = '#/'; };
   const accountDeleted = () => { setUser(null); setAuthPending(false); window.location.hash = '#/'; };
@@ -1914,7 +1924,8 @@ function App() {
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
   const isLibrary = section === 'library' || section === 'traces' || section === 'collections';
-  return <><Header user={user} onLogout={logout} hideSignIn={section === 'authorize' || section === 'signin'} authPending={authPending} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'signin' ? <SignInPage route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} route={path} theme={theme} onThemeChange={setTheme} onAccountDeleted={accountDeleted} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && <Footer />}</>;
+  const dashboardLoading = section === 'dashboard' && authPending;
+  return <><Header user={user} onLogout={logout} hideSignIn={section === 'authorize' || section === 'signin'} authPending={authPending} />{directShareId ? <SharePage shareId={directShareId} /> : section === 'authorize' ? <CliApproval route={path} user={user} /> : section === 'signin' ? <SignInPage route={path} user={user} /> : section === 'verify' ? <VerificationPage /> : section === 'docs' ? <Docs pageKey={page || 'overview'} section={sectionAnchor} /> : isLibrary ? <Library /> : section === 'notaries' ? <NotariesPage /> : dashboardLoading ? <DashboardAuthLoading /> : section === 'dashboard' && user ? <Dashboard user={user} view={page} route={path} theme={theme} onThemeChange={setTheme} onAccountDeleted={accountDeleted} /> : legalPages[section] ? <LegalPage pageKey={section} /> : <Landing />}{!isLibrary && !dashboardLoading && <Footer />}</>;
 }
 
 const applicationRoot = document.getElementById('root');
