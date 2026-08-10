@@ -9,7 +9,7 @@
   padding: 5px 8px;
   border: 1px solid var(--line);
   color: var(--body-copy-muted);
-  font: 10px 'DM Mono', monospace;
+  font: 10px 'IBM Plex Mono', monospace;
 }
 
 .receipt header > b { font-weight: 500; }
@@ -45,13 +45,13 @@
 .preview-records button:focus-visible { position: relative; z-index: 1; outline-offset: -3px; }
 .preview-records i { display: block; width: 10px; height: 10px; border: 1px solid var(--action-dark); background: var(--action); }
 .preview-records b { display: block; font-size: 15px; letter-spacing: -.03em; }
-.preview-records small { display: block; margin-top: 5px; color: var(--muted); font: 10px 'DM Mono', monospace; }
-.preview-records em { color: var(--muted); font: normal 10px 'DM Mono', monospace; }
+.preview-records small { display: block; margin-top: 5px; color: var(--muted); font: 10px 'IBM Plex Mono', monospace; }
+.preview-records em { color: var(--muted); font: normal 10px 'IBM Plex Mono', monospace; }
 
 .preview-inspector { min-height: 310px; padding: 25px 28px; background: var(--paper); }
 .preview-inspector header { display: flex; align-items: center; justify-content: space-between; gap: 18px; }
 .preview-inspector h3 { margin: 37px 0 7px; font-size: 24px; letter-spacing: -.05em; }
-.preview-inspector > p { margin: 0; color: var(--muted); font: 10px 'DM Mono', monospace; }
+.preview-inspector > p { margin: 0; color: var(--muted); font: 10px 'IBM Plex Mono', monospace; }
 .preview-contents { margin: 28px 0 22px; border-top: 1px solid var(--line); }
 .preview-contents span { gap: 20px; padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
 

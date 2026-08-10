@@ -1,9 +1,10 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import '@fontsource-variable/instrument-sans';
-import '@fontsource-variable/space-grotesk';
-import '@fontsource/dm-mono/400.css';
-import '@fontsource/dm-mono/500.css';
+import '@fontsource/ibm-plex-mono/latin-400.css';
+import '@fontsource/ibm-plex-mono/latin-ext-400.css';
+import '@fontsource/ibm-plex-mono/latin-500.css';
+import '@fontsource/ibm-plex-mono/latin-ext-500.css';
 import {
   MantineProvider, createTheme, localStorageColorSchemeManager
 } from '@mantine/core';
@@ -20,9 +21,9 @@ import { createFixtureApi } from './fixtures';
 
 const colorSchemeManager = localStorageColorSchemeManager({ key: 'llm-notary-dashboard-color-scheme' });
 const theme = createTheme({
-  fontFamily: 'Instrument Sans, system-ui, sans-serif',
-  fontFamilyMonospace: '"DM Mono", ui-monospace, monospace',
-  headings: { fontFamily: 'Space Grotesk, system-ui, sans-serif', fontWeight: '600' },
+  fontFamily: 'Instrument Sans Variable, system-ui, sans-serif',
+  fontFamilyMonospace: '"IBM Plex Mono", ui-monospace, monospace',
+  headings: { fontFamily: 'Instrument Sans Variable, system-ui, sans-serif', fontWeight: '600' },
   primaryColor: 'axis',
   defaultRadius: 0,
   colors: {

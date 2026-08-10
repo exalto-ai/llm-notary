@@ -49,7 +49,7 @@
   border: 1px solid var(--line);
   background: var(--paper);
   color: var(--muted);
-  font: 500 10px/1 'DM Mono', monospace;
+  font: 500 10px/1 'IBM Plex Mono', monospace;
   padding: 3px 4px;
 }
 
@@ -58,7 +58,7 @@
 .docs-sidebar .docs-group {
   margin: 17px 0 5px 9px;
   color: var(--muted);
-  font: 500 10px/1.4 'DM Mono', monospace;
+  font: 500 10px/1.4 'IBM Plex Mono', monospace;
   letter-spacing: .07em;
   text-transform: uppercase;
 }
@@ -136,7 +136,7 @@
   border: 1px solid var(--line);
   background: var(--soft);
   color: var(--ink);
-  font: 500 .86em/1.35 'DM Mono', monospace;
+  font: 500 .86em/1.35 'IBM Plex Mono', monospace;
   overflow-wrap: anywhere;
 }
 
@@ -145,7 +145,7 @@
   border: 1px solid var(--line);
   background: var(--paper);
   color: var(--muted);
-  font: 500 10px/1 'DM Mono', monospace;
+  font: 500 10px/1 'IBM Plex Mono', monospace;
   letter-spacing: .03em;
   padding: 7px 8px;
 }
@@ -177,7 +177,7 @@
   border: 1px solid var(--inverse-surface);
   background: var(--inverse-surface);
   color: var(--inverse-text);
-  font: 12px/1.65 'DM Mono', monospace;
+  font: 12px/1.65 'IBM Plex Mono', monospace;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -230,7 +230,7 @@
 }
 
 .docs-flow li { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 14px; padding: 18px 0; border-bottom: 1px solid var(--line); }
-.docs-flow li > span, .docs-card-grid article > span { color: var(--muted); font: 500 10px/1.4 'DM Mono', monospace; letter-spacing: .05em; text-transform: uppercase; }
+.docs-flow li > span, .docs-card-grid article > span { color: var(--muted); font: 500 10px/1.4 'IBM Plex Mono', monospace; letter-spacing: .05em; text-transform: uppercase; }
 .docs-flow b { display: block; margin-bottom: 5px; font-size: 14px; }
 .docs-flow li p, .docs-card-grid article p { margin: 0; }
 
@@ -242,7 +242,7 @@
 
 .docs-definitions { max-width: 760px; margin: 20px 0 0; border-top: 1px solid var(--ink); }
 .docs-definitions > div { display: grid; grid-template-columns: minmax(160px, .35fr) minmax(0, 1fr); gap: 24px; padding: 15px 0; border-bottom: 1px solid var(--line); }
-.docs-definitions dt { font: 500 11px/1.55 'DM Mono', monospace; overflow-wrap: anywhere; }
+.docs-definitions dt { font: 500 11px/1.55 'IBM Plex Mono', monospace; overflow-wrap: anywhere; }
 .docs-definitions dd { margin: 0; color: var(--body-copy-muted); font-size: 14px; line-height: 1.65; }
 
 .docs-boundary-grid {
@@ -297,23 +297,23 @@
 .docs-page-nav a:last-child { text-align: right; }
 .docs-page-nav a { color: var(--ink); font-size: 13px; font-weight: 700; }
 .docs-page-nav a:hover { text-decoration: underline; text-decoration-color: var(--green); text-decoration-thickness: 2px; text-underline-offset: 4px; }
-.docs-page-nav span { display: block; margin-bottom: 6px; color: var(--muted); font: 500 10px 'DM Mono', monospace; letter-spacing: .05em; text-transform: uppercase; }
+.docs-page-nav span { display: block; margin-bottom: 6px; color: var(--muted); font: 500 10px 'IBM Plex Mono', monospace; letter-spacing: .05em; text-transform: uppercase; }
 
 .docs-toc { padding-top: 18px; border-top: 1px solid var(--line); }
-.docs-toc > span { margin-bottom: 4px; color: var(--muted); font: 500 10px 'DM Mono', monospace; letter-spacing: .07em; text-transform: uppercase; }
+.docs-toc > span { margin-bottom: 4px; color: var(--muted); font: 500 10px 'IBM Plex Mono', monospace; letter-spacing: .07em; text-transform: uppercase; }
 .docs-toc-list { display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .docs-toc-list li { min-width: 0; }
 .docs-toc-list a { display: block; color: var(--muted); font-size: 12px; line-height: 1.35; }
 .docs-toc-list a:hover, .docs-toc-list a.active { color: var(--ink); font-weight: 700; }
 .docs-toc-list ol { display: flex; flex-direction: column; gap: 6px; margin: 7px 0 0; padding: 0 0 0 12px; border-left: 1px solid var(--line); list-style: none; }
 .docs-toc-list ol a { font-size: 11px; }
-.docs-toc p { margin: 16px 0 0; color: var(--muted); font: 10px/1.6 'DM Mono', monospace; }
+.docs-toc p { margin: 16px 0 0; color: var(--muted); font: 10px/1.6 'IBM Plex Mono', monospace; }
 
 .docs-search-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; padding: 24px; background: color-mix(in srgb, var(--paper) 76%, transparent); }
 .docs-search-dialog { display: grid; width: min(660px, 100%); max-height: calc(100dvh - 48px); grid-template-rows: auto auto minmax(0, 1fr) auto; border: 1px solid var(--line); background: var(--paper); }
 .docs-search-dialog header, .docs-search-dialog footer { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--line); }
-.docs-search-dialog header label { font: 500 10px 'DM Mono', monospace; letter-spacing: .07em; text-transform: uppercase; }
-.docs-search-dialog input { width: 100%; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; outline: 0; background: var(--white); padding: 19px 16px; color: var(--ink); font: 500 18px 'Instrument Sans', sans-serif; }
+.docs-search-dialog header label { font: 500 10px 'IBM Plex Mono', monospace; letter-spacing: .07em; text-transform: uppercase; }
+.docs-search-dialog input { width: 100%; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; outline: 0; background: var(--white); padding: 19px 16px; color: var(--ink); font: 500 18px 'Instrument Sans Variable', sans-serif; }
 .docs-search-dialog input:focus { box-shadow: inset 0 -2px 0 var(--green); }
 .docs-search-results { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
 .docs-search-results button { display: grid; width: 100%; gap: 5px; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; padding: 14px 16px; color: var(--ink); text-align: left; }
@@ -322,7 +322,7 @@
 .docs-search-results button span { font-size: 14px; font-weight: 700; }
 .docs-search-results button small { overflow: hidden; color: var(--muted); font-size: 12px; line-height: 1.45; text-overflow: ellipsis; white-space: nowrap; }
 .docs-search-results > p { margin: 0; padding: 28px 16px; color: var(--muted); font-size: 13px; }
-.docs-search-dialog footer { border-bottom: 0; border-top: 1px solid var(--line); color: var(--muted); font: 10px 'DM Mono', monospace; }
+.docs-search-dialog footer { border-bottom: 0; border-top: 1px solid var(--line); color: var(--muted); font: 10px 'IBM Plex Mono', monospace; }
 .docs-search-dialog footer span { display: flex; align-items: center; gap: 4px; }
 
 @media (max-width: 1120px) {
@@ -376,7 +376,7 @@
   .docs-mobile-toolbar-row > button:hover,
   .docs-mobile-toolbar-row > button.active { background: var(--soft); }
   .docs-mobile-toolbar-row > button span { min-width: 0; overflow: hidden; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-  .docs-mobile-toolbar-row > button small { display: block; margin-bottom: 3px; color: var(--muted); font: 500 8px/1 'DM Mono', monospace; letter-spacing: .06em; text-transform: uppercase; }
+  .docs-mobile-toolbar-row > button small { display: block; margin-bottom: 3px; color: var(--muted); font: 500 8px/1 'IBM Plex Mono', monospace; letter-spacing: .06em; text-transform: uppercase; }
   .docs-mobile-toolbar-row > button svg { flex: none; width: 15px; height: 15px; transition: transform 150ms ease; }
   .docs-mobile-toolbar-row > button.active svg { transform: rotate(180deg); }
 
@@ -397,7 +397,7 @@
   .docs-mobile-toc { display: grid; }
   .docs-mobile-nav-group + .docs-mobile-nav-group { margin-top: 12px; }
   .docs-mobile-nav-group > span,
-  .docs-mobile-toc > span { padding: 8px 9px 5px; color: var(--muted); font: 500 9px/1.4 'DM Mono', monospace; letter-spacing: .07em; text-transform: uppercase; }
+  .docs-mobile-toc > span { padding: 8px 9px 5px; color: var(--muted); font: 500 9px/1.4 'IBM Plex Mono', monospace; letter-spacing: .07em; text-transform: uppercase; }
   .docs-mobile-panel a { padding: 10px 9px; border-bottom: 1px solid var(--line); color: var(--body-copy); font-size: 13px; }
   .docs-mobile-panel a:hover { background: var(--soft); color: var(--ink); }
   .docs-mobile-panel a.active { border-left: 2px solid var(--action); background: var(--soft); color: var(--ink); font-weight: 700; }

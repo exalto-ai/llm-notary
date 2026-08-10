@@ -10,7 +10,7 @@ body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
-  font-family: 'Instrument Sans', Arial, sans-serif;
+  font-family: 'Instrument Sans Variable', Arial, sans-serif;
 }
 
 button,
@@ -87,7 +87,7 @@ a {
 /* Shared editorial primitives */
 .eyebrow {
   color: #5c5a55;
-  font: 500 11px/1 'DM Mono', monospace;
+  font: 500 11px/1 'IBM Plex Mono', monospace;
   letter-spacing: .07em;
   text-transform: uppercase;
 }
@@ -216,7 +216,7 @@ a {
 
 .receipt header > b {
   color: #d2d2cb;
-  font: 10px 'DM Mono', monospace;
+  font: 10px 'IBM Plex Mono', monospace;
 }
 
 .receipt h3 {
@@ -241,12 +241,12 @@ a {
 
 .receipt dt {
   color: #a6a6a0;
-  font: 10px 'DM Mono', monospace;
+  font: 10px 'IBM Plex Mono', monospace;
 }
 
 .receipt dd {
   margin: 0;
-  font: 10px 'DM Mono', monospace;
+  font: 10px 'IBM Plex Mono', monospace;
   text-align: right;
 }
 
@@ -255,7 +255,7 @@ a {
   justify-content: space-between;
   margin-top: auto;
   color: #aaa;
-  font: 10px 'DM Mono', monospace;
+  font: 10px 'IBM Plex Mono', monospace;
 }
 
 .install {
@@ -287,7 +287,7 @@ a {
 
 .terminal pre {
   margin: 38px 0 25px;
-  font: 12px/1.8 'DM Mono', monospace;
+  font: 12px/1.8 'IBM Plex Mono', monospace;
   white-space: pre-wrap;
 }
 
