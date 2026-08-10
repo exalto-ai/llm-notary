@@ -2114,6 +2114,27 @@ mod tests {
             .await
             .unwrap();
         }
+        let mut transaction = state.database.begin().await.unwrap();
+        create_credit_grant(
+            &mut transaction,
+            CreditGrantSpec {
+                credit_subject: "user:history-1",
+                account_id: Some("history-1"),
+                amount_bytes: 1,
+                source_kind: "manual_adjustment",
+                source_reference: "credit-history-pagination-fixture",
+                idempotency_key: "credit-history-pagination-fixture",
+                period_start: None,
+                period_end: None,
+                created_at: now - 1,
+                available_at: now - 1,
+                expires_at: None,
+                display_label: "Credit history pagination fixture",
+            },
+        )
+        .await
+        .unwrap();
+        transaction.commit().await.unwrap();
         let jar = |token| CookieJar::new().add(Cookie::new(super::super::SESSION_COOKIE, token));
         let first = credit_history(
             State(state.clone()),
