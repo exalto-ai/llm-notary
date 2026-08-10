@@ -7,6 +7,7 @@
   --ink: #101010;
   --muted: #6b6b6b;
   --rule: #d4d4d4;
+  --rule-soft: #e7e7e7;
   --rule-strong: #8c8c8c;
   --accent: #1c55cd;
   --accent-ink: #143d94;
@@ -30,6 +31,7 @@
   --ink: #f5f8fc;
   --muted: #a0a0a0;
   --rule: #2c2c2c;
+  --rule-soft: #202020;
   --rule-strong: #5c5c5c;
   --accent: #6fa7ff;
   --accent-ink: #a9caff;
@@ -278,4 +280,54 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline-color:
   .resizable-split .split-handle { display: none; }
   .operations-list-scroll,
   .trace-list { border-bottom: 1px solid var(--rule); }
+}
+
+/*
+ * Rule hierarchy: a rule names a boundary, not a container by default.
+ * Chrome and workspace rails use --rule; repeatable rows use the quieter
+ * --rule-soft. Inputs, dialogs, receipts, and true fact grids retain frames
+ * because their edges carry interaction or table meaning.
+ */
+.local-topbar nav { gap: 2px; }
+.local-topbar nav button { border-right: 0; }
+
+/* Overview is three reading bands, not a set of nested framed widgets. */
+.overview-work,
+.count-strip,
+.count-strip button { border-top: 0; border-bottom: 0; }
+
+/* A record inspector has one divider per section; its contents add only the
+ * separators needed to compare repeated values. */
+.inspector-head { border-bottom: 0; }
+.lifecycle li,
+.capture-row,
+.operation-row,
+.event-row { border-color: var(--rule-soft); }
+.metadata-grid { border-top: 0; }
+.metadata-grid > div { border-bottom-color: var(--rule-soft); }
+.inspector-section .preview-block { margin-top: 0; border-top: 0; }
+.inspector-section .preview-block + .preview-block { margin-top: 8px; border-top: 1px solid var(--rule-soft); }
+.artifact-list > div { border-top: 0; }
+.artifact-list > div + div { border-top: 1px solid var(--rule-soft); }
+
+/* Progress is already signalled by its measured track; framing the whole
+ * block adds a second, unrelated boundary before the fact list. */
+.proof-work { border-top: 0; border-bottom: 0; padding-top: 0; padding-bottom: 0; }
+.operation-inspector .receipt-list { border-top: 0; }
+.receipt-list > div,
+.sharing-facts > div { border-bottom-color: var(--rule-soft); }
+
+/* Keep each notary record as a ledger entry. The fact grid owns its own
+ * table edges, while the list owns only the separators between records. */
+.settings-panel { border: 0; }
+.settings-panel.inverse { border: 1px solid var(--rule); }
+.local-notary-list { border: 0; }
+.local-notary-record { border-bottom: 0; }
+.local-notary-record + .local-notary-record { border-top: 1px solid var(--rule); }
+.local-notary-key { margin-top: 12px; }
+
+/* The standard dashboard already sits below the AppShell header. Pulling the
+ * sharing toolbar upward hides its labels beneath the header on desktop. */
+@media (min-width: 821px) {
+  .view-page.share-flow { min-height: 100%; margin-top: 0; padding-top: 0; }
 }
