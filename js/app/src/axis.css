@@ -374,3 +374,39 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .dashboard-utilization dl > div { border-right: 0; border-bottom: 1px solid var(--line); }
   .dashboard-utilization dl > div:last-child { border-bottom: 0; }
 }
+
+/* Account dashboard: rules describe data groups, not every section boundary. */
+.dashboard-page-header { padding-bottom: 0; border-bottom: 0; }
+.dashboard-summary { margin-top: 32px; }
+.dashboard-utilization { margin-top: 48px; border: 0; }
+.dashboard-utilization-plot { border-top-color: var(--line-soft); }
+.dashboard-utilization dl { border-top-color: var(--line); }
+
+.dashboard-credits { margin-top: 40px; border: 0; background: transparent; }
+.dashboard-credits > header { padding: 0 0 20px; border-bottom: 1px solid var(--line); }
+.dashboard-credit-note { padding: 17px 0; border-bottom-color: var(--line-soft); }
+.dashboard-credit-ledger { margin-top: 0; border-top: 0; border-bottom: 1px solid var(--line); }
+.dashboard-credit-ledger > div { padding-inline: 16px; }
+.dashboard-credit-offer { padding-inline: 0; }
+.dashboard-credit-purchase { margin-top: 34px; padding: 20px 0; border-top: 1px solid var(--line); border-bottom: 0; }
+.dashboard-checkout-state { padding-inline: 0; }
+.dashboard-purchase-history, .dashboard-credit-history { margin-top: 34px; padding: 18px 0 8px; border-top: 1px solid var(--line); border-bottom: 0; }
+
+.dashboard-traces { margin-top: 36px; }
+.dashboard-empty--traces { border-top: 1px solid var(--line); border-bottom: 0; }
+.dashboard-sessions, .dashboard-api-keys { margin-top: 52px; padding: 0; border-top: 0; border-bottom: 0; }
+.dashboard-sessions > .dashboard-session-empty, .dashboard-sessions > .dashboard-session-error { border-top: 1px solid var(--line); border-bottom: 0; }
+.dashboard-api-key-empty { border-top: 1px solid var(--line); border-bottom: 0; }
+.dashboard-account-settings { margin-top: 32px; border-top: 0; border-bottom: 0; }
+.dashboard-delete-account { margin-top: 52px; border-bottom: 0; }
+
+@media (max-width: 820px) {
+  .dashboard-summary { margin-top: 24px; }
+  .dashboard-utilization { margin-top: 40px; }
+  .dashboard-credits { margin-top: 32px; }
+  .dashboard-credit-ledger > div { padding-inline: 16px; }
+  .dashboard-credit-purchase { margin-top: 28px; }
+  .dashboard-purchase-history, .dashboard-credit-history { margin-top: 28px; padding-inline: 0; }
+  .dashboard-traces, .dashboard-sessions, .dashboard-api-keys { margin-top: 32px; }
+  .dashboard-delete-account { margin-top: 40px; }
+}
