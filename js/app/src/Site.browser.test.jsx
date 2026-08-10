@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
 import { cleanup, fireEvent, render } from '@testing-library/react';
-import { AccountSettings, ApiKeysPanel, CliApproval, Dashboard, DeleteAccountPanel, Footer, Header, HostedNotaryRecord, Landing, Library, ListedSharesPreview, SharePage, SignInPage, VerificationPage } from './main';
+import { AccountSettings, ApiKeysPanel, App, CliApproval, Dashboard, DeleteAccountPanel, Footer, Header, HostedNotaryRecord, Landing, Library, ListedSharesPreview, SharePage, SignInPage, VerificationPage } from './main';
 import CreditUtilizationChart from './CreditUtilizationChart';
 import { ProviderIdentity } from './ProviderIdentity';
 import { latestMacosDownloadHref } from './releaseDownloads';
@@ -107,6 +107,19 @@ describe('hosted site', () => {
 
     await expect.element(page.getByRole('status', { name: 'Checking sign-in status' })).toBeVisible();
     await expect.element(page.getByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
+  });
+
+  test('keeps a dashboard deep link out of the landing page while authentication loads', async () => {
+    window.location.hash = '#/dashboard/settings';
+    let resolveCurrentUser;
+    const loadCurrentUser = () => new Promise((resolve) => { resolveCurrentUser = resolve; });
+    render(<App loadCurrentUser={loadCurrentUser} />);
+
+    await expect.element(page.getByRole('status', { name: 'Loading dashboard' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Verifiable intelligence' })).not.toBeInTheDocument();
+
+    resolveCurrentUser({ github_login: 'fixture-user', share_stats: { total: 0, admitted: 0, in_progress: 0 } });
+    await expect.element(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
   });
 
   test('offers Google first and preserves a local-service return route', async () => {
