@@ -1,4 +1,4 @@
-name: Publish CLI
+name: Publish clients
 
 on:
   workflow_call:
@@ -19,15 +19,37 @@ permissions:
   contents: read
 
 concurrency:
-  group: publish-cli-${{ github.workflow }}-${{ inputs.channel }}
+  group: publish-client-${{ inputs.channel }}
   cancel-in-progress: false
 
 jobs:
+  config:
+    name: Validate release origin
+    runs-on: ubuntu-24.04
+    env:
+      PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://llm-notary.exalto.ai' }}
+    steps:
+      - name: Verify the compiled public origin
+        run: |
+          set -euo pipefail
+          node -e '
+            const origin = new URL(process.env.PUBLIC_ORIGIN);
+            if (origin.protocol !== "https:" || origin.pathname !== "/" || origin.search || origin.hash) {
+              throw new Error("LLM_NOTARY_PUBLIC_ORIGIN must be an HTTPS origin");
+            }
+          '
+          curl --fail --silent --show-error --location \
+            --retry 3 --retry-all-errors --connect-timeout 5 --max-time 20 \
+            "$PUBLIC_ORIGIN/" >/dev/null
+
   build:
     name: ${{ matrix.asset }}
+    needs: config
     timeout-minutes: 90
     env:
       LLM_NOTARY_PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://llm-notary.exalto.ai' }}
+      LLM_NOTARY_BUILD_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+      LLM_NOTARY_UPDATES_ENABLED: ${{ github.ref == 'refs/heads/main' && inputs.channel == 'latest' && '1' || '0' }}
     strategy:
       fail-fast: false
       matrix:
@@ -79,6 +101,8 @@ jobs:
           if [[ "$TARGET" == *windows* ]]; then suffix=".exe"; fi
           cp "target/$TARGET/release/llm-notary${suffix}" "$folder/"
           cp "target/$TARGET/release/llm-notaryd${suffix}" "$folder/"
+          "target/$TARGET/release/llm-notary${suffix}" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
+          "target/$TARGET/release/llm-notaryd${suffix}" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
           cp LICENSE* THIRD-PARTY-NOTICES.md "$folder/"
           if [[ "$ARCHIVE" == "zip" ]]; then
             archive="${folder}.zip"
@@ -94,6 +118,15 @@ jobs:
           fi
           mkdir release
           mv "$archive" "${archive}.sha256" release/
+          cp "target/$TARGET/release/llm-notary${suffix}" "release/llm-notary-${ASSET}${suffix}"
+          cp "target/$TARGET/release/llm-notaryd${suffix}" "release/llm-notaryd-${ASSET}${suffix}"
+          if command -v sha256sum >/dev/null; then
+            (cd release && sha256sum "llm-notary-${ASSET}${suffix}" > "llm-notary-${ASSET}${suffix}.sha256")
+            (cd release && sha256sum "llm-notaryd-${ASSET}${suffix}" > "llm-notaryd-${ASSET}${suffix}.sha256")
+          else
+            (cd release && shasum -a 256 "llm-notary-${ASSET}${suffix}" > "llm-notary-${ASSET}${suffix}.sha256")
+            (cd release && shasum -a 256 "llm-notaryd-${ASSET}${suffix}" > "llm-notaryd-${ASSET}${suffix}.sha256")
+          fi
       - uses: actions/upload-artifact@v7
         with:
           name: cli-${{ matrix.asset }}
@@ -102,20 +135,123 @@ jobs:
           retention-days: 1
 
   desktop:
+    needs: config
     uses: ./.github/workflows/desktop-dmg.yml
     with:
       sign: ${{ github.ref == 'refs/heads/main' }}
+      build_id: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+      public_origin: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://llm-notary.exalto.ai' }}
+      updates_enabled: ${{ github.ref == 'refs/heads/main' && inputs.channel == 'latest' }}
     secrets: inherit
+
+  manifest:
+    name: Sign release manifest
+    needs: [build, desktop]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: macos-release
+    env:
+      BUILD_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+      CHANNEL: ${{ inputs.channel }}
+      PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://llm-notary.exalto.ai' }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: js/desktop/package-lock.json
+      - uses: actions/download-artifact@v8
+        with:
+          path: release
+          merge-multiple: true
+      - run: npm --prefix js/desktop ci
+      - name: Allocate the next authenticated channel revision
+        id: channel
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends minisign
+          channel_url="$PUBLIC_ORIGIN/downloads/cli/channels/$CHANNEL.json"
+          status="$(curl --silent --show-error --location \
+            --retry 3 --retry-all-errors --connect-timeout 5 --max-time 20 \
+            --output "$RUNNER_TEMP/current-channel.json" \
+            --write-out '%{http_code}' "$channel_url")"
+          if test "$status" = 404; then
+            revision=1
+          elif test "$status" = 200; then
+            test "$(jq -r .schema_version "$RUNNER_TEMP/current-channel.json")" = \
+              llm-notary/release-channel-envelope/v1
+            jq -er .signed "$RUNNER_TEMP/current-channel.json" \
+              | base64 --decode > "$RUNNER_TEMP/current-channel.payload.json"
+            jq -er .signature "$RUNNER_TEMP/current-channel.json" \
+              | base64 --decode > "$RUNNER_TEMP/current-channel.minisig"
+            base64 --decode config/updater-public-key.txt > "$RUNNER_TEMP/updater.pub"
+            minisign -Vm "$RUNNER_TEMP/current-channel.payload.json" \
+              -p "$RUNNER_TEMP/updater.pub" -x "$RUNNER_TEMP/current-channel.minisig"
+            test "$(jq -r .schema_version "$RUNNER_TEMP/current-channel.payload.json")" = \
+              llm-notary/release-channel/v1
+            test "$(jq -r .channel "$RUNNER_TEMP/current-channel.payload.json")" = "$CHANNEL"
+            current="$(jq -er '.channel_revision | select(type == "number" and floor == . and . > 0)' \
+              "$RUNNER_TEMP/current-channel.payload.json")"
+            revision="$((current + 1))"
+          else
+            echo "could not read the current release channel: HTTP $status" >&2
+            exit 1
+          fi
+          test "$revision" -le 9007199254740991
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
+      - name: Generate and sign immutable release manifest and channel
+        env:
+          CHANNEL_REVISION: ${{ steps.channel.outputs.revision }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/llm-notary-client/Cargo.toml | head -1)"
+          node scripts/release-manifest.mjs \
+            --release-dir release \
+            --build-id "$BUILD_ID" \
+            --commit-sha "$GITHUB_SHA" \
+            --version "$version" \
+            --published-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --public-origin "$PUBLIC_ORIGIN" \
+            --output release/release.json
+          npm --prefix js/desktop exec -- tauri signer sign "$(pwd)/release/release.json"
+          test -s release/release.json.sig
+          (cd release && sha256sum release.json > release.json.sha256)
+          node scripts/release-manifest.mjs \
+            --channel "$CHANNEL" \
+            --revision "$CHANNEL_REVISION" \
+            --manifest release/release.json \
+            --manifest-url "$PUBLIC_ORIGIN/downloads/cli/builds/$BUILD_ID/release.json" \
+            --signature release/release.json.sig \
+            --output release/channel.payload.json
+          npm --prefix js/desktop exec -- tauri signer sign "$(pwd)/release/channel.payload.json"
+          test -s release/channel.payload.json.sig
+          node scripts/release-manifest.mjs \
+            --envelope 1 \
+            --payload release/channel.payload.json \
+            --signature release/channel.payload.json.sig \
+            --output release/channel.json
+      - uses: actions/upload-artifact@v7
+        with:
+          name: client-release-manifest
+          path: |
+            release/release.json
+            release/release.json.sig
+            release/release.json.sha256
+            release/channel.json
+          if-no-files-found: error
+          retention-days: 3
 
   publish:
     name: Publish ${{ inputs.channel }}
-    needs: [build, desktop]
+    needs: [build, desktop, manifest]
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     environment: production
     env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.LLM_NOTARY_DOWNLOADS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.LLM_NOTARY_DOWNLOADS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: auto
       AWS_EC2_METADATA_DISABLED: true
       BUCKET: llm-notary-prod-downloads
@@ -123,6 +259,9 @@ jobs:
       PUBLIC_BUCKET_ORIGIN: https://llm-notary-prod-downloads.t3.tigrisfiles.io
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
       - uses: actions/download-artifact@v8
         with:
           path: release
@@ -150,11 +289,26 @@ jobs:
             "llm-notary-${version}-linux-aarch64.tar.gz" \
             "llm-notary-${version}-darwin-aarch64.tar.gz" \
             "llm-notary-${version}-windows-x86_64.zip" \
-            "LLM-Notary-macos-arm64.dmg"; do
+            "LLM-Notary-macos-arm64.dmg" \
+            "LLM-Notary-macos-arm64.app.tar.gz" \
+            "llm-notary-linux-x86_64" \
+            "llm-notaryd-linux-x86_64" \
+            "llm-notary-linux-aarch64" \
+            "llm-notaryd-linux-aarch64" \
+            "llm-notary-darwin-aarch64" \
+            "llm-notaryd-darwin-aarch64" \
+            "llm-notary-windows-x86_64.exe" \
+            "llm-notaryd-windows-x86_64.exe" \
+            "release.json"; do
             test -f "release/$asset"
             test -f "release/$asset.sha256"
             (cd release && sha256sum --check "$asset.sha256")
           done
+          test -s release/LLM-Notary-macos-arm64.app.tar.gz.sig
+          test -s release/release.json.sig
+          test -s release/channel.json
+          test "$(jq -r .build_id release/release.json)" = "${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test "$(jq -r .schema_version release/channel.json)" = "llm-notary/release-channel-envelope/v1"
           build_id="${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           prefix="cli/builds/$build_id"
           {
@@ -164,6 +318,8 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Upload immutable build
         env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.LLM_NOTARY_DOWNLOADS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.LLM_NOTARY_DOWNLOADS_SECRET_ACCESS_KEY }}
           PREFIX: ${{ steps.release.outputs.prefix }}
         run: |
           set -euo pipefail
@@ -174,6 +330,9 @@ jobs:
               *.zip) content_type=application/zip ;;
               *.dmg) content_type=application/x-apple-diskimage ;;
               *.sha256) content_type='text/plain; charset=utf-8' ;;
+              *.sig) content_type='text/plain; charset=utf-8' ;;
+              *.json) content_type='application/json; charset=utf-8' ;;
+              llm-notary-*|llm-notaryd-*) content_type=application/octet-stream ;;
               *) echo "unexpected release file: $name" >&2; exit 1 ;;
             esac
             aws s3 cp "$file" "s3://$BUCKET/$PREFIX/$name" \
@@ -201,27 +360,79 @@ jobs:
               -o "$RUNNER_TEMP/public-release/$checksum_name"
             (cd "$RUNNER_TEMP/public-release" && sha256sum --check "$checksum_name")
           done
+          for signature in release/*.sig; do
+            signature_name="${signature#release/}"
+            curl --fail --silent --show-error --location \
+              --retry 8 --retry-all-errors --retry-delay 2 \
+              "$PUBLIC_BUCKET_ORIGIN/$PREFIX/$signature_name" \
+              -o "$RUNNER_TEMP/public-release/$signature_name"
+            cmp "$signature" "$RUNNER_TEMP/public-release/$signature_name"
+          done
+          curl --fail --silent --show-error --location \
+            --retry 8 --retry-all-errors --retry-delay 2 \
+            "$PUBLIC_BUCKET_ORIGIN/$PREFIX/channel.json" \
+            -o "$RUNNER_TEMP/public-release/channel.json"
+          cmp release/channel.json "$RUNNER_TEMP/public-release/channel.json"
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends minisign
+          base64 --decode config/updater-public-key.txt > "$RUNNER_TEMP/updater.pub"
+          base64 --decode "$RUNNER_TEMP/public-release/release.json.sig" > "$RUNNER_TEMP/release.minisig"
+          minisign -Vm "$RUNNER_TEMP/public-release/release.json" \
+            -p "$RUNNER_TEMP/updater.pub" -x "$RUNNER_TEMP/release.minisig"
+          base64 --decode "$RUNNER_TEMP/public-release/LLM-Notary-macos-arm64.app.tar.gz.sig" \
+            > "$RUNNER_TEMP/desktop.minisig"
+          minisign -Vm "$RUNNER_TEMP/public-release/LLM-Notary-macos-arm64.app.tar.gz" \
+            -p "$RUNNER_TEMP/updater.pub" -x "$RUNNER_TEMP/desktop.minisig"
+          jq -r .signed "$RUNNER_TEMP/public-release/channel.json" \
+            | base64 --decode > "$RUNNER_TEMP/channel.payload.json"
+          jq -r .signature "$RUNNER_TEMP/public-release/channel.json" \
+            | base64 --decode > "$RUNNER_TEMP/channel.minisig"
+          minisign -Vm "$RUNNER_TEMP/channel.payload.json" \
+            -p "$RUNNER_TEMP/updater.pub" -x "$RUNNER_TEMP/channel.minisig"
+          test "$(jq -r .build_id "$RUNNER_TEMP/channel.payload.json")" = \
+            "${GITHUB_SHA}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
       - name: Move channel pointer
         env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.LLM_NOTARY_DOWNLOADS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.LLM_NOTARY_DOWNLOADS_SECRET_ACCESS_KEY }}
           BUILD_ID: ${{ steps.release.outputs.build_id }}
           CHANNEL: ${{ inputs.channel }}
           VERSION: ${{ steps.release.outputs.version }}
+          PREFIX: ${{ steps.release.outputs.prefix }}
         run: |
           set -euo pipefail
           printf '%s %s\n' "$BUILD_ID" "$VERSION" > "$RUNNER_TEMP/current"
+          cp release/channel.json "$RUNNER_TEMP/channel.json"
+          # Keep the legacy text pointer for existing installers. New clients
+          # use the signed-manifest JSON pointer, which is moved last.
           aws s3 cp "$RUNNER_TEMP/current" "s3://$BUCKET/cli/$CHANNEL" \
             --endpoint-url "$ENDPOINT" \
             --cache-control 'no-store' \
             --content-type 'text/plain; charset=utf-8' \
+            --only-show-errors
+          aws s3 cp "$RUNNER_TEMP/channel.json" "s3://$BUCKET/cli/channels/$CHANNEL.json" \
+            --endpoint-url "$ENDPOINT" \
+            --cache-control 'no-store' \
+            --content-type 'application/json; charset=utf-8' \
             --only-show-errors
           expected="$(cat "$RUNNER_TEMP/current")"
           actual="$(curl --fail --silent --show-error --location \
             --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
             "$PUBLIC_BUCKET_ORIGIN/cli/$CHANNEL")"
           test "$actual" = "$expected"
+          curl --fail --silent --show-error --location \
+            --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
+            "$PUBLIC_BUCKET_ORIGIN/cli/channels/$CHANNEL.json" \
+            -o "$RUNNER_TEMP/published-channel.json"
+          cmp "$RUNNER_TEMP/channel.json" "$RUNNER_TEMP/published-channel.json"
           if test "$CHANNEL" = latest; then
             website="$(curl --fail --silent --show-error --location \
               --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
               "https://llm-notary.exalto.ai/downloads/cli/$CHANNEL")"
             test "$website" = "$expected"
+            curl --fail --silent --show-error --location \
+              --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
+              "https://llm-notary.exalto.ai/downloads/cli/channels/$CHANNEL.json" \
+              -o "$RUNNER_TEMP/website-channel.json"
+            cmp "$RUNNER_TEMP/channel.json" "$RUNNER_TEMP/website-channel.json"
           fi

@@ -1796,10 +1796,14 @@
         "required": [
           "service",
           "status",
-          "api_version"
+          "api_version",
+          "build_id"
         ],
         "properties": {
           "api_version": {
+            "type": "string"
+          },
+          "build_id": {
             "type": "string"
           },
           "service": {
@@ -2462,6 +2466,7 @@
         "type": "object",
         "required": [
           "version",
+          "build_id",
           "proxy_listener",
           "admin_listener",
           "vault",
@@ -2471,6 +2476,9 @@
         ],
         "properties": {
           "admin_listener": {
+            "type": "string"
+          },
+          "build_id": {
             "type": "string"
           },
           "counts": {

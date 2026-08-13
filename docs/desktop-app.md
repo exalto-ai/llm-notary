@@ -92,10 +92,14 @@ present.
 Pull requests that affect the desktop app build a debug Apple Silicon
 application bundle in CI without receiving production signing credentials.
 GitHub's **Desktop DMG** workflow is reserved for manual package checks and the
-production publisher. Manual checks can build an unsigned preview; a successful
+production publisher. Manual checks can build an unsigned preview. A successful
 production publication signs, notarizes, staples, and checks the package, then
-publishes the DMG and its SHA-256 checksum in the same immutable website build
-selected by the `latest` pointer as the CLI archives.
+publishes the DMG and its SHA-256 checksum together with Tauri's signed
+`.app.tar.gz` updater bundle. They live in the same immutable website build as
+the command-line clients. Release builds carry the shared immutable build ID;
+local source builds report `dev` and do not participate in published updates.
+Unsigned preview builds carry a test build ID but have updates explicitly
+disabled; build identity alone never grants authority to follow production.
 
 The signed workflow reads these secrets from the branch-restricted
 `macos-release` GitHub environment:
@@ -107,6 +111,9 @@ The signed workflow reads these secrets from the branch-restricted
 - `APPLE_NOTARIZATION_KEY_BASE64`, `APPLE_NOTARIZATION_KEY_ID`, and
   `APPLE_NOTARIZATION_ISSUER_ID` provide a dedicated App Store Connect API key
   for notarization.
+- `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` sign the
+  updater bundle and release manifest. This key is separate from Apple's code
+  signing identity and must be backed up for the lifetime of installed clients.
 
 The sidecar preparation script asks Cargo for the active target triple and
 copies the matching daemon binary to Tauri's target-specific external-binary

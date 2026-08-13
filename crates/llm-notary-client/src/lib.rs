@@ -21,7 +21,8 @@ mod local_cli;
 #[command(
     name = "llm-notaryd",
     about = "Run the local LLM Notary proxy and administration daemon",
-    version
+    version,
+    long_version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("LLM_NOTARY_BUILD_ID"), ")")
 )]
 struct DaemonCli {
     /// Versioned local service configuration file. Defaults to the standard

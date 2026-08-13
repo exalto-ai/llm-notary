@@ -251,6 +251,7 @@ async fn health() -> Json<HealthResponse> {
         service: "llm-notaryd".into(),
         status: "ok".into(),
         api_version: API_VERSION.into(),
+        build_id: crate::cli::BUILD_ID.into(),
     })
 }
 
@@ -352,6 +353,7 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
         .map_err(|_| ApiError::internal("catalog_query_failed"))?;
     Ok(Json(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),
+        build_id: crate::cli::BUILD_ID.into(),
         proxy_listener: state.config.proxy.listen.to_string(),
         admin_listener: state.config.admin.listen.to_string(),
         vault: Vault::status().unwrap_or("unavailable").into(),
@@ -1409,6 +1411,7 @@ struct HealthResponse {
     service: String,
     status: String,
     api_version: String,
+    build_id: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1437,6 +1440,7 @@ impl From<crate::catalog::CatalogCounts> for CountsResponse {
 #[derive(Debug, Serialize, ToSchema)]
 struct StatusResponse {
     version: String,
+    build_id: String,
     proxy_listener: String,
     admin_listener: String,
     vault: String,

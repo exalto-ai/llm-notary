@@ -1,9 +1,12 @@
 use std::env;
 
 const DEFAULT_PUBLIC_ORIGIN: &str = "https://llm-notary.exalto.ai";
+const DEVELOPMENT_BUILD_ID: &str = "dev";
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LLM_NOTARY_PUBLIC_ORIGIN");
+    println!("cargo:rerun-if-env-changed=LLM_NOTARY_BUILD_ID");
+    println!("cargo:rerun-if-env-changed=LLM_NOTARY_UPDATES_ENABLED");
     let origin =
         env::var("LLM_NOTARY_PUBLIC_ORIGIN").unwrap_or_else(|_| DEFAULT_PUBLIC_ORIGIN.to_owned());
     let origin = origin.trim_end_matches('/');
@@ -20,4 +23,28 @@ fn main() {
         "LLM_NOTARY_PUBLIC_ORIGIN must be an origin without a path, query, fragment, or newline"
     );
     println!("cargo:rustc-env=LLM_NOTARY_PUBLIC_ORIGIN={origin}");
+
+    let build_id =
+        env::var("LLM_NOTARY_BUILD_ID").unwrap_or_else(|_| DEVELOPMENT_BUILD_ID.to_owned());
+    assert!(
+        valid_release_identifier(&build_id),
+        "LLM_NOTARY_BUILD_ID must be a safe non-empty release identifier"
+    );
+    println!("cargo:rustc-env=LLM_NOTARY_BUILD_ID={build_id}");
+
+    let updates_enabled = env::var("LLM_NOTARY_UPDATES_ENABLED").unwrap_or_else(|_| "0".into());
+    assert!(
+        matches!(updates_enabled.as_str(), "0" | "1"),
+        "LLM_NOTARY_UPDATES_ENABLED must be 0 or 1"
+    );
+    println!("cargo:rustc-env=LLM_NOTARY_UPDATES_ENABLED={updates_enabled}");
+}
+
+fn valid_release_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('.')
+        && !value.contains("..")
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }

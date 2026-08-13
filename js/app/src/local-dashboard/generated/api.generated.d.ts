@@ -528,6 +528,7 @@ export interface components {
         };
         HealthResponse: {
             api_version: string;
+            build_id: string;
             service: string;
             status: string;
         };
@@ -711,6 +712,7 @@ export interface components {
         ShareVisibility: "unlisted" | "listed";
         StatusResponse: {
             admin_listener: string;
+            build_id: string;
             counts: components["schemas"]["CountsResponse"];
             notary: string;
             preview_chars: number;

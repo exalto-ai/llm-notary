@@ -65,16 +65,23 @@ jobs:
               - 'crates/llm-notary-platform/Cargo.toml'
               - 'crates/llm-notary-platform/src/**'
               - 'crates/llm-notary-platform/examples/export-hosted-openapi.rs'
+              - 'config/updater-public-key.txt'
               - 'js/app/**'
+              - 'js/desktop/src-tauri/tauri.release.conf.json'
+              - 'scripts/release-manifest.mjs'
+              - 'scripts/release-manifest.test.mjs'
             desktop:
               # Website-only changes are validated by the Linux SPA job. The
               # packaged dashboard output enters through the Rust client tree.
               - '.github/workflows/ci.yml'
+              - '.github/workflows/desktop-dmg.yml'
+              - '.github/workflows/release.yml'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - 'crates/llm-notary-client/**'
               - 'crates/llm-notary-core/**'
+              - 'config/updater-public-key.txt'
               - 'js/desktop/**'
             docs:
               - '.github/workflows/ci.yml'
@@ -109,6 +116,7 @@ jobs:
             cli:
               - '.github/workflows/ci.yml'
               - '.github/workflows/release.yml'
+              - '.github/workflows/desktop-dmg.yml'
               - 'build.rs'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -121,6 +129,10 @@ jobs:
               - 'vendor/tlsn-utils/**'
               - 'js/app/public/install.sh'
               - 'js/app/scripts/test-install.sh'
+              - 'js/desktop/**'
+              - 'config/updater-public-key.txt'
+              - 'scripts/release-manifest.mjs'
+              - 'scripts/release-manifest.test.mjs'
 
   rust:
     name: Rust
@@ -186,6 +198,7 @@ jobs:
           cache: npm
           cache-dependency-path: js/app/package-lock.json
       - run: npm ci
+      - run: node ../../scripts/release-manifest.test.mjs
       - run: npm run build
       - name: Verify generated APIs and embedded dashboard are committed
         run: git -C ../.. diff --exit-code -- js/app/src/local-dashboard/generated js/app/src/platform-api/generated crates/llm-notary-client/dashboard
@@ -221,6 +234,19 @@ jobs:
       - run: cargo clippy -p llm-notary-desktop --all-targets -- -D warnings
       - name: Build debug application bundle with bundled daemon
         run: npm exec -- tauri build --debug --bundles app
+      - name: Verify signed updater artifact packaging
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/updater.key"
+          npm exec -- tauri signer generate --ci --password test-password --write-keys "$key" >/dev/null
+          LLM_NOTARY_BUILD_ID=ci-updater-fixture \
+            TAURI_SIGNING_PRIVATE_KEY="$key" \
+            TAURI_SIGNING_PRIVATE_KEY_PASSWORD=test-password \
+            npm exec -- tauri build --debug --bundles app \
+              --config src-tauri/tauri.release.conf.json --ci
+          updater=$(find ../../target/debug/bundle/macos -maxdepth 1 -name '*.app.tar.gz' -print -quit)
+          test -n "$updater"
+          test -s "$updater.sig"
 
   docs:
     name: Local workflow documentation
@@ -343,7 +369,7 @@ jobs:
       github.ref == 'refs/heads/main' &&
       needs.changes.outputs.cli == 'true' &&
       needs.required.result == 'success' &&
-      needs.deploy.result == 'success'
+      (needs.deploy.result == 'success' || needs.deploy.result == 'skipped')
     uses: ./.github/workflows/release.yml
     with:
       channel: latest

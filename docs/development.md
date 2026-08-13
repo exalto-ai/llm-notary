@@ -178,12 +178,43 @@ operational spans use bounded safe codes and metadata only.
 
 There are no GitHub Releases or immutable semantic-version releases yet.
 After the normal production deployment succeeds, client-affecting changes on
-`main` builds Apple silicon macOS, Linux, and Windows archives and their SHA-256
-files. The publisher uploads one immutable build directory, verifies every
-public object, and moves `cli/latest` last. The website installer supports macOS
-and Linux and resolves that moving pointer.
+`main` build Apple silicon macOS, Linux, and Windows clients. Every published
+binary carries the same build ID: the commit SHA, GitHub Actions run ID, and run
+attempt joined with hyphens. The publisher uploads raw command-line binaries,
+archives, the DMG, and the signed macOS updater bundle to one immutable build
+directory, then verifies each public object before moving a channel pointer.
+
+`cli/channels/latest.json` is the canonical pointer. It is a signed envelope
+whose exact payload identifies an immutable `release.json` by URL, SHA-256,
+build ID, and detached Minisign signature. It also carries a monotonically
+increasing channel revision allocated as one more than the currently published,
+authenticated revision. Clients
+persist the highest authenticated revision they have accepted and reject a
+replay or conflicting reuse. A first installation still relies on HTTPS and
+the download-bucket access policy for freshness; after first contact, bucket
+credentials alone cannot select an older signed release. The manifest in turn
+binds every installable payload to an immutable URL, byte size, and SHA-256
+value. The legacy text `cli/latest` pointer remains available for older
+installers, but the JSON pointer is moved last. The two mutable objects cannot
+move atomically, so new clients must treat the JSON pointer as the source of
+truth.
+
+The macOS updater bundle also has the independent signature required by Tauri.
+Apple Developer ID signing and notarization protect the installed application;
+the Tauri signature protects the updater payload; and the signed release
+manifest authenticates the release selected by command-line clients. An
+authorized channel update may intentionally point to any differently identified
+signed build, including an older build, but it must use a new signed channel
+revision. A storage or CDN writer without the release signing key cannot
+authorize that rollback.
 
 Keep the download bucket separate from private capture intake. Never expose
-its upload credential to a deployed application. SHA-256 files share the same
-publisher as their archives and must be described as corruption checks, not
-independent release authentication.
+its upload credential to a deployed application. SHA-256 files by themselves
+are corruption checks, not independent release authentication.
+
+The updater's long-lived private key and password live only in the protected
+`macos-release` GitHub environment as `TAURI_SIGNING_PRIVATE_KEY` and
+`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The matching public key is committed at
+`config/updater-public-key.txt`. Back up the private key outside GitHub: losing
+it prevents installed clients from accepting future updates. Rotate it only
+through a release signed by the old key that also teaches clients the new key.
