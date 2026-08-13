@@ -421,9 +421,10 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         let mut response = if parts.method == http::Method::HEAD {
             Response::new(Body::empty())
         } else {
-            Response::new(Body::from(
-                r#"{"service":"llm-notary-proxy","status":"ok"}"#,
-            ))
+            Response::new(Body::from(format!(
+                r#"{{"service":"llm-notary-proxy","status":"ok","build_id":"{}"}}"#,
+                crate::cli::BUILD_ID
+            )))
         };
         response.headers_mut().insert(
             http::header::CONTENT_TYPE,

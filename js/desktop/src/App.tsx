@@ -453,6 +453,8 @@ function SettingsView({ state, notice }: { state: DesktopState; notice: string |
         <div className="preference-row"><strong>Provider proxy</strong><code>{state.proxy_listener}</code></div>
         <div className="preference-row"><strong>Administration</strong><code>{state.admin_listener}</code></div>
         <div className="preference-row"><strong>Version</strong><code>{state.version ?? 'Not running'}</code></div>
+        <div className="preference-row"><strong>App build</strong><code>{state.app_build_id}</code></div>
+        <div className="preference-row"><strong>Service build</strong><code>{state.daemon_build_id ?? 'Not running'}</code></div>
       </div>
     </section>
     {(notice || message) && <div className="native-notice">{message ?? notice}</div>}

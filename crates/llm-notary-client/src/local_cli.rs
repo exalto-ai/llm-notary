@@ -110,6 +110,7 @@ impl std::error::Error for CliError {}
     name = "llm-notary",
     about = "Inspect and operate the local LLM Notary daemon",
     version,
+    long_version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("LLM_NOTARY_BUILD_ID"), ")"),
     arg_required_else_help = true
 )]
 struct Cli {

@@ -154,7 +154,7 @@ export const fixtureEvents: Event[] = [
 ];
 
 export const fixtureStatus: Status = {
-  version: '0.1.0', proxy_listener: '127.0.0.1:8787', admin_listener: '127.0.0.1:8788',
+  version: '0.1.0', build_id: 'dev', proxy_listener: '127.0.0.1:8787', admin_listener: '127.0.0.1:8788',
   vault: 'OS vault', notary: 'directory', preview_chars: 1000,
   counts: { total_captures: 7, capturing: 1, ready_to_finalize: 1, finalized: 2, failed: 1, active_operations: 1 }
 };
