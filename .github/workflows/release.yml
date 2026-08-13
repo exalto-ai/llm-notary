@@ -254,6 +254,8 @@ jobs:
     env:
       AWS_DEFAULT_REGION: auto
       AWS_EC2_METADATA_DISABLED: true
+      AWS_MAX_ATTEMPTS: 10
+      AWS_RETRY_MODE: standard
       BUCKET: llm-notary-prod-downloads
       ENDPOINT: https://t3.storage.dev
       PUBLIC_BUCKET_ORIGIN: https://llm-notary-prod-downloads.t3.tigrisfiles.io
@@ -323,6 +325,11 @@ jobs:
           PREFIX: ${{ steps.release.outputs.prefix }}
         run: |
           set -euo pipefail
+          # Every client payload is below 1 GB. A single PUT avoids fragile
+          # multipart completion against the S3-compatible downloads store,
+          # while the outer retry handles transient canceled requests.
+          aws configure set default.s3.preferred_transfer_client classic
+          aws configure set default.s3.multipart_threshold 1GB
           for file in release/*; do
             name="${file#release/}"
             case "$name" in
@@ -335,11 +342,20 @@ jobs:
               llm-notary-*|llm-notaryd-*) content_type=application/octet-stream ;;
               *) echo "unexpected release file: $name" >&2; exit 1 ;;
             esac
-            aws s3 cp "$file" "s3://$BUCKET/$PREFIX/$name" \
-              --endpoint-url "$ENDPOINT" \
-              --cache-control 'public, max-age=31536000, immutable' \
-              --content-type "$content_type" \
-              --only-show-errors
+            uploaded=false
+            for attempt in 1 2 3 4 5; do
+              if aws s3 cp "$file" "s3://$BUCKET/$PREFIX/$name" \
+                --endpoint-url "$ENDPOINT" \
+                --cache-control 'public, max-age=31536000, immutable' \
+                --content-type "$content_type" \
+                --only-show-errors; then
+                uploaded=true
+                break
+              fi
+              echo "upload attempt $attempt failed for $name" >&2
+              if test "$attempt" -lt 5; then sleep "$((attempt * 5))"; fi
+            done
+            test "$uploaded" = true
           done
       - name: Verify public immutable build
         env:
