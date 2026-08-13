@@ -7,6 +7,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clipboard,
+  Download,
   FileCheck2,
   Gauge,
   KeyRound,
@@ -25,13 +26,17 @@ import {
   completeOnboarding,
   configureVault,
   errorMessage,
+  checkForUpdates,
   getDesktopState,
   getLaunchAtLogin,
+  getUpdateState,
+  installUpdateAndRestart,
   restartDaemon,
   setLaunchAtLogin,
   startDaemon,
   stopDaemon,
   type DesktopState,
+  type DesktopUpdateState,
 } from './bridge';
 import notaryMark from './notary-mark.svg';
 
@@ -129,11 +134,38 @@ function StatusDot({ running, warning = false }: { running: boolean; warning?: b
   return <span className={`status-dot ${running ? 'is-running' : ''} ${warning ? 'is-warning' : ''}`} />;
 }
 
+function formatBytes(bytes: number) {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function updateChipLabel(update: DesktopUpdateState) {
+  if (update.phase === 'checking') return 'Checking for updates';
+  if (update.phase === 'downloading') {
+    const percent = update.total_bytes
+      ? Math.min(100, Math.round((update.downloaded_bytes / update.total_bytes) * 100))
+      : 0;
+    return `Downloading update${percent ? ` ${percent}%` : ''}`;
+  }
+  if (update.phase === 'ready') return 'Update ready';
+  if (update.phase === 'installing') return 'Installing update';
+  if (update.phase === 'error') return 'Update check failed';
+  return null;
+}
+
+function updateRestartBlockReason(state: DesktopState) {
+  if (state.counts.capturing > 0) return 'Finish the active capture before restarting.';
+  if (state.counts.active_operations > 0) return 'Finish the active finalization before restarting.';
+  if (state.running && !state.managed_by_desktop) return 'Stop or update the separately managed local service first.';
+  return null;
+}
+
 function App() {
   const query = useMemo(() => new URLSearchParams(window.location.search), []);
   const requestedView = query.get('view') as View | null;
   const [view, setView] = useState<View>(requestedView && requestedView in viewMeta ? requestedView : 'home');
   const [state, setState] = useState<DesktopState | null>(null);
+  const [updateState, setUpdateState] = useState<DesktopUpdateState | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -151,6 +183,19 @@ function App() {
     return () => window.clearInterval(timer);
   }, [refresh]);
 
+  useEffect(() => {
+    const refreshUpdate = async () => {
+      try {
+        setUpdateState(await getUpdateState());
+      } catch (error) {
+        setNotice(errorMessage(error));
+      }
+    };
+    void refreshUpdate();
+    const timer = window.setInterval(() => void refreshUpdate(), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   const runAction = async (name: string, action: () => Promise<void>, success: string) => {
     setBusy(name);
     setNotice(null);
@@ -162,6 +207,31 @@ function App() {
     } catch (error) {
       setNotice(errorMessage(error));
     } finally {
+      setBusy(null);
+    }
+  };
+
+  const checkForDesktopUpdate = async () => {
+    setBusy('update-check');
+    setNotice(null);
+    try {
+      setUpdateState(await checkForUpdates());
+    } catch (error) {
+      setNotice(errorMessage(error));
+      setUpdateState(await getUpdateState());
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const restartToUpdate = async () => {
+    setBusy('update-install');
+    setNotice(null);
+    try {
+      await installUpdateAndRestart();
+    } catch (error) {
+      setNotice(errorMessage(error));
+      setUpdateState(await getUpdateState());
       setBusy(null);
     }
   };
@@ -184,6 +254,14 @@ function App() {
             <span>{meta.subtitle}</span>
           </div>
           <div className="toolbar-spacer" data-tauri-drag-region />
+          {updateState && updateChipLabel(updateState) && <button
+            type="button"
+            className={`update-chip is-${updateState.phase}`}
+            onClick={() => setView('settings')}
+          >
+            {updateState.phase === 'downloading' ? <RefreshCw size={11} className="is-spinning" /> : <Download size={11} />}
+            {updateChipLabel(updateState)}
+          </button>}
           <div className={`service-chip ${state.running ? 'is-running' : ''}`}>
             <StatusDot running={state.running} warning={!state.running} />
             {state.running ? 'Service running' : 'Service stopped'}
@@ -203,7 +281,14 @@ function App() {
             />
           )}
           {view === 'connections' && <ConnectionsView state={state} notice={notice} />}
-          {view === 'settings' && <SettingsView state={state} notice={notice} />}
+          {view === 'settings' && <SettingsView
+            state={state}
+            updateState={updateState}
+            busy={busy}
+            notice={notice}
+            onCheckUpdate={() => void checkForDesktopUpdate()}
+            onRestartToUpdate={() => void restartToUpdate()}
+          />}
           {route && (
             <WorkspaceFrame
               route={route}
@@ -408,11 +493,34 @@ function ConnectionsView({ state, notice }: { state: DesktopState; notice: strin
   </div>;
 }
 
-function SettingsView({ state, notice }: { state: DesktopState; notice: string | null }) {
+function SettingsView({
+  state,
+  updateState,
+  busy,
+  notice,
+  onCheckUpdate,
+  onRestartToUpdate,
+}: {
+  state: DesktopState;
+  updateState: DesktopUpdateState | null;
+  busy: string | null;
+  notice: string | null;
+  onCheckUpdate: () => void;
+  onRestartToUpdate: () => void;
+}) {
   const [launch, setLaunch] = useState(false);
   const [ready, setReady] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const vault = vaultProtection(state.vault_mode);
+  const restartBlock = updateRestartBlockReason(state);
+  const updateBusy = updateState?.phase === 'checking'
+    || updateState?.phase === 'downloading'
+    || updateState?.phase === 'installing'
+    || busy === 'update-check'
+    || busy === 'update-install';
+  const progress = updateState?.total_bytes
+    ? Math.min(100, (updateState.downloaded_bytes / updateState.total_bytes) * 100)
+    : 0;
 
   useEffect(() => {
     void getLaunchAtLogin().then((enabled) => { setLaunch(enabled); setReady(true); });
@@ -438,6 +546,36 @@ function SettingsView({ state, notice }: { state: DesktopState; notice: string |
           <input type="checkbox" role="switch" checked={launch} disabled={!ready} onChange={(event) => void changeLaunch(event.target.checked)} />
         </label>
         <div className="preference-row"><div><strong>Menu-bar controller</strong><span>Closing the window keeps the background service available.</span></div><span className="value-label"><StatusDot running />Active</span></div>
+      </div>
+    </section>
+    <section className="preference-section">
+      <h2>Software updates</h2>
+      <div className="preference-group update-preferences">
+        <div className="preference-row update-summary-row">
+          <div>
+            <strong>{updateState?.phase === 'ready'
+              ? 'The latest release is ready'
+              : updateState?.phase === 'current'
+                ? 'LLM Notary is up to date'
+                : updateState?.phase === 'downloading'
+                  ? 'Downloading the latest release'
+                  : updateState?.phase === 'error'
+                    ? 'Could not check for updates'
+                    : updateState?.enabled === false
+                      ? 'Updates are off in this build'
+                      : 'Automatically stay on the latest release'}</strong>
+            <span>{updateState?.message ?? 'Checking the signed latest release in the background.'}</span>
+          </div>
+          {updateState?.phase === 'ready'
+            ? <button className="mac-button is-primary" onClick={onRestartToUpdate} disabled={Boolean(restartBlock) || updateBusy}>Restart to update</button>
+            : <button className="mac-button" onClick={onCheckUpdate} disabled={!updateState?.enabled || updateBusy}>{updateBusy ? 'Working…' : 'Check now'}</button>}
+        </div>
+        {updateState?.phase === 'downloading' && <div className="update-progress-row">
+          <span><i style={{ width: `${progress}%` }} /></span>
+          <small>{formatBytes(updateState.downloaded_bytes)} of {updateState.total_bytes ? formatBytes(updateState.total_bytes) : 'the update'}</small>
+        </div>}
+        {updateState?.phase === 'ready' && restartBlock && <p className="preference-note update-block-note">{restartBlock} The update will stay ready.</p>}
+        <p className="preference-note">Signed release builds check about every six hours and download in the background. Installation happens only when you choose Restart to update.</p>
       </div>
     </section>
     <section className="preference-section">

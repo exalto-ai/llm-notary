@@ -26,6 +26,16 @@ export type DesktopState = {
   message: string | null;
 };
 
+export type DesktopUpdateState = {
+  enabled: boolean;
+  phase: 'disabled' | 'idle' | 'checking' | 'current' | 'downloading' | 'ready' | 'installing' | 'error';
+  current_build_id: string;
+  latest_build_id: string | null;
+  downloaded_bytes: number;
+  total_bytes: number | null;
+  message: string | null;
+};
+
 const emptyCounts: CaptureCounts = {
   total_captures: 0,
   capturing: 0,
@@ -130,6 +140,54 @@ export async function stopDaemon(): Promise<void> {
 export async function restartDaemon(): Promise<void> {
   if (!isTauri()) return;
   await invoke('restart_daemon');
+}
+
+export async function getUpdateState(): Promise<DesktopUpdateState> {
+  if (!isTauri()) {
+    const preview = new URLSearchParams(window.location.search).get('update');
+    if (preview === 'ready') {
+      return {
+        enabled: true,
+        phase: 'ready',
+        current_build_id: 'preview-build-a',
+        latest_build_id: 'preview-build-b',
+        downloaded_bytes: 42 * 1024 * 1024,
+        total_bytes: 42 * 1024 * 1024,
+        message: 'The latest release is ready. Restart when local work is idle.',
+      };
+    }
+    if (preview === 'downloading') {
+      return {
+        enabled: true,
+        phase: 'downloading',
+        current_build_id: 'preview-build-a',
+        latest_build_id: 'preview-build-b',
+        downloaded_bytes: 24 * 1024 * 1024,
+        total_bytes: 42 * 1024 * 1024,
+        message: 'Downloading the signed update…',
+      };
+    }
+    return {
+      enabled: false,
+      phase: 'disabled',
+      current_build_id: 'dev',
+      latest_build_id: null,
+      downloaded_bytes: 0,
+      total_bytes: null,
+      message: 'Automatic updates are available in signed release builds.',
+    };
+  }
+  return invoke<DesktopUpdateState>('get_update_state');
+}
+
+export async function checkForUpdates(): Promise<DesktopUpdateState> {
+  if (!isTauri()) return getUpdateState();
+  return invoke<DesktopUpdateState>('check_for_updates');
+}
+
+export async function installUpdateAndRestart(): Promise<void> {
+  if (!isTauri()) return;
+  await invoke('install_update_and_restart');
 }
 
 export async function getLaunchAtLogin(): Promise<boolean> {
