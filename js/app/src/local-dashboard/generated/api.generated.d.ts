@@ -717,6 +717,7 @@ export interface components {
             notary: string;
             preview_chars: number;
             proxy_listener: string;
+            updates: components["schemas"]["UpdateStatusResponse"];
             vault: string;
             version: string;
         };
@@ -724,6 +725,15 @@ export interface components {
             capture_id: string;
             manifest: unknown;
             trace: unknown;
+        };
+        UpdateStatusResponse: {
+            current_build_id: string;
+            enabled: boolean;
+            error_code?: string | null;
+            /** Format: int64 */
+            last_checked_unix_ms?: number | null;
+            latest_build_id?: string | null;
+            update_available: boolean;
         };
         VerificationResponse: {
             capture_id: string;

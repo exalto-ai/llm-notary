@@ -16,6 +16,7 @@ pub mod catalog;
 pub mod cli;
 pub mod config;
 mod local_cli;
+pub mod update;
 
 #[derive(Parser, Debug)]
 #[command(

@@ -2,6 +2,7 @@
 
 use std::{
     fs,
+    io::Write as _,
     net::{IpAddr, Ipv4Addr, SocketAddr},
     os::unix::fs::PermissionsExt as _,
     process::{Child, Command, Stdio},
@@ -13,12 +14,35 @@ use llm_notary_client::{
     config::AgentConfig,
 };
 
-struct Daemon(Child);
+struct Daemon(Option<Child>);
+
+impl Daemon {
+    fn graceful_shutdown(&mut self) {
+        let child = self.0.as_mut().unwrap();
+        child
+            .stdin
+            .as_mut()
+            .unwrap()
+            .write_all(b"shutdown\n")
+            .unwrap();
+        for _ in 0..200 {
+            if child.try_wait().unwrap().is_some() {
+                let status = self.0.take().unwrap().wait().unwrap();
+                assert!(status.success(), "daemon did not shut down cleanly");
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        panic!("daemon did not drain after its desktop control request");
+    }
+}
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        if let Some(mut child) = self.0.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
     }
 }
 
@@ -84,11 +108,13 @@ async fn daemon_and_cli_use_the_versioned_loopback_api_for_reads_and_mutations()
         .env("XDG_CONFIG_HOME", &isolated_config)
         .env("XDG_DATA_HOME", &isolated_data)
         .env("LLM_NOTARY_VAULT_PASSPHRASE_FILE", &passphrase_path)
+        .env("LLM_NOTARY_DESKTOP_CONTROL_STDIN", "1")
+        .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    let _daemon = Daemon(daemon);
+    let mut daemon = Daemon(Some(daemon));
 
     let health_url = format!("http://{admin}/healthz");
     let client = reqwest::Client::new();
@@ -113,6 +139,8 @@ async fn daemon_and_cli_use_the_versioned_loopback_api_for_reads_and_mutations()
     assert_eq!(status["admin_listener"], admin.to_string());
     assert_eq!(status["counts"]["total_captures"], 1);
     assert_eq!(status["counts"]["ready_to_finalize"], 1);
+    assert_eq!(status["updates"]["current_build_id"], "dev");
+    assert_eq!(status["updates"]["enabled"], false);
 
     let capture = cli(
         &config_path,
@@ -132,6 +160,7 @@ async fn daemon_and_cli_use_the_versioned_loopback_api_for_reads_and_mutations()
             .unwrap()
             .starts_with("op-")
     );
+    daemon.graceful_shutdown();
 }
 
 fn cli(config: &std::path::Path, arguments: &[&str]) -> std::process::Output {

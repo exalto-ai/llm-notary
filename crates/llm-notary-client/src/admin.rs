@@ -24,7 +24,7 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, watch};
 use tower_http::{
     limit::RequestBodyLimitLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
@@ -73,6 +73,7 @@ pub(crate) struct AdminState {
     pending_authorizations: Arc<Mutex<HashMap<String, auth::PendingAuthorization>>>,
     account_credentials: Arc<Mutex<()>>,
     pub(crate) work_available: Arc<Notify>,
+    pub(crate) update_status: crate::update::SharedUpdateStatus,
 }
 
 impl AdminState {
@@ -88,6 +89,7 @@ impl AdminState {
             pending_authorizations: Arc::new(Mutex::new(HashMap::new())),
             account_credentials: Arc::new(Mutex::new(())),
             work_available: Arc::new(Notify::new()),
+            update_status: crate::update::background_status(),
         })
     }
 }
@@ -216,7 +218,7 @@ fn embedded_dashboard_response(path: &str, desktop_embed: bool) -> Response {
         share_status
     ),
     components(schemas(
-        HealthResponse, StatusResponse, CountsResponse, NotariesResponse, NotaryResponse,
+        HealthResponse, StatusResponse, CountsResponse, UpdateStatusResponse, NotariesResponse, NotaryResponse,
         PageQuery, CaptureResponse, CaptureDetailResponse, ArtifactResponse,
         OperationSummaryResponse, OperationResponse, OperationProgressResponse,
         OperationProofProgressResponse, OperationAttemptResponse,
@@ -351,6 +353,7 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
         .await
         .map_err(|_| ApiError::internal("catalog_task_failed"))?
         .map_err(|_| ApiError::internal("catalog_query_failed"))?;
+    let update = state.update_status.read().await;
     Ok(Json(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),
         build_id: crate::cli::BUILD_ID.into(),
@@ -365,6 +368,14 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
         .into(),
         preview_chars: state.config.catalog.prompt_preview_chars,
         counts: CountsResponse::from(counts),
+        updates: UpdateStatusResponse {
+            enabled: update.enabled,
+            current_build_id: update.current_build_id.clone(),
+            latest_build_id: update.latest_build_id.clone(),
+            update_available: update.update_available,
+            last_checked_unix_ms: update.last_checked_unix_ms,
+            error_code: update.error_code.clone(),
+        },
     }))
 }
 
@@ -1157,9 +1168,13 @@ pub(crate) fn spawn_finalization_worker(
     config: Arc<AgentConfig>,
     vault: Arc<Vault>,
     work_available: Arc<Notify>,
+    mut shutdown: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<Result<()>> {
     tokio::spawn(async move {
         loop {
+            if *shutdown.borrow() {
+                return Ok(());
+            }
             let catalog_for_claim = catalog.clone();
             let operation = tokio::task::spawn_blocking(move || {
                 catalog_for_claim.claim_next_finalization(now_ms()?)
@@ -1170,6 +1185,11 @@ pub(crate) fn spawn_finalization_worker(
                 tokio::select! {
                     () = work_available.notified() => {},
                     () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {},
+                    result = shutdown.changed() => {
+                        if result.is_err() || *shutdown.borrow() {
+                            return Ok(());
+                        }
+                    },
                 }
                 continue;
             };
@@ -1199,6 +1219,9 @@ pub(crate) fn spawn_finalization_worker(
                     .unwrap_or("finalization_error");
                 catalog.fail_operation(&operation.operation_id, now, code)?;
                 tracing::warn!(operation_id = %operation.operation_id, failure_code = code, "finalization operation failed");
+            }
+            if *shutdown.borrow() {
+                return Ok(());
             }
         }
     })
@@ -1447,6 +1470,17 @@ struct StatusResponse {
     notary: String,
     preview_chars: usize,
     counts: CountsResponse,
+    updates: UpdateStatusResponse,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct UpdateStatusResponse {
+    enabled: bool,
+    current_build_id: String,
+    latest_build_id: Option<String>,
+    update_available: bool,
+    last_checked_unix_ms: Option<u64>,
+    error_code: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

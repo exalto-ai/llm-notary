@@ -1038,6 +1038,11 @@ function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
       message: 'Use this URL to discover admin routes and request bodies.'
     });
   };
+  const updateState = !status.updates.enabled ? 'Disabled for source builds'
+    : status.updates.update_available ? `Available: ${status.updates.latest_build_id}`
+    : status.updates.error_code ? 'Check failed'
+    : status.updates.last_checked_unix_ms ? 'Up to date'
+    : 'Not checked yet';
 
   return <div className="view-page"><Paper className="appearance-setting">
       <Text fw={700}>Theme</Text>
@@ -1053,8 +1058,11 @@ function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
           <Fact label="Admin & dashboard" value={status.admin_listener} />
           <Fact label="API version" value="v1" />
           <Fact label="Service version" value={status.version} />
+          <Fact label="Build" value={status.build_id} />
+          <Fact label="Updates" value={updateState} />
         </dl>
         <Text className="safe-note"><ShieldCheck size={15} /> Both listeners are restricted to loopback.</Text>
+        {status.updates.update_available && <Text>Run <code>llm-notary update</code>, then restart the service after active work finishes.</Text>}
       </Paper>
       <Paper className="settings-panel">
         <Text className="eyebrow">Agent discovery</Text>

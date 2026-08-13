@@ -30,6 +30,14 @@ systemd, launchd, or the Windows Service Control Manager can supervise this
 same foreground command. Stop it through the manager or with the terminal's
 normal interrupt; do not run a second process against the same catalog.
 
+On interrupt or termination, the daemon first closes both listeners to new
+requests. Existing provider response streams are allowed to finish and seal
+their private capture, and the finalization worker stops claiming queued work
+after it finishes the operation it already owns. Queued operations remain in
+the catalog for the next start. The desktop app requests the same drain over
+its private child-process pipe. It does not send a kill signal as an update or
+normal stop mechanism.
+
 There is no compatibility alias: `llm-notary` does not start the service.
 Service-manager `ExecStart`, launchd `ProgramArguments`, and Windows service
 definitions must invoke `llm-notaryd`, optionally followed by `--config` and
@@ -147,6 +155,15 @@ llm-notary --config /path/to/config.toml captures list --json
 On Unix, the password file must not be accessible to group or other users.
 The CLI never reads the Argon2id hash as though it were a password and never
 stores a prompted password.
+
+`llm-notary version`, `llm-notary update --check`, and `llm-notary update`
+run before configuration loading and daemon compatibility checks. This keeps
+release recovery available when the service is stopped or an installed pair
+has an incompatible API. Official daemons authenticate the signed `latest`
+channel and its monotonically increasing revision, then check it in the
+background after startup and about every six hours with jitter. `/v1/status`
+reports only the current/latest build IDs, availability, last check time, and a
+bounded failure code; development builds make no update request.
 
 ## Command client
 

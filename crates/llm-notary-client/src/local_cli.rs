@@ -132,6 +132,12 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum CliCommand {
+    /// Show this command-line client's exact release identity.
+    Version,
+    /// Check for or install the current signed release.
+    Update(UpdateArgs),
+    #[command(name = "__apply-update", hide = true)]
+    ApplyUpdate(ApplyUpdateArgs),
     /// Show daemon health, listeners, and capture counts.
     Status,
     /// Search or inspect captures.
@@ -169,6 +175,25 @@ enum CliCommand {
     },
     /// Open the local dashboard in the default browser.
     Open,
+}
+
+#[derive(Args, Debug)]
+struct UpdateArgs {
+    /// Check the signed release channel without changing installed files.
+    #[arg(long)]
+    check: bool,
+}
+
+#[derive(Args, Debug)]
+struct ApplyUpdateArgs {
+    #[arg(long)]
+    parent_pid: u32,
+    #[arg(long)]
+    install_directory: PathBuf,
+    #[arg(long)]
+    staging_directory: PathBuf,
+    #[arg(long)]
+    build_id: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -372,6 +397,55 @@ async fn run_parsed(
     stdout: &mut dyn io::Write,
     stderr: &mut dyn io::Write,
 ) -> Result<(), CliError> {
+    if matches!(&cli.command, CliCommand::Version) {
+        let windows_update = crate::update::windows_update_result();
+        let value = json!({
+            "version": env!("CARGO_PKG_VERSION"),
+            "build_id": crate::cli::BUILD_ID,
+            "official_build": crate::update::is_official_build(),
+            "last_windows_update": windows_update,
+        });
+        let windows_suffix = windows_update
+            .as_ref()
+            .map(|result| format!("; last Windows update: {}", result.state))
+            .unwrap_or_default();
+        return write_direct_output(
+            cli.json,
+            &value,
+            format!(
+                "LLM Notary {} ({}){}",
+                env!("CARGO_PKG_VERSION"),
+                crate::cli::BUILD_ID,
+                windows_suffix,
+            ),
+            stdout,
+        );
+    }
+    if let CliCommand::Update(args) = &cli.command {
+        let value = if args.check {
+            let check = crate::update::check_latest().await.map_err(update_error)?;
+            serde_json::to_value(&check)
+                .map_err(|_| CliError::new(EXIT_ERROR, "could not encode update status"))?
+        } else {
+            let outcome = crate::update::install_latest()
+                .await
+                .map_err(update_error)?;
+            serde_json::to_value(&outcome)
+                .map_err(|_| CliError::new(EXIT_ERROR, "could not encode update result"))?
+        };
+        let human = update_human_output(&value, args.check)?;
+        return write_direct_output(cli.json, &value, human, stdout);
+    }
+    if let CliCommand::ApplyUpdate(args) = &cli.command {
+        crate::update::run_windows_apply_helper(
+            args.parent_pid,
+            &args.install_directory,
+            &args.staging_directory,
+            &args.build_id,
+        )
+        .map_err(update_error)?;
+        return Ok(());
+    }
     if let CliCommand::Traces {
         command: TracesCommand::Verify(args),
     } = &cli.command
@@ -410,6 +484,93 @@ async fn run_parsed(
     writeln!(stdout, "{output}")
         .map_err(|_| CliError::new(EXIT_ERROR, "could not write command output"))?;
     Ok(())
+}
+
+fn write_direct_output(
+    json: bool,
+    value: &Value,
+    human: String,
+    stdout: &mut dyn io::Write,
+) -> Result<(), CliError> {
+    let output = if json {
+        serde_json::to_string_pretty(value)
+            .map_err(|_| CliError::new(EXIT_ERROR, "could not encode command output"))?
+    } else {
+        human
+    };
+    writeln!(stdout, "{output}")
+        .map_err(|_| CliError::new(EXIT_ERROR, "could not write command output"))
+}
+
+fn update_error(error: anyhow::Error) -> CliError {
+    let message = error.to_string();
+    let invalid = message.contains("source and development builds")
+        || message.contains("package manager")
+        || message.contains("desktop app")
+        || message.contains("not available for");
+    CliError::coded(
+        if invalid {
+            EXIT_INVALID_INPUT
+        } else {
+            EXIT_RETRYABLE
+        },
+        if invalid {
+            "update_not_supported"
+        } else {
+            "update_failed"
+        },
+        message,
+    )
+}
+
+fn update_human_output(value: &Value, check: bool) -> Result<String, CliError> {
+    if check {
+        let current = value
+            .get("current_build_id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let latest = value
+            .get("latest_build_id")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown");
+        let available = value
+            .get("update_available")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let official = value
+            .get("official_build")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if !official {
+            return Ok(format!(
+                "Latest signed build: {latest}\nThis source build ({current}) can check releases but cannot replace itself."
+            ));
+        }
+        return Ok(if available {
+            format!(
+                "Update available: {current} → {latest}\nRun `llm-notary update` to install it."
+            )
+        } else {
+            format!("LLM Notary is up to date ({current}).")
+        });
+    }
+    let state = value
+        .get("state")
+        .and_then(Value::as_str)
+        .ok_or_else(|| CliError::new(EXIT_ERROR, "the update result is incomplete"))?;
+    let build = value
+        .get("new_build_id")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    Ok(match state {
+        "current" => format!("LLM Notary is already up to date ({build})."),
+        "staged" => format!(
+            "Update {build} is staged and will finish after this command exits. Restart llm-notaryd when no capture or finalization is active."
+        ),
+        _ => format!(
+            "Updated llm-notary and llm-notaryd to {build}. Restart llm-notaryd when no capture or finalization is active."
+        ),
+    })
 }
 
 fn load_config_for_cli(path: Option<&Path>) -> Result<AgentConfig, CliError> {
@@ -708,6 +869,9 @@ async fn execute(
     show_progress: bool,
 ) -> Result<Value, CliError> {
     match command {
+        CliCommand::Version | CliCommand::Update(_) | CliCommand::ApplyUpdate(_) => {
+            unreachable!("direct commands are handled before daemon configuration")
+        }
         CliCommand::Status => client.request(Method::GET, "/v1/status", &[]).await,
         CliCommand::Captures { command } => match command {
             CapturesCommand::List(args) => {
@@ -1100,9 +1264,13 @@ fn push_number<T: ToString>(query: &mut Vec<(String, String)>, key: &str, value:
 
 fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError> {
     match command {
+        CliCommand::Version | CliCommand::Update(_) | CliCommand::ApplyUpdate(_) => {
+            unreachable!("direct commands provide their own human output")
+        }
         CliCommand::Status => Ok(format!(
-            "llm-notaryd {}\nproxy {}\nadmin {}\ncaptures {} total, {} ready to finalize, {} finalized, {} failed\noperations {} active",
+            "llm-notaryd {} ({})\nproxy {}\nadmin {}\ncaptures {} total, {} ready to finalize, {} finalized, {} failed\noperations {} active\nupdates {}",
             value_string(value, "/version"),
+            value_string(value, "/build_id"),
             value_string(value, "/proxy_listener"),
             value_string(value, "/admin_listener"),
             value_string(value, "/counts/total_captures"),
@@ -1110,6 +1278,30 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             value_string(value, "/counts/finalized"),
             value_string(value, "/counts/failed"),
             value_string(value, "/counts/active_operations"),
+            if value.pointer("/updates/enabled").and_then(Value::as_bool) == Some(false) {
+                "disabled for this source build".to_owned()
+            } else if value
+                .pointer("/updates/update_available")
+                .and_then(Value::as_bool)
+                == Some(true)
+            {
+                format!(
+                    "available ({})",
+                    value_string(value, "/updates/latest_build_id")
+                )
+            } else if value
+                .pointer("/updates/error_code")
+                .is_some_and(|value| !value.is_null())
+            {
+                "check failed".to_owned()
+            } else if value
+                .pointer("/updates/last_checked_unix_ms")
+                .is_some_and(|value| !value.is_null())
+            {
+                "up to date".to_owned()
+            } else {
+                "not checked yet".to_owned()
+            },
         )),
         CliCommand::Captures {
             command: CapturesCommand::List(_),
@@ -1329,6 +1521,8 @@ mod tests {
     fn every_initial_command_parses_and_the_cli_never_has_an_implicit_daemon_mode() {
         assert!(Cli::try_parse_from(["llm-notary"]).is_err());
         for arguments in [
+            vec!["llm-notary", "version"],
+            vec!["llm-notary", "update", "--check"],
             vec!["llm-notary", "status"],
             vec!["llm-notary", "captures", "list"],
             vec!["llm-notary", "captures", "list", "--all"],
@@ -1369,6 +1563,28 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(arguments).is_ok());
         }
+    }
+
+    #[tokio::test]
+    async fn version_bypasses_configuration_and_the_daemon() {
+        let missing = tempfile::tempdir().unwrap().path().join("missing.toml");
+        let cli = Cli::try_parse_from([
+            "llm-notary",
+            "--json",
+            "--config",
+            missing.to_str().unwrap(),
+            "version",
+        ])
+        .unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        run_parsed(cli, &mut stdout, &mut stderr).await.unwrap();
+
+        let value: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(value["build_id"], crate::cli::BUILD_ID);
+        assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
+        assert!(stderr.is_empty());
     }
 
     #[tokio::test]

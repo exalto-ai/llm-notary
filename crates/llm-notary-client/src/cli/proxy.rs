@@ -1,7 +1,10 @@
 use std::{
     collections::HashSet,
     path::PathBuf,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -16,7 +19,7 @@ use axum::{
 };
 use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt as _;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Notify, watch};
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
@@ -112,6 +115,40 @@ pub(crate) struct AppState {
     config_fingerprint: Arc<str>,
     serial: Arc<Mutex<u64>>,
     hosted_admission: bool,
+    capture_tasks: CaptureTasks,
+}
+
+#[derive(Clone, Default)]
+struct CaptureTasks {
+    active: Arc<AtomicUsize>,
+    idle: Arc<Notify>,
+}
+
+struct CaptureTaskGuard(CaptureTasks);
+
+impl CaptureTasks {
+    fn track(&self) -> CaptureTaskGuard {
+        self.active.fetch_add(1, Ordering::AcqRel);
+        CaptureTaskGuard(self.clone())
+    }
+
+    async fn wait_idle(&self) {
+        loop {
+            let notified = self.idle.notified();
+            if self.active.load(Ordering::Acquire) == 0 {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+impl Drop for CaptureTaskGuard {
+    fn drop(&mut self) {
+        if self.0.active.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.0.idle.notify_waiters();
+        }
+    }
 }
 
 pub async fn run(args: ProxyArgs) -> Result<()> {
@@ -157,6 +194,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         config: Arc::new(config),
         serial: Arc::new(Mutex::new(0)),
         hosted_admission,
+        capture_tasks: CaptureTasks::default(),
     };
     let app = router(state.clone());
     let admin_state = crate::admin::AdminState::new(state.catalog.clone(), state.config.clone())?;
@@ -171,23 +209,88 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         "LLM Notary daemon proxy listening"
     );
     tracing::info!(address = %state.config.admin.listen, "LLM Notary daemon admin API listening");
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let update_checker = crate::update::spawn_background_checker(
+        admin_state.update_status.clone(),
+        shutdown_rx.clone(),
+    );
     let mut worker = crate::admin::spawn_finalization_worker(
         state.catalog.clone(),
         state.config.clone(),
         state.vault.clone(),
         admin_state.work_available.clone(),
+        shutdown_rx.clone(),
     );
-    let result = tokio::select! {
-        result = axum::serve(listener, app) => result.map_err(Into::into),
-        result = axum::serve(admin_listener, admin) => result.map_err(Into::into),
-        result = &mut worker => result.context("finalization worker exited")?,
-        () = shutdown_signal() => {
-            tracing::info!("LLM Notary daemon shutting down");
-            Ok(())
-        },
+    let proxy_shutdown = wait_for_shutdown(shutdown_rx.clone());
+    let admin_shutdown = wait_for_shutdown(shutdown_rx);
+    let mut proxy_server = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .with_graceful_shutdown(proxy_shutdown)
+            .await
+            .context("proxy listener exited")
+    });
+    let mut admin_server = tokio::spawn(async move {
+        axum::serve(admin_listener, admin)
+            .with_graceful_shutdown(admin_shutdown)
+            .await
+            .context("admin listener exited")
+    });
+    enum Exit {
+        Requested,
+        Proxy(Result<()>),
+        Admin(Result<()>),
+        Worker(Result<()>),
+    }
+    let exit = tokio::select! {
+        result = &mut proxy_server => Exit::Proxy(joined(result, "proxy server")),
+        result = &mut admin_server => Exit::Admin(joined(result, "admin server")),
+        result = &mut worker => Exit::Worker(joined(result, "finalization worker")),
+        () = shutdown_signal() => Exit::Requested,
     };
-    worker.abort();
-    result
+    tracing::info!("LLM Notary daemon draining before shutdown");
+    let _ = shutdown_tx.send(true);
+    match exit {
+        Exit::Requested => {
+            joined(proxy_server.await, "proxy server")?;
+            joined(admin_server.await, "admin server")?;
+            joined(worker.await, "finalization worker")?;
+        }
+        Exit::Proxy(result) => {
+            result?;
+            joined(admin_server.await, "admin server")?;
+            joined(worker.await, "finalization worker")?;
+            bail!("proxy server stopped unexpectedly");
+        }
+        Exit::Admin(result) => {
+            result?;
+            joined(proxy_server.await, "proxy server")?;
+            joined(worker.await, "finalization worker")?;
+            bail!("admin server stopped unexpectedly");
+        }
+        Exit::Worker(result) => {
+            result?;
+            joined(proxy_server.await, "proxy server")?;
+            joined(admin_server.await, "admin server")?;
+            bail!("finalization worker stopped unexpectedly");
+        }
+    }
+    if let Some(update_checker) = update_checker {
+        update_checker.await.context("update checker task exited")?;
+    }
+    state.capture_tasks.wait_idle().await;
+    tracing::info!("LLM Notary daemon shut down cleanly");
+    Ok(())
+}
+
+fn joined(
+    result: std::result::Result<Result<()>, tokio::task::JoinError>,
+    name: &str,
+) -> Result<()> {
+    result.with_context(|| format!("{name} task exited"))?
+}
+
+async fn wait_for_shutdown(mut shutdown: watch::Receiver<bool>) {
+    while !*shutdown.borrow() && shutdown.changed().await.is_ok() {}
 }
 
 pub(crate) fn router(state: AppState) -> Router {
@@ -195,6 +298,17 @@ pub(crate) fn router(state: AppState) -> Router {
 }
 
 async fn shutdown_signal() {
+    if std::env::var_os("LLM_NOTARY_DESKTOP_CONTROL_STDIN").is_some() {
+        tokio::select! {
+            () = system_shutdown_signal() => unblock_desktop_control_stdin(),
+            () = desktop_shutdown_signal() => {},
+        }
+    } else {
+        system_shutdown_signal().await;
+    }
+}
+
+async fn system_shutdown_signal() {
     let interrupt = async {
         tokio::signal::ctrl_c()
             .await
@@ -214,6 +328,59 @@ async fn shutdown_signal() {
         () = terminate => {},
     }
 }
+
+async fn desktop_shutdown_signal() {
+    let command = tokio::task::spawn_blocking(|| {
+        use std::io::BufRead as _;
+        let mut line = String::new();
+        let read = std::io::stdin().lock().read_line(&mut line)?;
+        Ok::<_, std::io::Error>((read, line))
+    })
+    .await;
+    match command {
+        Ok(Ok((0, _))) => tracing::info!("desktop control pipe closed"),
+        Ok(Ok((_, line))) if line.trim_end_matches(['\r', '\n']) == "shutdown" => {
+            tracing::info!("desktop requested graceful shutdown");
+        }
+        Ok(Ok(_)) => {
+            tracing::warn!("ignoring an invalid desktop control command");
+            std::future::pending::<()>().await;
+        }
+        Ok(Err(_)) | Err(_) => {
+            tracing::warn!("desktop control pipe failed");
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+#[cfg(unix)]
+fn unblock_desktop_control_stdin() {
+    // SAFETY: the process is already shutting down. Closing its private
+    // desktop-control pipe releases the one blocking reader so the Tokio
+    // runtime cannot wait on that thread during teardown.
+    unsafe {
+        libc::close(libc::STDIN_FILENO);
+    }
+}
+
+#[cfg(windows)]
+fn unblock_desktop_control_stdin() {
+    use windows_sys::Win32::{
+        Foundation::CloseHandle,
+        System::Console::{GetStdHandle, STD_INPUT_HANDLE},
+    };
+    // SAFETY: the process is already shutting down and no further stdin reads
+    // are attempted after the desktop-control reader is released.
+    unsafe {
+        let handle = GetStdHandle(STD_INPUT_HANDLE);
+        if !handle.is_null() {
+            CloseHandle(handle);
+        }
+    }
+}
+
+#[cfg(not(any(unix, windows)))]
+fn unblock_desktop_control_stdin() {}
 
 pub(crate) async fn discover_notary() -> Result<NotaryEndpoint> {
     let directory = refresh_notary_directory().await?;
@@ -568,7 +735,12 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         let capture_id_for_task = capture_id.clone();
         let response_preview_limit = state.config.catalog.output_preview_chars;
         let (body_sender, body_receiver) = tokio::sync::mpsc::channel(32);
+        // Register before detaching. Once both graceful servers have stopped,
+        // no new task can register and daemon shutdown can safely wait for
+        // every admitted stream to seal, save, and reach the catalog.
+        let capture_task = state.capture_tasks.track();
         tokio::spawn(async move {
+            let _capture_task = capture_task;
             let mut upstream = upstream;
             let mut received_first_chunk = false;
             let mut client_connected = true;
@@ -1189,7 +1361,25 @@ mod tests {
             config: Arc::new(config),
             serial: Arc::new(Mutex::new(0)),
             hosted_admission: false,
+            capture_tasks: CaptureTasks::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_every_detached_capture_task() {
+        let tasks = CaptureTasks::default();
+        let guard = tasks.track();
+        let waiting = tokio::spawn({
+            let tasks = tasks.clone();
+            async move { tasks.wait_idle().await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        drop(guard);
+        tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+            .await
+            .expect("capture drain timed out")
+            .expect("capture drain task failed");
     }
 
     #[test]

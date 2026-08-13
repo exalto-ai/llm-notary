@@ -2774,6 +2774,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
+]
+
+[[package]]
 name = "fs_extra"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4234,18 +4244,22 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "clap",
+ "fs2",
  "hex",
  "http 1.4.2",
  "http-body-util",
  "k256",
+ "libc",
  "llm-notary-core",
  "mime_guess",
+ "minisign-verify",
  "reqwest 0.12.28",
  "rpassword",
  "rusqlite",
  "rust-embed",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -4551,6 +4565,12 @@ dependencies = [
  "mime",
  "unicase",
 ]
+
+[[package]]
+name = "minisign-verify"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
 
 [[package]]
 name = "miniz_oxide"

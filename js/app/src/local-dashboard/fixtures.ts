@@ -156,7 +156,8 @@ export const fixtureEvents: Event[] = [
 export const fixtureStatus: Status = {
   version: '0.1.0', build_id: 'dev', proxy_listener: '127.0.0.1:8787', admin_listener: '127.0.0.1:8788',
   vault: 'OS vault', notary: 'directory', preview_chars: 1000,
-  counts: { total_captures: 7, capturing: 1, ready_to_finalize: 1, finalized: 2, failed: 1, active_operations: 1 }
+  counts: { total_captures: 7, capturing: 1, ready_to_finalize: 1, finalized: 2, failed: 1, active_operations: 1 },
+  updates: { enabled: false, current_build_id: 'dev', latest_build_id: null, update_available: false, last_checked_unix_ms: null, error_code: null }
 };
 
 export const fixtureNotaries: Notaries = {

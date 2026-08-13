@@ -25,7 +25,10 @@ process, exposes its status from the menu bar, and contains the complete local
 capture workspace. Users do not need to open a localhost page in a browser.
 Closing the window removes the app from the Dock and leaves the menu-bar
 controller running; opening it from the menu bar restores the regular app
-window. Quitting the app stops a daemon that the app started. Once onboarding
+window. Quitting the app asks a daemon that it started to stop accepting new
+work, waits for open response streams and the currently running finalization to
+finish, and then exits. It never force-kills the service if draining takes too
+long. Once onboarding
 is complete, later app launches start the bundled service automatically.
 
 First run detects the local agent config, capture vault, and service before it
