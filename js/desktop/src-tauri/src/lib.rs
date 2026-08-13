@@ -2,7 +2,10 @@ use std::{
     fs,
     io::Write as _,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -19,9 +22,16 @@ use tauri_plugin_shell::{ShellExt, process::CommandChild};
 const ADMIN_ORIGIN: &str = "http://127.0.0.1:8788";
 const CONVENIENCE_MARKER: &str = "desktop-convenience-v1";
 const ONBOARDING_MARKER: &str = "desktop-onboarding-v1";
+const DESKTOP_CONTROL_STDIN_ENV: &str = "LLM_NOTARY_DESKTOP_CONTROL_STDIN";
 
 #[derive(Default)]
 struct DaemonProcess(Mutex<Option<CommandChild>>);
+
+#[derive(Default)]
+struct ExitState {
+    allowed: AtomicBool,
+    draining: AtomicBool,
+}
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct CaptureCounts {
@@ -212,26 +222,33 @@ async fn get_desktop_state(
         .is_some();
 
     match read_admin_status().await {
-        Ok(status) => Ok(DesktopState {
-            running: true,
-            managed_by_desktop,
-            vault_configured,
-            agent_configured,
-            onboarding_complete,
-            vault_mode: match status.vault.as_str() {
-                "OS vault" => "keychain".into(),
-                "passphrase vault" => local_mode,
-                _ => status.vault,
-            },
-            version: Some(status.version),
-            app_build_id: env!("LLM_NOTARY_BUILD_ID").into(),
-            daemon_build_id: Some(status.build_id),
-            proxy_listener: status.proxy_listener,
-            admin_listener: status.admin_listener,
-            notary: Some(status.notary),
-            counts: status.counts,
-            message: None,
-        }),
+        Ok(status) => {
+            let daemon_build_id = status.build_id.clone();
+            let message = (daemon_build_id != env!("LLM_NOTARY_BUILD_ID")).then(|| {
+                "The app and running local service are different builds. Update or restart the separately installed service before relying on new client behavior."
+                    .into()
+            });
+            Ok(DesktopState {
+                running: true,
+                managed_by_desktop,
+                vault_configured,
+                agent_configured,
+                onboarding_complete,
+                vault_mode: match status.vault.as_str() {
+                    "OS vault" => "keychain".into(),
+                    "passphrase vault" => local_mode,
+                    _ => status.vault,
+                },
+                version: Some(status.version),
+                app_build_id: env!("LLM_NOTARY_BUILD_ID").into(),
+                daemon_build_id: Some(daemon_build_id),
+                proxy_listener: status.proxy_listener,
+                admin_listener: status.admin_listener,
+                notary: Some(status.notary),
+                counts: status.counts,
+                message,
+            })
+        }
         Err(error) => {
             let running = daemon_is_healthy().await;
             Ok(DesktopState {
@@ -291,11 +308,11 @@ fn spawn_daemon(app: &tauri::AppHandle, process: &DaemonProcess) -> Result<(), S
         .sidecar("llm-notaryd")
         .map_err(|error| format!("Could not locate the bundled llm-notaryd service: {error}"))?
         .env(CHILD_KEY_STDIN_ENV, "1")
+        .env(DESKTOP_CONTROL_STDIN_ENV, "1")
         .spawn()
         .map_err(|error| format!("Could not start the bundled llm-notaryd service: {error}"))?;
 
     if let Err(error) = child.write(&unlock_key) {
-        let _ = child.kill();
         return Err(format!(
             "Could not send the unlocked capture key to the local service: {error}"
         ));
@@ -322,6 +339,36 @@ fn spawn_daemon(app: &tauri::AppHandle, process: &DaemonProcess) -> Result<(), S
         }
     });
     Ok(())
+}
+
+async fn request_managed_daemon_shutdown(process: &DaemonProcess) -> Result<bool, String> {
+    {
+        let mut guard = process
+            .0
+            .lock()
+            .map_err(|_| "daemon process state is unavailable")?;
+        let Some(child) = guard.as_mut() else {
+            return Ok(false);
+        };
+        child
+            .write(b"shutdown\n")
+            .map_err(|error| format!("Could not request a safe local-service shutdown: {error}"))?;
+    }
+    for _ in 0..6_000 {
+        let stopped = process
+            .0
+            .lock()
+            .map_err(|_| "daemon process state is unavailable")?
+            .is_none();
+        if stopped {
+            return Ok(true);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(
+        "The local service is still draining work after ten minutes. It was left running; try again after active work finishes."
+            .into(),
+    )
 }
 
 #[tauri::command]
@@ -362,20 +409,13 @@ async fn start_daemon(
 
 #[tauri::command]
 async fn stop_daemon(process: tauri::State<'_, DaemonProcess>) -> Result<(), String> {
-    let child = process
-        .0
-        .lock()
-        .map_err(|_| "daemon process state is unavailable")?
-        .take();
-    match child {
-        Some(child) => child
-            .kill()
-            .map_err(|error| format!("Could not stop the local service: {error}")),
-        None if daemon_is_healthy().await => Err(
+    match request_managed_daemon_shutdown(&process).await? {
+        true => Ok(()),
+        false if daemon_is_healthy().await => Err(
             "This service was started outside the desktop app. Stop it from the process that launched it."
                 .into(),
         ),
-        None => Ok(()),
+        false => Ok(()),
     }
 }
 
@@ -384,17 +424,8 @@ async fn restart_daemon(
     app: tauri::AppHandle,
     process: tauri::State<'_, DaemonProcess>,
 ) -> Result<(), String> {
-    let child = process
-        .0
-        .lock()
-        .map_err(|_| "daemon process state is unavailable")?
-        .take();
-    if let Some(child) = child {
-        child
-            .kill()
-            .map_err(|error| format!("Could not stop the local service: {error}"))?;
-        tokio::time::sleep(Duration::from_millis(300)).await;
-    } else if daemon_is_healthy().await {
+    let stopped = request_managed_daemon_shutdown(&process).await?;
+    if !stopped && daemon_is_healthy().await {
         return Err(
             "This service was started outside the desktop app. Restart it from the process that launched it."
                 .into(),
@@ -443,6 +474,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(DaemonProcess::default())
+        .manage(ExitState::default())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -481,19 +513,48 @@ pub fn run() {
         .expect("error while building LLM Notary desktop");
 
     app.run(|app, event| {
-        if matches!(
-            event,
-            tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
-        ) {
-            let child = app
+        if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+            let exit = app.state::<ExitState>();
+            if exit.allowed.load(Ordering::Acquire) {
+                return;
+            }
+            let managed = app
                 .state::<DaemonProcess>()
                 .0
                 .lock()
-                .ok()
-                .and_then(|mut process| process.take());
-            if let Some(child) = child {
-                let _ = child.kill();
+                .is_ok_and(|process| process.is_some());
+            if !managed {
+                return;
             }
+            api.prevent_exit();
+            if exit
+                .draining
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+            {
+                return;
+            }
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let process = app_handle.state::<DaemonProcess>();
+                match request_managed_daemon_shutdown(&process).await {
+                    Ok(_) => {
+                        app_handle
+                            .state::<ExitState>()
+                            .allowed
+                            .store(true, Ordering::Release);
+                        app_handle.exit(code.unwrap_or(0));
+                    }
+                    Err(error) => {
+                        eprintln!("Could not drain the local service before exit: {error}");
+                        app_handle
+                            .state::<ExitState>()
+                            .draining
+                            .store(false, Ordering::Release);
+                        show_main_window(&app_handle);
+                    }
+                }
+            });
         }
     });
 }

@@ -2472,7 +2472,8 @@
           "vault",
           "notary",
           "preview_chars",
-          "counts"
+          "counts",
+          "updates"
         ],
         "properties": {
           "admin_listener": {
@@ -2493,6 +2494,9 @@
           },
           "proxy_listener": {
             "type": "string"
+          },
+          "updates": {
+            "$ref": "#/components/schemas/UpdateStatusResponse"
           },
           "vault": {
             "type": "string"
@@ -2515,6 +2519,45 @@
           },
           "manifest": {},
           "trace": {}
+        }
+      },
+      "UpdateStatusResponse": {
+        "type": "object",
+        "required": [
+          "enabled",
+          "current_build_id",
+          "update_available"
+        ],
+        "properties": {
+          "current_build_id": {
+            "type": "string"
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "error_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_checked_unix_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "latest_build_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "update_available": {
+            "type": "boolean"
+          }
         }
       },
       "VerificationResponse": {

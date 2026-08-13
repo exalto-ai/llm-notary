@@ -56,6 +56,27 @@ archive against its published SHA-256 value, and places `llm-notaryd` and
 destination. The checksum detects corruption in transit or storage; it is not
 an independent signature because the archive and checksum share a publisher.
 
+After the first install, official builds authenticate the signed channel and
+release manifest before trusting either binary's size and SHA-256. The client
+remembers the highest signed channel revision it accepted, so replaying an
+older pointer cannot silently downgrade it:
+
+```bash
+llm-notary version
+llm-notary update --check
+llm-notary update
+```
+
+The build ID, not the package's pre-release `0.1.0` label or a timestamp,
+decides whether an update is available. Any different build ID is accepted,
+including an intentional rollback selected by the trusted `latest` channel.
+The updater stages and verifies both programs before changing either one and
+keeps rollback copies until both replacements are confirmed. It never stops a
+running daemon. Restart `llm-notaryd` yourself after active capture and proof
+work finishes. On Windows the daemon must already be stopped. The update is
+applied by a short-lived helper after the running CLI exits; the version
+command reports the helper's last durable result.
+
 To build from source instead, install Rust 1.95.0 and a C toolchain, then run:
 
 ```bash

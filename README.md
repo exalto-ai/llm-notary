@@ -104,6 +104,19 @@ rejects a mismatch. Because both files come from the same publishing system,
 that checksum detects download corruption but is not an independent release
 signature.
 
+Official command-line builds can then authenticate and install the signed
+`latest` channel without contacting the daemon:
+
+```bash
+llm-notary update --check
+llm-notary update
+```
+
+An update replaces the CLI and daemon together. On Unix it does not stop a
+running daemon; restart the service only after captures and finalizations are
+idle. On Windows, stop the daemon before updating.
+Source builds report the latest signed build but do not overwrite themselves.
+
 Building the current source instead requires:
 
 - Rust 1.95.0, selected automatically by `rust-toolchain.toml`.
