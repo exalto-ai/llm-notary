@@ -42,6 +42,24 @@ address `127.0.0.1:8788` and embedded in the native window. The desktop content
 security policy permits that exact local frame; it does not permit public or
 arbitrary remote pages.
 
+## Automatic updates
+
+Signed production builds check the `latest` channel shortly after launch and
+about every six hours after that. A different authenticated build ID means an
+update is available, even when the channel intentionally points back to an
+older build. The app downloads and verifies the whole signed application in
+the background. Local source builds do not contact the update service.
+
+The app never installs or restarts on its own. It shows **Update ready** and
+keeps the verified download until the user chooses **Restart to update** in
+Settings. Background checks discard a downloaded build if a newer signed
+channel revision withdraws or replaces it. Restart is unavailable during a
+capture or finalization. On click, the app authenticates `latest` again, checks
+activity again, asks its managed daemon to stop accepting new work, waits for
+open streams, detached capture sealing, and the current finalization to finish,
+installs the application, and reopens it. A daemon started outside the app is
+never stopped or replaced by this flow.
+
 ## Private capture protection
 
 All `.llmcapture` files remain encrypted before they are written. First run
