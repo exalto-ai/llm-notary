@@ -1945,6 +1945,7 @@ fn validate_capture_id(capture_id: &str) -> Result<()> {
 fn validate_provider_name(provider_name: &str, host: &str) -> Result<()> {
     let expected = match host {
         "api.openai.com" => "openai",
+        "chatgpt.com" => "openai",
         "api.anthropic.com" => "anthropic",
         "api.deepseek.com" => "deepseek",
         "openrouter.ai" => "openrouter",
@@ -2688,6 +2689,7 @@ mod tests {
     #[test]
     fn provider_labels_must_match_the_authenticated_host() {
         assert!(validate_provider_name("openai", "api.openai.com").is_ok());
+        assert!(validate_provider_name("openai", "chatgpt.com").is_ok());
         assert!(validate_provider_name("anthropic", "api.anthropic.com").is_ok());
         assert!(validate_provider_name("deepseek", "api.deepseek.com").is_ok());
         assert!(validate_provider_name("openrouter", "openrouter.ai").is_ok());
@@ -2731,7 +2733,7 @@ mod tests {
     #[test]
     fn chunked_http_commitments_exclude_redacted_header_values() {
         let body = vec![b'x'; 64 << 10];
-        let mut sent = b"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer auth-secret\r\nProxy-Authorization: Basic proxy-secret\r\nCookie: session=cookie-secret\r\nx-api-key: key-secret\r\nHTTP-Referer: https://example.test\r\nX-Title: LLM Notary test\r\nContent-Length: 65536\r\n\r\n".to_vec();
+        let mut sent = b"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer auth-secret\r\nChatGPT-Account-ID: account-routing-secret\r\nX-OpenAI-FedRAMP: fedramp-routing-secret\r\nProxy-Authorization: Basic proxy-secret\r\nCookie: session=cookie-secret\r\nx-api-key: key-secret\r\nHTTP-Referer: https://example.test\r\nX-Title: LLM Notary test\r\nContent-Length: 65536\r\n\r\n".to_vec();
         sent.extend_from_slice(&body);
         let mut received =
             b"HTTP/1.1 200 OK\r\nSet-Cookie: session=response-secret\r\nContent-Length: 65536\r\n\r\n"

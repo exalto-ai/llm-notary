@@ -74,4 +74,4 @@ COPY --from=builder /app/target/release/llm-notary-server /usr/local/bin/llm-not
 RUN llm-notary-server --help >/dev/null
 
 EXPOSE 7047
-ENTRYPOINT ["/bin/sh", "-ec", "key_file=${NOTARY_SIGNING_KEY_FILE:-/run/secrets/notary_signing_key}; if ! test -r \"$key_file\"; then echo 'notary signing key file is required and must be readable' >&2; exit 1; fi; exec llm-notary-server --listen 0.0.0.0:7047 --signing-key \"$key_file\" --allow-host api.openai.com --allow-host api.anthropic.com --allow-host api.deepseek.com --allow-host openrouter.ai \"$@\"", "--"]
+ENTRYPOINT ["/bin/sh", "-ec", "key_file=${NOTARY_SIGNING_KEY_FILE:-/run/secrets/notary_signing_key}; if ! test -r \"$key_file\"; then echo 'notary signing key file is required and must be readable' >&2; exit 1; fi; exec llm-notary-server --listen 0.0.0.0:7047 --signing-key \"$key_file\" --allow-host api.openai.com --allow-host chatgpt.com --allow-host api.anthropic.com --allow-host api.deepseek.com --allow-host openrouter.ai \"$@\"", "--"]

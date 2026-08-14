@@ -9,6 +9,7 @@ replace only the base URL.
 | Provider | Local SDK base URL | Upstream host | Typical operation |
 | --- | --- | --- | --- |
 | OpenAI | `http://127.0.0.1:8787/openai/v1` | `api.openai.com` | Responses |
+| Codex with a ChatGPT plan | `http://127.0.0.1:8787/codex` | `chatgpt.com/backend-api/codex` | Responses |
 | Anthropic | `http://127.0.0.1:8787/anthropic` | `api.anthropic.com` | Messages |
 | DeepSeek | `http://127.0.0.1:8787/deepseek` | `api.deepseek.com` | Chat Completions |
 | OpenRouter | `http://127.0.0.1:8787/openrouter/api/v1` | `openrouter.ai` | Chat Completions |
@@ -83,7 +84,7 @@ stream ends, one short notary exchange seals the deferred capture.
 The proxy does not implement WebSocket transport. Configure clients to use
 HTTP streaming when they can select between HTTP and WebSockets.
 
-## Codex CLI
+## Codex with an OpenAI API key
 
 Codex can use the OpenAI route through a custom Responses provider. The
 `supports_websockets = false` setting is important because this prototype is
@@ -114,6 +115,57 @@ codex exec --ephemeral --skip-git-repo-check \
 The custom-provider keys above follow the current Codex configuration
 reference. Avoid the built-in `openai_base_url` shortcut here: a named provider
 makes the no-WebSocket capability explicit.
+
+## Codex with a ChatGPT plan
+
+Codex can also keep using the ChatGPT login it already manages. This is a
+separate route because subscription-authenticated Codex connects to
+`chatgpt.com/backend-api/codex`, not the public OpenAI API.
+
+First confirm that Codex itself is signed in with ChatGPT:
+
+```bash
+codex login status
+```
+
+The result should say `Logged in using ChatGPT`. Signing in to a browser or a
+different desktop app is not enough; the Codex CLI must own this login.
+
+Add this provider to `~/.codex/config.toml` and select it with
+`model_provider`. Keep your current model setting:
+
+```toml
+model_provider = "llm-notary-chatgpt"
+
+[model_providers.llm-notary-chatgpt]
+name = "LLM Notary — ChatGPT plan"
+base_url = "http://127.0.0.1:8787/codex"
+requires_openai_auth = true
+wire_api = "responses"
+supports_websockets = false
+```
+
+Do not add `env_key` to this provider. `requires_openai_auth = true` tells
+Codex to attach its saved ChatGPT authorization and account-routing headers.
+LLM Notary forwards those values for the provider request, but does not read
+Codex's auth cache, collect browser cookies, refresh the login, or write the
+header values to logs or finalized packages.
+
+Run Codex normally after starting `llm-notaryd`:
+
+```bash
+codex exec --ephemeral --skip-git-repo-check \
+  'Reply with exactly: llm-notary'
+```
+
+To stop using the proxy, restore your previous `model_provider` setting
+(normally `openai`) and remove the `model_providers.llm-notary-chatgpt` block.
+This does not sign you out of ChatGPT.
+
+A verified trace proves that the request reached `chatgpt.com` over the
+authenticated provider connection and authenticates the disclosed request and
+response bodies. It does not prove which person or organization owned the
+ChatGPT account, which plan they had, or how OpenAI billed the request.
 
 ## Other agents and SDKs
 

@@ -45,14 +45,16 @@ use crate::{DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Provider {
     Openai,
+    OpenaiCodex,
     Anthropic,
     Deepseek,
     Openrouter,
 }
 
 impl Provider {
-    const ALL: [Self; 4] = [
+    const ALL: [Self; 5] = [
         Self::Openai,
+        Self::OpenaiCodex,
         Self::Anthropic,
         Self::Deepseek,
         Self::Openrouter,
@@ -61,6 +63,7 @@ impl Provider {
     fn host(self) -> &'static str {
         match self {
             Self::Openai => "api.openai.com",
+            Self::OpenaiCodex => "chatgpt.com",
             Self::Anthropic => "api.anthropic.com",
             Self::Deepseek => "api.deepseek.com",
             Self::Openrouter => "openrouter.ai",
@@ -69,7 +72,7 @@ impl Provider {
 
     fn name(self) -> &'static str {
         match self {
-            Self::Openai => "openai",
+            Self::Openai | Self::OpenaiCodex => "openai",
             Self::Anthropic => "anthropic",
             Self::Deepseek => "deepseek",
             Self::Openrouter => "openrouter",
@@ -80,6 +83,7 @@ impl Provider {
     fn default_path_prefix(self) -> &'static str {
         match self {
             Self::Openai => "/openai",
+            Self::OpenaiCodex => "/codex",
             Self::Anthropic => "/anthropic",
             Self::Deepseek => "/deepseek",
             Self::Openrouter => "/openrouter",
@@ -89,9 +93,17 @@ impl Provider {
     fn config(self, config: &AgentConfig) -> &ProviderConfig {
         match self {
             Self::Openai => &config.providers.openai,
+            Self::OpenaiCodex => &config.providers.codex,
             Self::Anthropic => &config.providers.anthropic,
             Self::Deepseek => &config.providers.deepseek,
             Self::Openrouter => &config.providers.openrouter,
+        }
+    }
+
+    fn upstream_path_prefix(self) -> &'static str {
+        match self {
+            Self::OpenaiCodex => "/backend-api/codex",
+            _ => "",
         }
     }
 }
@@ -549,10 +561,20 @@ fn provider_route(uri: &http::Uri, config: &AgentConfig) -> Option<(Provider, ht
         if !remainder.is_empty() && !remainder.starts_with('/') {
             continue;
         }
-        let upstream_path = if remainder.is_empty() { "/" } else { remainder };
+        if provider == Provider::OpenaiCodex
+            && !matches!(remainder, "/responses" | "/responses/compact")
+        {
+            continue;
+        }
+        let upstream_path = match (provider.upstream_path_prefix(), remainder) {
+            ("", "") => "/".to_owned(),
+            ("", remainder) => remainder.to_owned(),
+            (base, "") => format!("{base}/"),
+            (base, remainder) => format!("{base}{remainder}"),
+        };
         let path_and_query = match uri.query() {
             Some(query) => format!("{upstream_path}?{query}"),
-            None => upstream_path.to_owned(),
+            None => upstream_path,
         };
         let upstream_uri = path_and_query
             .parse()
@@ -577,6 +599,8 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         http::header::AUTHORIZATION,
         http::header::PROXY_AUTHORIZATION,
         HeaderName::from_static("x-api-key"),
+        HeaderName::from_static("chatgpt-account-id"),
+        HeaderName::from_static("x-openai-fedramp"),
     ] {
         if let Some(value) = parts.headers.get_mut(name) {
             value.set_sensitive(true);
@@ -995,7 +1019,7 @@ fn request_catalog_metadata(
         .map(str::to_owned);
     let mut preview = LimitedText::new(maximum_preview_chars);
     match provider {
-        Provider::Openai | Provider::Deepseek | Provider::Openrouter => {
+        Provider::Openai | Provider::OpenaiCodex | Provider::Deepseek | Provider::Openrouter => {
             append_messages(&mut preview, value.get("messages"));
             append_messages(&mut preview, value.get("input"));
         }
@@ -1235,7 +1259,7 @@ fn append_response_text(
                 append_text_value(preview, value.get("content"));
             }
         }
-        Provider::Openai | Provider::Deepseek | Provider::Openrouter => {
+        Provider::Openai | Provider::OpenaiCodex | Provider::Deepseek | Provider::Openrouter => {
             if streaming {
                 if let Some(choices) = value.get("choices").and_then(serde_json::Value::as_array) {
                     for choice in choices {
@@ -1411,6 +1435,13 @@ mod tests {
         assert_eq!(Provider::Openrouter.host(), "openrouter.ai");
         assert_eq!(Provider::Openrouter.name(), "openrouter");
         assert_eq!(Provider::Openrouter.default_path_prefix(), "/openrouter");
+        assert_eq!(Provider::OpenaiCodex.host(), "chatgpt.com");
+        assert_eq!(Provider::OpenaiCodex.name(), "openai");
+        assert_eq!(Provider::OpenaiCodex.default_path_prefix(), "/codex");
+        assert_eq!(
+            Provider::OpenaiCodex.upstream_path_prefix(),
+            "/backend-api/codex"
+        );
     }
 
     #[test]
@@ -1421,10 +1452,23 @@ mod tests {
         assert_eq!(provider, Provider::Openai);
         assert_eq!(upstream_uri, "/v1/responses?stream=true");
 
+        let uri = "/codex/responses?stream=true".parse().unwrap();
+        let (provider, upstream_uri) = provider_route(&uri, &config).unwrap();
+        assert_eq!(provider, Provider::OpenaiCodex);
+        assert_eq!(upstream_uri, "/backend-api/codex/responses?stream=true");
+
         let uri = "/deepseek/chat/completions".parse().unwrap();
         let (provider, upstream_uri) = provider_route(&uri, &config).unwrap();
         assert_eq!(provider, Provider::Deepseek);
         assert_eq!(upstream_uri, "/chat/completions");
+
+        for unsupported in ["/codex", "/codex/../unrelated", "/codex/v1/responses"] {
+            let uri = unsupported.parse().unwrap();
+            assert!(
+                provider_route(&uri, &config).is_none(),
+                "Codex route accepted {unsupported}"
+            );
+        }
     }
 
     #[test]
@@ -1540,6 +1584,14 @@ mod tests {
             http::header::AUTHORIZATION,
             HeaderValue::from_static("Bearer provider-credential"),
         );
+        source.insert(
+            "chatgpt-account-id",
+            HeaderValue::from_static("account-routing-value"),
+        );
+        source.insert(
+            "x-openai-fedramp",
+            HeaderValue::from_static("fedramp-routing-value"),
+        );
         source.insert("x-end-to-end", HeaderValue::from_static("keep"));
 
         let forwarded = end_to_end_headers(&source);
@@ -1558,6 +1610,14 @@ mod tests {
         assert_eq!(
             forwarded.get(http::header::AUTHORIZATION).unwrap(),
             "Bearer provider-credential"
+        );
+        assert_eq!(
+            forwarded.get("chatgpt-account-id").unwrap(),
+            "account-routing-value"
+        );
+        assert_eq!(
+            forwarded.get("x-openai-fedramp").unwrap(),
+            "fedramp-routing-value"
         );
         assert_eq!(forwarded.get("x-end-to-end").unwrap(), "keep");
     }

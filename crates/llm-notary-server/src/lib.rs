@@ -119,6 +119,7 @@ struct Args {
     /// defaults cover the supported provider adapters.
     #[arg(long, default_values_t = [
         "api.openai.com".to_owned(),
+        "chatgpt.com".to_owned(),
         "api.anthropic.com".to_owned(),
         "api.deepseek.com".to_owned(),
         "openrouter.ai".to_owned(),

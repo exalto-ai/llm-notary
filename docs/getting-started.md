@@ -102,8 +102,8 @@ llm-notaryd
 ```
 
 The first start writes `config.toml` once and initializes the bundle vault. The
-default configuration enables all four providers and binds only these distinct
-loopback listeners:
+default configuration enables the five built-in routes and binds only these
+distinct loopback listeners:
 
 | Listener | Address | Purpose |
 | --- | --- | --- |
