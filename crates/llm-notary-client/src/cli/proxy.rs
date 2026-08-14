@@ -601,6 +601,8 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         HeaderName::from_static("x-api-key"),
         HeaderName::from_static("chatgpt-account-id"),
         HeaderName::from_static("x-openai-fedramp"),
+        HeaderName::from_static("anthropic-beta"),
+        HeaderName::from_static("anthropic-version"),
     ] {
         if let Some(value) = parts.headers.get_mut(name) {
             value.set_sensitive(true);
@@ -1462,6 +1464,11 @@ mod tests {
         assert_eq!(provider, Provider::Deepseek);
         assert_eq!(upstream_uri, "/chat/completions");
 
+        let uri = "/anthropic/v1/messages?beta=true".parse().unwrap();
+        let (provider, upstream_uri) = provider_route(&uri, &config).unwrap();
+        assert_eq!(provider, Provider::Anthropic);
+        assert_eq!(upstream_uri, "/v1/messages?beta=true");
+
         for unsupported in ["/codex", "/codex/../unrelated", "/codex/v1/responses"] {
             let uri = unsupported.parse().unwrap();
             assert!(
@@ -1511,6 +1518,17 @@ mod tests {
         );
         assert_eq!(response.response_model.as_deref(), Some("gpt-5"));
         assert_eq!(response.output_preview, "Pricing is usage based.");
+
+        let anthropic = request_catalog_metadata(
+            Provider::Anthropic,
+            br#"{"model":"claude-sonnet","system":"Be concise","messages":[{"role":"user","content":[{"type":"text","text":"Use the weather tool"},{"type":"tool_result","tool_use_id":"toolu_1","content":"private tool result"}]}],"tools":[{"name":"weather","input_schema":{"type":"object"}}]}"#,
+            1_000,
+        );
+        assert_eq!(
+            anthropic.prompt_preview,
+            "Be concise\nuser: Use the weather tool"
+        );
+        assert!(!anthropic.prompt_preview.contains("private tool result"));
     }
 
     #[test]
@@ -1538,6 +1556,21 @@ mod tests {
             preview.finish().response_model.as_deref(),
             Some("gpt-5-mini")
         );
+    }
+
+    #[test]
+    fn streaming_preview_accepts_claude_messages_events_and_ignores_pings() {
+        let mut preview = StreamingOutputPreview::new(Provider::Anthropic, 1_000);
+        preview.push(
+            b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet\"}}\n\n",
+        );
+        preview.push(b"event: ping\ndata: {\"type\":\"ping\"}\n\n");
+        preview.push(
+            b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n",
+        );
+        let preview = preview.finish();
+        assert_eq!(preview.response_model.as_deref(), Some("claude-sonnet"));
+        assert_eq!(preview.text, "hello");
     }
 
     #[test]
@@ -1592,6 +1625,11 @@ mod tests {
             "x-openai-fedramp",
             HeaderValue::from_static("fedramp-routing-value"),
         );
+        source.insert(
+            "anthropic-beta",
+            HeaderValue::from_static("oauth-2025-04-20,interleaved-thinking"),
+        );
+        source.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
         source.insert("x-end-to-end", HeaderValue::from_static("keep"));
 
         let forwarded = end_to_end_headers(&source);
@@ -1619,6 +1657,11 @@ mod tests {
             forwarded.get("x-openai-fedramp").unwrap(),
             "fedramp-routing-value"
         );
+        assert_eq!(
+            forwarded.get("anthropic-beta").unwrap(),
+            "oauth-2025-04-20,interleaved-thinking"
+        );
+        assert_eq!(forwarded.get("anthropic-version").unwrap(), "2023-06-01");
         assert_eq!(forwarded.get("x-end-to-end").unwrap(), "keep");
     }
 
