@@ -2733,7 +2733,7 @@ mod tests {
     #[test]
     fn chunked_http_commitments_exclude_redacted_header_values() {
         let body = vec![b'x'; 64 << 10];
-        let mut sent = b"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer auth-secret\r\nChatGPT-Account-ID: account-routing-secret\r\nX-OpenAI-FedRAMP: fedramp-routing-secret\r\nProxy-Authorization: Basic proxy-secret\r\nCookie: session=cookie-secret\r\nx-api-key: key-secret\r\nHTTP-Referer: https://example.test\r\nX-Title: LLM Notary test\r\nContent-Length: 65536\r\n\r\n".to_vec();
+        let mut sent = b"POST /v1/responses HTTP/1.1\r\nAuthorization: Bearer auth-secret\r\nChatGPT-Account-ID: account-routing-secret\r\nX-OpenAI-FedRAMP: fedramp-routing-secret\r\nAnthropic-Beta: oauth-2025-04-20\r\nAnthropic-Version: 2023-06-01\r\nProxy-Authorization: Basic proxy-secret\r\nCookie: session=cookie-secret\r\nx-api-key: key-secret\r\nHTTP-Referer: https://example.test\r\nX-Title: LLM Notary test\r\nContent-Length: 65536\r\n\r\n".to_vec();
         sent.extend_from_slice(&body);
         let mut received =
             b"HTTP/1.1 200 OK\r\nSet-Cookie: session=response-secret\r\nContent-Length: 65536\r\n\r\n"

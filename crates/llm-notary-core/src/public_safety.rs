@@ -441,6 +441,23 @@ fn is_documented_public_protocol_id(
     let Some(context) = context else {
         return false;
     };
+    if context.provider_host == "api.anthropic.com" && context.request_path == "/v1/messages" {
+        if location == PublicPackageLocation::ResponseBody
+            && (matches!(
+                path,
+                [JsonPathSegment::Key(id)] if id == "id"
+            ) || matches!(
+                path,
+                [JsonPathSegment::Key(message), JsonPathSegment::Key(id)]
+                    if message == "message" && id == "id"
+            ))
+        {
+            return has_public_id_format(value, "msg_");
+        }
+        if is_anthropic_tool_use_id_path(location, path) {
+            return has_public_id_format(value, "toolu_");
+        }
+    }
     if matches!(context.provider_host, "api.openai.com" | "chatgpt.com")
         && location == PublicPackageLocation::ResponseBody
         && path.len() == 1
@@ -473,6 +490,50 @@ fn is_documented_public_protocol_id(
                     || has_public_id_format(value, "chatcmpl-")));
     }
     is_chat_completion_tool_call_id_path(location, path) && has_public_id_format(value, "call_")
+}
+
+fn is_anthropic_tool_use_id_path(
+    location: PublicPackageLocation,
+    path: &[JsonPathSegment],
+) -> bool {
+    match location {
+        PublicPackageLocation::RequestBody => {
+            matches!(
+                path,
+                [
+                    JsonPathSegment::Key(messages),
+                    JsonPathSegment::Index(_),
+                    JsonPathSegment::Key(content),
+                    JsonPathSegment::Index(_),
+                    JsonPathSegment::Key(id),
+                ] if messages == "messages" && content == "content" && id == "id"
+            ) || matches!(
+                path,
+                [
+                    JsonPathSegment::Key(messages),
+                    JsonPathSegment::Index(_),
+                    JsonPathSegment::Key(content),
+                    JsonPathSegment::Index(_),
+                    JsonPathSegment::Key(tool_use_id),
+                ] if messages == "messages" && content == "content" && tool_use_id == "tool_use_id"
+            )
+        }
+        PublicPackageLocation::ResponseBody => {
+            matches!(
+                path,
+                [
+                    JsonPathSegment::Key(content),
+                    JsonPathSegment::Index(_),
+                    JsonPathSegment::Key(id),
+                ] if content == "content" && id == "id"
+            ) || matches!(
+                path,
+                [JsonPathSegment::Key(content_block), JsonPathSegment::Key(id)]
+                    if content_block == "content_block" && id == "id"
+            )
+        }
+        _ => false,
+    }
 }
 
 fn is_chat_completion_tool_call_id_path(
@@ -803,6 +864,13 @@ mod tests {
         }
     }
 
+    fn anthropic_messages_context() -> PublicPackageSafetyContext<'static> {
+        PublicPackageSafetyContext {
+            provider_host: "api.anthropic.com",
+            request_path: "/v1/messages",
+        }
+    }
+
     fn safe_trace() -> serde_json::Value {
         serde_json::json!({
             "resourceSpans": [{"scopeSpans": [{"spans": [{
@@ -994,6 +1062,86 @@ mod tests {
             "high_entropy_value"
         );
         validate_public_trace_package_with_context(&archive, openrouter_chat_context()).unwrap();
+    }
+
+    #[test]
+    fn accepts_verified_anthropic_message_and_tool_ids_at_exact_paths() {
+        let message_id = "msg_01A2b3C4d5E6f7G8h9J0k1L2m3N4p5Q6";
+        let tool_id = "toolu_01Q2w3E4r5T6y7U8i9O0p1A2s3D4f5G6";
+        let request = serde_json::json!({
+            "model": "claude-test",
+            "messages": [
+                {"role": "assistant", "content": [{"type": "tool_use", "id": tool_id, "name": "weather", "input": {"city": "SF"}}]},
+                {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tool_id, "content": "sunny"}]}
+            ]
+        });
+        let response = serde_json::json!({
+            "id": message_id,
+            "model": "claude-test",
+            "content": [{"type": "tool_use", "id": tool_id, "name": "weather", "input": {"city": "SF"}}]
+        });
+        let archive = package_with_path(
+            "/v1/messages",
+            &request.to_string(),
+            &response.to_string(),
+            safe_trace(),
+        );
+        assert_eq!(
+            validate_public_trace_package(&archive).unwrap_err().code,
+            "high_entropy_value"
+        );
+        validate_public_trace_package_with_context(&archive, anthropic_messages_context()).unwrap();
+
+        let wrong_path = package_with_path(
+            "/v1/unrelated",
+            r#"{"model":"claude-test","messages":[]}"#,
+            &serde_json::json!({"id": message_id, "content": []}).to_string(),
+            safe_trace(),
+        );
+        assert_eq!(
+            validate_public_trace_package_with_context(
+                &wrong_path,
+                PublicPackageSafetyContext {
+                    provider_host: "api.anthropic.com",
+                    request_path: "/v1/unrelated",
+                },
+            )
+            .unwrap_err()
+            .code,
+            "high_entropy_value"
+        );
+    }
+
+    #[test]
+    fn accepts_verified_anthropic_sse_ids_and_rejects_secret_shaped_values() {
+        let response = concat!(
+            "event: message_start\n",
+            "data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01A2b3C4d5E6f7G8h9J0k1L2m3N4p5Q6\",\"model\":\"claude-test\"}}\n\n",
+            "event: ping\n",
+            "data: {\"type\":\"ping\"}\n\n",
+            "event: content_block_start\n",
+            "data: {\"type\":\"content_block_start\",\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_01Q2w3E4r5T6y7U8i9O0p1A2s3D4f5G6\",\"name\":\"weather\"}}\n\n"
+        );
+        let archive = package_with_path(
+            "/v1/messages",
+            r#"{"model":"claude-test","messages":[],"stream":true}"#,
+            response,
+            safe_trace(),
+        );
+        validate_public_trace_package_with_context(&archive, anthropic_messages_context()).unwrap();
+
+        let secret = package_with_path(
+            "/v1/messages",
+            r#"{"model":"claude-test","messages":[]}"#,
+            r#"{"id":"msg_sk-ant-api03-secretvalue1234567890","content":[]}"#,
+            safe_trace(),
+        );
+        assert_eq!(
+            validate_public_trace_package_with_context(&secret, anthropic_messages_context())
+                .unwrap_err()
+                .code,
+            "secret_pattern"
+        );
     }
 
     #[test]

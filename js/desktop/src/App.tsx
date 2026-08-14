@@ -78,7 +78,7 @@ const providers = [
   },
   {
     id: 'anthropic',
-    name: 'Anthropic',
+    name: 'Anthropic / Claude Code',
     operation: 'Messages',
     baseUrl: 'http://127.0.0.1:8787/anthropic',
     modelExample: 'claude-sonnet-4-5',

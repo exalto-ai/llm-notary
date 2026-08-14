@@ -23,6 +23,8 @@ Signed-in users get 512 MiB to notarize each month, plus 128 MiB that does not e
 
 On first use, the daemon creates a user-editable `config.toml` at the standard platform configuration location. It enables routes for the OpenAI API, ChatGPT-authenticated Codex, Anthropic, DeepSeek, and OpenRouter by default; keeps encrypted bundles and finalized packages under the platform data directory; and creates a local SQLite catalog. The catalog indexes short, plain-text prompt and output previews for search, along with provider, model, status, size, duration, and artifact metadata. It does not store header values, cookies, or credentials.
 
+Codex can use its own saved ChatGPT login through the fixed `/codex` route, and Claude Code can use its own saved claude.ai login through `/anthropic`. LLM Notary does not collect browser cookies, read either tool's auth cache, or perform login and refresh flows. These routes prove the authenticated provider host and disclosed bodies, not an account owner, subscription tier, or billing. Native Claude Desktop and remote or cloud agent sessions do not run through the local proxy.
+
 ## Local service and API
 
 ```sh

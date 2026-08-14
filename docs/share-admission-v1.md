@@ -47,9 +47,12 @@ OpenRouter root generation IDs require `openrouter.ai`,
 `/api/v1/chat/completions`, and a
 documented `gen-...` or `chatcmpl-...` format. The same verified Chat
 Completions contexts permit `call_...` only at exact request or response tool
-call identifier paths, including parsed SSE `data:` objects. Known-secret
-patterns still run on every exempt ID. Other nested IDs, tool arguments and
-results, model content, providers, and operations receive no exemption.
+call identifier paths, including parsed SSE `data:` objects. Anthropic message
+and tool-use IDs require `api.anthropic.com`, the exact `/v1/messages` path,
+the documented `msg_...` or `toolu_...` format, and their exact JSON or parsed
+SSE locations. Known-secret patterns still run on every exempt ID. Other
+nested IDs, tool arguments and results, model content, providers, and
+operations receive no exemption.
 Hostile fixtures cover tokens split across parsing boundaries, nested tool
 data, signed queries, private keys, malformed SSE, and high-entropy secrets.
 

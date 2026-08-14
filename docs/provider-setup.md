@@ -10,7 +10,7 @@ replace only the base URL.
 | --- | --- | --- | --- |
 | OpenAI | `http://127.0.0.1:8787/openai/v1` | `api.openai.com` | Responses |
 | Codex with a ChatGPT plan | `http://127.0.0.1:8787/codex` | `chatgpt.com/backend-api/codex` | Responses |
-| Anthropic | `http://127.0.0.1:8787/anthropic` | `api.anthropic.com` | Messages |
+| Anthropic / Claude Code | `http://127.0.0.1:8787/anthropic` | `api.anthropic.com` | Messages |
 | DeepSeek | `http://127.0.0.1:8787/deepseek` | `api.deepseek.com` | Chat Completions |
 | OpenRouter | `http://127.0.0.1:8787/openrouter/api/v1` | `openrouter.ai` | Chat Completions |
 
@@ -34,7 +34,7 @@ Use the Responses API. Chat Completions normalization remains covered by
 fixtures for compatible provider inputs, but the Codex integration below uses
 Responses.
 
-## Anthropic
+## Anthropic API key
 
 ```bash
 curl http://127.0.0.1:8787/anthropic/v1/messages \
@@ -46,6 +46,56 @@ curl http://127.0.0.1:8787/anthropic/v1/messages \
 
 The `x-api-key` value, `anthropic-version` value, and content type are hidden in
 the finalized disclosure. Their header names remain visible.
+
+## Claude Code with a claude.ai plan
+
+Claude Code can keep using the claude.ai login it already manages. First check
+the CLI's own authentication state:
+
+```bash
+claude auth status
+```
+
+It must report `loggedIn: true` with the first-party provider. A login in the
+native Claude desktop app is separate and does not establish that Claude Code
+CLI state. If the CLI is logged out, run `claude login` directly without the
+LLM Notary base URL, then check again. LLM Notary does not perform the login or
+refresh flow.
+
+Run Claude Code with only its Anthropic base URL changed:
+
+```bash
+env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
+  ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic \
+  claude -p 'Reply with exactly: llm-notary'
+```
+
+Remove any `apiKeyHelper` setting while using subscription authentication. Do
+not add a gateway API key or an `ANTHROPIC_AUTH_TOKEN`: without those
+overrides, Claude Code attaches its saved claude.ai authorization and includes
+the OAuth capability in `anthropic-beta`.
+
+LLM Notary forwards `Authorization`, `anthropic-beta`, `anthropic-version`, the
+`?beta=true` query, streaming events (including pings), tool definitions, tool
+calls, and other current Messages fields unchanged. It treats Anthropic header
+and body fields as open protocol lists rather than filtering them to a frozen
+schema. Authorization and every other HTTP header value are hidden from the
+finalized package; the disclosed request and response bodies still require
+review before sharing.
+
+If the saved login expires, unset `ANTHROPIC_BASE_URL`, let Claude Code sign in
+or refresh directly, and then restore the base URL. To stop using the proxy,
+unset `ANTHROPIC_BASE_URL`; this does not sign you out. API-key-authenticated
+Anthropic requests remain supported on the same route.
+
+The native Claude desktop app cannot currently be configured to send its model
+traffic through this route. Claude on the web, in Slack, in remote sessions,
+or in cloud execution also runs outside the local proxy and is not supported.
+
+A verified trace proves that the request reached `api.anthropic.com` over the
+authenticated provider connection and authenticates the disclosed request and
+response bodies. It does not prove which person owned the claude.ai login,
+which subscription they had, or how Anthropic accounted for the request.
 
 ## DeepSeek
 
@@ -169,9 +219,6 @@ ChatGPT account, which plan they had, or how OpenAI billed the request.
 
 ## Other agents and SDKs
 
-- For Claude Code, set its Anthropic base URL to
-  `http://127.0.0.1:8787/anthropic` and keep `ANTHROPIC_API_KEY` in its normal
-  environment.
 - For an OpenAI-compatible DeepSeek or OpenRouter client, use the corresponding
   base URL from the route table and keep the provider's normal API-key
   variable.
@@ -185,8 +232,9 @@ the request before opening the provider connection and the response while it
 arrives, so it cannot knowingly write a bundle above the configured
 finalization limit.
 
-Non-`2xx` provider responses are still captured as encrypted local evidence,
-but current normalizers reject them for finalization with
+Non-`2xx` provider responses—including subscription authentication and provider
+errors—are returned to the calling client and captured as encrypted local
+evidence, but current normalizers reject them for finalization with
 `unsupported_provider_http_status` before proof generation.
 
 Real provider requests can incur cost. The ordinary test suite uses offline
