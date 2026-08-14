@@ -66,9 +66,9 @@ must remain vault-encrypted and local.
 ## Current scope
 
 - HTTP/1.1 `POST` requests, including Server-Sent Events.
-- The OpenAI API, ChatGPT-authenticated Codex, Anthropic, DeepSeek, and
-  OpenRouter through fixed local routes and an explicit upstream hostname
-  allowlist.
+- The OpenAI API, ChatGPT-authenticated Codex CLI, the Anthropic API,
+  claude.ai-authenticated Claude Code, DeepSeek, and OpenRouter through fixed
+  local routes and an explicit upstream hostname allowlist.
 - One remote notary per capture or finalization. Hosted clients use a
   versioned key-and-endpoint directory served over authenticated HTTPS;
   self-hosted clients pair an explicit endpoint with an explicit public key.
@@ -155,21 +155,29 @@ llm-notary captures list --limit 20
 
 ## Connect a provider client
 
-Keep the provider API key in the original client and replace only its base URL:
+Keep the provider API key or subscription login in the original client and
+replace only its base URL:
 
 | Provider | Local base URL | Authenticated upstream |
 | --- | --- | --- |
 | OpenAI | `http://127.0.0.1:8787/openai/v1` | `api.openai.com` |
-| Anthropic | `http://127.0.0.1:8787/anthropic` | `api.anthropic.com` |
+| Codex with a ChatGPT plan | `http://127.0.0.1:8787/codex` | `chatgpt.com/backend-api/codex` |
+| Anthropic / Claude Code | `http://127.0.0.1:8787/anthropic` | `api.anthropic.com` |
 | DeepSeek | `http://127.0.0.1:8787/deepseek` | `api.deepseek.com` |
 | OpenRouter | `http://127.0.0.1:8787/openrouter/api/v1` | `openrouter.ai` |
+
+Subscription-backed authentication is live-tested with Codex CLI and Claude
+Code. The LLM Notary macOS app can run the local proxy, but it does not make
+another vendor's desktop, browser, remote, or cloud traffic use that proxy.
+Native Claude Desktop is not configurable for this route. Codex desktop is not
+yet an end-to-end-tested or supported client surface.
 
 For OpenRouter, the evidence authenticates `openrouter.ai`; a namespaced model
 slug is metadata and does not prove a direct connection to the vendor named in
 that slug.
 
-See [Provider and agent setup](docs/provider-setup.md) for curl, SDK, Codex,
-and streaming examples.
+See [Provider and agent setup](docs/provider-setup.md) for curl, SDK,
+subscription-backed Codex and Claude Code, and streaming examples.
 
 ## Finalize and verify
 

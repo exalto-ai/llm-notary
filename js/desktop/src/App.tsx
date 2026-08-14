@@ -81,7 +81,7 @@ const providers = [
     name: 'Anthropic / Claude Code',
     operation: 'Messages',
     baseUrl: 'http://127.0.0.1:8787/anthropic',
-    modelExample: 'claude-sonnet-4-5',
+    modelExample: 'Use your current Claude Code model',
   },
   {
     id: 'deepseek',
@@ -495,7 +495,7 @@ function ConnectionsView({ state, notice }: { state: DesktopState; notice: strin
     </section>
     <section className="native-card connection-note">
       <KeyRound size={18} />
-      <div><strong>LLM Notary does not store provider credentials.</strong><p>The key or subscription token remains in your model client and passes through the local proxy only for the provider request.</p></div>
+      <div><strong>LLM Notary does not store provider credentials.</strong><p>The key or subscription token remains in your model client and passes through the local proxy only for the provider request.</p><p>Subscription login is supported with Codex CLI and Claude Code. Native Claude Desktop cannot use this route, and Codex desktop is not yet end-to-end tested or supported.</p></div>
     </section>
   </div>;
 }

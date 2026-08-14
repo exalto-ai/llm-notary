@@ -42,6 +42,21 @@ address `127.0.0.1:8788` and embedded in the native window. The desktop content
 security policy permits that exact local frame; it does not permit public or
 arbitrary remote pages.
 
+## Connect subscription-backed clients
+
+Choosing a provider during setup shows and copies the local base URL; it does
+not reconfigure or sign in to the vendor client. Subscription-backed capture is
+supported and live-tested with Codex CLI using its saved ChatGPT login and
+Claude Code using its saved claude.ai login. The LLM Notary app can supervise
+the proxy while either CLI sends requests through it.
+
+This does not intercept traffic from vendor applications automatically. Native
+Claude Desktop cannot currently use the local route. Codex desktop is not yet
+an end-to-end-tested or supported client surface, even though local Codex work
+may read the same configuration. Browser, Slack, remote, and cloud sessions run
+outside this Mac's loopback proxy. See [Provider and agent setup](provider-setup.md)
+for the exact supported commands and configuration.
+
 ## Automatic updates
 
 Signed production builds check the `latest` channel shortly after launch and

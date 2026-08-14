@@ -187,7 +187,8 @@ curl http://127.0.0.1:8787/openai/v1/responses \
 ```
 
 Use a model available to the provider account. See [Provider and agent
-setup](provider-setup.md) for every route and the Codex configuration.
+setup](provider-setup.md) for every route, including the live-tested Codex CLI
+and Claude Code subscription configurations.
 
 The response is relayed normally. After it ends, the daemon records a catalog
 row and vault-encrypts `<capture-id>.llmcapture`. The capture file is a private

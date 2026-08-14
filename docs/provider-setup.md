@@ -21,6 +21,22 @@ distinct and non-overlapping.
 Examples below use `YOUR_MODEL` deliberately. Choose a model available to the
 provider account rather than copying a time-sensitive model name.
 
+## Supported subscription clients
+
+| Client surface | Current status |
+| --- | --- |
+| Codex CLI with its saved ChatGPT login | Supported and live-tested |
+| Claude Code with its saved claude.ai login | Supported and live-tested |
+| Codex desktop app | Not yet end-to-end tested or supported |
+| Native Claude Desktop | Cannot currently be configured for the local route |
+| Browser, Slack, remote, or cloud sessions | Outside the loopback proxy and unsupported |
+
+The LLM Notary macOS app can start and manage the local proxy for either
+supported CLI. It does not supply the provider login or configure the vendor
+client. Codex desktop may read the same local Codex configuration for local
+work, but that path remains unverified; do not rely on it as a supported
+integration yet.
+
 ## OpenAI
 
 ```bash
@@ -49,8 +65,8 @@ the finalized disclosure. Their header names remain visible.
 
 ## Claude Code with a claude.ai plan
 
-Claude Code can keep using the claude.ai login it already manages. First check
-the CLI's own authentication state:
+This flow is live-tested with Claude Code. It can keep using the claude.ai
+login it already manages. First check the CLI's own authentication state:
 
 ```bash
 claude auth status
@@ -178,8 +194,9 @@ First confirm that Codex itself is signed in with ChatGPT:
 codex login status
 ```
 
-The result should say `Logged in using ChatGPT`. Signing in to a browser or a
-different desktop app is not enough; the Codex CLI must own this login.
+The result should say `Logged in using ChatGPT`. This flow is live-tested with
+Codex CLI, and the CLI must own this login. A browser or another app's login
+does not establish that CLI state.
 
 Add this provider to `~/.codex/config.toml` and select it with
 `model_provider`. Keep your current model setting:
@@ -216,6 +233,10 @@ A verified trace proves that the request reached `chatgpt.com` over the
 authenticated provider connection and authenticates the disclosed request and
 response bodies. It does not prove which person or organization owned the
 ChatGPT account, which plan they had, or how OpenAI billed the request.
+
+Codex desktop may read the same local configuration for local work, but this
+integration has not yet been tested end to end there and is not a supported
+client surface. Remote and cloud Codex work cannot reach the loopback proxy.
 
 ## Other agents and SDKs
 
