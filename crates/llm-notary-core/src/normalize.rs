@@ -175,11 +175,7 @@ fn parse_openai_compatible(
     };
     let response = provider_response_json(response_body, |events| {
         if operation == "responses" {
-            events
-                .iter()
-                .rev()
-                .find_map(|event| event.get("response").cloned())
-                .ok_or_else(|| anyhow!("Responses SSE stream did not contain response.completed"))
+            openai_responses_sse(events)
         } else {
             openai_chat_sse(events)
         }
@@ -439,6 +435,42 @@ fn openai_responses_output(response: &Value) -> Result<ProviderOutput> {
             .into_iter()
             .collect(),
     ))
+}
+
+fn openai_responses_sse(events: &[Value]) -> Result<Value> {
+    let mut response = events
+        .iter()
+        .rev()
+        .find(|event| event.get("type").and_then(Value::as_str) == Some("response.completed"))
+        .and_then(|event| event.get("response"))
+        .cloned()
+        .ok_or_else(|| anyhow!("Responses SSE stream did not contain response.completed"))?;
+
+    let completed_output_is_empty = response
+        .get("output")
+        .and_then(Value::as_array)
+        .is_none_or(Vec::is_empty);
+    if completed_output_is_empty {
+        let mut completed_items = BTreeMap::<usize, Value>::new();
+        for event in events.iter().filter(|event| {
+            event.get("type").and_then(Value::as_str) == Some("response.output_item.done")
+        }) {
+            let Some(item) = event.get("item") else {
+                continue;
+            };
+            let index = event
+                .get("output_index")
+                .and_then(Value::as_u64)
+                .and_then(|index| usize::try_from(index).ok())
+                .unwrap_or(completed_items.len());
+            completed_items.insert(index, item.clone());
+        }
+        if !completed_items.is_empty() {
+            response["output"] = Value::Array(completed_items.into_values().collect());
+        }
+    }
+
+    Ok(response)
 }
 
 fn openai_chat_sse(events: &[Value]) -> Result<Value> {
@@ -899,6 +931,28 @@ mod tests {
         .expect("Responses capture");
         assert_eq!(inference.input_messages[0]["parts"][0]["id"], "call_1");
         assert_eq!(inference.input_messages[1]["parts"][0]["id"], "call_1");
+    }
+
+    #[test]
+    fn responses_sse_uses_completed_output_items_when_final_output_is_empty() {
+        let inference = verified_inference_from_capture(
+            &manifest("openai"),
+            &http(r#"{"model":"gpt-5.6-sol","input":"hello"}"#),
+            &response(concat!(
+                "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"message\",\"role\":\"assistant\",\"status\":\"completed\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello from Codex\"}]}}\n\n",
+                "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5.6-sol\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":2,\"output_tokens\":4}}}\n\n",
+            )),
+        )
+        .expect("Codex Responses SSE capture");
+
+        assert_eq!(
+            inference.output_messages[0]["parts"][0]["content"],
+            "hello from Codex"
+        );
+        assert_eq!(inference.response_model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(inference.input_tokens, Some(2));
+        assert_eq!(inference.output_tokens, Some(4));
+        assert_eq!(inference.finish_reasons, vec!["completed".to_owned()]);
     }
 
     #[test]

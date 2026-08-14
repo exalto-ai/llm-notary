@@ -13,6 +13,7 @@ openssl rand -hex 32 > notary.key
 cargo run -p llm-notary-server --bin llm-notary-server -- \
   --signing-key notary.key \
   --allow-host api.openai.com \
+  --allow-host chatgpt.com \
   --allow-host api.anthropic.com \
   --allow-host api.deepseek.com \
   --allow-host openrouter.ai

@@ -56,6 +56,13 @@ type OnboardingStep = 'welcome' | 'protection' | 'provider' | 'ready';
 
 const providers = [
   {
+    id: 'codex',
+    name: 'Codex (ChatGPT plan)',
+    operation: 'Responses',
+    baseUrl: 'http://127.0.0.1:8787/codex',
+    modelExample: 'Use your current Codex model',
+  },
+  {
     id: 'openrouter',
     name: 'OpenRouter',
     operation: 'Chat Completions',
@@ -472,7 +479,7 @@ function ConnectionsView({ state, notice }: { state: DesktopState; notice: strin
   return <div className="native-page connections-page">
     <section className="page-intro">
       <h1>Connect a model client</h1>
-      <p>Keep the provider API key in the app that already uses it. Change only its base URL.</p>
+      <p>Keep the provider API key or subscription login in the app that already uses it. Change only its base URL.</p>
       <span className={`readiness ${state.running ? 'is-ready' : ''}`}><StatusDot running={state.running} warning={!state.running} />{state.running ? 'Ready for requests' : 'Start the service first'}</span>
     </section>
     {notice && <div className="native-notice">{notice}</div>}
@@ -488,7 +495,7 @@ function ConnectionsView({ state, notice }: { state: DesktopState; notice: strin
     </section>
     <section className="native-card connection-note">
       <KeyRound size={18} />
-      <div><strong>LLM Notary does not store provider credentials.</strong><p>The key remains in your model client and passes through the local proxy only for the provider request.</p></div>
+      <div><strong>LLM Notary does not store provider credentials.</strong><p>The key or subscription token remains in your model client and passes through the local proxy only for the provider request.</p></div>
     </section>
   </div>;
 }
@@ -767,7 +774,7 @@ function ProviderStep({ provider, selectedProvider, setSelectedProvider, model, 
   return <div className="wizard-step provider-step">
     <span className="wizard-kicker">Models & providers</span>
     <h1>Connect your first provider</h1>
-    <p>Choose one to set up now. All four local routes remain available, and the provider key stays in your existing client.</p>
+    <p>Choose one to set up now. Every local route remains available, and the provider credential stays in your existing client.</p>
     <div className="provider-picker" role="radiogroup" aria-label="Provider to configure first">
       {providers.map((item) => <button key={item.id} type="button" role="radio" aria-checked={selectedProvider === item.id} className={selectedProvider === item.id ? 'is-selected' : ''} onClick={() => setSelectedProvider(item.id)}>
         <span>{item.name.slice(0, 1)}</span><strong>{item.name}</strong><small>{item.operation}</small>
@@ -823,7 +830,7 @@ function OnboardingAside({ step, state, provider }: {
     },
     provider: {
       title: `Connect ${provider.name}`,
-      copy: 'Only the base URL changes. The API key remains in the model client that already holds it.',
+      copy: 'Only the base URL changes. The API key or subscription login remains in the model client that already holds it.',
     },
     ready: {
       title: 'One app, end to end',
@@ -835,7 +842,7 @@ function OnboardingAside({ step, state, provider }: {
     <h2>{content.title}</h2>
     <p>{content.copy}</p>
     <div className="aside-route">
-      <RouteStop title="Model client" detail="Keeps the API key" active={step === 'ready' || state.running} />
+      <RouteStop title="Model client" detail="Keeps the credential" active={step === 'ready' || state.running} />
       <RouteStop title="LLM Notary" detail="Captures locally" active={step === 'ready' || state.running} />
       <RouteStop title="Remote notary" detail="Sees encrypted protocol" active={step === 'ready' || state.running} />
       <RouteStop title="Provider" detail="Returns the model response" active={step === 'ready' || state.running} />

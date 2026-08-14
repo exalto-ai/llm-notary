@@ -38,10 +38,13 @@ Known public hashes, signatures, public keys, and key identifiers are exempt
 from entropy rejection when their structure identifies them as public proof
 material. After cryptographic package verification, documented OpenAI response
 IDs are also exempt from entropy rejection only after package verification and
-only at documented protocol paths. OpenAI root response IDs require
+only at documented protocol paths. OpenAI API root response IDs require
 `api.openai.com`, the exact `/v1/chat/completions` or `/v1/responses` request
-path, and the matching `chatcmpl-...` or `resp_...` format. OpenRouter root
-generation IDs require `openrouter.ai`, `/api/v1/chat/completions`, and a
+path, and the matching `chatcmpl-...` or `resp_...` format. Codex response IDs
+require `chatgpt.com`, the exact `/backend-api/codex/responses` or
+`/backend-api/codex/responses/compact` path, and the `resp_...` format.
+OpenRouter root generation IDs require `openrouter.ai`,
+`/api/v1/chat/completions`, and a
 documented `gen-...` or `chatcmpl-...` format. The same verified Chat
 Completions contexts permit `call_...` only at exact request or response tool
 call identifier paths, including parsed SSE `data:` objects. Known-secret

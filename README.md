@@ -66,8 +66,9 @@ must remain vault-encrypted and local.
 ## Current scope
 
 - HTTP/1.1 `POST` requests, including Server-Sent Events.
-- OpenAI, Anthropic, DeepSeek, and OpenRouter through fixed local routes and an
-  explicit upstream hostname allowlist.
+- The OpenAI API, ChatGPT-authenticated Codex, Anthropic, DeepSeek, and
+  OpenRouter through fixed local routes and an explicit upstream hostname
+  allowlist.
 - One remote notary per capture or finalization. Hosted clients use a
   versioned key-and-endpoint directory served over authenticated HTTPS;
   self-hosted clients pair an explicit endpoint with an explicit public key.

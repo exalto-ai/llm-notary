@@ -121,6 +121,8 @@ pub struct CatalogConfig {
 pub struct ProvidersConfig {
     #[serde(default = "ProviderConfig::openai")]
     pub openai: ProviderConfig,
+    #[serde(default = "ProviderConfig::codex")]
+    pub codex: ProviderConfig,
     #[serde(default = "ProviderConfig::anthropic")]
     pub anthropic: ProviderConfig,
     #[serde(default = "ProviderConfig::deepseek")]
@@ -193,6 +195,7 @@ impl Default for ProvidersConfig {
     fn default() -> Self {
         Self {
             openai: ProviderConfig::openai(),
+            codex: ProviderConfig::codex(),
             anthropic: ProviderConfig::anthropic(),
             deepseek: ProviderConfig::deepseek(),
             openrouter: ProviderConfig::openrouter(),
@@ -205,6 +208,13 @@ impl ProviderConfig {
         Self {
             enabled: true,
             route_prefix: "/openai".to_owned(),
+        }
+    }
+
+    fn codex() -> Self {
+        Self {
+            enabled: true,
+            route_prefix: "/codex".to_owned(),
         }
     }
 
@@ -347,6 +357,7 @@ impl AgentConfig {
 
         let routes = [
             ("openai", &self.providers.openai),
+            ("codex", &self.providers.codex),
             ("anthropic", &self.providers.anthropic),
             ("deepseek", &self.providers.deepseek),
             ("openrouter", &self.providers.openrouter),
@@ -511,6 +522,7 @@ mod tests {
         let config = AgentConfig::default();
         config.validate().unwrap();
         assert!(config.providers.openai.enabled);
+        assert!(config.providers.codex.enabled);
         assert!(config.providers.anthropic.enabled);
         assert!(config.providers.deepseek.enabled);
         assert!(config.providers.openrouter.enabled);

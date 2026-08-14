@@ -441,7 +441,7 @@ fn is_documented_public_protocol_id(
     let Some(context) = context else {
         return false;
     };
-    if context.provider_host == "api.openai.com"
+    if matches!(context.provider_host, "api.openai.com" | "chatgpt.com")
         && location == PublicPackageLocation::ResponseBody
         && path.len() == 1
         && matches!(&path[0], JsonPathSegment::Key(key) if key == "id")
@@ -449,6 +449,9 @@ fn is_documented_public_protocol_id(
         return match context.request_path {
             "/v1/chat/completions" => has_public_id_format(value, "chatcmpl-"),
             "/v1/responses" => has_public_id_format(value, "resp_"),
+            "/backend-api/codex/responses" | "/backend-api/codex/responses/compact" => {
+                has_public_id_format(value, "resp_")
+            }
             _ => false,
         };
     }
@@ -786,6 +789,13 @@ mod tests {
         }
     }
 
+    fn codex_context(request_path: &str) -> PublicPackageSafetyContext<'_> {
+        PublicPackageSafetyContext {
+            provider_host: "chatgpt.com",
+            request_path,
+        }
+    }
+
     fn openrouter_chat_context() -> PublicPackageSafetyContext<'static> {
         PublicPackageSafetyContext {
             provider_host: "openrouter.ai",
@@ -923,6 +933,39 @@ mod tests {
             validate_public_trace_package_with_context(&archive, openai_context(request_path))
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn accepts_verified_codex_response_ids_only_at_the_pinned_paths() {
+        for request_path in [
+            "/backend-api/codex/responses",
+            "/backend-api/codex/responses/compact",
+        ] {
+            let archive = package_with_path(
+                request_path,
+                r#"{"model":"gpt-test","input":"ordinary prompt"}"#,
+                r#"{"id":"resp_7Qx9Za2Bc4De6Fg8Hi0Jk3Lm5Np","output":[]}"#,
+                safe_trace(),
+            );
+            validate_public_trace_package_with_context(&archive, codex_context(request_path))
+                .unwrap();
+        }
+
+        let wrong_path = package_with_path(
+            "/backend-api/codex/unrelated",
+            r#"{"model":"gpt-test","input":"ordinary prompt"}"#,
+            r#"{"id":"resp_7Qx9Za2Bc4De6Fg8Hi0Jk3Lm5Np","output":[]}"#,
+            safe_trace(),
+        );
+        assert_eq!(
+            validate_public_trace_package_with_context(
+                &wrong_path,
+                codex_context("/backend-api/codex/unrelated"),
+            )
+            .unwrap_err()
+            .code,
+            "high_entropy_value"
+        );
     }
 
     #[test]
