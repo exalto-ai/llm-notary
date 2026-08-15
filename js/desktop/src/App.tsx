@@ -189,7 +189,7 @@ function DesktopAccountCard({
   onSkip?: () => void;
 }) {
   const [account, setAccount] = useState<AccountConnection | null>(null);
-  const [flow, setFlow] = useState<{ value: AccountConnectionStarted; startedAt: number; nextPollAt: number } | null>(null);
+  const [flow, setFlow] = useState<{ value: AccountConnectionStarted; startedAt: number; nextPollAt: number; failures: number } | null>(null);
   const [now, setNow] = useState(Date.now());
   const [busy, setBusy] = useState(false);
   const [polling, setPolling] = useState(false);
@@ -221,10 +221,16 @@ function DesktopAccountCard({
       const next = await pollAccountConnection(flow.value.request_id);
       setAccount(next);
       if (next.signed_in || next.connection_state === 'connected') setFlow(null);
-      else setFlow({ ...flow, nextPollAt: Date.now() + flow.value.poll_interval_seconds * 1000 });
+      else setFlow({ ...flow, nextPollAt: Date.now() + flow.value.poll_interval_seconds * 1000, failures: 0 });
       setError(null);
     } catch (caught) {
       setError(errorMessage(caught));
+      setFlow((current) => {
+        if (!current) return current;
+        const failures = current.failures + 1;
+        const delay = Math.min(30, Math.max(1, current.value.poll_interval_seconds) * 2 ** Math.min(Math.max(0, failures - 1), 4));
+        return { ...current, failures, nextPollAt: Date.now() + delay * 1000 };
+      });
     } finally {
       setPolling(false);
     }
@@ -241,7 +247,7 @@ function DesktopAccountCard({
     try {
       const value = await startAccountConnection();
       const startedAt = Date.now();
-      setFlow({ value, startedAt, nextPollAt: startedAt + value.poll_interval_seconds * 1000 });
+      setFlow({ value, startedAt, nextPollAt: startedAt + value.poll_interval_seconds * 1000, failures: 0 });
       await openAccountLink(value.verification_uri_complete);
     } catch (caught) {
       setError(errorMessage(caught));

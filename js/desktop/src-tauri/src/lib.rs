@@ -397,9 +397,7 @@ fn open_account_link(url: String) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     let result = Command::new("open").arg(url.as_str()).spawn();
     #[cfg(target_os = "windows")]
-    let result = Command::new("cmd")
-        .args(["/C", "start", "", url.as_str()])
-        .spawn();
+    let result = Command::new("explorer.exe").arg(url.as_str()).spawn();
     #[cfg(all(unix, not(target_os = "macos")))]
     let result = Command::new("xdg-open").arg(url.as_str()).spawn();
     result

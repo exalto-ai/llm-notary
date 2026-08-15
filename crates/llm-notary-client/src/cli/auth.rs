@@ -24,8 +24,17 @@ const API_KEY_ENV: &str = "LLM_NOTARY_API_KEY";
 const API_KEY_FILE_ENV: &str = "LLM_NOTARY_API_KEY_FILE";
 const API_ORIGIN_ENV: &str = "LLM_NOTARY_API_ORIGIN";
 const API_KEY_VERSION_PREFIX: &str = "llmn_v1_";
+const ACCOUNT_REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const ACCOUNT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const DEFAULT_DEVICE_NAME: &str = "llm-notary cli";
 static CREDENTIAL_REFRESH: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+async fn credential_refresh_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    CREDENTIAL_REFRESH
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
@@ -392,10 +401,7 @@ pub(crate) async fn poll_authorization(
         .json::<AuthorizationComplete>()
         .await
         .context("reading LLM Notary account credentials")?;
-    let _refresh = CREDENTIAL_REFRESH
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
+    let _refresh = credential_refresh_guard().await;
     save_credentials(&FileCredentials {
         api_origin: pending.api_origin.clone(),
         refresh_token: tokens.refresh_token,
@@ -411,10 +417,7 @@ pub async fn logout() -> Result<()> {
 }
 
 pub(crate) async fn logout_for_service() -> Result<()> {
-    let _refresh = CREDENTIAL_REFRESH
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
+    let _refresh = credential_refresh_guard().await;
     match credential_configuration()? {
         CredentialConfiguration::ApiKey(_) => {
             bail!(
@@ -518,7 +521,7 @@ fn unavailable_or_reauthorization_status(
 
 async fn lookup_account_status(authenticated: AuthenticatedApi) -> AccountConnectionStatus {
     let origin = authenticated.origin.clone();
-    let response = match http_client_builder().build() {
+    let response = match account_http_client_builder().build() {
         Ok(client) => match client
             .get(origin.api_url("/api/cli/me"))
             .bearer_auth(authenticated.access_token)
@@ -582,9 +585,10 @@ async fn lookup_account_status(authenticated: AuthenticatedApi) -> AccountConnec
 async fn refresh_device_session_for_status(
     origin: &ApiOrigin,
 ) -> std::result::Result<AuthenticatedApi, AccountConnectionState> {
+    let _refresh = credential_refresh_guard().await;
     let mut credentials =
         load_credentials().map_err(|_| AccountConnectionState::ReauthorizationRequired)?;
-    let client = http_client_builder()
+    let client = account_http_client_builder()
         .build()
         .map_err(|_| AccountConnectionState::Unavailable)?;
     let response = client
@@ -613,6 +617,12 @@ async fn refresh_device_session_for_status(
     })
 }
 
+fn account_http_client_builder() -> reqwest::ClientBuilder {
+    http_client_builder()
+        .connect_timeout(ACCOUNT_REQUEST_CONNECT_TIMEOUT)
+        .timeout(ACCOUNT_REQUEST_TIMEOUT)
+}
+
 pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
     authenticate_configuration(credential_configuration()?).await
 }
@@ -630,10 +640,7 @@ async fn authenticate_configuration(
 }
 
 async fn authenticate_device_session() -> Result<AuthenticatedApi> {
-    let _refresh = CREDENTIAL_REFRESH
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
+    let _refresh = credential_refresh_guard().await;
     let mut credentials =
         load_credentials().context("an LLM Notary account connection is required")?;
     let (access_token, rotated_refresh_token) = refresh(&credentials).await?;
@@ -732,10 +739,7 @@ pub(crate) async fn authenticate_for_publication_status()
         CredentialConfiguration::ApiKey(authenticated) => return Ok(authenticated),
         CredentialConfiguration::DeviceSession { .. } => {}
     }
-    let _refresh = CREDENTIAL_REFRESH
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
+    let _refresh = credential_refresh_guard().await;
     let mut credentials = load_credentials_for_publication_status()?;
     let (access_token, rotated_refresh_token) =
         refresh_for_publication_status(&credentials).await?;
@@ -1220,6 +1224,23 @@ mod tests {
         let result = refresh_for_publication_status(&credentials).await;
         server.abort();
         result
+    }
+
+    #[tokio::test]
+    async fn credential_refresh_guard_serializes_concurrent_refreshes() {
+        let guard = credential_refresh_guard().await;
+        let mut waiter = tokio::spawn(async { credential_refresh_guard().await });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut waiter)
+                .await
+                .is_err()
+        );
+        drop(guard);
+        let _guard = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap();
     }
 
     #[test]

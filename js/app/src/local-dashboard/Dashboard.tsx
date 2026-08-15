@@ -167,10 +167,15 @@ function mutationError(title: string, error: unknown) {
 
 type AccountConnectionController = ReturnType<typeof useAccountConnection>;
 
+function accountPollRetryDelaySeconds(intervalSeconds: number, failures: number) {
+  const base = Math.max(1, intervalSeconds);
+  return Math.min(30, base * 2 ** Math.min(Math.max(0, failures - 1), 4));
+}
+
 function useAccountConnection(api: LocalApi) {
   const queryClient = useQueryClient();
   const account = useQuery({ queryKey: ['account'], queryFn: api.account, retry: false });
-  const [started, setStarted] = useState<{ flow: AccountConnectionStarted; nextPollAt: number; startedAt: number } | null>(null);
+  const [started, setStarted] = useState<{ flow: AccountConnectionStarted; nextPollAt: number; startedAt: number; failures: number } | null>(null);
   const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
@@ -181,7 +186,7 @@ function useAccountConnection(api: LocalApi) {
 
   const schedule = (flow: AccountConnectionStarted) => {
     const startedAt = Date.now();
-    setStarted({ flow, startedAt, nextPollAt: startedAt + flow.poll_interval_seconds * 1000 });
+    setStarted({ flow, startedAt, nextPollAt: startedAt + flow.poll_interval_seconds * 1000, failures: 0 });
   };
   const begin = useMutation({
     mutationFn: api.startAccountConnection,
@@ -193,9 +198,17 @@ function useAccountConnection(api: LocalApi) {
     onSuccess: (result) => {
       queryClient.setQueryData(['account'], result);
       if (result.signed_in || result.connection_state === 'connected') setStarted(null);
-      else if (started) setStarted({ ...started, nextPollAt: Date.now() + started.flow.poll_interval_seconds * 1000 });
+      else if (started) setStarted({ ...started, nextPollAt: Date.now() + started.flow.poll_interval_seconds * 1000, failures: 0 });
     },
-    onError: (error) => mutationError('Could not check authorization', error)
+    onError: (error) => {
+      mutationError('Could not check authorization', error);
+      setStarted((current) => {
+        if (!current) return current;
+        const failures = current.failures + 1;
+        const delay = accountPollRetryDelaySeconds(current.flow.poll_interval_seconds, failures);
+        return { ...current, failures, nextPollAt: Date.now() + delay * 1000 };
+      });
+    }
   });
   const disconnect = useMutation({
     mutationFn: api.disconnectAccount,

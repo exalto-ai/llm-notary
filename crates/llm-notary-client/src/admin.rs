@@ -1184,9 +1184,8 @@ async fn events(
 
 #[utoipa::path(get, path = "/v1/account", summary = "Get the LLM Notary account connection", description = "Reports whether this local service has an account connection used for hosted admission, credits, and sharing.", responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn account_status(
-    State(state): State<AdminState>,
+    State(_state): State<AdminState>,
 ) -> Result<Json<AccountConnectionResponse>, ApiError> {
-    let _credentials = state.account_credentials.lock().await;
     load_account_status().await
 }
 
