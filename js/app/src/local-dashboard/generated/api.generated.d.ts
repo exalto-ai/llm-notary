@@ -420,17 +420,27 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AccountActionLinks: {
+            account: string;
+            plans: string;
+            settings: string;
+            usage: string;
+        };
         AccountConnectionRequest: {
             api_origin?: string;
             device_name?: string;
         };
         AccountConnectionResponse: {
+            auth_provider?: string | null;
             billing?: null | components["schemas"]["BillingState"];
+            connection_state?: null | components["schemas"]["AccountConnectionState"];
             credential_kind?: string | null;
             credential_name?: string | null;
             credits?: null | components["schemas"]["CreditSummary"];
             device_name?: string | null;
+            display_name?: string | null;
             github_login?: string | null;
+            links?: null | components["schemas"]["AccountActionLinks"];
             signed_in: boolean;
         };
         AccountConnectionStartedResponse: {
@@ -443,6 +453,8 @@ export interface components {
             user_code: string;
             verification_uri_complete: string;
         };
+        /** @enum {string} */
+        AccountConnectionState: "disconnected" | "connected" | "reauthorization_required" | "unavailable";
         ArtifactResponse: {
             kind: string;
             sha256: string;
@@ -451,6 +463,7 @@ export interface components {
         };
         BillingState: {
             billing_status: string;
+            purchase_mode?: string | null;
             service_plan: string;
         };
         CaptureDetailResponse: {
@@ -508,23 +521,23 @@ export interface components {
         };
         CreditBalanceSummary: {
             /** Format: int64 */
-            included_monthly_remaining_bytes: number;
+            included_monthly_remaining_bytes?: number;
             /** Format: int64 */
             next_grant_expiration?: number | null;
             /** Format: int64 */
-            supplemental_remaining_bytes: number;
+            supplemental_remaining_bytes?: number;
             /** Format: int64 */
-            total_granted_bytes: number;
+            total_granted_bytes?: number;
             /** Format: int64 */
-            total_remaining_bytes: number;
+            total_remaining_bytes?: number;
             /** Format: int64 */
-            total_used_bytes: number;
+            total_used_bytes?: number;
         };
         CreditSummary: {
             capture: components["schemas"]["CreditBalanceSummary"];
             notarization: components["schemas"]["CreditBalanceSummary"];
             /** Format: int64 */
-            reset_at: number;
+            reset_at?: number;
         };
         ErrorBody: {
             code: string;

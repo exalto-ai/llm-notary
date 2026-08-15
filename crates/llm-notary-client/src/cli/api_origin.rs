@@ -53,6 +53,18 @@ impl ApiOrigin {
             .expect("an absolute API path always joins a validated origin")
     }
 
+    /// Builds a website URL for a stable hash route on the same validated
+    /// origin. Account links must stay on the configured hosted origin so a
+    /// self-hosted daemon never sends a user to the public service by
+    /// accident.
+    pub(crate) fn web_url(&self, route: &str) -> Url {
+        let mut url = self.0.clone();
+        url.set_path("/");
+        url.set_query(None);
+        url.set_fragment(Some(route.trim_start_matches('#')));
+        url
+    }
+
     pub(crate) fn url(&self) -> &Url {
         &self.0
     }
@@ -106,6 +118,10 @@ mod tests {
         assert_eq!(
             secure.api_url("/api/cli/me").as_str(),
             "https://example.test/api/cli/me"
+        );
+        assert_eq!(
+            secure.web_url("/dashboard/credits").as_str(),
+            "https://example.test/#/dashboard/credits"
         );
         assert_eq!(
             ApiOrigin::parse("http://[::1]:8787").unwrap().to_string(),

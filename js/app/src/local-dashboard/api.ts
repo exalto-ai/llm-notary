@@ -134,6 +134,7 @@ export const localApi = {
   }),
   pollAccountConnection: (requestId: string) =>
     request<AccountConnection>(`/v1/account/${encodeURIComponent(requestId)}`),
+  disconnectAccount: () => request<void>('/v1/account', { method: 'DELETE' }),
   share: (captureId: string, visibility: ShareVisibility) => request<Share>(
     `/v1/captures/${encodeURIComponent(captureId)}/shares`,
     { method: 'POST', body: { visibility } }

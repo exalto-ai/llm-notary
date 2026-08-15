@@ -1184,9 +1184,8 @@ async fn events(
 
 #[utoipa::path(get, path = "/v1/account", summary = "Get the LLM Notary account connection", description = "Reports whether this local service has an account connection used for hosted admission, credits, and sharing.", responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn account_status(
-    State(state): State<AdminState>,
+    State(_state): State<AdminState>,
 ) -> Result<Json<AccountConnectionResponse>, ApiError> {
-    let _credentials = state.account_credentials.lock().await;
     load_account_status().await
 }
 
@@ -1196,12 +1195,16 @@ async fn load_account_status() -> Result<Json<AccountConnectionResponse>, ApiErr
         .map_err(|_| ApiError::internal("account_status_failed"))?;
     Ok(Json(AccountConnectionResponse {
         signed_in: status.signed_in,
+        connection_state: Some(status.connection_state),
         github_login: status.github_login,
+        display_name: status.display_name,
+        auth_provider: status.auth_provider,
         device_name: status.device_name,
         credential_kind: status.credential_kind,
         credential_name: status.credential_name,
         billing: status.billing,
         credits: status.credits,
+        links: Some(status.links),
     }))
 }
 
@@ -1280,12 +1283,16 @@ async fn poll_account_connection(
     {
         auth::AuthorizationPoll::Pending => Ok(Json(AccountConnectionResponse {
             signed_in: false,
+            connection_state: Some(auth::AccountConnectionState::Disconnected),
             github_login: None,
+            display_name: None,
+            auth_provider: None,
             device_name: None,
             credential_kind: None,
             credential_name: None,
             billing: None,
             credits: None,
+            links: Some(auth::account_action_links(&pending.api_origin)),
         })),
         auth::AuthorizationPoll::Complete => {
             state
@@ -2426,12 +2433,20 @@ struct VerificationResponse {
 #[derive(Debug, Serialize, ToSchema)]
 struct AccountConnectionResponse {
     signed_in: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    connection_state: Option<auth::AccountConnectionState>,
     github_login: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auth_provider: Option<String>,
     device_name: Option<String>,
     credential_kind: Option<String>,
     credential_name: Option<String>,
     billing: Option<auth::BillingState>,
     credits: Option<auth::CreditSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    links: Option<auth::AccountActionLinks>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]

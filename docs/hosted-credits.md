@@ -106,6 +106,14 @@ dashboard also shows current trace storage and subscription controls. History
 labels and errors omit address subjects, record digests, tickets, credentials,
 and other users' activity.
 
+The native desktop app and local dashboard use the same account projection. They
+show the account identity and sign-in provider, device or API-key mode, plan,
+billing state, and credit details without exposing the hosted credential to the
+browser or desktop renderer. Hosted account, usage, plan, and settings links are
+constructed from the validated account origin. A local browser-approved device
+session can be disconnected locally; API keys remain controlled by the hosted
+account settings.
+
 The account response reports whether Stripe is `disabled`, in `test` mode, or
 `live`. The dashboard hides billing controls when Stripe is disabled and labels
 test mode prominently.

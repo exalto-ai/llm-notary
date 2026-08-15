@@ -171,6 +171,20 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'IBM Plex Mono', ui-mon
 .json-view { background: var(--inverse); border: 1px solid #484848; color: #d8d8d8; font-size: 10px; line-height: 1.7; margin: 22px 0 0; max-height: 440px; overflow: auto; padding: 20px; white-space: pre-wrap; }
 
 .settings-panel { background: var(--raised); border: 1px solid var(--rule); padding: 25px; }
+.account-connection-card { background: var(--raised); border: 1px solid var(--rule); display: grid; gap: 16px; margin: 20px 0; padding: 22px 25px; }
+.account-connection-card--compact { background: transparent; border: 0; margin: 0; padding: 0; }
+.account-connection-card--compact { gap: 10px; }
+.account-connection-identity { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+.account-connection-identity b { font-size: 15px; }
+.account-connection-identity .mantine-Text-root { color: var(--muted); font-size: 12px; }
+.account-connection-facts { border-top: 1px solid var(--rule); display: grid; gap: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; }
+.account-connection-card--compact .account-connection-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.account-connection-facts > div { border-bottom: 1px solid var(--rule); padding: 10px 12px 10px 0; }
+.account-connection-card--compact .account-connection-facts > div { padding: 7px 8px 7px 0; }
+.account-connection-links { border-top: 1px solid var(--rule); padding-top: 10px; }
+.account-connection-card--compact .account-connection-links { padding-top: 7px; }
+.account-connection-links a { color: var(--ink); }
+.account-connection-card .status-label { justify-self: end; }
 .settings-panel h2 { font-size: 27px; letter-spacing: -.055em; margin: 34px 0 9px; }
 .settings-panel > p:not(.eyebrow) { color: var(--muted); line-height: 1.65; }
 .authorization-code { border-top: 1px solid var(--rule); display: grid; gap: 12px; margin-top: 24px; padding-top: 18px; }
@@ -211,6 +225,7 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'IBM Plex Mono', ui-mon
 .sharing-account { border-bottom: 1px solid var(--rule); display: grid; gap: 12px; padding: 16px 0; }
 .sharing-account b { font-size: 13px; }
 .sharing-account .mantine-Text-root { font-size: 12px; }
+.sharing-account .account-connection-card { gap: 12px; }
 .sharing-preview .trace-transcript { margin-top: 0; }
 .share-package-preview > div { display: grid; gap: 3px; }
 .share-package-preview b { font: 600 13px 'Instrument Sans Variable', sans-serif; }
@@ -247,6 +262,7 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'IBM Plex Mono', ui-mon
 .event-icon--active { color: var(--active); }
 
 .settings-panel { min-height: 310px; }
+.account-connection-card + .appearance-setting { margin-top: 0; }
 .appearance-setting { align-items: center; background: var(--raised); border: 1px solid var(--rule); display: flex; justify-content: space-between; margin: 20px 0; padding: 14px 16px; }
 .settings-panel .receipt-list { margin-top: 30px; }
 .api-link { align-items: center; background: var(--subtle); border: 1px solid var(--rule); display: flex; justify-content: space-between; margin: 20px 0 0; padding: 10px; }
@@ -309,6 +325,7 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'IBM Plex Mono', ui-mon
   .trace-layout.show-detail .trace-list { display: none; }
   .trace-inspector { margin-top: 20px; padding: 17px; }
   .settings-panel { min-height: 0; }
+  .account-connection-facts { grid-template-columns: 1fr 1fr; }
   .mobile-nav-body { padding: 0; }
   .auth-shell { padding: 24px; }
   .auth-document { border-left: 0; padding: 0; }

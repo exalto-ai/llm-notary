@@ -1744,31 +1744,80 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
                 .and_then(Value::as_bool)
                 .unwrap_or(false)
             {
-                let mut output = format!(
-                    "Connected to LLM Notary as {} ({}: {})",
-                    value_string(value, "/github_login"),
+                let display_name = match value_string(value, "/display_name").as_str() {
+                    "-" => value_string(value, "/github_login"),
+                    name => name.to_owned(),
+                };
+                let provider = value_string(value, "/auth_provider");
+                let credential = format!(
+                    "{}: {}",
                     value_string(value, "/credential_kind"),
                     value_string(value, "/credential_name"),
                 );
+                let mut output = if provider == "-" {
+                    format!("Connected to LLM Notary as {display_name} ({credential})")
+                } else {
+                    format!("Connected to LLM Notary as {display_name} ({provider}; {credential})")
+                };
                 if let Some(billing) = value.get("billing") {
                     output.push_str(&format!(
-                        "\nplan {} ({})",
+                        "\nplan {} ({}, purchase mode {})",
                         value_string(billing, "/service_plan"),
                         value_string(billing, "/billing_status"),
+                        value_string(billing, "/purchase_mode"),
                     ));
                 }
                 if let Some(credits) = value.get("credits") {
                     output.push_str(&format!(
-                        "\nnotarization {} available ({} included, {} additional); capture {} available",
+                        "\nnotarization used {} / {} granted; {} remaining ({} included, {} additional)",
+                        format_bytes(value_i64(credits, "/notarization/total_used_bytes")),
+                        format_bytes(value_i64(credits, "/notarization/total_granted_bytes")),
                         format_bytes(value_i64(credits, "/notarization/total_remaining_bytes")),
                         format_bytes(value_i64(credits, "/notarization/included_monthly_remaining_bytes")),
                         format_bytes(value_i64(credits, "/notarization/supplemental_remaining_bytes")),
+                    ));
+                    output.push_str(&format!(
+                        "\ncapture used {} / {} granted; {} remaining",
+                        format_bytes(value_i64(credits, "/capture/total_used_bytes")),
+                        format_bytes(value_i64(credits, "/capture/total_granted_bytes")),
                         format_bytes(value_i64(credits, "/capture/total_remaining_bytes")),
+                    ));
+                    output.push_str(&format!(
+                        "\nreset at {}",
+                        value_string(credits, "/reset_at"),
+                    ));
+                    if credits
+                        .pointer("/notarization/next_grant_expiration")
+                        .is_some_and(|value| !value.is_null())
+                    {
+                        output.push_str(&format!(
+                            "\nnext notarization expiration {}",
+                            value_string(credits, "/notarization/next_grant_expiration"),
+                        ));
+                    }
+                }
+                if let Some(links) = value.get("links") {
+                    output.push_str(&format!(
+                        "\naccount {}\nusage {}\nplans {}\nsettings {}",
+                        value_string(links, "/account"),
+                        value_string(links, "/usage"),
+                        value_string(links, "/plans"),
+                        value_string(links, "/settings"),
                     ));
                 }
                 Ok(output)
             } else {
-                Ok("No LLM Notary account is connected.".to_owned())
+                match value_string(value, "/connection_state").as_str() {
+                    "reauthorization_required" => Ok(
+                        "LLM Notary account authorization has expired or was revoked; reconnect it."
+                            .to_owned(),
+                    ),
+                    "unavailable" => Ok(
+                        "LLM Notary account status is temporarily unavailable; local work remains available."
+                            .to_owned(),
+                    ),
+                    _ => Ok("No LLM Notary account is connected.".to_owned()),
+                }
             }
         }
         CliCommand::Logout => Ok(
@@ -2323,9 +2372,44 @@ mod tests {
             human_output(&CliCommand::Whoami, &connected).unwrap(),
             "Connected to LLM Notary as octocat (cli_session: workstation)"
         );
+        let rich_connected = json!({
+            "signed_in": true,
+            "connection_state": "connected",
+            "display_name": "Example Person",
+            "auth_provider": "google",
+            "credential_kind": "cli_session",
+            "credential_name": "workstation",
+            "billing": { "service_plan": "one_gb", "billing_status": "active", "purchase_mode": "live" },
+            "credits": {
+                "reset_at": 1_700_000_000,
+                "capture": { "total_granted_bytes": 10_000_000, "total_used_bytes": 1_000_000, "total_remaining_bytes": 9_000_000 },
+                "notarization": { "total_granted_bytes": 20_000_000, "total_used_bytes": 2_000_000, "total_remaining_bytes": 18_000_000, "included_monthly_remaining_bytes": 8_000_000, "supplemental_remaining_bytes": 10_000_000, "next_grant_expiration": 1_800_000_000 }
+            },
+            "links": {
+                "account": "https://example.test/#/dashboard",
+                "usage": "https://example.test/#/dashboard/credits",
+                "plans": "https://example.test/#/pricing",
+                "settings": "https://example.test/#/dashboard/settings"
+            }
+        });
+        let rich_output = human_output(&CliCommand::Whoami, &rich_connected).unwrap();
+        assert!(rich_output.contains("Example Person (google; cli_session: workstation)"));
+        assert!(rich_output.contains("plan one_gb (active, purchase mode live)"));
+        assert!(rich_output.contains("notarization used 1.9 MiB / 19.1 MiB granted"));
+        assert!(rich_output.contains("capture used 976.6 KiB / 9.5 MiB granted"));
+        assert!(rich_output.contains("next notarization expiration 1800000000"));
+        assert!(rich_output.contains("settings https://example.test/#/dashboard/settings"));
         assert_eq!(
             human_output(&CliCommand::Whoami, &json!({ "signed_in": false })).unwrap(),
             "No LLM Notary account is connected."
+        );
+        assert_eq!(
+            human_output(
+                &CliCommand::Whoami,
+                &json!({ "signed_in": false, "connection_state": "reauthorization_required" })
+            )
+            .unwrap(),
+            "LLM Notary account authorization has expired or was revoked; reconnect it."
         );
         assert_eq!(
             human_output(&CliCommand::Logout, &json!({ "signed_in": false })).unwrap(),

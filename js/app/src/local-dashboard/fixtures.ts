@@ -328,8 +328,15 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
   const traces = new Map(captures.filter((capture) => capture.finalization_state === 'finalized')
     .map((capture) => [capture.capture_id, traceForCapture(capture)]));
   let account: AccountConnection = {
-    signed_in: true, github_login: 'sample-user', device_name: 'Local dashboard',
-    credential_kind: 'cli_session', credential_name: 'Local dashboard'
+    signed_in: true, connection_state: 'connected', github_login: 'sample-user', display_name: 'Sample User', auth_provider: 'github',
+    device_name: 'Local dashboard', credential_kind: 'cli_session', credential_name: 'Local dashboard',
+    billing: { service_plan: 'one_gb', billing_status: 'active', purchase_mode: 'test' },
+    credits: {
+      reset_at: Math.floor((fixtureNow + hour * 24 * 10) / 1000),
+      capture: { total_granted_bytes: 10_000_000, total_used_bytes: 1_000_000, total_remaining_bytes: 9_000_000, included_monthly_remaining_bytes: 9_000_000, supplemental_remaining_bytes: 0, next_grant_expiration: null },
+      notarization: { total_granted_bytes: 10_000_000, total_used_bytes: 2_000_000, total_remaining_bytes: 8_000_000, included_monthly_remaining_bytes: 8_000_000, supplemental_remaining_bytes: 0, next_grant_expiration: null }
+    },
+    links: { account: 'https://notary.exalto.ai/#/dashboard', usage: 'https://notary.exalto.ai/#/dashboard/credits', plans: 'https://notary.exalto.ai/#/pricing', settings: 'https://notary.exalto.ai/#/dashboard/settings' }
   };
   let nextEventId = Math.max(...events.map((event) => event.event_id)) + 1;
   let nextActionTime = clock;
@@ -533,10 +540,13 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
       poll_interval_seconds: 0, state: 'pending' }),
     pollAccountConnection: async () => {
       account = {
-        signed_in: true, github_login: 'sample-user', device_name: 'Local dashboard',
-        credential_kind: 'cli_session', credential_name: 'Local dashboard'
+        ...account, signed_in: true, connection_state: 'connected', github_login: 'sample-user', display_name: 'Sample User',
+        device_name: 'Local dashboard', credential_kind: 'cli_session', credential_name: 'Local dashboard'
       };
       return account;
+    },
+    disconnectAccount: async () => {
+      account = { signed_in: false, connection_state: 'disconnected', links: account.links };
     },
     share: async (captureId, visibility) => {
       if (!traces.has(captureId)) throw new LocalApiError(404, 'finalized_trace_not_found', 'Finalized trace not found');

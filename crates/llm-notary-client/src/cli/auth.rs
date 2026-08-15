@@ -24,8 +24,17 @@ const API_KEY_ENV: &str = "LLM_NOTARY_API_KEY";
 const API_KEY_FILE_ENV: &str = "LLM_NOTARY_API_KEY_FILE";
 const API_ORIGIN_ENV: &str = "LLM_NOTARY_API_ORIGIN";
 const API_KEY_VERSION_PREFIX: &str = "llmn_v1_";
+const ACCOUNT_REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const ACCOUNT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 pub(crate) const DEFAULT_DEVICE_NAME: &str = "llm-notary cli";
 static CREDENTIAL_REFRESH: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
+async fn credential_refresh_guard() -> tokio::sync::MutexGuard<'static, ()> {
+    CREDENTIAL_REFRESH
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
 
 #[derive(Args, Debug)]
 pub struct LoginArgs {
@@ -60,7 +69,7 @@ pub(crate) struct PendingAuthorization {
     pub(crate) expires_in: u64,
     pub(crate) interval: u64,
     poll_secret: String,
-    api_origin: ApiOrigin,
+    pub(crate) api_origin: ApiOrigin,
 }
 
 pub(crate) enum AuthorizationPoll {
@@ -70,34 +79,64 @@ pub(crate) enum AuthorizationPoll {
 
 pub(crate) struct AccountConnectionStatus {
     pub(crate) signed_in: bool,
+    pub(crate) connection_state: AccountConnectionState,
     pub(crate) github_login: Option<String>,
+    pub(crate) display_name: Option<String>,
+    pub(crate) auth_provider: Option<String>,
     pub(crate) device_name: Option<String>,
     pub(crate) credential_kind: Option<String>,
     pub(crate) credential_name: Option<String>,
     pub(crate) billing: Option<BillingState>,
     pub(crate) credits: Option<CreditSummary>,
+    pub(crate) links: AccountActionLinks,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AccountConnectionState {
+    Disconnected,
+    Connected,
+    ReauthorizationRequired,
+    Unavailable,
+}
+
+#[derive(Clone, Debug, Serialize, ToSchema)]
+pub(crate) struct AccountActionLinks {
+    pub(crate) account: String,
+    pub(crate) usage: String,
+    pub(crate) plans: String,
+    pub(crate) settings: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub(crate) struct BillingState {
     pub(crate) service_plan: String,
     pub(crate) billing_status: String,
+    #[serde(default)]
+    pub(crate) purchase_mode: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub(crate) struct CreditSummary {
     pub(crate) capture: CreditBalanceSummary,
     pub(crate) notarization: CreditBalanceSummary,
+    #[serde(default)]
     pub(crate) reset_at: i64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub(crate) struct CreditBalanceSummary {
+    #[serde(default)]
     pub(crate) total_granted_bytes: i64,
+    #[serde(default)]
     pub(crate) total_used_bytes: i64,
+    #[serde(default)]
     pub(crate) total_remaining_bytes: i64,
+    #[serde(default)]
     pub(crate) included_monthly_remaining_bytes: i64,
+    #[serde(default)]
     pub(crate) supplemental_remaining_bytes: i64,
+    #[serde(default)]
     pub(crate) next_grant_expiration: Option<i64>,
 }
 
@@ -127,12 +166,18 @@ struct WhoamiResponse {
     session: Option<CliSession>,
     #[serde(default)]
     billing: Option<BillingState>,
-    credits: CreditSummary,
+    #[serde(default)]
+    credits: Option<CreditSummary>,
 }
 
 #[derive(Deserialize)]
 struct CliUser {
-    github_login: String,
+    #[serde(default)]
+    github_login: Option<String>,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    auth_provider: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -356,10 +401,7 @@ pub(crate) async fn poll_authorization(
         .json::<AuthorizationComplete>()
         .await
         .context("reading LLM Notary account credentials")?;
-    let _refresh = CREDENTIAL_REFRESH
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
+    let _refresh = credential_refresh_guard().await;
     save_credentials(&FileCredentials {
         api_origin: pending.api_origin.clone(),
         refresh_token: tokens.refresh_token,
@@ -375,10 +417,7 @@ pub async fn logout() -> Result<()> {
 }
 
 pub(crate) async fn logout_for_service() -> Result<()> {
-    let _refresh = CREDENTIAL_REFRESH
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
+    let _refresh = credential_refresh_guard().await;
     match credential_configuration()? {
         CredentialConfiguration::ApiKey(_) => {
             bail!(
@@ -421,43 +460,167 @@ pub async fn whoami() -> Result<()> {
 }
 
 pub(crate) async fn account_connection_status() -> Result<AccountConnectionStatus> {
-    let authenticated = match credential_configuration()? {
-        CredentialConfiguration::Anonymous { .. } => {
-            return Ok(AccountConnectionStatus {
-                signed_in: false,
-                github_login: None,
-                device_name: None,
-                credential_kind: None,
-                credential_name: None,
-                billing: None,
-                credits: None,
-            });
+    match credential_configuration()? {
+        CredentialConfiguration::Anonymous { origin } => Ok(disconnected_status(&origin)),
+        CredentialConfiguration::ApiKey(authenticated) => {
+            Ok(lookup_account_status(authenticated).await)
         }
-        CredentialConfiguration::ApiKey(authenticated) => authenticated,
-        CredentialConfiguration::DeviceSession { .. } => authenticate_device_session().await?,
+        CredentialConfiguration::DeviceSession { origin } => {
+            let authenticated = match refresh_device_session_for_status(&origin).await {
+                Ok(authenticated) => authenticated,
+                Err(state) => return Ok(unavailable_or_reauthorization_status(&origin, state)),
+            };
+            Ok(lookup_account_status(authenticated).await)
+        }
+    }
+}
+
+pub(crate) fn account_action_links(origin: &ApiOrigin) -> AccountActionLinks {
+    AccountActionLinks {
+        account: origin.web_url("/dashboard").to_string(),
+        usage: origin.web_url("/dashboard/credits").to_string(),
+        plans: origin.web_url("/pricing").to_string(),
+        settings: origin.web_url("/dashboard/settings").to_string(),
+    }
+}
+
+fn disconnected_status(origin: &ApiOrigin) -> AccountConnectionStatus {
+    AccountConnectionStatus {
+        signed_in: false,
+        connection_state: AccountConnectionState::Disconnected,
+        github_login: None,
+        display_name: None,
+        auth_provider: None,
+        device_name: None,
+        credential_kind: None,
+        credential_name: None,
+        billing: None,
+        credits: None,
+        links: account_action_links(origin),
+    }
+}
+
+fn unavailable_or_reauthorization_status(
+    origin: &ApiOrigin,
+    state: AccountConnectionState,
+) -> AccountConnectionStatus {
+    AccountConnectionStatus {
+        signed_in: false,
+        connection_state: state,
+        github_login: None,
+        display_name: None,
+        auth_provider: None,
+        device_name: None,
+        credential_kind: None,
+        credential_name: None,
+        billing: None,
+        credits: None,
+        links: account_action_links(origin),
+    }
+}
+
+async fn lookup_account_status(authenticated: AuthenticatedApi) -> AccountConnectionStatus {
+    let origin = authenticated.origin.clone();
+    let response = match account_http_client_builder().build() {
+        Ok(client) => match client
+            .get(origin.api_url("/api/cli/me"))
+            .bearer_auth(authenticated.access_token)
+            .send()
+            .await
+        {
+            Ok(response)
+                if response.status() == StatusCode::UNAUTHORIZED
+                    || response.status() == StatusCode::FORBIDDEN =>
+            {
+                return unavailable_or_reauthorization_status(
+                    &origin,
+                    AccountConnectionState::ReauthorizationRequired,
+                );
+            }
+            Ok(response) if !response.status().is_success() => {
+                return unavailable_or_reauthorization_status(
+                    &origin,
+                    AccountConnectionState::Unavailable,
+                );
+            }
+            Ok(response) => match response.json::<WhoamiResponse>().await {
+                Ok(response) => response,
+                Err(_) => {
+                    return unavailable_or_reauthorization_status(
+                        &origin,
+                        AccountConnectionState::Unavailable,
+                    );
+                }
+            },
+            Err(_) => {
+                return unavailable_or_reauthorization_status(
+                    &origin,
+                    AccountConnectionState::Unavailable,
+                );
+            }
+        },
+        Err(_) => {
+            return unavailable_or_reauthorization_status(
+                &origin,
+                AccountConnectionState::Unavailable,
+            );
+        }
     };
-    let response = http_client_builder()
-        .build()
-        .context("building API client")?
-        .get(authenticated.origin.api_url("/api/cli/me"))
-        .bearer_auth(authenticated.access_token)
-        .send()
-        .await
-        .context("looking up CLI session")?
-        .error_for_status()
-        .context("looking up CLI session")?
-        .json::<WhoamiResponse>()
-        .await
-        .context("reading CLI session")?;
-    Ok(AccountConnectionStatus {
+    let device_name = response.session.map(|session| session.device_name);
+    AccountConnectionStatus {
         signed_in: true,
-        github_login: Some(response.user.github_login),
-        device_name: response.session.map(|session| session.device_name),
+        connection_state: AccountConnectionState::Connected,
+        github_login: response.user.github_login,
+        display_name: response.user.display_name,
+        auth_provider: response.user.auth_provider,
+        device_name,
         credential_kind: Some(response.credential.kind),
         credential_name: Some(response.credential.name),
         billing: response.billing,
-        credits: Some(response.credits),
+        credits: response.credits,
+        links: account_action_links(&origin),
+    }
+}
+
+async fn refresh_device_session_for_status(
+    origin: &ApiOrigin,
+) -> std::result::Result<AuthenticatedApi, AccountConnectionState> {
+    let _refresh = credential_refresh_guard().await;
+    let mut credentials =
+        load_credentials().map_err(|_| AccountConnectionState::ReauthorizationRequired)?;
+    let client = account_http_client_builder()
+        .build()
+        .map_err(|_| AccountConnectionState::Unavailable)?;
+    let response = client
+        .post(origin.api_url("/api/cli/token"))
+        .json(&RefreshRequest {
+            refresh_token: &credentials.refresh_token,
+        })
+        .send()
+        .await
+        .map_err(|_| AccountConnectionState::Unavailable)?;
+    if response.status() == StatusCode::UNAUTHORIZED || response.status() == StatusCode::FORBIDDEN {
+        return Err(AccountConnectionState::ReauthorizationRequired);
+    }
+    if !response.status().is_success() {
+        return Err(AccountConnectionState::Unavailable);
+    }
+    let response = response
+        .json::<RefreshResponse>()
+        .await
+        .map_err(|_| AccountConnectionState::Unavailable)?;
+    credentials.refresh_token = response.refresh_token;
+    save_credentials(&credentials).map_err(|_| AccountConnectionState::Unavailable)?;
+    Ok(AuthenticatedApi {
+        origin: origin.clone(),
+        access_token: response.access_token,
     })
+}
+
+fn account_http_client_builder() -> reqwest::ClientBuilder {
+    http_client_builder()
+        .connect_timeout(ACCOUNT_REQUEST_CONNECT_TIMEOUT)
+        .timeout(ACCOUNT_REQUEST_TIMEOUT)
 }
 
 pub(crate) async fn authenticate() -> Result<AuthenticatedApi> {
@@ -477,10 +640,7 @@ async fn authenticate_configuration(
 }
 
 async fn authenticate_device_session() -> Result<AuthenticatedApi> {
-    let _refresh = CREDENTIAL_REFRESH
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
+    let _refresh = credential_refresh_guard().await;
     let mut credentials =
         load_credentials().context("an LLM Notary account connection is required")?;
     let (access_token, rotated_refresh_token) = refresh(&credentials).await?;
@@ -579,10 +739,7 @@ pub(crate) async fn authenticate_for_publication_status()
         CredentialConfiguration::ApiKey(authenticated) => return Ok(authenticated),
         CredentialConfiguration::DeviceSession { .. } => {}
     }
-    let _refresh = CREDENTIAL_REFRESH
-        .get_or_init(|| tokio::sync::Mutex::new(()))
-        .lock()
-        .await;
+    let _refresh = credential_refresh_guard().await;
     let mut credentials = load_credentials_for_publication_status()?;
     let (access_token, rotated_refresh_token) =
         refresh_for_publication_status(&credentials).await?;
@@ -1069,6 +1226,23 @@ mod tests {
         result
     }
 
+    #[tokio::test]
+    async fn credential_refresh_guard_serializes_concurrent_refreshes() {
+        let guard = credential_refresh_guard().await;
+        let mut waiter = tokio::spawn(async { credential_refresh_guard().await });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(20), &mut waiter)
+                .await
+                .is_err()
+        );
+        drop(guard);
+        let _guard = tokio::time::timeout(Duration::from_secs(1), waiter)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
     #[test]
     fn api_origin_uses_the_shared_trust_policy() {
         assert_eq!(
@@ -1133,8 +1307,9 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(response.billing.unwrap().service_plan, "one_gb");
-        assert_eq!(response.credits.capture.total_remaining_bytes, 1024);
-        assert_eq!(response.credits.notarization.total_remaining_bytes, 2048);
+        let credits = response.credits.unwrap();
+        assert_eq!(credits.capture.total_remaining_bytes, 1024);
+        assert_eq!(credits.notarization.total_remaining_bytes, 2048);
     }
 
     #[test]
