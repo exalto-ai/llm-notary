@@ -139,7 +139,7 @@ jobs:
           import urllib.request
 
           api_url = "https://notary.exalto.ai/api/notary/admissions"
-          hostname = "llm-notary-prod-notary.fly.dev"
+          hostname = "alice.notary.exalto.ai"
           target = (hostname, 443)
           last_error = None
           for _ in range(5):

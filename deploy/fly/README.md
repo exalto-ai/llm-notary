@@ -7,15 +7,16 @@ internet ── HTTPS ──> notary.exalto.ai
                               │
                               └── Flycast HTTP ──> llm-notary-prod-api
 
-local proxies ── TLS:443 ──> llm-notary-prod-notary.fly.dev
+local proxies ── TLS:443 ──> alice.notary.exalto.ai
 ```
 
 The API is private behind Flycast, so its PostgreSQL connection and intake
 endpoint are never directly exposed. Fly Proxy terminates the notary's public
 TLS connection and forwards the unmodified binary protocol to port 7047
 through Fly's encrypted backhaul. The configuration deliberately uses the
-`tls` handler only—not the HTTP handler. Fly supplies the certificate for the
-app's `.fly.dev` hostname, so no custom DNS is required.
+`tls` handler only—not the HTTP handler. The custom hostname is a DNS-only
+CNAME to the target reported by `fly certs setup`; its `_fly-ownership` TXT
+record lets Fly issue and renew the public certificate.
 
 The checked-in configuration targets the `llm-notary-prod` organization. Create
 the three apps and provision a private Flycast address for the API before the
