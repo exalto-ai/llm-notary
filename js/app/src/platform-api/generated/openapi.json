@@ -2185,6 +2185,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "X-Share-Password",
+            "in": "header",
+            "description": "Base64url-encoded UTF-8 password for a protected share",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2198,7 +2210,27 @@
               }
             }
           },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
             "description": "",
             "content": {
               "application/json": {
@@ -2236,6 +2268,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "X-Share-Password",
+            "in": "header",
+            "description": "Base64url-encoded UTF-8 password for a protected share",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2254,6 +2298,16 @@
               }
             }
           },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
             "description": "",
             "content": {
@@ -2265,6 +2319,16 @@
             }
           },
           "410": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
             "description": "",
             "content": {
               "application/json": {
@@ -2297,6 +2361,109 @@
         }
       }
     },
+    "/api/public/shares/{share_id}/reports": {
+      "post": {
+        "tags": [
+          "sharing"
+        ],
+        "summary": "Report a published share",
+        "operationId": "create_share_report",
+        "parameters": [
+          {
+            "name": "share_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Share-Password",
+            "in": "header",
+            "description": "Base64url-encoded UTF-8 password for a protected share",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateShareReport"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareReportReceipt"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/public/shares/{share_id}/trace.otlp.json": {
       "get": {
         "tags": [
@@ -2312,6 +2479,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "X-Share-Password",
+            "in": "header",
+            "description": "Base64url-encoded UTF-8 password for a protected share",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -2323,7 +2502,27 @@
               }
             }
           },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
             "description": "",
             "content": {
               "application/json": {
@@ -2593,8 +2792,8 @@
         "tags": [
           "sharing"
         ],
-        "summary": "Explicitly change a share's visibility",
-        "operationId": "update_share_visibility",
+        "summary": "Change a share's publication access settings",
+        "operationId": "update_share_settings",
         "parameters": [
           {
             "name": "share_id",
@@ -2609,7 +2808,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateShareVisibility"
+                "$ref": "#/components/schemas/UpdateShareSettings"
               }
             }
           },
@@ -2626,6 +2825,16 @@
               }
             }
           },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "401": {
             "description": "",
             "content": {
@@ -2636,7 +2845,27 @@
               }
             }
           },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
           "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
             "description": "",
             "content": {
               "application/json": {
@@ -2670,6 +2899,9 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "browserSession": []
           }
         ]
       }
@@ -3403,6 +3635,25 @@
         },
         "additionalProperties": false
       },
+      "CreateShareReport": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          },
+          "reason": {
+            "$ref": "#/components/schemas/ShareReportReason"
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateShareResponse": {
         "type": "object",
         "required": [
@@ -3675,6 +3926,7 @@
           "provider",
           "model",
           "publisher",
+          "password_protected",
           "share_url"
         ],
         "properties": {
@@ -3702,6 +3954,9 @@
               "string",
               "null"
             ]
+          },
+          "password_protected": {
+            "type": "boolean"
           },
           "provider": {
             "type": "string"
@@ -4007,6 +4262,7 @@
                 "provider",
                 "model",
                 "publisher",
+                "password_protected",
                 "share_url"
               ],
               "properties": {
@@ -4034,6 +4290,9 @@
                     "string",
                     "null"
                   ]
+                },
+                "password_protected": {
+                  "type": "boolean"
                 },
                 "provider": {
                   "type": "string"
@@ -4071,6 +4330,8 @@
                 "id",
                 "state",
                 "visibility",
+                "published",
+                "password_protected",
                 "force",
                 "created_at",
                 "updated_at",
@@ -4086,6 +4347,13 @@
                 },
                 "created_at": {
                   "type": "integer",
+                  "format": "int64"
+                },
+                "expires_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
                   "format": "int64"
                 },
                 "failure_code": {
@@ -4105,6 +4373,12 @@
                     "string",
                     "null"
                   ]
+                },
+                "password_protected": {
+                  "type": "boolean"
+                },
+                "published": {
+                  "type": "boolean"
                 },
                 "share_url": {
                   "type": [
@@ -4191,6 +4465,7 @@
         "required": [
           "id",
           "visibility",
+          "password_protected",
           "publisher",
           "admitted_at",
           "provider",
@@ -4216,6 +4491,13 @@
             "format": "int64"
           },
           "directory_generation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "expires_at": {
             "type": [
               "integer",
               "null"
@@ -4258,6 +4540,9 @@
               "string",
               "null"
             ]
+          },
+          "password_protected": {
+            "type": "boolean"
           },
           "provider": {
             "type": "string"
@@ -4438,12 +4723,35 @@
           "paid"
         ]
       },
+      "ShareReportReason": {
+        "type": "string",
+        "enum": [
+          "sensitive_information",
+          "harassment",
+          "illegal_content",
+          "spam",
+          "other"
+        ]
+      },
+      "ShareReportReceipt": {
+        "type": "object",
+        "required": [
+          "received"
+        ],
+        "properties": {
+          "received": {
+            "type": "boolean"
+          }
+        }
+      },
       "ShareResponse": {
         "type": "object",
         "required": [
           "id",
           "state",
           "visibility",
+          "published",
+          "password_protected",
           "force",
           "created_at",
           "updated_at",
@@ -4459,6 +4767,13 @@
           },
           "created_at": {
             "type": "integer",
+            "format": "int64"
+          },
+          "expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           },
           "failure_code": {
@@ -4478,6 +4793,12 @@
               "string",
               "null"
             ]
+          },
+          "password_protected": {
+            "type": "boolean"
+          },
+          "published": {
+            "type": "boolean"
           },
           "share_url": {
             "type": [
@@ -4533,14 +4854,41 @@
         "type": "string",
         "format": "binary"
       },
-      "UpdateShareVisibility": {
+      "UpdateShareSettings": {
         "type": "object",
-        "required": [
-          "visibility"
-        ],
         "properties": {
+          "expires_in_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Days from now until expiry. Zero removes the current expiry.",
+            "maximum": 365,
+            "minimum": 0
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A new password, or an empty string to remove the current password."
+          },
+          "published": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
           "visibility": {
-            "$ref": "#/components/schemas/ShareVisibility"
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ShareVisibility"
+              }
+            ]
           }
         },
         "additionalProperties": false

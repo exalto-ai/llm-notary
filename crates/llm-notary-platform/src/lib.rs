@@ -505,14 +505,18 @@ impl ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (
+        let mut response = (
             self.status,
             Json(ErrorResponse {
                 error: self.code,
                 message: self.message,
             }),
         )
-            .into_response()
+            .into_response();
+        response
+            .headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        response
     }
 }
 
@@ -754,6 +758,12 @@ async fn observe_http_request(request: Request, next: Next) -> Response {
     async move {
         let started = Instant::now();
         let mut response = next.run(request).await;
+        if route.starts_with("/api/public/shares") {
+            response.headers_mut().insert(
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("private, no-store"),
+            );
+        }
         let status = response.status().as_u16().to_string();
         let elapsed = started.elapsed().as_secs_f64();
         metrics::counter!(
@@ -2534,6 +2544,7 @@ mod tests {
             "POST /api/verify",
             "POST /api/shares",
             "POST /api/shares/{share_id}/complete",
+            "POST /api/public/shares/{share_id}/reports",
             "POST /api/internal/notary/admissions/redeem",
             "POST /api/internal/notary/leases/release",
             "POST /api/internal/notary/leases/renew",
@@ -2564,6 +2575,19 @@ mod tests {
         let upload_schema = &document["components"]["schemas"]["TracePackageBody"];
         assert_eq!(upload_schema["type"], "string");
         assert_eq!(upload_schema["format"], "binary");
+        let settings_patch = &document["paths"]["/api/shares/{share_id}"]["patch"];
+        for status in ["400", "403", "429"] {
+            assert!(settings_patch["responses"].get(status).is_some());
+        }
+        assert_eq!(
+            document["components"]["schemas"]["UpdateShareSettings"]["properties"]["expires_in_days"]
+                ["maximum"],
+            365
+        );
+        assert_eq!(
+            document["components"]["schemas"]["CreateShareReport"]["properties"]["message"]["maxLength"],
+            500
+        );
     }
 
     #[tokio::test]

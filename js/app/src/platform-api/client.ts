@@ -4,10 +4,17 @@ import type { components, paths } from './generated/api.generated';
 const client = createClient<paths>({ credentials: 'same-origin' });
 
 export class PlatformApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly code?: string) {
     super(message);
     this.name = 'PlatformApiError';
   }
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (error && typeof error === 'object' && 'error' in error && typeof error.error === 'string') {
+    return error.error;
+  }
+  return undefined;
 }
 
 function errorMessage(error: unknown, fallback: string): string {
@@ -40,22 +47,61 @@ export async function getNotaryDirectory() {
   return data;
 }
 
-export async function getPublicShare(shareId: string) {
+export function encodeSharePassword(password: string) {
+  const bytes = new TextEncoder().encode(password);
+  const binary = String.fromCharCode(...bytes);
+  return btoa(binary).replaceAll('+', '-').replaceAll('/', '_').replace(/=+$/, '');
+}
+
+function sharePasswordHeaders(password?: string) {
+  return password ? { 'X-Share-Password': encodeSharePassword(password) } : undefined;
+}
+
+export async function getPublicShare(shareId: string, password?: string) {
   const { data, error, response } = await client.GET('/api/public/shares/{share_id}', {
     params: { path: { share_id: shareId } },
+    headers: sharePasswordHeaders(password),
   });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load this shared session.'), response.status);
+    throw new PlatformApiError(errorMessage(error, 'Could not load this shared session.'), response.status, errorCode(error));
   }
   return data;
 }
 
-export async function getSharedTrace(shareId: string) {
+export async function getSharedTrace(shareId: string, password?: string) {
   const { data, error, response } = await client.GET('/api/public/shares/{share_id}/trace.otlp.json', {
     params: { path: { share_id: shareId } },
+    headers: sharePasswordHeaders(password),
   });
   if (!response.ok || data === undefined) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load this shared transcript.'), response.status);
+    throw new PlatformApiError(errorMessage(error, 'Could not load this shared transcript.'), response.status, errorCode(error));
+  }
+  return data;
+}
+
+export async function downloadSharedPackage(shareId: string, password?: string) {
+  const response = await fetch(`/api/public/shares/${encodeURIComponent(shareId)}/package.llmtrace`, {
+    credentials: 'same-origin',
+    headers: sharePasswordHeaders(password),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => null);
+    throw new PlatformApiError(errorMessage(error, 'Could not download this trace package.'), response.status, errorCode(error));
+  }
+  return response.blob();
+}
+
+export async function reportPublicShare(shareId: string, body: {
+  reason: 'sensitive_information' | 'harassment' | 'illegal_content' | 'spam' | 'other';
+  message?: string;
+}, password?: string) {
+  const { data, error, response } = await client.POST('/api/public/shares/{share_id}/reports', {
+    params: { path: { share_id: shareId } },
+    headers: sharePasswordHeaders(password),
+    body,
+  });
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not send this report.'), response.status, errorCode(error));
   }
   return data;
 }
@@ -110,6 +156,22 @@ export async function getMyShares(options: PageOptions = {}) {
   });
   if (!response.ok || !data) {
     throw new PlatformApiError(errorMessage(error, 'Could not load your shares.'), response.status);
+  }
+  return data;
+}
+
+export async function updateMyShare(shareId: string, body: {
+  visibility?: 'unlisted' | 'listed';
+  published?: boolean;
+  password?: string;
+  expires_in_days?: number;
+}) {
+  const { data, error, response } = await client.PATCH('/api/shares/{share_id}', {
+    params: { path: { share_id: shareId } },
+    body,
+  });
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not update this trace.'), response.status, errorCode(error));
   }
   return data;
 }

@@ -8,6 +8,7 @@ import '@fontsource/ibm-plex-mono/latin-ext-500.css';
 import { ChevronDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Command, CommandDialog, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
@@ -54,9 +55,12 @@ import {
   getMyShares,
   getPublicShare,
   getSharedTrace,
+  downloadSharedPackage,
   logoutBrowser,
+  reportPublicShare,
   revokeApiKey,
   revokeCliSession,
+  updateMyShare,
   verifyTracePackage,
 } from './platform-api/client';
 import { loadRecentDebits } from './creditUtilization';
@@ -217,9 +221,10 @@ const legalPages = {
     sections: [
       ['Local capture stays local', 'The local proxy handles application plaintext and provider credentials. Within the protocol, the remote notary witnesses encrypted traffic and protocol metadata; it does not receive your API key, prompt, or response plaintext.'],
       ['Account information', 'If you sign in with Google, we use your stable Google account identifier, display name, and profile image to operate your account. We check that Google reports a verified email address but do not retain the address. Google access is limited to openid, email, and profile. If configured, GitHub sign-in remains available for existing accounts and requests identity only, without repository, organization, or email access. Provider access tokens are not retained.'],
-      ['Shared sessions', 'Sharing is an explicit action. The service verifies and safety-scans a submitted .llmtrace package before admission, then makes the disclosed conversation and exact admitted package public. Header values are hidden by the package’s default disclosure policy, but request and response bodies—including prompts, responses, tool definitions, and tool results—may be public. Do not share content you are not permitted to disclose.'],
+      ['Shared sessions', 'Sharing is an explicit action. The service verifies and safety-scans a submitted .llmtrace package before admission, then hosts the disclosed conversation and exact admitted package at a stable link. Header values are hidden by the package’s default disclosure policy, but request and response bodies—including prompts, responses, tool definitions, and tool results—may be accessible. Do not share content you are not permitted to disclose.'],
       ['Service processing', 'One-off verification does not retain an uploaded package. Sharing retains the exact admitted package and its normalized trace so visitors can inspect the session and independently verify the original bytes. Temporary intake objects are removed after admission or rejection.'],
-      ['Your choices', 'You choose whether a shared session is Unlisted or Listed. Both are public to anyone with the link; Unlisted only keeps it out of the Library. Keep private capture bundles and credentials under your control. For privacy questions or requests, contact the LLM Notary operator through the project’s support channel.'],
+      ['Trace reports', 'A report retains the selected reason and optional note for moderation. Reports are append-only. A keyed network-derived value rate-limits submissions separately, and the application does not store the reporter’s raw IP address in the report record.'],
+      ['Your choices', 'You choose whether a shared session is Unlisted or Listed. Both start accessible to anyone with the link; Unlisted only keeps it out of the Library. After admission, you can unpublish it, require a password, or set an expiry. Keep private capture bundles and credentials under your control. For privacy questions or requests, contact the LLM Notary operator through the project’s support channel.'],
       ['Updates', 'We may revise this policy as the service evolves. The current version will always be available on this page.'],
     ],
   },
@@ -267,7 +272,7 @@ export function ListedSharesPreview({ loadShares = getListedShares }) {
     return () => { cancelled = true; };
   }, [loadShares]);
   const visible = shares || [];
-  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Public domain</span><h2>Traces from the community.</h2></div></div>{shares === null && !loadError ? <div className="collection-pending" role="status"><b>Loading the Library…</b><span>Finding the latest public traces.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library couldn’t load.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-share-list" aria-label="Featured public traces">{visible.map((share) => <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><header><b>{share.model}</b><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} /></header><div className="preview-share-snippets"><p><span>Prompt</span>{share.input_preview || 'No prompt preview.'}</p><p><span>Response</span>{share.output_preview || 'No response preview.'}</p></div></a>)}</div> : <div className="collection-pending"><b>The Library is empty.</b><span>Public traces will appear here after they’re shared.</span></div>}<a className="button button-dark" href="#/library">Browse the Library</a></section>;
+  return <section className="section library-preview"><div className="trace-heading"><div><span className="eyebrow">Public domain</span><h2>Traces from the community.</h2></div></div>{shares === null && !loadError ? <div className="collection-pending" role="status"><b>Loading the Library…</b><span>Finding the latest public traces.</span></div> : loadError ? <div className="collection-pending" role="alert"><b>The Library couldn’t load.</b><span>Open the Library to try again.</span></div> : visible.length ? <div className="preview-share-list" aria-label="Featured public traces">{visible.map((share) => <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}><header><b>{share.model}</b><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} /></header>{share.password_protected ? <p className="preview-share-protected"><span>Protected</span>Password required to view disclosed messages.</p> : <div className="preview-share-snippets"><p><span>Prompt</span>{share.input_preview || 'No prompt preview.'}</p><p><span>Response</span>{share.output_preview || 'No response preview.'}</p></div>}</a>)}</div> : <div className="collection-pending"><b>The Library is empty.</b><span>Public traces will appear here after they’re shared.</span></div>}<a className="button button-dark" href="#/library">Browse the Library</a></section>;
 }
 
 const MAX_VERIFY_FILE_BYTES = 128 * 1024 * 1024 + 64 * 1024 + 16 * 1024;
@@ -621,7 +626,8 @@ const docPages = {
     lead: 'Sharing is a deliberate upload of one already-finalized package. The local service verifies it and shows the full disclosed conversation before it contacts LLM Notary.',
     blocks: [
       { heading: 'Connect the local service', body: 'Use the dashboard Share view, or begin the documented `POST /v1/account` device flow and poll its returned request identifier at the required interval.' },
-      { heading: 'Choose visibility', body: 'Unlisted is recommended and stays out of the Library. Listed appears in the Library. Both are public to anyone with the stable link; neither is private access.' },
+      { heading: 'Choose visibility', body: 'Unlisted is recommended and stays out of the Library. Listed appears in the Library. Both start accessible to anyone with the stable link.' },
+      { heading: 'Manage access after admission', body: 'From Account → Traces, you can unpublish a trace, require a password, or set an expiry of up to 365 days. Protected Listed traces remain discoverable, but their conversation previews are withheld.' },
       { heading: 'Submit one finalized package', code: 'POST /v1/captures/{capture_id}/shares\n{"visibility":"unlisted"}' },
       { heading: 'Script-friendly output', body: 'The status URL stays on the loopback administration API so the browser or agent never receives the vault-held hosted credential.', code: '{"capture_id":"cap-…","share_id":"…","state":"queued","visibility":"unlisted","status_url":"/v1/shares/…"}' },
       {
@@ -952,13 +958,13 @@ function LibraryShareRow({ share }) {
   const captureDate = formatLibraryDate(share.authenticated_at_unix_ms);
   const inputPreview = share.input_preview;
   const outputPreview = share.output_preview;
-  return <a className="share-index-row" href={`/s/${encodeURIComponent(share.id)}`}>
-    <header><div className="share-index-heading"><b>{share.model}</b><small><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} />{captureDate && <time dateTime={new Date(share.authenticated_at_unix_ms).toISOString()}>{captureDate}</time>}</small></div><span className="share-index-open">Open trace</span></header>
-    <div className="share-index-previews">
+  return <a className={`share-index-row${share.password_protected ? ' share-index-row--protected' : ''}`} href={`/s/${encodeURIComponent(share.id)}`}>
+    <header><div className="share-index-heading"><b>{share.model}</b><small><ProviderIdentity provider={share.provider} detail={`shared by ${share.publisher}`} />{captureDate && <time dateTime={new Date(share.authenticated_at_unix_ms).toISOString()}>{captureDate}</time>}</small></div><span className="share-index-open">{share.password_protected ? 'Open protected trace' : 'Open trace'}</span></header>
+    {share.password_protected ? <p className="share-index-protected"><span>Protected</span>Password required to view disclosed messages.</p> : <div className="share-index-previews">
       {inputPreview && <p><span>Input</span>{inputPreview}</p>}
       {outputPreview && <p><span>Response</span>{outputPreview}</p>}
       {!inputPreview && !outputPreview && <p className="share-index-preview-missing">No prompt or response preview.</p>}
-    </div>
+    </div>}
   </a>;
 }
 
@@ -1059,15 +1065,57 @@ function SharedConversation({ spans }) {
   return <div className="shared-conversation">{turns.map((message, index) => <article className={`shared-message shared-message--${message.role || 'unknown'}`} key={message.key}><aside><span>{String(index + 1).padStart(2, '0')}</span><b>{message.role || 'message'}</b></aside><div>{(message.parts || []).map((part, partIndex) => <SharedPart part={part} key={`${part.type}-${partIndex}`} />)}{message.finishReason && <small className="finish-reason">finish_reason: {message.finishReason}</small>}</div></article>)}</div>;
 }
 
-export function SharePage({ shareId, loadShare = getPublicShare, loadTrace = getSharedTrace }) {
+function ShareReportDialog({ open, onOpenChange, shareId, password, sendReport }) {
+  const [reason, setReason] = useState('sensitive_information');
+  const [message, setMessage] = useState('');
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState('');
+  const [received, setReceived] = useState(false);
+  const submit = async (event) => {
+    event.preventDefault();
+    setSending(true);
+    setError('');
+    try {
+      await sendReport(shareId, { reason, message: message.trim() || undefined }, password);
+      setReceived(true);
+    } catch (failure) {
+      setError(failure.message);
+    } finally {
+      setSending(false);
+    }
+  };
+  const changeOpen = (nextOpen) => {
+    onOpenChange(nextOpen);
+    if (!nextOpen) {
+      setReason('sensitive_information');
+      setMessage('');
+      setError('');
+      setReceived(false);
+    }
+  };
+  return <Dialog open={open} onOpenChange={changeOpen}><DialogContent className="axis-dialog share-report-dialog"><DialogHeader><DialogTitle>{received ? 'Report received' : 'Report this trace'}</DialogTitle><DialogDescription>{received ? 'This trace has been added to the moderation queue.' : 'Choose the issue that best describes this published trace.'}</DialogDescription></DialogHeader>{received ? <DialogFooter><button type="button" onClick={() => changeOpen(false)}>Close</button></DialogFooter> : <form onSubmit={submit}><label><span>Reason</span><Select value={reason} onValueChange={setReason}><SelectTrigger aria-label="Report reason"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="sensitive_information">Sensitive information</SelectItem><SelectItem value="harassment">Harassment</SelectItem><SelectItem value="illegal_content">Illegal content</SelectItem><SelectItem value="spam">Spam or misleading content</SelectItem><SelectItem value="other">Other</SelectItem></SelectContent></Select></label><label><span>Optional note</span><Textarea value={message} onChange={(event) => setMessage(event.target.value)} maxLength={500} placeholder="Briefly explain the issue" /><small>{message.length}/500</small></label>{error && <p role="alert">{error}</p>}<DialogFooter><button type="button" onClick={() => changeOpen(false)} disabled={sending}>Cancel</button><button type="submit" disabled={sending}>{sending ? 'Sending…' : 'Send report'}</button></DialogFooter></form>}</DialogContent></Dialog>;
+}
+
+export function SharePage({ shareId, loadShare = getPublicShare, loadTrace = getSharedTrace, downloadPackage = downloadSharedPackage, sendReport = reportPublicShare }) {
   const [share, setShare] = useState(null);
   const [spans, setSpans] = useState(null);
   const [loadError, setLoadError] = useState('');
+  const [passwordRequired, setPasswordRequired] = useState(false);
+  const [password, setPassword] = useState('');
+  const [activePassword, setActivePassword] = useState('');
+  const [passwordError, setPasswordError] = useState('');
+  const [checkingPassword, setCheckingPassword] = useState(false);
+  const [packageError, setPackageError] = useState('');
+  const [reportOpen, setReportOpen] = useState(false);
   useEffect(() => {
     let cancelled = false;
     setShare(null);
     setSpans(null);
     setLoadError('');
+    setPasswordRequired(false);
+    setPassword('');
+    setActivePassword('');
+    setPasswordError('');
     Promise.all([loadShare(shareId), loadTrace(shareId)])
       .then(([detail, trace]) => {
         if (!cancelled) {
@@ -1075,12 +1123,16 @@ export function SharePage({ shareId, loadShare = getPublicShare, loadTrace = get
           setSpans(parseSharedTrace(trace));
         }
       })
-      .catch((error) => { if (!cancelled) setLoadError(error.message); });
+      .catch((error) => {
+        if (cancelled) return;
+        if (error.code === 'share_password_required') setPasswordRequired(true);
+        else setLoadError(error.message);
+      });
     return () => { cancelled = true; };
   }, [loadShare, loadTrace, shareId]);
   useEffect(() => {
-    if (!share) return undefined;
-    document.title = `${share.model} · LLM Notary`;
+    if (!share && !passwordRequired) return undefined;
+    if (share) document.title = `${share.model} · LLM Notary`;
     const existingRobots = document.head.querySelector('meta[name="robots"][data-share-page]');
     const robots = existingRobots instanceof HTMLMetaElement ? existingRobots : document.createElement('meta');
     if (!(existingRobots instanceof HTMLMetaElement)) {
@@ -1088,10 +1140,43 @@ export function SharePage({ shareId, loadShare = getPublicShare, loadTrace = get
       robots.dataset.sharePage = 'true';
       document.head.appendChild(robots);
     }
-    robots.content = share.visibility === 'unlisted' ? 'noindex, nofollow, noarchive' : 'index, follow';
+    robots.content = passwordRequired || share?.visibility === 'unlisted' || share?.password_protected ? 'noindex, nofollow, noarchive' : 'index, follow';
     return () => { robots?.remove(); document.title = 'LLM Notary'; };
-  }, [share]);
+  }, [passwordRequired, share]);
+  const unlock = async (event) => {
+    event.preventDefault();
+    if (!password) return;
+    setCheckingPassword(true);
+    setPasswordError('');
+    try {
+      const [detail, trace] = await Promise.all([loadShare(shareId, password), loadTrace(shareId, password)]);
+      setShare(detail);
+      setSpans(parseSharedTrace(trace));
+      setActivePassword(password);
+      setPasswordRequired(false);
+    } catch (error) {
+      if (error.code === 'share_password_invalid' || error.code === 'share_password_required') setPasswordError('That password did not open this trace.');
+      else setPasswordError(error.message);
+    } finally {
+      setCheckingPassword(false);
+    }
+  };
+  const saveProtectedPackage = async () => {
+    setPackageError('');
+    try {
+      const blob = await downloadPackage(shareId, activePassword);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `llm-notary-${shareId}.llmtrace`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch (error) {
+      setPackageError(error.message);
+    }
+  };
   if (loadError) return <main className="share-page share-page-state" role="alert"><h1>Share unavailable</h1><p>{loadError}</p><a href="#/library">Open Library</a></main>;
+  if (passwordRequired) return <main className="share-password-page"><form className="share-password-gate" onSubmit={unlock}><span className="eyebrow">Protected trace</span><h1>Password required</h1><p>The publisher limited access to this disclosed conversation.</p><label htmlFor="share-password">Password</label><Input id="share-password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} autoFocus />{passwordError && <p className="share-password-error" role="alert">{passwordError}</p>}<div><a href="#/library">Back to Library</a><button type="submit" disabled={!password || checkingPassword}>{checkingPassword ? 'Opening…' : 'Open trace'}</button></div></form></main>;
   if (!share || spans === null) return <main className="share-page share-page-loading" aria-busy="true" aria-label="Loading shared trace">
     <header className="share-page-header"><div><i className="share-loading-title" /><i className="share-loading-meta" /></div><div className="share-verification-mark"><i aria-hidden="true" /><span><i /><i /></span></div></header>
     <div className="share-page-layout">
@@ -1105,11 +1190,14 @@ export function SharePage({ shareId, loadShare = getPublicShare, loadTrace = get
     <header className="share-page-header"><div><h1>{share.model}</h1><p><b>{share.publisher}</b><span><ProviderIdentity provider={share.provider} /></span><span>{share.visibility}</span></p></div><div className="share-verification-mark"><i aria-hidden="true" /><span><b>Verified</b><small>Provider session</small></span></div></header>
     <div className="share-page-layout">
       <section className="share-transcript" aria-labelledby="shared-conversation-title"><header><h2 id="shared-conversation-title">Conversation</h2><span>{messageCount} {messageCount === 1 ? 'message' : 'messages'}</span></header><SharedConversation spans={spans} /></section>
-      <aside className="share-evidence-rail"><span className="eyebrow">Verification</span><dl><div><dt>Provider</dt><dd><ProviderIdentity provider={share.provider} /></dd></div><div><dt>Host</dt><dd>{share.host}</dd></div><div><dt>Authenticated</dt><dd>{authenticated}</dd></div><div><dt>Visibility</dt><dd>{share.visibility}</dd></div></dl>
-        {share.package_url ? <a className="share-package-download" href={share.package_url}><span>Package</span><b>Download .llmtrace</b><small>{fileSize(share.package_size_bytes || 0)} · SHA-256 included</small></a> : <p className="share-legacy-package">Exact package unavailable for this older share.</p>}
+      <aside className="share-evidence-rail"><span className="eyebrow">Verification</span><dl><div><dt>Provider</dt><dd><ProviderIdentity provider={share.provider} /></dd></div><div><dt>Host</dt><dd>{share.host}</dd></div><div><dt>Authenticated</dt><dd>{authenticated}</dd></div><div><dt>Visibility</dt><dd>{share.visibility}{share.password_protected ? ' · password protected' : ''}</dd></div>{share.expires_at && <div><dt>Expires</dt><dd>{sessionDate(share.expires_at)}</dd></div>}</dl>
+        {share.package_url ? share.password_protected ? <button className="share-package-download" type="button" onClick={saveProtectedPackage}><span>Package</span><b>Download .llmtrace</b><small>{fileSize(share.package_size_bytes || 0)} · SHA-256 included</small></button> : <a className="share-package-download" href={share.package_url}><span>Package</span><b>Download .llmtrace</b><small>{fileSize(share.package_size_bytes || 0)} · SHA-256 included</small></a> : <p className="share-legacy-package">Exact package unavailable for this older share.</p>}
+        {packageError && <p className="share-package-error" role="alert">{packageError}</p>}
         <details className="share-technical"><summary>Hashes and notary</summary><dl><div><dt>Trace SHA-256</dt><dd><code>{share.trace_sha256}</code></dd></div>{share.package_sha256 && <div><dt>Package SHA-256</dt><dd><code>{share.package_sha256}</code></dd></div>}<div><dt>Notary key</dt><dd><code>{share.notary_key_id || 'Not recorded'}</code></dd></div><div><dt>Directory generation</dt><dd>{share.directory_generation ?? 'Not recorded'}</dd></div><div><dt>Safety contract</dt><dd><code>{share.public_package_safety_version || 'Legacy'}</code></dd></div></dl></details>
+        <button className="share-report-button" type="button" onClick={() => setReportOpen(true)}>Report this trace</button>
       </aside>
     </div>
+    <ShareReportDialog open={reportOpen} onOpenChange={setReportOpen} shareId={shareId} password={activePassword} sendReport={sendReport} />
   </main>;
 }
 
@@ -1133,6 +1221,12 @@ function shareStateLabel(state) {
   if (state === 'expired') return { label: 'Expired', tone: 'attention' };
   if (state === 'failed') return { label: 'Failed', tone: 'attention' };
   return { label: state, tone: 'neutral' };
+}
+
+function shareAccessLabel(share) {
+  if (share.published === false) return 'Unpublished';
+  if (share.expires_at && share.expires_at <= Math.floor(Date.now() / 1000)) return 'Expired';
+  return share.visibility === 'listed' ? 'Listed' : 'Unlisted';
 }
 
 const apiKeyScopeOptions = [
@@ -1336,6 +1430,45 @@ function DashboardMobileNavigation({ activeView, traceCount }) {
   </nav>;
 }
 
+function ShareSettingsDialog({ share, open, onOpenChange, onSave, saving, error }) {
+  const [visibility, setVisibility] = useState('unlisted');
+  const [protectedAccess, setProtectedAccess] = useState(false);
+  const [password, setPassword] = useState('');
+  const [expiryMode, setExpiryMode] = useState('keep');
+  const [expiryDays, setExpiryDays] = useState('7');
+  useEffect(() => {
+    if (!share || !open) return;
+    setVisibility(share.visibility);
+    setProtectedAccess(Boolean(share.password_protected));
+    setPassword('');
+    setExpiryMode('keep');
+    setExpiryDays('7');
+  }, [open, share]);
+  if (!share) return null;
+  const needsPassword = protectedAccess && !share.password_protected;
+  const passwordValid = !needsPassword || password.length >= 8;
+  const expiryValid = expiryMode !== 'after' || (Number.isInteger(Number(expiryDays)) && Number(expiryDays) >= 1 && Number(expiryDays) <= 365);
+  const submit = (event) => {
+    event.preventDefault();
+    const settings = { visibility };
+    if (!protectedAccess && share.password_protected) settings.password = '';
+    if (protectedAccess && password) settings.password = password;
+    if (expiryMode === 'never') settings.expires_in_days = 0;
+    if (expiryMode === 'after') settings.expires_in_days = Number(expiryDays);
+    onSave(share, settings);
+  };
+  return <Dialog open={open} onOpenChange={(nextOpen) => { if (!saving) onOpenChange(nextOpen); }}><DialogContent className="axis-dialog share-settings-dialog"><DialogHeader><DialogTitle>Manage trace {share.id.slice(0, 8)}</DialogTitle><DialogDescription>Changes apply to the stable public link immediately.</DialogDescription></DialogHeader><form onSubmit={submit}>
+    <label><span>Library visibility</span><Select value={visibility} onValueChange={setVisibility}><SelectTrigger aria-label="Library visibility"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="unlisted">Unlisted · link only</SelectItem><SelectItem value="listed">Listed · shown in Library</SelectItem></SelectContent></Select></label>
+    <label className="share-settings-check"><input type="checkbox" checked={protectedAccess} onChange={(event) => setProtectedAccess(event.target.checked)} /><span><b>Require a password</b><small>{share.password_protected ? 'Leave the field blank to keep the current password.' : 'People must enter it before any trace content loads.'}</small></span></label>
+    {protectedAccess && <label><span>{share.password_protected ? 'New password (optional)' : 'Password'}</span><Input type="password" value={password} minLength={8} maxLength={128} autoComplete="new-password" onChange={(event) => setPassword(event.target.value)} placeholder={share.password_protected ? 'Keep current password' : 'At least 8 characters'} /></label>}
+    <label><span>Expiry</span><Select value={expiryMode} onValueChange={setExpiryMode}><SelectTrigger aria-label="Trace expiry"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="keep">Keep current expiry</SelectItem><SelectItem value="never">Never expires</SelectItem><SelectItem value="after">Expire after a number of days</SelectItem></SelectContent></Select></label>
+    {expiryMode === 'after' && <label><span>Days from now</span><Input type="number" min="1" max="365" step="1" value={expiryDays} onChange={(event) => setExpiryDays(event.target.value)} /></label>}
+    {share.expires_at && expiryMode === 'keep' && <p className="share-settings-current">Currently expires {sessionDate(share.expires_at)}.</p>}
+    {error && <p className="share-settings-error" role="alert">{error}</p>}
+    <DialogFooter><button type="button" onClick={() => onOpenChange(false)} disabled={saving}>Cancel</button><button type="submit" disabled={saving || !passwordValid || !expiryValid}>{saving ? 'Saving…' : 'Save changes'}</button></DialogFooter>
+  </form></DialogContent></Dialog>;
+}
+
 export function Dashboard({
   user,
   view,
@@ -1352,6 +1485,7 @@ export function Dashboard({
   openCheckout = (url) => window.location.assign(url),
   loadCurrentUser = getCurrentUser,
   claimOfferRequest = claimCreditOffer,
+  updateShareRequest = updateMyShare,
   route = '',
   checkoutPollBaseDelay = 1_000,
   checkoutPollMaxAttempts = 8,
@@ -1367,6 +1501,9 @@ export function Dashboard({
   const [shareCursor, setShareCursor] = useState(null);
   const [loadingMoreShares, setLoadingMoreShares] = useState(false);
   const [shareError, setShareError] = useState(null);
+  const [shareSettingsTarget, setShareSettingsTarget] = useState(null);
+  const [unpublishTarget, setUnpublishTarget] = useState(null);
+  const [savingShare, setSavingShare] = useState(null);
   const [credits, setCredits] = useState(user.credits);
   const [creditOffers, setCreditOffers] = useState(null);
   const [creditError, setCreditError] = useState(null);
@@ -1524,6 +1661,21 @@ export function Dashboard({
     }
   };
 
+  const saveShareSettings = async (share, settings, closeSettings = true) => {
+    setSavingShare(share.id);
+    setShareError(null);
+    try {
+      const updated = await updateShareRequest(share.id, settings);
+      setShares((current) => current?.map((item) => item.id === updated.id ? updated : item) || []);
+      if (closeSettings) setShareSettingsTarget(null);
+      setUnpublishTarget(null);
+    } catch (reason) {
+      setShareError(reason.message);
+    } finally {
+      setSavingShare(null);
+    }
+  };
+
   const claimOffer = async (offer) => {
     let refreshGeneration = null;
     setClaimingOffer(offer.id);
@@ -1665,17 +1817,20 @@ export function Dashboard({
           <section className="dashboard-traces" aria-label="Your traces">
             {shareError && <p className="dashboard-session-error" role="alert">{shareError}</p>}
             {shares === null && !shareError ? <p className="dashboard-session-empty">Loading your traces…</p> : shares?.length ? <div className="dashboard-trace-list">{shares.map((share) => {
-              const status = shareStateLabel(share.state);
+              const status = share.state === 'admitted' && share.published === false ? { label: 'Unpublished', tone: 'neutral' } : shareStateLabel(share.state);
               return <article key={share.id}>
                 <div className="dashboard-trace-copy">
                   <div><span className={`dashboard-trace-state dashboard-trace-state--${status.tone}`}><i aria-hidden="true" />{status.label}</span><time>{sessionDate(share.admitted_at || share.updated_at)}</time></div>
                   <h3>Trace {share.id.slice(0, 8)}</h3>
-                  <p>{share.visibility} · <code>{share.id}</code></p>
+                  <p>{shareAccessLabel(share)}{share.password_protected ? ' · Password protected' : ''}{share.expires_at ? ` · Expires ${sessionDate(share.expires_at)}` : ''} · <code>{share.id}</code></p>
                   {share.failure_code && <p className="dashboard-trace-failure">Reason: {share.failure_code.replaceAll('_', ' ')}</p>}
                 </div>
                 <div className="dashboard-trace-actions">
                   {share.share_url && <a href={share.share_url} target="_blank" rel="noreferrer">Open trace</a>}
-                  {share.package_url && <a href={share.package_url}>Package</a>}
+                  {share.package_url && !share.password_protected && <a href={share.package_url}>Package</a>}
+                  {share.state === 'admitted' && <button type="button" onClick={() => { setShareError(null); setShareSettingsTarget(share); }}>Manage</button>}
+                  {share.state === 'admitted' && share.published !== false && <button className="dashboard-trace-unpublish" type="button" onClick={() => setUnpublishTarget(share)}>Unpublish</button>}
+                  {share.state === 'admitted' && share.published === false && <button type="button" onClick={() => saveShareSettings(share, { published: true }, false)} disabled={savingShare === share.id}>{savingShare === share.id ? 'Publishing…' : 'Publish again'}</button>}
                 </div>
               </article>;
             })}</div> : <div className="dashboard-empty dashboard-empty--traces"><span className="eyebrow">No traces</span><b>Publish your first verified trace.</b><p>Finalize a local capture, check the disclosed conversation, then publish it as Unlisted or Listed.</p><a href="#/docs/share">Open the sharing guide</a></div>}
@@ -1685,6 +1840,8 @@ export function Dashboard({
       </div>
     </div>
     <AlertDialog open={Boolean(revokeTarget)} onOpenChange={(nextOpen) => { if (!nextOpen && !revoking) setRevokeTarget(null); }}><AlertDialogContent className="axis-alert-dialog"><AlertDialogHeader><AlertDialogTitle>Revoke {revokeTarget?.device_name}?</AlertDialogTitle><AlertDialogDescription>This local service will return to public hosted limits and need a new browser approval for account access or sharing.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={Boolean(revoking)}>Keep authorization</AlertDialogCancel><AlertDialogAction disabled={Boolean(revoking)} onClick={() => revokeTarget && revoke(revokeTarget)}>{revoking ? 'Revoking…' : 'Revoke device'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+    <ShareSettingsDialog share={shareSettingsTarget} open={Boolean(shareSettingsTarget)} onOpenChange={(nextOpen) => { if (!nextOpen) setShareSettingsTarget(null); }} onSave={saveShareSettings} saving={savingShare === shareSettingsTarget?.id} error={shareError} />
+    <AlertDialog open={Boolean(unpublishTarget)} onOpenChange={(nextOpen) => { if (!nextOpen && !savingShare) setUnpublishTarget(null); }}><AlertDialogContent className="axis-alert-dialog"><AlertDialogHeader><AlertDialogTitle>Unpublish trace {unpublishTarget?.id.slice(0, 8)}?</AlertDialogTitle><AlertDialogDescription>The stable link, trace JSON, and package will stop working immediately. You can publish this trace again later.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel disabled={Boolean(savingShare)}>Keep published</AlertDialogCancel><AlertDialogAction disabled={Boolean(savingShare)} onClick={() => unpublishTarget && saveShareSettings(unpublishTarget, { published: false }, false)}>{savingShare ? 'Unpublishing…' : 'Unpublish trace'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </main>;
 }
 

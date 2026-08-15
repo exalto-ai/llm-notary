@@ -104,9 +104,10 @@ disclosure, hashes, provider mapping, and canonical trace bytes agree.
 ## Share only with consent
 
 The Share view shows the disclosed conversation before upload, then asks for
-Unlisted (the default) or Listed visibility. Both are public to anyone with the
-link; Unlisted only stays out of the Library. The explicit confirmation repeats
-that this is not private access. The source `.llmcapture` is never an input, and
+Unlisted (the default) or Listed visibility. Both start accessible to anyone
+with the link; Unlisted only stays out of the Library. After admission, the
+hosted account’s Traces view can unpublish the share, require a password, or set
+an expiry. The source `.llmcapture` is never an input, and
 nothing is uploaded merely because a trace was finalized or verified. After
 submission, the dashboard polls `GET /v1/shares/{share_id}` through the local
 service. Successful admission makes **Copy link** the primary action and also

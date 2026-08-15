@@ -90,15 +90,18 @@ An unreferenced candidate is not reachable. The database transition to
 
 ## Visibility
 
-Both visibility modes are public to anyone with the stable link:
+Both visibility modes start accessible to anyone with the stable link:
 
 - Unlisted shares are directly accessible but excluded from
   `GET /api/public/shares`; their detail and artifact responses include
   `X-Robots-Tag: noindex, nofollow, noarchive`.
 - Listed shares are directly accessible and appear in the Library index.
 
-Changing visibility does not change `/s/{share_id}` or either artifact URL.
-Access-controlled private shares are outside this contract.
+Changing visibility, password access, expiry, or publication state does not
+change `/s/{share_id}` or either artifact URL. Password-protected Listed shares
+remain in the Library, but the index withholds their input/output previews and
+content-only search matches. Expired and unpublished shares are excluded from
+the Library and unavailable on every public route.
 
 ## Public API
 
@@ -107,13 +110,23 @@ Access-controlled private shares are outside this contract.
   public trace. The `search` and `provider` filters run before pagination.
   Search terms require three consecutive letters or numbers, treat `%` and `_` literally,
   and use the indexed public search document stored at admission. Legacy shares
-  without stored excerpts return `null` preview fields.
+  without stored excerpts return `null` preview fields. Password-protected
+  shares also return `null` previews.
 - `GET /api/public/shares/{share_id}` returns one admitted share record for
-  either visibility.
+  either visibility. Protected shares require the UTF-8 password encoded as
+  unpadded base64url in `X-Share-Password`. Password verification has bounded
+  concurrency and per-network, per-share attempt limits.
 - `GET /api/public/shares/{share_id}/trace.otlp.json` returns its
   integrity-checked canonical trace.
 - `GET /api/public/shares/{share_id}/package.llmtrace` returns the exact
-  admitted package with immutable caching, byte size, and SHA-256 metadata.
+  admitted package with byte size and SHA-256 metadata. Public artifacts use
+  `private, no-store` so unpublish, password, and expiry changes are immediate.
+- `POST /api/public/shares/{share_id}/reports` records a bounded reason and an
+  optional 500-character note. Protected shares require the same password.
+  Reports are append-only so people on the same household, office, VPN, or
+  carrier network cannot replace one another's evidence. A keyed
+  network-derived value rate-limits submissions, but is stored separately from
+  report records; raw client addresses are not stored.
 - Authenticated `GET /api/me/shares` returns the current account's share records
   in cursor-paginated order.
 

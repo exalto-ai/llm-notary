@@ -11,7 +11,7 @@
 - [Credits and usage](%PUBLIC_ORIGIN%/docs/hosted-credits): Monthly credits, Stripe purchases, refunds and disputes, promotions, account balances, and public allowances.
 - [Trace packages](%PUBLIC_ORIGIN%/docs/trace-packages): Finalization, package layout, disclosure, and offline verification.
 - [Verify online](%PUBLIC_ORIGIN%/#/verify): Explicitly upload one finalized package for retention-free hosted verification.
-- [Share](%PUBLIC_ORIGIN%/docs/share): Preview and deliberately share an already-finalized trace package as Unlisted or Listed.
+- [Share](%PUBLIC_ORIGIN%/docs/share): Preview and deliberately share an already-finalized trace package as Unlisted or Listed, then manage unpublish, password, and expiry access from the hosted account.
 
 ## Core trust boundary
 

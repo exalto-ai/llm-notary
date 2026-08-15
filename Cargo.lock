@@ -4409,6 +4409,7 @@ name = "llm-notary-platform"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "argon2",
  "aws-sdk-s3",
  "axum",
  "axum-extra",

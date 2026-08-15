@@ -6,6 +6,7 @@ import CreditUtilizationChart from './CreditUtilizationChart';
 import { ProviderIdentity } from './ProviderIdentity';
 import { latestMacosDownloadHref } from './releaseDownloads';
 import { initialThemePreference } from './theme';
+import { encodeSharePassword } from './platform-api/client';
 
 afterEach(async () => {
   cleanup();
@@ -45,6 +46,10 @@ const loadLibraryTrace = async (id) => ({
 });
 
 describe('hosted site', () => {
+  test('encodes every UTF-8 share password as an HTTP-safe value', () => {
+    expect(encodeSharePassword('пароль\n🔐123')).toBe('0L_QsNGA0L7Qu9GMCvCflJAxMjM');
+  });
+
   test('makes the current macOS app the primary landing action', async () => {
     expect(latestMacosDownloadHref('build-123 0.1.0')).toBe('/downloads/cli/builds/build-123/LLM-Notary-macos-arm64.dmg');
     expect(() => latestMacosDownloadHref('../build 0.1.0')).toThrow('latest download pointer is invalid');
@@ -721,6 +726,92 @@ describe('hosted site', () => {
     await expect.element(page.getByText('fixture record 42')).toBeVisible();
     await expect.element(page.getByRole('link', { name: /Download .llmtrace/ })).toBeVisible();
     expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain('noindex');
+  });
+
+  test('opens a protected trace in memory and submits a bounded report', async () => {
+    const required = () => {
+      const error = new Error('This share requires a password');
+      error.code = 'share_password_required';
+      throw error;
+    };
+    const loadShare = async (_id, password) => {
+      if (password !== 'evidence-pass') required();
+      return {
+        id: 'protected-share', visibility: 'listed', password_protected: true, expires_at: 4_102_444_800,
+        publisher: 'fixture-user', admitted_at: 1_786_000_000, authenticated_at_unix_ms: 1_786_000_000_000,
+        verified_at: 1_786_000_001, provider: 'openai', host: 'api.openai.com', model: 'gpt-5.2',
+        verification_state: 'verified', notary_key_id: 'sha256:abc', directory_generation: 42,
+        trust_source: 'hosted_notary_directory', trace_sha256: 'b'.repeat(64), package_available: false,
+        package_size_bytes: null, package_sha256: null, public_package_safety_version: 'llm-notary/public-package-safety/v1',
+        trace_url: '/api/public/shares/protected-share/trace.otlp.json', package_url: null,
+        share_url: 'https://example.test/s/protected-share',
+      };
+    };
+    const loadTrace = async (id, password) => {
+      if (password !== 'evidence-pass') required();
+      return loadLibraryTrace(id);
+    };
+    let report;
+    render(<SharePage
+      shareId="protected-share"
+      loadShare={loadShare}
+      loadTrace={loadTrace}
+      sendReport={async (...args) => { report = args; return { received: true }; }}
+    />);
+
+    await expect.element(page.getByRole('heading', { name: 'Password required' })).toBeVisible();
+    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain('noindex');
+    await page.getByLabelText('Password').fill('evidence-pass');
+    await page.getByRole('button', { name: 'Open trace' }).click();
+    await expect.element(page.getByText('Prompt for protected-share')).toBeVisible();
+    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain('noindex');
+
+    await page.getByRole('button', { name: 'Report this trace' }).click();
+    await page.getByRole('combobox', { name: 'Report reason' }).click();
+    await page.getByRole('option', { name: 'Spam or misleading content' }).click();
+    await page.getByPlaceholder('Briefly explain the issue').fill('The listing misrepresents the disclosed response.');
+    await page.getByRole('button', { name: 'Send report' }).click();
+    expect(report).toEqual(['protected-share', { reason: 'spam', message: 'The listing misrepresents the disclosed response.' }, 'evidence-pass']);
+    await expect.element(page.getByRole('heading', { name: 'Report received' })).toBeVisible();
+  });
+
+  test('manages access and unpublishes an admitted trace from the account', async () => {
+    let current = {
+      id: 'share-managed', state: 'admitted', visibility: 'listed', published: true,
+      password_protected: false, expires_at: null, admitted_at: 1_786_000_000,
+      updated_at: 1_786_000_000, failure_code: null,
+      share_url: 'https://example.test/s/share-managed', package_url: '/package.llmtrace',
+    };
+    const updates = [];
+    render(<Dashboard
+      user={{ github_login: 'fixture-user', credits: null, share_stats: { total: 1, admitted: 1, in_progress: 0 } }}
+      view="traces"
+      theme="light"
+      onThemeChange={() => {}}
+      onAccountDeleted={() => {}}
+      loadCliSessions={async () => ({ items: [], next_cursor: null })}
+      loadMyShares={async () => ({ items: [current], next_cursor: null })}
+      loadCreditOffers={async () => []}
+      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+      loadBillingPurchases={async () => []}
+      updateShareRequest={async (_id, settings) => {
+        updates.push(settings);
+        current = { ...current, ...settings, password_protected: settings.password ? true : current.password_protected };
+        if (settings.published === false) current = { ...current, share_url: null, package_url: null };
+        return current;
+      }}
+    />);
+
+    await page.getByRole('button', { name: 'Manage' }).click();
+    await page.getByRole('checkbox', { name: /Require a password/ }).click();
+    await page.getByRole('textbox', { name: 'Password' }).fill('eight-characters');
+    await page.getByRole('button', { name: 'Save changes' }).click();
+    expect(updates[0]).toEqual({ visibility: 'listed', password: 'eight-characters' });
+
+    await page.getByRole('button', { name: 'Unpublish' }).click();
+    await page.getByRole('button', { name: 'Unpublish trace' }).click();
+    expect(updates[1]).toEqual({ published: false });
+    await expect.element(page.getByText('Unpublished', { exact: true })).toBeVisible();
   });
 
   test('requires disclosure consent before hosted package verification', async () => {

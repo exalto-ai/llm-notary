@@ -1,5 +1,13 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, LazyLock},
+    time::Duration,
+};
 
+use argon2::{
+    Argon2, PasswordHasher,
+    password_hash::{SaltString, rand_core::OsRng},
+};
 use axum::{
     Json,
     extract::{Path, Query, State},
@@ -9,6 +17,7 @@ use axum::{
 use axum_extra::extract::cookie::CookieJar;
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Postgres, Transaction};
+use tokio::sync::Semaphore;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
@@ -29,6 +38,15 @@ use super::config::{DEFAULT_MAX_ARCHIVE_BYTES, DEFAULT_UPLOAD_TTL_SECS};
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 const CLEANUP_INTERVAL_SECS: u64 = 10 * 60;
 const OBJECTS_PER_CLEANUP: i64 = 32;
+const MAX_SHARE_EXPIRY_DAYS: u32 = 365;
+const MIN_SHARE_PASSWORD_BYTES: usize = 8;
+pub(super) const MAX_SHARE_PASSWORD_BYTES: usize = 128;
+const SHARE_PASSWORD_CHANGE_LIMIT: i64 = 5;
+const SHARE_PASSWORD_CHANGE_WINDOW_SECS: i64 = 60;
+const SHARE_PASSWORD_WORK_CAPACITY: usize = 4;
+
+static SHARE_PASSWORD_CAPACITY: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(SHARE_PASSWORD_WORK_CAPACITY)));
 
 #[derive(Clone)]
 pub struct PublishService {
@@ -79,8 +97,14 @@ struct SharePagePosition {
 
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-struct UpdateShareVisibility {
-    visibility: ShareVisibility,
+struct UpdateShareSettings {
+    visibility: Option<ShareVisibility>,
+    published: Option<bool>,
+    /// A new password, or an empty string to remove the current password.
+    password: Option<String>,
+    /// Days from now until expiry. Zero removes the current expiry.
+    #[schema(maximum = 365)]
+    expires_in_days: Option<u32>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -96,6 +120,9 @@ struct ShareResponse {
     id: String,
     state: String,
     visibility: ShareVisibility,
+    published: bool,
+    password_protected: bool,
+    expires_at: Option<i64>,
     force: bool,
     created_at: i64,
     updated_at: i64,
@@ -112,6 +139,9 @@ pub(super) struct PublishJobRow {
     pub(super) user_id: String,
     pub(super) state: String,
     pub(super) visibility: String,
+    pub(super) published: bool,
+    pub(super) share_expires_at: Option<i64>,
+    pub(super) share_password_hash: Option<String>,
     pub(super) force_publication: bool,
     pub(super) archive_format: String,
     pub(super) declared_size_bytes: i64,
@@ -167,7 +197,7 @@ impl PublishService {
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(create_publish_job))
-        .routes(routes!(get_publish_job, update_share_visibility))
+        .routes(routes!(get_publish_job, update_share_settings))
         .routes(routes!(list_web_publish_jobs))
         .routes(routes!(complete_publish_job))
 }
@@ -413,35 +443,91 @@ async fn get_publish_job(
 #[utoipa::path(
     patch,
     path = "/api/shares/{share_id}",
-    summary = "Explicitly change a share's visibility",
+    summary = "Change a share's publication access settings",
     params(("share_id" = String, Path)),
-    request_body = UpdateShareVisibility,
+    request_body = UpdateShareSettings,
     responses(
         (status = 200, body = ShareResponse),
+        (status = 400, body = super::ErrorResponse),
         (status = 401, body = super::ErrorResponse),
+        (status = 403, body = super::ErrorResponse),
         (status = 404, body = super::ErrorResponse),
+        (status = 429, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse),
         (status = 503, body = super::ErrorResponse)
     ),
-    security(("bearerAuth" = [])),
+    security(("bearerAuth" = []), ("browserSession" = [])),
     tag = "sharing"
 )]
-async fn update_share_visibility(
+async fn update_share_settings(
     State(state): State<AppState>,
     headers: HeaderMap,
+    jar: CookieJar,
     Path(share_id): Path<String>,
-    Json(request): Json<UpdateShareVisibility>,
+    Json(request): Json<UpdateShareSettings>,
 ) -> ApiResult<Json<ShareResponse>> {
     require_enabled(&state)?;
-    let user_id = authenticated_principal(&state, &headers, ApiScope::PublishWrite)
-        .await?
-        .user_id;
+    let user_id = if headers.contains_key(axum::http::header::AUTHORIZATION) {
+        authenticated_principal(&state, &headers, ApiScope::PublishWrite)
+            .await?
+            .user_id
+    } else {
+        authenticated_web_user(&state, &jar).await?.0
+    };
     let now = unix_timestamp()?;
+    if request.visibility.is_none()
+        && request.published.is_none()
+        && request.password.is_none()
+        && request.expires_in_days.is_none()
+    {
+        return Err(ApiError::bad_request(
+            "at least one share setting is required",
+        ));
+    }
+    // Resolve ownership before accepting any request that can schedule costly
+    // password hashing work.
+    load_owned_job(&state, &user_id, &share_id).await?;
+    let visibility = request.visibility.map(ShareVisibility::as_str);
+    let expires_at_changed = request.expires_in_days.is_some();
+    let expires_at = match request.expires_in_days {
+        Some(0) => None,
+        Some(days) if days <= MAX_SHARE_EXPIRY_DAYS => Some(
+            now.checked_add(i64::from(days) * 24 * 60 * 60)
+                .ok_or_else(|| {
+                    ApiError::bad_request("share expiry is outside the accepted range")
+                })?,
+        ),
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "expires_in_days must be between 0 and 365",
+            ));
+        }
+        None => None,
+    };
+    let password_changed = request.password.is_some();
+    if password_changed {
+        enforce_password_change_limit(&state, &user_id, now).await?;
+    }
+    let password_hash = match request.password {
+        Some(password) if password.is_empty() => None,
+        Some(password) => Some(hash_share_password(password).await?),
+        None => None,
+    };
     let updated = sqlx::query(
-        "UPDATE publish_jobs SET visibility = $1, updated_at = $2
-         WHERE id = $3 AND user_id = $4",
+        "UPDATE publish_jobs
+         SET visibility = COALESCE($1, visibility),
+             published = COALESCE($2, published),
+             share_expires_at = CASE WHEN $3 THEN $4 ELSE share_expires_at END,
+             share_password_hash = CASE WHEN $5 THEN $6 ELSE share_password_hash END,
+             updated_at = $7
+         WHERE id = $8 AND user_id = $9",
     )
-    .bind(request.visibility.as_str())
+    .bind(visibility)
+    .bind(request.published)
+    .bind(expires_at_changed)
+    .bind(expires_at)
+    .bind(password_changed)
+    .bind(password_hash)
     .bind(now)
     .bind(&share_id)
     .bind(&user_id)
@@ -943,26 +1029,114 @@ fn share_response(job: &PublishJobRow, app_url: &url::Url) -> ShareResponse {
         "listed" => ShareVisibility::Listed,
         _ => ShareVisibility::Unlisted,
     };
-    let admitted = job.state == "admitted";
+    let live = job.state == "admitted"
+        && job.published
+        && job
+            .share_expires_at
+            .is_none_or(|expires_at| expires_at > unix_timestamp().unwrap_or(i64::MAX));
     ShareResponse {
         id: job.id.clone(),
         state: job.state.clone(),
         visibility,
+        published: job.published,
+        password_protected: job.share_password_hash.is_some(),
+        expires_at: job.share_expires_at,
         force: job.force_publication,
         created_at: job.created_at,
         updated_at: job.updated_at,
         admitted_at: job.admitted_at,
         failure_code: job.failure_code.clone(),
         status_url: format!("/api/shares/{}", job.id),
-        share_url: admitted.then(|| {
+        share_url: live.then(|| {
             app_url
                 .join(&format!("/s/{}", job.id))
                 .expect("share path is a valid same-origin URL")
                 .to_string()
         }),
-        package_url: (admitted && job.package_object_key.is_some())
+        package_url: (live && job.package_object_key.is_some())
             .then(|| format!("/api/public/shares/{}/package.llmtrace", job.id)),
     }
+}
+
+async fn hash_share_password(password: String) -> ApiResult<String> {
+    if !(MIN_SHARE_PASSWORD_BYTES..=MAX_SHARE_PASSWORD_BYTES).contains(&password.len()) {
+        return Err(ApiError::bad_request(
+            "password must contain between 8 and 128 bytes",
+        ));
+    }
+    run_share_password_work(move || {
+        let salt = SaltString::generate(&mut OsRng);
+        Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .map(|hash| hash.to_string())
+            .map_err(|error| ApiError::internal(anyhow::anyhow!(error)))
+    })
+    .await?
+}
+
+pub(super) async fn run_share_password_work<T, F>(work: F) -> ApiResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    run_share_password_work_with_capacity(SHARE_PASSWORD_CAPACITY.clone(), work).await
+}
+
+pub(super) async fn run_share_password_work_with_capacity<T, F>(
+    capacity: Arc<Semaphore>,
+    work: F,
+) -> ApiResult<T>
+where
+    T: Send + 'static,
+    F: FnOnce() -> T + Send + 'static,
+{
+    let _capacity = capacity.try_acquire_owned().map_err(|_| {
+        ApiError::coded(
+            StatusCode::TOO_MANY_REQUESTS,
+            "share_password_capacity",
+            "Password processing is busy; try again shortly",
+        )
+    })?;
+    tokio::task::spawn_blocking(work)
+        .await
+        .map_err(|error| ApiError::internal(error.into()))
+}
+
+async fn enforce_password_change_limit(state: &AppState, user_id: &str, now: i64) -> ApiResult<()> {
+    let window_reset_before = now - SHARE_PASSWORD_CHANGE_WINDOW_SECS;
+    let request_count = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO share_password_change_limits
+             (user_id, window_started_at, request_count, updated_at)
+         VALUES ($1, $2, 1, $2)
+         ON CONFLICT (user_id) DO UPDATE
+         SET window_started_at = CASE
+                 WHEN share_password_change_limits.window_started_at <= $3 THEN $2
+                 ELSE share_password_change_limits.window_started_at
+             END,
+             request_count = CASE
+                 WHEN share_password_change_limits.window_started_at <= $3 THEN 1
+                 ELSE share_password_change_limits.request_count + 1
+             END,
+             updated_at = $2
+         WHERE share_password_change_limits.window_started_at <= $3
+            OR share_password_change_limits.request_count < $4
+         RETURNING request_count",
+    )
+    .bind(user_id)
+    .bind(now)
+    .bind(window_reset_before)
+    .bind(SHARE_PASSWORD_CHANGE_LIMIT)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?;
+    if request_count.is_none() {
+        return Err(ApiError::coded(
+            StatusCode::TOO_MANY_REQUESTS,
+            "share_password_change_rate_limited",
+            "Too many password changes were requested for this account",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1678,5 +1852,18 @@ mod tests {
         let mut uppercase_hash = request();
         uppercase_hash.sha256 = SHA256.to_uppercase();
         assert!(validate_request(&service, &uppercase_hash).is_err());
+    }
+
+    #[tokio::test]
+    async fn share_password_hashes_are_salted_and_bounded() {
+        let first = hash_share_password("long-enough-password".to_owned())
+            .await
+            .unwrap();
+        let second = hash_share_password("long-enough-password".to_owned())
+            .await
+            .unwrap();
+        assert_ne!(first, second);
+        assert!(hash_share_password("short".to_owned()).await.is_err());
+        assert!(hash_share_password("x".repeat(129)).await.is_err());
     }
 }
