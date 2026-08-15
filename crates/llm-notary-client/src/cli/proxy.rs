@@ -2364,20 +2364,21 @@ mod tests {
         drop(response_sender);
         drop(request_sender);
 
-        let seen = observations.lock().unwrap();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(seen[0].provider, Provider::Openai);
-        assert_eq!(seen[0].uri, "/v1/responses?stream=true");
-        assert_eq!(
-            seen[0].headers.get(http::header::AUTHORIZATION).unwrap(),
-            "Bearer provider-secret"
-        );
-        assert_eq!(
-            seen[0].headers.get(http::header::ACCEPT_ENCODING).unwrap(),
-            "gzip"
-        );
-        assert!(seen[0].headers.get("x-request-scoped").is_none());
-        drop(seen);
+        {
+            let seen = observations.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].provider, Provider::Openai);
+            assert_eq!(seen[0].uri, "/v1/responses?stream=true");
+            assert_eq!(
+                seen[0].headers.get(http::header::AUTHORIZATION).unwrap(),
+                "Bearer provider-secret"
+            );
+            assert_eq!(
+                seen[0].headers.get(http::header::ACCEPT_ENCODING).unwrap(),
+                "gzip"
+            );
+            assert!(seen[0].headers.get("x-request-scoped").is_none());
+        }
         assert_eq!(state.persistence.metadata.counts().await.unwrap(), before);
     }
 
