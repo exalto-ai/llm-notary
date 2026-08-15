@@ -3870,23 +3870,33 @@ mod tests {
         .await
         .unwrap();
 
-        for outcome in [
-            LeaseCompletionOutcome::ServiceFailed,
-            LeaseCompletionOutcome::ClientFailed,
-        ] {
+        for _ in 0..2 {
             release_lease(
                 State(state.clone()),
                 service_headers(&state),
                 Json(LeaseRequest {
                     lease_id: "settlement-lease".to_owned(),
                     notary_instance_id: "notary-settlement".to_owned(),
-                    outcome: Some(outcome),
+                    outcome: Some(LeaseCompletionOutcome::ServiceFailed),
                     used_allowance_bytes: None,
                 }),
             )
             .await
             .unwrap();
         }
+        let conflicting_outcome = release_lease(
+            State(state.clone()),
+            service_headers(&state),
+            Json(LeaseRequest {
+                lease_id: "settlement-lease".to_owned(),
+                notary_instance_id: "notary-settlement".to_owned(),
+                outcome: Some(LeaseCompletionOutcome::ClientFailed),
+                used_allowance_bytes: None,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(conflicting_outcome.status, StatusCode::CONFLICT);
         let restored: (i64, i64) = sqlx::query_as(
             "SELECT COUNT(*), COALESCE(SUM(amount_bytes), 0)::BIGINT
              FROM notary_credit_grants
