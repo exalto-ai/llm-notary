@@ -133,6 +133,7 @@ scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 smoke
 scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 full
 scripts/test-daemon-persistence-e2e.sh postgres s3 1 smoke
 scripts/test-daemon-persistence-e2e.sh postgres s3 1 full
+scripts/test-daemon-persistence-e2e.sh postgres s3 2 full
 ```
 
 The smoke test builds and launches the real `llm-notaryd` and `llm-notary`
@@ -156,6 +157,11 @@ Both ordinary JSON responses and OpenAI-style SSE streaming responses traverse
 the real proxy/notary fixture, produce finalized packages, and upload those
 exact verified bytes to a loopback-only hosted-share fixture with a synthetic
 API key.
+
+The two-replica row uses PostgreSQL 17 and MinIO behind a health-aware Caddy
+frontend with retries and buffering disabled. It verifies distinct replica
+incarnations, cross-replica dashboard sessions, fenced finalization ownership,
+cross-replica capture/package access, and safe peer removal.
 
 S3 recovery coverage includes a metadata row whose object is missing, a
 same-size object whose digest does not match its metadata, and a package that

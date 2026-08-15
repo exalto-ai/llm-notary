@@ -183,6 +183,17 @@ pub(crate) fn background_status() -> SharedUpdateStatus {
     }))
 }
 
+pub(crate) fn background_status_disabled(reason: &str) -> SharedUpdateStatus {
+    Arc::new(RwLock::new(BackgroundUpdateStatus {
+        enabled: false,
+        current_build_id: BUILD_ID.into(),
+        latest_build_id: None,
+        update_available: false,
+        last_checked_unix_ms: None,
+        error_code: Some(reason.into()),
+    }))
+}
+
 pub(crate) fn spawn_background_checker(
     status: SharedUpdateStatus,
     mut shutdown: watch::Receiver<bool>,

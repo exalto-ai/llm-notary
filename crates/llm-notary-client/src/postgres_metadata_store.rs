@@ -21,24 +21,35 @@ use crate::{
     metadata::{
         CaptureCompletion, CaptureFilters, CaptureSummary, Event, EventFilters, EventSnapshot,
         IncompleteCapture, MetadataCounts, NewCapture, Operation, OperationAttempt,
-        OperationFilters, TerminalOperationResult, capture_search_parts,
+        OperationFilters, SharedNotaryTrust, TerminalOperationResult, capture_search_parts,
     },
-    metadata_store::{MetadataResult, MetadataStore, MetadataStoreError},
+    metadata_store::{
+        CaptureClaim, CaptureRecoveryClaim, FinalizationClaim, MetadataResult, MetadataStore,
+        MetadataStoreError, ReplicaIdentity,
+    },
+    notary_directory::NotaryDirectory,
 };
 
 const SCHEMA: &str = "llm_notary_daemon";
 const JOURNAL: &str = "llm_notary_daemon.schema_migrations";
 const MIGRATION_LOCK_NAMESPACE: &str = "llm-notary/daemon-postgres-migrations/v1";
-const LATEST_SCHEMA_VERSION: i64 = 2;
+const LATEST_SCHEMA_VERSION: i64 = 3;
 const INITIAL_MIGRATION: &str = include_str!("../migrations-postgres-daemon/0001_initial.sql");
 const ARTIFACT_EXPECTATION_MIGRATION: &str =
     include_str!("../migrations-postgres-daemon/0002_capture_artifact_expectation.sql");
-const MIGRATIONS: [(i64, &str, &str); 2] = [
+const SERVER_COORDINATION_MIGRATION: &str =
+    include_str!("../migrations-postgres-daemon/0003_server_coordination.sql");
+const MIGRATIONS: [(i64, &str, &str); 3] = [
     (1, "initial daemon metadata schema", INITIAL_MIGRATION),
     (
         2,
         "bind capture completion to encrypted artifact",
         ARTIFACT_EXPECTATION_MIGRATION,
+    ),
+    (
+        3,
+        "server replica leases, fencing, and shared state",
+        SERVER_COORDINATION_MIGRATION,
     ),
 ];
 
@@ -47,6 +58,7 @@ const MIGRATIONS: [(i64, &str, &str); 2] = [
 pub(crate) struct PostgresMetadataStore {
     pool: PgPool,
     full_text_search: bool,
+    server_mode: bool,
 }
 
 impl PostgresMetadataStore {
@@ -58,6 +70,27 @@ impl PostgresMetadataStore {
         acquire_timeout: Duration,
         ssl_mode: PostgresSslMode,
         full_text_search: bool,
+    ) -> MetadataResult<Self> {
+        Self::connect_mode(
+            database_url,
+            max_connections,
+            connect_timeout,
+            acquire_timeout,
+            ssl_mode,
+            full_text_search,
+            false,
+        )
+        .await
+    }
+
+    async fn connect_mode(
+        database_url: &str,
+        max_connections: u32,
+        connect_timeout: Duration,
+        acquire_timeout: Duration,
+        ssl_mode: PostgresSslMode,
+        full_text_search: bool,
+        server_mode: bool,
     ) -> MetadataResult<Self> {
         if max_connections == 0 {
             return Err(MetadataStoreError::InvalidInput(
@@ -75,7 +108,7 @@ impl PostgresMetadataStore {
                 .connect_with(options)
                 .await
                 .map_err(|error| db(anyhow!(error).context("opening daemon PostgreSQL pool")))?;
-            Self::from_pool(pool, full_text_search).await
+            Self::from_pool_mode(pool, full_text_search, server_mode).await
         })
         .await
         .map_err(|_| {
@@ -86,12 +119,52 @@ impl PostgresMetadataStore {
     }
 
     /// Wraps an existing pool after verifying the daemon-owned migration journal.
+    #[cfg(test)]
     async fn from_pool(pool: PgPool, full_text_search: bool) -> MetadataResult<Self> {
+        Self::from_pool_mode(pool, full_text_search, false).await
+    }
+
+    async fn from_pool_mode(
+        pool: PgPool,
+        full_text_search: bool,
+        server_mode: bool,
+    ) -> MetadataResult<Self> {
         require_current_schema(&pool).await?;
+        require_runtime_profile(&pool, server_mode).await?;
         Ok(Self {
             pool,
             full_text_search,
+            server_mode,
         })
+    }
+
+    /// Opens a runtime pool which rejects every legacy unfenced mutation.
+    pub(crate) async fn connect_server(
+        database_url: &str,
+        max_connections: u32,
+        connect_timeout: Duration,
+        acquire_timeout: Duration,
+        ssl_mode: PostgresSslMode,
+        full_text_search: bool,
+    ) -> MetadataResult<Self> {
+        Self::connect_mode(
+            database_url,
+            max_connections,
+            connect_timeout,
+            acquire_timeout,
+            ssl_mode,
+            full_text_search,
+            true,
+        )
+        .await
+    }
+
+    fn require_local_mutation(&self) -> MetadataResult<()> {
+        if self.server_mode {
+            Err(MetadataStoreError::InvalidInput("server_requires_claim"))
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -230,6 +303,72 @@ pub(crate) async fn migrate_database(
     Ok(())
 }
 
+/// Pins the operator-provided, non-secret server compatibility identity after
+/// migrations. Exact replay is idempotent; a different profile never replaces
+/// the installed identity.
+pub(crate) async fn configure_server_compatibility(
+    database_url: &str,
+    ssl_mode: PostgresSslMode,
+    connect_timeout: Duration,
+    compatibility_sha256: &str,
+) -> anyhow::Result<()> {
+    ensure!(
+        compatibility_sha256.len() == 64
+            && compatibility_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+        "server compatibility identity is invalid"
+    );
+    let options = database_url
+        .parse::<PgConnectOptions>()
+        .context("daemon migration URL must be PostgreSQL")?
+        .ssl_mode(pg_ssl_mode(ssl_mode));
+    let mut connection =
+        tokio::time::timeout(connect_timeout, PgConnection::connect_with(&options))
+            .await
+            .context("opening server compatibility connection timed out")?
+            .context("opening server compatibility connection")?;
+    let active_legacy_work: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM llm_notary_daemon.captures
+             WHERE capture_state='capturing' AND capture_fence IS NULL
+             UNION ALL
+             SELECT 1 FROM llm_notary_daemon.operations
+             WHERE state='running' AND claim_fence IS NULL
+         )",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .context("checking for unfenced active daemon work")?;
+    ensure!(
+        !active_legacy_work,
+        "server activation requires a quiesced daemon with no unfenced active work"
+    );
+    sqlx::query(
+        "INSERT INTO llm_notary_daemon.server_invariants
+             (singleton, compatibility_sha256)
+         VALUES (TRUE, $1)
+         ON CONFLICT (singleton) DO NOTHING",
+    )
+    .bind(compatibility_sha256)
+    .execute(&mut connection)
+    .await
+    .context("pinning server compatibility identity")?;
+    let configured: String = sqlx::query_scalar(
+        "SELECT compatibility_sha256
+         FROM llm_notary_daemon.server_invariants
+         WHERE singleton = TRUE",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .context("reading server compatibility identity")?;
+    ensure!(
+        configured == compatibility_sha256,
+        "server compatibility identity differs from the installed profile"
+    );
+    Ok(())
+}
+
 fn pg_ssl_mode(mode: PostgresSslMode) -> sqlx::postgres::PgSslMode {
     match mode {
         PostgresSslMode::Disable => sqlx::postgres::PgSslMode::Disable,
@@ -276,6 +415,22 @@ async fn require_current_schema(pool: &PgPool) -> MetadataResult<()> {
         .await
         .map_err(|error| db(anyhow!(error).context("probing daemon metadata tables")))?;
     Ok(())
+}
+
+async fn require_runtime_profile(pool: &PgPool, server_mode: bool) -> MetadataResult<()> {
+    let server_pinned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM llm_notary_daemon.server_invariants WHERE singleton=TRUE
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|error| db(anyhow!(error).context("checking daemon runtime profile")))?;
+    match (server_mode, server_pinned) {
+        (false, true) => Err(MetadataStoreError::InvalidInput("server_profile_required")),
+        (true, false) => Err(MetadataStoreError::InvalidInput("server_not_initialized")),
+        _ => Ok(()),
+    }
 }
 
 fn db(error: anyhow::Error) -> MetadataStoreError {
@@ -574,10 +729,12 @@ impl MetadataStore for PostgresMetadataStore {
     }
 
     async fn readiness(&self) -> MetadataResult<()> {
-        require_current_schema(&self.pool).await
+        require_current_schema(&self.pool).await?;
+        require_runtime_profile(&self.pool, self.server_mode).await
     }
 
     async fn begin_capture(&self, capture: NewCapture) -> MetadataResult<()> {
+        self.require_local_mutation()?;
         let created_at = invalid_i64(
             capture.created_at_unix_ms,
             "capture_created_at_out_of_range",
@@ -612,6 +769,7 @@ impl MetadataStore for PostgresMetadataStore {
         capture_id: &str,
         failure_code: &str,
     ) -> MetadataResult<()> {
+        self.require_local_mutation()?;
         let mut transaction =
             self.pool.begin().await.map_err(|error| {
                 db(anyhow!(error).context("starting capture failure transaction"))
@@ -661,6 +819,7 @@ impl MetadataStore for PostgresMetadataStore {
         &self,
         completion: CaptureCompletion,
     ) -> MetadataResult<()> {
+        self.require_local_mutation()?;
         validate_completion(&completion)?;
         let mut transaction = self.pool.begin().await.map_err(|error| {
             db(anyhow!(error).context("starting capture completion preparation"))
@@ -739,6 +898,7 @@ impl MetadataStore for PostgresMetadataStore {
         completion: CaptureCompletion,
         artifact: ArtifactRecord,
     ) -> MetadataResult<()> {
+        self.require_local_mutation()?;
         validate_completion(&completion)?;
         validate_artifact(&artifact)?;
         require_artifact(
@@ -909,6 +1069,7 @@ impl MetadataStore for PostgresMetadataStore {
         capture_id: &str,
         artifact: ArtifactRecord,
     ) -> MetadataResult<()> {
+        self.require_local_mutation()?;
         validate_artifact(&artifact)?;
         require_artifact(&artifact, capture_id, ArtifactKind::DeferredBundle)?;
         let mut transaction = self
@@ -1054,7 +1215,8 @@ impl MetadataStore for PostgresMetadataStore {
 
     async fn artifacts(&self, capture_id: &str) -> MetadataResult<Vec<ArtifactRecord>> {
         let rows = sqlx::query(
-            "SELECT capture_id, kind, locator, size_bytes, sha256
+            "SELECT capture_id, kind, locator, size_bytes, sha256,
+                    publication_id::text AS publication_id
              FROM llm_notary_daemon.artifacts
              WHERE capture_id = $1 AND state = 'available' ORDER BY kind",
         )
@@ -1069,12 +1231,16 @@ impl MetadataStore for PostgresMetadataStore {
                 let locator: String = row.try_get("locator")?;
                 let size_bytes: i64 = row.try_get("size_bytes")?;
                 let sha256: String = row.try_get("sha256")?;
-                ArtifactRecord::new(
+                let record = ArtifactRecord::new(
                     ArtifactKey::new(&capture_id, ArtifactKind::try_from(kind.as_str())?)?,
                     ArtifactLocator::from_stored(locator)?,
                     size_bytes.try_into()?,
                     sha256,
-                )
+                )?;
+                match row.try_get::<Option<String>, _>("publication_id")? {
+                    Some(publication_id) => record.with_publication_id(publication_id),
+                    None => Ok(record),
+                }
             })
             .collect::<anyhow::Result<Vec<_>>>()
             .map_err(db)
@@ -1189,6 +1355,7 @@ impl MetadataStore for PostgresMetadataStore {
     }
 
     async fn claim_next_finalization(&self, now_unix_ms: u64) -> MetadataResult<Option<Operation>> {
+        self.require_local_mutation()?;
         let now = invalid_i64(now_unix_ms, "timestamp_out_of_range")?;
         let mut transaction = self
             .pool
@@ -1269,6 +1436,7 @@ impl MetadataStore for PostgresMetadataStore {
         phase: FinalizationPhase,
         now_unix_ms: u64,
     ) -> MetadataResult<bool> {
+        self.require_local_mutation()?;
         let now = invalid_i64(now_unix_ms, "timestamp_out_of_range")?;
         let phase = phase.as_str();
         let mut transaction = self
@@ -1320,6 +1488,7 @@ impl MetadataStore for PostgresMetadataStore {
         progress: FinalizationProofProgress,
         now_unix_ms: u64,
     ) -> MetadataResult<bool> {
+        self.require_local_mutation()?;
         let now = invalid_i64(now_unix_ms, "timestamp_out_of_range")?;
         validate_proof(progress)?;
         let mut transaction = self
@@ -1408,6 +1577,7 @@ impl MetadataStore for PostgresMetadataStore {
         artifact: ArtifactRecord,
         now_unix_ms: u64,
     ) -> MetadataResult<TerminalOperationResult> {
+        self.require_local_mutation()?;
         let now = invalid_i64(now_unix_ms, "timestamp_out_of_range")?;
         validate_artifact(&artifact)?;
         let mut transaction = self
@@ -1510,6 +1680,7 @@ impl MetadataStore for PostgresMetadataStore {
         now_unix_ms: u64,
         failure_code: &str,
     ) -> MetadataResult<TerminalOperationResult> {
+        self.require_local_mutation()?;
         let now = invalid_i64(now_unix_ms, "timestamp_out_of_range")?;
         let mut transaction = self
             .pool
@@ -1602,6 +1773,7 @@ impl MetadataStore for PostgresMetadataStore {
     }
 
     async fn interrupt_running_operations(&self, now_unix_ms: u64) -> MetadataResult<usize> {
+        self.require_local_mutation()?;
         let now = invalid_i64(now_unix_ms, "timestamp_out_of_range")?;
         let mut transaction = self
             .pool
@@ -1882,6 +2054,1021 @@ impl MetadataStore for PostgresMetadataStore {
             .map_err(|error| db(anyhow!(error).context("committing event snapshot")))?;
         Ok(EventSnapshot { events, high_water })
     }
+
+    async fn register_replica(
+        &self,
+        identity: &ReplicaIdentity,
+        compatibility_sha256: &str,
+        lease_seconds: u64,
+    ) -> MetadataResult<()> {
+        if compatibility_sha256.len() != 64
+            || !compatibility_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(MetadataStoreError::InvalidInput(
+                "invalid_server_compatibility",
+            ));
+        }
+        let configured = sqlx::query_scalar::<_, String>(
+            "SELECT compatibility_sha256
+             FROM llm_notary_daemon.server_invariants
+             WHERE singleton = TRUE",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| db(anyhow!(error).context("checking server compatibility")))?;
+        if configured.as_deref() != Some(compatibility_sha256) {
+            return Err(MetadataStoreError::InvalidInput(
+                "server_compatibility_mismatch",
+            ));
+        }
+        let has_filesystem_artifacts: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                 SELECT 1 FROM llm_notary_daemon.artifacts
+                 WHERE locator NOT LIKE 'artifact/v1/s3/%'
+             )",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| db(anyhow!(error).context("checking server artifact compatibility")))?;
+        if has_filesystem_artifacts {
+            return Err(MetadataStoreError::InvalidInput(
+                "server_filesystem_artifacts_present",
+            ));
+        }
+        let lease = lease_i32(lease_seconds)?;
+        let row = sqlx::query_scalar::<_, String>(
+            "INSERT INTO llm_notary_daemon.replicas
+                (instance_id, incarnation_id, heartbeat_at, lease_expires_at)
+             VALUES ($1, $2::uuid, clock_timestamp(),
+                     clock_timestamp() + make_interval(secs => $3))
+             ON CONFLICT (instance_id) DO UPDATE SET
+                incarnation_id = excluded.incarnation_id,
+                heartbeat_at = excluded.heartbeat_at,
+                lease_expires_at = excluded.lease_expires_at
+             WHERE llm_notary_daemon.replicas.lease_expires_at <= clock_timestamp()
+                OR llm_notary_daemon.replicas.incarnation_id = excluded.incarnation_id
+             RETURNING instance_id",
+        )
+        .bind(identity.instance_id())
+        .bind(identity.incarnation_id())
+        .bind(lease)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| db(anyhow!(error).context("registering server replica")))?;
+        if row.is_none() {
+            return Err(MetadataStoreError::InvalidInput(
+                "live_instance_id_collision",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn heartbeat_replica(
+        &self,
+        identity: &ReplicaIdentity,
+        lease_seconds: u64,
+    ) -> MetadataResult<()> {
+        let lease = lease_i32(lease_seconds)?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        let changed = sqlx::query(
+            "UPDATE llm_notary_daemon.replicas SET
+                heartbeat_at = clock_timestamp(),
+                lease_expires_at = clock_timestamp() + make_interval(secs => $3)
+             WHERE instance_id = $1 AND incarnation_id = $2::uuid
+               AND lease_expires_at > clock_timestamp()",
+        )
+        .bind(identity.instance_id())
+        .bind(identity.incarnation_id())
+        .bind(lease)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error).context("heartbeating server replica")))?
+        .rows_affected();
+        if changed != 1 {
+            return Err(MetadataStoreError::Fenced);
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|error| db(anyhow!(error).context("committing replica heartbeat")))
+    }
+
+    async fn replica_ready(&self, identity: &ReplicaIdentity) -> MetadataResult<bool> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(
+                 SELECT 1 FROM llm_notary_daemon.replicas
+                 WHERE instance_id=$1 AND incarnation_id=$2::uuid
+                   AND lease_expires_at>clock_timestamp()
+             )",
+        )
+        .bind(identity.instance_id())
+        .bind(identity.incarnation_id())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| db(anyhow!(error).context("checking replica lease readiness")))
+    }
+
+    async fn release_replica(&self, identity: &ReplicaIdentity) -> MetadataResult<()> {
+        sqlx::query(
+            "DELETE FROM llm_notary_daemon.replicas
+             WHERE instance_id = $1 AND incarnation_id = $2::uuid",
+        )
+        .bind(identity.instance_id())
+        .bind(identity.incarnation_id())
+        .execute(&self.pool)
+        .await
+        .map_err(|error| db(anyhow!(error).context("releasing server replica")))?;
+        Ok(())
+    }
+
+    async fn begin_capture_claimed(
+        &self,
+        capture: NewCapture,
+        claim: &CaptureClaim,
+        lease_seconds: u64,
+    ) -> MetadataResult<()> {
+        if capture.capture_id != claim.capture_id {
+            return Err(MetadataStoreError::InvalidInput("capture_claim_mismatch"));
+        }
+        let created_at = invalid_i64(
+            capture.created_at_unix_ms,
+            "capture_created_at_out_of_range",
+        )?;
+        let request_bytes = i64::try_from(capture.request_bytes)
+            .map_err(|_| MetadataStoreError::InvalidInput("request_bytes_out_of_range"))?;
+        let lease = lease_i32(lease_seconds)?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        lock_live_replica(&mut transaction, &claim.owner).await?;
+        sqlx::query(
+            "INSERT INTO llm_notary_daemon.captures (
+                capture_id, created_at_unix_ms, provider, operation, requested_model,
+                streaming, request_bytes, prompt_preview, prompt_preview_truncated,
+                config_fingerprint, capture_state, finalization_state,
+                owner_instance_id, owner_incarnation_id, capture_fence,
+                artifact_publication_id, claim_lease_expires_at
+             ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'capturing','not_requested',
+                       $11,$12::uuid,$13::uuid,$14::uuid,
+                       clock_timestamp() + make_interval(secs => $15))",
+        )
+        .bind(capture.capture_id)
+        .bind(created_at)
+        .bind(capture.provider)
+        .bind(capture.operation)
+        .bind(capture.requested_model)
+        .bind(capture.streaming)
+        .bind(request_bytes)
+        .bind(capture.prompt_preview)
+        .bind(capture.prompt_preview_truncated)
+        .bind(capture.config_fingerprint)
+        .bind(claim.owner.instance_id())
+        .bind(claim.owner.incarnation_id())
+        .bind(&claim.fence_token)
+        .bind(&claim.publication_id)
+        .bind(lease)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error).context("beginning claimed capture")))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| db(anyhow!(error).context("committing claimed capture")))
+    }
+
+    async fn renew_capture_claim(
+        &self,
+        claim: &CaptureClaim,
+        lease_seconds: u64,
+    ) -> MetadataResult<()> {
+        let lease = lease_i32(lease_seconds)?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        lock_live_replica(&mut transaction, &claim.owner).await?;
+        let changed = sqlx::query(
+            "UPDATE llm_notary_daemon.captures SET
+                claim_lease_expires_at = clock_timestamp() + make_interval(secs => $6)
+             WHERE capture_id = $1 AND capture_state = 'capturing'
+               AND owner_instance_id = $2 AND owner_incarnation_id = $3::uuid
+               AND capture_fence = $4::uuid AND artifact_publication_id = $5::uuid
+               AND claim_lease_expires_at > clock_timestamp()",
+        )
+        .bind(&claim.capture_id)
+        .bind(claim.owner.instance_id())
+        .bind(claim.owner.incarnation_id())
+        .bind(&claim.fence_token)
+        .bind(&claim.publication_id)
+        .bind(lease)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error).context("renewing capture claim")))?
+        .rows_affected();
+        if changed == 1 {
+            transaction
+                .commit()
+                .await
+                .map_err(|error| db(anyhow!(error).context("committing capture renewal")))
+        } else {
+            Err(MetadataStoreError::Fenced)
+        }
+    }
+
+    async fn prepare_capture_completion_claimed(
+        &self,
+        completion: CaptureCompletion,
+        claim: &CaptureClaim,
+        lease_seconds: u64,
+    ) -> MetadataResult<()> {
+        validate_completion(&completion)?;
+        if completion.capture_id != claim.capture_id {
+            return Err(MetadataStoreError::InvalidInput("capture_claim_mismatch"));
+        }
+        let lease = lease_i32(lease_seconds)?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        lock_live_replica(&mut transaction, &claim.owner).await?;
+        let prepared: Option<bool> = sqlx::query_scalar(
+            "SELECT expected_artifact_size_bytes IS NOT NULL
+             FROM llm_notary_daemon.captures
+             WHERE capture_id=$1 AND capture_state='capturing'
+               AND owner_instance_id=$2 AND owner_incarnation_id=$3::uuid
+               AND capture_fence=$4::uuid AND artifact_publication_id=$5::uuid
+               AND claim_lease_expires_at>clock_timestamp()
+             FOR UPDATE",
+        )
+        .bind(&claim.capture_id)
+        .bind(claim.owner.instance_id())
+        .bind(claim.owner.incarnation_id())
+        .bind(&claim.fence_token)
+        .bind(&claim.publication_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error).context("checking claimed capture preparation")))?;
+        let Some(prepared) = prepared else {
+            return Err(MetadataStoreError::Fenced);
+        };
+        if prepared && !completion_matches(&mut transaction, &completion).await? {
+            return Err(MetadataStoreError::InvalidInput(
+                "capture_completion_conflict",
+            ));
+        }
+        let changed = sqlx::query(
+            "UPDATE llm_notary_daemon.captures SET
+                completed_at_unix_ms=$6,duration_ms=$7,http_status=$8,response_bytes=$9,
+                response_model=$10,output_preview=$11,output_preview_truncated=$12,
+                expected_artifact_size_bytes=$13,expected_artifact_sha256=$14,
+                claim_lease_expires_at=clock_timestamp()+make_interval(secs => $15)
+             WHERE capture_id=$1 AND capture_state='capturing'
+               AND owner_instance_id=$2 AND owner_incarnation_id=$3::uuid
+               AND capture_fence=$4::uuid AND artifact_publication_id=$5::uuid
+               AND claim_lease_expires_at > clock_timestamp()",
+        )
+        .bind(&claim.capture_id)
+        .bind(claim.owner.instance_id())
+        .bind(claim.owner.incarnation_id())
+        .bind(&claim.fence_token)
+        .bind(&claim.publication_id)
+        .bind(invalid_i64(
+            completion.completed_at_unix_ms,
+            "capture_completed_at_out_of_range",
+        )?)
+        .bind(invalid_i64(
+            completion.duration_ms,
+            "duration_out_of_range",
+        )?)
+        .bind(i32::from(completion.http_status))
+        .bind(invalid_i64(
+            completion.response_bytes,
+            "response_bytes_out_of_range",
+        )?)
+        .bind(&completion.response_model)
+        .bind(&completion.output_preview)
+        .bind(completion.output_preview_truncated)
+        .bind(invalid_i64(
+            completion.expected_artifact_size_bytes,
+            "artifact_size_out_of_range",
+        )?)
+        .bind(&completion.expected_artifact_sha256)
+        .bind(lease)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error).context("preparing claimed capture")))?
+        .rows_affected();
+        if changed == 1 {
+            transaction.commit().await.map_err(|error| {
+                db(anyhow!(error).context("committing claimed capture preparation"))
+            })
+        } else {
+            Err(MetadataStoreError::Fenced)
+        }
+    }
+
+    async fn complete_capture_claimed(
+        &self,
+        completion: CaptureCompletion,
+        artifact: ArtifactRecord,
+        claim: &CaptureClaim,
+    ) -> MetadataResult<()> {
+        validate_completion(&completion)?;
+        validate_artifact(&artifact)?;
+        require_artifact(&artifact, &claim.capture_id, ArtifactKind::DeferredBundle)?;
+        if artifact.publication_id() != Some(claim.publication_id.as_str()) {
+            return Err(MetadataStoreError::InvalidInput(
+                "artifact_publication_mismatch",
+            ));
+        }
+        if artifact.size_bytes != completion.expected_artifact_size_bytes
+            || artifact.sha256 != completion.expected_artifact_sha256
+        {
+            return Err(MetadataStoreError::InvalidInput(
+                "capture_artifact_mismatch",
+            ));
+        }
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        lock_live_replica(&mut transaction, &claim.owner).await?;
+        let changed = sqlx::query(
+            "UPDATE llm_notary_daemon.captures SET capture_state='captured', failure_code=NULL
+             WHERE capture_id=$1 AND capture_state='capturing'
+               AND owner_instance_id=$2 AND owner_incarnation_id=$3::uuid
+               AND capture_fence=$4::uuid AND artifact_publication_id=$5::uuid
+               AND claim_lease_expires_at > clock_timestamp()
+               AND expected_artifact_size_bytes=$6 AND expected_artifact_sha256=$7",
+        )
+        .bind(&claim.capture_id)
+        .bind(claim.owner.instance_id())
+        .bind(claim.owner.incarnation_id())
+        .bind(&claim.fence_token)
+        .bind(&claim.publication_id)
+        .bind(invalid_i64(
+            artifact.size_bytes,
+            "artifact_size_out_of_range",
+        )?)
+        .bind(&artifact.sha256)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error)))?
+        .rows_affected();
+        if changed != 1 {
+            return Err(MetadataStoreError::Fenced);
+        }
+        insert_artifact(&mut transaction, &artifact).await?;
+        sqlx::query("UPDATE llm_notary_daemon.artifacts SET publication_id=$3::uuid WHERE capture_id=$1 AND kind=$2")
+            .bind(&claim.capture_id).bind(ArtifactKind::DeferredBundle.as_str()).bind(&claim.publication_id)
+            .execute(&mut *transaction).await.map_err(|error| db(anyhow!(error)))?;
+        sqlx::query(
+            "INSERT INTO llm_notary_daemon.capture_search (capture_id,prompt_document,output_document)
+             SELECT capture_id,to_tsvector('simple',prompt_preview),to_tsvector('simple',output_preview)
+             FROM llm_notary_daemon.captures WHERE capture_id=$1
+             ON CONFLICT(capture_id) DO UPDATE SET prompt_document=excluded.prompt_document,output_document=excluded.output_document",
+        ).bind(&claim.capture_id).execute(&mut *transaction).await.map_err(|error| db(anyhow!(error)))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| db(anyhow!(error)))
+    }
+
+    async fn fail_capture_claimed(
+        &self,
+        claim: &CaptureClaim,
+        failure_code: &str,
+    ) -> MetadataResult<()> {
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        lock_live_replica(&mut transaction, &claim.owner).await?;
+        let changed = sqlx::query(
+            "UPDATE llm_notary_daemon.captures SET capture_state='failed',failure_code=$6
+             WHERE capture_id=$1 AND capture_state='capturing'
+               AND owner_instance_id=$2 AND owner_incarnation_id=$3::uuid
+               AND capture_fence=$4::uuid AND artifact_publication_id=$5::uuid
+               AND claim_lease_expires_at > clock_timestamp()",
+        )
+        .bind(&claim.capture_id)
+        .bind(claim.owner.instance_id())
+        .bind(claim.owner.incarnation_id())
+        .bind(&claim.fence_token)
+        .bind(&claim.publication_id)
+        .bind(failure_code)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error)))?
+        .rows_affected();
+        if changed == 1 {
+            transaction
+                .commit()
+                .await
+                .map_err(|error| db(anyhow!(error).context("committing claimed capture failure")))
+        } else {
+            Err(MetadataStoreError::Fenced)
+        }
+    }
+
+    async fn claim_next_stale_capture(
+        &self,
+        identity: &ReplicaIdentity,
+        fence_token: &str,
+        lease_seconds: u64,
+    ) -> MetadataResult<Option<CaptureRecoveryClaim>> {
+        let lease = lease_i32(lease_seconds)?;
+        let row = sqlx::query(
+            "WITH live_owner AS (
+                SELECT instance_id FROM llm_notary_daemon.replicas
+                WHERE instance_id=$1 AND incarnation_id=$2::uuid
+                  AND lease_expires_at>clock_timestamp() FOR UPDATE),
+             candidate AS (
+                SELECT c.capture_id FROM llm_notary_daemon.captures c
+                WHERE c.capture_state='capturing' AND c.claim_lease_expires_at <= clock_timestamp()
+                ORDER BY c.claim_lease_expires_at,c.capture_id FOR UPDATE SKIP LOCKED LIMIT 1)
+             UPDATE llm_notary_daemon.captures c SET owner_instance_id=$1,
+                owner_incarnation_id=$2::uuid,capture_fence=$3::uuid,
+                claim_lease_expires_at=clock_timestamp()+make_interval(secs => $4)
+             FROM candidate,live_owner WHERE c.capture_id=candidate.capture_id
+             RETURNING c.*,c.artifact_publication_id::text AS publication_id",
+        )
+        .bind(identity.instance_id())
+        .bind(identity.incarnation_id())
+        .bind(fence_token)
+        .bind(lease)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| db(anyhow!(error).context("claiming stale capture")))?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let capture_id: String = row.try_get("capture_id").map_err(|e| db(e.into()))?;
+        let publication_id: String = row.try_get("publication_id").map_err(|e| db(e.into()))?;
+        let completion = completion_from_row(&row).map_err(db)?;
+        Ok(Some(CaptureRecoveryClaim {
+            claim: CaptureClaim {
+                capture_id,
+                owner: identity.clone(),
+                fence_token: fence_token.to_owned(),
+                publication_id,
+            },
+            completion,
+        }))
+    }
+
+    async fn claim_next_finalization_claimed(
+        &self,
+        identity: &ReplicaIdentity,
+        fence_token: &str,
+        lease_seconds: u64,
+    ) -> MetadataResult<Option<FinalizationClaim>> {
+        let lease = lease_i32(lease_seconds)?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        lock_live_replica(&mut transaction, identity).await?;
+        let row = sqlx::query(
+            "WITH moment AS (
+                SELECT clock_timestamp() AS ts,
+                       floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS unix_ms),
+             candidate AS (
+                SELECT operation_id FROM llm_notary_daemon.operations
+                WHERE kind='finalization' AND state='queued'
+                ORDER BY created_at_unix_ms,operation_id FOR UPDATE SKIP LOCKED LIMIT 1)
+             UPDATE llm_notary_daemon.operations o SET state='running',attempt=attempt+1,
+                started_at_unix_ms=moment.unix_ms,completed_at_unix_ms=NULL,failure_code=NULL,
+                progress_phase='preparing',progress_updated_at_unix_ms=moment.unix_ms,
+                proof_bytes_completed=0,proof_bytes_total=0,
+                proof_commitments_completed=0,proof_commitments_total=0,
+                owner_instance_id=$1,owner_incarnation_id=$2::uuid,claim_fence=$3::uuid,
+                artifact_publication_id=$3::uuid,
+                claim_lease_expires_at=moment.ts+make_interval(secs => $4)
+             FROM candidate,moment WHERE o.operation_id=candidate.operation_id RETURNING o.*",
+        )
+        .bind(identity.instance_id())
+        .bind(identity.incarnation_id())
+        .bind(fence_token)
+        .bind(lease)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error).context("claiming server finalization")))?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let operation = operation_from_row(&row).map_err(db)?;
+        let capture_id = operation
+            .capture_id
+            .as_deref()
+            .ok_or_else(|| db(anyhow!("finalization has no capture")))?;
+        sqlx::query("UPDATE llm_notary_daemon.captures SET finalization_state='running' WHERE capture_id=$1")
+            .bind(capture_id).execute(&mut *transaction).await.map_err(|error| db(anyhow!(error)))?;
+        sqlx::query(
+            "INSERT INTO llm_notary_daemon.operation_attempts
+                (operation_id,attempt,state,started_at_unix_ms,owner_instance_id,owner_incarnation_id,claim_fence)
+             VALUES($1,$2,'running',$3,$4,$5::uuid,$6::uuid)",
+        ).bind(&operation.operation_id).bind(i32::try_from(operation.attempt).map_err(|e| db(e.into()))?)
+          .bind(invalid_i64(operation.started_at_unix_ms.unwrap_or(0), "timestamp_out_of_range")?)
+          .bind(identity.instance_id()).bind(identity.incarnation_id()).bind(fence_token)
+          .execute(&mut *transaction).await.map_err(|error| db(anyhow!(error)))?;
+        insert_event(
+            &mut transaction,
+            invalid_i64(
+                operation.started_at_unix_ms.unwrap_or(0),
+                "timestamp_out_of_range",
+            )?,
+            "finalization_started",
+            Some(capture_id),
+            Some(&operation.operation_id),
+            "info",
+            "Finalization started",
+        )
+        .await?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        Ok(Some(FinalizationClaim {
+            operation,
+            owner: identity.clone(),
+            fence_token: fence_token.to_owned(),
+            publication_id: fence_token.to_owned(),
+        }))
+    }
+
+    async fn renew_finalization_claim(
+        &self,
+        claim: &FinalizationClaim,
+        lease_seconds: u64,
+    ) -> MetadataResult<()> {
+        let lease = lease_i32(lease_seconds)?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        lock_live_replica(&mut transaction, &claim.owner).await?;
+        let changed = sqlx::query(
+            "UPDATE llm_notary_daemon.operations SET claim_lease_expires_at=clock_timestamp()+make_interval(secs => $6)
+             WHERE operation_id=$1 AND state='running' AND owner_instance_id=$2
+               AND owner_incarnation_id=$3::uuid AND claim_fence=$4::uuid
+               AND artifact_publication_id=$5::uuid AND claim_lease_expires_at>clock_timestamp()",
+        ).bind(&claim.operation.operation_id).bind(claim.owner.instance_id()).bind(claim.owner.incarnation_id())
+          .bind(&claim.fence_token).bind(&claim.publication_id).bind(lease)
+          .execute(&mut *transaction).await.map_err(|error| db(anyhow!(error).context("renewing finalization claim")))?.rows_affected();
+        if changed == 1 {
+            transaction
+                .commit()
+                .await
+                .map_err(|error| db(anyhow!(error).context("committing finalization renewal")))
+        } else {
+            Err(MetadataStoreError::Fenced)
+        }
+    }
+
+    async fn update_operation_progress_claimed(
+        &self,
+        claim: &FinalizationClaim,
+        phase: FinalizationPhase,
+        now_unix_ms: u64,
+        lease_seconds: u64,
+    ) -> MetadataResult<bool> {
+        let now = invalid_i64(now_unix_ms, "timestamp_out_of_range")?;
+        let lease = lease_i32(lease_seconds)?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        lock_live_replica(&mut transaction, &claim.owner).await?;
+        let previous: Option<String> = sqlx::query_scalar(
+            "SELECT progress_phase FROM llm_notary_daemon.operations WHERE operation_id=$1
+               AND state='running' AND owner_instance_id=$2 AND owner_incarnation_id=$3::uuid
+               AND claim_fence=$4::uuid AND claim_lease_expires_at>clock_timestamp() FOR UPDATE",
+        )
+        .bind(&claim.operation.operation_id)
+        .bind(claim.owner.instance_id())
+        .bind(claim.owner.incarnation_id())
+        .bind(&claim.fence_token)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error)))?;
+        let Some(previous) = previous else {
+            return Err(MetadataStoreError::Fenced);
+        };
+        let changed = previous != phase.as_str();
+        sqlx::query("UPDATE llm_notary_daemon.operations SET progress_phase=$2,progress_updated_at_unix_ms=$3,claim_lease_expires_at=clock_timestamp()+make_interval(secs => $4) WHERE operation_id=$1")
+            .bind(&claim.operation.operation_id).bind(phase.as_str()).bind(now).bind(lease)
+            .execute(&mut *transaction).await.map_err(|error| db(anyhow!(error)))?;
+        if changed {
+            let message = match phase.as_str() {
+                "proving" => "Generating private proof",
+                "signing" => "Requesting notary signature",
+                "packaging" => "Building verified package",
+                _ => "Finalization advanced",
+            };
+            insert_event(
+                &mut transaction,
+                now,
+                "finalization_progress",
+                claim.operation.capture_id.as_deref(),
+                Some(&claim.operation.operation_id),
+                "info",
+                message,
+            )
+            .await?;
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        Ok(changed)
+    }
+
+    async fn update_operation_proof_progress_claimed(
+        &self,
+        claim: &FinalizationClaim,
+        progress: FinalizationProofProgress,
+        now_unix_ms: u64,
+        lease_seconds: u64,
+    ) -> MetadataResult<bool> {
+        validate_proof(progress)?;
+        let now = invalid_i64(now_unix_ms, "timestamp_out_of_range")?;
+        let lease = lease_i32(lease_seconds)?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        lock_live_replica(&mut transaction, &claim.owner).await?;
+        let row = sqlx::query(
+            "SELECT progress_phase,proof_bytes_completed,proof_bytes_total,
+                    proof_commitments_completed,proof_commitments_total
+             FROM llm_notary_daemon.operations WHERE operation_id=$1 AND state='running'
+               AND owner_instance_id=$2 AND owner_incarnation_id=$3::uuid
+               AND claim_fence=$4::uuid AND claim_lease_expires_at>clock_timestamp() FOR UPDATE",
+        )
+        .bind(&claim.operation.operation_id)
+        .bind(claim.owner.instance_id())
+        .bind(claim.owner.incarnation_id())
+        .bind(&claim.fence_token)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error)))?;
+        let Some(row) = row else {
+            return Err(MetadataStoreError::Fenced);
+        };
+        let old_phase: String = row.try_get("progress_phase").map_err(|e| db(e.into()))?;
+        let old_bc = row_u64(&row, "proof_bytes_completed").map_err(db)?;
+        let old_bt = row_u64(&row, "proof_bytes_total").map_err(db)?;
+        let old_cc = row_u64(&row, "proof_commitments_completed").map_err(db)?;
+        let old_ct = row_u64(&row, "proof_commitments_total").map_err(db)?;
+        if progress.bytes_completed < old_bc
+            || progress.commitments_completed < old_cc
+            || (old_bt != 0 && progress.bytes_total != old_bt)
+            || (old_ct != 0 && progress.commitments_total != old_ct)
+        {
+            return Err(MetadataStoreError::InvalidInput("invalid_proof_progress"));
+        }
+        let changed = old_phase != "proving"
+            || old_bc != progress.bytes_completed
+            || old_bt != progress.bytes_total
+            || old_cc != progress.commitments_completed
+            || old_ct != progress.commitments_total;
+        sqlx::query("UPDATE llm_notary_daemon.operations SET progress_phase='proving',progress_updated_at_unix_ms=$2,proof_bytes_completed=$3,proof_bytes_total=$4,proof_commitments_completed=$5,proof_commitments_total=$6,claim_lease_expires_at=clock_timestamp()+make_interval(secs => $7) WHERE operation_id=$1")
+            .bind(&claim.operation.operation_id).bind(now)
+            .bind(i64::try_from(progress.bytes_completed).expect("validated")).bind(i64::try_from(progress.bytes_total).expect("validated"))
+            .bind(i64::try_from(progress.commitments_completed).expect("validated")).bind(i64::try_from(progress.commitments_total).expect("validated")).bind(lease)
+            .execute(&mut *transaction).await.map_err(|error| db(anyhow!(error)))?;
+        if old_phase != "proving" {
+            insert_event(
+                &mut transaction,
+                now,
+                "finalization_progress",
+                claim.operation.capture_id.as_deref(),
+                Some(&claim.operation.operation_id),
+                "info",
+                "Generating private proof",
+            )
+            .await?;
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        Ok(changed)
+    }
+
+    async fn complete_finalization_claimed(
+        &self,
+        claim: &FinalizationClaim,
+        artifact: ArtifactRecord,
+        now_unix_ms: u64,
+    ) -> MetadataResult<TerminalOperationResult> {
+        let now = invalid_i64(now_unix_ms, "timestamp_out_of_range")?;
+        validate_artifact(&artifact)?;
+        let capture_id = claim
+            .operation
+            .capture_id
+            .as_deref()
+            .ok_or_else(|| db(anyhow!("finalization has no capture")))?;
+        require_artifact(&artifact, capture_id, ArtifactKind::FinalizedPackage)?;
+        if artifact.publication_id() != Some(claim.publication_id.as_str()) {
+            return Err(MetadataStoreError::InvalidInput(
+                "artifact_publication_mismatch",
+            ));
+        }
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        lock_live_replica(&mut tx, &claim.owner).await?;
+        let row=sqlx::query("SELECT state,claim_fence::text AS claim_fence FROM llm_notary_daemon.operations WHERE operation_id=$1 FOR UPDATE")
+            .bind(&claim.operation.operation_id).fetch_optional(&mut *tx).await.map_err(|error| db(anyhow!(error)))?;
+        let Some(row) = row else {
+            return Ok(TerminalOperationResult::NotFound);
+        };
+        let state: String = row.try_get("state").map_err(|e| db(e.into()))?;
+        let stored_fence: Option<String> = row.try_get("claim_fence").map_err(|e| db(e.into()))?;
+        if stored_fence.as_deref() != Some(&claim.fence_token) {
+            return Err(MetadataStoreError::Fenced);
+        }
+        if state == "finalized" {
+            return if artifact_exists_exact(&mut tx, &artifact).await? {
+                Ok(TerminalOperationResult::AlreadyApplied)
+            } else {
+                Err(MetadataStoreError::Fenced)
+            };
+        }
+        if state != "running" {
+            return Err(MetadataStoreError::Fenced);
+        }
+        let changed=sqlx::query("UPDATE llm_notary_daemon.operations SET state='finalized',completed_at_unix_ms=$5,failure_code=NULL,progress_phase='complete',progress_updated_at_unix_ms=$5 WHERE operation_id=$1 AND state='running' AND owner_instance_id=$2 AND owner_incarnation_id=$3::uuid AND claim_fence=$4::uuid AND claim_lease_expires_at>clock_timestamp()")
+            .bind(&claim.operation.operation_id).bind(claim.owner.instance_id()).bind(claim.owner.incarnation_id()).bind(&claim.fence_token).bind(now)
+            .execute(&mut *tx).await.map_err(|error| db(anyhow!(error)))?.rows_affected();
+        if changed != 1 {
+            return Err(MetadataStoreError::Fenced);
+        }
+        insert_artifact(&mut tx, &artifact).await?;
+        sqlx::query("UPDATE llm_notary_daemon.artifacts SET publication_id=$3::uuid WHERE capture_id=$1 AND kind=$2")
+            .bind(capture_id).bind(ArtifactKind::FinalizedPackage.as_str()).bind(&claim.publication_id).execute(&mut *tx).await.map_err(|error| db(anyhow!(error)))?;
+        let attempt_changed=sqlx::query("UPDATE llm_notary_daemon.operation_attempts SET state='finalized',completed_at_unix_ms=$5,failure_code=NULL WHERE operation_id=$1 AND attempt=$2 AND owner_instance_id=$3 AND claim_fence=$4::uuid")
+            .bind(&claim.operation.operation_id).bind(i32::try_from(claim.operation.attempt).map_err(|e| db(e.into()))?).bind(claim.owner.instance_id()).bind(&claim.fence_token).bind(now)
+            .execute(&mut *tx).await.map_err(|error| db(anyhow!(error)))?.rows_affected();
+        if attempt_changed != 1 {
+            return Err(db(anyhow!("claimed attempt missing")));
+        }
+        sqlx::query("UPDATE llm_notary_daemon.captures SET finalization_state='finalized' WHERE capture_id=$1")
+            .bind(capture_id).execute(&mut *tx).await.map_err(|error| db(anyhow!(error)))?;
+        insert_event(
+            &mut tx,
+            now,
+            "finalization_completed",
+            Some(capture_id),
+            Some(&claim.operation.operation_id),
+            "success",
+            "Finalization completed",
+        )
+        .await?;
+        tx.commit().await.map_err(|error| db(anyhow!(error)))?;
+        Ok(TerminalOperationResult::Applied)
+    }
+
+    async fn fail_operation_claimed(
+        &self,
+        claim: &FinalizationClaim,
+        now_unix_ms: u64,
+        failure_code: &str,
+    ) -> MetadataResult<TerminalOperationResult> {
+        let now = invalid_i64(now_unix_ms, "timestamp_out_of_range")?;
+        let capture_id = claim
+            .operation
+            .capture_id
+            .as_deref()
+            .ok_or_else(|| db(anyhow!("finalization has no capture")))?;
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        lock_live_replica(&mut tx, &claim.owner).await?;
+        let changed=sqlx::query("UPDATE llm_notary_daemon.operations SET state='failed',completed_at_unix_ms=$5,failure_code=$6 WHERE operation_id=$1 AND state='running' AND owner_instance_id=$2 AND owner_incarnation_id=$3::uuid AND claim_fence=$4::uuid AND claim_lease_expires_at>clock_timestamp()")
+            .bind(&claim.operation.operation_id).bind(claim.owner.instance_id()).bind(claim.owner.incarnation_id()).bind(&claim.fence_token).bind(now).bind(failure_code)
+            .execute(&mut *tx).await.map_err(|error| db(anyhow!(error)))?.rows_affected();
+        if changed != 1 {
+            return Err(MetadataStoreError::Fenced);
+        }
+        let attempt_changed=sqlx::query("UPDATE llm_notary_daemon.operation_attempts SET state='failed',completed_at_unix_ms=$5,failure_code=$6 WHERE operation_id=$1 AND attempt=$2 AND owner_instance_id=$3 AND claim_fence=$4::uuid")
+            .bind(&claim.operation.operation_id).bind(i32::try_from(claim.operation.attempt).map_err(|e| db(e.into()))?).bind(claim.owner.instance_id()).bind(&claim.fence_token).bind(now).bind(failure_code)
+            .execute(&mut *tx).await.map_err(|error| db(anyhow!(error)))?.rows_affected();
+        if attempt_changed != 1 {
+            return Err(db(anyhow!("claimed attempt missing")));
+        }
+        sqlx::query(
+            "UPDATE llm_notary_daemon.captures SET finalization_state='failed' WHERE capture_id=$1",
+        )
+        .bind(capture_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| db(anyhow!(error)))?;
+        insert_event(
+            &mut tx,
+            now,
+            "finalization_failed",
+            Some(capture_id),
+            Some(&claim.operation.operation_id),
+            "error",
+            "Finalization failed",
+        )
+        .await?;
+        tx.commit().await.map_err(|error| db(anyhow!(error)))?;
+        Ok(TerminalOperationResult::Applied)
+    }
+
+    async fn interrupt_next_expired_finalization(&self) -> MetadataResult<Option<String>> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error)))?;
+        let row=sqlx::query(
+            "WITH moment AS (SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS unix_ms),
+             candidate AS (SELECT o.operation_id FROM llm_notary_daemon.operations o
+                WHERE o.state='running' AND o.claim_lease_expires_at<=clock_timestamp()
+                ORDER BY o.claim_lease_expires_at,o.operation_id FOR UPDATE SKIP LOCKED LIMIT 1)
+             UPDATE llm_notary_daemon.operations o SET state='interrupted',completed_at_unix_ms=moment.unix_ms,failure_code='claim_expired'
+             FROM candidate,moment WHERE o.operation_id=candidate.operation_id RETURNING o.operation_id,o.capture_id,o.attempt,o.completed_at_unix_ms",
+        ).fetch_optional(&mut *tx).await.map_err(|error| db(anyhow!(error)))?;
+        let Some(row) = row else { return Ok(None) };
+        let operation_id: String = row.try_get("operation_id").map_err(|e| db(e.into()))?;
+        let capture_id: String = row.try_get("capture_id").map_err(|e| db(e.into()))?;
+        let attempt: i32 = row.try_get("attempt").map_err(|e| db(e.into()))?;
+        let now: i64 = row
+            .try_get("completed_at_unix_ms")
+            .map_err(|e| db(e.into()))?;
+        sqlx::query("UPDATE llm_notary_daemon.operation_attempts SET state='interrupted',completed_at_unix_ms=$3,failure_code='claim_expired' WHERE operation_id=$1 AND attempt=$2 AND state='running'")
+            .bind(&operation_id).bind(attempt).bind(now).execute(&mut *tx).await.map_err(|error| db(anyhow!(error)))?;
+        sqlx::query("UPDATE llm_notary_daemon.captures SET finalization_state='interrupted' WHERE capture_id=$1").bind(&capture_id).execute(&mut *tx).await.map_err(|error| db(anyhow!(error)))?;
+        insert_event(
+            &mut tx,
+            now,
+            "finalization_interrupted",
+            Some(&capture_id),
+            Some(&operation_id),
+            "warning",
+            "Finalization claim expired",
+        )
+        .await?;
+        tx.commit().await.map_err(|error| db(anyhow!(error)))?;
+        Ok(Some(operation_id))
+    }
+
+    async fn create_dashboard_session(
+        &self,
+        token_hash: &[u8; 32],
+        created_at_unix_ms: u64,
+        expires_at_unix_ms: u64,
+    ) -> MetadataResult<()> {
+        let created = invalid_i64(created_at_unix_ms, "timestamp_out_of_range")?;
+        let expires = invalid_i64(expires_at_unix_ms, "timestamp_out_of_range")?;
+        let ttl = expires
+            .checked_sub(created)
+            .ok_or(MetadataStoreError::InvalidInput("invalid_session_expiry"))?;
+        if !(1..=86_400_000).contains(&ttl) {
+            return Err(MetadataStoreError::InvalidInput("invalid_session_expiry"));
+        }
+        sqlx::query("WITH moment AS (SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS unix_ms)
+             INSERT INTO llm_notary_daemon.dashboard_sessions(token_hash,created_at_unix_ms,expires_at_unix_ms)
+             SELECT $1,moment.unix_ms,moment.unix_ms+$2 FROM moment")
+            .bind(token_hash.as_slice()).bind(ttl).execute(&self.pool).await
+            .map_err(|error| db(anyhow!(error).context("creating dashboard session")))?;
+        Ok(())
+    }
+
+    async fn dashboard_session_valid(
+        &self,
+        token_hash: &[u8; 32],
+        _now_unix_ms: u64,
+    ) -> MetadataResult<bool> {
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM llm_notary_daemon.dashboard_sessions WHERE token_hash=$1 AND to_timestamp(expires_at_unix_ms::double precision/1000.0) > clock_timestamp())")
+            .bind(token_hash.as_slice()).fetch_one(&self.pool).await
+            .map_err(|error| db(anyhow!(error).context("checking dashboard session")))
+    }
+
+    async fn revoke_dashboard_session(&self, token_hash: &[u8; 32]) -> MetadataResult<()> {
+        sqlx::query("DELETE FROM llm_notary_daemon.dashboard_sessions WHERE token_hash=$1")
+            .bind(token_hash.as_slice())
+            .execute(&self.pool)
+            .await
+            .map_err(|error| db(anyhow!(error).context("revoking dashboard session")))?;
+        Ok(())
+    }
+
+    async fn prune_dashboard_sessions(
+        &self,
+        _now_unix_ms: u64,
+        limit: usize,
+    ) -> MetadataResult<usize> {
+        let limit =
+            i64::try_from(limit).map_err(|_| MetadataStoreError::InvalidInput("invalid_limit"))?;
+        let affected = sqlx::query("DELETE FROM llm_notary_daemon.dashboard_sessions WHERE token_hash IN (SELECT token_hash FROM llm_notary_daemon.dashboard_sessions WHERE to_timestamp(expires_at_unix_ms::double precision/1000.0) <= clock_timestamp() ORDER BY expires_at_unix_ms LIMIT $1)")
+            .bind(limit).execute(&self.pool).await.map_err(|error| db(anyhow!(error).context("pruning dashboard sessions")))?.rows_affected();
+        usize::try_from(affected).map_err(|error| db(error.into()))
+    }
+
+    async fn pin_notary_directory(
+        &self,
+        directory: NotaryDirectory,
+        directory_source: &str,
+    ) -> MetadataResult<SharedNotaryTrust> {
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error).context("starting notary trust transaction")))?;
+        let current = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT state_json FROM llm_notary_daemon.notary_trust
+             WHERE singleton = TRUE FOR UPDATE",
+        )
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error).context("locking shared notary trust")))?
+        .map(|bytes| {
+            serde_json::from_slice::<SharedNotaryTrust>(&bytes)
+                .context("parsing shared notary trust")
+                .map_err(db)
+        })
+        .transpose()?;
+        let trust = crate::cli::notary::merge_shared_trust(current, directory, directory_source)
+            .map_err(|error| db(error.context("merging shared notary trust")))?;
+        let generation = i64::try_from(trust.generation)
+            .map_err(|_| MetadataStoreError::InvalidInput("notary_generation_out_of_range"))?;
+        let state_json = serde_json::to_vec(&trust)
+            .map_err(|error| db(anyhow!(error).context("encoding shared notary trust")))?;
+        if state_json.len() > 1_048_576 {
+            return Err(MetadataStoreError::InvalidInput("notary_trust_too_large"));
+        }
+        sqlx::query(
+            "INSERT INTO llm_notary_daemon.notary_trust(
+                 singleton,generation,directory_sha256,directory_source,active_key_id,state_json,updated_at)
+             VALUES(TRUE,$1,$2,$3,$4,$5,clock_timestamp())
+             ON CONFLICT(singleton) DO UPDATE SET
+                 generation=excluded.generation,
+                 directory_sha256=excluded.directory_sha256,
+                 directory_source=excluded.directory_source,
+                 active_key_id=excluded.active_key_id,
+                 state_json=excluded.state_json,
+                 updated_at=clock_timestamp()",
+        )
+        .bind(generation)
+        .bind(&trust.directory_sha256)
+        .bind(&trust.directory_source)
+        .bind(&trust.active_key_id)
+        .bind(&state_json)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error).context("publishing shared notary trust")))?;
+        transaction
+            .commit()
+            .await
+            .map_err(|error| db(anyhow!(error).context("committing shared notary trust")))?;
+        Ok(trust)
+    }
+
+    async fn notary_trust_snapshot(&self) -> MetadataResult<Option<SharedNotaryTrust>> {
+        let value = sqlx::query_scalar::<_, Vec<u8>>(
+            "SELECT state_json FROM llm_notary_daemon.notary_trust WHERE singleton = TRUE",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| db(anyhow!(error).context("reading shared notary trust")))?
+        .map(|bytes| {
+            serde_json::from_slice::<SharedNotaryTrust>(&bytes)
+                .context("parsing shared notary trust")
+                .and_then(|trust| {
+                    crate::cli::notary::validate_shared_trust(&trust)?;
+                    Ok(trust)
+                })
+                .map_err(db)
+        })
+        .transpose()?;
+        Ok(value)
+    }
 }
 
 fn push_event_filters<'a>(query: &mut QueryBuilder<'a, Postgres>, filters: &'a EventFilters) {
@@ -1906,8 +3093,74 @@ fn push_event_filters<'a>(query: &mut QueryBuilder<'a, Postgres>, filters: &'a E
     }
 }
 
+fn lease_i32(value: u64) -> MetadataResult<i32> {
+    if !(1..=300).contains(&value) {
+        return Err(MetadataStoreError::InvalidInput("invalid_server_lease"));
+    }
+    i32::try_from(value).map_err(|_| MetadataStoreError::InvalidInput("invalid_server_lease"))
+}
+
+async fn lock_live_replica(
+    transaction: &mut sqlx::Transaction<'_, Postgres>,
+    identity: &ReplicaIdentity,
+) -> MetadataResult<()> {
+    let live = sqlx::query_scalar::<_, String>(
+        "SELECT instance_id FROM llm_notary_daemon.replicas
+         WHERE instance_id=$1 AND incarnation_id=$2::uuid
+           AND lease_expires_at>clock_timestamp()
+         FOR UPDATE",
+    )
+    .bind(identity.instance_id())
+    .bind(identity.incarnation_id())
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(|error| db(anyhow!(error).context("locking live server replica")))?;
+    if live.is_some() {
+        Ok(())
+    } else {
+        Err(MetadataStoreError::Fenced)
+    }
+}
+
+fn completion_from_row(row: &PgRow) -> anyhow::Result<Option<CaptureCompletion>> {
+    let Some(completed_at_unix_ms) = row_optional_u64(row, "completed_at_unix_ms")? else {
+        return Ok(None);
+    };
+    let (
+        Some(duration_ms),
+        Some(http_status),
+        Some(response_bytes),
+        Some(expected_size),
+        Some(expected_sha),
+    ) = (
+        row_optional_u64(row, "duration_ms")?,
+        row.try_get::<Option<i32>, _>("http_status")?,
+        row_optional_u64(row, "response_bytes")?,
+        row_optional_u64(row, "expected_artifact_size_bytes")?,
+        row.try_get::<Option<String>, _>("expected_artifact_sha256")?,
+    )
+    else {
+        return Ok(None);
+    };
+    Ok(Some(CaptureCompletion {
+        capture_id: row.try_get("capture_id")?,
+        completed_at_unix_ms,
+        duration_ms,
+        http_status: u16::try_from(http_status)?,
+        response_bytes,
+        response_model: row.try_get("response_model")?,
+        output_preview: row.try_get("output_preview")?,
+        output_preview_truncated: row.try_get("output_preview_truncated")?,
+        expected_artifact_size_bytes: expected_size,
+        expected_artifact_sha256: expected_sha,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
+    const TEST_SERVER_COMPATIBILITY: &str =
+        "0000000000000000000000000000000000000000000000000000000000000000";
+
     use std::{
         sync::{
             Arc,
@@ -1922,17 +3175,25 @@ mod tests {
         postgres::Postgres,
         testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner},
     };
+    use tokio::sync::Barrier;
 
     use crate::{
-        artifact_store::ArtifactKind,
+        FinalizationPhase,
+        artifact_store::{ArtifactKind, ArtifactLocator},
         config::PostgresSslMode,
-        metadata::CaptureFilters,
-        metadata_store::{MetadataStore, conformance},
+        metadata::{CaptureFilters, NewCapture, TerminalOperationResult},
+        metadata_store::{
+            CaptureClaim, MetadataStore, MetadataStoreError, ReplicaIdentity, conformance,
+        },
+        notary_directory::{
+            DIRECTORY_FORMAT_V3, NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus,
+            NotaryTransport, key_id,
+        },
     };
 
     use super::{
         INITIAL_MIGRATION, JOURNAL, MIGRATION_LOCK_NAMESPACE, PostgresMetadataStore,
-        migrate_database,
+        configure_server_compatibility, migrate_database,
     };
 
     struct TestPostgres {
@@ -2035,6 +3296,480 @@ mod tests {
         let server = TestPostgres::start().await;
         run_conformance(&server, true).await;
         run_conformance(&server, false).await;
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL 17 container"]
+    async fn server_replica_fencing_and_hashed_sessions() {
+        let server = TestPostgres::start().await;
+        let url = server.create_database("daemon_server").await;
+        migrate_database(
+            &url,
+            PostgresSslMode::Disable,
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        configure_server_compatibility(
+            &url,
+            PostgresSslMode::Disable,
+            Duration::from_secs(5),
+            TEST_SERVER_COMPATIBILITY,
+        )
+        .await
+        .unwrap();
+        let store = PostgresMetadataStore::connect_server(
+            &url,
+            8,
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            PostgresSslMode::Disable,
+            true,
+        )
+        .await
+        .unwrap();
+        let first = ReplicaIdentity::new("daemon-a").unwrap();
+        let collision = ReplicaIdentity::new("daemon-a").unwrap();
+        store
+            .register_replica(&first, TEST_SERVER_COMPATIBILITY, 20)
+            .await
+            .unwrap();
+        let incompatible = ReplicaIdentity::new("daemon-incompatible").unwrap();
+        assert!(matches!(
+            store
+                .register_replica(&incompatible, &"1".repeat(64), 20)
+                .await,
+            Err(MetadataStoreError::InvalidInput(
+                "server_compatibility_mismatch"
+            ))
+        ));
+        assert!(matches!(
+            store
+                .register_replica(&collision, TEST_SERVER_COMPATIBILITY, 20)
+                .await,
+            Err(MetadataStoreError::InvalidInput(
+                "live_instance_id_collision"
+            ))
+        ));
+
+        let capture_id = "cap-server-fencing";
+        let original = CaptureClaim::new(capture_id, first.clone());
+        store
+            .begin_capture_claimed(
+                NewCapture {
+                    capture_id: capture_id.into(),
+                    created_at_unix_ms: 1,
+                    provider: "openai".into(),
+                    operation: "/v1/responses".into(),
+                    requested_model: Some("gpt-test".into()),
+                    streaming: false,
+                    request_bytes: 1,
+                    prompt_preview: "safe".into(),
+                    prompt_preview_truncated: false,
+                    config_fingerprint: "sha256:test".into(),
+                },
+                &original,
+                20,
+            )
+            .await
+            .unwrap();
+        sqlx::query("UPDATE llm_notary_daemon.captures SET claim_lease_expires_at=clock_timestamp()-interval '1 second' WHERE capture_id=$1")
+            .bind(capture_id).execute(&store.pool).await.unwrap();
+        sqlx::query("UPDATE llm_notary_daemon.replicas SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE instance_id=$1")
+            .bind(first.instance_id()).execute(&store.pool).await.unwrap();
+        store
+            .register_replica(&collision, TEST_SERVER_COMPATIBILITY, 20)
+            .await
+            .unwrap();
+        let recovered = store
+            .claim_next_stale_capture(&collision, &uuid::Uuid::new_v4().to_string(), 20)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(recovered.claim.publication_id, original.publication_id);
+        assert!(matches!(
+            store.renew_capture_claim(&original, 20).await,
+            Err(MetadataStoreError::Fenced)
+        ));
+
+        let mut bundle = conformance::artifact(capture_id, ArtifactKind::DeferredBundle, 2);
+        bundle.locator = ArtifactLocator::from_stored(
+            "artifact/v1/s3/Y2x1c3Rlci1jYXB0dXJlLWRlZmVycmVkLWJ1bmRsZQ",
+        )
+        .unwrap();
+        let bundle = bundle
+            .with_publication_id(&recovered.claim.publication_id)
+            .unwrap();
+        let mut completion = conformance::completion(capture_id, 9, 200);
+        completion.expected_artifact_size_bytes = bundle.size_bytes;
+        completion.expected_artifact_sha256 = bundle.sha256.clone();
+        assert!(matches!(
+            store
+                .prepare_capture_completion_claimed(completion.clone(), &original, 20)
+                .await,
+            Err(MetadataStoreError::Fenced)
+        ));
+        assert!(matches!(
+            store
+                .complete_capture_claimed(completion.clone(), bundle.clone(), &original)
+                .await,
+            Err(MetadataStoreError::Fenced)
+        ));
+        assert!(matches!(
+            store.fail_capture_claimed(&original, "stale_owner").await,
+            Err(MetadataStoreError::Fenced)
+        ));
+        store
+            .prepare_capture_completion_claimed(completion.clone(), &recovered.claim, 20)
+            .await
+            .unwrap();
+        store
+            .complete_capture_claimed(completion, bundle, &recovered.claim)
+            .await
+            .unwrap();
+
+        let (operation, _) = store
+            .enqueue_finalization(capture_id, 10)
+            .await
+            .unwrap()
+            .unwrap();
+        let second = ReplicaIdentity::new("daemon-b").unwrap();
+        store
+            .register_replica(&second, TEST_SERVER_COMPATIBILITY, 20)
+            .await
+            .unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let first_contender = {
+            let store = store.clone();
+            let identity = collision.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .claim_next_finalization_claimed(
+                        &identity,
+                        &uuid::Uuid::new_v4().to_string(),
+                        20,
+                    )
+                    .await
+            })
+        };
+        let second_contender = {
+            let store = store.clone();
+            let identity = second.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .claim_next_finalization_claimed(
+                        &identity,
+                        &uuid::Uuid::new_v4().to_string(),
+                        20,
+                    )
+                    .await
+            })
+        };
+        let first_claim = first_contender.await.unwrap().unwrap();
+        let second_claim = second_contender.await.unwrap().unwrap();
+        assert_eq!(
+            usize::from(first_claim.is_some()) + usize::from(second_claim.is_some()),
+            1
+        );
+        let old_finalization = first_claim.or(second_claim).unwrap();
+        assert_eq!(
+            old_finalization.operation.operation_id,
+            operation.operation_id
+        );
+        assert!(
+            store
+                .update_operation_progress_claimed(
+                    &old_finalization,
+                    FinalizationPhase::Signing,
+                    11,
+                    20,
+                )
+                .await
+                .unwrap()
+        );
+        sqlx::query("UPDATE llm_notary_daemon.operations SET claim_lease_expires_at=clock_timestamp()-interval '1 second' WHERE operation_id=$1")
+            .bind(&operation.operation_id).execute(&store.pool).await.unwrap();
+        assert_eq!(
+            store.interrupt_next_expired_finalization().await.unwrap(),
+            Some(operation.operation_id.clone())
+        );
+        assert!(
+            store
+                .interrupt_next_expired_finalization()
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            store
+                .update_operation_progress_claimed(
+                    &old_finalization,
+                    FinalizationPhase::Packaging,
+                    12,
+                    20,
+                )
+                .await,
+            Err(MetadataStoreError::Fenced)
+        ));
+        let mut stale_package =
+            conformance::artifact(capture_id, ArtifactKind::FinalizedPackage, 3);
+        stale_package.locator = ArtifactLocator::from_stored(
+            "artifact/v1/s3/Y2x1c3Rlci1jYXB0dXJlLWZpbmFsaXplZC1wYWNrYWdl",
+        )
+        .unwrap();
+        let stale_package = stale_package
+            .with_publication_id(&old_finalization.publication_id)
+            .unwrap();
+        assert!(matches!(
+            store
+                .complete_finalization_claimed(&old_finalization, stale_package, 13)
+                .await,
+            Err(MetadataStoreError::Fenced)
+        ));
+        assert!(matches!(
+            store
+                .fail_operation_claimed(&old_finalization, 13, "stale_failure")
+                .await,
+            Err(MetadataStoreError::Fenced)
+        ));
+        store
+            .retry_operation(&operation.operation_id, 13)
+            .await
+            .unwrap()
+            .unwrap();
+        let retry_owner = if old_finalization.owner == collision {
+            second.clone()
+        } else {
+            collision.clone()
+        };
+        let winner = store
+            .claim_next_finalization_claimed(&retry_owner, &uuid::Uuid::new_v4().to_string(), 20)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(winner.fence_token, old_finalization.fence_token);
+        assert_eq!(
+            store
+                .fail_operation_claimed(&winner, 14, "test_failure")
+                .await
+                .unwrap(),
+            TerminalOperationResult::Applied
+        );
+
+        let token_hash = [7_u8; 32];
+        store
+            .create_dashboard_session(&token_hash, 1, 60_001)
+            .await
+            .unwrap();
+        assert!(store.dashboard_session_valid(&token_hash, 0).await.unwrap());
+        let stored: Vec<u8> =
+            sqlx::query_scalar("SELECT token_hash FROM llm_notary_daemon.dashboard_sessions")
+                .fetch_one(&store.pool)
+                .await
+                .unwrap();
+        assert_eq!(stored, token_hash);
+
+        let expired_token_hash = [8_u8; 32];
+        store
+            .create_dashboard_session(&expired_token_hash, 0, 1_000)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE llm_notary_daemon.dashboard_sessions SET created_at_unix_ms=0, expires_at_unix_ms=1 WHERE token_hash=$1",
+        )
+        .bind(expired_token_hash.as_slice())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(
+            !store
+                .dashboard_session_valid(&expired_token_hash, 0)
+                .await
+                .unwrap()
+        );
+        assert_eq!(store.prune_dashboard_sessions(0, 10).await.unwrap(), 1);
+        let expired_stored: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM llm_notary_daemon.dashboard_sessions WHERE token_hash=$1)",
+        )
+        .bind(expired_token_hash.as_slice())
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert!(!expired_stored);
+        assert!(store.dashboard_session_valid(&token_hash, 0).await.unwrap());
+        store.revoke_dashboard_session(&token_hash).await.unwrap();
+        assert!(!store.dashboard_session_valid(&token_hash, 0).await.unwrap());
+
+        let directory_record = |seed: u8| {
+            let signing = k256::ecdsa::SigningKey::from_slice(&[seed; 32]).unwrap();
+            let public_key = signing.verifying_key().to_sec1_bytes().to_vec();
+            NotaryDirectoryRecord {
+                host: "notary.example".into(),
+                port: 7047,
+                transport: NotaryTransport::Tcp,
+                key_id: key_id(&public_key),
+                public_key: hex::encode(public_key),
+                status: NotaryKeyStatus::Active,
+                valid_from_unix_ms: 0,
+                valid_until_unix_ms: None,
+                finalize_until_unix_ms: None,
+            }
+        };
+        let old = directory_record(9);
+        let new = directory_record(10);
+        let source = "https://api.example/api/notary";
+        let first_directory = NotaryDirectory {
+            format: DIRECTORY_FORMAT_V3.into(),
+            generation: 1,
+            active_key_id: old.key_id.clone(),
+            notaries: vec![old.clone()],
+        };
+        store
+            .pin_notary_directory(first_directory.clone(), source)
+            .await
+            .unwrap();
+        let second_directory = NotaryDirectory {
+            format: DIRECTORY_FORMAT_V3.into(),
+            generation: 2,
+            active_key_id: new.key_id.clone(),
+            notaries: vec![new.clone()],
+        };
+        let updated = store
+            .pin_notary_directory(second_directory.clone(), source)
+            .await
+            .unwrap();
+        assert_eq!(updated.generation, 2);
+        assert_eq!(
+            updated
+                .records
+                .iter()
+                .find(|record| record.key_id == old.key_id)
+                .unwrap()
+                .status,
+            NotaryKeyStatus::Retired
+        );
+
+        let replayed = store
+            .pin_notary_directory(second_directory.clone(), source)
+            .await
+            .unwrap();
+        assert_eq!(replayed.generation, updated.generation);
+        assert_eq!(replayed.directory_sha256, updated.directory_sha256);
+        assert_eq!(replayed.directory_source, updated.directory_source);
+        assert_eq!(
+            replayed
+                .records
+                .iter()
+                .find(|record| record.key_id == old.key_id)
+                .unwrap()
+                .status,
+            NotaryKeyStatus::Retired
+        );
+
+        let mirror_source = "https://mirror.example/api/notary";
+        assert!(
+            store
+                .pin_notary_directory(second_directory.clone(), mirror_source)
+                .await
+                .is_err()
+        );
+        let source_unchanged = store.notary_trust_snapshot().await.unwrap().unwrap();
+        assert_eq!(source_unchanged.generation, updated.generation);
+        assert_eq!(source_unchanged.directory_sha256, updated.directory_sha256);
+        assert_eq!(source_unchanged.directory_source, source);
+        assert_eq!(
+            source_unchanged
+                .records
+                .iter()
+                .find(|record| record.key_id == old.key_id)
+                .unwrap()
+                .status,
+            NotaryKeyStatus::Retired
+        );
+
+        let mut conflicting_new = new.clone();
+        conflicting_new.host = "conflict.example".into();
+        assert!(
+            store
+                .pin_notary_directory(
+                    NotaryDirectory {
+                        format: DIRECTORY_FORMAT_V3.into(),
+                        generation: 2,
+                        active_key_id: conflicting_new.key_id.clone(),
+                        notaries: vec![conflicting_new],
+                    },
+                    source,
+                )
+                .await
+                .is_err()
+        );
+        assert!(
+            store
+                .pin_notary_directory(first_directory, source)
+                .await
+                .is_err()
+        );
+
+        let mut revoked_old = old.clone();
+        revoked_old.status = NotaryKeyStatus::Revoked;
+        let revoked = store
+            .pin_notary_directory(
+                NotaryDirectory {
+                    format: DIRECTORY_FORMAT_V3.into(),
+                    generation: 3,
+                    active_key_id: new.key_id.clone(),
+                    notaries: vec![new.clone(), revoked_old],
+                },
+                source,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            revoked
+                .records
+                .iter()
+                .find(|record| record.key_id == old.key_id)
+                .unwrap()
+                .status,
+            NotaryKeyStatus::Revoked
+        );
+        let mut attempted_restore = old.clone();
+        attempted_restore.status = NotaryKeyStatus::Retired;
+        let non_resurrected = store
+            .pin_notary_directory(
+                NotaryDirectory {
+                    format: DIRECTORY_FORMAT_V3.into(),
+                    generation: 4,
+                    active_key_id: new.key_id.clone(),
+                    notaries: vec![new, attempted_restore],
+                },
+                source,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            non_resurrected
+                .records
+                .iter()
+                .find(|record| record.key_id == old.key_id)
+                .unwrap()
+                .status,
+            NotaryKeyStatus::Revoked
+        );
+        assert_eq!(
+            store
+                .notary_trust_snapshot()
+                .await
+                .unwrap()
+                .unwrap()
+                .generation,
+            4
+        );
     }
 
     #[tokio::test]

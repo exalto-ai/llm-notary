@@ -299,6 +299,75 @@ impl S3ArtifactStore {
         }
     }
 
+    fn scoped_object_key(&self, key: &ArtifactKey, publication_id: &str) -> ArtifactResult<String> {
+        let publication_id = uuid::Uuid::parse_str(publication_id)
+            .map_err(|error| invalid("invalid_publication_id", anyhow!(error)))?;
+        let (kind, extension) = match key.kind() {
+            ArtifactKind::DeferredBundle => ("deferred_bundle", "llmcapture"),
+            ArtifactKind::FinalizedPackage => ("finalized_package", "llmtrace"),
+        };
+        let suffix = format!(
+            "daemon-private/{kind}/{}/{}.{}",
+            key.capture_id(),
+            publication_id,
+            extension
+        );
+        Ok(if self.prefix.is_empty() {
+            suffix
+        } else {
+            format!("{}/{suffix}", self.prefix)
+        })
+    }
+
+    pub(crate) async fn put_scoped(
+        &self,
+        key: &ArtifactKey,
+        publication_id: &str,
+        source: ArtifactSource,
+        max_bytes: u64,
+    ) -> ArtifactResult<ArtifactRecord> {
+        if source.size_bytes() > max_bytes || source.size_bytes() > i64::MAX as u64 {
+            return Err(ArtifactStoreError::TooLarge {
+                limit: max_bytes.min(i64::MAX as u64),
+                actual: Some(source.size_bytes()),
+            });
+        }
+        let object_key = self.scoped_object_key(key, publication_id)?;
+        let staged = stage_source(source).await?;
+        let disposition = self.put_staged(key, &object_key, &staged).await?;
+        self.verify_put(key, object_key, &staged, disposition)
+            .await?
+            .with_publication_id(publication_id)
+            .map_err(|error| invalid("invalid_publication_id", error))
+    }
+
+    pub(crate) async fn find_scoped(
+        &self,
+        key: &ArtifactKey,
+        publication_id: &str,
+        max_bytes: u64,
+    ) -> ArtifactResult<Option<ArtifactRecord>> {
+        let object_key = self.scoped_object_key(key, publication_id)?;
+        let Some(object) = self
+            .download_verified(key, &object_key, max_bytes, None, false)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let expected = ExpectedObject {
+            kind: key.kind(),
+            size_bytes: object.size_bytes,
+            sha256: object.sha256,
+        };
+        self.record(key.clone(), object_key, &expected)
+            .and_then(|record| {
+                record
+                    .with_publication_id(publication_id)
+                    .map_err(|error| invalid("invalid_publication_id", error))
+            })
+            .map(Some)
+    }
+
     fn locator(&self, object_key: &str) -> ArtifactResult<ArtifactLocator> {
         ArtifactLocator::from_stored(format!(
             "{S3_ARTIFACT_LOCATOR_PREFIX}{}",
@@ -335,19 +404,23 @@ impl S3ArtifactStore {
         }
         let decoded = String::from_utf8(decoded)
             .map_err(|error| invalid("invalid_locator", anyhow!(error)))?;
-        let expected = self.object_key(&record.key);
+        let expected = match record.publication_id() {
+            Some(publication_id) => self.scoped_object_key(&record.key, publication_id)?,
+            None => self.object_key(&record.key),
+        };
         if decoded != expected {
             return Err(invalid(
                 "invalid_locator",
-                anyhow!("S3 artifact locator is outside the configured namespace"),
+                anyhow!("S3 artifact locator does not match its publication scope"),
             ));
         }
-        Ok(expected)
+        Ok(decoded)
     }
 
     async fn put_staged(
         &self,
         key: &ArtifactKey,
+        object_key: &str,
         staged: &StagedObject,
     ) -> ArtifactResult<PutDisposition> {
         for attempt in 0..MAX_CONDITIONAL_ATTEMPTS {
@@ -362,7 +435,7 @@ impl S3ArtifactStore {
                 .client
                 .put_object()
                 .bucket(&self.bucket)
-                .key(self.object_key(key))
+                .key(object_key)
                 .if_none_match("*")
                 .content_length(staged.content_length)
                 .metadata(SHA256_METADATA, &staged.sha256)
@@ -565,10 +638,10 @@ impl S3ArtifactStore {
     async fn verify_put(
         &self,
         key: &ArtifactKey,
+        object_key: String,
         staged: &StagedObject,
         disposition: PutDisposition,
     ) -> ArtifactResult<ArtifactRecord> {
-        let object_key = self.object_key(key);
         let expected = ExpectedObject {
             kind: key.kind(),
             size_bytes: staged.size_bytes,
@@ -655,8 +728,9 @@ impl ArtifactStore for S3ArtifactStore {
             });
         }
         let staged = stage_source(source).await?;
-        let disposition = self.put_staged(key, &staged).await?;
-        self.verify_put(key, &staged, disposition).await
+        let object_key = self.object_key(key);
+        let disposition = self.put_staged(key, &object_key, &staged).await?;
+        self.verify_put(key, object_key, &staged, disposition).await
     }
 
     async fn find(
@@ -1146,6 +1220,50 @@ mod tests {
         assert!(!locator.as_stored().contains(&store.bucket));
         let record = ArtifactRecord::new(key, locator, 0, hex::encode(Sha256::digest([]))).unwrap();
         assert_eq!(store.checked_object_key(&record).unwrap(), object_key);
+        let publication_id = "123e4567-e89b-12d3-a456-426614174000";
+        let scoped = store
+            .scoped_object_key(&record.key, publication_id)
+            .unwrap();
+        assert_eq!(
+            scoped,
+            "tenant_1/private-artifacts/daemon-private/deferred_bundle/cap-safe-123/123e4567-e89b-12d3-a456-426614174000.llmcapture"
+        );
+        let scoped_record = ArtifactRecord::new(
+            record.key.clone(),
+            store.locator(&scoped).unwrap(),
+            0,
+            hex::encode(Sha256::digest([])),
+        )
+        .unwrap()
+        .with_publication_id(publication_id)
+        .unwrap();
+        assert_eq!(scoped_record.publication_id(), Some(publication_id));
+        assert_eq!(store.checked_object_key(&scoped_record).unwrap(), scoped);
+
+        let unbound_scoped_record = ArtifactRecord::new(
+            record.key.clone(),
+            store.locator(&scoped).unwrap(),
+            0,
+            hex::encode(Sha256::digest([])),
+        )
+        .unwrap();
+        assert!(matches!(
+            store.checked_object_key(&unbound_scoped_record),
+            Err(ArtifactStoreError::InvalidInput {
+                code: "invalid_locator",
+                ..
+            })
+        ));
+        let wrong_publication_record = unbound_scoped_record
+            .with_publication_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+            .unwrap();
+        assert!(matches!(
+            store.checked_object_key(&wrong_publication_record),
+            Err(ArtifactStoreError::InvalidInput {
+                code: "invalid_locator",
+                ..
+            })
+        ));
 
         let mut root_config = config("https://s3.example.com", false);
         root_config.prefix.clear();
@@ -1321,6 +1439,55 @@ mod tests {
         store.readiness().await.unwrap();
         conformance::run(Arc::new(store.clone())).await;
 
+        let scoped_key =
+            ArtifactKey::new("cap-s3-publication", ArtifactKind::DeferredBundle).unwrap();
+        let publication_id = "123e4567-e89b-12d3-a456-426614174000";
+        let scoped_record = store
+            .put_scoped(
+                &scoped_key,
+                publication_id,
+                ArtifactSource::from_bytes(b"claim scoped".to_vec()),
+                12,
+            )
+            .await
+            .unwrap();
+        assert_eq!(scoped_record.publication_id(), Some(publication_id));
+        let found_scoped = store
+            .find_scoped(&scoped_key, publication_id, 12)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found_scoped.publication_id(), Some(publication_id));
+        assert_eq!(
+            store
+                .read_verified(&found_scoped, 12)
+                .await
+                .unwrap()
+                .into_bytes()
+                .await
+                .unwrap(),
+            b"claim scoped"
+        );
+        let wrong_publication_record = ArtifactRecord::new(
+            scoped_record.key.clone(),
+            scoped_record.locator.clone(),
+            scoped_record.size_bytes,
+            scoped_record.sha256.clone(),
+        )
+        .unwrap()
+        .with_publication_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        .unwrap();
+        assert!(matches!(
+            store
+                .read_verified(&wrong_publication_record, 12)
+                .await
+                .unwrap_err(),
+            ArtifactStoreError::InvalidInput {
+                code: "invalid_locator",
+                ..
+            }
+        ));
+
         let filesystem_directory = tempfile::tempdir().unwrap();
         let filesystem = FileSystemArtifactStore::new(
             filesystem_directory.path().join("bundles"),
@@ -1459,6 +1626,8 @@ mod tests {
         let mut inventory_config = config(&endpoint, true);
         inventory_config.prefix = "reconciliation-only".to_owned();
         let inventory_store = S3ArtifactStore::new(inventory_config, credentials()).unwrap();
+        inventory_store.readiness().await.unwrap();
+        inventory_store.readiness().await.unwrap();
         let referenced_key =
             ArtifactKey::new("cap-s3-referenced", ArtifactKind::DeferredBundle).unwrap();
         let referenced_record = inventory_store

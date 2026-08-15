@@ -10,6 +10,9 @@ services:
         if ! test -f /state/secrets/vault-passphrase; then
           printf '%s' 'deterministic-daemon-e2e-passphrase' > /state/secrets/vault-passphrase
         fi
+        if ! test -f /state/secrets/server-vault.key; then
+          openssl rand 32 > /state/secrets/server-vault.key
+        fi
         if ! test -f /fixtures/ca.der; then
           openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /fixtures/ca.key
           openssl req -x509 -new -key /fixtures/ca.key -sha256 -days 2 \
@@ -33,6 +36,10 @@ services:
         printf '%064d' 1 > /fixtures/notary-signing-key
         chmod 600 /state/secrets/vault-passphrase
         chmod 600 /fixtures/ca.key /fixtures/server.key /fixtures/notary-signing-key
+        cp /etc/llm-notary/config-server-template.toml /state/config-server-a.toml
+        cp /etc/llm-notary/config-server-template.toml /state/config-server-b.toml
+        chmod 600 /state/secrets/server-vault.key
+        chmod 600 /state/config-server-a.toml /state/config-server-b.toml
     volumes:
       - daemon-state:/state
       - fixture-state:/fixtures
@@ -72,7 +79,7 @@ services:
       postgres:
         condition: service_healthy
     entrypoint: ["llm-notaryd"]
-    command: ["--config", "/etc/llm-notary/config-postgres.toml", "migrate"]
+    command: ["migrate", "--config", "/etc/llm-notary/config-postgres.toml"]
     environment:
       LLM_NOTARY_METADATA_MIGRATION_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
     read_only: true
@@ -356,6 +363,154 @@ services:
     restart: "no"
     healthcheck:
       test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8788/readyz"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  daemon-a:
+    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: daemon-e2e
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      server-migrator:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      provider:
+        condition: service_healthy
+      notary:
+        condition: service_healthy
+    command: ["--config", "/state/config-server-a.toml"]
+    environment:
+      LLM_NOTARY_SERVER_INSTANCE_ID: daemon-a
+      LLM_NOTARY_SERVER_VAULT_KEY_FILE: /state/secrets/server-vault.key
+      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
+      LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
+      LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
+      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS:-0}
+      LLM_NOTARY_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+      LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
+      LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
+      XDG_CONFIG_HOME: /state/xdg-config
+      XDG_DATA_HOME: /state/xdg-data
+    volumes:
+      - daemon-state:/state:ro
+      - fixture-state:/fixtures:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8788/readyz"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  daemon-b:
+    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      server-migrator:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      provider:
+        condition: service_healthy
+      notary:
+        condition: service_healthy
+    command: ["--config", "/state/config-server-b.toml"]
+    environment:
+      LLM_NOTARY_SERVER_INSTANCE_ID: daemon-b
+      LLM_NOTARY_SERVER_VAULT_KEY_FILE: /state/secrets/server-vault.key
+      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
+      LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
+      LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
+      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS:-0}
+      LLM_NOTARY_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+      LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
+      LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
+      XDG_CONFIG_HOME: /state/xdg-config
+      XDG_DATA_HOME: /state/xdg-data
+    volumes:
+      - daemon-state:/state:ro
+      - fixture-state:/fixtures:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8788/readyz"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  server-migrator:
+    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    entrypoint: ["llm-notaryd"]
+    command: ["migrate", "--config", "/state/config-server-a.toml"]
+    environment:
+      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
+      LLM_NOTARY_METADATA_MIGRATION_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+      LLM_NOTARY_SERVER_VAULT_KEY_FILE: /state/secrets/server-vault.key
+    volumes:
+      - daemon-state:/state:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+
+  test-load-balancer:
+    image: caddy:2.10-alpine
+    depends_on:
+      daemon-a:
+        condition: service_healthy
+      daemon-b:
+        condition: service_healthy
+    volumes:
+      - ./deploy/daemon-e2e/load-balancer.Caddyfile:/etc/caddy/Caddyfile:ro
+    read_only: true
+    tmpfs:
+      - /config
+      - /data
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8788/readyz"]
       interval: 1s
       timeout: 2s
       retries: 30

@@ -10,7 +10,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail, ensure};
-use argon2::PasswordHash;
+use argon2::{Argon2, PasswordHash, PasswordHasher as _, password_hash::SaltString};
 use k256::ecdsa::VerifyingKey;
 use serde::{Deserialize, Serialize};
 
@@ -33,6 +33,9 @@ pub const ARTIFACT_S3_SECRET_ACCESS_KEY_FILE_ENV: &str =
     "LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY_FILE";
 pub const ARTIFACT_S3_SESSION_TOKEN_ENV: &str = "LLM_NOTARY_ARTIFACT_S3_SESSION_TOKEN";
 pub const ARTIFACT_S3_SESSION_TOKEN_FILE_ENV: &str = "LLM_NOTARY_ARTIFACT_S3_SESSION_TOKEN_FILE";
+pub const ADMIN_PASSWORD_ENV: &str = "LLM_NOTARY_ADMIN_PASSWORD";
+pub const ADMIN_PASSWORD_FILE_ENV: &str = "LLM_NOTARY_ADMIN_PASSWORD_FILE";
+pub const SERVER_INSTANCE_ID_ENV: &str = "LLM_NOTARY_SERVER_INSTANCE_ID";
 
 /// Local proxy configuration. This is intentionally separate from the private
 /// vault state, which contains key references and passphrase KDF parameters.
@@ -40,6 +43,8 @@ pub const ARTIFACT_S3_SESSION_TOKEN_FILE_ENV: &str = "LLM_NOTARY_ARTIFACT_S3_SES
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     pub format: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<ServerConfig>,
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
@@ -52,6 +57,17 @@ pub struct AgentConfig {
     pub catalog: CatalogConfig,
     #[serde(default)]
     pub providers: ProvidersConfig,
+}
+
+/// Explicit multi-replica server profile. Coordination timings and replica
+/// identities are internal so every deployment uses the same safety rules.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ServerConfig {
+    /// Public HTTPS endpoint applications use for provider requests.
+    pub proxy_origin: String,
+    /// Public HTTPS endpoint operators use for the dashboard and admin API.
+    pub admin_origin: String,
 }
 
 /// Local administration listener. It is deliberately separate from the
@@ -72,7 +88,10 @@ pub struct AdminConfig {
 #[serde(deny_unknown_fields)]
 pub struct AdminAuthConfig {
     pub username: String,
-    pub password_hash: String,
+    /// Existing deployments may keep an Argon2id hash in the config. New
+    /// server deployments leave this unset and provide a password secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_hash: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -327,6 +346,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             format: CONFIG_FORMAT.to_owned(),
+            server: None,
             proxy: ProxyConfig::default(),
             admin: AdminConfig::default(),
             notary: NotaryConfig::default(),
@@ -504,14 +524,18 @@ impl AgentConfig {
             self.proxy.max_attestable_http_bytes > 0,
             "proxy.max_attestable_http_bytes must be non-zero"
         );
-        ensure!(
-            self.proxy.listen.ip().is_loopback(),
-            "proxy.listen must use a loopback address"
-        );
-        ensure!(
-            self.admin.listen.ip().is_loopback(),
-            "admin.listen must use a loopback address"
-        );
+        if let Some(server) = &self.server {
+            self.validate_server(server)?;
+        } else {
+            ensure!(
+                self.proxy.listen.ip().is_loopback(),
+                "proxy.listen must use a loopback address outside server mode"
+            );
+            ensure!(
+                self.admin.listen.ip().is_loopback(),
+                "admin.listen must use a loopback address outside server mode"
+            );
+        }
         ensure!(
             self.admin.listen != self.proxy.listen,
             "admin.listen and proxy.listen must be different addresses"
@@ -525,12 +549,20 @@ impl AgentConfig {
                 !auth.username.contains(':'),
                 "admin.auth.username must not contain a colon"
             );
-            let password_hash = PasswordHash::new(&auth.password_hash)
-                .map_err(|error| anyhow::anyhow!("admin.auth.password_hash is invalid: {error}"))?;
-            ensure!(
-                password_hash.algorithm.as_str() == "argon2id",
-                "admin.auth.password_hash must use Argon2id"
-            );
+            if let Some(value) = auth.password_hash.as_deref() {
+                let password_hash = PasswordHash::new(value).map_err(|error| {
+                    anyhow::anyhow!("admin.auth.password_hash is invalid: {error}")
+                })?;
+                ensure!(
+                    password_hash.algorithm.as_str() == "argon2id",
+                    "admin.auth.password_hash must use Argon2id"
+                );
+            } else {
+                ensure!(
+                    self.server.is_some(),
+                    "admin.auth.password_hash is required outside server mode"
+                );
+            }
         }
         match (&self.notary.endpoint, &self.notary.public_key) {
             (Some(endpoint), Some(_)) => {
@@ -595,6 +627,30 @@ impl AgentConfig {
         Ok(())
     }
 
+    fn validate_server(&self, server: &ServerConfig) -> Result<()> {
+        ensure!(
+            self.catalog.backend == MetadataBackend::Postgres,
+            "server mode requires catalog.backend = \"postgres\""
+        );
+        ensure!(
+            self.storage.backend == ArtifactStorageBackend::S3,
+            "server mode requires storage.backend = \"s3\""
+        );
+        ensure!(
+            self.admin.auth.is_some(),
+            "server mode requires admin authentication"
+        );
+        let proxy = server.proxy_origin.as_str();
+        let admin = server.admin_origin.as_str();
+        validate_public_https_origin(proxy, "server.proxy_origin")?;
+        validate_public_https_origin(admin, "server.admin_origin")?;
+        ensure!(
+            proxy != admin,
+            "server proxy and admin origins must be different"
+        );
+        Ok(())
+    }
+
     fn validate_storage(&self) -> Result<()> {
         ensure!(
             !self.storage.bundle_dir.as_os_str().is_empty(),
@@ -654,9 +710,41 @@ impl AgentConfig {
     /// Returns a stable identifier for the complete, non-secret configuration
     /// that governed a capture.
     pub fn fingerprint(&self) -> Result<String> {
+        let mut normalized = self.clone();
+        if let Some(auth) = normalized.admin.auth.as_mut() {
+            auth.password_hash = None;
+        }
         Ok(format!(
             "sha256:{}",
-            sha256_hex(toml::to_string(self)?.as_bytes())
+            sha256_hex(toml::to_string(&normalized)?.as_bytes())
+        ))
+    }
+
+    /// Identifies the exact non-secret server configuration, hosted API
+    /// authority, and shared vault key expected by every replica.
+    pub(crate) fn server_compatibility_sha256_for_api_origin(
+        &self,
+        api_origin: &str,
+        vault_identity: &str,
+    ) -> Result<String> {
+        ensure!(self.server.is_some(), "server mode is not enabled");
+        ensure!(
+            vault_identity.len() == 64
+                && vault_identity
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')),
+            "server vault identity is invalid"
+        );
+        let mut normalized = self.clone();
+        if let Some(auth) = normalized.admin.auth.as_mut() {
+            auth.password_hash = None;
+        }
+        let normalized = toml::to_string(&normalized)?;
+        Ok(sha256_hex(
+            format!(
+                "llm-notary-server/v1\n{normalized}\napi-origin={api_origin}\nvault={vault_identity}\n"
+            )
+            .as_bytes(),
         ))
     }
 
@@ -731,6 +819,40 @@ impl AgentConfig {
             env::var_os(METADATA_MIGRATION_URL_FILE_ENV),
         )
     }
+
+    /// Resolves the server dashboard password once at startup. Plaintext is
+    /// never retained in the configuration or written back to disk.
+    pub(crate) fn resolve_runtime_secrets(&mut self) -> Result<()> {
+        if self.server.is_none() {
+            return Ok(());
+        }
+        let auth = self
+            .admin
+            .auth
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("server mode requires admin authentication"))?;
+        if auth.password_hash.is_some() {
+            return Ok(());
+        }
+        let password = zeroize::Zeroizing::new(resolve_secret_value(
+            env::var_os(ADMIN_PASSWORD_ENV),
+            env::var_os(ADMIN_PASSWORD_FILE_ENV),
+            ADMIN_PASSWORD_ENV,
+            ADMIN_PASSWORD_FILE_ENV,
+        )?);
+        let password_hash = hash_admin_password(password.as_bytes())?;
+        auth.password_hash = Some(password_hash);
+        Ok(())
+    }
+}
+
+fn hash_admin_password(password: &[u8]) -> Result<String> {
+    let salt = SaltString::encode_b64(uuid::Uuid::new_v4().as_bytes())
+        .map_err(|error| anyhow::anyhow!("creating admin password salt failed: {error}"))?;
+    Argon2::default()
+        .hash_password(password, &salt)
+        .map(|hash| hash.to_string())
+        .map_err(|error| anyhow::anyhow!("hashing admin password failed: {error}"))
 }
 
 fn resolve_migration_database_url(
@@ -840,6 +962,29 @@ fn route_prefixes_overlap(left: &str, right: &str) -> bool {
         || right
             .strip_prefix(left)
             .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+pub(crate) fn valid_instance_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+}
+
+fn validate_public_https_origin(value: &str, name: &str) -> Result<()> {
+    let parsed = url::Url::parse(value).with_context(|| format!("{name} is invalid"))?;
+    ensure!(parsed.scheme() == "https", "{name} must use https://");
+    ensure!(parsed.host_str().is_some(), "{name} must include a host");
+    ensure!(
+        parsed.username().is_empty() && parsed.password().is_none(),
+        "{name} must not contain credentials"
+    );
+    ensure!(
+        parsed.path() == "/" && parsed.query().is_none() && parsed.fragment().is_none(),
+        "{name} must be an origin without a path, query, or fragment"
+    );
+    Ok(())
 }
 
 /// Finds the usual user-editable configuration location.
@@ -985,6 +1130,101 @@ mod tests {
     }
 
     #[test]
+    fn server_profile_has_safe_defaults_and_rejects_unsafe_combinations() {
+        let mut config = AgentConfig {
+            server: Some(ServerConfig {
+                proxy_origin: "https://proxy.notary.example".into(),
+                admin_origin: "https://admin.notary.example".into(),
+            }),
+            ..AgentConfig::default()
+        };
+        config.proxy.listen = "0.0.0.0:8787".parse().unwrap();
+        config.admin.listen = "0.0.0.0:8788".parse().unwrap();
+        config.admin.auth = Some(AdminAuthConfig {
+            username: "admin".into(),
+            password_hash: None,
+        });
+        config.catalog.backend = MetadataBackend::Postgres;
+        config.catalog.postgres = PostgresCatalogConfig::default();
+        config.storage.backend = ArtifactStorageBackend::S3;
+        config.storage.s3 = Some(S3StorageConfig {
+            bucket: "private-artifacts".into(),
+            region: "us-east-1".into(),
+            endpoint: Some("https://s3.example.test".into()),
+            prefix: "server".into(),
+            force_path_style: false,
+            allow_insecure_http: false,
+            connect_timeout_seconds: 5,
+            operation_timeout_seconds: 10,
+        });
+        config.notary.endpoint = Some("tcp://notary.internal:7047".into());
+        config.notary.public_key =
+            Some("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into());
+        config.validate().unwrap();
+
+        let valid = config.clone();
+        let encoded = toml::to_string_pretty(&valid).unwrap();
+        assert!(encoded.contains("[server]"));
+        assert!(toml::from_str::<AgentConfig>(&encoded.replace("[server]", "[cluster]")).is_err());
+        let vault_identity = "11".repeat(32);
+        let compatibility = valid
+            .server_compatibility_sha256_for_api_origin(
+                crate::cli::DEFAULT_PUBLIC_ORIGIN,
+                &vault_identity,
+            )
+            .unwrap();
+        let mut peer = valid.clone();
+        peer.admin.auth.as_mut().unwrap().password_hash =
+            Some(hash_admin_password(b"generated at startup").unwrap());
+        assert_eq!(
+            peer.server_compatibility_sha256_for_api_origin(
+                crate::cli::DEFAULT_PUBLIC_ORIGIN,
+                &vault_identity,
+            )
+            .unwrap(),
+            compatibility
+        );
+        peer.storage.s3.as_mut().unwrap().prefix = "different".into();
+        assert_ne!(
+            peer.server_compatibility_sha256_for_api_origin(
+                crate::cli::DEFAULT_PUBLIC_ORIGIN,
+                &vault_identity,
+            )
+            .unwrap(),
+            compatibility
+        );
+        config.catalog.backend = MetadataBackend::Sqlite;
+        assert!(config.validate().is_err());
+        config = valid.clone();
+        config.storage.backend = ArtifactStorageBackend::Filesystem;
+        assert!(config.validate().is_err());
+        config = valid.clone();
+        config.admin.auth = None;
+        assert!(config.validate().is_err());
+        config = valid.clone();
+        config.server.as_mut().unwrap().admin_origin = String::new();
+        assert!(config.validate().is_err());
+        config = valid.clone();
+        config.notary.endpoint = None;
+        config.notary.public_key = None;
+        config.validate().unwrap();
+        assert_ne!(
+            config
+                .server_compatibility_sha256_for_api_origin(
+                    crate::cli::DEFAULT_PUBLIC_ORIGIN,
+                    &vault_identity,
+                )
+                .unwrap(),
+            valid
+                .server_compatibility_sha256_for_api_origin(
+                    crate::cli::DEFAULT_PUBLIC_ORIGIN,
+                    &vault_identity,
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
     fn explicit_notary_endpoint_requires_a_valid_trust_anchor() {
         let mut config = AgentConfig::default();
         config.notary.endpoint = Some("tcp://127.0.0.1:7047".to_owned());
@@ -1004,13 +1244,21 @@ mod tests {
         let mut config = AgentConfig::default();
         config.admin.auth = Some(AdminAuthConfig {
             username: "local-admin".to_owned(),
-            password_hash: "$2b$12$not-an-argon2id-hash".to_owned(),
+            password_hash: Some("$2b$12$not-an-argon2id-hash".to_owned()),
         });
         assert!(config.validate().is_err());
 
-        config.admin.auth.as_mut().unwrap().password_hash =
-            "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0c2FsdA$yJIR0lVleM2KSPdVmBvsQ9uhA06YIR8aPCbRDbNvXXQ".to_owned();
+        config.admin.auth.as_mut().unwrap().password_hash = Some(
+            "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0c2FsdA$yJIR0lVleM2KSPdVmBvsQ9uhA06YIR8aPCbRDbNvXXQ".to_owned(),
+        );
         config.validate().unwrap();
+
+        let generated = hash_admin_password(b"generated server password").unwrap();
+        let parsed = PasswordHash::new(&generated).unwrap();
+        use argon2::PasswordVerifier as _;
+        Argon2::default()
+            .verify_password(b"generated server password", &parsed)
+            .unwrap();
     }
 
     #[test]
@@ -1043,6 +1291,7 @@ mod tests {
         let config = AgentConfig::default();
         let encoded = toml::to_string_pretty(&config).unwrap();
         assert!(!encoded.contains("[catalog.postgres]"));
+        assert!(!encoded.contains("[server]"));
         let parsed: AgentConfig = toml::from_str(&encoded).unwrap();
         parsed.validate().unwrap();
     }

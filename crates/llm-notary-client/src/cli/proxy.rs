@@ -40,9 +40,11 @@ use crate::{
     config::{AgentConfig, ProviderConfig},
     deferred_streaming_request_to, deferred_streaming_request_to_admitted,
     metadata::{CaptureCompletion, NewCapture},
+    metadata_store::{CaptureClaim, MetadataStoreError},
     notary_admission_error,
     notary_directory::{NotaryDirectory, NotaryDirectoryRecord, NotaryEndpoint},
     persistence::Persistence,
+    server_runtime::{Lifecycle, ServerRuntime},
     vault::Vault,
 };
 
@@ -138,6 +140,7 @@ pub(crate) struct AppState {
     serial: Arc<Mutex<u64>>,
     hosted_admission: bool,
     capture_tasks: CaptureTasks,
+    server_runtime: Option<Arc<ServerRuntime>>,
 }
 
 #[derive(Clone, Default)]
@@ -175,6 +178,7 @@ impl Drop for CaptureTaskGuard {
 
 pub async fn run(args: ProxyArgs) -> Result<()> {
     let (config, config_path) = load_agent_config(args.config.as_deref())?;
+    auth::validate_credential_configuration()?;
     let listen = config.proxy.listen;
     let max_frame_bytes = config.notary.max_frame_bytes;
     let max_attestable_http_bytes = config.proxy.max_attestable_http_bytes;
@@ -190,27 +194,73 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     // Open and validate persistence before notary discovery or interactive
     // vault initialization. A PostgreSQL outage or unmigrated schema therefore
     // fails startup directly and never causes a fallback or unrelated prompt.
+    let server_runtime = config
+        .server
+        .is_some()
+        .then(ServerRuntime::from_environment)
+        .transpose()?
+        .map(Arc::new);
+    if server_runtime.is_some() && !auth::api_key_mode_active()? {
+        bail!("server mode requires LLM_NOTARY_API_KEY or LLM_NOTARY_API_KEY_FILE");
+    }
+    if server_runtime.is_some() && std::env::var_os("LLM_NOTARY_DESKTOP_CONTROL_STDIN").is_some() {
+        bail!("desktop child-process control is unavailable in server mode");
+    }
     let persistence = Persistence::open(&config).await?;
-    let recovery = persistence.reconcile_incomplete_captures().await?;
-    if recovery.recovered_bundles > 0
-        || recovery.interrupted_captures > 0
-        || recovery.pending_publications > 0
-    {
-        tracing::warn!(
-            recovered_bundles = recovery.recovered_bundles,
-            interrupted_captures = recovery.interrupted_captures,
-            pending_publications = recovery.pending_publications,
-            "reconciled captures left incomplete by an earlier proxy process"
-        );
+    let vault = if server_runtime.is_some() {
+        Vault::open_server().context("opening the shared server vault")?
+    } else {
+        Vault::open_or_init_interactive().context(
+            "opening the local bundle vault (set LLM_NOTARY_VAULT_PASSPHRASE_FILE before first start when an OS vault is unavailable)",
+        )?
+    };
+    if let Some(server_runtime) = &server_runtime {
+        let api_origin = auth::configured_api_origin()?;
+        let vault_identity = vault.server_identity_sha256()?;
+        persistence
+            .metadata
+            .register_replica(
+                server_runtime.identity(),
+                &config.server_compatibility_sha256_for_api_origin(
+                    &api_origin.to_string(),
+                    &vault_identity,
+                )?,
+                server_runtime.lease_seconds(),
+            )
+            .await?;
+    } else {
+        let recovery = persistence.reconcile_incomplete_captures().await?;
+        if recovery.recovered_bundles > 0
+            || recovery.interrupted_captures > 0
+            || recovery.pending_publications > 0
+        {
+            tracing::warn!(
+                recovered_bundles = recovery.recovered_bundles,
+                interrupted_captures = recovery.interrupted_captures,
+                pending_publications = recovery.pending_publications,
+                "reconciled captures left incomplete by an earlier proxy process"
+            );
+        }
     }
     let hosted_admission = config.notary.endpoint.is_none();
     let notary = match config.notary_endpoint()? {
         Some(notary) => notary,
+        None if server_runtime.is_some() => {
+            let (directory, directory_url) =
+                fetch_notary_directory_from(&super::auth::configured_api_origin()?).await?;
+            let trust = persistence
+                .metadata
+                .pin_notary_directory(directory, directory_url.as_str())
+                .await?;
+            let active = trust
+                .records
+                .iter()
+                .find(|record| record.key_id == trust.active_key_id)
+                .context("shared notary trust is missing its active endpoint")?;
+            resolve_notary(active).await?
+        }
         None => discover_notary().await?,
     };
-    let vault = Vault::open_or_init_interactive().context(
-        "opening the local bundle vault (set LLM_NOTARY_VAULT_PASSPHRASE_FILE before first start when an OS vault is unavailable)",
-    )?;
     let state = AppState {
         notary: notary.clone(),
         max_frame_bytes,
@@ -222,10 +272,19 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         serial: Arc::new(Mutex::new(0)),
         hosted_admission,
         capture_tasks: CaptureTasks::default(),
+        server_runtime: server_runtime.clone(),
     };
     let app = router(state.clone());
-    let admin_state =
-        crate::admin::AdminState::new(state.persistence.clone(), state.config.clone()).await?;
+    let admin_state = crate::admin::AdminState::new(
+        state.persistence.clone(),
+        state.config.clone(),
+        server_runtime.clone(),
+        server_runtime
+            .as_ref()
+            .map(|_| state.vault.server_identity_sha256())
+            .transpose()?,
+    )
+    .await?;
     let admin = crate::admin::router(admin_state.clone())?;
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let admin_listener = tokio::net::TcpListener::bind(state.config.admin.listen).await?;
@@ -238,17 +297,34 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     );
     tracing::info!(address = %state.config.admin.listen, "LLM Notary daemon admin API listening");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let capture_recovery =
-        spawn_capture_recovery_worker(state.persistence.clone(), shutdown_rx.clone());
-    let update_checker = crate::update::spawn_background_checker(
-        admin_state.update_status.clone(),
+    let (heartbeat_shutdown_tx, heartbeat_shutdown_rx) = watch::channel(false);
+    if let Some(server_runtime) = &server_runtime {
+        server_runtime.mark_ready();
+    }
+    let mut heartbeat = spawn_server_heartbeat(
+        state.persistence.clone(),
+        server_runtime.clone(),
+        heartbeat_shutdown_rx,
+    );
+    let capture_recovery = spawn_capture_recovery_worker(
+        state.persistence.clone(),
+        server_runtime.clone(),
         shutdown_rx.clone(),
     );
+    let update_checker = if server_runtime.is_none() {
+        crate::update::spawn_background_checker(
+            admin_state.update_status.clone(),
+            shutdown_rx.clone(),
+        )
+    } else {
+        None
+    };
     let mut worker = crate::admin::spawn_finalization_worker(
         state.persistence.clone(),
         state.config.clone(),
         state.vault.clone(),
         admin_state.work_available.clone(),
+        server_runtime.clone(),
         shutdown_rx.clone(),
     );
     let proxy_shutdown = wait_for_shutdown(shutdown_rx.clone());
@@ -270,53 +346,122 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         Proxy(Result<()>),
         Admin(Result<()>),
         Worker(Result<()>),
+        Heartbeat(Result<()>),
     }
     let exit = tokio::select! {
         result = &mut proxy_server => Exit::Proxy(joined(result, "proxy server")),
         result = &mut admin_server => Exit::Admin(joined(result, "admin server")),
         result = &mut worker => Exit::Worker(joined(result, "finalization worker")),
+        result = &mut heartbeat => Exit::Heartbeat(joined(result, "server replica heartbeat")),
         () = shutdown_signal() => Exit::Requested,
     };
+    if let Some(server_runtime) = &server_runtime {
+        server_runtime.mark_draining();
+        if matches!(&exit, Exit::Requested) {
+            tokio::time::sleep(std::time::Duration::from_secs(
+                server_runtime.withdrawal_delay_seconds(),
+            ))
+            .await;
+        }
+    }
     tracing::info!("LLM Notary daemon draining before shutdown");
     let _ = shutdown_tx.send(true);
+    let mut forced_server_shutdown = false;
     match exit {
         Exit::Requested => {
-            joined(proxy_server.await, "proxy server")?;
-            joined(admin_server.await, "admin server")?;
-            joined(worker.await, "finalization worker")?;
+            if let Some(server_runtime) = &server_runtime {
+                let graceful = tokio::time::timeout(
+                    std::time::Duration::from_secs(server_runtime.shutdown_grace_seconds()),
+                    async {
+                        joined((&mut proxy_server).await, "proxy server")?;
+                        joined((&mut admin_server).await, "admin server")?;
+                        joined((&mut worker).await, "finalization worker")?;
+                        Ok::<_, anyhow::Error>(())
+                    },
+                )
+                .await;
+                match graceful {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        forced_server_shutdown = true;
+                        tracing::warn!(
+                            shutdown_grace_seconds = server_runtime.shutdown_grace_seconds(),
+                            "server shutdown grace expired; stopping remaining local tasks"
+                        );
+                        proxy_server.abort();
+                        admin_server.abort();
+                        worker.abort();
+                    }
+                }
+            } else {
+                joined(proxy_server.await, "proxy server")?;
+                joined(admin_server.await, "admin server")?;
+                joined(worker.await, "finalization worker")?;
+            }
         }
         Exit::Proxy(result) => {
             result?;
             joined(admin_server.await, "admin server")?;
             joined(worker.await, "finalization worker")?;
+            let _ = heartbeat_shutdown_tx.send(true);
+            joined(heartbeat.await, "server replica heartbeat")?;
             bail!("proxy server stopped unexpectedly");
         }
         Exit::Admin(result) => {
             result?;
             joined(proxy_server.await, "proxy server")?;
             joined(worker.await, "finalization worker")?;
+            let _ = heartbeat_shutdown_tx.send(true);
+            joined(heartbeat.await, "server replica heartbeat")?;
             bail!("admin server stopped unexpectedly");
         }
         Exit::Worker(result) => {
             result?;
             joined(proxy_server.await, "proxy server")?;
             joined(admin_server.await, "admin server")?;
+            let _ = heartbeat_shutdown_tx.send(true);
+            joined(heartbeat.await, "server replica heartbeat")?;
             bail!("finalization worker stopped unexpectedly");
+        }
+        Exit::Heartbeat(result) => {
+            result?;
+            joined(proxy_server.await, "proxy server")?;
+            joined(admin_server.await, "admin server")?;
+            joined(worker.await, "finalization worker")?;
+            bail!("server replica heartbeat stopped unexpectedly");
         }
     }
     if let Some(update_checker) = update_checker {
         update_checker.await.context("update checker task exited")?;
     }
-    capture_recovery
-        .await
-        .context("capture recovery worker exited")?;
-    state.capture_tasks.wait_idle().await;
+    if forced_server_shutdown {
+        capture_recovery.abort();
+    } else {
+        capture_recovery
+            .await
+            .context("capture recovery worker exited")?;
+        state.capture_tasks.wait_idle().await;
+    }
+    let _ = heartbeat_shutdown_tx.send(true);
+    if forced_server_shutdown {
+        heartbeat.abort();
+    } else {
+        joined(heartbeat.await, "server replica heartbeat")?;
+    }
+    if let (Some(server_runtime), false) = (&server_runtime, forced_server_shutdown) {
+        state
+            .persistence
+            .metadata
+            .release_replica(server_runtime.identity())
+            .await?;
+    }
     tracing::info!("LLM Notary daemon shut down cleanly");
     Ok(())
 }
 
 fn spawn_capture_recovery_worker(
     persistence: Persistence,
+    server_runtime: Option<Arc<ServerRuntime>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -329,7 +474,18 @@ fn spawn_capture_recovery_worker(
                 }
                 () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
             }
-            match persistence.reconcile_pending_publications().await {
+            if server_runtime
+                .as_ref()
+                .is_some_and(|server_runtime| server_runtime.lifecycle() != Lifecycle::Ready)
+            {
+                continue;
+            }
+            let recovery = if let Some(server_runtime) = &server_runtime {
+                persistence.reconcile_server_capture(server_runtime).await
+            } else {
+                persistence.reconcile_pending_publications().await
+            };
+            match recovery {
                 Ok(summary) if summary.recovered_bundles > 0 => {
                     tracing::info!(
                         recovered_bundles = summary.recovered_bundles,
@@ -340,6 +496,44 @@ fn spawn_capture_recovery_worker(
                 Ok(_) => {}
                 Err(error) => {
                     tracing::warn!(%error, "capture artifact recovery is temporarily unavailable");
+                }
+            }
+        }
+    })
+}
+
+fn spawn_server_heartbeat(
+    persistence: Persistence,
+    server_runtime: Option<Arc<ServerRuntime>>,
+    mut shutdown: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<Result<()>> {
+    tokio::spawn(async move {
+        let Some(server_runtime) = server_runtime else {
+            while !*shutdown.borrow() && shutdown.changed().await.is_ok() {}
+            return Ok(());
+        };
+        loop {
+            tokio::select! {
+                result = shutdown.changed() => {
+                    if result.is_err() || *shutdown.borrow() { return Ok(()); }
+                }
+                () = tokio::time::sleep(std::time::Duration::from_secs(server_runtime.heartbeat_interval_seconds())) => {}
+            }
+            match persistence
+                .metadata
+                .heartbeat_replica(server_runtime.identity(), server_runtime.lease_seconds())
+                .await
+            {
+                Ok(()) => {}
+                Err(MetadataStoreError::Fenced) => {
+                    server_runtime.mark_draining();
+                    return Err(MetadataStoreError::Fenced.into());
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "server replica heartbeat could not reach the metadata backend; retrying"
+                    );
                 }
             }
         }
@@ -464,6 +658,19 @@ pub(crate) async fn refresh_notary_directory() -> Result<NotaryDirectory> {
 pub(crate) async fn refresh_notary_directory_from(
     api_origin: &ApiOrigin,
 ) -> Result<NotaryDirectory> {
+    let (directory, directory_url) = fetch_notary_directory_from(api_origin).await?;
+    pin(directory.clone(), directory_url.as_str())?;
+    tracing::info!(
+        key_id = %directory.active_key_id,
+        key_count = directory.notaries.len(),
+        "pinned trusted notary directory"
+    );
+    Ok(directory)
+}
+
+pub(crate) async fn fetch_notary_directory_from(
+    api_origin: &ApiOrigin,
+) -> Result<(NotaryDirectory, url::Url)> {
     let directory_url = notary_directory_url(api_origin);
     let bytes = http_client_builder()
         .build()?
@@ -477,13 +684,7 @@ pub(crate) async fn refresh_notary_directory_from(
         .await
         .context("reading notary directory from LLM Notary API")?;
     let directory = parse_directory(&bytes)?;
-    pin(directory.clone(), directory_url.as_str())?;
-    tracing::info!(
-        key_id = %directory.active_key_id,
-        key_count = directory.notaries.len(),
-        "pinned trusted notary directory"
-    );
-    Ok(directory)
+    Ok((directory, directory_url))
 }
 
 fn notary_directory_url(api_origin: &ApiOrigin) -> url::Url {
@@ -496,6 +697,18 @@ pub(crate) async fn resolve_notary(record: &NotaryDirectoryRecord) -> Result<Not
 
 #[axum::debug_handler]
 async fn proxy(State(state): State<AppState>, request: Request) -> Response {
+    if state
+        .server_runtime
+        .as_ref()
+        .is_some_and(|server_runtime| server_runtime.lifecycle() != Lifecycle::Ready)
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [("content-type", "application/json")],
+            r#"{"error":{"message":"LLM Notary proxy is draining"}}"#,
+        )
+            .into_response();
+    }
     match proxy_inner(state, request).await {
         Ok(response) => response,
         Err(error) => {
@@ -776,22 +989,42 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     let outbound = outbound.body(chunked_request_body(input))?;
 
     let (capture_id, created_at_unix_ms) = next_capture_metadata(&state).await?;
-    state
-        .persistence
-        .metadata
-        .begin_capture(NewCapture {
-            capture_id: capture_id.clone(),
-            created_at_unix_ms,
-            provider: provider.name().to_owned(),
-            operation,
-            requested_model: request_metadata.requested_model.clone(),
-            streaming,
-            request_bytes: request_body_bytes,
-            prompt_preview: request_metadata.prompt_preview,
-            prompt_preview_truncated: request_metadata.prompt_preview_truncated,
-            config_fingerprint: state.config_fingerprint.to_string(),
-        })
-        .await?;
+    let capture_claim = state
+        .server_runtime
+        .as_ref()
+        .map(|server_runtime| server_runtime.capture_claim(capture_id.clone()));
+    let new_capture = NewCapture {
+        capture_id: capture_id.clone(),
+        created_at_unix_ms,
+        provider: provider.name().to_owned(),
+        operation,
+        requested_model: request_metadata.requested_model.clone(),
+        streaming,
+        request_bytes: request_body_bytes,
+        prompt_preview: request_metadata.prompt_preview,
+        prompt_preview_truncated: request_metadata.prompt_preview_truncated,
+        config_fingerprint: state.config_fingerprint.to_string(),
+    };
+    if let (Some(server_runtime), Some(claim)) = (&state.server_runtime, &capture_claim) {
+        state
+            .persistence
+            .metadata
+            .begin_capture_claimed(new_capture, claim, server_runtime.lease_seconds())
+            .await?;
+    } else {
+        state
+            .persistence
+            .metadata
+            .begin_capture(new_capture)
+            .await?;
+    }
+    let mut capture_claim_lease = match (&state.server_runtime, &capture_claim) {
+        (Some(server_runtime), Some(claim)) => Some(
+            server_runtime
+                .keep_capture_claim_alive(state.persistence.metadata.clone(), claim.clone()),
+        ),
+        _ => None,
+    };
     let started = Instant::now();
     let capture = DeferredCaptureConfig {
         capture_id: capture_id.clone(),
@@ -817,11 +1050,13 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     let upstream = match upstream {
         Ok(upstream) => upstream,
         Err(error) => {
-            let _ = state
-                .persistence
-                .metadata
-                .mark_capture_failed(&capture_id, "notary_error")
-                .await;
+            let _ = fail_capture(
+                &state.persistence,
+                capture_claim.as_ref(),
+                &capture_id,
+                "notary_error",
+            )
+            .await;
             return Err(error);
         }
     };
@@ -835,6 +1070,8 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         let headers = upstream.headers.clone();
         let trace_state = state.clone();
         let capture_id_for_task = capture_id.clone();
+        let capture_claim_for_task = capture_claim.clone();
+        let capture_claim_lease_for_task = capture_claim_lease.take();
         let response_preview_limit = state.config.catalog.output_preview_chars;
         let (body_sender, body_receiver) = tokio::sync::mpsc::channel(32);
         // Register before detaching. Once both graceful servers have stopped,
@@ -843,6 +1080,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         let capture_task = state.capture_tasks.track();
         tokio::spawn(async move {
             let _capture_task = capture_task;
+            let _capture_claim_lease = capture_claim_lease_for_task;
             let mut upstream = upstream;
             let mut received_first_chunk = false;
             let mut client_connected = true;
@@ -875,11 +1113,13 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                     let response_bytes = match u64::try_from(output_preview.response_bytes) {
                         Ok(response_bytes) => response_bytes,
                         Err(_) => {
-                            let _ = trace_state
-                                .persistence
-                                .metadata
-                                .mark_capture_failed(&capture_id_for_task, "response_size_overflow")
-                                .await;
+                            let _ = fail_capture(
+                                &trace_state.persistence,
+                                capture_claim_for_task.as_ref(),
+                                &capture_id_for_task,
+                                "response_size_overflow",
+                            )
+                            .await;
                             tracing::warn!(capture_id = %capture_id_for_task, "provider response size does not fit durable metadata");
                             return;
                         }
@@ -894,11 +1134,13 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                     {
                         Ok(encrypted) => encrypted,
                         Err(error) => {
-                            let _ = trace_state
-                                .persistence
-                                .metadata
-                                .mark_capture_failed(&capture_id_for_task, "bundle_store_error")
-                                .await;
+                            let _ = fail_capture(
+                                &trace_state.persistence,
+                                capture_claim_for_task.as_ref(),
+                                &capture_id_for_task,
+                                "bundle_store_error",
+                            )
+                            .await;
                             tracing::warn!(%error, "could not encrypt deferred streaming bundle");
                             return;
                         }
@@ -917,30 +1159,41 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                         expected_artifact_size_bytes,
                         expected_artifact_sha256,
                     };
-                    if let Err(error) = trace_state
-                        .persistence
-                        .metadata
-                        .prepare_capture_completion(completion.clone())
-                        .await
+                    if let Err(error) = prepare_capture(
+                        &trace_state.persistence,
+                        trace_state.server_runtime.as_deref(),
+                        capture_claim_for_task.as_ref(),
+                        completion.clone(),
+                    )
+                    .await
                     {
-                        let _ = trace_state
-                            .persistence
-                            .metadata
-                            .mark_capture_failed(&capture_id_for_task, "metadata_prepare_error")
-                            .await;
+                        let _ = fail_capture(
+                            &trace_state.persistence,
+                            capture_claim_for_task.as_ref(),
+                            &capture_id_for_task,
+                            "metadata_prepare_error",
+                        )
+                        .await;
                         tracing::warn!(capture_id = %capture_id_for_task, %error, "could not stage streaming capture completion");
                         return;
                     }
-                    match store_bundle(&trace_state.persistence, &capture_id_for_task, encrypted)
-                        .await
+                    match store_bundle(
+                        &trace_state.persistence,
+                        &capture_id_for_task,
+                        capture_claim_for_task.as_ref(),
+                        encrypted,
+                    )
+                    .await
                     {
                         Ok(artifact) => {
-                            if trace_state
-                                .persistence
-                                .metadata
-                                .complete_capture(completion, artifact)
-                                .await
-                                .is_err()
+                            if complete_capture(
+                                &trace_state.persistence,
+                                capture_claim_for_task.as_ref(),
+                                completion,
+                                artifact,
+                            )
+                            .await
+                            .is_err()
                             {
                                 tracing::warn!(capture_id = %capture_id_for_task, "could not index deferred streaming bundle");
                             }
@@ -950,30 +1203,36 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                             let failure_code =
                                 artifact_failure_code(&error).unwrap_or("bundle_store_error");
                             if !recoverable_artifact_publication_failure(failure_code) {
-                                let _ = trace_state
-                                    .persistence
-                                    .metadata
-                                    .mark_capture_failed(&capture_id_for_task, failure_code)
-                                    .await;
+                                let _ = fail_capture(
+                                    &trace_state.persistence,
+                                    capture_claim_for_task.as_ref(),
+                                    &capture_id_for_task,
+                                    failure_code,
+                                )
+                                .await;
                             }
                             tracing::warn!(%error, "could not save deferred streaming bundle")
                         }
                     }
                 }
                 Ok(Err(error)) => {
-                    let _ = trace_state
-                        .persistence
-                        .metadata
-                        .mark_capture_failed(&capture_id_for_task, "capture_error")
-                        .await;
+                    let _ = fail_capture(
+                        &trace_state.persistence,
+                        capture_claim_for_task.as_ref(),
+                        &capture_id_for_task,
+                        "capture_error",
+                    )
+                    .await;
                     tracing::warn!(%error, "stream ended without an LLM Notary deferred bundle")
                 }
                 Err(error) => {
-                    let _ = trace_state
-                        .persistence
-                        .metadata
-                        .mark_capture_failed(&capture_id_for_task, "capture_task_error")
-                        .await;
+                    let _ = fail_capture(
+                        &trace_state.persistence,
+                        capture_claim_for_task.as_ref(),
+                        &capture_id_for_task,
+                        "capture_task_error",
+                    )
+                    .await;
                     tracing::warn!(%error, "stream deferred capture task exited")
                 }
             }
@@ -997,11 +1256,13 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         match chunk {
             Ok(chunk) => body.extend_from_slice(&chunk),
             Err(error) => {
-                let _ = state
-                    .persistence
-                    .metadata
-                    .mark_capture_failed(&capture_id, "response_error")
-                    .await;
+                let _ = fail_capture(
+                    &state.persistence,
+                    capture_claim.as_ref(),
+                    &capture_id,
+                    "response_error",
+                )
+                .await;
                 return Err(error.into());
             }
         }
@@ -1009,19 +1270,23 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     let bundle = match upstream.bundle.await {
         Ok(Ok(bundle)) => bundle,
         Ok(Err(error)) => {
-            let _ = state
-                .persistence
-                .metadata
-                .mark_capture_failed(&capture_id, "capture_error")
-                .await;
+            let _ = fail_capture(
+                &state.persistence,
+                capture_claim.as_ref(),
+                &capture_id,
+                "capture_error",
+            )
+            .await;
             return Err(error);
         }
         Err(error) => {
-            let _ = state
-                .persistence
-                .metadata
-                .mark_capture_failed(&capture_id, "capture_task_error")
-                .await;
+            let _ = fail_capture(
+                &state.persistence,
+                capture_claim.as_ref(),
+                &capture_id,
+                "capture_task_error",
+            )
+            .await;
             return Err(error).context("deferred bundle task exited");
         }
     };
@@ -1030,11 +1295,13 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     let encrypted = match encrypt_bundle(bundle, state.vault.clone(), &capture_id).await {
         Ok(encrypted) => encrypted,
         Err(error) => {
-            let _ = state
-                .persistence
-                .metadata
-                .mark_capture_failed(&capture_id, "bundle_store_error")
-                .await;
+            let _ = fail_capture(
+                &state.persistence,
+                capture_claim.as_ref(),
+                &capture_id,
+                "bundle_store_error",
+            )
+            .await;
             return Err(error);
         }
     };
@@ -1051,39 +1318,54 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         expected_artifact_size_bytes,
         expected_artifact_sha256,
     };
-    if let Err(error) = state
-        .persistence
-        .metadata
-        .prepare_capture_completion(completion.clone())
-        .await
+    if let Err(error) = prepare_capture(
+        &state.persistence,
+        state.server_runtime.as_deref(),
+        capture_claim.as_ref(),
+        completion.clone(),
+    )
+    .await
     {
-        let _ = state
-            .persistence
-            .metadata
-            .mark_capture_failed(&capture_id, "metadata_prepare_error")
-            .await;
+        let _ = fail_capture(
+            &state.persistence,
+            capture_claim.as_ref(),
+            &capture_id,
+            "metadata_prepare_error",
+        )
+        .await;
         tracing::warn!(capture_id = %capture_id, %error, "could not stage capture completion");
     } else {
-        let artifact = match store_bundle(&state.persistence, &capture_id, encrypted).await {
+        let artifact = match store_bundle(
+            &state.persistence,
+            &capture_id,
+            capture_claim.as_ref(),
+            encrypted,
+        )
+        .await
+        {
             Ok(artifact) => artifact,
             Err(error) => {
                 let failure_code = artifact_failure_code(&error).unwrap_or("bundle_store_error");
                 if !recoverable_artifact_publication_failure(failure_code) {
-                    let _ = state
-                        .persistence
-                        .metadata
-                        .mark_capture_failed(&capture_id, failure_code)
-                        .await;
+                    let _ = fail_capture(
+                        &state.persistence,
+                        capture_claim.as_ref(),
+                        &capture_id,
+                        failure_code,
+                    )
+                    .await;
                 }
                 return Err(error);
             }
         };
-        if state
-            .persistence
-            .metadata
-            .complete_capture(completion, artifact)
-            .await
-            .is_err()
+        if complete_capture(
+            &state.persistence,
+            capture_claim.as_ref(),
+            completion,
+            artifact,
+        )
+        .await
+        .is_err()
         {
             tracing::warn!(capture_id = %capture_id, "could not index deferred bundle");
         }
@@ -1142,18 +1424,92 @@ fn artifact_expectation(encrypted: &[u8]) -> (u64, String) {
 async fn store_bundle(
     persistence: &Persistence,
     capture_id: &str,
+    claim: Option<&CaptureClaim>,
     encrypted: Vec<u8>,
 ) -> Result<crate::artifact_store::ArtifactRecord> {
     let key = ArtifactKey::new(capture_id, ArtifactKind::DeferredBundle)?;
-    persistence
-        .artifacts
-        .put(
-            &key,
-            ArtifactSource::from_bytes(encrypted),
-            MAX_ARCHIVE_WIRE_BYTES,
-        )
-        .await
-        .map_err(Into::into)
+    if let Some(claim) = claim {
+        persistence
+            .artifacts
+            .put_scoped(
+                &key,
+                &claim.publication_id,
+                ArtifactSource::from_bytes(encrypted),
+                MAX_ARCHIVE_WIRE_BYTES,
+            )
+            .await
+            .map_err(Into::into)
+    } else {
+        persistence
+            .artifacts
+            .put(
+                &key,
+                ArtifactSource::from_bytes(encrypted),
+                MAX_ARCHIVE_WIRE_BYTES,
+            )
+            .await
+            .map_err(Into::into)
+    }
+}
+
+async fn fail_capture(
+    persistence: &Persistence,
+    claim: Option<&CaptureClaim>,
+    capture_id: &str,
+    failure_code: &str,
+) -> Result<()> {
+    if let Some(claim) = claim {
+        persistence
+            .metadata
+            .fail_capture_claimed(claim, failure_code)
+            .await?;
+    } else {
+        persistence
+            .metadata
+            .mark_capture_failed(capture_id, failure_code)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn prepare_capture(
+    persistence: &Persistence,
+    server_runtime: Option<&ServerRuntime>,
+    claim: Option<&CaptureClaim>,
+    completion: CaptureCompletion,
+) -> Result<()> {
+    if let (Some(server_runtime), Some(claim)) = (server_runtime, claim) {
+        persistence
+            .metadata
+            .prepare_capture_completion_claimed(completion, claim, server_runtime.lease_seconds())
+            .await?;
+    } else {
+        persistence
+            .metadata
+            .prepare_capture_completion(completion)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn complete_capture(
+    persistence: &Persistence,
+    claim: Option<&CaptureClaim>,
+    completion: CaptureCompletion,
+    artifact: crate::artifact_store::ArtifactRecord,
+) -> Result<()> {
+    if let Some(claim) = claim {
+        persistence
+            .metadata
+            .complete_capture_claimed(completion, artifact, claim)
+            .await?;
+    } else {
+        persistence
+            .metadata
+            .complete_capture(completion, artifact)
+            .await?;
+    }
+    Ok(())
 }
 
 fn artifact_failure_code(error: &anyhow::Error) -> Option<&'static str> {
@@ -1612,6 +1968,7 @@ mod tests {
             serial: Arc::new(Mutex::new(0)),
             hosted_admission: false,
             capture_tasks: CaptureTasks::default(),
+            server_runtime: None,
         }
     }
 

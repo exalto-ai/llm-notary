@@ -10,6 +10,7 @@ use crate::{
         api_origin::ApiOrigin, auth, http_client_builder, notary,
         proxy::refresh_notary_directory_from,
     },
+    metadata::SharedNotaryTrust,
     public_safety::{
         PublicPackageSafetyContext, validate_public_trace_package_with_context_and_force,
     },
@@ -105,6 +106,7 @@ pub(crate) enum ShareStatusError {
 pub(crate) async fn share_package_bytes(
     archive: &[u8],
     trusted_key: Option<&str>,
+    shared_trust: Option<&SharedNotaryTrust>,
     visibility: ShareVisibility,
     force: bool,
 ) -> Result<(ShareOutput, String, String)> {
@@ -114,7 +116,10 @@ pub(crate) async fn share_package_bytes(
         Some(value) => notary::explicit_key(value)?,
         None => {
             let created_at = trace_package_created_at_unix_ms_bytes(archive)?;
-            let (key_id, _) = notary::cached_key_at(&embedded_key, created_at)?;
+            let (key_id, _) = match shared_trust {
+                Some(shared) => notary::shared_key_at(shared, &embedded_key, created_at)?,
+                None => notary::cached_key_at(&embedded_key, created_at)?,
+            };
             (embedded_key, key_id)
         }
     };
@@ -135,9 +140,18 @@ pub(crate) async fn share_package_bytes(
     // create a share. Authenticate first to recover the configured
     // API origin, then refresh that origin's directory before any upload.
     let authenticated = auth::authenticate().await?;
-    refresh_notary_directory_from(&authenticated.origin).await?;
-    notary::cached_key_at(&trusted_notary_key, verified.manifest.created_at_unix_ms())
+    if let Some(shared) = shared_trust {
+        notary::shared_key_at(
+            shared,
+            &trusted_notary_key,
+            verified.manifest.created_at_unix_ms(),
+        )
         .context("the package notary is no longer trusted; nothing was uploaded")?;
+    } else {
+        refresh_notary_directory_from(&authenticated.origin).await?;
+        notary::cached_key_at(&trusted_notary_key, verified.manifest.created_at_unix_ms())
+            .context("the package notary is no longer trusted; nothing was uploaded")?;
+    }
     let share = submit_archive(
         &authenticated,
         archive,

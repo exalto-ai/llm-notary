@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo "usage: $0 [smoke|full]" >&2
-  echo "       $0 {sqlite|postgres} {filesystem|s3} 1 {smoke|full}" >&2
+  echo "       $0 {sqlite|postgres} {filesystem|s3} {1|2} {smoke|full}" >&2
 }
 
 metadata_engine=sqlite
@@ -20,6 +20,14 @@ elif [[ $# -eq 4 ]]; then
 elif [[ $# -ne 0 ]]; then
   usage
   exit 2
+fi
+if [[ $replica_count == 2 ]]; then
+  if [[ $metadata_engine != postgres || $artifact_engine != s3 || ( $profile != smoke && $profile != full ) ]]; then
+    echo "server E2E supports only postgres s3 2 {smoke|full}" >&2
+    exit 2
+  fi
+  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  exec "$script_dir/test-daemon-server-e2e.sh" "$profile"
 fi
 if [[ ( $metadata_engine != sqlite && $metadata_engine != postgres ) || ( $artifact_engine != filesystem && $artifact_engine != s3 ) || $replica_count != 1 || ( $profile != smoke && $profile != full ) ]]; then
   echo "unsupported daemon E2E matrix entry: $metadata_engine $artifact_engine $replica_count $profile" >&2

@@ -6,8 +6,12 @@ running. The default configuration opens the dashboard directly. If
 exchanges them for an HttpOnly local session, clears the fields, and does not
 store the password in a URL or browser storage.
 
-The dashboard is served only by the loopback administration listener. The
-provider proxy on port 8787 never serves it.
+Local mode serves the dashboard only on the loopback administration listener;
+the provider proxy on port 8787 never serves it. Server mode exposes the same
+dashboard through its authenticated admin HTTPS origin. Its Settings view
+shows public endpoints, the responding replica, shared backends, lifecycle,
+and deployment-managed update state instead of presenting container listeners
+as usable client addresses.
 
 ## Find the next useful action
 

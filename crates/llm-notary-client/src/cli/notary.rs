@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     DeferredBundle,
+    metadata::SharedNotaryTrust,
     notary_directory::{
         DIRECTORY_FORMAT_V3, NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, key_id,
     },
@@ -41,6 +42,17 @@ pub(crate) struct PinnedNotaryState {
     pub generation: u64,
     pub active_key_id: String,
     pub records: Vec<NotaryDirectoryRecord>,
+}
+
+impl From<SharedNotaryTrust> for PinnedNotaryState {
+    fn from(value: SharedNotaryTrust) -> Self {
+        Self {
+            directory_source: Some(value.directory_source),
+            generation: value.generation,
+            active_key_id: value.active_key_id,
+            records: value.records,
+        }
+    }
 }
 
 pub fn pin(directory: NotaryDirectory, directory_source: &str) -> Result<()> {
@@ -124,6 +136,114 @@ fn merge_store(mut store: TrustStore, directory: NotaryDirectory) -> Result<Trus
     store.active_key_id = Some(directory.active_key_id);
     store.records = records.into_values().collect();
     Ok(store)
+}
+
+pub(crate) fn merge_shared_trust(
+    current: Option<SharedNotaryTrust>,
+    directory: NotaryDirectory,
+    directory_source: &str,
+) -> Result<SharedNotaryTrust> {
+    let source_url =
+        url::Url::parse(directory_source).context("notary directory source is invalid")?;
+    if directory_source.len() > 2048
+        || !matches!(source_url.scheme(), "http" | "https")
+        || !source_url.username().is_empty()
+        || source_url.password().is_some()
+        || source_url.path() != "/api/notary"
+        || source_url.query().is_some()
+        || source_url.fragment().is_some()
+    {
+        bail!("notary directory source is not a public directory URL");
+    }
+    if current
+        .as_ref()
+        .is_some_and(|current| current.directory_source != directory_source)
+    {
+        bail!("notary directory source differs from the pinned server authority");
+    }
+    let store = current.map_or_else(TrustStore::default, |current| TrustStore {
+        format: DIRECTORY_FORMAT_V3.to_owned(),
+        generation: current.generation,
+        directory_sha256: Some(current.directory_sha256),
+        directory_source: Some(current.directory_source),
+        active_key_id: Some(current.active_key_id),
+        records: current.records,
+    });
+    let mut store = merge_store(store, directory)?;
+    store.directory_source = Some(directory_source.to_owned());
+    validate_trust_store(&store)?;
+    Ok(shared_from_store(store))
+}
+
+pub(crate) fn validate_shared_trust(trust: &SharedNotaryTrust) -> Result<()> {
+    validate_trust_store(&TrustStore {
+        format: DIRECTORY_FORMAT_V3.to_owned(),
+        generation: trust.generation,
+        directory_sha256: Some(trust.directory_sha256.clone()),
+        directory_source: Some(trust.directory_source.clone()),
+        active_key_id: Some(trust.active_key_id.clone()),
+        records: trust.records.clone(),
+    })
+}
+
+pub(crate) fn shared_key_at(
+    trust: &SharedNotaryTrust,
+    public_key: &[u8],
+    authenticated_unix_ms: u64,
+) -> Result<(String, String)> {
+    validate_shared_trust(trust)?;
+    let requested_id = key_id(public_key);
+    let record = trust
+        .records
+        .iter()
+        .find(|record| {
+            record
+                .public_key
+                .eq_ignore_ascii_case(&hex::encode(public_key))
+        })
+        .ok_or_else(|| anyhow!("notary key {requested_id} is not present in shared trust"))?;
+    if !record.trusted_at(authenticated_unix_ms) {
+        bail!(
+            "notary key {} was not trusted at the authenticated connection time",
+            record.key_id
+        );
+    }
+    Ok((record.key_id.clone(), "directory".to_owned()))
+}
+
+pub(crate) fn shared_record_for_bundle(
+    trust: &SharedNotaryTrust,
+    bundle: &DeferredBundle,
+) -> Result<(Vec<u8>, NotaryDirectoryRecord)> {
+    validate_shared_trust(trust)?;
+    let connection_time = bundle.authenticated_connection_time_unix_ms()?;
+    let now = unix_time_ms()?;
+    for record in &trust.records {
+        let key = record.public_key_bytes()?;
+        if record.trusted_at(connection_time)
+            && record.accepts_finalization_at(now)
+            && bundle.verify_notary_key(&key).is_ok()
+        {
+            return Ok((key, record.clone()));
+        }
+    }
+    bail!("no shared active or retiring notary can finalize this bundle")
+}
+
+fn shared_from_store(store: TrustStore) -> SharedNotaryTrust {
+    SharedNotaryTrust {
+        generation: store.generation,
+        directory_sha256: store
+            .directory_sha256
+            .expect("validated trust has a digest"),
+        directory_source: store
+            .directory_source
+            .expect("validated trust has a source"),
+        active_key_id: store
+            .active_key_id
+            .expect("validated trust has an active key"),
+        records: store.records,
+    }
 }
 
 pub fn cached_key_at(public_key: &[u8], authenticated_unix_ms: u64) -> Result<(String, String)> {

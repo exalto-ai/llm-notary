@@ -132,6 +132,7 @@ pub struct ArtifactRecord {
     pub locator: ArtifactLocator,
     pub size_bytes: u64,
     pub sha256: String,
+    publication_id: Option<String>,
 }
 
 impl ArtifactRecord {
@@ -149,13 +150,42 @@ impl ArtifactRecord {
             locator,
             size_bytes,
             sha256,
+            publication_id: None,
         })
+    }
+
+    /// Binds this record to one server artifact-publication claim.
+    ///
+    /// The stored value is always the canonical hyphenated lowercase UUID.
+    /// Reattaching the same value is idempotent; replacing it is rejected.
+    pub(crate) fn with_publication_id(mut self, publication_id: impl AsRef<str>) -> Result<Self> {
+        let publication_id = uuid::Uuid::parse_str(publication_id.as_ref())?.to_string();
+        if self
+            .publication_id
+            .as_deref()
+            .is_some_and(|current| current != publication_id)
+        {
+            bail!("artifact publication ID is already bound to another claim");
+        }
+        self.publication_id = Some(publication_id);
+        Ok(self)
+    }
+
+    /// Returns the canonical publication UUID for a claim-scoped record.
+    pub(crate) fn publication_id(&self) -> Option<&str> {
+        self.publication_id.as_deref()
     }
 
     /// Revalidates invariants after a record crosses a backend boundary.
     pub fn validate(&self) -> Result<()> {
         validate_capture_id(self.key.capture_id())?;
         validate_sha256(&self.sha256)?;
+        if let Some(publication_id) = &self.publication_id {
+            ensure!(
+                uuid::Uuid::parse_str(publication_id)?.to_string() == *publication_id,
+                "artifact publication ID is not canonical"
+            );
+        }
         ensure!(
             !self.locator.as_stored().is_empty()
                 && !self.locator.as_stored().as_bytes().contains(&0),
@@ -1248,6 +1278,38 @@ mod tests {
 
     fn source(bytes: &[u8]) -> ArtifactSource {
         ArtifactSource::from_bytes(bytes.to_vec())
+    }
+
+    #[test]
+    fn publication_ids_are_optional_canonical_and_immutable() {
+        let record = ArtifactRecord::new(
+            key(ArtifactKind::DeferredBundle),
+            ArtifactLocator::from_stored("artifact/v1/s3/example").unwrap(),
+            0,
+            hex::encode(Sha256::digest([])),
+        )
+        .unwrap();
+        assert_eq!(record.publication_id(), None);
+        assert!(record.clone().with_publication_id("not-a-uuid").is_err());
+
+        let publication_id = "123E4567-E89B-12D3-A456-426614174000";
+        let record = record.with_publication_id(publication_id).unwrap();
+        assert_eq!(
+            record.publication_id(),
+            Some("123e4567-e89b-12d3-a456-426614174000")
+        );
+        record.validate().unwrap();
+        assert!(
+            record
+                .clone()
+                .with_publication_id("123e4567-e89b-12d3-a456-426614174000")
+                .is_ok()
+        );
+        assert!(
+            record
+                .with_publication_id("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+                .is_err()
+        );
     }
 
     async fn bytes(store: &dyn ArtifactStore, record: &ArtifactRecord, limit: u64) -> Vec<u8> {

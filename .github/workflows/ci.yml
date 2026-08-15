@@ -50,9 +50,13 @@ jobs:
               - 'build.rs'
               - 'migrations-postgres/**'
               - 'compose.daemon-e2e.yml'
+              - 'compose.daemon-server.yml'
+              - 'deploy/daemon-server/**'
               - 'deploy/daemon-e2e/**'
               - 'rust-toolchain.toml'
               - 'scripts/test-daemon-persistence-e2e.sh'
+              - 'scripts/test-daemon-server-e2e.sh'
+              - 'scripts/llm-notary-server.sh'
               - 'crates/**'
               - 'src/**'
               - 'tests/**'
@@ -118,9 +122,11 @@ jobs:
               - 'vendor/tlsn-utils/**'
               - 'compose.yml'
               - 'compose.daemon-e2e.yml'
+              - 'compose.daemon-server.yml'
               - 'deploy/**'
               - 'js/app/**'
               - 'scripts/test-daemon-persistence-e2e.sh'
+              - 'scripts/llm-notary-server.sh'
             cli:
               - '.github/workflows/ci.yml'
               - '.github/workflows/release.yml'
@@ -198,12 +204,13 @@ jobs:
         run: cargo test -p llm-notary-client postgres_metadata_store::tests -- --ignored --nocapture
       - name: Run S3-compatible daemon artifact tests
         run: cargo test -p llm-notary-client s3_artifact_store::tests::minio_conforms_and_detects_missing_corrupt_and_oversized_objects -- --ignored --nocapture
-      - name: Run single-daemon persistence matrix
+      - name: Run daemon persistence and server matrix
         run: |
           scripts/test-daemon-persistence-e2e.sh sqlite filesystem 1 full
           DAEMON_E2E_SKIP_BUILD=1 DAEMON_E2E_POSTGRES_SCENARIOS=extended scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 full
           DAEMON_E2E_SKIP_BUILD=1 scripts/test-daemon-persistence-e2e.sh sqlite s3 1 full
           DAEMON_E2E_SKIP_BUILD=1 scripts/test-daemon-persistence-e2e.sh postgres s3 1 full
+          DAEMON_E2E_SKIP_BUILD=1 scripts/test-daemon-persistence-e2e.sh postgres s3 2 full
 
   windows-update:
     name: Windows client update
@@ -346,6 +353,30 @@ jobs:
             LLM_NOTARY_S3_REGION=sfo3 \
             LLM_NOTARY_PUBLIC_ORIGIN=https://example.com \
             docker compose config --quiet
+      - name: Validate simplified daemon server bundle
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/llm-notary-server"
+          LLM_NOTARY_SERVER_STATE_DIR="$state" \
+            LLM_NOTARY_BOOTSTRAP_API_KEY=llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222 \
+            scripts/llm-notary-server.sh init proxy.example.com admin.example.com >/dev/null
+          rendered=$(docker compose --env-file "$state/.env" -f compose.daemon-server.yml config --format json)
+          jq -e '
+            .services.daemon.deploy.mode == "replicated" and
+            .services.daemon.deploy.replicas == 2 and
+            (.services.daemon.expose | sort) == ["8787", "8788"] and
+            (.services | has("daemon-a") | not) and
+            (.services | has("daemon-b") | not) and
+            (.services | has("ingress") | not)
+          ' <<<"$rendered" >/dev/null
+          test "$(wc -c < "$state/secrets/server-vault.key")" -eq 32
+          test ! -e "$state/secrets/vault-passphrase"
+          if LLM_NOTARY_SERVER_STATE_DIR="$state" \
+            LLM_NOTARY_BOOTSTRAP_API_KEY=llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222 \
+            scripts/llm-notary-server.sh init proxy.example.com admin.example.com >/dev/null 2>&1; then
+            echo "server initializer overwrote existing state" >&2
+            exit 1
+          fi
 
   required:
     name: Required checks

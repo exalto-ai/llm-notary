@@ -607,6 +607,17 @@ pub(crate) fn configured_api_origin() -> Result<ApiOrigin> {
     }
 }
 
+/// Resolves only the hosted API origin, without opening or validating any
+/// account credential source. One-shot setup commands use this so migration
+/// never requires an API key or a stored device session.
+pub(crate) fn configured_api_origin_without_credentials() -> Result<ApiOrigin> {
+    match env::var(API_ORIGIN_ENV) {
+        Ok(value) => ApiOrigin::parse(&value).context("validating LLM_NOTARY_API_ORIGIN"),
+        Err(env::VarError::NotPresent) => Ok(ApiOrigin::default_public()),
+        Err(env::VarError::NotUnicode(_)) => bail!("LLM_NOTARY_API_ORIGIN must be UTF-8"),
+    }
+}
+
 pub(crate) fn api_key_mode_active() -> Result<bool> {
     Ok(matches!(
         credential_configuration()?,

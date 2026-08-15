@@ -23,6 +23,7 @@ pub mod metadata_store;
 pub mod persistence;
 mod postgres_metadata_store;
 mod s3_artifact_store;
+mod server_runtime;
 mod sqlite_catalog;
 pub mod sqlite_metadata_store;
 pub mod update;
@@ -30,7 +31,7 @@ pub mod update;
 #[derive(Parser, Debug)]
 #[command(
     name = "llm-notaryd",
-    about = "Run the local LLM Notary proxy and administration daemon",
+    about = "Run the LLM Notary proxy and administration daemon",
     version,
     long_version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("LLM_NOTARY_BUILD_ID"), ")")
 )]
@@ -53,6 +54,21 @@ enum DaemonCommand {
         #[arg(long, default_value_t = 7)]
         orphan_grace_days: u64,
     },
+    /// Initialize shared key material for a server deployment.
+    Server {
+        #[command(subcommand)]
+        command: ServerCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ServerCommand {
+    /// Create one private 32-byte vault key for all server replicas.
+    Init {
+        /// New key file. Existing files are never overwritten.
+        #[arg(long)]
+        vault_key: PathBuf,
+    },
 }
 
 /// Runs the client command line using process arguments.
@@ -63,10 +79,16 @@ pub async fn run_daemon() -> Result<()> {
         Some(DaemonCommand::ReconcileArtifacts { orphan_grace_days }) => {
             return run_artifact_reconciliation(cli.config, orphan_grace_days).await;
         }
+        Some(DaemonCommand::Server {
+            command: ServerCommand::Init { vault_key },
+        }) => {
+            llm_notary_core::vault::Vault::init_server_key(&vault_key)?;
+            println!("Created shared server vault key: {}", vault_key.display());
+            return Ok(());
+        }
         None => {}
     }
     let _telemetry = telemetry::init("llm-notaryd")?;
-    cli::auth::validate_credential_configuration()?;
     cli::proxy::run(cli::proxy::ProxyArgs { config: cli.config }).await
 }
 
@@ -116,6 +138,22 @@ async fn run_daemon_migrator(config_path: Option<PathBuf>) -> Result<()> {
     )
     .await
     .map_err(|_| anyhow::anyhow!("local daemon PostgreSQL metadata migration failed"))?;
+    if config.server.is_some() {
+        let api_origin = cli::auth::configured_api_origin_without_credentials()?;
+        let vault = llm_notary_core::vault::Vault::open_server()?;
+        let vault_identity = vault.server_identity_sha256()?;
+        postgres_metadata_store::configure_server_compatibility(
+            database_url.expose(),
+            postgres.ssl_mode,
+            Duration::from_secs(postgres.connect_timeout_seconds),
+            &config.server_compatibility_sha256_for_api_origin(
+                &api_origin.to_string(),
+                &vault_identity,
+            )?,
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("server compatibility configuration failed"))?;
+    }
     println!("Local daemon PostgreSQL metadata migrations are current");
     Ok(())
 }
@@ -142,6 +180,16 @@ mod tests {
             DaemonCli::try_parse_from(["llm-notaryd", "migrate", "--config", "agent.toml"]).is_ok()
         );
         assert!(DaemonCli::try_parse_from(["llm-notaryd", "reconcile-artifacts"]).is_ok());
+        assert!(
+            DaemonCli::try_parse_from([
+                "llm-notaryd",
+                "server",
+                "init",
+                "--vault-key",
+                "/run/secrets/server-vault.key",
+            ])
+            .is_ok()
+        );
         assert!(
             DaemonCli::try_parse_from([
                 "llm-notaryd",
