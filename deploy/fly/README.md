@@ -122,7 +122,7 @@ The account API exposes the configured purchase mode as `disabled`, `test`, or
 test-mode warning before exercising a test Price. Do not promote a test secret,
 Price, or webhook endpoint into a live configuration.
 
-Migration `0021_subscription_plans.sql` intentionally clears prototype billing,
+Migration `0022_subscription_plans.sql` intentionally clears prototype billing,
 credit, and active admission rows while preserving accounts and public traces.
 Take a database backup, drain hosted admission traffic, and deploy the migration
 and matching API/notary images as one coordinated maintenance release. Do not
