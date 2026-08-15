@@ -152,8 +152,8 @@ SQLite-to-PostgreSQL or filesystem-to-S3 importer is provided.
 Keep the sum of `catalog.postgres.max_connections` across running daemons plus
 one direct migrator connection within the provider's pool budget. PostgreSQL
 with filesystem artifacts remains single-process. Multiple daemon replicas are
-supported only by the explicit PostgreSQL-and-S3 profile in [Multi-replica
-daemon operations](cluster-operations.md).
+supported only by server mode with PostgreSQL and S3; see
+[Server deployment](server-operations.md).
 
 ## Scale and monitor
 

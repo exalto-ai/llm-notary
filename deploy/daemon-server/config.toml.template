@@ -1,7 +1,6 @@
 format = "llm-notary/agent-config/v1"
 
 [server]
-enabled = true
 proxy_origin = "https://__PROXY_DOMAIN__"
 admin_origin = "https://__ADMIN_DOMAIN__"
 

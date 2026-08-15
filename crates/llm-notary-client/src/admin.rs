@@ -88,7 +88,7 @@ pub(crate) struct AdminState {
     pub(crate) work_available: Arc<Notify>,
     pub(crate) update_status: crate::update::SharedUpdateStatus,
     cluster: Option<Arc<ClusterRuntime>>,
-    vault_compatibility_sha256: Option<String>,
+    server_vault_identity: Option<String>,
     dependency_probe: Arc<Mutex<DependencyProbeCache>>,
 }
 
@@ -97,7 +97,7 @@ impl AdminState {
         persistence: Persistence,
         config: Arc<AgentConfig>,
         cluster: Option<Arc<ClusterRuntime>>,
-        vault_compatibility_sha256: Option<String>,
+        server_vault_identity: Option<String>,
     ) -> Result<Self> {
         if cluster.is_none() {
             let interrupted = persistence
@@ -116,12 +116,12 @@ impl AdminState {
             account_credentials: Arc::new(Mutex::new(())),
             work_available: Arc::new(Notify::new()),
             update_status: if cluster.is_some() {
-                crate::update::background_status_disabled("cluster_managed")
+                crate::update::background_status_disabled("server_managed")
             } else {
                 crate::update::background_status()
             },
             cluster,
-            vault_compatibility_sha256,
+            server_vault_identity,
             dependency_probe: Arc::new(Mutex::new(None)),
         })
     }
@@ -137,8 +137,7 @@ async fn probe_dependencies(state: &AdminState) -> std::result::Result<(), &'sta
 
     let persistence = state.persistence.clone();
     let cluster = state.cluster.clone();
-    let configured_vault = state.config.cluster.vault_compatibility_sha256.clone();
-    let opened_vault = state.vault_compatibility_sha256.clone();
+    let opened_vault = state.server_vault_identity.clone();
     let require_shared_trust = state.cluster.is_some() && state.config.notary.endpoint.is_none();
     let result = match tokio::time::timeout(DEPENDENCY_PROBE_TIMEOUT, async move {
         persistence
@@ -152,11 +151,7 @@ async fn probe_dependencies(state: &AdminState) -> std::result::Result<(), &'sta
             .await
             .map_err(|_| "artifact_not_ready")?;
         if let Some(cluster) = cluster {
-            if opened_vault.is_none()
-                || configured_vault
-                    .as_ref()
-                    .is_some_and(|expected| opened_vault.as_ref() != Some(expected))
-            {
+            if opened_vault.is_none() {
                 return Err("vault_not_ready");
             }
             if !persistence
@@ -353,7 +348,7 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
-#[utoipa::path(get, path = "/readyz", summary = "Check service readiness", description = "Runs bounded metadata, selected artifact-writer, and cluster trust dependency probes. Dependency outages or schema mismatches make readiness fail while /healthz remains local liveness.", responses((status = 200, body = ReadinessResponse), (status = 503, body = ErrorEnvelope)), tag = "local-admin")]
+#[utoipa::path(get, path = "/readyz", summary = "Check service readiness", description = "Runs bounded metadata, selected artifact-writer, and shared trust dependency probes. Dependency outages or schema mismatches make readiness fail while /healthz remains local liveness.", responses((status = 200, body = ReadinessResponse), (status = 503, body = ErrorEnvelope)), tag = "local-admin")]
 async fn readiness(State(state): State<AdminState>) -> Result<Json<ReadinessResponse>, ApiError> {
     if state
         .cluster
@@ -556,15 +551,15 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
         admin_listener: state.config.admin.listen.to_string(),
         proxy_origin: state
             .config
-            .cluster
-            .proxy_origin
-            .clone()
+            .server
+            .as_ref()
+            .map(|server| server.proxy_origin.clone())
             .unwrap_or_else(|| format!("http://{}", state.config.proxy.listen)),
         admin_origin: state
             .config
-            .cluster
-            .admin_origin
-            .clone()
+            .server
+            .as_ref()
+            .map(|server| server.admin_origin.clone())
             .unwrap_or_else(|| format!("http://{}", state.config.admin.listen)),
         metadata_backend: state.persistence.metadata.backend_name().into(),
         metadata_status: "ready".into(),
@@ -595,7 +590,7 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
     }))
 }
 
-#[utoipa::path(get, path = "/v1/notaries", summary = "Get configured notary trust", description = "Returns a safe read-only projection of the local or cluster-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.", responses((status = 200, body = NotariesResponse), (status = 401, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/notaries", summary = "Get configured notary trust", description = "Returns a safe read-only projection of the local or server-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.", responses((status = 200, body = NotariesResponse), (status = 401, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn notaries(State(state): State<AdminState>) -> Result<Json<NotariesResponse>, ApiError> {
     let shared = if state.cluster.is_some() && state.config.notary.endpoint.is_none() {
         state

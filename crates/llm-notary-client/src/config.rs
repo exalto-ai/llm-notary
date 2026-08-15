@@ -43,13 +43,8 @@ pub const SERVER_INSTANCE_ID_ENV: &str = "LLM_NOTARY_SERVER_INSTANCE_ID";
 #[serde(deny_unknown_fields)]
 pub struct AgentConfig {
     pub format: String,
-    #[serde(
-        default,
-        rename = "server",
-        alias = "cluster",
-        skip_serializing_if = "ClusterConfig::is_disabled"
-    )]
-    pub cluster: ClusterConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server: Option<ServerConfig>,
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
@@ -64,74 +59,15 @@ pub struct AgentConfig {
     pub providers: ProvidersConfig,
 }
 
-/// Explicit multi-replica runtime profile. Merely selecting PostgreSQL and S3
-/// never enables cluster semantics.
+/// Explicit multi-replica server profile. Coordination timings and replica
+/// identities are internal so every deployment uses the same safety rules.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct ClusterConfig {
-    #[serde(default)]
-    pub enabled: bool,
-    /// Stable, operator-readable name for one replica slot.
-    pub instance_id: Option<String>,
+pub struct ServerConfig {
     /// Public HTTPS endpoint applications use for provider requests.
-    pub proxy_origin: Option<String>,
+    pub proxy_origin: String,
     /// Public HTTPS endpoint operators use for the dashboard and admin API.
-    pub admin_origin: Option<String>,
-    #[serde(default = "default_cluster_heartbeat_seconds")]
-    pub heartbeat_interval_seconds: u64,
-    #[serde(default = "default_cluster_lease_seconds")]
-    pub lease_seconds: u64,
-    /// Hard ceiling after which a work claim stops renewing even if its task
-    /// is still pending, so a wedged provider/notary operation is recoverable.
-    #[serde(default = "default_cluster_claim_max_runtime_seconds")]
-    pub claim_max_runtime_seconds: u64,
-    /// Time kept ready=false but live before listeners begin graceful shutdown.
-    #[serde(default = "default_cluster_withdrawal_delay_seconds")]
-    pub withdrawal_delay_seconds: u64,
-    /// Bounded time for admitted streams and current work to finish on SIGTERM.
-    #[serde(default = "default_cluster_shutdown_grace_seconds")]
-    pub shutdown_grace_seconds: u64,
-    /// Confirms that non-loopback listeners sit behind authenticated,
-    /// TLS-terminated infrastructure which does not replay provider requests.
-    #[serde(default)]
-    pub trusted_ingress: bool,
-    /// Pre-provisioned SHA-256 identity of the exact shared vault config and
-    /// verifier. Runtime replicas may compare it but never establish it.
-    pub vault_compatibility_sha256: Option<String>,
-}
-
-impl Default for ClusterConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            instance_id: None,
-            proxy_origin: None,
-            admin_origin: None,
-            heartbeat_interval_seconds: default_cluster_heartbeat_seconds(),
-            lease_seconds: default_cluster_lease_seconds(),
-            claim_max_runtime_seconds: default_cluster_claim_max_runtime_seconds(),
-            withdrawal_delay_seconds: default_cluster_withdrawal_delay_seconds(),
-            shutdown_grace_seconds: default_cluster_shutdown_grace_seconds(),
-            trusted_ingress: false,
-            vault_compatibility_sha256: None,
-        }
-    }
-}
-
-impl ClusterConfig {
-    fn is_disabled(&self) -> bool {
-        !self.enabled
-            && self.instance_id.is_none()
-            && self.proxy_origin.is_none()
-            && self.admin_origin.is_none()
-            && !self.trusted_ingress
-            && self.vault_compatibility_sha256.is_none()
-            && self.heartbeat_interval_seconds == default_cluster_heartbeat_seconds()
-            && self.lease_seconds == default_cluster_lease_seconds()
-            && self.claim_max_runtime_seconds == default_cluster_claim_max_runtime_seconds()
-            && self.withdrawal_delay_seconds == default_cluster_withdrawal_delay_seconds()
-            && self.shutdown_grace_seconds == default_cluster_shutdown_grace_seconds()
-    }
+    pub admin_origin: String,
 }
 
 /// Local administration listener. It is deliberately separate from the
@@ -410,7 +346,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             format: CONFIG_FORMAT.to_owned(),
-            cluster: ClusterConfig::default(),
+            server: None,
             proxy: ProxyConfig::default(),
             admin: AdminConfig::default(),
             notary: NotaryConfig::default(),
@@ -588,8 +524,8 @@ impl AgentConfig {
             self.proxy.max_attestable_http_bytes > 0,
             "proxy.max_attestable_http_bytes must be non-zero"
         );
-        if self.cluster.enabled {
-            self.validate_cluster()?;
+        if let Some(server) = &self.server {
+            self.validate_server(server)?;
         } else {
             ensure!(
                 self.proxy.listen.ip().is_loopback(),
@@ -598,14 +534,6 @@ impl AgentConfig {
             ensure!(
                 self.admin.listen.ip().is_loopback(),
                 "admin.listen must use a loopback address outside server mode"
-            );
-            ensure!(
-                self.cluster.instance_id.is_none()
-                    && self.cluster.proxy_origin.is_none()
-                    && self.cluster.admin_origin.is_none()
-                    && !self.cluster.trusted_ingress
-                    && self.cluster.vault_compatibility_sha256.is_none(),
-                "server-only settings require server.enabled = true"
             );
         }
         ensure!(
@@ -631,7 +559,7 @@ impl AgentConfig {
                 );
             } else {
                 ensure!(
-                    self.cluster.enabled,
+                    self.server.is_some(),
                     "admin.auth.password_hash is required outside server mode"
                 );
             }
@@ -699,37 +627,7 @@ impl AgentConfig {
         Ok(())
     }
 
-    fn validate_cluster(&self) -> Result<()> {
-        if let Some(instance_id) = self.cluster.instance_id.as_deref() {
-            ensure!(
-                valid_instance_id(instance_id),
-                "server.instance_id must contain 1 to 64 safe ASCII bytes"
-            );
-        }
-        ensure!(
-            (1..=60).contains(&self.cluster.heartbeat_interval_seconds),
-            "server.heartbeat_interval_seconds must be between 1 and 60"
-        );
-        ensure!(
-            (3..=300).contains(&self.cluster.lease_seconds)
-                && self.cluster.lease_seconds
-                    >= self.cluster.heartbeat_interval_seconds.saturating_mul(3),
-            "server.lease_seconds must be between 3 and 300 and at least three heartbeat intervals"
-        );
-        ensure!(
-            self.cluster.claim_max_runtime_seconds >= self.cluster.lease_seconds
-                && self.cluster.claim_max_runtime_seconds <= 86_400,
-            "server.claim_max_runtime_seconds must be at least the lease and no more than 86400"
-        );
-        ensure!(
-            (1..=120).contains(&self.cluster.withdrawal_delay_seconds),
-            "server.withdrawal_delay_seconds must be between 1 and 120"
-        );
-        ensure!(
-            self.cluster.shutdown_grace_seconds >= self.cluster.withdrawal_delay_seconds
-                && self.cluster.shutdown_grace_seconds <= 3_600,
-            "server.shutdown_grace_seconds must be at least the withdrawal delay and no more than 3600"
-        );
+    fn validate_server(&self, server: &ServerConfig) -> Result<()> {
         ensure!(
             self.catalog.backend == MetadataBackend::Postgres,
             "server mode requires catalog.backend = \"postgres\""
@@ -742,34 +640,14 @@ impl AgentConfig {
             self.admin.auth.is_some(),
             "server mode requires admin authentication"
         );
-        match (
-            self.cluster.proxy_origin.as_deref(),
-            self.cluster.admin_origin.as_deref(),
-        ) {
-            (Some(proxy), Some(admin)) => {
-                validate_public_https_origin(proxy, "server.proxy_origin")?;
-                validate_public_https_origin(admin, "server.admin_origin")?;
-                ensure!(
-                    proxy != admin,
-                    "server proxy and admin origins must be different"
-                );
-            }
-            (None, None) if self.cluster.trusted_ingress => {
-                // Compatibility for pre-server-profile configurations. New
-                // deployments should publish explicit origins instead.
-            }
-            _ => bail!(
-                "server mode requires server.proxy_origin and server.admin_origin HTTPS origins"
-            ),
-        }
-        if let Some(vault_identity) = self.cluster.vault_compatibility_sha256.as_deref() {
-            ensure!(
-                vault_identity.len() == 64
-                    && vault_identity.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    && vault_identity == vault_identity.to_ascii_lowercase(),
-                "server.vault_compatibility_sha256 must be 64 lowercase hexadecimal bytes"
-            );
-        }
+        let proxy = server.proxy_origin.as_str();
+        let admin = server.admin_origin.as_str();
+        validate_public_https_origin(proxy, "server.proxy_origin")?;
+        validate_public_https_origin(admin, "server.admin_origin")?;
+        ensure!(
+            proxy != admin,
+            "server proxy and admin origins must be different"
+        );
         Ok(())
     }
 
@@ -842,58 +720,31 @@ impl AgentConfig {
         ))
     }
 
-    /// Returns the non-secret compatibility identity pinned by the cluster
-    /// migrator. The replica slot name is intentionally excluded; every other
-    /// configured trust, storage, listener, and lease setting must agree.
-    pub fn cluster_compatibility_sha256(&self) -> Result<String> {
-        self.cluster_compatibility_sha256_for_api_origin(crate::cli::DEFAULT_PUBLIC_ORIGIN)
-    }
-
-    /// Includes the normalized hosted API origin because it is the authority
-    /// from which replicas advance shared notary trust and request admission.
-    pub fn cluster_compatibility_sha256_for_api_origin(&self, api_origin: &str) -> Result<String> {
-        let vault_identity = self
-            .cluster
-            .vault_compatibility_sha256
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("server vault identity is unavailable"))?;
-        self.server_compatibility_sha256_for_api_origin(api_origin, vault_identity)
-    }
-
-    /// Returns the server compatibility identity using the vault opened by
-    /// this process. New deployments never copy a vault digest into TOML.
-    pub fn server_compatibility_sha256_for_api_origin(
+    /// Identifies the exact non-secret server configuration, hosted API
+    /// authority, and shared vault key expected by every replica.
+    pub(crate) fn server_compatibility_sha256_for_api_origin(
         &self,
         api_origin: &str,
         vault_identity: &str,
     ) -> Result<String> {
-        ensure!(self.cluster.enabled, "server mode is not enabled");
+        ensure!(self.server.is_some(), "server mode is not enabled");
         ensure!(
             vault_identity.len() == 64
-                && vault_identity.bytes().all(|byte| byte.is_ascii_hexdigit()),
+                && vault_identity
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f')),
             "server vault identity is invalid"
         );
-        if let Some(expected) = self.cluster.vault_compatibility_sha256.as_deref() {
-            ensure!(
-                expected == vault_identity,
-                "shared vault compatibility check failed"
-            );
-        }
         let mut normalized = self.clone();
-        normalized.cluster.instance_id = None;
-        normalized.cluster.vault_compatibility_sha256 = Some(vault_identity.to_owned());
-        let legacy_cluster_config = normalized.cluster.proxy_origin.is_none()
-            && normalized.cluster.admin_origin.is_none()
-            && normalized.cluster.trusted_ingress;
-        if !legacy_cluster_config && let Some(auth) = normalized.admin.auth.as_mut() {
+        if let Some(auth) = normalized.admin.auth.as_mut() {
             auth.password_hash = None;
         }
-        // The compatibility record predates the public `[server]` name. Keep
-        // its exact serialized section name so existing installations do not
-        // fail closed merely because the user-facing terminology improved.
-        let normalized = toml::to_string(&normalized)?.replacen("[server]\n", "[cluster]\n", 1);
+        let normalized = toml::to_string(&normalized)?;
         Ok(sha256_hex(
-            format!("llm-notary-cluster/v1\n{normalized}\napi-origin={api_origin}\n").as_bytes(),
+            format!(
+                "llm-notary-server/v1\n{normalized}\napi-origin={api_origin}\nvault={vault_identity}\n"
+            )
+            .as_bytes(),
         ))
     }
 
@@ -972,7 +823,7 @@ impl AgentConfig {
     /// Resolves the server dashboard password once at startup. Plaintext is
     /// never retained in the configuration or written back to disk.
     pub(crate) fn resolve_runtime_secrets(&mut self) -> Result<()> {
-        if !self.cluster.enabled {
+        if self.server.is_none() {
             return Ok(());
         }
         let auth = self
@@ -1183,26 +1034,6 @@ fn default_true() -> bool {
     true
 }
 
-fn default_cluster_heartbeat_seconds() -> u64 {
-    5
-}
-
-fn default_cluster_lease_seconds() -> u64 {
-    20
-}
-
-fn default_cluster_claim_max_runtime_seconds() -> u64 {
-    3_600
-}
-
-fn default_cluster_withdrawal_delay_seconds() -> u64 {
-    8
-}
-
-fn default_cluster_shutdown_grace_seconds() -> u64 {
-    120
-}
-
 fn default_postgres_max_connections() -> u32 {
     8
 }
@@ -1300,10 +1131,13 @@ mod tests {
 
     #[test]
     fn server_profile_has_safe_defaults_and_rejects_unsafe_combinations() {
-        let mut config = AgentConfig::default();
-        config.cluster.enabled = true;
-        config.cluster.proxy_origin = Some("https://proxy.notary.example".into());
-        config.cluster.admin_origin = Some("https://admin.notary.example".into());
+        let mut config = AgentConfig {
+            server: Some(ServerConfig {
+                proxy_origin: "https://proxy.notary.example".into(),
+                admin_origin: "https://admin.notary.example".into(),
+            }),
+            ..AgentConfig::default()
+        };
         config.proxy.listen = "0.0.0.0:8787".parse().unwrap();
         config.admin.listen = "0.0.0.0:8788".parse().unwrap();
         config.admin.auth = Some(AdminAuthConfig {
@@ -1317,7 +1151,7 @@ mod tests {
             bucket: "private-artifacts".into(),
             region: "us-east-1".into(),
             endpoint: Some("https://s3.example.test".into()),
-            prefix: "cluster".into(),
+            prefix: "server".into(),
             force_path_style: false,
             allow_insecure_http: false,
             connect_timeout_seconds: 5,
@@ -1331,9 +1165,7 @@ mod tests {
         let valid = config.clone();
         let encoded = toml::to_string_pretty(&valid).unwrap();
         assert!(encoded.contains("[server]"));
-        let legacy: AgentConfig =
-            toml::from_str(&encoded.replace("[server]", "[cluster]")).unwrap();
-        legacy.validate().unwrap();
+        assert!(toml::from_str::<AgentConfig>(&encoded.replace("[server]", "[cluster]")).is_err());
         let vault_identity = "11".repeat(32);
         let compatibility = valid
             .server_compatibility_sha256_for_api_origin(
@@ -1342,16 +1174,6 @@ mod tests {
             )
             .unwrap();
         let mut peer = valid.clone();
-        peer.cluster.instance_id = Some("daemon-b".into());
-        assert_eq!(
-            peer.server_compatibility_sha256_for_api_origin(
-                crate::cli::DEFAULT_PUBLIC_ORIGIN,
-                &vault_identity,
-            )
-            .unwrap(),
-            compatibility
-        );
-        peer = valid.clone();
         peer.admin.auth.as_mut().unwrap().password_hash =
             Some(hash_admin_password(b"generated at startup").unwrap());
         assert_eq!(
@@ -1380,7 +1202,7 @@ mod tests {
         config.admin.auth = None;
         assert!(config.validate().is_err());
         config = valid.clone();
-        config.cluster.admin_origin = None;
+        config.server.as_mut().unwrap().admin_origin = String::new();
         assert!(config.validate().is_err());
         config = valid.clone();
         config.notary.endpoint = None;
@@ -1399,35 +1221,6 @@ mod tests {
                     &vault_identity,
                 )
                 .unwrap()
-        );
-        config = valid.clone();
-        config.cluster.lease_seconds = config.cluster.heartbeat_interval_seconds * 2;
-        assert!(config.validate().is_err());
-
-        let mut legacy = valid;
-        legacy.cluster.proxy_origin = None;
-        legacy.cluster.admin_origin = None;
-        legacy.cluster.trusted_ingress = true;
-        legacy.cluster.vault_compatibility_sha256 = Some(vault_identity.clone());
-        legacy.admin.auth.as_mut().unwrap().password_hash =
-            Some(hash_admin_password(b"legacy password").unwrap());
-        legacy.validate().unwrap();
-        let legacy_compatibility = legacy
-            .server_compatibility_sha256_for_api_origin(
-                crate::cli::DEFAULT_PUBLIC_ORIGIN,
-                &vault_identity,
-            )
-            .unwrap();
-        legacy.admin.auth.as_mut().unwrap().password_hash =
-            Some(hash_admin_password(b"different legacy password").unwrap());
-        assert_ne!(
-            legacy
-                .server_compatibility_sha256_for_api_origin(
-                    crate::cli::DEFAULT_PUBLIC_ORIGIN,
-                    &vault_identity,
-                )
-                .unwrap(),
-            legacy_compatibility
         );
     }
 
@@ -1499,7 +1292,6 @@ mod tests {
         let encoded = toml::to_string_pretty(&config).unwrap();
         assert!(!encoded.contains("[catalog.postgres]"));
         assert!(!encoded.contains("[server]"));
-        assert!(!encoded.contains("heartbeat_interval_seconds"));
         let parsed: AgentConfig = toml::from_str(&encoded).unwrap();
         parsed.validate().unwrap();
     }

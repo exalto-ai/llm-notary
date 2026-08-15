@@ -159,7 +159,7 @@ pub(crate) fn merge_shared_trust(
         .as_ref()
         .is_some_and(|current| current.directory_source != directory_source)
     {
-        bail!("notary directory source differs from the pinned cluster authority");
+        bail!("notary directory source differs from the pinned server authority");
     }
     let store = current.map_or_else(TrustStore::default, |current| TrustStore {
         format: DIRECTORY_FORMAT_V3.to_owned(),

@@ -4,7 +4,7 @@ x-daemon: &daemon
   build:
     context: .
     dockerfile: Dockerfile
-    target: daemon-cluster
+    target: daemon-server
   image: ${LLM_NOTARY_SERVER_IMAGE:-llm-notary-daemon-server:local}
   user: "${SERVER_UID:-10001}:${SERVER_GID:-10001}"
   command: ["--config", "/etc/llm-notary/config.toml"]
@@ -98,7 +98,7 @@ services:
 
   migrate:
     <<: *daemon
-    command: ["--config", "/etc/llm-notary/config.toml", "migrate"]
+    command: ["migrate", "--config", "/etc/llm-notary/config.toml"]
     environment:
       LLM_NOTARY_METADATA_DATABASE_URL_FILE: /run/secrets/postgres_url
       LLM_NOTARY_SERVER_VAULT_KEY_FILE: /run/secrets/server_vault_key

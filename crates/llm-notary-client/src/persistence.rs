@@ -48,7 +48,7 @@ impl Persistence {
                 let postgres = &config.catalog.postgres;
                 let database_url = config.postgres_runtime_url()?;
                 Arc::new(
-                    if config.cluster.enabled {
+                    if config.server.is_some() {
                         PostgresMetadataStore::connect_clustered(
                             database_url.expose(),
                             postgres.max_connections,

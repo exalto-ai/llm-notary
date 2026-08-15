@@ -118,10 +118,10 @@ RUN llm-notaryd --help >/dev/null \
 
 ENTRYPOINT ["llm-notaryd"]
 
-# Production multi-replica runtime. Operators mount a read-only explicit
+# Production server runtime. Operators mount a read-only explicit
 # configuration and secret files, while the pre-provisioned vault lives on a
 # shared read-only volume. The process never needs root or a privileged port.
-FROM daemon AS daemon-cluster
+FROM daemon AS daemon-server
 
 RUN groupadd --gid 10001 llm-notary \
     && useradd --uid 10001 --gid 10001 --system --no-create-home llm-notary \
@@ -175,24 +175,18 @@ RUN cp /etc/llm-notary/config.toml /etc/llm-notary/config-s3.toml \
     && sed -i 's/backend = "filesystem"/backend = "s3"/' /etc/llm-notary/config-postgres-s3.toml \
     && sed -n '/^\[storage.s3\]/,$p' /etc/llm-notary/config-s3.toml \
         >> /etc/llm-notary/config-postgres-s3.toml \
-    && cp /etc/llm-notary/config-postgres-s3.toml /etc/llm-notary/config-cluster-template.toml \
-    && sed -i 's/127.0.0.1:8787/0.0.0.0:8787/' /etc/llm-notary/config-cluster-template.toml \
-    && sed -i 's/127.0.0.1:8788/0.0.0.0:8788/' /etc/llm-notary/config-cluster-template.toml \
+    && cp /etc/llm-notary/config-postgres-s3.toml /etc/llm-notary/config-server-template.toml \
+    && sed -i 's/127.0.0.1:8787/0.0.0.0:8787/' /etc/llm-notary/config-server-template.toml \
+    && sed -i 's/127.0.0.1:8788/0.0.0.0:8788/' /etc/llm-notary/config-server-template.toml \
     && printf '%s\n' \
         '' \
         '[server]' \
-        'enabled = true' \
         'proxy_origin = "https://proxy.e2e.invalid"' \
         'admin_origin = "https://admin.e2e.invalid"' \
-        'heartbeat_interval_seconds = 2' \
-        'lease_seconds = 8' \
-        'claim_max_runtime_seconds = 60' \
-        'withdrawal_delay_seconds = 4' \
-        'shutdown_grace_seconds = 45' \
         '' \
         '[admin.auth]' \
-        'username = "cluster-admin"' \
+        'username = "server-admin"' \
         'password_hash = "$argon2id$v=19$m=19456,t=2,p=1$Y2x1c3Rlci1lMmUtc2FsdA$e5miUzfGBUsUELcxECEyngoD2trkyo28hZ794hQ9bO8"' \
-        >> /etc/llm-notary/config-cluster-template.toml
+        >> /etc/llm-notary/config-server-template.toml
 COPY deploy/daemon-e2e/provider.py /usr/local/libexec/llm-notary-e2e-provider.py
 COPY deploy/daemon-e2e/share.py /usr/local/libexec/llm-notary-e2e-share.py

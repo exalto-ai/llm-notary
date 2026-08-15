@@ -23,11 +23,11 @@ elif [[ $# -ne 0 ]]; then
 fi
 if [[ $replica_count == 2 ]]; then
   if [[ $metadata_engine != postgres || $artifact_engine != s3 || ( $profile != smoke && $profile != full ) ]]; then
-    echo "cluster E2E supports only postgres s3 2 {smoke|full}" >&2
+    echo "server E2E supports only postgres s3 2 {smoke|full}" >&2
     exit 2
   fi
   script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-  exec "$script_dir/test-daemon-cluster-e2e.sh" "$profile"
+  exec "$script_dir/test-daemon-server-e2e.sh" "$profile"
 fi
 if [[ ( $metadata_engine != sqlite && $metadata_engine != postgres ) || ( $artifact_engine != filesystem && $artifact_engine != s3 ) || $replica_count != 1 || ( $profile != smoke && $profile != full ) ]]; then
   echo "unsupported daemon E2E matrix entry: $metadata_engine $artifact_engine $replica_count $profile" >&2

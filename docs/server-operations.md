@@ -69,7 +69,6 @@ The generated configuration exposes only the choices an application needs:
 format = "llm-notary/agent-config/v1"
 
 [server]
-enabled = true
 proxy_origin = "https://proxy.notary.example"
 admin_origin = "https://admin.notary.example"
 
@@ -106,10 +105,6 @@ To prepare this key outside the Compose helper:
 llm-notaryd server init --vault-key /run/secrets/server-vault.key
 ```
 
-Existing experimental `[cluster]` configurations and verifier-backed
-passphrase vaults remain readable for migration, but new deployments should
-use `[server]` and the shared key file.
-
 ## External PostgreSQL and S3
 
 For Kubernetes or multiple hosts, keep the same server configuration and
@@ -117,7 +112,7 @@ replace the bundled PostgreSQL and MinIO endpoints. Run one setup job before
 the Deployment:
 
 ```bash
-llm-notaryd --config /etc/llm-notary/config.toml migrate
+llm-notaryd migrate --config /etc/llm-notary/config.toml
 ```
 
 Then run two or more identical daemon pods. Give every pod the same config,

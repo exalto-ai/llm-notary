@@ -53,7 +53,7 @@ export interface paths {
         };
         /**
          * Check service readiness
-         * @description Runs bounded metadata, selected artifact-writer, and cluster trust dependency probes. Dependency outages or schema mismatches make readiness fail while /healthz remains local liveness.
+         * @description Runs bounded metadata, selected artifact-writer, and shared trust dependency probes. Dependency outages or schema mismatches make readiness fail while /healthz remains local liveness.
          */
         get: operations["readiness"];
         put?: never;
@@ -281,7 +281,7 @@ export interface paths {
         };
         /**
          * Get configured notary trust
-         * @description Returns a safe read-only projection of the local or cluster-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.
+         * @description Returns a safe read-only projection of the local or server-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.
          */
         get: operations["notaries"];
         put?: never;

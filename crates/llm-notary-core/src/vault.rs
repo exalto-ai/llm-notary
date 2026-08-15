@@ -89,35 +89,10 @@ impl Vault {
         }
     }
 
-    /// Opens an already-provisioned, verifier-backed passphrase vault without
-    /// prompting or initializing any material. This is the only cluster-safe
-    /// startup path.
-    pub fn open_existing_noninteractive() -> Result<Self> {
-        if env::var_os(CHILD_KEY_STDIN_ENV).is_some() {
-            bail!("cluster vault cannot be unlocked through child stdin");
-        }
-        let path = config_path()?;
-        let config = read_config(&path).context("opening existing cluster vault configuration")?;
-        if !matches!(config.mode, VaultMode::Passphrase) {
-            bail!("cluster mode requires a passphrase-backed vault");
-        }
-        if read_key_check(&path)?.is_none() {
-            bail!("cluster mode requires a verifier-backed passphrase vault");
-        }
-        let passphrase = passphrase_from_file_env()?
-            .ok_or_else(|| anyhow::anyhow!("cluster vault passphrase file is required"))?;
-        Self::open_at(&path, Some(&passphrase), None)
-    }
-
     /// Opens the shared server vault without prompting or local key setup.
-    ///
-    /// New server deployments use one exact 32-byte key file. The existing
-    /// verifier-backed passphrase form remains readable for deployments made
-    /// before the server setup was simplified.
     pub fn open_server() -> Result<Self> {
-        let Some(path) = env::var_os(SERVER_KEY_FILE_ENV) else {
-            return Self::open_existing_noninteractive();
-        };
+        let path = env::var_os(SERVER_KEY_FILE_ENV)
+            .ok_or_else(|| anyhow::anyhow!("{SERVER_KEY_FILE_ENV} is required in server mode"))?;
         let path = PathBuf::from(path);
         let key = read_server_key_file(&path)?;
         Ok(Self {
@@ -161,24 +136,14 @@ impl Vault {
         })
     }
 
-    /// Identifies the exact non-secret vault derivation configuration and
-    /// key verifier expected on every replica, without exposing key material.
-    pub fn compatibility_sha256(&self) -> Result<String> {
-        if self.server_key {
-            let mut digest = Sha256::new();
-            digest.update(b"llm-notary/server-vault-compatibility/v1\0");
-            digest.update(self.key);
-            return Ok(hex::encode(digest.finalize()));
+    /// Identifies the exact shared server key without exposing key material.
+    pub fn server_identity_sha256(&self) -> Result<String> {
+        if !self.server_key {
+            bail!("server vault identity is unavailable for a local vault");
         }
-        let config = fs::read(&self.config_path)
-            .context("reading vault configuration for compatibility check")?;
-        let key_check = fs::read(key_check_path(&self.config_path))
-            .context("reading vault verifier for compatibility check")?;
         let mut digest = Sha256::new();
-        digest.update(b"llm-notary/cluster-vault-compatibility/v1\0");
-        digest.update(config);
-        digest.update([0]);
-        digest.update(key_check);
+        digest.update(b"llm-notary/server-vault-compatibility/v1\0");
+        digest.update(self.key);
         Ok(hex::encode(digest.finalize()))
     }
 
@@ -631,7 +596,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("server-vault.key");
         let first = Vault::init_server_key(&path).unwrap();
-        let identity = first.compatibility_sha256().unwrap();
+        let identity = first.server_identity_sha256().unwrap();
         let encrypted = first.encrypt(b"private server bundle").unwrap();
         assert_eq!(fs::metadata(&path).unwrap().len(), 32);
         #[cfg(unix)]
@@ -649,7 +614,7 @@ mod tests {
             config_path: path,
             server_key: true,
         };
-        assert_eq!(reopened.compatibility_sha256().unwrap(), identity);
+        assert_eq!(reopened.server_identity_sha256().unwrap(), identity);
         assert_eq!(
             reopened.decrypt(&encrypted).unwrap(),
             b"private server bundle"
@@ -722,7 +687,6 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config_path = root.path().join("vault.json");
         let vault = Vault::init_passphrase_at(&config_path, "correct horse").unwrap();
-        let compatibility = vault.compatibility_sha256().unwrap();
         let encrypted = vault.encrypt(b"private bundle").unwrap();
         drop(vault);
 
@@ -746,18 +710,8 @@ mod tests {
 
         fs::write(&check_path, original_check).unwrap();
         let reopened = Vault::open_at(&config_path, Some("correct horse"), None).unwrap();
-        assert_eq!(reopened.compatibility_sha256().unwrap(), compatibility);
         assert_eq!(reopened.decrypt(&encrypted).unwrap(), b"private bundle");
         drop(reopened);
-
-        // A vault's config and verifier are one directory-level pair. Use a
-        // second directory to prove that the same passphrase with a different
-        // salt has a different compatibility identity.
-        let other_root = tempfile::tempdir().unwrap();
-        let other_path = other_root.path().join("vault.json");
-        let other = Vault::init_passphrase_at(&other_path, "correct horse").unwrap();
-        assert_ne!(other.compatibility_sha256().unwrap(), compatibility);
-        drop(other);
 
         fs::remove_file(&check_path).unwrap();
         assert!(!passphrase_unlock_is_verifiable_at(&config_path).unwrap());

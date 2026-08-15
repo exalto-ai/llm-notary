@@ -11,12 +11,33 @@ use std::{
 use tokio::sync::watch;
 
 use crate::{
-    config::{ClusterConfig, SERVER_INSTANCE_ID_ENV, valid_instance_id},
+    config::{SERVER_INSTANCE_ID_ENV, valid_instance_id},
     metadata_store::{
         CaptureClaim, FinalizationClaim, MetadataResult, MetadataStore, MetadataStoreError,
         ReplicaIdentity,
     },
 };
+
+#[cfg(not(feature = "daemon-e2e"))]
+const HEARTBEAT_INTERVAL_SECONDS: u64 = 5;
+#[cfg(feature = "daemon-e2e")]
+const HEARTBEAT_INTERVAL_SECONDS: u64 = 2;
+#[cfg(not(feature = "daemon-e2e"))]
+const LEASE_SECONDS: u64 = 20;
+#[cfg(feature = "daemon-e2e")]
+const LEASE_SECONDS: u64 = 8;
+#[cfg(not(feature = "daemon-e2e"))]
+const CLAIM_MAX_RUNTIME_SECONDS: u64 = 3_600;
+#[cfg(feature = "daemon-e2e")]
+const CLAIM_MAX_RUNTIME_SECONDS: u64 = 60;
+#[cfg(not(feature = "daemon-e2e"))]
+const WITHDRAWAL_DELAY_SECONDS: u64 = 8;
+#[cfg(feature = "daemon-e2e")]
+const WITHDRAWAL_DELAY_SECONDS: u64 = 4;
+#[cfg(not(feature = "daemon-e2e"))]
+const SHUTDOWN_GRACE_SECONDS: u64 = 120;
+#[cfg(feature = "daemon-e2e")]
+const SHUTDOWN_GRACE_SECONDS: u64 = 45;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Lifecycle {
@@ -28,20 +49,13 @@ pub(crate) enum Lifecycle {
 #[derive(Debug)]
 pub(crate) struct ClusterRuntime {
     identity: ReplicaIdentity,
-    heartbeat_interval_seconds: u64,
-    lease_seconds: u64,
-    claim_max_runtime_seconds: u64,
-    withdrawal_delay_seconds: u64,
-    shutdown_grace_seconds: u64,
     lifecycle: AtomicU8,
 }
 
 impl ClusterRuntime {
-    pub(crate) fn from_config(config: &ClusterConfig) -> MetadataResult<Self> {
-        let instance_id = config
-            .instance_id
-            .clone()
-            .or_else(|| std::env::var(SERVER_INSTANCE_ID_ENV).ok())
+    pub(crate) fn from_environment() -> MetadataResult<Self> {
+        let instance_id = std::env::var(SERVER_INSTANCE_ID_ENV)
+            .ok()
             .or_else(|| {
                 std::env::var("HOSTNAME")
                     .ok()
@@ -51,11 +65,6 @@ impl ClusterRuntime {
         let identity = ReplicaIdentity::new(instance_id)?;
         Ok(Self {
             identity,
-            heartbeat_interval_seconds: config.heartbeat_interval_seconds,
-            lease_seconds: config.lease_seconds,
-            claim_max_runtime_seconds: config.claim_max_runtime_seconds,
-            withdrawal_delay_seconds: config.withdrawal_delay_seconds,
-            shutdown_grace_seconds: config.shutdown_grace_seconds,
             lifecycle: AtomicU8::new(Lifecycle::Starting as u8),
         })
     }
@@ -65,19 +74,19 @@ impl ClusterRuntime {
     }
 
     pub(crate) const fn heartbeat_interval_seconds(&self) -> u64 {
-        self.heartbeat_interval_seconds
+        HEARTBEAT_INTERVAL_SECONDS
     }
 
     pub(crate) const fn lease_seconds(&self) -> u64 {
-        self.lease_seconds
+        LEASE_SECONDS
     }
 
     pub(crate) const fn withdrawal_delay_seconds(&self) -> u64 {
-        self.withdrawal_delay_seconds
+        WITHDRAWAL_DELAY_SECONDS
     }
 
     pub(crate) const fn shutdown_grace_seconds(&self) -> u64 {
-        self.shutdown_grace_seconds
+        SHUTDOWN_GRACE_SECONDS
     }
 
     pub(crate) fn keep_capture_claim_alive(
@@ -102,9 +111,9 @@ impl ClusterRuntime {
         claim: ClaimToRenew,
     ) -> ClaimLeaseGuard {
         let (shutdown, mut stopped) = watch::channel(false);
-        let renewal_interval = Duration::from_secs(self.heartbeat_interval_seconds);
-        let maximum_runtime = Duration::from_secs(self.claim_max_runtime_seconds);
-        let lease_seconds = self.lease_seconds;
+        let renewal_interval = Duration::from_secs(HEARTBEAT_INTERVAL_SECONDS);
+        let maximum_runtime = Duration::from_secs(CLAIM_MAX_RUNTIME_SECONDS);
+        let lease_seconds = LEASE_SECONDS;
         tokio::spawn(async move {
             let started = tokio::time::Instant::now();
             loop {
@@ -116,7 +125,7 @@ impl ClusterRuntime {
                 }
                 if started.elapsed() >= maximum_runtime {
                     tracing::warn!(
-                        "cluster work claim reached its maximum runtime; allowing lease expiry"
+                        "server work claim reached its maximum runtime; allowing lease expiry"
                     );
                     return;
                 }
@@ -134,7 +143,7 @@ impl ClusterRuntime {
                     Ok(()) => {}
                     Err(MetadataStoreError::Fenced) => return,
                     Err(error) => {
-                        tracing::warn!(error = %error, "cluster work claim renewal failed; retrying until the lease expires")
+                        tracing::warn!(error = %error, "server work claim renewal failed; retrying until the lease expires")
                     }
                 }
             }

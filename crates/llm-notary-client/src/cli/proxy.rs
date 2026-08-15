@@ -195,9 +195,9 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     // vault initialization. A PostgreSQL outage or unmigrated schema therefore
     // fails startup directly and never causes a fallback or unrelated prompt.
     let cluster = config
-        .cluster
-        .enabled
-        .then(|| ClusterRuntime::from_config(&config.cluster))
+        .server
+        .is_some()
+        .then(ClusterRuntime::from_environment)
         .transpose()?
         .map(Arc::new);
     if cluster.is_some() && !auth::api_key_mode_active()? {
@@ -208,14 +208,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     }
     let persistence = Persistence::open(&config).await?;
     let vault = if cluster.is_some() {
-        let vault = Vault::open_server().context("opening the shared server vault")?;
-        if let Some(expected) = config.cluster.vault_compatibility_sha256.as_deref() {
-            anyhow::ensure!(
-                vault.compatibility_sha256()? == expected,
-                "shared vault compatibility check failed"
-            );
-        }
-        vault
+        Vault::open_server().context("opening the shared server vault")?
     } else {
         Vault::open_or_init_interactive().context(
             "opening the local bundle vault (set LLM_NOTARY_VAULT_PASSPHRASE_FILE before first start when an OS vault is unavailable)",
@@ -223,7 +216,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     };
     if let Some(cluster) = &cluster {
         let api_origin = auth::configured_api_origin()?;
-        let vault_identity = vault.compatibility_sha256()?;
+        let vault_identity = vault.server_identity_sha256()?;
         persistence
             .metadata
             .register_replica(
@@ -288,7 +281,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         cluster.clone(),
         cluster
             .as_ref()
-            .map(|_| state.vault.compatibility_sha256())
+            .map(|_| state.vault.server_identity_sha256())
             .transpose()?,
     )
     .await?;
@@ -359,7 +352,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         result = &mut proxy_server => Exit::Proxy(joined(result, "proxy server")),
         result = &mut admin_server => Exit::Admin(joined(result, "admin server")),
         result = &mut worker => Exit::Worker(joined(result, "finalization worker")),
-        result = &mut heartbeat => Exit::Heartbeat(joined(result, "cluster heartbeat")),
+        result = &mut heartbeat => Exit::Heartbeat(joined(result, "server replica heartbeat")),
         () = shutdown_signal() => Exit::Requested,
     };
     if let Some(cluster) = &cluster {
@@ -393,7 +386,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
                         forced_cluster_shutdown = true;
                         tracing::warn!(
                             shutdown_grace_seconds = cluster.shutdown_grace_seconds(),
-                            "cluster shutdown grace expired; stopping remaining local tasks"
+                            "server shutdown grace expired; stopping remaining local tasks"
                         );
                         proxy_server.abort();
                         admin_server.abort();
@@ -411,7 +404,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
             joined(admin_server.await, "admin server")?;
             joined(worker.await, "finalization worker")?;
             let _ = heartbeat_shutdown_tx.send(true);
-            joined(heartbeat.await, "cluster heartbeat")?;
+            joined(heartbeat.await, "server replica heartbeat")?;
             bail!("proxy server stopped unexpectedly");
         }
         Exit::Admin(result) => {
@@ -419,7 +412,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
             joined(proxy_server.await, "proxy server")?;
             joined(worker.await, "finalization worker")?;
             let _ = heartbeat_shutdown_tx.send(true);
-            joined(heartbeat.await, "cluster heartbeat")?;
+            joined(heartbeat.await, "server replica heartbeat")?;
             bail!("admin server stopped unexpectedly");
         }
         Exit::Worker(result) => {
@@ -427,7 +420,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
             joined(proxy_server.await, "proxy server")?;
             joined(admin_server.await, "admin server")?;
             let _ = heartbeat_shutdown_tx.send(true);
-            joined(heartbeat.await, "cluster heartbeat")?;
+            joined(heartbeat.await, "server replica heartbeat")?;
             bail!("finalization worker stopped unexpectedly");
         }
         Exit::Heartbeat(result) => {
@@ -435,7 +428,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
             joined(proxy_server.await, "proxy server")?;
             joined(admin_server.await, "admin server")?;
             joined(worker.await, "finalization worker")?;
-            bail!("cluster heartbeat stopped unexpectedly");
+            bail!("server replica heartbeat stopped unexpectedly");
         }
     }
     if let Some(update_checker) = update_checker {
@@ -453,7 +446,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     if forced_cluster_shutdown {
         heartbeat.abort();
     } else {
-        joined(heartbeat.await, "cluster heartbeat")?;
+        joined(heartbeat.await, "server replica heartbeat")?;
     }
     if let (Some(cluster), false) = (&cluster, forced_cluster_shutdown) {
         state
@@ -539,7 +532,7 @@ fn spawn_cluster_heartbeat(
                 Err(error) => {
                     tracing::warn!(
                         error = %error,
-                        "cluster heartbeat could not reach the metadata backend; retrying"
+                        "server replica heartbeat could not reach the metadata backend; retrying"
                     );
                 }
             }

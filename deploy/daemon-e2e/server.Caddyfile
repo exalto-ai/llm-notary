@@ -3,17 +3,15 @@
 	auto_https off
 }
 
-# Internal provider-proxy frontend. Terminate TLS before this hop and keep
-# retries disabled: replaying an inference POST can duplicate billed work and
-# split capture ownership.
+# Provider requests are never retried or replayed.
 :8787 {
 	reverse_proxy daemon-a:8787 daemon-b:8787 {
 		lb_policy round_robin
 		lb_try_duration 0s
 		health_uri /readyz
 		health_port 8788
-		health_interval 5s
-		health_timeout 3s
+		health_interval 1s
+		health_timeout 2s
 		flush_interval -1
 		transport http {
 			versions 1.1
@@ -23,15 +21,13 @@
 	}
 }
 
-# Internal administration frontend. Restrict this network path and keep the
-# daemon's configured HTTP Basic authentication enabled.
 :8788 {
 	reverse_proxy daemon-a:8788 daemon-b:8788 {
 		lb_policy round_robin
 		lb_try_duration 0s
 		health_uri /readyz
-		health_interval 5s
-		health_timeout 3s
+		health_interval 1s
+		health_timeout 2s
 		flush_interval -1
 		transport http {
 			versions 1.1

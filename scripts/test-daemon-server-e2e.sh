@@ -8,7 +8,7 @@ fi
 profile=$1
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repository_dir=$(cd -- "$script_dir/.." && pwd)
-project_name="llm-notary-daemon-cluster-e2e-$$"
+project_name="llm-notary-daemon-server-e2e-$$"
 compose=(docker compose --project-name "$project_name" --file "$repository_dir/compose.daemon-e2e.yml")
 
 cleanup() {
@@ -17,7 +17,7 @@ cleanup() {
   set +e
   if [[ $result -ne 0 ]]; then
     "${compose[@]}" ps >&2
-    "${compose[@]}" logs --no-color postgres cluster-migrator minio setup provider notary daemon-a daemon-b cluster-ingress >&2
+    "${compose[@]}" logs --no-color postgres server-migrator minio setup provider notary daemon-a daemon-b server-ingress >&2
   fi
   if [[ ${DAEMON_E2E_KEEP:-0} != 1 ]]; then
     "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1
@@ -55,12 +55,12 @@ wait_ready() {
 wait_ingress_ready() {
   for _ in $(seq 1 60); do
     if "${compose[@]}" exec -T daemon-a curl --fail --silent --max-time 3 \
-        http://cluster-ingress:8788/readyz >/dev/null 2>&1; then
+        http://server-ingress:8788/readyz >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
   done
-  echo "cluster ingress did not recover a ready backend" >&2
+  echo "server ingress did not recover a ready backend" >&2
   return 1
 }
 
@@ -114,16 +114,16 @@ fi
 if [[ $profile == full ]]; then
   # Hold publication briefly so the event-page high-water is captured before
   # the terminal event, regardless of which replica claims the operation.
-  export DAEMON_E2E_CLUSTER_FINALIZATION_PAUSE_MS=3000
+  export DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS=3000
 fi
-"${compose[@]}" up --detach cluster-ingress
+"${compose[@]}" up --detach server-ingress
 
-for service in daemon-a daemon-b cluster-ingress; do
+for service in daemon-a daemon-b server-ingress; do
   wait_healthy "$service"
 done
 wait_ingress_ready
 
-basic=cluster-admin:cluster-password
+basic=server-admin:cluster-password
 admin_json() {
   local service=$1
   local path=$2
@@ -133,7 +133,7 @@ admin_json() {
 ingress_admin_json() {
   local path=$1
   shift
-  "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error --user "$basic" "$@" "http://cluster-ingress:8788$path"
+  "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error --user "$basic" "$@" "http://server-ingress:8788$path"
 }
 session_request() {
   local service=$1
@@ -148,7 +148,7 @@ ingress_session_request() {
   shift
   "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error \
     --header 'x-llm-notary-request: dashboard' --header "cookie: $cookie" \
-    "$@" "http://cluster-ingress:8788$path"
+    "$@" "http://server-ingress:8788$path"
 }
 
 status_a=$(admin_json daemon-a /v1/status)
@@ -160,9 +160,9 @@ replicas=$(psql_value 'select count(*) from llm_notary_daemon.replicas where lea
 
 # A raw dashboard token is returned only to this client. PostgreSQL stores the
 # domain-separated 32-byte digest and replica B validates/revokes it.
-headers=$("${compose[@]}" exec -T daemon-a curl --silent --show-error --dump-header - --output /dev/null --user "$basic" --request POST http://cluster-ingress:8788/v1/session)
+headers=$("${compose[@]}" exec -T daemon-a curl --silent --show-error --dump-header - --output /dev/null --user "$basic" --request POST http://server-ingress:8788/v1/session)
 cookie=$(printf '%s\n' "$headers" | awk -F': ' 'tolower($1)=="set-cookie" {sub(/;.*/,"",$2); gsub("\r","",$2); print $2}')
-[[ $cookie == llm_notary_admin_session=* ]] || { echo "cluster session cookie missing" >&2; exit 1; }
+[[ $cookie == llm_notary_admin_session=* ]] || { echo "server session cookie missing" >&2; exit 1; }
 session_instances=""
 for _ in $(seq 1 10); do
   session_status=$(ingress_session_request /v1/status)
@@ -176,27 +176,27 @@ raw_in_database=$(psql_value "select count(*) from llm_notary_daemon.dashboard_s
 [[ $raw_in_database == 0 ]] || { echo "raw dashboard bearer token reached PostgreSQL" >&2; exit 1; }
 ingress_session_request /v1/session --request DELETE >/dev/null
 if session_request daemon-a /v1/status >/dev/null 2>&1; then
-  echo "revoked cluster session remained valid" >&2
+  echo "revoked server session remained valid" >&2
   exit 1
 fi
 
 if [[ $profile == full ]]; then
-  echo "checking fail-closed cluster startup profiles"
+  echo "checking fail-closed server startup profiles"
   if "${compose[@]}" run --rm --no-deps -e LLM_NOTARY_API_KEY= daemon-a \
-      --config /state/config-cluster-a.toml >/dev/null 2>&1; then
-    echo "cluster daemon started without an injected API key" >&2
+      --config /state/config-server-a.toml >/dev/null 2>&1; then
+    echo "server daemon started without an injected API key" >&2
     exit 1
   fi
   if "${compose[@]}" run --rm --no-deps \
       -e LLM_NOTARY_DESKTOP_CONTROL_STDIN=1 daemon-a \
-      --config /state/config-cluster-a.toml </dev/null >/dev/null 2>&1; then
-    echo "cluster daemon accepted desktop process control" >&2
+      --config /state/config-server-a.toml </dev/null >/dev/null 2>&1; then
+    echo "server daemon accepted desktop process control" >&2
     exit 1
   fi
   if "${compose[@]}" run --rm --no-deps --entrypoint /bin/sh daemon-a -ec \
-      'dd if=/dev/zero of=/tmp/wrong-vault.key bs=32 count=1 status=none; chmod 600 /tmp/wrong-vault.key; export LLM_NOTARY_SERVER_VAULT_KEY_FILE=/tmp/wrong-vault.key; exec llm-notaryd --config /state/config-cluster-a.toml' \
+      'dd if=/dev/zero of=/tmp/wrong-vault.key bs=32 count=1 status=none; chmod 600 /tmp/wrong-vault.key; export LLM_NOTARY_SERVER_VAULT_KEY_FILE=/tmp/wrong-vault.key; exec llm-notaryd --config /state/config-server-a.toml' \
       >/dev/null 2>&1; then
-    echo "cluster daemon accepted incompatible vault material" >&2
+    echo "server daemon accepted incompatible vault material" >&2
     exit 1
   fi
 
@@ -221,15 +221,15 @@ if [[ $profile == full ]]; then
 
   provider_requests_before=$("${compose[@]}" logs --no-color provider | grep -c 'POST /v1/chat/completions' || true)
   "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error \
-    --dump-header /tmp/cluster-capture.headers \
-    --header 'authorization: Bearer offline-cluster-secret' \
+    --dump-header /tmp/server-capture.headers \
+    --header 'authorization: Bearer offline-server-secret' \
     --header 'content-type: application/json' \
-    --data '{"model":"fixture-model","messages":[{"role":"user","content":"cluster cross replica prompt"}]}' \
-    http://cluster-ingress:8787/openai/v1/chat/completions >/tmp/cluster-provider-response.json
+    --data '{"model":"fixture-model","messages":[{"role":"user","content":"server cross replica prompt"}]}' \
+    http://server-ingress:8787/openai/v1/chat/completions >/tmp/server-provider-response.json
   provider_requests_after=$("${compose[@]}" logs --no-color provider | grep -c 'POST /v1/chat/completions' || true)
   [[ $((provider_requests_after - provider_requests_before)) == 1 ]] || { echo "ingress replayed one provider request" >&2; exit 1; }
-  capture_id=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-llm-notary-capture-id:" {gsub("\r","",$2); print $2}' /tmp/cluster-capture.headers)
-  [[ $capture_id == cap-* ]] || { echo "cluster capture ID missing" >&2; exit 1; }
+  capture_id=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-llm-notary-capture-id:" {gsub("\r","",$2); print $2}' /tmp/server-capture.headers)
+  [[ $capture_id == cap-* ]] || { echo "server capture ID missing" >&2; exit 1; }
   capture_b=$(admin_json daemon-b "/v1/captures/$capture_id")
   printf '%s' "$capture_b" | "${compose[@]}" exec -T daemon-b jq -e --arg id "$capture_id" '.capture.capture_id==$id and .capture.capture_state=="captured" and any(.artifacts[]; .kind=="deferred_bundle")' >/dev/null
 
@@ -247,9 +247,9 @@ if [[ $profile == full ]]; then
     [[ $state == failed || $state == interrupted ]] && { printf '%s\n' "$operation" >&2; exit 1; }
     sleep 1
   done
-  [[ $state == finalized ]] || { echo "cluster finalization timed out" >&2; exit 1; }
-  ingress_admin_json "/v1/captures/$capture_id/package" --output /tmp/cluster.llmtrace
-  "${compose[@]}" exec -T daemon-a llm-notary traces verify /tmp/cluster.llmtrace \
+  [[ $state == finalized ]] || { echo "server finalization timed out" >&2; exit 1; }
+  ingress_admin_json "/v1/captures/$capture_id/package" --output /tmp/server.llmtrace
+  "${compose[@]}" exec -T daemon-a llm-notary traces verify /tmp/server.llmtrace \
     --trusted-notary-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 >/dev/null
   owner_rows=$("${compose[@]}" exec -T postgres psql -U daemon_e2e -d daemon_e2e -Atc "select count(*) from llm_notary_daemon.operations where operation_id='$operation_id' and owner_instance_id in ('daemon-a','daemon-b') and claim_fence is not null")
   [[ $owner_rows == 1 ]] || { echo "finalization did not retain one fenced owner" >&2; exit 1; }
@@ -267,16 +267,16 @@ if [[ $profile == full ]]; then
   [[ $healthy_capture == captured ]] || { echo "peer stop corrupted completed capture" >&2; exit 1; }
 
   echo "forcing claim expiry and proving stale artifact/terminal fencing"
-  export DAEMON_E2E_CLUSTER_FINALIZATION_PAUSE_MS=30000
+  export DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS=30000
   "${compose[@]}" rm --stop --force daemon-a >/dev/null
   wait_replica_slot_released daemon-a
   "${compose[@]}" up --detach --no-deps daemon-a >/dev/null
   wait_healthy daemon-a
   "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error \
     --dump-header /tmp/stale-capture.headers \
-    --header 'authorization: Bearer offline-cluster-secret' \
+    --header 'authorization: Bearer offline-server-secret' \
     --header 'content-type: application/json' \
-    --data '{"model":"fixture-model","messages":[{"role":"user","content":"cluster stale owner prompt"}]}' \
+    --data '{"model":"fixture-model","messages":[{"role":"user","content":"server stale owner prompt"}]}' \
     http://127.0.0.1:8787/openai/v1/chat/completions >/dev/null
   stale_capture_id=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-llm-notary-capture-id:" {gsub("\r","",$2); print $2}' /tmp/stale-capture.headers)
   stale_queued=$(admin_json daemon-a "/v1/captures/$stale_capture_id/finalizations" --request POST)
@@ -294,7 +294,7 @@ if [[ $profile == full ]]; then
   [[ $stale_object_ready == 1 ]] || { echo "stale-owner finalization never published its claim-scoped object" >&2; exit 1; }
   daemon_a_container=$("${compose[@]}" ps --quiet daemon-a)
   docker pause "$daemon_a_container" >/dev/null
-  unset DAEMON_E2E_CLUSTER_FINALIZATION_PAUSE_MS
+  unset DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS
   wait_replica_slot_released daemon-b
   start_existing_service daemon-b
   wait_healthy daemon-b
@@ -338,14 +338,14 @@ if [[ $profile == full ]]; then
   "${compose[@]}" rm --stop --force daemon-a >/dev/null 2>&1 || true
   wait_replica_slot_released daemon-a
   "${compose[@]}" stop daemon-b >/dev/null
-  export DAEMON_E2E_CLUSTER_FINALIZATION_PAUSE_MS=5000
+  export DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS=5000
   "${compose[@]}" up --detach --no-deps daemon-a >/dev/null
   wait_healthy daemon-a
   "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error \
     --dump-header /tmp/drain-finalization.headers \
-    --header 'authorization: Bearer offline-cluster-secret' \
+    --header 'authorization: Bearer offline-server-secret' \
     --header 'content-type: application/json' \
-    --data '{"model":"fixture-model","messages":[{"role":"user","content":"cluster running drain prompt"}]}' \
+    --data '{"model":"fixture-model","messages":[{"role":"user","content":"server running drain prompt"}]}' \
     http://127.0.0.1:8787/openai/v1/chat/completions >/dev/null
   drain_finalization_capture=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-llm-notary-capture-id:" {gsub("\r","",$2); print $2}' /tmp/drain-finalization.headers)
   drain_queued=$(admin_json daemon-a "/v1/captures/$drain_finalization_capture/finalizations" --request POST)
@@ -377,24 +377,24 @@ if [[ $profile == full ]]; then
   [[ $drain_terminal == finalized ]] || { echo "running finalization did not finish during drain: $drain_terminal" >&2; exit 1; }
 
   echo "checking rolling drain with an admitted stream and queued peer work"
-  unset DAEMON_E2E_CLUSTER_FINALIZATION_PAUSE_MS
+  unset DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS
   "${compose[@]}" rm --force daemon-a >/dev/null 2>&1 || true
   wait_replica_slot_released daemon-a
   "${compose[@]}" up --detach --no-deps daemon-a >/dev/null
   wait_healthy daemon-a
   "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error \
     --dump-header /tmp/queued-drain.headers \
-    --header 'authorization: Bearer offline-cluster-secret' \
+    --header 'authorization: Bearer offline-server-secret' \
     --header 'content-type: application/json' \
-    --data '{"model":"fixture-model","messages":[{"role":"user","content":"cluster queued drain prompt"}]}' \
+    --data '{"model":"fixture-model","messages":[{"role":"user","content":"server queued drain prompt"}]}' \
     http://127.0.0.1:8787/openai/v1/chat/completions >/dev/null
   queued_drain_capture=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-llm-notary-capture-id:" {gsub("\r","",$2); print $2}' /tmp/queued-drain.headers)
   slow_output=$(mktemp)
   "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error \
     --dump-header /tmp/rolling-stream.headers \
-    --header 'authorization: Bearer offline-cluster-secret' \
+    --header 'authorization: Bearer offline-server-secret' \
     --header 'content-type: application/json' \
-    --data '{"model":"fixture-model","stream":true,"messages":[{"role":"user","content":"cluster rolling drain stream"}]}' \
+    --data '{"model":"fixture-model","stream":true,"messages":[{"role":"user","content":"server rolling drain stream"}]}' \
     http://127.0.0.1:8787/openai/v1/chat/completions >"$slow_output" 2>&1 &
   slow_pid=$!
   rolling_capture_id=""
@@ -442,7 +442,7 @@ if [[ $profile == full ]]; then
   wait_replica_slot_released daemon-a
   "${compose[@]}" up --detach --no-deps daemon-a >/dev/null
   wait_healthy daemon-a
-  wait_healthy cluster-ingress
+  wait_healthy server-ingress
 fi
 
-echo "daemon cluster E2E passed: postgres s3 2 $profile"
+echo "daemon server E2E passed: postgres s3 2 $profile"
