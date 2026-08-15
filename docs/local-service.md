@@ -149,21 +149,22 @@ UTF-8 file and pass its path rather than the secret itself:
 ```bash
 llm-notary status
 llm-notary --admin-password-file /private/admin-password status
-llm-notary --config /path/to/config.toml captures list --json
+llm-notary --config /path/to/config.toml captures list --metadata-only --json
 ```
 
 On Unix, the password file must not be accessible to group or other users.
 The CLI never reads the Argon2id hash as though it were a password and never
 stores a prompted password.
 
-`llm-notary version`, `llm-notary update --check`, and `llm-notary update`
-run before configuration loading and daemon compatibility checks. This keeps
-release recovery available when the service is stopped or an installed pair
-has an incompatible API. Official daemons authenticate the signed `latest`
-channel and its monotonically increasing revision, then check it in the
-background after startup and about every six hours with jitter. `/v1/status`
-reports only the current/latest build IDs, availability, last check time, and a
-bounded failure code; development builds make no update request.
+`llm-notary version`, `llm-notary update --check`, `llm-notary update`, and
+`llm-notary skill install` run before configuration loading and daemon
+compatibility checks. This keeps release recovery and agent-skill installation
+available when the service is stopped or an installed pair has an incompatible
+API. Official daemons authenticate the signed `latest` channel and its
+monotonically increasing revision, then check it in the background after
+startup and about every six hours with jitter. `/v1/status` reports only the
+current/latest build IDs, availability, last check time, and a bounded failure
+code; development builds make no update request.
 
 ## Command client
 
@@ -173,12 +174,13 @@ nonzero exit status and uses the bounded
 `{"error":{"code":"...","message":"..."}}` envelope without a duplicate
 plain-text diagnostic. List filters map directly to server-side REST filters,
 and accepted mutations print the durable operation or job identifier without
-waiting indefinitely:
+waiting indefinitely. Capture-list JSON includes stored prompt and output
+previews; use `--metadata-only` before sending it to an agent transcript:
 
 ```bash
 llm-notary captures list --query sanitized --provider openai --limit 20
 llm-notary captures list --cursor "$next_cursor"
-llm-notary captures list --provider openai --all --json
+llm-notary captures list --provider openai --all --metadata-only --json
 llm-notary captures show cap-example
 llm-notary finalize cap-example --wait
 llm-notary operations list --state failed --kind finalization
@@ -189,8 +191,15 @@ llm-notary traces verify ./cap-example.llmtrace
 llm-notary events --severity error --limit 20
 llm-notary events --after "$high_water_cursor"
 llm-notary notaries list
+llm-notary skill install --target all
 llm-notary open
 ```
+
+The skill installer writes the release's portable `llm-notary` skill to Codex,
+Claude Code, both, or a custom skills directory. It preflights every requested
+destination and refuses to replace different bundled files without `--force`.
+It does not contact the daemon. See the [coding-agent
+playbook](agent-playbook.md) for paths and consent boundaries.
 
 Sharing identity remains daemon-owned. Login, logout, account inspection,
 and sharing all use the local REST API, so only `llm-notaryd` accesses the

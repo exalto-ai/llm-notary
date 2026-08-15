@@ -1,0 +1,4 @@
+interface:
+  display_name: "LLM Notary"
+  short_description: "Inspect and verify local LLM traces"
+  default_prompt: "Use $llm-notary to list my finalized captures and verify the trace I select."

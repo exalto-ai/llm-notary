@@ -29,6 +29,7 @@ Subscription-backed authentication is supported and live-tested with Codex CLI u
 
 ```sh
 curl -fsSL %PUBLIC_ORIGIN%/install.sh | sh
+llm-notary skill install --target all
 llm-notaryd
 ```
 
@@ -42,10 +43,10 @@ llm-notaryd
 
 curl http://127.0.0.1:8788/healthz
 curl http://127.0.0.1:8788/openapi.json
-curl "http://127.0.0.1:8788/v1/captures?query=pricing"
+llm-notary --json captures list --metadata-only --query pricing
 ```
 
-LLM Notary is pre-release. The guided app supports Apple silicon Macs running macOS 12 or later; production app downloads are signed, notarized, and published with the CLI archives. The website's latest channel tracks the latest successfully published main build. The CLI installer verifies the downloaded archive against a SHA-256 value from the same publisher, which detects corruption but is not an independent release signature. Open `http://127.0.0.1:8788` for the local dashboard. Use `llm-notary status`, `llm-notary captures list`, or another CLI command to operate the daemon through its versioned REST API; add `--json` for automation. The loopback admin API is open to local processes by default; an installation can require HTTP Basic credentials by setting `admin.auth` to a username and Argon2id password hash. Use `llm-notaryd --config /path/to/config.toml` to start the daemon with a non-standard local configuration, and pass the same `--config` option to CLI commands. For a self-hosted notary, set `notary.endpoint` and `notary.public_key` together in that file. Hosted services discover the notary endpoint and key from a versioned directory served over authenticated HTTPS; the directory JSON is not separately signed.
+LLM Notary is pre-release. The guided app supports Apple silicon Macs running macOS 12 or later; production app downloads are signed, notarized, and published with the CLI archives. The website's latest channel tracks the latest successfully published main build. The CLI installer verifies the downloaded archive against a SHA-256 value from the same publisher, which detects corruption but is not an independent release signature. `llm-notary skill install --target codex`, `--target claude`, or `--target all` installs the bundled portable agent skill without contacting the daemon; `--skills-dir` supports another Agent Skills compatible client. The skill teaches approval, verification, disclosure, and secret-handling boundaries while using the live local OpenAPI contract. Claude Code installs under `$CLAUDE_CONFIG_DIR/skills` when that environment variable is nonempty and under `~/.claude/skills` otherwise. It detects changes inside an existing personal skills directory; restart it if that directory did not exist when the current session started. Open `http://127.0.0.1:8788` for the local dashboard. Use `llm-notary status`, `llm-notary captures list`, or another CLI command to operate the daemon through its versioned REST API; add `--json` for automation. Raw capture-list JSON includes stored prompt and output previews, so use `--metadata-only` before sending structured capture results to an agent transcript. The loopback admin API is open to local processes by default; an installation can require HTTP Basic credentials by setting `admin.auth` to a username and Argon2id password hash. Use `llm-notaryd --config /path/to/config.toml` to start the daemon with a non-standard local configuration, and pass the same `--config` option to CLI commands. For a self-hosted notary, set `notary.endpoint` and `notary.public_key` together in that file. Hosted services discover the notary endpoint and key from a versioned directory served over authenticated HTTPS; the directory JSON is not separately signed.
 
 ## Package layout
 

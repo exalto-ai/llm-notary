@@ -95,6 +95,51 @@ The two installed programs have separate jobs:
 `llm-notary` does not start the service and does not open the catalog, vault,
 or artifacts directly.
 
+## Install the portable agent skill
+
+The CLI bundles an [Agent Skills](https://agentskills.io) compatible skill that
+teaches local coding agents how to find captures, finalize selected calls,
+verify traces, diagnose operations, and ask before state-changing or public
+actions. Installing the skill does not contact or start the daemon.
+
+Install it for one supported agent, or both:
+
+```bash
+llm-notary skill install --target codex
+llm-notary skill install --target claude
+llm-notary skill install --target all
+```
+
+Codex receives it under `~/.agents/skills/llm-notary`. Claude Code receives it
+under `$CLAUDE_CONFIG_DIR/skills/llm-notary` when that environment variable is
+nonempty and under `~/.claude/skills/llm-notary` otherwise. For another
+compatible agent, provide its skills directory and the installer will create
+the `llm-notary` child:
+
+```bash
+llm-notary skill install --skills-dir /path/to/agent/skills
+```
+
+Claude Code detects changes inside its existing personal `skills` directory.
+If that top-level directory did not exist when the current Claude Code session
+started, restart Claude Code after installation so it discovers the skill.
+
+The installed skill uses the command client first and treats the running
+daemon's `/openapi.json` as the authority for operations the CLI does not
+expose. It never needs a non-loopback listener. If a destination already
+contains different bundled files, installation stops without changing any
+target. Inspect the existing skill before explicitly replacing those files:
+
+```bash
+llm-notary skill install --target all --force
+```
+
+Re-run the install command after updating LLM Notary so the installed skill
+matches the local CLI. The portable source is committed at
+[`skills/llm-notary`](../skills/llm-notary/SKILL.md), and the
+[coding-agent playbook](agent-playbook.md) explains its safety and consent
+boundaries.
+
 ## Start the daemon
 
 ```bash
@@ -202,6 +247,10 @@ Find the capture without decrypting every bundle:
 llm-notary captures list --provider openai --limit 20
 llm-notary captures show cap-example
 ```
+
+Human capture output omits stored prompt and output previews. For structured
+capture discovery that enters an agent transcript, use `llm-notary --json
+captures list --metadata-only`; raw capture-list JSON includes those previews.
 
 ## Finalize and verify
 

@@ -1,13 +1,14 @@
 //! Short-lived command client for the versioned loopback administration API.
 
 use std::{
+    ffi::OsString,
     fmt, fs, io,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
     time::Duration,
 };
 
-use clap::{Args, Parser, Subcommand, error::ErrorKind};
+use clap::{Args, Parser, Subcommand, ValueEnum, error::ErrorKind};
 use reqwest::{Method, StatusCode};
 use serde_json::{Value, json};
 use url::Url;
@@ -17,11 +18,27 @@ use crate::{
         trace_package_created_at_unix_ms_bytes, trace_package_notary_key_bytes,
         verify_trace_package_bytes,
     },
-    cli::{notary, publish::ShareVisibility},
+    cli::{notary, publish::ShareVisibility, storage::write_private_file_atomically},
     config::{AgentConfig, default_config_path},
 };
 
 const API_VERSION: &str = "v1";
+const AGENT_SKILL_NAME: &str = "llm-notary";
+const CLAUDE_SKILL_ACTIVATION_NOTE: &str = "restart Claude Code if its top-level skills directory did not exist when the current session started";
+const AGENT_SKILL_FILES: &[(&str, &str)] = &[
+    (
+        "SKILL.md",
+        include_str!("../../../skills/llm-notary/SKILL.md"),
+    ),
+    (
+        "agents/openai.yaml",
+        include_str!("../../../skills/llm-notary/agents/openai.yaml"),
+    ),
+    (
+        "references/workflows.md",
+        include_str!("../../../skills/llm-notary/references/workflows.md"),
+    ),
+];
 const EXIT_ERROR: i32 = 1;
 const EXIT_INVALID_INPUT: i32 = 2;
 const EXIT_UNAVAILABLE: i32 = 3;
@@ -138,6 +155,11 @@ enum CliCommand {
     Update(UpdateArgs),
     #[command(name = "__apply-update", hide = true)]
     ApplyUpdate(ApplyUpdateArgs),
+    /// Install the portable LLM Notary agent skill.
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
+    },
     /// Show daemon health, listeners, and capture counts.
     Status,
     /// Search or inspect captures.
@@ -194,6 +216,39 @@ struct ApplyUpdateArgs {
     staging_directory: PathBuf,
     #[arg(long)]
     build_id: String,
+}
+
+#[derive(Subcommand, Debug)]
+enum SkillCommand {
+    /// Install or update the skill for a supported agent.
+    Install(SkillInstallArgs),
+}
+
+#[derive(Args, Debug)]
+struct SkillInstallArgs {
+    /// Install for Codex, Claude Code, or both.
+    #[arg(
+        long,
+        value_enum,
+        required_unless_present = "skills_dir",
+        conflicts_with = "skills_dir"
+    )]
+    target: Option<SkillTarget>,
+
+    /// Install under this custom skills directory for another compatible agent.
+    #[arg(long, value_name = "DIR", conflicts_with = "target")]
+    skills_dir: Option<PathBuf>,
+
+    /// Replace an existing skill whose bundled files differ.
+    #[arg(long)]
+    force: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum SkillTarget {
+    Codex,
+    Claude,
+    All,
 }
 
 #[derive(Subcommand, Debug)]
@@ -289,6 +344,9 @@ struct CaptureListArgs {
     /// Traverse every remaining page and emit one combined result.
     #[arg(long)]
     all: bool,
+    /// Omit prompt and output previews from structured output.
+    #[arg(long)]
+    metadata_only: bool,
 }
 
 #[derive(Args, Debug, Default)]
@@ -446,6 +504,14 @@ async fn run_parsed(
         .map_err(update_error)?;
         return Ok(());
     }
+    if let CliCommand::Skill {
+        command: SkillCommand::Install(args),
+    } = &cli.command
+    {
+        let value = install_agent_skill(args)?;
+        let human = skill_install_human_output(&value)?;
+        return write_direct_output(cli.json, &value, human, stdout);
+    }
     if let CliCommand::Traces {
         command: TracesCommand::Verify(args),
     } = &cli.command
@@ -571,6 +637,266 @@ fn update_human_output(value: &Value, check: bool) -> Result<String, CliError> {
             "Updated llm-notary and llm-notaryd to {build}. Restart llm-notaryd when no capture or finalization is active."
         ),
     })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SkillInstallState {
+    Current,
+    Installed,
+    Updated,
+}
+
+impl SkillInstallState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::Installed => "installed",
+            Self::Updated => "updated",
+        }
+    }
+}
+
+struct SkillDestination {
+    agent: &'static str,
+    path: PathBuf,
+}
+
+fn install_agent_skill(args: &SkillInstallArgs) -> Result<Value, CliError> {
+    let destinations = skill_destinations(args)?;
+    install_agent_skill_at(&destinations, args.force)
+}
+
+fn skill_destinations(args: &SkillInstallArgs) -> Result<Vec<SkillDestination>, CliError> {
+    if let Some(skills_dir) = &args.skills_dir {
+        return Ok(vec![SkillDestination {
+            agent: "custom",
+            path: skills_dir.join(AGENT_SKILL_NAME),
+        }]);
+    }
+
+    let claude_config_dir = first_nonempty_path([std::env::var_os("CLAUDE_CONFIG_DIR")]);
+    let target = args
+        .target
+        .ok_or_else(|| CliError::invalid("skill install requires --target or --skills-dir"))?;
+    let home = if target == SkillTarget::Claude && claude_config_dir.is_some() {
+        None
+    } else {
+        Some(user_home_directory()?)
+    };
+    skill_target_destinations(target, home.as_deref(), claude_config_dir.as_deref())
+}
+
+fn skill_target_destinations(
+    target: SkillTarget,
+    home: Option<&Path>,
+    claude_config_dir: Option<&Path>,
+) -> Result<Vec<SkillDestination>, CliError> {
+    let home = || home.ok_or_else(|| CliError::invalid("could not locate the user home directory"));
+    let claude_config_dir = match claude_config_dir {
+        Some(path) => path.to_path_buf(),
+        None => home()?.join(".claude"),
+    };
+    let mut destinations = Vec::new();
+    match target {
+        SkillTarget::Codex => destinations.push(SkillDestination {
+            agent: "codex",
+            path: home()?.join(".agents/skills").join(AGENT_SKILL_NAME),
+        }),
+        SkillTarget::Claude => destinations.push(SkillDestination {
+            agent: "claude",
+            path: claude_config_dir.join("skills").join(AGENT_SKILL_NAME),
+        }),
+        SkillTarget::All => {
+            destinations.push(SkillDestination {
+                agent: "codex",
+                path: home()?.join(".agents/skills").join(AGENT_SKILL_NAME),
+            });
+            destinations.push(SkillDestination {
+                agent: "claude",
+                path: claude_config_dir.join("skills").join(AGENT_SKILL_NAME),
+            });
+        }
+    }
+    Ok(destinations)
+}
+
+fn user_home_directory() -> Result<PathBuf, CliError> {
+    #[cfg(windows)]
+    let candidates = [std::env::var_os("USERPROFILE"), std::env::var_os("HOME")];
+    #[cfg(not(windows))]
+    let candidates = [std::env::var_os("HOME")];
+
+    first_nonempty_path(candidates)
+        .ok_or_else(|| CliError::invalid("could not locate the user home directory"))
+}
+
+fn first_nonempty_path<const N: usize>(candidates: [Option<OsString>; N]) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+fn install_agent_skill_at(
+    destinations: &[SkillDestination],
+    force: bool,
+) -> Result<Value, CliError> {
+    let states = destinations
+        .iter()
+        .map(|destination| inspect_skill_destination(destination, force))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    for (destination, state) in destinations.iter().zip(states.iter()) {
+        if *state == SkillInstallState::Current {
+            continue;
+        }
+        for (relative, contents) in AGENT_SKILL_FILES {
+            let path = destination.path.join(relative);
+            write_private_file_atomically(&path, contents.as_bytes()).map_err(|_| {
+                CliError::new(
+                    EXIT_ERROR,
+                    format!("could not write agent skill file {}", path.display()),
+                )
+            })?;
+        }
+    }
+
+    Ok(json!({
+        "skill": AGENT_SKILL_NAME,
+        "targets": destinations
+            .iter()
+            .zip(states)
+            .map(|(destination, state)| json!({
+                "agent": destination.agent,
+                "activation_note": (destination.agent == "claude")
+                    .then_some(CLAUDE_SKILL_ACTIVATION_NOTE),
+                "path": destination.path.display().to_string(),
+                "state": state.as_str(),
+            }))
+            .collect::<Vec<_>>(),
+    }))
+}
+
+fn inspect_skill_destination(
+    destination: &SkillDestination,
+    force: bool,
+) -> Result<SkillInstallState, CliError> {
+    match fs::symlink_metadata(&destination.path) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Ok(_) => return Err(skill_conflict(&destination.path)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(SkillInstallState::Installed);
+        }
+        Err(_) => {
+            return Err(CliError::new(
+                EXIT_ERROR,
+                format!(
+                    "could not inspect existing agent skill {}",
+                    destination.path.display()
+                ),
+            ));
+        }
+    }
+
+    let mut current = true;
+    for (relative, expected) in AGENT_SKILL_FILES {
+        let path = destination.path.join(relative);
+        validate_managed_skill_path(&destination.path, relative)?;
+        match fs::read(&path) {
+            Ok(actual) if actual == expected.as_bytes() => {}
+            Ok(_) => current = false,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => current = false,
+            Err(_) => {
+                return Err(CliError::new(
+                    EXIT_ERROR,
+                    format!(
+                        "could not read existing agent skill file {}",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+    }
+    if current {
+        Ok(SkillInstallState::Current)
+    } else if force {
+        Ok(SkillInstallState::Updated)
+    } else {
+        Err(skill_conflict(&destination.path))
+    }
+}
+
+fn validate_managed_skill_path(root: &Path, relative: &str) -> Result<(), CliError> {
+    let mut path = root.to_path_buf();
+    let mut components = Path::new(relative).components().peekable();
+    while let Some(component) = components.next() {
+        path.push(component);
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(skill_conflict(&path));
+            }
+            Ok(metadata) if components.peek().is_some() && !metadata.is_dir() => {
+                return Err(skill_conflict(&path));
+            }
+            Ok(metadata) if components.peek().is_none() && !metadata.is_file() => {
+                return Err(skill_conflict(&path));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => {
+                return Err(CliError::new(
+                    EXIT_ERROR,
+                    format!(
+                        "could not inspect existing agent skill path {}",
+                        path.display()
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn skill_conflict(path: &Path) -> CliError {
+    CliError::coded(
+        EXIT_CONFLICT,
+        "skill_install_conflict",
+        format!(
+            "an existing skill at {} differs from this release; inspect it, then rerun with --force to replace the bundled files",
+            path.display()
+        ),
+    )
+}
+
+fn skill_install_human_output(value: &Value) -> Result<String, CliError> {
+    let targets = value
+        .get("targets")
+        .and_then(Value::as_array)
+        .ok_or_else(|| CliError::new(EXIT_ERROR, "the skill install result is incomplete"))?;
+    targets
+        .iter()
+        .map(|target| {
+            let agent = target
+                .get("agent")
+                .and_then(Value::as_str)
+                .ok_or_else(|| CliError::new(EXIT_ERROR, "the skill target is incomplete"))?;
+            let path = target
+                .get("path")
+                .and_then(Value::as_str)
+                .ok_or_else(|| CliError::new(EXIT_ERROR, "the skill path is incomplete"))?;
+            let state = target
+                .get("state")
+                .and_then(Value::as_str)
+                .ok_or_else(|| CliError::new(EXIT_ERROR, "the skill state is incomplete"))?;
+            let mut line = format!("{agent}: {state} at {path}");
+            if let Some(note) = target.get("activation_note").and_then(Value::as_str) {
+                line.push_str(&format!("\n{agent}: {note}"));
+            }
+            Ok(line)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|lines| lines.join("\n"))
 }
 
 fn load_config_for_cli(path: Option<&Path>) -> Result<AgentConfig, CliError> {
@@ -869,13 +1195,21 @@ async fn execute(
     show_progress: bool,
 ) -> Result<Value, CliError> {
     match command {
-        CliCommand::Version | CliCommand::Update(_) | CliCommand::ApplyUpdate(_) => {
+        CliCommand::Version
+        | CliCommand::Update(_)
+        | CliCommand::ApplyUpdate(_)
+        | CliCommand::Skill { .. } => {
             unreachable!("direct commands are handled before daemon configuration")
         }
         CliCommand::Status => client.request(Method::GET, "/v1/status", &[]).await,
         CliCommand::Captures { command } => match command {
             CapturesCommand::List(args) => {
-                list_request(client, "/v1/captures", capture_query(args), args.all).await
+                let mut response =
+                    list_request(client, "/v1/captures", capture_query(args), args.all).await?;
+                if args.metadata_only {
+                    remove_capture_previews(&mut response)?;
+                }
+                Ok(response)
             }
             CapturesCommand::Show(args) => {
                 validate_identifier(&args.id, "cap-")?;
@@ -1173,6 +1507,25 @@ fn capture_query(args: &CaptureListArgs) -> Vec<(String, String)> {
     query
 }
 
+fn remove_capture_previews(value: &mut Value) -> Result<(), CliError> {
+    let items = value
+        .get_mut("items")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(incomplete_page_error)?;
+    for item in items {
+        let item = item.as_object_mut().ok_or_else(incomplete_page_error)?;
+        for field in [
+            "prompt_preview",
+            "prompt_preview_truncated",
+            "output_preview",
+            "output_preview_truncated",
+        ] {
+            item.remove(field);
+        }
+    }
+    Ok(())
+}
+
 fn operation_query(args: &OperationListArgs) -> Vec<(String, String)> {
     let mut query = Vec::new();
     push_string(&mut query, "state", args.state.as_deref());
@@ -1264,7 +1617,10 @@ fn push_number<T: ToString>(query: &mut Vec<(String, String)>, key: &str, value:
 
 fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError> {
     match command {
-        CliCommand::Version | CliCommand::Update(_) | CliCommand::ApplyUpdate(_) => {
+        CliCommand::Version
+        | CliCommand::Update(_)
+        | CliCommand::ApplyUpdate(_)
+        | CliCommand::Skill { .. } => {
             unreachable!("direct commands provide their own human output")
         }
         CliCommand::Status => Ok(format!(
@@ -1523,9 +1879,20 @@ mod tests {
         for arguments in [
             vec!["llm-notary", "version"],
             vec!["llm-notary", "update", "--check"],
+            vec!["llm-notary", "skill", "install", "--target", "codex"],
+            vec!["llm-notary", "skill", "install", "--target", "claude"],
+            vec!["llm-notary", "skill", "install", "--target", "all"],
+            vec![
+                "llm-notary",
+                "skill",
+                "install",
+                "--skills-dir",
+                "/tmp/agent-skills",
+            ],
             vec!["llm-notary", "status"],
             vec!["llm-notary", "captures", "list"],
             vec!["llm-notary", "captures", "list", "--all"],
+            vec!["llm-notary", "captures", "list", "--metadata-only"],
             vec![
                 "llm-notary",
                 "captures",
@@ -1585,6 +1952,282 @@ mod tests {
         assert_eq!(value["build_id"], crate::cli::BUILD_ID);
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         assert!(stderr.is_empty());
+    }
+
+    #[tokio::test]
+    async fn skill_install_bypasses_configuration_and_the_daemon() {
+        let directory = tempfile::tempdir().unwrap();
+        let missing = directory.path().join("missing.toml");
+        let skills = directory.path().join("skills");
+        let cli = Cli::try_parse_from([
+            "llm-notary",
+            "--json",
+            "--config",
+            missing.to_str().unwrap(),
+            "skill",
+            "install",
+            "--skills-dir",
+            skills.to_str().unwrap(),
+        ])
+        .unwrap();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        run_parsed(cli, &mut stdout, &mut stderr).await.unwrap();
+
+        let value: Value = serde_json::from_slice(&stdout).unwrap();
+        assert_eq!(value["skill"], AGENT_SKILL_NAME);
+        assert_eq!(value["targets"][0]["agent"], "custom");
+        assert_eq!(value["targets"][0]["state"], "installed");
+        for (relative, expected) in AGENT_SKILL_FILES {
+            assert_eq!(
+                fs::read_to_string(skills.join(AGENT_SKILL_NAME).join(relative)).unwrap(),
+                *expected
+            );
+        }
+        assert!(stderr.is_empty());
+    }
+
+    #[test]
+    fn skill_install_preserves_modified_files_without_force() {
+        let directory = tempfile::tempdir().unwrap();
+        let codex = SkillDestination {
+            agent: "codex",
+            path: directory.path().join("codex/llm-notary"),
+        };
+        let claude = SkillDestination {
+            agent: "claude",
+            path: directory.path().join("claude/llm-notary"),
+        };
+        fs::create_dir_all(&claude.path).unwrap();
+        fs::write(claude.path.join("SKILL.md"), "user-owned instructions\n").unwrap();
+
+        let error = install_agent_skill_at(&[codex, claude], false).unwrap_err();
+
+        assert_eq!(error.exit_code(), EXIT_CONFLICT);
+        assert_eq!(error.code, "skill_install_conflict");
+        assert!(!directory.path().join("codex/llm-notary").exists());
+        assert_eq!(
+            fs::read_to_string(directory.path().join("claude/llm-notary/SKILL.md")).unwrap(),
+            "user-owned instructions\n"
+        );
+    }
+
+    #[test]
+    fn skill_install_is_repeatable_and_force_updates_bundled_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("skills/llm-notary");
+
+        let installed = install_agent_skill_at(
+            &[SkillDestination {
+                agent: "custom",
+                path: path.clone(),
+            }],
+            false,
+        )
+        .unwrap();
+        assert_eq!(installed["targets"][0]["state"], "installed");
+
+        let current = install_agent_skill_at(
+            &[SkillDestination {
+                agent: "custom",
+                path: path.clone(),
+            }],
+            false,
+        )
+        .unwrap();
+        assert_eq!(current["targets"][0]["state"], "current");
+
+        fs::write(path.join("SKILL.md"), "modified\n").unwrap();
+        fs::write(path.join("personal-notes.md"), "keep me\n").unwrap();
+        let updated = install_agent_skill_at(
+            &[SkillDestination {
+                agent: "custom",
+                path: path.clone(),
+            }],
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(updated["targets"][0]["state"], "updated");
+        assert_eq!(
+            fs::read_to_string(path.join("SKILL.md")).unwrap(),
+            AGENT_SKILL_FILES[0].1
+        );
+        assert_eq!(
+            fs::read_to_string(path.join("personal-notes.md")).unwrap(),
+            "keep me\n"
+        );
+    }
+
+    #[test]
+    fn skill_install_force_recovers_an_invalid_utf8_file_and_rejects_a_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("skills/llm-notary");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("SKILL.md"), [0xff, 0xfe]).unwrap();
+
+        let updated = install_agent_skill_at(
+            &[SkillDestination {
+                agent: "custom",
+                path: path.clone(),
+            }],
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(updated["targets"][0]["state"], "updated");
+        assert_eq!(
+            fs::read_to_string(path.join("SKILL.md")).unwrap(),
+            AGENT_SKILL_FILES[0].1
+        );
+
+        fs::remove_file(path.join("SKILL.md")).unwrap();
+        fs::create_dir(path.join("SKILL.md")).unwrap();
+        let error = install_agent_skill_at(
+            &[SkillDestination {
+                agent: "custom",
+                path,
+            }],
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "skill_install_conflict");
+    }
+
+    #[test]
+    fn skill_install_human_output_explains_claude_activation() {
+        let value = json!({
+            "skill": AGENT_SKILL_NAME,
+            "targets": [{
+                "agent": "claude",
+                "activation_note": CLAUDE_SKILL_ACTIVATION_NOTE,
+                "path": "/user/.claude/skills/llm-notary",
+                "state": "installed",
+            }],
+        });
+
+        let output = skill_install_human_output(&value).unwrap();
+
+        assert!(output.contains(CLAUDE_SKILL_ACTIVATION_NOTE));
+    }
+
+    #[test]
+    fn skill_install_target_paths_and_home_fallback_are_portable() {
+        let home = PathBuf::from("user-home");
+        let destinations = skill_target_destinations(
+            SkillTarget::All,
+            Some(&home),
+            Some(Path::new("claude-config")),
+        )
+        .unwrap();
+
+        assert_eq!(destinations[0].agent, "codex");
+        assert_eq!(destinations[0].path, home.join(".agents/skills/llm-notary"));
+        assert_eq!(destinations[1].agent, "claude");
+        assert_eq!(
+            destinations[1].path,
+            PathBuf::from("claude-config/skills/llm-notary")
+        );
+        assert_eq!(
+            first_nonempty_path([Some(OsString::new()), Some(OsString::from("fallback-home")),]),
+            Some(PathBuf::from("fallback-home"))
+        );
+        let default_claude =
+            skill_target_destinations(SkillTarget::Claude, Some(&home), None).unwrap();
+        assert_eq!(
+            default_claude[0].path,
+            home.join(".claude/skills/llm-notary")
+        );
+        let override_without_home =
+            skill_target_destinations(SkillTarget::Claude, None, Some(Path::new("claude-config")))
+                .unwrap();
+        assert_eq!(
+            override_without_home[0].path,
+            PathBuf::from("claude-config/skills/llm-notary")
+        );
+    }
+
+    #[test]
+    fn capture_metadata_only_omits_preview_fields() {
+        let mut value = json!({
+            "items": [{
+                "capture_id": "cap-example",
+                "created_at_unix_ms": 123,
+                "prompt_preview": "private prompt",
+                "prompt_preview_truncated": false,
+                "output_preview": "private output",
+                "output_preview_truncated": false,
+            }],
+            "next_cursor": null,
+        });
+
+        remove_capture_previews(&mut value).unwrap();
+
+        assert_eq!(value["items"][0]["capture_id"], "cap-example");
+        assert_eq!(value["items"][0]["created_at_unix_ms"], 123);
+        assert!(value["items"][0].get("prompt_preview").is_none());
+        assert!(value["items"][0].get("output_preview").is_none());
+    }
+
+    #[tokio::test]
+    async fn capture_metadata_only_is_applied_to_daemon_output() {
+        let router = Router::new().route(
+            "/v1/captures",
+            get(|| async {
+                Json(json!({
+                    "items": [{
+                        "capture_id": "cap-example",
+                        "prompt_preview": "private prompt",
+                        "prompt_preview_truncated": false,
+                        "output_preview": "private output",
+                        "output_preview_truncated": false,
+                    }],
+                    "next_cursor": null,
+                }))
+            }),
+        );
+        let (address, server) = serve(router).await;
+        let client = AdminClient::new(address, None).unwrap();
+        let command = CliCommand::Captures {
+            command: CapturesCommand::List(CaptureListArgs {
+                metadata_only: true,
+                ..CaptureListArgs::default()
+            }),
+        };
+
+        let response = execute(&client, &command, &mut Vec::new(), false)
+            .await
+            .unwrap();
+
+        assert!(response["items"][0].get("prompt_preview").is_none());
+        assert!(response["items"][0].get("output_preview").is_none());
+        server.abort();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_install_force_never_follows_a_managed_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("skills/llm-notary");
+        let unrelated = directory.path().join("unrelated");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(&unrelated, "leave me alone\n").unwrap();
+        symlink(&unrelated, path.join("SKILL.md")).unwrap();
+
+        let error = install_agent_skill_at(
+            &[SkillDestination {
+                agent: "custom",
+                path,
+            }],
+            true,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code, "skill_install_conflict");
+        assert_eq!(fs::read_to_string(unrelated).unwrap(), "leave me alone\n");
     }
 
     #[tokio::test]
