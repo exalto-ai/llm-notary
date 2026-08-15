@@ -32,6 +32,7 @@ where
     Fut: Future<Output = Arc<dyn MetadataStore>>,
 {
     make_store().await.readiness().await.unwrap();
+    capture_mode_is_durable_and_evented(make_store()).await;
     capture_lifecycle(make_store().await).await;
     preview_search(make_store().await, full_text_search).await;
     capture_filters_pagination_and_counts(make_store().await).await;
@@ -41,6 +42,37 @@ where
     concurrent_retry_is_deduplicated(make_store().await).await;
     event_page_and_high_water_are_atomic(make_store().await).await;
     invalid_limits_and_ranges(make_store().await).await;
+}
+
+async fn capture_mode_is_durable_and_evented<Fut>(store: Fut)
+where
+    Fut: Future<Output = Arc<dyn MetadataStore>>,
+{
+    let store = store.await;
+    assert!(store.capture_enabled().await.unwrap());
+    assert!(!store.set_capture_enabled(false, 1).await.unwrap());
+    assert!(!store.capture_enabled().await.unwrap());
+    assert!(!store.set_capture_enabled(false, 2).await.unwrap());
+    assert!(store.set_capture_enabled(true, 3).await.unwrap());
+    assert!(store.capture_enabled().await.unwrap());
+    let events = store
+        .events_snapshot(EventFilters {
+            limit: 20,
+            ..EventFilters::default()
+        })
+        .await
+        .unwrap()
+        .events;
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "capture_disabled")
+            .count(),
+        1,
+        "an idempotent write must not emit a duplicate activity event"
+    );
+    assert_eq!(events[0].event_type, "capture_enabled");
+    assert_eq!(events[0].message, "Capture requests enabled");
 }
 
 pub(crate) fn new_capture(id: &str, created_at_unix_ms: u64) -> NewCapture {

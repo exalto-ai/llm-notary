@@ -46,7 +46,7 @@ llm-notary-core = { path = "../llm-notary-core", features = ["cli", "openapi"] }
 libc = "0.2"
 mime_guess = "2.0"
 minisign-verify = "0.2"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
 rpassword = "7.4"
 rusqlite = { version = "0.32", features = ["bundled"] }
 rust-embed = "8.12"

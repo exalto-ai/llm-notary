@@ -185,6 +185,9 @@ code, pre, .mono-id, .mono-time, .eyebrow { font-family: 'IBM Plex Mono', ui-mon
 .account-connection-card--compact .account-connection-links { padding-top: 7px; }
 .account-connection-links a { color: var(--ink); }
 .account-connection-card .status-label { justify-self: end; }
+.capture-mode-setting { display: flex; min-height: 76px; align-items: center; justify-content: space-between; gap: 24px; margin: 0 -16px; padding: 12px 16px; border: 0; border-bottom: 1px solid var(--rule); background: transparent; }
+.capture-mode-setting > div > p:last-child { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.capture-mode-setting .mantine-Switch-track, .capture-mode-setting .mantine-Switch-thumb { border-radius: 0; }
 .settings-panel h2 { font-size: 27px; letter-spacing: -.055em; margin: 34px 0 9px; }
 .settings-panel > p:not(.eyebrow) { color: var(--muted); line-height: 1.65; }
 .authorization-code { border-top: 1px solid var(--rule); display: grid; gap: 12px; margin-top: 24px; padding-top: 18px; }

@@ -32,6 +32,16 @@ long. Once onboarding is complete, later app launches start the bundled
 service automatically for Keychain and empty-passphrase vaults. A protected
 passphrase vault opens locked and starts capture only after the user unlocks it.
 
+The native Settings screen and the checked **Capture requests** menu-bar item
+read and change the daemon-owned setting. On uses the remote notary and creates
+private captures. Off leaves the service and loopback provider routes running,
+but sends later requests directly from the daemon to the fixed provider and
+creates no evidence. The home status and route diagram distinguish this state
+from both **Ready to capture** and **Service stopped**. The menu item is
+disabled when the daemon is unreachable; the desktop process does not keep a
+second preference. Existing captures can still be browsed, finalized,
+verified, and shared while capture is off.
+
 First run detects the local agent config, capture vault, and service before it
 changes anything. It then guides the user through capture protection, choosing
 a provider and optional default model, starting the service, optionally

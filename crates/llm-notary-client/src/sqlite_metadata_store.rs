@@ -136,6 +136,16 @@ impl MetadataStore for SqliteMetadataStore {
         self.blocking(SqliteCatalog::readiness).await
     }
 
+    async fn capture_enabled(&self) -> MetadataResult<bool> {
+        self.blocking(SqliteCatalog::capture_enabled).await
+    }
+
+    async fn set_capture_enabled(&self, enabled: bool, now_unix_ms: u64) -> MetadataResult<bool> {
+        validate_i64(now_unix_ms, "timestamp_out_of_range")?;
+        self.blocking(move |catalog| catalog.set_capture_enabled(enabled, now_unix_ms))
+            .await
+    }
+
     async fn begin_capture(&self, capture: NewCapture) -> MetadataResult<()> {
         validate_i64(
             capture.created_at_unix_ms,
@@ -378,6 +388,19 @@ mod tests {
     use super::*;
     use crate::metadata_store::conformance;
 
+    #[tokio::test]
+    async fn capture_mode_survives_store_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("catalog.db");
+        let first = SqliteMetadataStore::open(path.clone(), true).await.unwrap();
+        assert!(first.capture_enabled().await.unwrap());
+        assert!(!first.set_capture_enabled(false, 1).await.unwrap());
+        drop(first);
+
+        let reopened = SqliteMetadataStore::open(path, true).await.unwrap();
+        assert!(!reopened.capture_enabled().await.unwrap());
+    }
+
     async fn sqlite_conformance(full_text_search: bool) {
         let directory = tempfile::tempdir().unwrap();
         let sequence = AtomicUsize::new(0);
@@ -501,7 +524,7 @@ mod tests {
                     row.get(0)
                 })
                 .unwrap();
-            assert_eq!(migrated, 7);
+            assert_eq!(migrated, 8);
         }
     }
 }

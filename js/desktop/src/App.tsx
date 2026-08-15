@@ -40,6 +40,7 @@ import {
   openAccountLink,
   pollAccountConnection,
   restartDaemon,
+  setCaptureEnabled,
   setLaunchAtLogin,
   startAccountConnection,
   startDaemon,
@@ -419,9 +420,9 @@ function App() {
             {updateState.phase === 'downloading' ? <RefreshCw size={11} className="is-spinning" /> : <Download size={11} />}
             {updateChipLabel(updateState)}
           </button>}
-          <div className={`service-chip ${state.running ? 'is-running' : ''}`}>
+          <div className={`service-chip ${state.running ? 'is-running' : ''} ${state.running && !state.capture_enabled ? 'is-direct' : ''}`}>
             <StatusDot running={state.running} warning={!state.running} />
-            {state.running ? 'Service running' : 'Service stopped'}
+            {state.running ? state.capture_enabled ? 'Ready to capture' : 'Running · Capture off' : 'Service stopped'}
           </div>
         </header>
 
@@ -445,6 +446,11 @@ function App() {
             notice={notice}
             onCheckUpdate={() => void checkForDesktopUpdate()}
             onRestartToUpdate={() => void restartToUpdate()}
+            onCaptureChange={(enabled) => void runAction(
+              'capture-mode',
+              async () => { await setCaptureEnabled(enabled); },
+              enabled ? 'Capture requests are on.' : 'Capture requests are off.'
+            )}
           />}
           {route && (
             <WorkspaceFrame
@@ -547,7 +553,7 @@ function Sidebar({ state, view, onNavigate }: { state: DesktopState; view: View;
     </nav>
     <div className="sidebar-footer">
       <StatusDot running={state.running} warning={!state.running} />
-      <span>{state.running ? `Running on ${state.proxy_listener}` : 'Not capturing'}</span>
+      <span>{state.running ? state.capture_enabled ? `Ready on ${state.proxy_listener}` : `Capture off · ${state.proxy_listener}` : 'Service stopped'}</span>
     </div>
   </aside>;
 }
@@ -596,12 +602,14 @@ function HomeView({ state, busy, notice, onNavigate, onStart, onStop, onRestart 
 }) {
   const vault = vaultProtection(state.vault_mode);
   return <div className="native-page home-page">
-    <section className={`status-hero ${state.running ? 'is-running' : ''}`}>
+    <section className={`status-hero ${state.running ? 'is-running' : ''} ${state.running && !state.capture_enabled ? 'is-direct' : ''}`}>
       <div className="status-orb"><StatusDot running={state.running} warning={!state.running} /></div>
       <div>
-        <h1>{state.running ? 'Ready to capture' : 'LLM Notary is stopped'}</h1>
+        <h1>{state.running ? state.capture_enabled ? 'Ready to capture' : 'Service running with capture off' : 'LLM Notary is stopped'}</h1>
         <p>{state.running
-          ? 'Your local proxy is ready. Provider credentials stay in the client that sends each request.'
+          ? state.capture_enabled
+            ? 'Your local proxy is ready. Provider credentials stay in the client that sends each request.'
+            : 'Provider requests still pass through this Mac, but go directly to the provider and create no evidence.'
           : 'Start the local service before sending a model request.'}</p>
       </div>
       <div className="hero-actions">
@@ -648,8 +656,8 @@ function HomeView({ state, busy, notice, onNavigate, onStart, onStop, onRestart 
       <header><div><span className="section-label">Authenticated route</span><h2>What each part can see</h2></div></header>
       <div className="native-route">
         <RouteStop title="Your client" detail="API key and plaintext" active={state.running} />
-        <RouteStop title="This Mac" detail="Plaintext and private capture" active={state.running} />
-        <RouteStop title="Remote notary" detail="Encrypted protocol only" active={state.running} />
+        <RouteStop title="This Mac" detail={state.capture_enabled ? 'Plaintext and private capture' : 'Direct HTTPS passthrough'} active={state.running} />
+        <RouteStop title="Remote notary" detail={state.capture_enabled ? 'Encrypted protocol only' : 'Bypassed for new requests'} active={state.running && state.capture_enabled} />
         <RouteStop title="Provider" detail="Normal model request" active={state.running} />
       </div>
     </section>
@@ -672,7 +680,7 @@ function ConnectionsView({ state, notice }: { state: DesktopState; notice: strin
     <section className="page-intro">
       <h1>Connect a model client</h1>
       <p>Keep the provider API key or subscription login in the app that already uses it. Change only its base URL.</p>
-      <span className={`readiness ${state.running ? 'is-ready' : ''}`}><StatusDot running={state.running} warning={!state.running} />{state.running ? 'Ready for requests' : 'Start the service first'}</span>
+      <span className={`readiness ${state.running ? 'is-ready' : ''}`}><StatusDot running={state.running} warning={!state.running} />{state.running ? state.capture_enabled ? 'Ready to capture requests' : 'Ready for direct requests · Capture off' : 'Start the service first'}</span>
     </section>
     {notice && <div className="native-notice">{notice}</div>}
     <section className="native-list provider-native-list">
@@ -699,6 +707,7 @@ function SettingsView({
   notice,
   onCheckUpdate,
   onRestartToUpdate,
+  onCaptureChange,
 }: {
   state: DesktopState;
   updateState: DesktopUpdateState | null;
@@ -706,6 +715,7 @@ function SettingsView({
   notice: string | null;
   onCheckUpdate: () => void;
   onRestartToUpdate: () => void;
+  onCaptureChange: (enabled: boolean) => void;
 }) {
   const [launch, setLaunch] = useState(false);
   const [ready, setReady] = useState(false);
@@ -743,6 +753,18 @@ function SettingsView({
 
   return <div className="native-page preferences-page">
     <DesktopAccountCard />
+    <section className="preference-section capture-preference-section">
+      <h2>Capture</h2>
+      <div className="preference-group">
+        <label className="preference-row capture-preference-row">
+          <div><strong>Capture requests</strong><span>{state.capture_enabled
+            ? 'On — requests use the remote notary and create private captures.'
+            : 'Off — requests still pass through the local daemon, go directly to the provider, and create no evidence.'}</span></div>
+          <input type="checkbox" role="switch" aria-label="Capture requests" checked={state.capture_enabled} disabled={!state.running || busy !== null} onChange={(event) => onCaptureChange(event.target.checked)} />
+        </label>
+        {!state.running && <p className="preference-note">Start the local service before changing capture mode.</p>}
+      </div>
+    </section>
     <section className="preference-section">
       <h2>General</h2>
       <div className="preference-group">

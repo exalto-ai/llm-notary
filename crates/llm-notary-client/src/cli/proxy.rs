@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -20,7 +20,7 @@ use axum::{
 use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt as _;
 use sha2::{Digest as _, Sha256};
-use tokio::sync::{Mutex, Notify, watch};
+use tokio::sync::{Mutex, Notify, RwLock, watch};
 use tokio_stream::wrappers::ReceiverStream;
 
 use super::{
@@ -130,7 +130,8 @@ pub struct ProxyArgs {
 
 #[derive(Clone)]
 pub(crate) struct AppState {
-    notary: NotaryEndpoint,
+    capture_mode: Arc<CaptureMode>,
+    direct_upstream: Arc<dyn DirectUpstreamConnector>,
     max_frame_bytes: usize,
     max_attestable_http_bytes: usize,
     pub(crate) vault: Arc<Vault>,
@@ -141,6 +142,156 @@ pub(crate) struct AppState {
     hosted_admission: bool,
     capture_tasks: CaptureTasks,
     server_runtime: Option<Arc<ServerRuntime>>,
+}
+
+pub(crate) struct CaptureMode {
+    enabled: AtomicBool,
+    notary: RwLock<Option<NotaryEndpoint>>,
+    transition: Mutex<()>,
+    config: Arc<AgentConfig>,
+    persistence: Persistence,
+    server_runtime: Option<Arc<ServerRuntime>>,
+    #[cfg(test)]
+    fail_notary_initialization: AtomicBool,
+}
+
+impl CaptureMode {
+    pub(crate) fn new(
+        enabled: bool,
+        notary: Option<NotaryEndpoint>,
+        config: Arc<AgentConfig>,
+        persistence: Persistence,
+        server_runtime: Option<Arc<ServerRuntime>>,
+    ) -> Self {
+        Self {
+            enabled: AtomicBool::new(enabled),
+            notary: RwLock::new(notary),
+            transition: Mutex::new(()),
+            config,
+            persistence,
+            server_runtime,
+            #[cfg(test)]
+            fail_notary_initialization: AtomicBool::new(false),
+        }
+    }
+
+    pub(crate) fn enabled(&self) -> bool {
+        self.enabled.load(Ordering::Acquire)
+    }
+
+    async fn snapshot(&self) -> Result<bool> {
+        // PostgreSQL is the shared daemon setting. Refreshing at admission
+        // lets replicas converge without keeping a competing process-local
+        // preference or letting a stale value execute the wrong request path.
+        if self.server_runtime.is_some() {
+            let persisted = self.persistence.metadata.capture_enabled().await?;
+            if persisted != self.enabled() {
+                if persisted {
+                    self.ensure_notary().await?;
+                }
+                self.enabled.store(persisted, Ordering::Release);
+            }
+        }
+        Ok(self.enabled())
+    }
+
+    async fn notary(&self) -> Result<NotaryEndpoint> {
+        self.notary
+            .read()
+            .await
+            .clone()
+            .context("capture mode has no initialized trusted notary")
+    }
+
+    async fn ensure_notary(&self) -> Result<NotaryEndpoint> {
+        #[cfg(test)]
+        if self.fail_notary_initialization.load(Ordering::Acquire) {
+            bail!("injected trusted notary initialization failure");
+        }
+        if let Some(notary) = self.notary.read().await.clone() {
+            return Ok(notary);
+        }
+        let notary = initialize_notary(
+            &self.config,
+            &self.persistence,
+            self.server_runtime.as_deref(),
+        )
+        .await?;
+        *self.notary.write().await = Some(notary.clone());
+        Ok(notary)
+    }
+
+    pub(crate) async fn set_enabled(&self, enabled: bool) -> Result<bool> {
+        let _transition = self.transition.lock().await;
+        let persisted = self.persistence.metadata.capture_enabled().await?;
+        if persisted == enabled {
+            if enabled {
+                self.ensure_notary().await?;
+            }
+            self.enabled.store(persisted, Ordering::Release);
+            return Ok(persisted);
+        }
+        // Enabling is prepared before the durable transition. A discovery or
+        // trust failure therefore cannot leave the selected mode half-on.
+        if enabled {
+            self.ensure_notary().await?;
+        }
+        let authoritative = self
+            .persistence
+            .metadata
+            .set_capture_enabled(enabled, current_unix_ms()?)
+            .await?;
+        self.enabled.store(authoritative, Ordering::Release);
+        Ok(authoritative)
+    }
+}
+
+struct DirectUpstreamResponse {
+    status: StatusCode,
+    headers: HeaderMap,
+    body: Body,
+}
+
+#[async_trait::async_trait]
+trait DirectUpstreamConnector: Send + Sync {
+    async fn send(&self, provider: Provider, request: Request) -> Result<DirectUpstreamResponse>;
+}
+
+struct ReqwestDirectUpstreamConnector {
+    client: reqwest::Client,
+}
+
+impl ReqwestDirectUpstreamConnector {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            client: http_client_builder()
+                .redirect(reqwest::redirect::Policy::none())
+                .build()?,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl DirectUpstreamConnector for ReqwestDirectUpstreamConnector {
+    async fn send(&self, provider: Provider, request: Request) -> Result<DirectUpstreamResponse> {
+        let (parts, body) = request.into_parts();
+        let url = format!("https://{}{}", provider.host(), parts.uri);
+        let response = self
+            .client
+            .request(parts.method, url)
+            .headers(parts.headers)
+            .body(reqwest::Body::wrap_stream(body.into_data_stream()))
+            .send()
+            .await
+            .context("sending direct provider request")?;
+        let status = response.status();
+        let headers = response.headers().clone();
+        Ok(DirectUpstreamResponse {
+            status,
+            headers,
+            body: Body::from_stream(response.bytes_stream()),
+        })
+    }
 }
 
 #[derive(Clone, Default)]
@@ -243,32 +394,29 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         }
     }
     let hosted_admission = config.notary.endpoint.is_none();
-    let notary = match config.notary_endpoint()? {
-        Some(notary) => notary,
-        None if server_runtime.is_some() => {
-            let (directory, directory_url) =
-                fetch_notary_directory_from(&super::auth::configured_api_origin()?).await?;
-            let trust = persistence
-                .metadata
-                .pin_notary_directory(directory, directory_url.as_str())
-                .await?;
-            let active = trust
-                .records
-                .iter()
-                .find(|record| record.key_id == trust.active_key_id)
-                .context("shared notary trust is missing its active endpoint")?;
-            resolve_notary(active).await?
-        }
-        None => discover_notary().await?,
+    let capture_enabled = persistence.metadata.capture_enabled().await?;
+    let config = Arc::new(config);
+    let notary = if capture_enabled {
+        Some(initialize_notary(&config, &persistence, server_runtime.as_deref()).await?)
+    } else {
+        None
     };
+    let capture_mode = Arc::new(CaptureMode::new(
+        capture_enabled,
+        notary.clone(),
+        config.clone(),
+        persistence.clone(),
+        server_runtime.clone(),
+    ));
     let state = AppState {
-        notary: notary.clone(),
+        capture_mode: capture_mode.clone(),
+        direct_upstream: Arc::new(ReqwestDirectUpstreamConnector::new()?),
         max_frame_bytes,
         max_attestable_http_bytes,
         vault: Arc::new(vault),
         persistence,
         config_fingerprint: Arc::from(config.fingerprint()?),
-        config: Arc::new(config),
+        config,
         serial: Arc::new(Mutex::new(0)),
         hosted_admission,
         capture_tasks: CaptureTasks::default(),
@@ -283,6 +431,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
             .as_ref()
             .map(|_| state.vault.server_identity_sha256())
             .transpose()?,
+        Some(capture_mode),
     )
     .await?;
     let admin = crate::admin::router(admin_state.clone())?;
@@ -290,7 +439,8 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     let admin_listener = tokio::net::TcpListener::bind(state.config.admin.listen).await?;
     tracing::info!(
         address = %listen,
-        notary = %notary,
+        notary = notary.as_ref().map(ToString::to_string).as_deref().unwrap_or("capture disabled"),
+        capture_enabled,
         config = %config_path.display(),
         providers = ?Provider::ALL,
         "LLM Notary daemon proxy listening"
@@ -651,6 +801,31 @@ pub(crate) async fn discover_notary() -> Result<NotaryEndpoint> {
     resolve_notary(directory.active_at(now)?).await
 }
 
+async fn initialize_notary(
+    config: &AgentConfig,
+    persistence: &Persistence,
+    server_runtime: Option<&ServerRuntime>,
+) -> Result<NotaryEndpoint> {
+    match config.notary_endpoint()? {
+        Some(notary) => Ok(notary),
+        None if server_runtime.is_some() => {
+            let (directory, directory_url) =
+                fetch_notary_directory_from(&super::auth::configured_api_origin()?).await?;
+            let trust = persistence
+                .metadata
+                .pin_notary_directory(directory, directory_url.as_str())
+                .await?;
+            let active = trust
+                .records
+                .iter()
+                .find(|record| record.key_id == trust.active_key_id)
+                .context("shared notary trust is missing its active endpoint")?;
+            resolve_notary(active).await
+        }
+        None => discover_notary().await,
+    }
+}
+
 pub(crate) async fn refresh_notary_directory() -> Result<NotaryDirectory> {
     refresh_notary_directory_from(&super::auth::configured_api_origin()?).await
 }
@@ -934,6 +1109,23 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     // caller. `Host` is connection-specific here because we create a new
     // upstream connection rather than forwarding the caller's one.
     outbound_headers.remove(http::header::HOST);
+    let capture_enabled = state.capture_mode.snapshot().await?;
+    if !capture_enabled {
+        tracing::info!(
+            provider = host,
+            "forwarding provider request without capture"
+        );
+        return direct_provider_request(
+            &state,
+            provider,
+            parts.method,
+            upstream_uri,
+            outbound_headers,
+            body,
+        )
+        .await;
+    }
+    let notary = state.capture_mode.notary().await?;
     outbound_headers.remove(http::header::ACCEPT_ENCODING);
     outbound_headers.insert(
         http::header::HOST,
@@ -1037,7 +1229,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     let upstream = match admission {
         Some(admission) => {
             deferred_streaming_request_to_admitted(
-                &state.notary,
+                &notary,
                 host,
                 capture,
                 outbound,
@@ -1045,7 +1237,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
             )
             .await
         }
-        None => deferred_streaming_request_to(&state.notary, host, capture, outbound).await,
+        None => deferred_streaming_request_to(&notary, host, capture, outbound).await,
     };
     let upstream = match upstream {
         Ok(upstream) => upstream,
@@ -1379,6 +1571,28 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         "x-llm-notary-capture-id",
         HeaderValue::from_str(&capture_id)?,
     );
+    Ok(response)
+}
+
+async fn direct_provider_request(
+    state: &AppState,
+    provider: Provider,
+    method: http::Method,
+    upstream_uri: http::Uri,
+    headers: HeaderMap,
+    body: Body,
+) -> Result<Response> {
+    let mut outbound = http::Request::builder().method(method).uri(upstream_uri);
+    for (name, value) in &headers {
+        outbound = outbound.header(name, value);
+    }
+    let upstream = state
+        .direct_upstream
+        .send(provider, outbound.body(body)?)
+        .await?;
+    let mut response = Response::new(upstream.body);
+    *response.status_mut() = upstream.status;
+    copy_end_to_end_headers(response.headers_mut(), &upstream.headers);
     Ok(response)
 }
 
@@ -1941,6 +2155,40 @@ fn hop_by_hop_header_names(headers: &HeaderMap) -> HashSet<HeaderName> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex as StdMutex;
+
+    #[derive(Clone)]
+    struct DirectObservation {
+        provider: Provider,
+        uri: http::Uri,
+        headers: HeaderMap,
+    }
+
+    struct StubDirectUpstream {
+        observations: Arc<StdMutex<Vec<DirectObservation>>>,
+        response: StdMutex<Option<DirectUpstreamResponse>>,
+    }
+
+    #[async_trait::async_trait]
+    impl DirectUpstreamConnector for StubDirectUpstream {
+        async fn send(
+            &self,
+            provider: Provider,
+            request: Request,
+        ) -> Result<DirectUpstreamResponse> {
+            let (parts, _body) = request.into_parts();
+            self.observations.lock().unwrap().push(DirectObservation {
+                provider,
+                uri: parts.uri,
+                headers: parts.headers,
+            });
+            self.response
+                .lock()
+                .unwrap()
+                .take()
+                .context("stub direct response was already used")
+        }
+    }
 
     fn state() -> AppState {
         let config = AgentConfig::default();
@@ -1957,14 +2205,23 @@ mod tests {
             )),
             artifacts: Arc::new(artifacts),
         };
+        let config = Arc::new(config);
+        let capture_mode = Arc::new(CaptureMode::new(
+            true,
+            Some("127.0.0.1:7047".parse().unwrap()),
+            config.clone(),
+            persistence.clone(),
+            None,
+        ));
         AppState {
-            notary: "127.0.0.1:7047".parse().unwrap(),
+            capture_mode,
+            direct_upstream: Arc::new(ReqwestDirectUpstreamConnector::new().unwrap()),
             max_frame_bytes: DEFAULT_NOTARY_MAX_FRAME_BYTES,
             max_attestable_http_bytes: DEFAULT_MAX_ATTESTABLE_HTTP_BYTES,
             vault: Arc::new(Vault::test_only()),
             persistence,
             config_fingerprint: Arc::from(config.fingerprint().unwrap()),
-            config: Arc::new(config),
+            config,
             serial: Arc::new(Mutex::new(0)),
             hosted_admission: false,
             capture_tasks: CaptureTasks::default(),
@@ -2026,6 +2283,132 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.to_string().contains("maximum attestable HTTP budget"));
+    }
+
+    #[tokio::test]
+    async fn direct_mode_streams_without_capture_and_preserves_end_to_end_response() {
+        let mut state = state();
+        state.capture_mode.set_enabled(false).await.unwrap();
+        let before = state.persistence.metadata.counts().await.unwrap();
+        let observations = Arc::new(StdMutex::new(Vec::new()));
+        let (response_sender, response_receiver) =
+            tokio::sync::mpsc::channel::<std::result::Result<Bytes, std::io::Error>>(1);
+        let mut response_headers = HeaderMap::new();
+        response_headers.insert(
+            http::header::CONNECTION,
+            HeaderValue::from_static("x-response-scoped"),
+        );
+        response_headers.insert(
+            "x-response-scoped",
+            HeaderValue::from_static("must-not-forward"),
+        );
+        response_headers.insert(
+            http::header::LOCATION,
+            HeaderValue::from_static("https://api.openai.com/redirect-target"),
+        );
+        response_headers.insert(
+            "x-provider-request-id",
+            HeaderValue::from_static("req-safe"),
+        );
+        state.direct_upstream = Arc::new(StubDirectUpstream {
+            observations: observations.clone(),
+            response: StdMutex::new(Some(DirectUpstreamResponse {
+                status: StatusCode::TEMPORARY_REDIRECT,
+                headers: response_headers,
+                body: Body::from_stream(ReceiverStream::new(response_receiver)),
+            })),
+        });
+
+        let (request_sender, request_receiver) =
+            tokio::sync::mpsc::channel::<std::result::Result<Bytes, std::io::Error>>(1);
+        let request = Request::post("/openai/v1/responses?stream=true")
+            .header(http::header::AUTHORIZATION, "Bearer provider-secret")
+            .header(http::header::ACCEPT_ENCODING, "gzip")
+            .header(http::header::CONNECTION, "x-request-scoped")
+            .header("x-request-scoped", "must-not-forward")
+            .body(Body::from_stream(ReceiverStream::new(request_receiver)))
+            .unwrap();
+        // Keeping the sender open proves admission and response headers do not
+        // wait for the whole request body. The stub deliberately never reads
+        // that body, matching a connector which begins its HTTPS exchange as
+        // chunks arrive.
+        let mut response = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            proxy_inner(state.clone(), request),
+        )
+        .await
+        .expect("direct request waited for its complete body")
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+        assert_eq!(
+            response.headers().get(http::header::LOCATION).unwrap(),
+            "https://api.openai.com/redirect-target"
+        );
+        assert_eq!(
+            response.headers().get("x-provider-request-id").unwrap(),
+            "req-safe"
+        );
+        assert!(response.headers().get(http::header::CONNECTION).is_none());
+        assert!(response.headers().get("x-response-scoped").is_none());
+        assert!(response.headers().get("x-llm-notary-capture-id").is_none());
+
+        response_sender
+            .send(Ok(Bytes::from_static(b"data: direct\n\n")))
+            .await
+            .unwrap();
+        let frame = response.body_mut().frame().await.unwrap().unwrap();
+        assert_eq!(
+            frame.into_data().unwrap(),
+            Bytes::from_static(b"data: direct\n\n")
+        );
+        drop(response_sender);
+        drop(request_sender);
+
+        {
+            let seen = observations.lock().unwrap();
+            assert_eq!(seen.len(), 1);
+            assert_eq!(seen[0].provider, Provider::Openai);
+            assert_eq!(seen[0].uri, "/v1/responses?stream=true");
+            assert_eq!(
+                seen[0].headers.get(http::header::AUTHORIZATION).unwrap(),
+                "Bearer provider-secret"
+            );
+            assert_eq!(
+                seen[0].headers.get(http::header::ACCEPT_ENCODING).unwrap(),
+                "gzip"
+            );
+            assert!(seen[0].headers.get("x-request-scoped").is_none());
+        }
+        assert_eq!(state.persistence.metadata.counts().await.unwrap(), before);
+    }
+
+    #[tokio::test]
+    async fn failed_enable_is_atomic_and_leaves_capture_off() {
+        let config = Arc::new(AgentConfig::default());
+        let artifacts = RoutedArtifactStore::new(
+            config.storage.backend,
+            FileSystemArtifactStore::new("bundles", "traces"),
+            None,
+        )
+        .unwrap();
+        let persistence = Persistence {
+            metadata: Arc::new(SqliteMetadataStore::from_catalog(
+                SqliteCatalog::open(std::path::Path::new(":memory:"), true).unwrap(),
+                true,
+            )),
+            artifacts: Arc::new(artifacts),
+        };
+        persistence
+            .metadata
+            .set_capture_enabled(false, 1)
+            .await
+            .unwrap();
+        let mode = CaptureMode::new(false, None, config, persistence.clone(), None);
+        mode.fail_notary_initialization
+            .store(true, Ordering::Release);
+        assert!(mode.set_enabled(true).await.is_err());
+        assert!(!mode.enabled());
+        assert!(!persistence.metadata.capture_enabled().await.unwrap());
     }
 
     #[test]

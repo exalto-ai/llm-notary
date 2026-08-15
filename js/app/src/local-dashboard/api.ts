@@ -1,6 +1,7 @@
 import type { components, paths } from './generated/api.generated';
 
 export type Status = components['schemas']['StatusResponse'];
+export type CaptureSetting = components['schemas']['CaptureSettingResponse'];
 export type Notaries = components['schemas']['NotariesResponse'];
 export type Notary = components['schemas']['NotaryResponse'];
 export type Capture = components['schemas']['CaptureResponse'];
@@ -32,7 +33,7 @@ export class LocalApiError extends Error {
 }
 
 type RequestOptions = {
-  method?: 'GET' | 'POST' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PUT' | 'DELETE';
   body?: unknown;
   basicAuth?: { username: string; password: string };
 };
@@ -102,6 +103,10 @@ export const localApi = {
   }),
   endSession: () => request<void>('/v1/session', { method: 'DELETE' }),
   status: () => request<Status>('/v1/status'),
+  captureSetting: () => request<CaptureSetting>('/v1/settings/capture'),
+  updateCaptureSetting: (enabled: boolean) => request<CaptureSetting>('/v1/settings/capture', {
+    method: 'PUT', body: { enabled }
+  }),
   notaries: () => request<Notaries>('/v1/notaries'),
   captures: (filters: Record<string, string | number | boolean | undefined> = {}) =>
     request<CaptureList>(`/v1/captures${queryString(filters)}`),

@@ -12,7 +12,7 @@ use crate::metadata::{
     TerminalOperationResult, capture_search_expression,
 };
 
-const CATALOG_SCHEMA_VERSION: i64 = 7;
+const CATALOG_SCHEMA_VERSION: i64 = 8;
 
 /// A single-process SQLite capture inventory.
 pub(crate) struct SqliteCatalog {
@@ -62,6 +62,52 @@ impl SqliteCatalog {
             row.get::<_, i64>(0).map(|_| ())
         })?;
         Ok(())
+    }
+
+    pub fn capture_enabled(&self) -> Result<bool> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        connection
+            .query_row(
+                "SELECT capture_enabled FROM daemon_settings WHERE singleton = 1",
+                [],
+                |row| row.get(0),
+            )
+            .context("reading capture mode")
+    }
+
+    pub fn set_capture_enabled(&self, enabled: bool, now_unix_ms: u64) -> Result<bool> {
+        let mut connection = self.connection.lock().expect("catalog mutex poisoned");
+        let transaction = connection.transaction()?;
+        let current: bool = transaction.query_row(
+            "SELECT capture_enabled FROM daemon_settings WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?;
+        if current != enabled {
+            transaction.execute(
+                "UPDATE daemon_settings SET capture_enabled = ? WHERE singleton = 1",
+                [enabled],
+            )?;
+            insert_event(
+                &transaction,
+                now_unix_ms,
+                if enabled {
+                    "capture_enabled"
+                } else {
+                    "capture_disabled"
+                },
+                None,
+                None,
+                "info",
+                if enabled {
+                    "Capture requests enabled"
+                } else {
+                    "Capture requests disabled"
+                },
+            )?;
+        }
+        transaction.commit()?;
+        Ok(enabled)
     }
 
     /// Records the start of a capture before the notary connection begins.
@@ -1305,6 +1351,18 @@ fn migrate_to(connection: &mut Connection, target_version: i64) -> Result<()> {
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (7)", [])?;
         transaction.commit()?;
     }
+    if version < 8 && target_version >= 8 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "CREATE TABLE daemon_settings (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                capture_enabled INTEGER NOT NULL CHECK (capture_enabled IN (0, 1))
+             );
+             INSERT INTO daemon_settings (singleton, capture_enabled) VALUES (1, 1);",
+        )?;
+        transaction.execute("INSERT INTO schema_migrations(version) VALUES (8)", [])?;
+        transaction.commit()?;
+    }
     Ok(())
 }
 
@@ -1651,6 +1709,7 @@ mod tests {
                      ALTER TABLE operations DROP COLUMN proof_commitments_total;
                      ALTER TABLE captures DROP COLUMN expected_artifact_size_bytes;
                      ALTER TABLE captures DROP COLUMN expected_artifact_sha256;
+                     DROP TABLE daemon_settings;
                      DELETE FROM schema_migrations WHERE version >= 4;",
                 )
                 .unwrap();
@@ -1735,6 +1794,7 @@ mod tests {
             .execute_batch(
                 "DROP TABLE operation_attempts;
                  DROP TABLE events;
+                 DROP TABLE daemon_settings;
                  DROP INDEX operations_created_at_idx;
                  DROP INDEX one_active_finalization_per_capture;
                  DROP TABLE operations;

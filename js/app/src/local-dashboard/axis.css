@@ -72,6 +72,7 @@ button:focus-visible, a:focus-visible, [tabindex]:focus-visible { outline-color:
 
 .settings-panel { min-height: 0; padding: 17px 20px 28px; border: 0; border-right: 1px solid var(--rule); border-bottom: 1px solid var(--rule); background: transparent; }.settings-panel:last-child { border-right: 0; }.settings-panel h2 { margin: 20px 0 7px; font-family: 'Instrument Sans Variable', Arial, sans-serif; font-size: 22px; font-weight: 600; }.authorization-code { border-color: var(--rule); }.fixture-flow-note { padding: 10px 0; border-top: 1px solid var(--rule); border-left: 0; background: transparent; }.event-list { margin-top: 0; border: 0; border-bottom: 1px solid var(--rule); background: transparent; }.event-row { min-height: 57px; padding: 9px 12px; border-color: var(--rule); }.appearance-setting { margin: 0 -16px; padding: 10px 16px; border: 0; border-bottom: 1px solid var(--rule); background: transparent; }.api-link { border-color: var(--rule); background: var(--subtle); }.settings-panel.inverse { border-color: var(--rule); background: var(--inverse); }.settings-panel.inverse .eyebrow, .settings-panel.inverse > p { color: var(--inverse-muted); }.settings-panel.inverse code { color: var(--inverse-accent); }
 
+.capture-mode-setting { margin-top: 0; }
 .settings-notaries { grid-column: 1 / -1; border-right: 0; }
 .settings-notaries-heading { display: flex; align-items: end; justify-content: space-between; gap: 16px; }
 .settings-notaries-heading > div h2 { margin-top: 6px; }

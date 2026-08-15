@@ -130,6 +130,16 @@ pub trait MetadataStore: Send + Sync {
     /// this binary. Implementations must not mutate schema or data.
     async fn readiness(&self) -> MetadataResult<()>;
 
+    /// Returns the daemon-owned mode used when admitting new provider
+    /// requests. The setting is durable and shared by every runtime using the
+    /// same metadata backend.
+    async fn capture_enabled(&self) -> MetadataResult<bool>;
+
+    /// Atomically stores the capture mode and records its safe activity event.
+    /// Implementations return the authoritative stored value so callers never
+    /// have to infer the winner of a concurrent update.
+    async fn set_capture_enabled(&self, enabled: bool, now_unix_ms: u64) -> MetadataResult<bool>;
+
     async fn begin_capture(&self, capture: NewCapture) -> MetadataResult<()>;
     async fn mark_capture_failed(&self, capture_id: &str, failure_code: &str)
     -> MetadataResult<()>;

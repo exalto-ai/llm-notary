@@ -2701,7 +2701,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let state = crate::admin::AdminState::new(persistence, Arc::new(config), None, None)
+        let state = crate::admin::AdminState::new(persistence, Arc::new(config), None, None, None)
             .await
             .unwrap();
         let router = crate::admin::router(state).unwrap();

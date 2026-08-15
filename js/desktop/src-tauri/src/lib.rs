@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tauri::{
     Manager,
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
 };
 use tauri_plugin_shell::{ShellExt, process::CommandChild};
@@ -107,7 +107,13 @@ struct AdminStatus {
     admin_listener: String,
     vault: String,
     notary: String,
+    capture_enabled: bool,
     counts: CaptureCounts,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct CaptureSetting {
+    enabled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -125,6 +131,7 @@ struct DesktopState {
     proxy_listener: String,
     admin_listener: String,
     notary: Option<String>,
+    capture_enabled: bool,
     counts: CaptureCounts,
     message: Option<String>,
 }
@@ -403,6 +410,43 @@ fn open_account_link(url: String) -> Result<(), String> {
     result
         .map(|_| ())
         .map_err(|error| format!("Could not open the account page: {error}"))
+}
+
+async fn write_capture_setting(enabled: bool) -> Result<bool, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(500))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let response = client
+        .put(format!("{ADMIN_ORIGIN}/v1/settings/capture"))
+        .json(&CaptureSetting { enabled })
+        .send()
+        .await
+        .map_err(|_| {
+            "The local service is unreachable; capture mode did not change.".to_string()
+        })?;
+    if response.status() == StatusCode::UNAUTHORIZED {
+        return Err(
+            "The local service requires dashboard authentication; capture mode did not change."
+                .into(),
+        );
+    }
+    response
+        .error_for_status()
+        .map_err(|_| {
+            "The local service could not change capture mode. Capture remains unchanged."
+                .to_string()
+        })?
+        .json::<CaptureSetting>()
+        .await
+        .map(|setting| setting.enabled)
+        .map_err(|_| "The local service returned an invalid capture setting.".to_string())
+}
+
+#[tauri::command]
+async fn set_capture_enabled(enabled: bool) -> Result<bool, String> {
+    write_capture_setting(enabled).await
 }
 
 async fn daemon_is_healthy() -> bool {
@@ -836,6 +880,7 @@ async fn get_desktop_state(
                 proxy_listener: status.proxy_listener,
                 admin_listener: status.admin_listener,
                 notary: Some(status.notary),
+                capture_enabled: status.capture_enabled,
                 counts: status.counts,
                 message,
             })
@@ -856,6 +901,7 @@ async fn get_desktop_state(
                 proxy_listener: "127.0.0.1:8787".into(),
                 admin_listener: "127.0.0.1:8788".into(),
                 notary: None,
+                capture_enabled: false,
                 counts: CaptureCounts::default(),
                 message: if running { Some(error) } else { None },
             })
@@ -1076,11 +1122,19 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-fn create_tray(app: &tauri::App) -> tauri::Result<()> {
+fn create_tray(app: &tauri::App) -> tauri::Result<CheckMenuItem<tauri::Wry>> {
     let open_app = MenuItem::with_id(app, "open_app", "Open LLM Notary", true, None::<&str>)?;
+    let capture_requests = CheckMenuItem::with_id(
+        app,
+        "capture_requests",
+        "Capture requests — service stopped",
+        false,
+        false,
+        None::<&str>,
+    )?;
     let separator = PredefinedMenuItem::separator(app)?;
     let quit = MenuItem::with_id(app, "quit", "Quit LLM Notary", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open_app, &separator, &quit])?;
+    let menu = Menu::with_items(app, &[&open_app, &capture_requests, &separator, &quit])?;
 
     #[cfg(target_os = "macos")]
     let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
@@ -1093,13 +1147,53 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
         .tooltip("LLM Notary")
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .on_menu_event(|app, event| match event.id().as_ref() {
-            "open_app" => show_main_window(app),
-            "quit" => app.exit(0),
-            _ => {}
+        .on_menu_event({
+            let capture_requests = capture_requests.clone();
+            move |app, event| match event.id().as_ref() {
+                "open_app" => show_main_window(app),
+                "capture_requests" => {
+                    let requested = capture_requests.is_checked().unwrap_or(false);
+                    let capture_requests = capture_requests.clone();
+                    tauri::async_runtime::spawn(async move {
+                        match write_capture_setting(requested).await {
+                            Ok(enabled) => {
+                                let _ = capture_requests.set_checked(enabled);
+                                let _ = capture_requests.set_text("Capture requests");
+                                let _ = capture_requests.set_enabled(true);
+                            }
+                            Err(_) => {
+                                let _ = capture_requests.set_checked(!requested);
+                                let _ = capture_requests.set_text("Capture requests — unavailable");
+                                let _ = capture_requests.set_enabled(false);
+                            }
+                        }
+                    });
+                }
+                "quit" => app.exit(0),
+                _ => {}
+            }
         })
         .build(app)?;
-    Ok(())
+    Ok(capture_requests)
+}
+
+fn schedule_capture_menu_updates(capture_requests: CheckMenuItem<tauri::Wry>) {
+    tauri::async_runtime::spawn(async move {
+        loop {
+            match read_admin_status().await {
+                Ok(status) => {
+                    let _ = capture_requests.set_checked(status.capture_enabled);
+                    let _ = capture_requests.set_text("Capture requests");
+                    let _ = capture_requests.set_enabled(true);
+                }
+                Err(_) => {
+                    let _ = capture_requests.set_text("Capture requests — service stopped");
+                    let _ = capture_requests.set_enabled(false);
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+    });
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1132,12 +1226,14 @@ pub fn run() {
             start_daemon,
             stop_daemon,
             restart_daemon,
+            set_capture_enabled,
             get_update_state,
             check_for_updates,
             install_update_and_restart,
         ])
         .setup(|app| {
-            create_tray(app)?;
+            let capture_requests = create_tray(app)?;
+            schedule_capture_menu_updates(capture_requests);
             schedule_update_checks(app.handle().clone());
             let (vault_configured, vault_mode) = local_vault_mode();
             let onboarding_complete = onboarding_marker_path().is_ok_and(|path| path.exists());

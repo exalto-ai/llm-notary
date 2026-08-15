@@ -23,6 +23,7 @@ export type DesktopState = {
   proxy_listener: string;
   admin_listener: string;
   notary: string | null;
+  capture_enabled: boolean;
   counts: CaptureCounts;
   message: string | null;
 };
@@ -99,6 +100,7 @@ function fallbackState(overrides: Partial<DesktopState> = {}): DesktopState {
     proxy_listener: '127.0.0.1:8787',
     admin_listener: '127.0.0.1:8788',
     notary: null,
+    capture_enabled: false,
     counts: emptyCounts,
     message: null,
     ...overrides,
@@ -128,6 +130,17 @@ function forcedState(): DesktopState | null {
       message: 'The local service is not responding.',
     });
   }
+  if (screen === 'capture-off' || screen === 'capture-on') {
+    return fallbackState({
+      running: true,
+      managed_by_desktop: true,
+      capture_enabled: screen === 'capture-on',
+      version: '0.1.0',
+      daemon_build_id: 'dev',
+      notary: 'directory',
+      counts: { ...emptyCounts, total_captures: 14, ready_to_finalize: 3, finalized: 8 },
+    });
+  }
   return null;
 }
 
@@ -154,6 +167,7 @@ export async function getDesktopState(): Promise<DesktopState> {
       proxy_listener: status.proxy_listener,
       admin_listener: status.admin_listener,
       notary: status.notary,
+      capture_enabled: status.capture_enabled,
       counts: status.counts,
       message: null,
     };
@@ -190,6 +204,20 @@ export async function stopDaemon(): Promise<void> {
 export async function restartDaemon(): Promise<void> {
   if (!isTauri()) return;
   await invoke('restart_daemon');
+}
+
+export async function setCaptureEnabled(enabled: boolean): Promise<boolean> {
+  if (isTauri()) return invoke<boolean>('set_capture_enabled', { enabled });
+  const forced = forcedState();
+  if (forced) return enabled;
+  const response = await fetch('/admin-api/v1/settings/capture', {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!response.ok) throw new Error('The local service could not change capture mode.');
+  const setting = await response.json() as { enabled: boolean };
+  return setting.enabled;
 }
 
 export async function getUpdateState(): Promise<DesktopUpdateState> {

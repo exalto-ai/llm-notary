@@ -90,6 +90,7 @@ pub(crate) struct AdminState {
     server_runtime: Option<Arc<ServerRuntime>>,
     server_vault_identity: Option<String>,
     dependency_probe: Arc<Mutex<DependencyProbeCache>>,
+    capture_mode: Arc<crate::cli::proxy::CaptureMode>,
 }
 
 impl AdminState {
@@ -98,6 +99,7 @@ impl AdminState {
         config: Arc<AgentConfig>,
         server_runtime: Option<Arc<ServerRuntime>>,
         server_vault_identity: Option<String>,
+        capture_mode: Option<Arc<crate::cli::proxy::CaptureMode>>,
     ) -> Result<Self> {
         if server_runtime.is_none() {
             let interrupted = persistence
@@ -108,6 +110,16 @@ impl AdminState {
                 tracing::warn!(interrupted, "recovered interrupted finalization operations");
             }
         }
+        let capture_mode = match capture_mode {
+            Some(capture_mode) => capture_mode,
+            None => Arc::new(crate::cli::proxy::CaptureMode::new(
+                persistence.metadata.capture_enabled().await?,
+                config.notary_endpoint()?,
+                config.clone(),
+                persistence.clone(),
+                server_runtime.clone(),
+            )),
+        };
         Ok(Self {
             persistence,
             config,
@@ -123,6 +135,7 @@ impl AdminState {
             server_runtime,
             server_vault_identity,
             dependency_probe: Arc::new(Mutex::new(None)),
+            capture_mode,
         })
     }
 }
@@ -138,8 +151,9 @@ async fn probe_dependencies(state: &AdminState) -> std::result::Result<(), &'sta
     let persistence = state.persistence.clone();
     let server_runtime = state.server_runtime.clone();
     let opened_vault = state.server_vault_identity.clone();
-    let require_shared_trust =
-        state.server_runtime.is_some() && state.config.notary.endpoint.is_none();
+    let require_shared_trust = state.capture_mode.enabled()
+        && state.server_runtime.is_some()
+        && state.config.notary.endpoint.is_none();
     let result = match tokio::time::timeout(DEPENDENCY_PROBE_TIMEOUT, async move {
         persistence
             .metadata
@@ -188,6 +202,10 @@ async fn probe_dependencies(state: &AdminState) -> std::result::Result<(), &'sta
 pub(crate) fn router(state: AdminState) -> Result<Router> {
     let protected = Router::new()
         .route("/v1/status", get(status))
+        .route(
+            "/v1/settings/capture",
+            get(capture_setting).put(update_capture_setting),
+        )
         .route("/v1/notaries", get(notaries))
         .route("/v1/captures", get(captures))
         .route("/v1/captures/{capture_id}", get(capture))
@@ -303,14 +321,14 @@ fn embedded_dashboard_response(path: &str, desktop_embed: bool) -> Response {
         description = "Loopback administration API. Routes are available without credentials by default; configure admin.auth to require HTTP Basic authentication."
     ),
     paths(
-        health, readiness, openapi, start_session, end_session, status, notaries, captures, capture,
+        health, readiness, openapi, start_session, end_session, status, capture_setting, update_capture_setting, notaries, captures, capture,
         start_finalization, operations, operation, retry_operation, trace,
         download_package, verify_trace, events, account_status, start_account_connection,
         end_account_connection, poll_account_connection, share_capture,
         share_status
     ),
     components(schemas(
-        HealthResponse, ReadinessResponse, StatusResponse, CountsResponse, UpdateStatusResponse, NotariesResponse, NotaryResponse,
+        HealthResponse, ReadinessResponse, StatusResponse, CaptureSettingResponse, UpdateCaptureSetting, CountsResponse, UpdateStatusResponse, NotariesResponse, NotaryResponse,
         PageQuery, CaptureResponse, CaptureDetailResponse, ArtifactResponse,
         OperationSummaryResponse, OperationResponse, OperationProgressResponse,
         OperationProofProgressResponse, OperationAttemptResponse,
@@ -525,6 +543,12 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
     .await
     .map_err(|_| ApiError::service_unavailable("dependency_not_ready"))?
     .map_err(|_| ApiError::service_unavailable("dependency_not_ready"))?;
+    let capture_enabled = state
+        .persistence
+        .metadata
+        .capture_enabled()
+        .await
+        .map_err(|_| ApiError::service_unavailable("metadata_not_ready"))?;
     let update = state.update_status.read().await;
     Ok(Json(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),
@@ -548,6 +572,7 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
             .as_ref()
             .map(|server_runtime| format!("{:?}", server_runtime.lifecycle()).to_ascii_lowercase())
             .unwrap_or_else(|| "ready".into()),
+        capture_enabled,
         proxy_listener: state.config.proxy.listen.to_string(),
         admin_listener: state.config.admin.listen.to_string(),
         proxy_origin: state
@@ -589,6 +614,39 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
             error_code: update.error_code.clone(),
         },
     }))
+}
+
+#[utoipa::path(get, path = "/v1/settings/capture", summary = "Get capture mode", description = "Returns the authoritative daemon-owned mode used when admitting new provider requests.", responses((status = 200, body = CaptureSettingResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn capture_setting(
+    State(state): State<AdminState>,
+) -> Result<Json<CaptureSettingResponse>, ApiError> {
+    let enabled = state
+        .persistence
+        .metadata
+        .capture_enabled()
+        .await
+        .map_err(|_| ApiError::service_unavailable("metadata_not_ready"))?;
+    Ok(Json(CaptureSettingResponse { enabled }))
+}
+
+#[utoipa::path(put, path = "/v1/settings/capture", summary = "Set capture mode", description = "Durably changes how later provider requests are admitted. Enabling first initializes trusted notary state; a failure leaves capture off.", request_body = UpdateCaptureSetting, responses((status = 200, body = CaptureSettingResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn update_capture_setting(
+    State(state): State<AdminState>,
+    Json(update): Json<UpdateCaptureSetting>,
+) -> Result<Json<CaptureSettingResponse>, ApiError> {
+    let enabled = state
+        .capture_mode
+        .set_enabled(update.enabled)
+        .await
+        .map_err(|error| {
+            tracing::warn!("capture mode transition failed: {error:#}");
+            ApiError::service_unavailable(if update.enabled {
+                "capture_enable_initialization_failed"
+            } else {
+                "capture_setting_not_stored"
+            })
+        })?;
+    Ok(Json(CaptureSettingResponse { enabled }))
 }
 
 #[utoipa::path(get, path = "/v1/notaries", summary = "Get configured notary trust", description = "Returns a safe read-only projection of the local or server-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.", responses((status = 200, body = NotariesResponse), (status = 401, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
@@ -2074,6 +2132,7 @@ struct StatusResponse {
     instance_id: Option<String>,
     incarnation_id: Option<String>,
     lifecycle: String,
+    capture_enabled: bool,
     proxy_listener: String,
     admin_listener: String,
     proxy_origin: String,
@@ -2087,6 +2146,16 @@ struct StatusResponse {
     preview_chars: usize,
     counts: CountsResponse,
     updates: UpdateStatusResponse,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct CaptureSettingResponse {
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize, ToSchema)]
+struct UpdateCaptureSetting {
+    enabled: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -2683,7 +2752,7 @@ mod tests {
         config.storage.finalized_dir = directory.join("traces");
         config.admin.auth = auth;
         let persistence = Persistence::open(&config).await.unwrap();
-        AdminState::new(persistence, Arc::new(config), None, None)
+        AdminState::new(persistence, Arc::new(config), None, None, None)
             .await
             .unwrap()
     }
@@ -2724,6 +2793,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn capture_setting_is_authoritative_durable_and_reflected_in_status() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = router(state(directory.path()).await).unwrap();
+        let response = app
+            .clone()
+            .oneshot(
+                Request::put("/v1/settings/capture")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"enabled":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let setting: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(setting["enabled"], false);
+
+        let status = app
+            .oneshot(Request::get("/v1/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status: serde_json::Value =
+            serde_json::from_slice(&status.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(status["capture_enabled"], false);
+
+        let persistence = Persistence::open(&{
+            let mut config = AgentConfig::default();
+            config.catalog.path = directory.path().join("catalog.db");
+            config.storage.bundle_dir = directory.path().join("bundles");
+            config.storage.finalized_dir = directory.path().join("traces");
+            config
+        })
+        .await
+        .unwrap();
+        assert!(!persistence.metadata.capture_enabled().await.unwrap());
+    }
+
+    #[tokio::test]
     async fn protected_routes_reject_missing_or_wrong_auth_without_echoing_it() {
         let directory = tempfile::tempdir().unwrap();
         let app = router(protected_state(directory.path()).await).unwrap();
@@ -2749,6 +2859,18 @@ mod tests {
             .oneshot(
                 Request::post("/v1/captures/cap-example/finalizations")
                     .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::put("/v1/settings/capture")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"enabled":false}"#))
                     .unwrap(),
             )
             .await
@@ -2829,6 +2951,7 @@ mod tests {
             "/readyz",
             "/openapi.json",
             "/v1/status",
+            "/v1/settings/capture",
             "/v1/notaries",
             "/v1/captures",
             "/v1/captures/{capture_id}",
@@ -2850,6 +2973,8 @@ mod tests {
         }
         for (path, method) in [
             ("/v1/status", "get"),
+            ("/v1/settings/capture", "get"),
+            ("/v1/settings/capture", "put"),
             ("/v1/notaries", "get"),
             ("/v1/captures", "get"),
             ("/v1/captures/{capture_id}", "get"),
@@ -2900,7 +3025,7 @@ mod tests {
                 documented_operations += 1;
             }
         }
-        assert_eq!(documented_operations, 23);
+        assert_eq!(documented_operations, 25);
     }
 
     #[tokio::test]

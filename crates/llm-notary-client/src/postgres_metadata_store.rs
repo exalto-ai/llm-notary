@@ -33,13 +33,15 @@ use crate::{
 const SCHEMA: &str = "llm_notary_daemon";
 const JOURNAL: &str = "llm_notary_daemon.schema_migrations";
 const MIGRATION_LOCK_NAMESPACE: &str = "llm-notary/daemon-postgres-migrations/v1";
-const LATEST_SCHEMA_VERSION: i64 = 3;
+const LATEST_SCHEMA_VERSION: i64 = 4;
 const INITIAL_MIGRATION: &str = include_str!("../migrations-postgres-daemon/0001_initial.sql");
 const ARTIFACT_EXPECTATION_MIGRATION: &str =
     include_str!("../migrations-postgres-daemon/0002_capture_artifact_expectation.sql");
 const SERVER_COORDINATION_MIGRATION: &str =
     include_str!("../migrations-postgres-daemon/0003_server_coordination.sql");
-const MIGRATIONS: [(i64, &str, &str); 3] = [
+const CAPTURE_MODE_MIGRATION: &str =
+    include_str!("../migrations-postgres-daemon/0004_capture_mode.sql");
+const MIGRATIONS: [(i64, &str, &str); 4] = [
     (1, "initial daemon metadata schema", INITIAL_MIGRATION),
     (
         2,
@@ -51,6 +53,7 @@ const MIGRATIONS: [(i64, &str, &str); 3] = [
         "server replica leases, fencing, and shared state",
         SERVER_COORDINATION_MIGRATION,
     ),
+    (4, "durable capture mode", CAPTURE_MODE_MIGRATION),
 ];
 
 /// A pooled PostgreSQL metadata backend whose schema has already been migrated.
@@ -731,6 +734,64 @@ impl MetadataStore for PostgresMetadataStore {
     async fn readiness(&self) -> MetadataResult<()> {
         require_current_schema(&self.pool).await?;
         require_runtime_profile(&self.pool, self.server_mode).await
+    }
+
+    async fn capture_enabled(&self) -> MetadataResult<bool> {
+        sqlx::query_scalar(
+            "SELECT capture_enabled FROM llm_notary_daemon.daemon_settings WHERE singleton = TRUE",
+        )
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| db(anyhow!(error).context("reading capture mode")))
+    }
+
+    async fn set_capture_enabled(&self, enabled: bool, now_unix_ms: u64) -> MetadataResult<bool> {
+        let now = invalid_i64(now_unix_ms, "timestamp_out_of_range")?;
+        let mut transaction = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| db(anyhow!(error).context("starting capture mode transaction")))?;
+        let current: bool = sqlx::query_scalar(
+            "SELECT capture_enabled FROM llm_notary_daemon.daemon_settings
+             WHERE singleton = TRUE FOR UPDATE",
+        )
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error).context("locking capture mode")))?;
+        if current != enabled {
+            sqlx::query(
+                "UPDATE llm_notary_daemon.daemon_settings
+                 SET capture_enabled = $1 WHERE singleton = TRUE",
+            )
+            .bind(enabled)
+            .execute(&mut *transaction)
+            .await
+            .map_err(|error| db(anyhow!(error).context("storing capture mode")))?;
+            insert_event(
+                &mut transaction,
+                now,
+                if enabled {
+                    "capture_enabled"
+                } else {
+                    "capture_disabled"
+                },
+                None,
+                None,
+                "info",
+                if enabled {
+                    "Capture requests enabled"
+                } else {
+                    "Capture requests disabled"
+                },
+            )
+            .await?;
+        }
+        transaction
+            .commit()
+            .await
+            .map_err(|error| db(anyhow!(error).context("committing capture mode")))?;
+        Ok(enabled)
     }
 
     async fn begin_capture(&self, capture: NewCapture) -> MetadataResult<()> {

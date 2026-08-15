@@ -376,6 +376,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/settings/capture": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get capture mode
+         * @description Returns the authoritative daemon-owned mode used when admitting new provider requests.
+         */
+        get: operations["capture_setting"];
+        /**
+         * Set capture mode
+         * @description Durably changes how later provider requests are admitted. Enabling first initializes trusted notary state; a failure leaves capture off.
+         */
+        put: operations["update_capture_setting"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/shares/{share_id}": {
         parameters: {
             query?: never;
@@ -499,6 +523,9 @@ export interface components {
             response_bytes?: number | null;
             response_model?: string | null;
             streaming: boolean;
+        };
+        CaptureSettingResponse: {
+            enabled: boolean;
         };
         CountsResponse: {
             /** Format: int64 */
@@ -763,6 +790,7 @@ export interface components {
             artifact_backend: string;
             artifact_status: string;
             build_id: string;
+            capture_enabled: boolean;
             counts: components["schemas"]["CountsResponse"];
             incarnation_id?: string | null;
             instance_id?: string | null;
@@ -782,6 +810,9 @@ export interface components {
             capture_id: string;
             manifest: unknown;
             trace: unknown;
+        };
+        UpdateCaptureSetting: {
+            enabled: boolean;
         };
         UpdateStatusResponse: {
             current_build_id: string;
@@ -1736,6 +1767,80 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    capture_setting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureSettingResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    update_capture_setting: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCaptureSetting"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureSettingResponse"];
+                };
             };
             401: {
                 headers: {

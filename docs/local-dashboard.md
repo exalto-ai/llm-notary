@@ -34,11 +34,13 @@ Use the sidebar to move between these parts of the local workflow:
 - **Share** previews the disclosed conversation, chooses Unlisted or Listed,
   and keeps public sharing separate from local proof creation.
 - **Activity** shows a bounded redacted event stream.
-- **Settings** reports safe listener, vault, preview-policy, and notary trust
-  state from `GET /v1/notaries`, contains the color-scheme control, and links
-  to the live OpenAPI contract. The notary records show configured trust and
-  lifecycle windows, not endpoint health. It also shows the hosted-account
-  connection and credit summary.
+- **Settings** starts with the authoritative **Capture requests** switch, then
+  reports safe listener, vault, preview-policy, and notary trust state from
+  `GET /v1/notaries`, contains the color-scheme control, and links to the live
+  OpenAPI contract. Turning capture off keeps the fixed provider proxy routes
+  available as direct passthrough and creates no evidence. The notary records
+  show configured trust and lifecycle windows, not endpoint health. It also
+  shows the hosted-account connection and credit summary.
 
 ## Connect an account (optional)
 
@@ -160,6 +162,14 @@ never request bodies, response bodies, raw headers, credentials, or filesystem
 paths. Settings shows safe runtime facts, the System/Light/Dark control, and
 the exact `http://127.0.0.1:8788/openapi.json` discovery URL for scripts and
 coding agents.
+
+The capture switch changes the daemon-owned durable setting; it is not a
+browser preference. The explanatory text states whether later requests use
+the notary and create private captures or pass directly to the provider with
+no evidence. Overview repeats the distinction as **Notarized capture** or
+**Direct passthrough**, and Activity records only a safe enabled/disabled
+event. Existing captures and finalization work remain available in either
+mode.
 
 ## Responsive navigation and color mode
 

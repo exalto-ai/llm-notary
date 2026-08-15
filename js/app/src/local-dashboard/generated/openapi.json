@@ -1489,6 +1489,110 @@
         ]
       }
     },
+    "/v1/settings/capture": {
+      "get": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Get capture mode",
+        "description": "Returns the authoritative daemon-owned mode used when admitting new provider requests.",
+        "operationId": "capture_setting",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureSettingResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Set capture mode",
+        "description": "Durably changes how later provider requests are admitted. Enabling first initializes trusted notary state; a failure leaves capture off.",
+        "operationId": "update_capture_setting",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateCaptureSetting"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureSettingResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
     "/v1/shares/{share_id}": {
       "get": {
         "tags": [
@@ -1965,6 +2069,17 @@
             ]
           },
           "streaming": {
+            "type": "boolean"
+          }
+        }
+      },
+      "CaptureSettingResponse": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
             "type": "boolean"
           }
         }
@@ -2891,6 +3006,7 @@
           "build_id",
           "runtime_profile",
           "lifecycle",
+          "capture_enabled",
           "proxy_listener",
           "admin_listener",
           "proxy_origin",
@@ -2920,6 +3036,9 @@
           },
           "build_id": {
             "type": "string"
+          },
+          "capture_enabled": {
+            "type": "boolean"
           },
           "counts": {
             "$ref": "#/components/schemas/CountsResponse"
@@ -2985,6 +3104,17 @@
           },
           "manifest": {},
           "trace": {}
+        }
+      },
+      "UpdateCaptureSetting": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          }
         }
       },
       "UpdateStatusResponse": {
