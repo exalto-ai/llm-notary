@@ -2,18 +2,25 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: $0 sqlite filesystem 1 {smoke|full}" >&2
+  echo "usage: $0 [smoke|full]" >&2
+  echo "       $0 sqlite filesystem 1 {smoke|full}" >&2
 }
 
-if [[ $# -ne 4 ]]; then
+metadata_engine=sqlite
+artifact_engine=filesystem
+replica_count=1
+profile=full
+if [[ $# -eq 1 ]]; then
+  profile=$1
+elif [[ $# -eq 4 ]]; then
+  metadata_engine=$1
+  artifact_engine=$2
+  replica_count=$3
+  profile=$4
+elif [[ $# -ne 0 ]]; then
   usage
   exit 2
 fi
-
-metadata_engine=$1
-artifact_engine=$2
-replica_count=$3
-profile=$4
 if [[ $metadata_engine != sqlite || $artifact_engine != filesystem || $replica_count != 1 || ( $profile != smoke && $profile != full ) ]]; then
   echo "unsupported daemon E2E matrix entry: $metadata_engine $artifact_engine $replica_count $profile" >&2
   usage

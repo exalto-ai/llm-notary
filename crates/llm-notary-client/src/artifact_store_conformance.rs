@@ -4,10 +4,7 @@ use std::sync::Arc;
 
 use sha2::{Digest as _, Sha256};
 
-use super::{
-    ArtifactAvailability, ArtifactKey, ArtifactKind, ArtifactSource, ArtifactStore,
-    ArtifactStoreError,
-};
+use super::{ArtifactKey, ArtifactKind, ArtifactSource, ArtifactStore, ArtifactStoreError};
 
 fn key(capture_id: &str, kind: ArtifactKind) -> ArtifactKey {
     ArtifactKey::new(capture_id, kind).unwrap()
@@ -112,16 +109,6 @@ pub(crate) async fn run(store: Arc<dyn ArtifactStore>) {
             .unwrap_err(),
         ArtifactStoreError::Integrity { .. }
     ));
-    let mut unavailable_record = first;
-    unavailable_record.availability = ArtifactAvailability::Missing;
-    assert!(matches!(
-        store
-            .read_verified(&unavailable_record, limit)
-            .await
-            .unwrap_err(),
-        ArtifactStoreError::Unavailable
-    ));
-
     let concurrent_key = key("cap-conformance-concurrent", ArtifactKind::FinalizedPackage);
     let concurrent_content = b"one immutable object".to_vec();
     let mut tasks = Vec::new();

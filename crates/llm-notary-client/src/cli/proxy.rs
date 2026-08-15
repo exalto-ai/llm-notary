@@ -46,7 +46,8 @@ use crate::{
 #[cfg(test)]
 use crate::{
     DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES,
-    artifact_store::FileSystemArtifactStore, catalog::Catalog, metadata_store::SqliteMetadataStore,
+    artifact_store::FileSystemArtifactStore, sqlite_catalog::SqliteCatalog,
+    sqlite_metadata_store::SqliteMetadataStore,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1491,7 +1492,7 @@ mod tests {
         let config = AgentConfig::default();
         let persistence = Persistence {
             metadata: Arc::new(SqliteMetadataStore::from_catalog(
-                Catalog::open(std::path::Path::new(":memory:"), true).unwrap(),
+                SqliteCatalog::open(std::path::Path::new(":memory:"), true).unwrap(),
                 true,
             )),
             artifacts: Arc::new(FileSystemArtifactStore::new("bundles", "traces")),

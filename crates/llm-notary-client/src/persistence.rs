@@ -8,8 +8,8 @@ use crate::{
     archive::MAX_ARCHIVE_WIRE_BYTES,
     artifact_store::{ArtifactKey, ArtifactKind, ArtifactStore, FileSystemArtifactStore},
     config::AgentConfig,
-    metadata::{CaptureCompletion, CaptureSummary},
-    metadata_store::{MetadataStore, SqliteMetadataStore},
+    metadata_store::MetadataStore,
+    sqlite_metadata_store::SqliteMetadataStore,
 };
 
 /// The result of reconciling captures that were active when the prior process
@@ -49,14 +49,11 @@ impl Persistence {
     /// them as available.
     pub async fn reconcile_incomplete_captures(&self) -> Result<RecoverySummary> {
         let mut summary = RecoverySummary::default();
-        for capture_id in self.metadata.capturing_ids().await? {
+        for incomplete in self.metadata.incomplete_captures().await? {
+            let capture_id = incomplete.capture_id;
             let key = ArtifactKey::new(&capture_id, ArtifactKind::DeferredBundle)?;
             if let Some(artifact) = self.artifacts.find(&key, MAX_ARCHIVE_WIRE_BYTES).await? {
-                let capture =
-                    self.metadata.capture(&capture_id).await?.ok_or_else(|| {
-                        anyhow::anyhow!("active capture disappeared during recovery")
-                    })?;
-                if let Some(completion) = prepared_completion(&capture) {
+                if let Some(completion) = incomplete.completion {
                     self.metadata.complete_capture(completion, artifact).await?;
                 } else {
                     // Compatibility for captures left by schema-v6 daemons
@@ -73,19 +70,6 @@ impl Persistence {
         }
         Ok(summary)
     }
-}
-
-fn prepared_completion(capture: &CaptureSummary) -> Option<CaptureCompletion> {
-    Some(CaptureCompletion {
-        capture_id: capture.capture_id.clone(),
-        completed_at_unix_ms: capture.completed_at_unix_ms?,
-        duration_ms: capture.duration_ms?,
-        http_status: capture.http_status?,
-        response_bytes: capture.response_bytes?,
-        response_model: capture.response_model.clone(),
-        output_preview: capture.output_preview.clone(),
-        output_preview_truncated: capture.output_preview_truncated,
-    })
 }
 
 #[cfg(test)]

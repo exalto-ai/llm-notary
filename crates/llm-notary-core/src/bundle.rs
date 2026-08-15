@@ -147,26 +147,6 @@ pub async fn finalize_bundle_with_progress(
     write_trace_package_bytes(output_path, &bytes)
 }
 
-/// Completes a deferred proof from an already-decoded private bundle and
-/// returns the canonical `.llmtrace` bytes.
-pub async fn finalize_bundle_bytes(
-    bundle: &DeferredBundle,
-    trusted_notary_key: &[u8],
-    notary: &NotaryEndpoint,
-    max_attestable_http_bytes: usize,
-    max_frame_bytes: usize,
-) -> Result<Vec<u8>> {
-    finalize_bundle_bytes_with_progress(
-        bundle,
-        trusted_notary_key,
-        notary,
-        max_attestable_http_bytes,
-        max_frame_bytes,
-        &|_| {},
-    )
-    .await
-}
-
 /// Completes a decoded deferred bundle, reports milestones, and returns the
 /// canonical `.llmtrace` bytes.
 pub async fn finalize_bundle_bytes_with_progress(
@@ -248,28 +228,6 @@ pub async fn finalize_bundle_admitted_with_progress(
     )
     .await?;
     write_trace_package_bytes(output_path, &bytes)
-}
-
-/// Completes hosted finalization from an already-decoded private bundle and
-/// returns the canonical `.llmtrace` bytes.
-pub async fn finalize_bundle_admitted_bytes(
-    bundle: &DeferredBundle,
-    trusted_notary_key: &[u8],
-    notary: &NotaryEndpoint,
-    max_attestable_http_bytes: usize,
-    max_frame_bytes: usize,
-    admission_ticket: &str,
-) -> Result<Vec<u8>> {
-    finalize_bundle_admitted_bytes_with_progress(
-        bundle,
-        trusted_notary_key,
-        notary,
-        max_attestable_http_bytes,
-        max_frame_bytes,
-        admission_ticket,
-        &|_| {},
-    )
-    .await
 }
 
 /// Completes admitted finalization from a decoded private bundle, reports

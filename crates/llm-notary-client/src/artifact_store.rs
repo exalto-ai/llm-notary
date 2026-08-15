@@ -81,37 +81,6 @@ impl ArtifactLocator {
     }
 }
 
-/// Whether metadata expects an artifact's bytes to be readable.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum ArtifactAvailability {
-    /// The artifact backend durably committed and verified the bytes.
-    Available,
-    /// The referenced bytes are not currently available.
-    Missing,
-}
-
-impl ArtifactAvailability {
-    /// Returns the value persisted by the metadata store.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Available => "available",
-            Self::Missing => "missing",
-        }
-    }
-}
-
-impl TryFrom<&str> for ArtifactAvailability {
-    type Error = anyhow::Error;
-
-    fn try_from(value: &str) -> Result<Self> {
-        match value {
-            "available" => Ok(Self::Available),
-            "missing" => Ok(Self::Missing),
-            other => bail!("unsupported artifact availability {other:?}"),
-        }
-    }
-}
-
 /// The logical name of one capture artifact.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ArtifactKey {
@@ -145,7 +114,6 @@ pub struct ArtifactRecord {
     pub locator: ArtifactLocator,
     pub size_bytes: u64,
     pub sha256: String,
-    pub availability: ArtifactAvailability,
 }
 
 impl ArtifactRecord {
@@ -155,7 +123,6 @@ impl ArtifactRecord {
         locator: ArtifactLocator,
         size_bytes: u64,
         sha256: impl Into<String>,
-        availability: ArtifactAvailability,
     ) -> Result<Self> {
         let sha256 = sha256.into();
         validate_sha256(&sha256)?;
@@ -164,7 +131,6 @@ impl ArtifactRecord {
             locator,
             size_bytes,
             sha256,
-            availability,
         })
     }
 
@@ -476,9 +442,6 @@ impl ArtifactStore for FileSystemArtifactStore {
         record: &ArtifactRecord,
         max_bytes: u64,
     ) -> ArtifactResult<VerifiedArtifact> {
-        if record.availability != ArtifactAvailability::Available {
-            return Err(ArtifactStoreError::Unavailable);
-        }
         validate_sha256(&record.sha256).map_err(|error| invalid("invalid_sha256", error))?;
         if record.size_bytes > max_bytes {
             return Err(ArtifactStoreError::TooLarge {
@@ -637,7 +600,6 @@ fn inspect_artifact(
         locator_for_path(path).map_err(|error| invalid("invalid_locator", error))?,
         size_bytes,
         hex::encode(digest.finalize()),
-        ArtifactAvailability::Available,
     )
     .map_err(|error| invalid("invalid_artifact_record", error))
 }
@@ -790,7 +752,6 @@ fn publish_artifact(
         locator_for_path(path).map_err(|error| invalid("invalid_locator", error))?,
         staged.size_bytes,
         staged.sha256,
-        ArtifactAvailability::Available,
     )
     .map_err(|error| invalid("invalid_artifact_record", error))?;
     let parent = path
@@ -1284,7 +1245,6 @@ mod tests {
             ArtifactLocator::from_stored(outside.to_string_lossy()).unwrap(),
             7,
             hex::encode(Sha256::digest(b"private")),
-            ArtifactAvailability::Available,
         )
         .unwrap();
 
@@ -1335,19 +1295,11 @@ mod tests {
             .unwrap(),
             1,
             "00".repeat(32),
-            ArtifactAvailability::Available,
         )
         .unwrap();
         assert!(matches!(
             store.read_verified(&missing, 1).await.unwrap_err(),
             ArtifactStoreError::NotFound { .. }
-        ));
-
-        let mut unavailable = missing.clone();
-        unavailable.availability = ArtifactAvailability::Missing;
-        assert!(matches!(
-            store.read_verified(&unavailable, 1).await.unwrap_err(),
-            ArtifactStoreError::Unavailable
         ));
         assert!(matches!(
             store

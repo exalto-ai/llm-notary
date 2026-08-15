@@ -13,13 +13,14 @@ pub use llm_notary_core::*;
 
 pub mod admin;
 pub mod artifact_store;
-mod catalog;
 pub mod cli;
 pub mod config;
 mod local_cli;
 pub mod metadata;
 pub mod metadata_store;
 pub mod persistence;
+mod sqlite_catalog;
+pub mod sqlite_metadata_store;
 pub mod update;
 
 #[derive(Parser, Debug)]

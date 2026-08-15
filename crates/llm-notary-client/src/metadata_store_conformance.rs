@@ -16,18 +16,14 @@ use tokio::sync::Barrier;
 
 use crate::{
     FinalizationPhase, FinalizationProofProgress,
-    artifact_store::{
-        ArtifactAvailability, ArtifactKey, ArtifactKind, ArtifactLocator, ArtifactRecord,
-    },
+    artifact_store::{ArtifactKey, ArtifactKind, ArtifactLocator, ArtifactRecord},
     metadata::{
-        CaptureCompletion, CapturePagePosition, NewCapture, OperationAttempt, OperationPagePosition,
+        CaptureCompletion, CaptureFilters, CapturePagePosition, EventFilters, NewCapture,
+        OperationAttempt, OperationFilters, OperationPagePosition, TerminalOperationResult,
     },
 };
 
-use super::{
-    CaptureFilters, EventFilters, MetadataResult, MetadataStore, MetadataStoreError,
-    OperationFilters, TerminalOperationResult,
-};
+use super::{MetadataResult, MetadataStore, MetadataStoreError};
 
 /// Runs the complete metadata contract against isolated stores from `make_store`.
 pub(crate) async fn run<F, Fut>(make_store: F, full_text_search: bool)
@@ -46,7 +42,7 @@ where
     invalid_limits_and_ranges(make_store().await).await;
 }
 
-pub(super) fn new_capture(id: &str, created_at_unix_ms: u64) -> NewCapture {
+pub(crate) fn new_capture(id: &str, created_at_unix_ms: u64) -> NewCapture {
     NewCapture {
         capture_id: id.to_owned(),
         created_at_unix_ms,
@@ -61,7 +57,7 @@ pub(super) fn new_capture(id: &str, created_at_unix_ms: u64) -> NewCapture {
     }
 }
 
-pub(super) fn completion(
+pub(crate) fn completion(
     id: &str,
     completed_at_unix_ms: u64,
     http_status: u16,
@@ -78,13 +74,12 @@ pub(super) fn completion(
     }
 }
 
-pub(super) fn artifact(id: &str, kind: ArtifactKind, marker: u8) -> ArtifactRecord {
+pub(crate) fn artifact(id: &str, kind: ArtifactKind, marker: u8) -> ArtifactRecord {
     ArtifactRecord::new(
         ArtifactKey::new(id, kind).unwrap(),
         ArtifactLocator::from_stored(format!("fixture://{id}/{}", kind.as_str())).unwrap(),
         u64::from(marker) + 10,
         format!("{marker:064x}"),
-        ArtifactAvailability::Available,
     )
     .unwrap()
 }
@@ -119,7 +114,7 @@ fn assert_invalid<T>(result: MetadataResult<T>, expected: &'static str) {
 async fn capture_lifecycle(store: Arc<dyn MetadataStore>) {
     assert!(store.capture("missing").await.unwrap().is_none());
     assert!(store.artifacts("missing").await.unwrap().is_empty());
-    assert!(store.capturing_ids().await.unwrap().is_empty());
+    assert!(store.incomplete_captures().await.unwrap().is_empty());
     assert!(
         store
             .mark_capture_failed("missing", "notary_error")
@@ -157,7 +152,13 @@ async fn capture_lifecycle(store: Arc<dyn MetadataStore>) {
         .begin_capture(new_capture("lifecycle-recovered", 30))
         .await
         .unwrap();
-    let mut capturing = store.capturing_ids().await.unwrap();
+    let mut capturing = store
+        .incomplete_captures()
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|capture| capture.capture_id)
+        .collect::<Vec<_>>();
     capturing.sort();
     assert_eq!(capturing, vec!["lifecycle-complete", "lifecycle-recovered"]);
 
@@ -191,6 +192,16 @@ async fn capture_lifecycle(store: Arc<dyn MetadataStore>) {
     assert_eq!(staged.capture_state, "capturing");
     assert_eq!(staged.completed_at_unix_ms, Some(40));
     assert_eq!(staged.http_status, Some(200));
+    assert_eq!(
+        store
+            .incomplete_captures()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|capture| capture.capture_id == "lifecycle-complete")
+            .and_then(|capture| capture.completion),
+        Some(completed.clone())
+    );
     assert!(
         store
             .artifacts("lifecycle-complete")
@@ -506,13 +517,13 @@ async fn operation_filters_and_pagination(store: Arc<dyn MetadataStore>) {
             .unwrap(),
         vec![op_a.clone()]
     );
-    assert_eq!(
-        store.operations_for_capture("ops-a").await.unwrap(),
-        vec![op_a.clone()]
-    );
     assert!(
         store
-            .operations_for_capture("missing")
+            .operations(OperationFilters {
+                capture_id: Some("missing".to_owned()),
+                limit: 20,
+                ..OperationFilters::default()
+            })
             .await
             .unwrap()
             .is_empty()
@@ -1014,7 +1025,11 @@ async fn concurrent_enqueue_is_deduplicated(store: Arc<dyn MetadataStore>) {
     );
     assert_eq!(
         store
-            .operations_for_capture("concurrent-enqueue")
+            .operations(OperationFilters {
+                capture_id: Some("concurrent-enqueue".to_owned()),
+                limit: 20,
+                ..OperationFilters::default()
+            })
             .await
             .unwrap()
             .len(),

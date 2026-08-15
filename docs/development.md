@@ -115,10 +115,17 @@ bash deploy/fly/test-resolve-image-digest.sh
 docker compose --env-file /path/to/placeholder.env config --quiet
 ```
 
-The daemon persistence matrix has smoke and full profiles in this layer:
+Run the complete local-daemon persistence test with no arguments:
 
 ```bash
-scripts/test-daemon-persistence-e2e.sh sqlite filesystem 1 smoke
+scripts/test-daemon-persistence-e2e.sh
+```
+
+Pass `smoke` for the shorter recovery check. The explicit matrix form remains
+available to CI and later storage backends:
+
+```bash
+scripts/test-daemon-persistence-e2e.sh smoke
 scripts/test-daemon-persistence-e2e.sh sqlite filesystem 1 full
 ```
 

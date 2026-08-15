@@ -49,13 +49,10 @@ use crate::{
     cli::{DEFAULT_PUBLIC_ORIGIN, auth, notary, proxy, publish},
     config::AgentConfig,
     metadata::{
-        CapturePagePosition, CaptureSummary, Event, Operation, OperationAttempt,
-        OperationPagePosition,
+        CaptureFilters, CapturePagePosition, CaptureSummary, Event, EventFilters, Operation,
+        OperationAttempt, OperationFilters, OperationPagePosition, TerminalOperationResult,
     },
-    metadata_store::{
-        CaptureFilters, EventFilters, MetadataStore, MetadataStoreError, OperationFilters,
-        TerminalOperationResult,
-    },
+    metadata_store::{MetadataStore, MetadataStoreError},
     notary_directory::{NotaryDirectoryRecord, NotaryKeyStatus, key_id},
     persistence::Persistence,
     vault::Vault,
@@ -564,7 +561,11 @@ async fn capture(
     let operations = state
         .persistence
         .metadata
-        .operations_for_capture(&capture_id)
+        .operations(OperationFilters {
+            capture_id: Some(capture_id.clone()),
+            limit: 200,
+            ..OperationFilters::default()
+        })
         .await
         .map_err(|_| ApiError::internal("metadata_query_failed"))?;
     let mut finalizations = Vec::with_capacity(operations.len());

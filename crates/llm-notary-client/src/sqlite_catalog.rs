@@ -1,64 +1,26 @@
-//! SQLite-backed local capture inventory and preview search.
+//! Synchronous SQLite metadata implementation and schema migrations.
 
 use std::{fs, path::Path, sync::Mutex};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::artifact_store::{
-    ArtifactAvailability, ArtifactKey, ArtifactKind, ArtifactLocator, ArtifactRecord,
-};
+use crate::artifact_store::{ArtifactKey, ArtifactKind, ArtifactLocator, ArtifactRecord};
 use crate::metadata::{
-    CaptureCompletion, CapturePagePosition, CaptureSummary, Event, MetadataCounts, NewCapture,
-    Operation, OperationAttempt, OperationPagePosition,
+    CaptureCompletion, CaptureFilters, CaptureSummary, Event, EventFilters, IncompleteCapture,
+    MetadataCounts, NewCapture, Operation, OperationAttempt, OperationFilters,
+    TerminalOperationResult,
 };
-use crate::metadata_store::TerminalOperationResult;
 
 const CATALOG_SCHEMA_VERSION: i64 = 6;
 
-#[derive(Clone, Debug, Default)]
-pub struct CaptureFilters<'a> {
-    pub query: Option<&'a str>,
-    pub model: Option<&'a str>,
-    pub provider: Option<&'a str>,
-    pub capture_state: Option<&'a str>,
-    pub finalization_state: Option<&'a str>,
-    pub streaming: Option<bool>,
-    pub created_after_unix_ms: Option<u64>,
-    pub cursor: Option<&'a CapturePagePosition>,
-    pub limit: usize,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct OperationFilters<'a> {
-    pub state: Option<&'a str>,
-    pub kind: Option<&'a str>,
-    pub capture_id: Option<&'a str>,
-    pub cursor: Option<&'a OperationPagePosition>,
-    pub limit: usize,
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct EventFilters<'a> {
-    /// Continue backward through history before this event identifier.
-    pub before: Option<u64>,
-    /// Follow events committed after this high-water identifier.
-    pub after: Option<u64>,
-    pub severity: Option<&'a str>,
-    pub event_type: Option<&'a str>,
-    pub capture_id: Option<&'a str>,
-    pub operation_id: Option<&'a str>,
-    pub created_after_unix_ms: Option<u64>,
-    pub limit: usize,
-}
-
 /// A single-process SQLite capture inventory.
-pub(crate) struct Catalog {
+pub(crate) struct SqliteCatalog {
     connection: Mutex<Connection>,
     full_text_search: bool,
 }
 
-impl Catalog {
+impl SqliteCatalog {
     /// Opens and migrates a local SQLite catalog.
     pub fn open(path: &Path, full_text_search: bool) -> Result<Self> {
         if let Some(parent) = path
@@ -263,14 +225,43 @@ impl Catalog {
     }
 
     /// Returns captures left active when a single-daemon process stopped.
-    pub fn capturing_ids(&self) -> Result<Vec<String>> {
+    pub fn incomplete_captures(&self) -> Result<Vec<IncompleteCapture>> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
-        let mut statement = connection
-            .prepare("SELECT capture_id FROM captures WHERE capture_state = 'capturing'")?;
-        statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        let mut statement = connection.prepare(
+            "SELECT capture_id, completed_at_unix_ms, duration_ms, http_status,
+                    response_bytes, response_model, output_preview,
+                    output_preview_truncated
+             FROM captures WHERE capture_state = 'capturing'",
+        )?;
+        let mut rows = statement.query([])?;
+        let mut captures = Vec::new();
+        while let Some(row) = rows.next()? {
+            let capture_id = row.get::<_, String>(0)?;
+            let completed_at = row.get::<_, Option<i64>>(1)?;
+            let duration = row.get::<_, Option<i64>>(2)?;
+            let http_status = row.get::<_, Option<i64>>(3)?;
+            let response_bytes = row.get::<_, Option<i64>>(4)?;
+            let completion = match (completed_at, duration, http_status, response_bytes) {
+                (Some(completed_at), Some(duration), Some(http_status), Some(response_bytes)) => {
+                    Some(CaptureCompletion {
+                        capture_id: capture_id.clone(),
+                        completed_at_unix_ms: completed_at.try_into()?,
+                        duration_ms: duration.try_into()?,
+                        http_status: http_status.try_into()?,
+                        response_bytes: response_bytes.try_into()?,
+                        response_model: row.get(5)?,
+                        output_preview: row.get(6)?,
+                        output_preview_truncated: row.get(7)?,
+                    })
+                }
+                _ => None,
+            };
+            captures.push(IncompleteCapture {
+                capture_id,
+                completion,
+            });
+        }
+        Ok(captures)
     }
 
     /// Recovers one durable deferred bundle found by the artifact backend.
@@ -301,65 +292,13 @@ impl Catalog {
         Ok(())
     }
 
-    /// Lists captures, optionally filtering their prompt and output previews
-    /// with SQLite FTS5 and/or filtering their requested model.
-    #[cfg(test)]
-    pub fn list_captures(
-        &self,
-        query: Option<&str>,
-        model: Option<&str>,
-    ) -> Result<Vec<CaptureSummary>> {
-        if query.is_some() && !self.full_text_search {
-            anyhow::bail!("full-text preview search is disabled in this agent configuration");
-        }
-        let search_query = query.and_then(capture_search_expression);
-        if query.is_some() && search_query.is_none() {
-            return Ok(Vec::new());
-        }
-        let query = search_query.as_deref();
-        let connection = self.connection.lock().expect("catalog mutex poisoned");
-        let mut statement = match (query, model) {
-            (Some(_), Some(_)) => connection.prepare(
-                "SELECT c.* FROM captures c
-                 JOIN capture_search search ON search.capture_id = c.capture_id
-                 WHERE capture_search MATCH ? AND c.requested_model = ?
-                 ORDER BY c.created_at_unix_ms DESC, c.capture_id DESC",
-            )?,
-            (Some(_), None) => connection.prepare(
-                "SELECT c.* FROM captures c
-                 JOIN capture_search search ON search.capture_id = c.capture_id
-                 WHERE capture_search MATCH ?
-                 ORDER BY c.created_at_unix_ms DESC, c.capture_id DESC",
-            )?,
-            (None, Some(_)) => connection.prepare(
-                "SELECT c.* FROM captures c
-                 WHERE c.requested_model = ?
-                 ORDER BY c.created_at_unix_ms DESC, c.capture_id DESC",
-            )?,
-            (None, None) => connection.prepare(
-                "SELECT c.* FROM captures c ORDER BY c.created_at_unix_ms DESC, c.capture_id DESC",
-            )?,
-        };
-        let mut rows = match (query, model) {
-            (Some(query), Some(model)) => statement.query(params![query, model])?,
-            (Some(query), None) => statement.query(params![query])?,
-            (None, Some(model)) => statement.query(params![model])?,
-            (None, None) => statement.query([])?,
-        };
-        let mut captures = Vec::new();
-        while let Some(row) = rows.next()? {
-            captures.push(capture_from_row(row)?);
-        }
-        Ok(captures)
-    }
-
     /// Lists captures using the complete REST filter set. Filter values are
     /// bound parameters, and the result is always bounded.
-    pub fn filtered_captures(&self, filters: &CaptureFilters<'_>) -> Result<Vec<CaptureSummary>> {
+    pub fn filtered_captures(&self, filters: &CaptureFilters) -> Result<Vec<CaptureSummary>> {
         if filters.query.is_some() && !self.full_text_search {
             anyhow::bail!("full-text preview search is disabled in this agent configuration");
         }
-        let search_query = filters.query.and_then(capture_search_expression);
+        let search_query = filters.query.as_deref().and_then(capture_search_expression);
         if filters.query.is_some() && search_query.is_none() {
             return Ok(Vec::new());
         }
@@ -375,10 +314,13 @@ impl Catalog {
             values.push(query.into());
         }
         for (column, value) in [
-            ("c.requested_model", filters.model),
-            ("c.provider", filters.provider),
-            ("c.capture_state", filters.capture_state),
-            ("c.finalization_state", filters.finalization_state),
+            ("c.requested_model", filters.model.as_deref()),
+            ("c.provider", filters.provider.as_deref()),
+            ("c.capture_state", filters.capture_state.as_deref()),
+            (
+                "c.finalization_state",
+                filters.finalization_state.as_deref(),
+            ),
         ] {
             if let Some(value) = value {
                 sql.push_str(" AND ");
@@ -395,7 +337,7 @@ impl Catalog {
             sql.push_str(" AND c.created_at_unix_ms >= ?");
             values.push(i64::try_from(created_after)?.into());
         }
-        if let Some(cursor) = filters.cursor {
+        if let Some(cursor) = &filters.cursor {
             sql.push_str(
                 " AND (c.created_at_unix_ms < ? OR (c.created_at_unix_ms = ? AND c.capture_id < ?))",
             );
@@ -432,8 +374,10 @@ impl Catalog {
     pub fn artifact_records(&self, capture_id: &str) -> Result<Vec<ArtifactRecord>> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let mut statement = connection.prepare(
-            "SELECT capture_id, kind, path, size_bytes, sha256, state
-             FROM artifacts WHERE capture_id = ? ORDER BY kind",
+            "SELECT capture_id, kind, path, size_bytes, sha256
+             FROM artifacts
+             WHERE capture_id = ? AND state = 'available'
+             ORDER BY kind",
         )?;
         let rows = statement
             .query_map(params![capture_id], |row| {
@@ -443,22 +387,18 @@ impl Catalog {
                     row.get::<_, String>(2)?,
                     row.get::<_, i64>(3)?,
                     row.get::<_, String>(4)?,
-                    row.get::<_, String>(5)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows.into_iter()
-            .map(
-                |(capture_id, kind, locator, size_bytes, sha256, availability)| {
-                    ArtifactRecord::new(
-                        ArtifactKey::new(capture_id, ArtifactKind::try_from(kind.as_str())?)?,
-                        ArtifactLocator::from_stored(locator)?,
-                        size_bytes.try_into()?,
-                        sha256,
-                        ArtifactAvailability::try_from(availability.as_str())?,
-                    )
-                },
-            )
+            .map(|(capture_id, kind, locator, size_bytes, sha256)| {
+                ArtifactRecord::new(
+                    ArtifactKey::new(capture_id, ArtifactKind::try_from(kind.as_str())?)?,
+                    ArtifactLocator::from_stored(locator)?,
+                    size_bytes.try_into()?,
+                    sha256,
+                )
+            })
             .collect()
     }
 
@@ -975,14 +915,14 @@ impl Catalog {
             .map_err(Into::into)
     }
 
-    pub fn filtered_operations(&self, filters: &OperationFilters<'_>) -> Result<Vec<Operation>> {
+    pub fn filtered_operations(&self, filters: &OperationFilters) -> Result<Vec<Operation>> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let mut sql = "SELECT * FROM operations WHERE 1 = 1".to_owned();
         let mut values = Vec::<rusqlite::types::Value>::new();
         for (column, value) in [
-            ("state", filters.state),
-            ("kind", filters.kind),
-            ("capture_id", filters.capture_id),
+            ("state", filters.state.as_deref()),
+            ("kind", filters.kind.as_deref()),
+            ("capture_id", filters.capture_id.as_deref()),
         ] {
             if let Some(value) = value {
                 sql.push_str(" AND ");
@@ -991,7 +931,7 @@ impl Catalog {
                 values.push(value.to_owned().into());
             }
         }
-        if let Some(cursor) = filters.cursor {
+        if let Some(cursor) = &filters.cursor {
             sql.push_str(
                 " AND (created_at_unix_ms < ? OR (created_at_unix_ms = ? AND operation_id < ?))",
             );
@@ -1011,16 +951,6 @@ impl Catalog {
         Ok(operations)
     }
 
-    pub fn operations_for_capture(&self, capture_id: &str) -> Result<Vec<Operation>> {
-        let connection = self.connection.lock().expect("catalog mutex poisoned");
-        let mut statement = connection.prepare(
-            "SELECT * FROM operations WHERE capture_id = ? ORDER BY created_at_unix_ms DESC LIMIT 200",
-        )?;
-        let rows = statement.query_map(params![capture_id], operation_from_row)?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
-    }
-
     pub fn operation_attempts(&self, operation_id: &str) -> Result<Vec<OperationAttempt>> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let mut statement = connection.prepare(
@@ -1032,55 +962,22 @@ impl Catalog {
             .map_err(Into::into)
     }
 
-    #[cfg(test)]
-    pub fn events(&self, before: Option<u64>, limit: usize) -> Result<Vec<Event>> {
-        self.filtered_events(&EventFilters {
-            before,
-            limit,
-            ..EventFilters::default()
-        })
-    }
-
-    #[cfg(test)]
-    pub fn filtered_events(&self, filters: &EventFilters<'_>) -> Result<Vec<Event>> {
-        let connection = self.connection.lock().expect("catalog mutex poisoned");
-        filtered_events(&connection, filters)
-    }
-
     /// Reads the displayed page and its follow watermark from one SQLite
     /// snapshot so an event committed between the two reads cannot be skipped.
     pub fn filtered_events_with_high_water(
         &self,
-        filters: &EventFilters<'_>,
+        filters: &EventFilters,
     ) -> Result<(Vec<Event>, Option<u64>)> {
-        self.filtered_events_snapshot(filters, || {})
-    }
-
-    fn filtered_events_snapshot<F>(
-        &self,
-        filters: &EventFilters<'_>,
-        after_page: F,
-    ) -> Result<(Vec<Event>, Option<u64>)>
-    where
-        F: FnOnce(),
-    {
         let mut connection = self.connection.lock().expect("catalog mutex poisoned");
         let transaction = connection.transaction()?;
         let events = filtered_events(&transaction, filters)?;
-        after_page();
         let high_water = event_high_water(&transaction, filters)?;
         transaction.commit()?;
         Ok((events, high_water))
     }
-
-    #[cfg(test)]
-    pub fn event_high_water(&self, filters: &EventFilters<'_>) -> Result<Option<u64>> {
-        let connection = self.connection.lock().expect("catalog mutex poisoned");
-        event_high_water(&connection, filters)
-    }
 }
 
-fn filtered_events(connection: &Connection, filters: &EventFilters<'_>) -> Result<Vec<Event>> {
+fn filtered_events(connection: &Connection, filters: &EventFilters) -> Result<Vec<Event>> {
     if filters.before.is_some() && filters.after.is_some() {
         anyhow::bail!("event history and follow positions are mutually exclusive");
     }
@@ -1095,10 +992,10 @@ fn filtered_events(connection: &Connection, filters: &EventFilters<'_>) -> Resul
         values.push(i64::try_from(after)?.into());
     }
     for (column, value) in [
-        ("severity", filters.severity),
-        ("event_type", filters.event_type),
-        ("capture_id", filters.capture_id),
-        ("operation_id", filters.operation_id),
+        ("severity", filters.severity.as_deref()),
+        ("event_type", filters.event_type.as_deref()),
+        ("capture_id", filters.capture_id.as_deref()),
+        ("operation_id", filters.operation_id.as_deref()),
     ] {
         if let Some(value) = value {
             sql.push_str(" AND ");
@@ -1126,14 +1023,14 @@ fn filtered_events(connection: &Connection, filters: &EventFilters<'_>) -> Resul
     Ok(events)
 }
 
-fn event_high_water(connection: &Connection, filters: &EventFilters<'_>) -> Result<Option<u64>> {
+fn event_high_water(connection: &Connection, filters: &EventFilters) -> Result<Option<u64>> {
     let mut sql = "SELECT MAX(event_id) FROM events WHERE 1 = 1".to_owned();
     let mut values = Vec::<rusqlite::types::Value>::new();
     for (column, value) in [
-        ("severity", filters.severity),
-        ("event_type", filters.event_type),
-        ("capture_id", filters.capture_id),
-        ("operation_id", filters.operation_id),
+        ("severity", filters.severity.as_deref()),
+        ("event_type", filters.event_type.as_deref()),
+        ("capture_id", filters.capture_id.as_deref()),
+        ("operation_id", filters.operation_id.as_deref()),
     ] {
         if let Some(value) = value {
             sql.push_str(" AND ");
@@ -1402,9 +1299,6 @@ fn require_artifact(artifact: &ArtifactRecord, capture_id: &str, kind: ArtifactK
     if artifact.key.kind() != kind {
         anyhow::bail!("artifact kind does not match metadata transition");
     }
-    if artifact.availability != ArtifactAvailability::Available {
-        anyhow::bail!("artifact is not available");
-    }
     Ok(())
 }
 
@@ -1414,7 +1308,7 @@ fn insert_artifact(
 ) -> Result<()> {
     let changed = transaction.execute(
         "INSERT INTO artifacts (capture_id, kind, path, size_bytes, sha256, state)
-         VALUES (?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, 'available')
          ON CONFLICT(capture_id, kind) DO NOTHING",
         params![
             artifact.key.capture_id(),
@@ -1422,7 +1316,6 @@ fn insert_artifact(
             artifact.locator.as_stored(),
             i64::try_from(artifact.size_bytes)?,
             artifact.sha256.as_str(),
-            artifact.availability.as_str(),
         ],
     )?;
     anyhow::ensure!(
@@ -1441,7 +1334,7 @@ fn artifact_exists_exact(
             "SELECT EXISTS(
                 SELECT 1 FROM artifacts
                 WHERE capture_id = ? AND kind = ? AND path = ?
-                  AND size_bytes = ? AND sha256 = ? AND state = ?
+                  AND size_bytes = ? AND sha256 = ? AND state = 'available'
              )",
             params![
                 artifact.key.capture_id(),
@@ -1449,7 +1342,6 @@ fn artifact_exists_exact(
                 artifact.locator.as_stored(),
                 i64::try_from(artifact.size_bytes)?,
                 artifact.sha256.as_str(),
-                artifact.availability.as_str(),
             ],
             |row| row.get(0),
         )
@@ -1679,12 +1571,11 @@ mod tests {
             ArtifactLocator::from_stored(format!("test-artifacts/{id}.llmcapture")).unwrap(),
             10,
             "00".repeat(32),
-            ArtifactAvailability::Available,
         )
         .unwrap()
     }
 
-    fn complete_capture(catalog: &Catalog, id: &str, status: u16, output: &str) {
+    fn complete_capture(catalog: &SqliteCatalog, id: &str, status: u16, output: &str) {
         catalog
             .complete_capture_record(
                 &CaptureCompletion {
@@ -1703,25 +1594,10 @@ mod tests {
     }
 
     #[test]
-    fn catalog_lists_and_searches_plain_text_previews() {
-        let directory = tempfile::tempdir().unwrap();
-        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
-        catalog.begin_capture(&new_capture("cap-1")).unwrap();
-        complete_capture(&catalog, "cap-1", 200, "Quarterly pricing is available.");
-
-        let matches = catalog.list_captures(Some("quarterly"), None).unwrap();
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].requested_model.as_deref(), Some("gpt-5"));
-        assert_eq!(matches[0].capture_state, "captured");
-        assert!(matches[0].output_preview.contains("pricing"));
-        assert_eq!(catalog.artifact_records("cap-1").unwrap().len(), 1);
-    }
-
-    #[test]
     fn migrates_completed_capture_state_to_captured() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("catalog.db");
-        let catalog = Catalog::open(&path, true).unwrap();
+        let catalog = SqliteCatalog::open(&path, true).unwrap();
         catalog.begin_capture(&new_capture("cap-1")).unwrap();
         complete_capture(&catalog, "cap-1", 200, "done");
         {
@@ -1746,7 +1622,7 @@ mod tests {
         }
         drop(catalog);
 
-        let migrated = Catalog::open(&path, true).unwrap();
+        let migrated = SqliteCatalog::open(&path, true).unwrap();
         assert_eq!(
             migrated.capture("cap-1").unwrap().unwrap().capture_state,
             "captured"
@@ -1761,256 +1637,6 @@ mod tests {
             .unwrap();
         assert_eq!(version, CATALOG_SCHEMA_VERSION);
     }
-
-    #[test]
-    fn capture_search_treats_punctuation_as_text_boundaries() {
-        let directory = tempfile::tempdir().unwrap();
-        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
-        catalog.begin_capture(&new_capture("cap-1")).unwrap();
-        complete_capture(&catalog, "cap-1", 200, "Quarterly pricing is available.");
-
-        for query in [
-            "quarterly-pricing",
-            "**quarterly**",
-            "\"quarterly pricing\"",
-        ] {
-            assert_eq!(catalog.list_captures(Some(query), None).unwrap().len(), 1);
-        }
-        for query in ["definitely-not-present-xyz", "**"] {
-            assert!(catalog.list_captures(Some(query), None).unwrap().is_empty());
-        }
-        assert_eq!(
-            catalog
-                .filtered_captures(&CaptureFilters {
-                    query: Some("**quarterly**"),
-                    limit: 50,
-                    ..CaptureFilters::default()
-                })
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn failed_captures_have_only_a_safe_failure_code() {
-        let directory = tempfile::tempdir().unwrap();
-        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
-        catalog.begin_capture(&new_capture("cap-1")).unwrap();
-        catalog
-            .mark_capture_failed("cap-1", "notary_error")
-            .unwrap();
-        let capture = catalog.capture("cap-1").unwrap().unwrap();
-        assert_eq!(capture.capture_state, "failed");
-    }
-
-    #[test]
-    fn finalization_operations_are_deduplicated_recovered_and_retryable() {
-        let directory = tempfile::tempdir().unwrap();
-        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
-        catalog.begin_capture(&new_capture("cap-1")).unwrap();
-        complete_capture(&catalog, "cap-1", 200, "done");
-        assert_eq!(catalog.counts().unwrap().ready_to_finalize, 1);
-
-        let (queued, duplicate) = catalog.enqueue_finalization("cap-1", 3).unwrap().unwrap();
-        assert!(!duplicate);
-        assert_eq!(catalog.counts().unwrap().ready_to_finalize, 0);
-        let (same, duplicate) = catalog.enqueue_finalization("cap-1", 4).unwrap().unwrap();
-        assert!(duplicate);
-        assert_eq!(same.operation_id, queued.operation_id);
-
-        let running = catalog.claim_next_finalization(5).unwrap().unwrap();
-        assert_eq!(running.state, "running");
-        assert_eq!(running.attempt, 1);
-        assert_eq!(running.progress_phase, "preparing");
-        assert!(
-            catalog
-                .update_operation_proof_progress(
-                    &running.operation_id,
-                    crate::FinalizationProofProgress {
-                        bytes_completed: 2_048,
-                        bytes_total: 8_192,
-                        commitments_completed: 0,
-                        commitments_total: 2,
-                    },
-                    6,
-                )
-                .unwrap()
-        );
-        assert!(
-            catalog
-                .update_operation_proof_progress(
-                    &running.operation_id,
-                    crate::FinalizationProofProgress {
-                        bytes_completed: 8_192,
-                        bytes_total: 8_192,
-                        commitments_completed: 2,
-                        commitments_total: 2,
-                    },
-                    7,
-                )
-                .unwrap()
-        );
-        assert!(
-            catalog
-                .update_operation_progress(
-                    &running.operation_id,
-                    crate::FinalizationPhase::Signing,
-                    8
-                )
-                .unwrap()
-        );
-        let progressed = catalog.operation(&running.operation_id).unwrap().unwrap();
-        assert_eq!(progressed.progress_phase, "signing");
-        assert_eq!(progressed.proof_bytes_completed, 8_192);
-        assert_eq!(progressed.proof_bytes_total, 8_192);
-        assert_eq!(progressed.proof_commitments_completed, 2);
-        assert_eq!(progressed.proof_commitments_total, 2);
-        assert_eq!(catalog.recover_operations(9).unwrap(), 1);
-        assert_eq!(
-            catalog
-                .operation(&running.operation_id)
-                .unwrap()
-                .unwrap()
-                .state,
-            "interrupted"
-        );
-        let (same, duplicate) = catalog.enqueue_finalization("cap-1", 10).unwrap().unwrap();
-        assert!(duplicate);
-        assert_eq!(same.operation_id, running.operation_id);
-        assert_eq!(same.state, "interrupted");
-        let retried = catalog
-            .retry_operation(&running.operation_id, 11)
-            .unwrap()
-            .unwrap();
-        assert_eq!(retried.state, "queued");
-        assert_eq!(retried.progress_phase, "queued");
-        assert_eq!(retried.proof_bytes_total, 0);
-        let second_attempt = catalog.claim_next_finalization(12).unwrap().unwrap();
-        assert_eq!(second_attempt.attempt, 2);
-        catalog
-            .fail_operation(&running.operation_id, 13, "proof_generation_failed")
-            .unwrap();
-        assert_eq!(
-            catalog
-                .filtered_operations(&OperationFilters {
-                    state: Some("failed"),
-                    kind: Some("finalization"),
-                    capture_id: Some("cap-1"),
-                    limit: 20,
-                    ..OperationFilters::default()
-                })
-                .unwrap(),
-            vec![catalog.operation(&running.operation_id).unwrap().unwrap()]
-        );
-        let failed_events = catalog
-            .filtered_events(&EventFilters {
-                severity: Some("error"),
-                event_type: Some("finalization_failed"),
-                capture_id: Some("cap-1"),
-                operation_id: Some(&running.operation_id),
-                created_after_unix_ms: Some(13),
-                limit: 20,
-                ..EventFilters::default()
-            })
-            .unwrap();
-        assert_eq!(failed_events.len(), 1);
-        assert_eq!(failed_events[0].event_type, "finalization_failed");
-        assert_eq!(
-            catalog.operation_attempts(&running.operation_id).unwrap(),
-            vec![
-                OperationAttempt {
-                    attempt: 2,
-                    state: "failed".into(),
-                    started_at_unix_ms: 12,
-                    completed_at_unix_ms: Some(13),
-                    failure_code: Some("proof_generation_failed".into()),
-                },
-                OperationAttempt {
-                    attempt: 1,
-                    state: "interrupted".into(),
-                    started_at_unix_ms: 5,
-                    completed_at_unix_ms: Some(9),
-                    failure_code: Some("service_restarted".into()),
-                },
-            ]
-        );
-        assert_eq!(catalog.events(None, 20).unwrap().len(), 8);
-    }
-
-    #[test]
-    fn event_page_and_follow_watermark_share_one_snapshot() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("catalog.db");
-        let reader = Catalog::open(&path, true).unwrap();
-        let writer = Catalog::open(&path, true).unwrap();
-        writer
-            .connection
-            .lock()
-            .unwrap()
-            .execute(
-                "INSERT INTO events (created_at_unix_ms, event_type, severity, message)
-                 VALUES (1, 'first', 'info', 'first')",
-                [],
-            )
-            .unwrap();
-
-        let filters = EventFilters {
-            limit: 20,
-            ..EventFilters::default()
-        };
-        let (events, high_water) = reader
-            .filtered_events_snapshot(&filters, || {
-                writer
-                    .connection
-                    .lock()
-                    .unwrap()
-                    .execute(
-                        "INSERT INTO events (created_at_unix_ms, event_type, severity, message)
-                         VALUES (2, 'between_reads', 'info', 'between reads')",
-                        [],
-                    )
-                    .unwrap();
-            })
-            .unwrap();
-
-        assert_eq!(events.len(), 1);
-        assert_eq!(high_water, Some(events[0].event_id));
-        assert!(writer.event_high_water(&filters).unwrap() > high_water);
-    }
-
-    #[test]
-    fn provider_error_capture_is_not_queued_or_retried_for_finalization() {
-        let directory = tempfile::tempdir().unwrap();
-        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
-        catalog
-            .begin_capture(&new_capture("cap-auth-error"))
-            .unwrap();
-        complete_capture(&catalog, "cap-auth-error", 401, "");
-
-        assert!(
-            catalog
-                .enqueue_finalization("cap-auth-error", 3)
-                .unwrap()
-                .is_none()
-        );
-        assert_eq!(
-            catalog
-                .capture("cap-auth-error")
-                .unwrap()
-                .unwrap()
-                .finalization_state,
-            "not_requested"
-        );
-        assert_eq!(catalog.counts().unwrap().ready_to_finalize, 0);
-        assert!(
-            catalog
-                .operations_for_capture("cap-auth-error")
-                .unwrap()
-                .is_empty()
-        );
-    }
-
     #[test]
     fn durable_operation_migration_is_atomic_and_resumable() {
         let mut connection = Connection::open_in_memory().unwrap();
