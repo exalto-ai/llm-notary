@@ -20,6 +20,7 @@ use tauri::{
 };
 use tauri_plugin_shell::{ShellExt, process::CommandChild};
 use tauri_plugin_updater::{Update, UpdaterExt};
+use zeroize::Zeroizing;
 
 const ADMIN_ORIGIN: &str = "http://127.0.0.1:8788";
 const CONVENIENCE_MARKER: &str = "desktop-convenience-v1";
@@ -28,6 +29,9 @@ const DESKTOP_CONTROL_STDIN_ENV: &str = "LLM_NOTARY_DESKTOP_CONTROL_STDIN";
 
 #[derive(Default)]
 struct DaemonProcess(Mutex<Option<CommandChild>>);
+
+#[derive(Default)]
+struct VaultSession(Mutex<Option<Vault>>);
 
 #[derive(Default)]
 struct ExitState {
@@ -111,6 +115,7 @@ struct DesktopState {
     agent_configured: bool,
     onboarding_complete: bool,
     vault_mode: String,
+    vault_locked: bool,
     version: Option<String>,
     app_build_id: String,
     daemon_build_id: Option<String>,
@@ -131,6 +136,14 @@ fn local_vault_mode() -> (bool, String) {
         Ok(other) => (true, other.to_lowercase()),
         Err(_) => (false, "not configured".into()),
     }
+}
+
+fn passphrase_vault_is_locked(mode: &str, session: &VaultSession) -> bool {
+    mode == "passphrase" && !session.0.lock().is_ok_and(|vault| vault.as_ref().is_some())
+}
+
+fn should_auto_start(vault_configured: bool, mode: &str, onboarding_complete: bool) -> bool {
+    vault_configured && mode != "passphrase" && onboarding_complete
 }
 
 fn local_marker_path(name: &str) -> Result<PathBuf, String> {
@@ -196,22 +209,30 @@ fn mark_convenience_vault() -> Result<(), String> {
     write_private_marker(&path, b"LLM Notary desktop convenience vault\n")
 }
 
-fn open_vault_for_child() -> Result<Vault, String> {
+fn vault_unlock_key_for_child(session: &VaultSession) -> Result<Zeroizing<Vec<u8>>, String> {
     match Vault::status() {
-        Ok("OS vault") => Vault::open(None).map_err(|error| {
-            format!("Could not unlock the capture key with the OS credential vault: {error}")
-        }),
+        Ok("OS vault") => Vault::open(None)
+            .map(|vault| vault.child_unlock_key_line())
+            .map_err(|error| {
+                format!("Could not unlock the capture key with the OS credential vault: {error}")
+            }),
         Ok("passphrase vault") => {
-            let vault = Vault::open(Some("")).map_err(|error| {
-                format!("Could not open the desktop convenience vault: {error}")
-            })?;
-            if !convenience_marker_path()?.exists() {
-                return Err(
-                    "This passphrase vault was configured outside the desktop app. Desktop passphrase entry is not implemented yet."
-                        .into(),
-                );
+            if convenience_marker_path()?.exists() {
+                return Vault::open(Some(""))
+                    .map(|vault| vault.child_unlock_key_line())
+                    .map_err(|error| {
+                        format!("Could not open the unprotected local capture vault: {error}")
+                    });
             }
-            Ok(vault)
+            session
+                .0
+                .lock()
+                .map_err(|_| "capture vault session is unavailable".to_string())?
+                .as_ref()
+                .map(Vault::child_unlock_key_line)
+                .ok_or_else(|| {
+                    "Enter the capture vault passphrase before starting the service.".into()
+                })
         }
         Ok(other) => Err(format!("Unsupported local vault mode: {other}")),
         Err(_) => Err("Choose how to protect private captures before starting the service.".into()),
@@ -637,6 +658,7 @@ fn schedule_update_checks(app: tauri::AppHandle) {
 #[tauri::command]
 async fn get_desktop_state(
     process: tauri::State<'_, DaemonProcess>,
+    vault_session: tauri::State<'_, VaultSession>,
 ) -> Result<DesktopState, String> {
     let (vault_configured, local_mode) = local_vault_mode();
     let agent_configured = agent_config_path().is_ok_and(|path| path.exists());
@@ -665,6 +687,7 @@ async fn get_desktop_state(
                     "passphrase vault" => local_mode,
                     _ => status.vault,
                 },
+                vault_locked: false,
                 version: Some(status.version),
                 app_build_id: env!("LLM_NOTARY_BUILD_ID").into(),
                 daemon_build_id: Some(daemon_build_id),
@@ -683,6 +706,7 @@ async fn get_desktop_state(
                 vault_configured,
                 agent_configured,
                 onboarding_complete,
+                vault_locked: passphrase_vault_is_locked(&local_mode, &vault_session),
                 vault_mode: local_mode,
                 version: None,
                 app_build_id: env!("LLM_NOTARY_BUILD_ID").into(),
@@ -707,7 +731,11 @@ fn complete_onboarding() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn configure_vault(mode: String) -> Result<(), String> {
+fn configure_vault(
+    mode: String,
+    passphrase: Option<String>,
+    vault_session: tauri::State<'_, VaultSession>,
+) -> Result<(), String> {
     if Vault::status().is_ok() {
         return Ok(());
     }
@@ -716,19 +744,55 @@ fn configure_vault(mode: String) -> Result<(), String> {
         "keychain" => Vault::init_os().map(|_| ()).map_err(|error| {
             format!("Could not store the capture key in the OS credential vault: {error}")
         }),
-        "convenience" => {
-            Vault::init_passphrase("").map_err(|error| {
+        "passphrase" => {
+            let passphrase = Zeroizing::new(
+                passphrase.ok_or_else(|| "Enter and confirm a vault passphrase.".to_string())?,
+            );
+            let vault = Vault::init_passphrase(&passphrase).map_err(|error| {
                 format!("Could not initialize the local capture vault: {error}")
             })?;
-            mark_convenience_vault()
+            if passphrase.is_empty() {
+                mark_convenience_vault()?;
+            }
+            *vault_session
+                .0
+                .lock()
+                .map_err(|_| "capture vault session is unavailable".to_string())? = Some(vault);
+            Ok(())
         }
-        _ => Err("Choose Keychain protection or convenience mode.".into()),
+        _ => Err("Choose Keychain protection or a passphrase.".into()),
     }
 }
 
+#[tauri::command]
+fn unlock_vault(
+    passphrase: String,
+    vault_session: tauri::State<'_, VaultSession>,
+) -> Result<(), String> {
+    if local_vault_mode().1 != "passphrase" {
+        return Err("This capture vault does not require a passphrase.".into());
+    }
+    if !Vault::passphrase_unlock_is_verifiable()
+        .map_err(|error| format!("Could not inspect the capture vault: {error}"))?
+    {
+        return Err(
+            "This passphrase vault predates verified desktop unlock. Continue using it with the CLI; desktop migration is not available yet."
+                .into(),
+        );
+    }
+    let passphrase = Zeroizing::new(passphrase);
+    let vault = Vault::open(Some(&passphrase))
+        .map_err(|error| format!("Could not unlock the capture vault: {error}"))?;
+    *vault_session
+        .0
+        .lock()
+        .map_err(|_| "capture vault session is unavailable".to_string())? = Some(vault);
+    Ok(())
+}
+
 fn spawn_daemon(app: &tauri::AppHandle, process: &DaemonProcess) -> Result<(), String> {
-    let vault = open_vault_for_child()?;
-    let unlock_key = vault.child_unlock_key_line();
+    let vault_session = app.state::<VaultSession>();
+    let unlock_key = vault_unlock_key_for_child(&vault_session)?;
     let (mut events, mut child) = app
         .shell()
         .sidecar("llm-notaryd")
@@ -900,6 +964,7 @@ fn create_tray(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(DaemonProcess::default())
+        .manage(VaultSession::default())
         .manage(ExitState::default())
         .manage(DesktopUpdaterState::default())
         .plugin(tauri_plugin_shell::init())
@@ -915,6 +980,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_desktop_state,
             configure_vault,
+            unlock_vault,
             complete_onboarding,
             start_daemon,
             stop_daemon,
@@ -926,7 +992,9 @@ pub fn run() {
         .setup(|app| {
             create_tray(app)?;
             schedule_update_checks(app.handle().clone());
-            if local_vault_mode().0 && onboarding_marker_path().is_ok_and(|path| path.exists()) {
+            let (vault_configured, vault_mode) = local_vault_mode();
+            let onboarding_complete = onboarding_marker_path().is_ok_and(|path| path.exists());
+            if should_auto_start(vault_configured, &vault_mode, onboarding_complete) {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let process = app_handle.state::<DaemonProcess>();
@@ -1024,5 +1092,18 @@ mod tests {
         assert!(restart_block_reason(&counts, true, false).is_some());
         assert!(restart_block_reason(&counts, true, true).is_none());
         assert!(restart_block_reason(&counts, false, false).is_none());
+    }
+
+    #[test]
+    fn passphrase_vaults_wait_for_an_in_memory_unlock() {
+        let session = VaultSession::default();
+        assert!(passphrase_vault_is_locked("passphrase", &session));
+        assert!(!passphrase_vault_is_locked("keychain", &session));
+        assert!(!passphrase_vault_is_locked("convenience", &session));
+        assert!(!should_auto_start(true, "passphrase", true));
+        assert!(should_auto_start(true, "keychain", true));
+        assert!(should_auto_start(true, "convenience", true));
+        assert!(!should_auto_start(false, "keychain", true));
+        assert!(!should_auto_start(true, "keychain", false));
     }
 }
