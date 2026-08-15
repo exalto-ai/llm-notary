@@ -152,7 +152,11 @@ async fn probe_dependencies(state: &AdminState) -> std::result::Result<(), &'sta
             .await
             .map_err(|_| "artifact_not_ready")?;
         if let Some(cluster) = cluster {
-            if opened_vault != configured_vault {
+            if opened_vault.is_none()
+                || configured_vault
+                    .as_ref()
+                    .is_some_and(|expected| opened_vault.as_ref() != Some(expected))
+            {
                 return Err("vault_not_ready");
             }
             if !persistence
@@ -530,7 +534,7 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
         version: env!("CARGO_PKG_VERSION").into(),
         build_id: crate::cli::BUILD_ID.into(),
         runtime_profile: if state.cluster.is_some() {
-            "cluster"
+            "server"
         } else {
             "local"
         }
@@ -550,11 +554,28 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
             .unwrap_or_else(|| "ready".into()),
         proxy_listener: state.config.proxy.listen.to_string(),
         admin_listener: state.config.admin.listen.to_string(),
+        proxy_origin: state
+            .config
+            .cluster
+            .proxy_origin
+            .clone()
+            .unwrap_or_else(|| format!("http://{}", state.config.proxy.listen)),
+        admin_origin: state
+            .config
+            .cluster
+            .admin_origin
+            .clone()
+            .unwrap_or_else(|| format!("http://{}", state.config.admin.listen)),
         metadata_backend: state.persistence.metadata.backend_name().into(),
         metadata_status: "ready".into(),
         artifact_backend: state.persistence.artifacts.backend_name().into(),
         artifact_status: "ready".into(),
-        vault: Vault::status().unwrap_or("unavailable").into(),
+        vault: if state.cluster.is_some() {
+            "shared server key"
+        } else {
+            Vault::status().unwrap_or("unavailable")
+        }
+        .into(),
         notary: if state.config.notary.endpoint.is_some() {
             "configured"
         } else {
@@ -1960,7 +1981,9 @@ async fn basic_matches(state: &AdminState, headers: &axum::http::HeaderMap) -> b
     if username != auth.username {
         return false;
     }
-    let password_hash = auth.password_hash.clone();
+    let Some(password_hash) = auth.password_hash.clone() else {
+        return false;
+    };
     tokio::task::spawn_blocking(move || {
         PasswordHash::new(&password_hash).ok().is_some_and(|hash| {
             Argon2::default()
@@ -2049,6 +2072,8 @@ struct StatusResponse {
     lifecycle: String,
     proxy_listener: String,
     admin_listener: String,
+    proxy_origin: String,
+    admin_origin: String,
     metadata_backend: String,
     metadata_status: String,
     artifact_backend: String,
@@ -2630,7 +2655,7 @@ mod tests {
             directory,
             Some(crate::config::AdminAuthConfig {
                 username: "local-admin".to_owned(),
-                password_hash,
+                password_hash: Some(password_hash),
             }),
         )
         .await

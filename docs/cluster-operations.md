@@ -1,74 +1,77 @@
-# Multi-replica daemon operations
+# Run LLM Notary on a server
 
-Cluster mode runs two or more `llm-notaryd` replicas against one PostgreSQL
-schema and one private S3 namespace. It is explicit: selecting PostgreSQL and
-S3 does not enable cluster behavior. Local mode remains the default.
+Server mode runs the same daemon behind HTTPS with PostgreSQL for metadata and
+S3-compatible private object storage. It is safe to run more than one daemon
+replica, but replica leases, fencing tokens, and recovery timings are internal
+defaults rather than setup tasks.
 
-## Required shared state
+Desktop and local CLI users do not need this mode. Their existing loopback,
+SQLite, filesystem, and OS-vault setup remains the default.
 
-Every replica must use:
+## Fastest setup: one server, two replicas
 
-- the same migrated PostgreSQL database;
-- the same S3 bucket, prefix, region, endpoint profile, and credentials;
-- the same pre-provisioned passphrase vault files and passphrase secret;
-- either the same explicit notary endpoint and public key, or the shared
-  PostgreSQL-backed hosted notary directory;
-- the same injected hosted API key; and
-- a distinct, stable `cluster.instance_id`.
+The bundled Compose deployment includes two daemon replicas, PostgreSQL,
+MinIO, and Caddy with automatic HTTPS. You need:
 
-The process creates a fresh incarnation ID at every start. PostgreSQL uses the
-stable instance ID, incarnation ID, expiring lease, and a new fence token for
-each capture or finalization claim. A stale replica cannot publish progress or
-complete work after another replica has recovered the claim. Artifact objects
-are also claim-scoped, so a stale S3 writer cannot overwrite the winning
-object before its metadata transaction is rejected.
+- Docker with `docker compose`;
+- an unprivileged account allowed to use Docker (do not run setup with
+  `sudo`);
+- two DNS names pointing at the server, one for provider traffic and one for
+  the dashboard; and
+- an LLM Notary API key.
 
-An explicit self-hosted notary trust anchor remains available. If `[notary]`
-is omitted, replicas fetch the authenticated hosted directory and merge it
-transactionally into PostgreSQL. Lower generations and same-generation digest
-conflicts are rejected, removed keys remain available as retired history, and
-revocation cannot be undone by a later directory response. Verification and
-finalization use one validated database snapshot rather than a replica-local
-cache.
-
-## Provision the vault
-
-Initialize one passphrase vault before starting any replica. Run the command
-with the same `XDG_CONFIG_HOME` that the replicas will mount and a private
-passphrase file:
+From a checkout of this repository, run:
 
 ```bash
-export XDG_CONFIG_HOME=/srv/llm-notary/config
-export LLM_NOTARY_VAULT_PASSPHRASE_FILE=/run/secrets/vault-passphrase
-llm-notaryd vault-init-passphrase
-llm-notaryd vault-compatibility
+scripts/llm-notary-server.sh init proxy.notary.example admin.notary.example
+scripts/llm-notary-server.sh up
 ```
 
-Put the printed 64-character digest in
-`cluster.vault_compatibility_sha256`. It identifies the exact vault
-configuration and verifier, not merely the passphrase. Mount the vault config
-and key-check read-only into every runtime replica. Cluster startup never
-prompts, initializes, or adopts the first replica's vault material.
+`init` privately prompts for the API key, generates all other secrets, writes
+the short server configuration under `.llm-notary-server/`, and prints the one
+generated dashboard password. It never overwrites an existing setup. For
+automation, pass the API key only for the initialization process:
 
-## Configure each replica
+```bash
+LLM_NOTARY_BOOTSTRAP_API_KEY='llmn_v1_...' \
+  scripts/llm-notary-server.sh init proxy.notary.example admin.notary.example
+```
 
-Use an explicit configuration file. The cluster additions below sit alongside
-the PostgreSQL and S3 settings documented in [Local service and REST
-API](local-service.md):
+Open `https://admin.notary.example` and sign in as `admin` with the printed
+password. Point provider SDKs at the other origin while leaving the provider
+credential in the SDK:
+
+```text
+https://proxy.notary.example/openai/v1
+https://proxy.notary.example/anthropic
+https://proxy.notary.example/deepseek
+https://proxy.notary.example/openrouter/api/v1
+```
+
+The normal operator commands are deliberately small:
+
+```bash
+scripts/llm-notary-server.sh status
+scripts/llm-notary-server.sh logs
+scripts/llm-notary-server.sh down   # preserves database, objects, TLS, and secrets
+```
+
+Back up `.llm-notary-server/` and the named PostgreSQL, MinIO, and Caddy
+volumes. The Compose bundle survives process and replica replacement, but all
+state still lives on one host. Use managed PostgreSQL and S3 for host-level or
+regional availability.
+
+## The server configuration
+
+The generated configuration exposes only the choices an application needs:
 
 ```toml
 format = "llm-notary/agent-config/v1"
 
-[cluster]
+[server]
 enabled = true
-instance_id = "daemon-a" # unique and stable for this replica slot
-heartbeat_interval_seconds = 5
-lease_seconds = 20
-claim_max_runtime_seconds = 3600
-withdrawal_delay_seconds = 8
-shutdown_grace_seconds = 120
-trusted_ingress = true
-vault_compatibility_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+proxy_origin = "https://proxy.notary.example"
+admin_origin = "https://admin.notary.example"
 
 [proxy]
 listen = "0.0.0.0:8787"
@@ -77,117 +80,100 @@ listen = "0.0.0.0:8787"
 listen = "0.0.0.0:8788"
 
 [admin.auth]
-username = "cluster-admin"
-password_hash = "$argon2id$v=19$m=32768,t=2,p=1$..."
-
-# Optional for a self-hosted notary. Omit both fields to use the shared hosted
-# directory stored in PostgreSQL.
-[notary]
-endpoint = "tcp://notary.internal:7047"
-public_key = "02..."
+username = "admin"
 
 [catalog]
 backend = "postgres"
 
-[catalog.postgres]
-ssl_mode = "verify_full"
-
 [storage]
 backend = "s3"
-
-[storage.s3]
-bucket = "llm-notary-private"
-region = "us-east-1"
-endpoint = "https://s3.example.com"
-prefix = "production/daemon"
-force_path_style = false
-allow_insecure_http = false
 ```
 
-Supply database URLs, S3 credentials, the vault passphrase file, and exactly
-one of `LLM_NOTARY_API_KEY` or `LLM_NOTARY_API_KEY_FILE` through the documented
-secret environment variables. Cluster validation rejects SQLite, filesystem
-artifact writes, missing admin authentication, insecure S3, inconsistent
-notary configuration, desktop child-process control, and auto-initialized vault state before
-the listeners bind. Background self-update and browser account connection are
-disabled; deploy cluster binaries through the orchestrator.
+The PostgreSQL connection and migration URL, S3 credentials, hosted API key,
+dashboard password, and vault key come from mounted secret files. The daemon
+hashes the dashboard password in memory. A replica gets its readable instance
+name from `LLM_NOTARY_SERVER_INSTANCE_ID` when set, otherwise from the
+container hostname. Every process still receives a fresh boot identity.
 
-Apply migrations once with the same image before rolling out replicas:
+The shared vault is one exact 32-byte file mounted as
+`LLM_NOTARY_SERVER_VAULT_KEY_FILE`. There is no passphrase prompt, per-replica
+salt, or digest to copy into TOML. The migration command pins a derived key
+identity and the non-secret server configuration in PostgreSQL, so a replica
+with the wrong key or storage namespace is rejected before serving traffic.
+To prepare this key outside the Compose helper:
+
+```bash
+llm-notaryd server init --vault-key /run/secrets/server-vault.key
+```
+
+Existing experimental `[cluster]` configurations and verifier-backed
+passphrase vaults remain readable for migration, but new deployments should
+use `[server]` and the shared key file.
+
+## External PostgreSQL and S3
+
+For Kubernetes or multiple hosts, keep the same server configuration and
+replace the bundled PostgreSQL and MinIO endpoints. Run one setup job before
+the Deployment:
 
 ```bash
 llm-notaryd --config /etc/llm-notary/config.toml migrate
 ```
 
-For a cluster configuration, the migrator also pins a normalized non-secret
-compatibility digest in PostgreSQL. Replica slot names are excluded, but the
-vault identity, notary trust mode, S3 namespace, listeners, and lease policy must
-match. Runtime startup fails rather than joining a differently configured
-cluster. It also refuses metadata that still references filesystem artifacts.
-Start with a database whose artifact records are already S3-backed; there is no
-automatic filesystem-to-S3 importer.
+Then run two or more identical daemon pods. Give every pod the same config,
+database, S3 namespace, API key, dashboard password, and 32-byte vault key.
+Replica names are automatic; set `LLM_NOTARY_SERVER_INSTANCE_ID` only when an
+orchestrator does not provide a useful unique hostname.
 
-The Dockerfile's `daemon-cluster` target runs as UID/GID 10001, exposes only
-ports 8787 and 8788, and expects configuration and secrets to be mounted by the
-orchestrator.
+The runtime secret variables are:
 
-## Ingress and health
+- `LLM_NOTARY_METADATA_DATABASE_URL_FILE` (an optional separate
+  `LLM_NOTARY_METADATA_MIGRATION_URL_FILE` may use a more privileged setup
+  role);
+- `LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID_FILE` and
+  `LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY_FILE`;
+- `LLM_NOTARY_API_KEY_FILE`;
+- `LLM_NOTARY_ADMIN_PASSWORD_FILE`; and
+- `LLM_NOTARY_SERVER_VAULT_KEY_FILE`.
 
-Terminate TLS on trusted infrastructure. Keep the provider proxy and admin API
-on separate frontends and do not expose the admin frontend without its
-configured authentication. The ingress must use HTTP/1.1, stream request and
-response bodies immediately, and never retry, replay, or redistribute a
-provider request. `deploy/daemon-cluster/Caddyfile` is a minimal internal
-example; place it behind the environment's TLS and network controls.
+Use HTTPS and hostname verification for external PostgreSQL/S3 services. The
+insecure database and object-store endpoints in the Compose template are
+allowed only because they stay on its private Docker network.
 
-Use `GET /healthz` only for process liveness. Use `GET /readyz` to select load
-balancer backends. Readiness fails while starting or draining and when the
-PostgreSQL schema, selected S3 namespace, shared vault, or directory trust is
-unavailable. Dependency probes are serialized and cached for one second per
-replica so load-balancer polling cannot stampede PostgreSQL or S3. `/v1/status`
-identifies the runtime profile, instance, incarnation, lifecycle, and backend
-status without exposing URLs or credentials. Its capture and operation counts
-are cluster-wide; listener addresses, lifecycle, incarnation, and build data
-describe the responding replica.
+## Ingress, readiness, and shutdown
 
-The bundled `llm-notary` CLI intentionally remains a loopback, single-daemon
-client and rejects the cluster's non-loopback listener configuration. Cluster
-operators and automation should use the authenticated HTTPS admin frontend and
-the generated OpenAPI clients. Do not point the CLI at an individual replica.
+Keep provider and admin traffic on separate HTTPS origins. The provider proxy
+must use HTTP/1.1 streaming and must not retry or replay a request. The bundled
+Caddy configuration has those properties and removes replicas using
+`GET /readyz`.
 
-On SIGTERM the replica first enters `draining`, making readiness fail and
-rejecting new proxy captures. A short withdrawal interval lets the load
-balancer observe that state. Existing HTTP streams and the finalization already
-owned by the replica finish while heartbeats continue; queued work remains for
-another replica. If the process is paused or killed, PostgreSQL time determines
-lease expiry, one peer records the interruption, and an explicit retry receives
-a new fence. Configure the orchestrator's termination grace period to exceed
-`withdrawal_delay_seconds + shutdown_grace_seconds`; after the bounded grace
-expires, the process aborts remaining local tasks and peers recover expired
-claims.
+`GET /healthz` reports only process liveness. `GET /readyz` also checks the
+replica lifecycle, PostgreSQL schema, S3 namespace, shared vault identity, and
+shared notary trust. On SIGTERM a replica becomes unready before it stops
+accepting work, then drains admitted streams within a bounded deadline.
 
-Dashboard session bearer values are returned only as secure cookies. The
-database stores a domain-separated SHA-256 digest, so a session issued on one
-replica can be validated or revoked on another without persisting the token.
+PostgreSQL time, expiring ownership, and per-operation fence tokens prevent a
+paused or stale replica from publishing after a peer takes over. S3 objects
+are immutable and claim-scoped for the same reason. These rules are always on
+in server mode and normally need no tuning.
 
-## Backup, restore, and verification
+The dashboard identifies the responding replica and shows the public server
+origins, PostgreSQL/S3 status, lifecycle, and deployment-managed update state.
+Sessions are shared through PostgreSQL as hashes, so sign-in and sign-out work
+through a load balancer without sticky sessions.
 
-Quiesce the cluster before taking a coordinated PostgreSQL and S3 backup. After
-restore, keep all replicas stopped and run the report-only artifact
-reconciliation command. Resolve missing, corrupt, invalid, or old unreferenced
-objects before serving traffic. Preserve the shared vault files and the
-PostgreSQL notary trust history (or explicit key) with the backup; restoring
-only the passphrase is insufficient.
+## Backup and verification
 
-The disposable two-replica validation is:
+Quiesce both replicas before taking a coordinated PostgreSQL and S3 backup.
+Preserve the server vault key and PostgreSQL notary trust history with it.
+After a restore, keep replicas stopped and run the report-only reconciliation:
+
+```bash
+llm-notaryd --config /etc/llm-notary/config.toml reconcile-artifacts
+```
+
+The disposable full validation remains:
 
 ```bash
 scripts/test-daemon-persistence-e2e.sh postgres s3 2 full
 ```
-
-It exercises shared hashed sessions, non-replaying ingress traffic,
-cross-replica capture/finalization/download and verification, event high-water
-paging, PostgreSQL and MinIO outages, vault mismatch rejection, duplicate
-instance fencing, stale artifact and terminal fencing, exactly-once expiry and
-retry, peer removal, bounded finalization drain, and a rolling replacement with
-an admitted streaming request and queued peer work against PostgreSQL 17 and
-MinIO.

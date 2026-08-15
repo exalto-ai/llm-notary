@@ -10,6 +10,9 @@ services:
         if ! test -f /state/secrets/vault-passphrase; then
           printf '%s' 'deterministic-daemon-e2e-passphrase' > /state/secrets/vault-passphrase
         fi
+        if ! test -f /state/secrets/server-vault.key; then
+          openssl rand 32 > /state/secrets/server-vault.key
+        fi
         if ! test -f /fixtures/ca.der; then
           openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out /fixtures/ca.key
           openssl req -x509 -new -key /fixtures/ca.key -sha256 -days 2 \
@@ -39,13 +42,9 @@ services:
         if ! test -f /state/xdg-config/llmnotary/vault.json; then
           llm-notaryd vault-init-passphrase
         fi
-        vault_compatibility=$$(llm-notaryd vault-compatibility)
-        sed -e "s/__INSTANCE_ID__/daemon-a/" \
-            -e "s/__VAULT_COMPATIBILITY__/$$vault_compatibility/" \
-            /etc/llm-notary/config-cluster-template.toml > /state/config-cluster-a.toml
-        sed -e "s/__INSTANCE_ID__/daemon-b/" \
-            -e "s/__VAULT_COMPATIBILITY__/$$vault_compatibility/" \
-            /etc/llm-notary/config-cluster-template.toml > /state/config-cluster-b.toml
+        cp /etc/llm-notary/config-cluster-template.toml /state/config-cluster-a.toml
+        cp /etc/llm-notary/config-cluster-template.toml /state/config-cluster-b.toml
+        chmod 600 /state/secrets/server-vault.key
         chmod 600 /state/config-cluster-a.toml /state/config-cluster-b.toml
     volumes:
       - daemon-state:/state
@@ -396,7 +395,8 @@ services:
         condition: service_healthy
     command: ["--config", "/state/config-cluster-a.toml"]
     environment:
-      LLM_NOTARY_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
+      LLM_NOTARY_SERVER_INSTANCE_ID: daemon-a
+      LLM_NOTARY_SERVER_VAULT_KEY_FILE: /state/secrets/server-vault.key
       LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
       LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
       LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
@@ -441,7 +441,8 @@ services:
         condition: service_healthy
     command: ["--config", "/state/config-cluster-b.toml"]
     environment:
-      LLM_NOTARY_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
+      LLM_NOTARY_SERVER_INSTANCE_ID: daemon-b
+      LLM_NOTARY_SERVER_VAULT_KEY_FILE: /state/secrets/server-vault.key
       LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
       LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
       LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
@@ -481,6 +482,7 @@ services:
     environment:
       LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
       LLM_NOTARY_METADATA_MIGRATION_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+      LLM_NOTARY_SERVER_VAULT_KEY_FILE: /state/secrets/server-vault.key
     volumes:
       - daemon-state:/state:ro
     read_only: true

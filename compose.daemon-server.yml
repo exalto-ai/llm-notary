@@ -1,0 +1,158 @@
+name: llm-notary-server
+
+x-daemon: &daemon
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: daemon-cluster
+  image: ${LLM_NOTARY_SERVER_IMAGE:-llm-notary-daemon-server:local}
+  user: "${SERVER_UID:-10001}:${SERVER_GID:-10001}"
+  command: ["--config", "/etc/llm-notary/config.toml"]
+  environment: &daemon-environment
+    LLM_NOTARY_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+    LLM_NOTARY_API_KEY_FILE: /run/secrets/api_key
+    LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID_FILE: /run/secrets/s3_access_key
+    LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_key
+    LLM_NOTARY_METADATA_DATABASE_URL_FILE: /run/secrets/postgres_url
+    LLM_NOTARY_SERVER_VAULT_KEY_FILE: /run/secrets/server_vault_key
+  secrets: &daemon-secrets
+    - admin_password
+    - api_key
+    - postgres_url
+    - s3_access_key
+    - s3_secret_key
+    - server_vault_key
+  volumes:
+    - ${SERVER_STATE_DIR:?run scripts/llm-notary-server.sh init first}/config.toml:/etc/llm-notary/config.toml:ro
+  read_only: true
+  tmpfs:
+    - /tmp
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  restart: unless-stopped
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    minio-init:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:17.7-alpine
+    environment:
+      POSTGRES_DB: llm_notary
+      POSTGRES_USER: llm_notary
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U llm_notary -d llm_notary"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data"]
+    environment:
+      MINIO_ROOT_USER_FILE: /run/secrets/s3_access_key
+      MINIO_ROOT_PASSWORD_FILE: /run/secrets/s3_secret_key
+    secrets:
+      - s3_access_key
+      - s3_secret_key
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    environment:
+      MC_CONFIG_DIR: /tmp/.mc
+    command:
+      - |
+        access_key=$$(cat /run/secrets/s3_access_key)
+        secret_key=$$(cat /run/secrets/s3_secret_key)
+        mc alias set private "http://minio:9000" "$$access_key" "$$secret_key"
+        mc mb --ignore-existing private/llm-notary-private
+    secrets:
+      - s3_access_key
+      - s3_secret_key
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: "no"
+
+  migrate:
+    <<: *daemon
+    command: ["--config", "/etc/llm-notary/config.toml", "migrate"]
+    environment:
+      LLM_NOTARY_METADATA_DATABASE_URL_FILE: /run/secrets/postgres_url
+      LLM_NOTARY_SERVER_VAULT_KEY_FILE: /run/secrets/server_vault_key
+    secrets:
+      - postgres_url
+      - server_vault_key
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  daemon-a:
+    <<: *daemon
+
+  daemon-b:
+    <<: *daemon
+
+  ingress:
+    image: caddy:2.10.2-alpine
+    environment:
+      PROXY_DOMAIN: ${PROXY_DOMAIN:?run scripts/llm-notary-server.sh init first}
+      ADMIN_DOMAIN: ${ADMIN_DOMAIN:?run scripts/llm-notary-server.sh init first}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/daemon-server/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - daemon-a
+      - daemon-b
+    restart: unless-stopped
+
+secrets:
+  admin_password:
+    file: ${SERVER_STATE_DIR}/secrets/admin-password
+  api_key:
+    file: ${SERVER_STATE_DIR}/secrets/api-key
+  postgres_password:
+    file: ${SERVER_STATE_DIR}/secrets/postgres-password
+  postgres_url:
+    file: ${SERVER_STATE_DIR}/secrets/postgres-url
+  s3_access_key:
+    file: ${SERVER_STATE_DIR}/secrets/s3-access-key
+  s3_secret_key:
+    file: ${SERVER_STATE_DIR}/secrets/s3-secret-key
+  server_vault_key:
+    file: ${SERVER_STATE_DIR}/secrets/server-vault.key
+
+volumes:
+  postgres-data:
+  minio-data:
+  caddy-data:
+  caddy-config:

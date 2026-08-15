@@ -2,7 +2,7 @@
 
 use std::{
     env, fs,
-    io::{BufRead as _, Write as _},
+    io::{BufRead as _, Read as _, Write as _},
     path::{Path, PathBuf},
 };
 
@@ -24,6 +24,8 @@ const KEY_CHECK_FILE_NAME: &str = "vault.key-check";
 const KEY_CHECK_PLAINTEXT: &[u8] = b"llm-notary vault key check";
 const SERVICE: &str = "LLM Notary";
 const PASSPHRASE_FILE_ENV: &str = "LLM_NOTARY_VAULT_PASSPHRASE_FILE";
+/// Private 32-byte key file shared by every replica in server mode.
+pub const SERVER_KEY_FILE_ENV: &str = "LLM_NOTARY_SERVER_VAULT_KEY_FILE";
 /// Requests that a supervised child read its already-unlocked vault key from
 /// stdin instead of contacting the OS credential store itself.
 pub const CHILD_KEY_STDIN_ENV: &str = "LLM_NOTARY_VAULT_KEY_STDIN";
@@ -47,6 +49,7 @@ enum VaultMode {
 pub struct Vault {
     key: [u8; 32],
     config_path: PathBuf,
+    server_key: bool,
 }
 
 impl Drop for Vault {
@@ -106,9 +109,67 @@ impl Vault {
         Self::open_at(&path, Some(&passphrase), None)
     }
 
+    /// Opens the shared server vault without prompting or local key setup.
+    ///
+    /// New server deployments use one exact 32-byte key file. The existing
+    /// verifier-backed passphrase form remains readable for deployments made
+    /// before the server setup was simplified.
+    pub fn open_server() -> Result<Self> {
+        let Some(path) = env::var_os(SERVER_KEY_FILE_ENV) else {
+            return Self::open_existing_noninteractive();
+        };
+        let path = PathBuf::from(path);
+        let key = read_server_key_file(&path)?;
+        Ok(Self {
+            key,
+            config_path: path,
+            server_key: true,
+        })
+    }
+
+    /// Creates one new shared server key without overwriting existing data.
+    pub fn init_server_key(path: &Path) -> Result<Self> {
+        let parent = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating server vault key directory {}", parent.display()))?;
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(0o600);
+        }
+        let mut key = [0; 32];
+        rand::rng().fill_bytes(&mut key);
+        let mut file = options
+            .open(path)
+            .with_context(|| format!("creating server vault key {}", path.display()))?;
+        if let Err(error) = file.write_all(&key).and_then(|()| file.sync_all()) {
+            key.zeroize();
+            drop(file);
+            let _ = fs::remove_file(path);
+            return Err(error)
+                .with_context(|| format!("writing server vault key {}", path.display()));
+        }
+        Ok(Self {
+            key,
+            config_path: path.to_owned(),
+            server_key: true,
+        })
+    }
+
     /// Identifies the exact non-secret vault derivation configuration and
     /// key verifier expected on every replica, without exposing key material.
     pub fn compatibility_sha256(&self) -> Result<String> {
+        if self.server_key {
+            let mut digest = Sha256::new();
+            digest.update(b"llm-notary/server-vault-compatibility/v1\0");
+            digest.update(self.key);
+            return Ok(hex::encode(digest.finalize()));
+        }
         let config = fs::read(&self.config_path)
             .context("reading vault configuration for compatibility check")?;
         let key_check = fs::read(key_check_path(&self.config_path))
@@ -160,6 +221,7 @@ impl Vault {
         Ok(Self {
             key: *key,
             config_path: config_path.to_owned(),
+            server_key: false,
         })
     }
 
@@ -180,7 +242,11 @@ impl Vault {
                 salt_hex: None,
             },
         )?;
-        Ok(Self { key, config_path })
+        Ok(Self {
+            key,
+            config_path,
+            server_key: false,
+        })
     }
 
     /// Initializes a passphrase-backed vault. An empty passphrase is allowed
@@ -217,6 +283,7 @@ impl Vault {
         Ok(Self {
             key: *key,
             config_path: config_path.to_owned(),
+            server_key: false,
         })
     }
 
@@ -326,6 +393,36 @@ fn read_passphrase_file(path: &Path) -> Result<String> {
         bail!("vault passphrase file contains a NUL byte");
     }
     Ok(value)
+}
+
+fn read_server_key_file(path: &Path) -> Result<[u8; 32]> {
+    let metadata = fs::metadata(path)
+        .with_context(|| format!("reading server vault key file {}", path.display()))?;
+    if !metadata.is_file() {
+        bail!(
+            "server vault key path {} is not a regular file",
+            path.display()
+        );
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            bail!(
+                "server vault key file {} must not be readable by group or others",
+                path.display()
+            );
+        }
+    }
+    if metadata.len() != 32 {
+        bail!("server vault key file must contain exactly 32 bytes");
+    }
+    let mut key = [0; 32];
+    fs::File::open(path)
+        .with_context(|| format!("opening server vault key file {}", path.display()))?
+        .read_exact(&mut key)
+        .with_context(|| format!("reading server vault key file {}", path.display()))?;
+    Ok(key)
 }
 
 fn config_path() -> Result<PathBuf> {
@@ -494,6 +591,7 @@ impl Vault {
         Self {
             key: [7; 32],
             config_path: PathBuf::from("test-vault"),
+            server_key: false,
         }
     }
 
@@ -502,6 +600,7 @@ impl Vault {
         Self {
             key,
             config_path: PathBuf::from("test-vault"),
+            server_key: false,
         }
     }
 }
@@ -528,6 +627,36 @@ mod tests {
     }
 
     #[test]
+    fn server_key_is_exact_private_and_never_overwritten() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("server-vault.key");
+        let first = Vault::init_server_key(&path).unwrap();
+        let identity = first.compatibility_sha256().unwrap();
+        let encrypted = first.encrypt(b"private server bundle").unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), 32);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert!(Vault::init_server_key(&path).is_err());
+
+        let reopened = Vault {
+            key: read_server_key_file(&path).unwrap(),
+            config_path: path,
+            server_key: true,
+        };
+        assert_eq!(reopened.compatibility_sha256().unwrap(), identity);
+        assert_eq!(
+            reopened.decrypt(&encrypted).unwrap(),
+            b"private server bundle"
+        );
+    }
+
+    #[test]
     fn ciphertext_requires_the_same_vault_key() {
         let vault = Vault::test_only();
         let encrypted = vault.encrypt(b"private bundle").unwrap();
@@ -541,6 +670,7 @@ mod tests {
         let other = Vault {
             key: [8; 32],
             config_path: PathBuf::from("other-test-vault"),
+            server_key: false,
         };
         assert!(other.decrypt(&encrypted).is_err());
     }

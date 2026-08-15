@@ -1,0 +1,39 @@
+{
+	admin off
+	servers {
+		protocols h1
+	}
+}
+
+{$PROXY_DOMAIN} {
+	reverse_proxy daemon-a:8787 daemon-b:8787 {
+		lb_policy round_robin
+		lb_try_duration 0s
+		health_uri /readyz
+		health_port 8788
+		health_interval 5s
+		health_timeout 3s
+		flush_interval -1
+		transport http {
+			versions 1.1
+			dial_timeout 3s
+			response_header_timeout 300s
+		}
+	}
+}
+
+{$ADMIN_DOMAIN} {
+	reverse_proxy daemon-a:8788 daemon-b:8788 {
+		lb_policy round_robin
+		lb_try_duration 0s
+		health_uri /readyz
+		health_interval 5s
+		health_timeout 3s
+		flush_interval -1
+		transport http {
+			versions 1.1
+			dial_timeout 3s
+			response_header_timeout 300s
+		}
+	}
+}

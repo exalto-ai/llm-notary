@@ -73,9 +73,9 @@ must remain vault-encrypted and local.
   versioned key-and-endpoint directory served over authenticated HTTPS;
   self-hosted clients pair an explicit endpoint with an explicit public key.
 - Deferred private proof generation and deterministic `.llmtrace` archives.
-- Local CLI, dashboard, SQLite-by-default capture catalog with optional
-  PostgreSQL metadata, filesystem-by-default artifacts with optional private
-  S3-compatible storage, and a versioned loopback REST API.
+- Local CLI and dashboard with SQLite/filesystem defaults, plus a server mode
+  with PostgreSQL, private S3-compatible storage, and safe multi-replica work
+  coordination behind HTTPS.
 - Optional consent-based sharing of a finalized session after server-side
   admission verifies and safety-scans its exact source package.
 

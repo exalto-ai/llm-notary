@@ -434,6 +434,7 @@ function View({ route, status, api, navigate, fixture }: { route: Route; status:
 }
 
 function OverviewView({ api, status, navigate }: { api: LocalApi; status: Status; navigate: (route: Route) => void }) {
+  const isServer = status.runtime_profile === 'server';
   const events = useQuery({ queryKey: ['events'], queryFn: () => api.events() });
   const stats = [
     ['Capturing', status.counts.capturing, 'active'], ['Ready to finalize', status.counts.ready_to_finalize, 'muted'],
@@ -441,15 +442,15 @@ function OverviewView({ api, status, navigate }: { api: LocalApi; status: Status
     ['Failed', status.counts.failed, 'danger']
   ] as const;
   return <div className="view-page overview-page"><SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing={0} className="service-grid">
-      <ServiceFact icon={CheckCircle2} label="Service" value="Online" detail={`v${status.version}`} tone="ready" />
-      <ServiceFact icon={KeyRound} label="Vault" value={status.vault} detail="Key material stays local" />
+      <ServiceFact icon={CheckCircle2} label={isServer ? 'Server' : 'Service'} value="Online" detail={isServer ? `${status.instance_id ?? 'replica'} · v${status.version}` : `v${status.version}`} tone="ready" />
+      <ServiceFact icon={KeyRound} label="Vault" value={status.vault} detail={isServer ? 'Shared by server replicas' : 'Key material stays local'} />
       <ServiceFact icon={ShieldCheck} label="Notary" value={status.notary === 'directory' ? 'Directory pinned' : 'Configured'} detail="Provider connection delegated" />
       <ServiceFact icon={Activity} label="Work queue" value={status.counts.active_operations ? 'Active' : 'Idle'} detail={`${status.counts.active_operations} operation${status.counts.active_operations === 1 ? '' : 's'}`} />
     </SimpleGrid>
     <section className="overview-work"><div><Text className="eyebrow">Capture states</Text><div className="count-strip">{stats.map(([label, value, tone]) => <UnstyledButton key={label} onClick={() => navigate({ view: label === 'Finalizing' ? 'finalizations' : 'captures' })}>
       <span className={`count-marker count-marker--${tone}`} /><b>{value}</b><span>{label}</span></UnstyledButton>)}</div></div>
       <Paper className="next-action"><Text className="eyebrow">Next action</Text><Title order={2}>{status.counts.ready_to_finalize ? 'Finalize captured evidence' : 'Send a provider request'}</Title>
-        <Text>{status.counts.ready_to_finalize ? `${status.counts.ready_to_finalize} capture${status.counts.ready_to_finalize === 1 ? ' is' : 's are'} ready to finalize.` : 'Point an SDK at the local provider proxy to create a private capture.'}</Text>
+        <Text>{status.counts.ready_to_finalize ? `${status.counts.ready_to_finalize} capture${status.counts.ready_to_finalize === 1 ? ' is' : 's are'} ready to finalize.` : `Point an SDK at the ${isServer ? 'server' : 'local'} provider proxy to create a private capture.`}</Text>
         <Button onClick={() => navigate({ view: status.counts.ready_to_finalize ? 'captures' : 'settings' })}>{status.counts.ready_to_finalize ? 'Review captures' : 'View proxy routes'}</Button></Paper>
     </section>
     <section className="recent-section"><Group justify="space-between"><div><Text className="eyebrow">Recent activity</Text><Title order={2}>What changed</Title></div><Button variant="subtle" onClick={() => navigate({ view: 'activity' })}>All activity</Button></Group>
@@ -1030,6 +1031,8 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
 }
 
 function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
+  const isServer = status.runtime_profile === 'server';
+  const proxyOrigin = status.proxy_origin.replace(/\/$/, '');
   const openApiUrl = `${window.location.origin}/openapi.json`;
   const copyOpenApi = async () => {
     await navigator.clipboard.writeText(openApiUrl);
@@ -1038,7 +1041,7 @@ function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
       message: 'Use this URL to discover admin routes and request bodies.'
     });
   };
-  const updateState = !status.updates.enabled ? 'Disabled for source builds'
+  const updateState = !status.updates.enabled ? (isServer ? 'Managed by deployment' : 'Disabled for source builds')
     : status.updates.update_available ? `Available: ${status.updates.latest_build_id}`
     : status.updates.error_code ? 'Check failed'
     : status.updates.last_checked_unix_ms ? 'Up to date'
@@ -1051,11 +1054,13 @@ function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
     <SimpleGrid cols={{ base: 1, md: 2 }} spacing="lg">
       <SettingsNotaries api={api} />
       <Paper className="settings-panel">
-        <Text className="eyebrow">Listeners</Text>
-        <Title order={2}>Listener addresses</Title>
+        <Text className="eyebrow">{isServer ? 'Deployment' : 'Listeners'}</Text>
+        <Title order={2}>{isServer ? 'Server endpoints' : 'Listener addresses'}</Title>
         <dl className="receipt-list">
-          <Fact label="Provider proxy" value={status.proxy_listener} />
-          <Fact label="Admin & dashboard" value={status.admin_listener} />
+          <Fact label="Provider proxy" value={isServer ? status.proxy_origin : status.proxy_listener} />
+          <Fact label="Admin & dashboard" value={isServer ? status.admin_origin : status.admin_listener} />
+          {isServer && <Fact label="Replica" value={status.instance_id ?? 'Assigned automatically'} />}
+          {isServer && <Fact label="Lifecycle" value={status.lifecycle} />}
           <Fact label="Metadata" value={`${status.metadata_backend} (${status.metadata_status})`} />
           <Fact label="Artifacts" value={`${status.artifact_backend} (${status.artifact_status})`} />
           <Fact label="API version" value="v1" />
@@ -1063,7 +1068,7 @@ function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
           <Fact label="Build" value={status.build_id} />
           <Fact label="Updates" value={updateState} />
         </dl>
-        <Text className="safe-note"><ShieldCheck size={15} /> Both listeners are restricted to loopback.</Text>
+        <Text className="safe-note"><ShieldCheck size={15} /> {isServer ? 'Public traffic uses the configured TLS ingress; provider requests must never be replayed.' : 'Both listeners are restricted to loopback.'}</Text>
         {status.updates.update_available && <Text>Run <code>llm-notary update</code>, then restart the service after active work finishes.</Text>}
       </Paper>
       <Paper className="settings-panel">
@@ -1079,7 +1084,7 @@ function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
       <Paper className="settings-panel">
         <Text className="eyebrow">Privacy policy</Text>
         <Title order={2}>Preview storage</Title>
-        <Text>Up to {status.preview_chars.toLocaleString()} characters of known text fields are indexed locally. Raw headers are never cataloged.</Text>
+        <Text>Up to {status.preview_chars.toLocaleString()} characters of known text fields are indexed {isServer ? 'in shared metadata' : 'locally'}. Raw headers are never cataloged.</Text>
         <dl className="receipt-list">
           <Fact label="Vault" value={status.vault} />
           <Fact label="Notary discovery" value={status.notary} />
@@ -1089,11 +1094,11 @@ function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
         <TerminalSquare size={20} />
         <Text className="eyebrow">Provider routes</Text>
         <Title order={2}>Proxy base URLs</Title>
-        <Text>Keep provider credentials in the SDK and replace its base URL with the matching local route.</Text>
-        <code>http://{status.proxy_listener}/openai/v1</code>
-        <code>http://{status.proxy_listener}/anthropic</code>
-        <code>http://{status.proxy_listener}/deepseek</code>
-        <code>http://{status.proxy_listener}/openrouter/api/v1</code>
+        <Text>Keep provider credentials in the SDK and replace its base URL with the matching {isServer ? 'server' : 'local'} route.</Text>
+        <code>{proxyOrigin}/openai/v1</code>
+        <code>{proxyOrigin}/anthropic</code>
+        <code>{proxyOrigin}/deepseek</code>
+        <code>{proxyOrigin}/openrouter/api/v1</code>
       </Paper>
     </SimpleGrid>
   </div>;

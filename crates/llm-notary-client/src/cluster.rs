@@ -11,7 +11,7 @@ use std::{
 use tokio::sync::watch;
 
 use crate::{
-    config::ClusterConfig,
+    config::{ClusterConfig, SERVER_INSTANCE_ID_ENV, valid_instance_id},
     metadata_store::{
         CaptureClaim, FinalizationClaim, MetadataResult, MetadataStore, MetadataStoreError,
         ReplicaIdentity,
@@ -38,12 +38,17 @@ pub(crate) struct ClusterRuntime {
 
 impl ClusterRuntime {
     pub(crate) fn from_config(config: &ClusterConfig) -> MetadataResult<Self> {
-        let identity = ReplicaIdentity::new(
-            config
-                .instance_id
-                .clone()
-                .ok_or(MetadataStoreError::InvalidInput("missing_instance_id"))?,
-        )?;
+        let instance_id = config
+            .instance_id
+            .clone()
+            .or_else(|| std::env::var(SERVER_INSTANCE_ID_ENV).ok())
+            .or_else(|| {
+                std::env::var("HOSTNAME")
+                    .ok()
+                    .filter(|value| valid_instance_id(value))
+            })
+            .unwrap_or_else(|| format!("replica-{}", uuid::Uuid::new_v4().simple()));
+        let identity = ReplicaIdentity::new(instance_id)?;
         Ok(Self {
             identity,
             heartbeat_interval_seconds: config.heartbeat_interval_seconds,

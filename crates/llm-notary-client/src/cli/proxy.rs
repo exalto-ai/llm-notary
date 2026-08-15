@@ -201,20 +201,20 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         .transpose()?
         .map(Arc::new);
     if cluster.is_some() && !auth::api_key_mode_active()? {
-        bail!("cluster mode requires LLM_NOTARY_API_KEY or LLM_NOTARY_API_KEY_FILE");
+        bail!("server mode requires LLM_NOTARY_API_KEY or LLM_NOTARY_API_KEY_FILE");
     }
     if cluster.is_some() && std::env::var_os("LLM_NOTARY_DESKTOP_CONTROL_STDIN").is_some() {
-        bail!("desktop child-process control is unavailable in cluster mode");
+        bail!("desktop child-process control is unavailable in server mode");
     }
     let persistence = Persistence::open(&config).await?;
     let vault = if cluster.is_some() {
-        let vault = Vault::open_existing_noninteractive()
-            .context("opening the pre-provisioned shared cluster vault")?;
-        anyhow::ensure!(
-            Some(vault.compatibility_sha256()?.as_str())
-                == config.cluster.vault_compatibility_sha256.as_deref(),
-            "shared vault compatibility check failed"
-        );
+        let vault = Vault::open_server().context("opening the shared server vault")?;
+        if let Some(expected) = config.cluster.vault_compatibility_sha256.as_deref() {
+            anyhow::ensure!(
+                vault.compatibility_sha256()? == expected,
+                "shared vault compatibility check failed"
+            );
+        }
         vault
     } else {
         Vault::open_or_init_interactive().context(
@@ -223,11 +223,15 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     };
     if let Some(cluster) = &cluster {
         let api_origin = auth::configured_api_origin()?;
+        let vault_identity = vault.compatibility_sha256()?;
         persistence
             .metadata
             .register_replica(
                 cluster.identity(),
-                &config.cluster_compatibility_sha256_for_api_origin(&api_origin.to_string())?,
+                &config.server_compatibility_sha256_for_api_origin(
+                    &api_origin.to_string(),
+                    &vault_identity,
+                )?,
                 cluster.lease_seconds(),
             )
             .await?;

@@ -153,8 +153,8 @@ ingress_session_request() {
 
 status_a=$(admin_json daemon-a /v1/status)
 status_b=$(admin_json daemon-b /v1/status)
-printf '%s' "$status_a" | "${compose[@]}" exec -T daemon-a jq -e '.runtime_profile == "cluster" and .instance_id == "daemon-a" and .lifecycle == "ready" and .metadata_backend == "postgres" and .artifact_backend == "s3"' >/dev/null
-printf '%s' "$status_b" | "${compose[@]}" exec -T daemon-b jq -e '.runtime_profile == "cluster" and .instance_id == "daemon-b" and .lifecycle == "ready"' >/dev/null
+printf '%s' "$status_a" | "${compose[@]}" exec -T daemon-a jq -e '.runtime_profile == "server" and .instance_id == "daemon-a" and .lifecycle == "ready" and .metadata_backend == "postgres" and .artifact_backend == "s3"' >/dev/null
+printf '%s' "$status_b" | "${compose[@]}" exec -T daemon-b jq -e '.runtime_profile == "server" and .instance_id == "daemon-b" and .lifecycle == "ready"' >/dev/null
 replicas=$(psql_value 'select count(*) from llm_notary_daemon.replicas where lease_expires_at > clock_timestamp()')
 [[ $replicas == 2 ]] || { echo "expected two live replicas, got $replicas" >&2; exit 1; }
 
@@ -194,7 +194,7 @@ if [[ $profile == full ]]; then
     exit 1
   fi
   if "${compose[@]}" run --rm --no-deps --entrypoint /bin/sh daemon-a -ec \
-      'sed '\''s/vault_compatibility_sha256 = "[0-9a-f]*"/vault_compatibility_sha256 = "0000000000000000000000000000000000000000000000000000000000000000"/'\'' /state/config-cluster-a.toml >/tmp/vault-mismatch.toml; exec llm-notaryd --config /tmp/vault-mismatch.toml' \
+      'dd if=/dev/zero of=/tmp/wrong-vault.key bs=32 count=1 status=none; chmod 600 /tmp/wrong-vault.key; export LLM_NOTARY_SERVER_VAULT_KEY_FILE=/tmp/wrong-vault.key; exec llm-notaryd --config /state/config-cluster-a.toml' \
       >/dev/null 2>&1; then
     echo "cluster daemon accepted incompatible vault material" >&2
     exit 1

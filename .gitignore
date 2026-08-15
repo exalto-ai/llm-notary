@@ -24,3 +24,4 @@ js/desktop/src-tauri/icons/android/
 js/desktop/src-tauri/icons/ios/
 .playwright-cli/
 output/playwright/
+/.llm-notary-server/

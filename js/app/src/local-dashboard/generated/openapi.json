@@ -2831,6 +2831,8 @@
           "lifecycle",
           "proxy_listener",
           "admin_listener",
+          "proxy_origin",
+          "admin_origin",
           "metadata_backend",
           "metadata_status",
           "artifact_backend",
@@ -2843,6 +2845,9 @@
         ],
         "properties": {
           "admin_listener": {
+            "type": "string"
+          },
+          "admin_origin": {
             "type": "string"
           },
           "artifact_backend": {
@@ -2886,6 +2891,9 @@
             "minimum": 0
           },
           "proxy_listener": {
+            "type": "string"
+          },
+          "proxy_origin": {
             "type": "string"
           },
           "runtime_profile": {

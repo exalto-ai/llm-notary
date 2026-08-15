@@ -746,6 +746,7 @@ export interface components {
         ShareVisibility: "unlisted" | "listed";
         StatusResponse: {
             admin_listener: string;
+            admin_origin: string;
             artifact_backend: string;
             artifact_status: string;
             build_id: string;
@@ -758,6 +759,7 @@ export interface components {
             notary: string;
             preview_chars: number;
             proxy_listener: string;
+            proxy_origin: string;
             runtime_profile: string;
             updates: components["schemas"]["UpdateStatusResponse"];
             vault: string;

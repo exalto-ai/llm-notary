@@ -64,6 +64,7 @@ tower-http = { version = "0.7", features = ["limit", "request-id", "sensitive-he
 url = "2.5"
 utoipa = { version = "5.5", features = ["axum_extras", "uuid"] }
 uuid = { version = "1.16", features = ["v4"] }
+zeroize = "1.8"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Threading"] }

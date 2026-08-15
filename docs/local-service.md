@@ -14,7 +14,7 @@ Both addresses must be distinct and loopback-only. The separation prevents a
 program that can send model requests through the proxy from automatically
 receiving access to capture management. An `/admin` path on the proxy would
 not provide that boundary: a route prefix is organization, not authentication.
-The explicit PostgreSQL-and-S3 multi-replica profile is documented separately
+The PostgreSQL-and-S3 server profile is documented separately
 in [Multi-replica daemon operations](cluster-operations.md).
 
 ## Start and supervise the service

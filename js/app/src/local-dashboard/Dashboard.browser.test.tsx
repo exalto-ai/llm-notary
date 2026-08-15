@@ -79,6 +79,28 @@ describe('local evidence dashboard', () => {
     expect(localStorage.getItem('mantine-color-scheme-value')).toBe('auto');
   });
 
+  test('shows public endpoints and deployment-managed updates in server mode', async () => {
+    const fixture = createFixtureApi();
+    const serverStatus = {
+      ...(await fixture.status()),
+      runtime_profile: 'server',
+      instance_id: 'notary-2',
+      incarnation_id: '8a8a8a8a-1111-4222-8333-123456789abc',
+      proxy_origin: 'https://proxy.notary.example',
+      admin_origin: 'https://admin.notary.example',
+      metadata_backend: 'postgres',
+      artifact_backend: 's3',
+      vault: 'shared server key'
+    };
+    renderDashboard('/settings', { ...fixture, status: async () => serverStatus });
+    await expect.element(page.getByRole('heading', { name: 'Server endpoints' })).toBeVisible();
+    await expect.element(page.getByText('https://proxy.notary.example', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('notary-2', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('Managed by deployment', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('https://proxy.notary.example/openai/v1', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('Both listeners are restricted to loopback.', { exact: true })).not.toBeInTheDocument();
+  });
+
   test('renders pinned notary lifecycle records in trust order without health claims', async () => {
     const api: LocalApi = {
       ...createFixtureApi(),

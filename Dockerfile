@@ -180,16 +180,15 @@ RUN cp /etc/llm-notary/config.toml /etc/llm-notary/config-s3.toml \
     && sed -i 's/127.0.0.1:8788/0.0.0.0:8788/' /etc/llm-notary/config-cluster-template.toml \
     && printf '%s\n' \
         '' \
-        '[cluster]' \
+        '[server]' \
         'enabled = true' \
-        'instance_id = "__INSTANCE_ID__"' \
+        'proxy_origin = "https://proxy.e2e.invalid"' \
+        'admin_origin = "https://admin.e2e.invalid"' \
         'heartbeat_interval_seconds = 2' \
         'lease_seconds = 8' \
         'claim_max_runtime_seconds = 60' \
         'withdrawal_delay_seconds = 4' \
         'shutdown_grace_seconds = 45' \
-        'trusted_ingress = true' \
-        'vault_compatibility_sha256 = "__VAULT_COMPATIBILITY__"' \
         '' \
         '[admin.auth]' \
         'username = "cluster-admin"' \
