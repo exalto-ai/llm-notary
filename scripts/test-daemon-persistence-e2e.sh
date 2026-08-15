@@ -659,7 +659,11 @@ assert_json "$recovered_capture" '
   .artifacts[0].sha256 == "43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d"
 '
 
-capture_page=$(daemon_cli captures list --query offline --metadata-only)
+capture_search_term=SQLite
+if [[ $metadata_engine == postgres ]]; then
+  capture_search_term=PostgreSQL
+fi
+capture_page=$(daemon_cli captures list --query "$capture_search_term" --metadata-only)
 assert_json "$capture_page" '
   (.items | length) == 1 and
   .items[0].capture_id == "cap-e2e-finalize" and
