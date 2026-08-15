@@ -102,11 +102,11 @@ impl Vault {
         child_key: Option<[u8; 32]>,
     ) -> Result<Self> {
         let config = read_config(config_path)?;
-        let key = Zeroizing::new(if let Some(child_key) = child_key {
-            child_key
+        let key = if let Some(child_key) = child_key {
+            Zeroizing::new(child_key)
         } else {
             match config.mode {
-                VaultMode::Os => read_os_key()?,
+                VaultMode::Os => Zeroizing::new(read_os_key()?),
                 VaultMode::Passphrase => derive_passphrase_key(
                     passphrase
                         .ok_or_else(|| anyhow::anyhow!("this vault requires a passphrase"))?,
@@ -115,7 +115,7 @@ impl Vault {
                         .ok_or_else(|| anyhow::anyhow!("passphrase vault is missing a salt"))?,
                 )?,
             }
-        });
+        };
         if matches!(config.mode, VaultMode::Passphrase)
             && let Some(key_check) = read_key_check(config_path)?
         {
@@ -164,7 +164,7 @@ impl Vault {
         let mut salt = [0; 16];
         rand::rng().fill_bytes(&mut salt);
         let salt_hex = hex::encode(salt);
-        let key = Zeroizing::new(derive_passphrase_key(passphrase, &salt_hex)?);
+        let key = derive_passphrase_key(passphrase, &salt_hex)?;
         let key_check_hex = create_key_check(&key)?;
         write_key_check(config_path, &key_check_hex)?;
         if let Err(error) = write_config(
@@ -414,13 +414,13 @@ fn decode_child_key_line(value: &str) -> Result<[u8; 32]> {
     Ok(key)
 }
 
-fn derive_passphrase_key(passphrase: &str, salt_hex: &str) -> Result<[u8; 32]> {
+fn derive_passphrase_key(passphrase: &str, salt_hex: &str) -> Result<Zeroizing<[u8; 32]>> {
     let salt = hex::decode(salt_hex)?;
-    let mut key = [0; 32];
+    let mut key = Zeroizing::new([0; 32]);
     let params = Params::new(19 * 1024, 2, 1, Some(32))
         .map_err(|e| anyhow::anyhow!("invalid vault KDF parameters: {e}"))?;
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-        .hash_password_into(passphrase.as_bytes(), &salt, &mut key)
+        .hash_password_into(passphrase.as_bytes(), &salt, &mut key[..])
         .map_err(|e| anyhow::anyhow!("deriving vault key failed: {e}"))?;
     Ok(key)
 }
