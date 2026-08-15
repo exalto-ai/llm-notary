@@ -98,6 +98,26 @@ daemon_cli() {
     llm-notary --config "$daemon_config" --json "$@"
 }
 
+wait_for_daemon_http_status() {
+  local path=$1
+  local expected=$2
+  local attempts=0
+  local observed=000
+  while (( attempts < 10 )); do
+    observed=$("${compose[@]}" exec -T "$daemon_service" \
+      curl --silent --output /dev/null --write-out '%{http_code}' \
+        --max-time 3 "http://127.0.0.1:8788$path" || true)
+    if [[ $observed == "$expected" ]]; then
+      printf '%s\n' "$observed"
+      return 0
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  printf '%s\n' "$observed"
+  return 1
+}
+
 assert_json() {
   local json=$1
   local expression=$2
@@ -262,9 +282,7 @@ assert_runtime_postgres_outage() {
   health_status=$("${compose[@]}" exec -T daemon-postgres \
     curl --silent --output /dev/null --write-out '%{http_code}' \
       --max-time 10 http://127.0.0.1:8788/healthz)
-  readiness_status=$("${compose[@]}" exec -T daemon-postgres \
-    curl --silent --output /dev/null --write-out '%{http_code}' \
-      --max-time 10 http://127.0.0.1:8788/readyz)
+  readiness_status=$(wait_for_daemon_http_status /readyz 503 || true)
   status_status=$("${compose[@]}" exec -T daemon-postgres \
     curl --silent --output /dev/null --write-out '%{http_code}' \
       --max-time 3 http://127.0.0.1:8788/v1/status)
