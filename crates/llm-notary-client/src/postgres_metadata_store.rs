@@ -119,6 +119,7 @@ impl PostgresMetadataStore {
     }
 
     /// Wraps an existing pool after verifying the daemon-owned migration journal.
+    #[cfg(test)]
     async fn from_pool(pool: PgPool, full_text_search: bool) -> MetadataResult<Self> {
         Self::from_pool_mode(pool, full_text_search, false).await
     }

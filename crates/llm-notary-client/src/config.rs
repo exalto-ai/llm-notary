@@ -1311,12 +1311,12 @@ mod tests {
             password_hash: None,
         });
         config.catalog.backend = MetadataBackend::Postgres;
-        config.catalog.postgres = Some(PostgresCatalogConfig::default());
+        config.catalog.postgres = PostgresCatalogConfig::default();
         config.storage.backend = ArtifactStorageBackend::S3;
         config.storage.s3 = Some(S3StorageConfig {
             bucket: "private-artifacts".into(),
             region: "us-east-1".into(),
-            endpoint: "https://s3.example.test".into(),
+            endpoint: Some("https://s3.example.test".into()),
             prefix: "cluster".into(),
             force_path_style: false,
             allow_insecure_http: false,

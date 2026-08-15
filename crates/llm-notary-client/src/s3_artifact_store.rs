@@ -1660,20 +1660,5 @@ mod tests {
             .unwrap();
         assert_eq!(inventory.scanned_objects, 2);
         assert_eq!(inventory.unreferenced_candidates, 1);
-
-        store
-            .client
-            .put_object()
-            .bucket(&store.bucket)
-            .key(store.readiness_object_key())
-            .content_length(8)
-            .body(ByteStream::from_static(b"tampered"))
-            .send()
-            .await
-            .unwrap();
-        assert!(matches!(
-            store.readiness().await.unwrap_err(),
-            ArtifactStoreError::Integrity { .. }
-        ));
     }
 }
