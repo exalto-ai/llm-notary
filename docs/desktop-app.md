@@ -9,7 +9,7 @@ does not require a terminal or a separate browser window.
 The current app requires an Apple silicon Mac (M1 or newer) running macOS 12
 Monterey or later.
 
-1. Choose **Download for macOS** on the [LLM Notary website](https://llm-notary.exalto.ai/).
+1. Choose **Download for macOS** on the [LLM Notary website](https://notary.exalto.ai/).
 2. Open the downloaded DMG.
 3. Move LLM Notary to Applications, then launch it.
 

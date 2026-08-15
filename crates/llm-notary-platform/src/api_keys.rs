@@ -334,16 +334,16 @@ mod tests {
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
             github_callback_url: url::Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/github/callback",
+                "https://notary.exalto.ai/api/auth/github/callback",
             )
             .unwrap(),
             google_client_id: "google-client-id".to_owned(),
             google_client_secret: "google-secret".to_owned(),
             google_callback_url: url::Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/google/callback",
+                "https://notary.exalto.ai/api/auth/google/callback",
             )
             .unwrap(),
-            app_url: url::Url::parse("https://llm-notary.exalto.ai").unwrap(),
+            app_url: url::Url::parse("https://notary.exalto.ai").unwrap(),
             secure_cookies: true,
             notary_directory: super::super::tests::directory_key(),
             publish: super::super::publish::PublishService::disabled_for_test(),

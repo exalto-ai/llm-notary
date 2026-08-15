@@ -5,7 +5,7 @@ primary_region = "sjc"
   dockerfile = "web.Dockerfile"
 
   [build.args]
-    LLM_NOTARY_PUBLIC_ORIGIN = "https://llm-notary.exalto.ai"
+    LLM_NOTARY_PUBLIC_ORIGIN = "https://notary.exalto.ai"
 
 [http_service]
   internal_port = 80

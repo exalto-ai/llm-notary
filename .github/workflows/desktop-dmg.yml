@@ -46,7 +46,7 @@ jobs:
       ASSET: macos-arm64
       TARGET: aarch64-apple-darwin
       LLM_NOTARY_BUILD_ID: ${{ inputs.build_id || format('{0}-{1}-{2}', github.sha, github.run_id, github.run_attempt) }}
-      LLM_NOTARY_PUBLIC_ORIGIN: ${{ inputs.public_origin || vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://llm-notary.exalto.ai' }}
+      LLM_NOTARY_PUBLIC_ORIGIN: ${{ inputs.public_origin || vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://notary.exalto.ai' }}
       LLM_NOTARY_UPDATES_ENABLED: ${{ inputs.updates_enabled && '1' || '0' }}
     defaults:
       run:

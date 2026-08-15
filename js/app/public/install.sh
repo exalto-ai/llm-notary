@@ -2,7 +2,7 @@
 # Install the latest LLM Notary CLI for Apple silicon macOS or Linux.
 set -eu
 
-download_root="${LLM_NOTARY_DOWNLOAD_ROOT:-https://llm-notary.exalto.ai/downloads/cli}"
+download_root="${LLM_NOTARY_DOWNLOAD_ROOT:-https://notary.exalto.ai/downloads/cli}"
 channel="${LLM_NOTARY_CHANNEL:-latest}"
 install_dir="${LLM_NOTARY_INSTALL_DIR:-${HOME}/.local/bin}"
 

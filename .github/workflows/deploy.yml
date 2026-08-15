@@ -116,7 +116,7 @@ jobs:
       - name: Verify old web to new API compatibility
         run: >-
           curl --fail --retry 5 --retry-all-errors --retry-delay 2
-          --max-time 20 https://llm-notary.exalto.ai/api/readyz
+          --max-time 20 https://notary.exalto.ai/api/readyz
       - name: Deploy notary image
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
@@ -138,7 +138,7 @@ jobs:
           import urllib.error
           import urllib.request
 
-          api_url = "https://llm-notary.exalto.ai/api/notary/admissions"
+          api_url = "https://notary.exalto.ai/api/notary/admissions"
           hostname = "llm-notary-prod-notary.fly.dev"
           target = (hostname, 443)
           last_error = None
@@ -196,13 +196,13 @@ jobs:
       - name: Verify new web to API wake-up
         run: >-
           curl --fail --retry 5 --retry-all-errors --retry-delay 2
-          --max-time 20 https://llm-notary.exalto.ai/api/readyz
+          --max-time 20 https://notary.exalto.ai/api/readyz
       - name: Verify website download proxy
         run: |
           set -euo pipefail
           pointer="$(curl --fail --silent --show-error --location \
             --retry 15 --retry-all-errors --retry-delay 2 --retry-max-time 60 \
-            https://llm-notary.exalto.ai/downloads/cli/latest)"
+            https://notary.exalto.ai/downloads/cli/latest)"
           case "$pointer" in
             *" "*) ;;
             *) echo "the website latest pointer is malformed" >&2; exit 1 ;;

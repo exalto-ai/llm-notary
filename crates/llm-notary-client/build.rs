@@ -1,6 +1,6 @@
 use std::env;
 
-const DEFAULT_PUBLIC_ORIGIN: &str = "https://llm-notary.exalto.ai";
+const DEFAULT_PUBLIC_ORIGIN: &str = "https://notary.exalto.ai";
 const DEVELOPMENT_BUILD_ID: &str = "dev";
 
 fn main() {

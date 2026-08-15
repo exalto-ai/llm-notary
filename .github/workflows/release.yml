@@ -27,7 +27,7 @@ jobs:
     name: Validate release origin
     runs-on: ubuntu-24.04
     env:
-      PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://llm-notary.exalto.ai' }}
+      PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://notary.exalto.ai' }}
     steps:
       - name: Verify the compiled public origin
         run: |
@@ -47,7 +47,7 @@ jobs:
     needs: config
     timeout-minutes: 90
     env:
-      LLM_NOTARY_PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://llm-notary.exalto.ai' }}
+      LLM_NOTARY_PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://notary.exalto.ai' }}
       LLM_NOTARY_BUILD_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
       LLM_NOTARY_UPDATES_ENABLED: ${{ github.ref == 'refs/heads/main' && inputs.channel == 'latest' && '1' || '0' }}
     strategy:
@@ -140,7 +140,7 @@ jobs:
     with:
       sign: ${{ github.ref == 'refs/heads/main' }}
       build_id: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-      public_origin: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://llm-notary.exalto.ai' }}
+      public_origin: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://notary.exalto.ai' }}
       updates_enabled: ${{ github.ref == 'refs/heads/main' && inputs.channel == 'latest' }}
     secrets: inherit
 
@@ -153,7 +153,7 @@ jobs:
     env:
       BUILD_ID: ${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
       CHANNEL: ${{ inputs.channel }}
-      PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://llm-notary.exalto.ai' }}
+      PUBLIC_ORIGIN: ${{ vars.LLM_NOTARY_PUBLIC_ORIGIN || 'https://notary.exalto.ai' }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -444,11 +444,11 @@ jobs:
           if test "$CHANNEL" = latest; then
             website="$(curl --fail --silent --show-error --location \
               --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
-              "https://llm-notary.exalto.ai/downloads/cli/$CHANNEL")"
+              "https://notary.exalto.ai/downloads/cli/$CHANNEL")"
             test "$website" = "$expected"
             curl --fail --silent --show-error --location \
               --retry 30 --retry-all-errors --retry-delay 2 --retry-max-time 90 \
-              "https://llm-notary.exalto.ai/downloads/cli/channels/$CHANNEL.json" \
+              "https://notary.exalto.ai/downloads/cli/channels/$CHANNEL.json" \
               -o "$RUNNER_TEMP/website-channel.json"
             cmp "$RUNNER_TEMP/channel.json" "$RUNNER_TEMP/website-channel.json"
           fi

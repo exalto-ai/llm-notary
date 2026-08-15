@@ -184,7 +184,7 @@ for (const file of consistencySources) {
 }
 
 const publicDocs = readFileSync(resolve(appRoot, 'src/main.jsx'), 'utf8');
-if (!publicDocs.includes('curl -fsSL https://llm-notary.exalto.ai/install.sh | sh')
+if (!publicDocs.includes('curl -fsSL https://notary.exalto.ai/install.sh | sh')
   || !publicDocs.includes('cargo install --locked --path crates/llm-notary-client')
   || !publicDocs.includes('llm-notary skill install --target all')
   || !publicDocs.includes('--metadata-only')

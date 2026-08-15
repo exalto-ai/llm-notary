@@ -2979,17 +2979,13 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            github_callback_url: Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/github/callback",
-            )
-            .expect("callback URL"),
+            github_callback_url: Url::parse("https://notary.exalto.ai/api/auth/github/callback")
+                .expect("callback URL"),
             google_client_id: "google-client-id".to_owned(),
             google_client_secret: "google-secret".to_owned(),
-            google_callback_url: Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/google/callback",
-            )
-            .expect("Google callback URL"),
-            app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
+            google_callback_url: Url::parse("https://notary.exalto.ai/api/auth/google/callback")
+                .expect("Google callback URL"),
+            app_url: Url::parse("https://notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
@@ -3010,8 +3006,7 @@ mod tests {
                 .any(|(key, value)| key == "state" && value == "state-token")
         );
         assert!(url.query_pairs().any(|(key, value)| {
-            key == "redirect_uri"
-                && value == "https://llm-notary.exalto.ai/api/auth/github/callback"
+            key == "redirect_uri" && value == "https://notary.exalto.ai/api/auth/github/callback"
         }));
         assert!(!url.query_pairs().any(|(key, _)| key == "scope"));
 
@@ -3027,7 +3022,7 @@ mod tests {
             ("client_id", "google-client-id"),
             (
                 "redirect_uri",
-                "https://llm-notary.exalto.ai/api/auth/google/callback",
+                "https://notary.exalto.ai/api/auth/google/callback",
             ),
             ("response_type", "code"),
             ("scope", "openid email profile"),
@@ -3104,17 +3099,13 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            github_callback_url: Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/github/callback",
-            )
-            .expect("GitHub callback URL"),
+            github_callback_url: Url::parse("https://notary.exalto.ai/api/auth/github/callback")
+                .expect("GitHub callback URL"),
             google_client_id: "google-client-id".to_owned(),
             google_client_secret: "google-secret".to_owned(),
-            google_callback_url: Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/google/callback",
-            )
-            .expect("Google callback URL"),
-            app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
+            google_callback_url: Url::parse("https://notary.exalto.ai/api/auth/google/callback")
+                .expect("Google callback URL"),
+            app_url: Url::parse("https://notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
@@ -3577,16 +3568,16 @@ mod tests {
                 github_client_id: "client-id".to_owned(),
                 github_client_secret: "secret".to_owned(),
                 github_callback_url: Url::parse(
-                    "https://llm-notary.exalto.ai/api/auth/github/callback",
+                    "https://notary.exalto.ai/api/auth/github/callback",
                 )
                 .expect("callback URL"),
                 google_client_id: "google-client-id".to_owned(),
                 google_client_secret: "google-secret".to_owned(),
                 google_callback_url: Url::parse(
-                    "https://llm-notary.exalto.ai/api/auth/google/callback",
+                    "https://notary.exalto.ai/api/auth/google/callback",
                 )
                 .expect("Google callback URL"),
-                app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
+                app_url: Url::parse("https://notary.exalto.ai").expect("app URL"),
                 secure_cookies: true,
                 notary_directory: directory_key(),
                 publish: publish::PublishService::disabled_for_test(),
@@ -3652,17 +3643,13 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            github_callback_url: Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/github/callback",
-            )
-            .expect("callback URL"),
+            github_callback_url: Url::parse("https://notary.exalto.ai/api/auth/github/callback")
+                .expect("callback URL"),
             google_client_id: "google-client-id".to_owned(),
             google_client_secret: "google-secret".to_owned(),
-            google_callback_url: Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/google/callback",
-            )
-            .expect("Google callback URL"),
-            app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
+            google_callback_url: Url::parse("https://notary.exalto.ai/api/auth/google/callback")
+                .expect("Google callback URL"),
+            app_url: Url::parse("https://notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
@@ -3736,17 +3723,13 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            github_callback_url: Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/github/callback",
-            )
-            .expect("callback URL"),
+            github_callback_url: Url::parse("https://notary.exalto.ai/api/auth/github/callback")
+                .expect("callback URL"),
             google_client_id: "google-client-id".to_owned(),
             google_client_secret: "google-secret".to_owned(),
-            google_callback_url: Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/google/callback",
-            )
-            .expect("Google callback URL"),
-            app_url: Url::parse("https://llm-notary.exalto.ai").expect("app URL"),
+            google_callback_url: Url::parse("https://notary.exalto.ai/api/auth/google/callback")
+                .expect("Google callback URL"),
+            app_url: Url::parse("https://notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
@@ -3891,17 +3874,13 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            github_callback_url: Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/github/callback",
-            )
-            .unwrap(),
+            github_callback_url: Url::parse("https://notary.exalto.ai/api/auth/github/callback")
+                .unwrap(),
             google_client_id: "google-client-id".to_owned(),
             google_client_secret: "google-secret".to_owned(),
-            google_callback_url: Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/google/callback",
-            )
-            .unwrap(),
-            app_url: Url::parse("https://llm-notary.exalto.ai").unwrap(),
+            google_callback_url: Url::parse("https://notary.exalto.ai/api/auth/google/callback")
+                .unwrap(),
+            app_url: Url::parse("https://notary.exalto.ai").unwrap(),
             secure_cookies: true,
             notary_directory: directory_key(),
             publish: publish::PublishService::disabled_for_test(),
