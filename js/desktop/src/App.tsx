@@ -357,8 +357,8 @@ function VaultUnlock({ refresh }: { refresh: () => Promise<void> }) {
         <span className="wizard-kicker">Private capture vault</span>
         <h1>Unlock captures on this Mac</h1>
         <p>Enter the passphrase you chose during setup. LLM Notary keeps it only for this app session.</p>
-        <label><span>Vault passphrase</span><input type="password" autoComplete="current-password" autoFocus value={passphrase} onChange={(event) => setPassphrase(event.target.value)} /></label>
-        {error && <div className="onboarding-error">{error}</div>}
+        <label><span>Vault passphrase</span><input type="password" autoComplete="current-password" autoFocus value={passphrase} aria-invalid={Boolean(error)} aria-describedby={error ? 'vault-unlock-error' : undefined} onChange={(event) => setPassphrase(event.target.value)} /></label>
+        {error && <div id="vault-unlock-error" className="onboarding-error" role="alert">{error}</div>}
         <button className="mac-button is-primary is-large" type="submit" disabled={busy}>{busy ? 'Unlocking…' : 'Unlock and start LLM Notary'} <ChevronRight size={15} /></button>
       </form>
     </main>
@@ -570,6 +570,7 @@ function SettingsView({
   const [ready, setReady] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const vault = vaultProtection(state.vault_mode);
+  const requiresSessionUnlock = state.vault_mode === 'passphrase';
   const restartBlock = updateRestartBlockReason(state);
   const updateBusy = updateState?.phase === 'checking'
     || updateState?.phase === 'downloading'
@@ -589,7 +590,11 @@ function SettingsView({
     try {
       await setLaunchAtLogin(enabled);
       setLaunch(enabled);
-      setMessage(enabled ? 'LLM Notary will open when you sign in.' : 'Launch at sign-in is off.');
+      setMessage(enabled
+        ? requiresSessionUnlock
+          ? 'LLM Notary will open locked when you sign in.'
+          : 'LLM Notary will open when you sign in.'
+        : 'Launch at sign-in is off.');
     } catch (error) {
       setMessage(errorMessage(error));
     }
@@ -600,7 +605,7 @@ function SettingsView({
       <h2>General</h2>
       <div className="preference-group">
         <label className="preference-row">
-          <div><strong>Open LLM Notary at sign-in</strong><span>Keep capture available from the menu bar.</span></div>
+          <div><strong>Open LLM Notary at sign-in</strong><span>{requiresSessionUnlock ? 'The app opens locked; enter the vault passphrase to start capture.' : 'Keep capture available from the menu bar.'}</span></div>
           <input type="checkbox" role="switch" checked={launch} disabled={!ready} onChange={(event) => void changeLaunch(event.target.checked)} />
         </label>
         <div className="preference-row"><div><strong>Menu-bar controller</strong><span>Closing the window keeps the background service available.</span></div><span className="value-label"><StatusDot running />Active</span></div>
@@ -633,6 +638,7 @@ function SettingsView({
           <small>{formatBytes(updateState.downloaded_bytes)} of {updateState.total_bytes ? formatBytes(updateState.total_bytes) : 'the update'}</small>
         </div>}
         {updateState?.phase === 'ready' && restartBlock && <p className="preference-note update-block-note">{restartBlock} The update will stay ready.</p>}
+        {updateState?.phase === 'ready' && requiresSessionUnlock && <p className="preference-note">After restart, enter the vault passphrase to resume capture.</p>}
         <p className="preference-note">Signed release builds check about every six hours and download in the background. Installation happens only when you choose Restart to update.</p>
       </div>
     </section>
@@ -676,6 +682,16 @@ function Onboarding({ state, refresh, onFinish }: {
   const [error, setError] = useState<string | null>(null);
   const provider = providers.find((item) => item.id === selectedProvider) ?? providers[0];
   const stepIndex = onboardingSteps.indexOf(step);
+
+  const goBack = () => {
+    setError(null);
+    if (step === 'protection') {
+      setProtectionMode('keychain');
+      setPassphrase('');
+      setPassphraseConfirmation('');
+    }
+    setStep(onboardingSteps[Math.max(0, stepIndex - 1)]);
+  };
 
   const configureProtection = async () => {
     if (protectionMode === 'passphrase' && passphrase !== passphraseConfirmation) {
@@ -739,7 +755,7 @@ function Onboarding({ state, refresh, onFinish }: {
     </div>
     <main className="onboarding-body">
       <section className="onboarding-content">
-        {step !== 'welcome' && <button className="back-button" type="button" onClick={() => setStep(onboardingSteps[Math.max(0, stepIndex - 1)])} disabled={busy}>
+        {step !== 'welcome' && <button className="back-button" type="button" onClick={goBack} disabled={busy}>
           <ChevronLeft size={14} /> Back
         </button>}
         {step === 'welcome' && <WelcomeStep state={state} onContinue={() => setStep('protection')} />}
@@ -770,7 +786,7 @@ function Onboarding({ state, refresh, onFinish }: {
           busy={busy}
           onFinish={finish}
         />}
-        {error && <div className="onboarding-error">{error}</div>}
+        {error && <div className="onboarding-error" role="alert">{error}</div>}
       </section>
       <OnboardingAside step={step} state={state} provider={provider} />
     </main>
@@ -847,10 +863,16 @@ function ProtectionStep({ configured, mode, setMode, passphrase, setPassphrase, 
   busy: boolean;
   onContinue: () => void;
 }) {
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [advancedOpen, setAdvancedOpen] = useState(mode === 'passphrase');
   const passphrasesMatch = passphrase === passphraseConfirmation;
+  const mismatchId = 'vault-passphrase-mismatch';
+  const chooseKeychain = () => {
+    setMode('keychain');
+    setPassphrase('');
+    setPassphraseConfirmation('');
+  };
   const toggleAdvanced = () => {
-    if (advancedOpen && mode === 'passphrase') setMode('keychain');
+    if (advancedOpen) chooseKeychain();
     setAdvancedOpen(!advancedOpen);
   };
   return <div className="wizard-step">
@@ -858,7 +880,7 @@ function ProtectionStep({ configured, mode, setMode, passphrase, setPassphrase, 
     <h1>Protect evidence on this Mac</h1>
     <p>A private capture can reconstruct the original provider request, including credentials. It is always encrypted before it is written.</p>
     {configured ? <div className="configured-protection"><BadgeCheck size={22} /><div><strong>Capture protection is already configured</strong><span>This assistant will keep the existing vault unchanged.</span></div></div> : <div className="protection-options" role="radiogroup" aria-label="Private capture protection">
-      <button type="button" role="radio" aria-checked={mode === 'keychain'} className={mode === 'keychain' ? 'is-selected' : ''} onClick={() => setMode('keychain')}>
+      <button type="button" role="radio" aria-checked={mode === 'keychain'} className={mode === 'keychain' ? 'is-selected' : ''} onClick={chooseKeychain}>
         <span className="radio-mark">{mode === 'keychain' && <span />}</span><KeyRound size={20} />
         <div><strong>Use Keychain</strong><p>Recommended. macOS protects the vault key; there is no separate password to remember.</p></div>
       </button>
@@ -869,12 +891,12 @@ function ProtectionStep({ configured, mode, setMode, passphrase, setPassphrase, 
     </div>}
     {!configured && <button type="button" className="advanced-options-toggle" aria-expanded={advancedOpen} onClick={toggleAdvanced}><SlidersHorizontal size={13} /> Advanced options <ChevronDown size={13} /></button>}
     {!configured && advancedOpen && mode === 'passphrase' && <div className="passphrase-fields">
-      <label><span>Passphrase</span><input type="password" autoComplete="new-password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} /></label>
-      <label><span>Confirm passphrase</span><input type="password" autoComplete="new-password" value={passphraseConfirmation} onChange={(event) => setPassphraseConfirmation(event.target.value)} /></label>
-      {!passphrasesMatch && <small className="passphrase-mismatch">The passphrases do not match.</small>}
+      <label><span>Passphrase</span><input type="password" autoComplete="new-password" value={passphrase} aria-invalid={!passphrasesMatch} aria-describedby={!passphrasesMatch ? mismatchId : undefined} onChange={(event) => setPassphrase(event.target.value)} /></label>
+      <label><span>Confirm passphrase</span><input type="password" autoComplete="new-password" value={passphraseConfirmation} aria-invalid={!passphrasesMatch} aria-describedby={!passphrasesMatch ? mismatchId : undefined} onChange={(event) => setPassphraseConfirmation(event.target.value)} /></label>
+      {!passphrasesMatch && <small id={mismatchId} className="passphrase-mismatch" role="alert">The passphrases do not match.</small>}
     </div>}
     {!configured && advancedOpen && mode === 'passphrase' && passphrasesMatch && passphrase.length === 0 && <div className="wizard-warning"><ShieldCheck size={16} /><span>An empty passphrase provides no device protection. Anyone with this account's app data can open private captures.</span></div>}
-    <div className="wizard-actions"><button className="mac-button is-primary is-large" onClick={onContinue} disabled={busy || (mode === 'passphrase' && !passphrasesMatch)}>{busy ? 'Saving…' : 'Continue'} <ChevronRight size={15} /></button></div>
+    <div className="wizard-actions"><button className="mac-button is-primary is-large" onClick={onContinue} disabled={busy || (mode === 'passphrase' && (!advancedOpen || !passphrasesMatch))}>{busy ? 'Saving…' : 'Continue'} <ChevronRight size={15} /></button></div>
   </div>;
 }
 

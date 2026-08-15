@@ -142,8 +142,8 @@ fn passphrase_vault_is_locked(mode: &str, session: &VaultSession) -> bool {
     mode == "passphrase" && !session.0.lock().is_ok_and(|vault| vault.as_ref().is_some())
 }
 
-fn vault_can_unlock_automatically(mode: &str) -> bool {
-    mode != "passphrase"
+fn should_auto_start(vault_configured: bool, mode: &str, onboarding_complete: bool) -> bool {
+    vault_configured && mode != "passphrase" && onboarding_complete
 }
 
 fn local_marker_path(name: &str) -> Result<PathBuf, String> {
@@ -772,6 +772,14 @@ fn unlock_vault(
     if local_vault_mode().1 != "passphrase" {
         return Err("This capture vault does not require a passphrase.".into());
     }
+    if !Vault::passphrase_unlock_is_verifiable()
+        .map_err(|error| format!("Could not inspect the capture vault: {error}"))?
+    {
+        return Err(
+            "This passphrase vault predates verified desktop unlock. Continue using it with the CLI; desktop migration is not available yet."
+                .into(),
+        );
+    }
     let passphrase = Zeroizing::new(passphrase);
     let vault = Vault::open(Some(&passphrase))
         .map_err(|error| format!("Could not unlock the capture vault: {error}"))?;
@@ -985,10 +993,8 @@ pub fn run() {
             create_tray(app)?;
             schedule_update_checks(app.handle().clone());
             let (vault_configured, vault_mode) = local_vault_mode();
-            if vault_configured
-                && vault_can_unlock_automatically(&vault_mode)
-                && onboarding_marker_path().is_ok_and(|path| path.exists())
-            {
+            let onboarding_complete = onboarding_marker_path().is_ok_and(|path| path.exists());
+            if should_auto_start(vault_configured, &vault_mode, onboarding_complete) {
                 let app_handle = app.handle().clone();
                 tauri::async_runtime::spawn(async move {
                     let process = app_handle.state::<DaemonProcess>();
@@ -1094,8 +1100,10 @@ mod tests {
         assert!(passphrase_vault_is_locked("passphrase", &session));
         assert!(!passphrase_vault_is_locked("keychain", &session));
         assert!(!passphrase_vault_is_locked("convenience", &session));
-        assert!(!vault_can_unlock_automatically("passphrase"));
-        assert!(vault_can_unlock_automatically("keychain"));
-        assert!(vault_can_unlock_automatically("convenience"));
+        assert!(!should_auto_start(true, "passphrase", true));
+        assert!(should_auto_start(true, "keychain", true));
+        assert!(should_auto_start(true, "convenience", true));
+        assert!(!should_auto_start(false, "keychain", true));
+        assert!(!should_auto_start(true, "keychain", false));
     }
 }

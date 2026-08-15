@@ -28,8 +28,9 @@ controller running; opening it from the menu bar restores the regular app
 window. Quitting the app asks a daemon that it started to stop accepting new
 work, waits for open response streams and the currently running finalization to
 finish, and then exits. It never force-kills the service if draining takes too
-long. Once onboarding
-is complete, later app launches start the bundled service automatically.
+long. Once onboarding is complete, later app launches start the bundled
+service automatically for Keychain and empty-passphrase vaults. A protected
+passphrase vault opens locked and starts capture only after the user unlocks it.
 
 First run detects the local agent config, capture vault, and service before it
 changes anything. It then guides the user through capture protection, choosing
@@ -73,7 +74,8 @@ capture or finalization. On click, the app authenticates `latest` again, checks
 activity again, asks its managed daemon to stop accepting new work, waits for
 open streams, detached capture sealing, and the current finalization to finish,
 installs the application, and reopens it. A daemon started outside the app is
-never stopped or replaced by this flow.
+never stopped or replaced by this flow. A protected passphrase vault reopens
+locked after the update and requires the passphrase before capture resumes.
 
 ## Private capture protection
 
@@ -84,10 +86,12 @@ the random vault key, and there is no separate password to remember.
 Advanced options allow a passphrase instead. The passphrase is required again
 when the app opens and is retained only for that app session. It is never
 written to the vault configuration. New passphrase vaults include an encrypted
-key check so the app can reject an incorrect passphrase before starting the
-local service. An empty passphrase is allowed as an explicit convenience
-choice: captures are still encrypted on disk, but this provides no meaningful
-protection to anyone who can access that account's application data.
+key check in a private sidecar next to the configuration so the app can reject
+an incorrect passphrase before starting the local service while preserving the
+v1 configuration format for older readers. An empty passphrase is allowed as
+an explicit convenience choice: captures are still encrypted on disk, but this
+provides no meaningful protection to anyone who can access that account's
+application data.
 
 The app unlocks the vault before launching the daemon and sends the already
 unlocked key through the child's anonymous standard-input pipe. The key is not
@@ -95,8 +99,9 @@ placed in command-line arguments, environment-variable values, logs, or files.
 An environment flag only tells the supervised child to read the key from the
 pipe. Temporary key buffers are cleared when dropped.
 
-An existing passphrase vault created outside the desktop app can be unlocked in
-the same screen. Vault migration remains a future workflow; the current
+Legacy passphrase vaults without a key check remain usable from the CLI, but
+the desktop app refuses to unlock them because it cannot safely reject a typo
+before starting capture. Vault migration remains a future workflow; the current
 settings screen explains this instead of silently changing protection for
 existing captures.
 
