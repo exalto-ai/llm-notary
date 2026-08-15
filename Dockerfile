@@ -130,7 +130,21 @@ COPY --from=daemon-e2e-builder /app/target/release/llm-notaryd /usr/local/bin/ll
 COPY --from=daemon-e2e-builder /app/target/release/llm-notary /usr/local/bin/llm-notary
 COPY --from=daemon-e2e-builder /app/target/release/llm-notary-e2e-notary /usr/local/bin/llm-notary-e2e-notary
 COPY deploy/daemon-e2e/config.toml /etc/llm-notary/config.toml
-RUN cp /etc/llm-notary/config.toml /etc/llm-notary/config-postgres.toml \
+RUN cp /etc/llm-notary/config.toml /etc/llm-notary/config-s3.toml \
+    && sed -i 's/backend = "filesystem"/backend = "s3"/' /etc/llm-notary/config-s3.toml \
+    && printf '%s\n' \
+        '' \
+        '[storage.s3]' \
+        'bucket = "llm-notary-daemon-e2e"' \
+        'region = "us-east-1"' \
+        'endpoint = "http://minio:9000"' \
+        'prefix = "daemon-e2e/artifacts"' \
+        'force_path_style = true' \
+        'allow_insecure_http = true' \
+        'connect_timeout_seconds = 3' \
+        'operation_timeout_seconds = 10' \
+        >> /etc/llm-notary/config-s3.toml \
+    && cp /etc/llm-notary/config.toml /etc/llm-notary/config-postgres.toml \
     && sed -i 's/backend = "sqlite"/backend = "postgres"/' /etc/llm-notary/config-postgres.toml \
     && printf '%s\n' \
         '' \
@@ -142,5 +156,10 @@ RUN cp /etc/llm-notary/config.toml /etc/llm-notary/config-postgres.toml \
         'migration_lock_timeout_seconds = 5' \
         >> /etc/llm-notary/config-postgres.toml \
     && cp /etc/llm-notary/config-postgres.toml /etc/llm-notary/config-postgres-lock-timeout.toml \
-    && sed -i 's/migration_lock_timeout_seconds = 5/migration_lock_timeout_seconds = 1/' /etc/llm-notary/config-postgres-lock-timeout.toml
+    && sed -i 's/migration_lock_timeout_seconds = 5/migration_lock_timeout_seconds = 1/' /etc/llm-notary/config-postgres-lock-timeout.toml \
+    && cp /etc/llm-notary/config-postgres.toml /etc/llm-notary/config-postgres-s3.toml \
+    && sed -i 's/backend = "filesystem"/backend = "s3"/' /etc/llm-notary/config-postgres-s3.toml \
+    && sed -n '/^\[storage.s3\]/,$p' /etc/llm-notary/config-s3.toml \
+        >> /etc/llm-notary/config-postgres-s3.toml
 COPY deploy/daemon-e2e/provider.py /usr/local/libexec/llm-notary-e2e-provider.py
+COPY deploy/daemon-e2e/share.py /usr/local/libexec/llm-notary-e2e-share.py

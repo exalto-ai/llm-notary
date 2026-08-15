@@ -39,7 +39,8 @@ use crate::{
     DeferredBundle,
     archive::{ARCHIVE_CONTENT_TYPE, MAX_ARCHIVE_WIRE_BYTES, read_trace_package_archive},
     artifact_store::{
-        ArtifactKey, ArtifactKind, ArtifactRecord, ArtifactSource, ArtifactStoreError,
+        ArtifactKey, ArtifactKind, ArtifactRecord, ArtifactSource, ArtifactStore,
+        ArtifactStoreError,
     },
     bundle::{
         finalize_bundle_admitted_bytes_with_progress, finalize_bundle_bytes_with_progress,
@@ -61,7 +62,7 @@ use crate::{
 const API_VERSION: &str = "v1";
 const SESSION_COOKIE: &str = "llm_notary_admin_session";
 const SESSION_MAX_AGE_SECONDS: u64 = 43_200;
-const METADATA_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const DEPENDENCY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const DASHBOARD_HEADER: &str = "x-llm-notary-request";
 const DASHBOARD_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 const DESKTOP_DASHBOARD_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self' tauri://localhost http://tauri.localhost https://tauri.localhost";
@@ -266,20 +267,32 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
-#[utoipa::path(get, path = "/readyz", summary = "Check service readiness", description = "Runs a bounded metadata dependency probe. PostgreSQL outages or schema mismatches make readiness fail while /healthz remains local liveness.", responses((status = 200, body = ReadinessResponse), (status = 503, body = ErrorEnvelope)), tag = "local-admin")]
+#[utoipa::path(get, path = "/readyz", summary = "Check service readiness", description = "Runs bounded metadata and selected artifact-writer dependency probes. Dependency outages or schema mismatches make readiness fail while /healthz remains local liveness.", responses((status = 200, body = ReadinessResponse), (status = 503, body = ErrorEnvelope)), tag = "local-admin")]
 async fn readiness(State(state): State<AdminState>) -> Result<Json<ReadinessResponse>, ApiError> {
-    match tokio::time::timeout(
-        METADATA_PROBE_TIMEOUT,
-        state.persistence.metadata.readiness(),
-    )
+    let persistence = state.persistence.clone();
+    match tokio::time::timeout(DEPENDENCY_PROBE_TIMEOUT, async move {
+        persistence
+            .metadata
+            .readiness()
+            .await
+            .map_err(|_| "metadata_not_ready")?;
+        persistence
+            .artifacts
+            .readiness()
+            .await
+            .map_err(|_| "artifact_not_ready")?;
+        Ok::<_, &'static str>(())
+    })
     .await
     {
         Ok(Ok(_)) => Ok(Json(ReadinessResponse {
             service: "llm-notaryd".into(),
             status: "ready".into(),
             metadata_backend: state.persistence.metadata.backend_name().into(),
+            artifact_backend: state.persistence.artifacts.backend_name().into(),
         })),
-        Ok(Err(_)) | Err(_) => Err(ApiError::service_unavailable("metadata_not_ready")),
+        Ok(Err(code)) => Err(ApiError::service_unavailable(code)),
+        Err(_) => Err(ApiError::service_unavailable("dependency_not_ready")),
     }
 }
 
@@ -372,16 +385,18 @@ async fn require_auth(State(state): State<AdminState>, request: Request, next: N
     }
 }
 
-#[utoipa::path(get, path = "/v1/status", summary = "Get local service status", description = "Returns listener addresses, metadata readiness, vault and notary configuration, preview limits, and current capture counts.", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/status", summary = "Get local service status", description = "Returns listener addresses, bounded metadata and artifact-writer readiness, vault and notary configuration, preview limits, and current capture counts.", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>, ApiError> {
     let metadata = state.persistence.metadata.clone();
-    let counts = tokio::time::timeout(METADATA_PROBE_TIMEOUT, async move {
-        metadata.readiness().await?;
-        metadata.counts().await
+    let artifacts = state.persistence.artifacts.clone();
+    let counts = tokio::time::timeout(DEPENDENCY_PROBE_TIMEOUT, async move {
+        metadata.readiness().await.map_err(|_| ())?;
+        artifacts.readiness().await.map_err(|_| ())?;
+        metadata.counts().await.map_err(|_| ())
     })
     .await
-    .map_err(|_| ApiError::service_unavailable("metadata_not_ready"))?
-    .map_err(|_| ApiError::service_unavailable("metadata_not_ready"))?;
+    .map_err(|_| ApiError::service_unavailable("dependency_not_ready"))?
+    .map_err(|_| ApiError::service_unavailable("dependency_not_ready"))?;
     let update = state.update_status.read().await;
     Ok(Json(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),
@@ -390,6 +405,8 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
         admin_listener: state.config.admin.listen.to_string(),
         metadata_backend: state.persistence.metadata.backend_name().into(),
         metadata_status: "ready".into(),
+        artifact_backend: state.persistence.artifacts.backend_name().into(),
+        artifact_status: "ready".into(),
         vault: Vault::status().unwrap_or("unavailable").into(),
         notary: if state.config.notary.endpoint.is_some() {
             "configured"
@@ -1209,14 +1226,25 @@ async fn finalized_bytes(persistence: &Persistence, capture_id: &str) -> Result<
 
 fn map_artifact_read_error(error: ArtifactStoreError) -> ApiError {
     match error {
-        ArtifactStoreError::NotFound { .. } => ApiError::not_found("finalized_trace_not_found"),
-        ArtifactStoreError::TooLarge { .. }
-        | ArtifactStoreError::Integrity { .. }
-        | ArtifactStoreError::Unavailable
-        | ArtifactStoreError::InvalidInput { .. }
-        | ArtifactStoreError::Conflict { .. }
-        | ArtifactStoreError::Backend { .. } => ApiError::internal("artifact_read_failed"),
+        ArtifactStoreError::NotFound { .. } => ApiError::not_found("artifact_missing"),
+        ArtifactStoreError::TooLarge { .. } => ApiError::internal("artifact_too_large"),
+        ArtifactStoreError::Integrity { .. } => ApiError::internal("artifact_corrupt"),
+        ArtifactStoreError::Conflict { .. } => ApiError::artifact_conflict(),
+        ArtifactStoreError::InvalidInput {
+            code: "artifact_backend_unconfigured",
+            ..
+        } => ApiError::service_unavailable("artifact_backend_unconfigured"),
+        ArtifactStoreError::Unavailable | ArtifactStoreError::Backend { .. } => {
+            ApiError::service_unavailable("artifact_backend_unavailable")
+        }
+        ArtifactStoreError::InvalidInput { .. } => ApiError::internal("artifact_invalid"),
     }
+}
+
+fn artifact_failure_code(error: &anyhow::Error) -> Option<&'static str> {
+    error
+        .downcast_ref::<ArtifactStoreError>()
+        .map(ArtifactStoreError::failure_code)
 }
 
 pub(crate) fn spawn_finalization_worker(
@@ -1276,6 +1304,7 @@ pub(crate) fn spawn_finalization_worker(
                             }
                         })
                     })
+                    .or_else(|| artifact_failure_code(error))
                     .unwrap_or("finalization_error")
             });
             loop {
@@ -1642,6 +1671,7 @@ struct ReadinessResponse {
     service: String,
     status: String,
     metadata_backend: String,
+    artifact_backend: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -1675,6 +1705,8 @@ struct StatusResponse {
     admin_listener: String,
     metadata_backend: String,
     metadata_status: String,
+    artifact_backend: String,
+    artifact_status: String,
     vault: String,
     notary: String,
     preview_chars: usize,
@@ -2138,6 +2170,13 @@ impl ApiError {
             message: "The operation is not retryable",
         }
     }
+    fn artifact_conflict() -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "artifact_collision",
+            message: "Stored artifact bytes conflict with the immutable artifact record",
+        }
+    }
     fn api_key_mode() -> Self {
         Self {
             status: StatusCode::CONFLICT,
@@ -2170,7 +2209,7 @@ impl ApiError {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
             code,
-            message: "The sharing service is temporarily unavailable",
+            message: "A required service dependency is temporarily unavailable",
         }
     }
     fn internal(code: &'static str) -> Self {
@@ -2526,6 +2565,8 @@ mod tests {
                     response_model: Some("gpt-5".to_owned()),
                     output_preview: String::new(),
                     output_preview_truncated: false,
+                    expected_artifact_size_bytes: deferred.size_bytes,
+                    expected_artifact_sha256: deferred.sha256.clone(),
                 },
                 deferred,
             )
@@ -2688,6 +2729,7 @@ mod tests {
                 .unwrap();
         assert_eq!(body["status"], "ready");
         assert_eq!(body["metadata_backend"], "sqlite");
+        assert_eq!(body["artifact_backend"], "filesystem");
     }
 
     #[tokio::test]
@@ -2993,6 +3035,8 @@ mod tests {
                         response_model: None,
                         output_preview: String::new(),
                         output_preview_truncated: false,
+                        expected_artifact_size_bytes: artifact.size_bytes,
+                        expected_artifact_sha256: artifact.sha256.clone(),
                     },
                     artifact,
                 )
@@ -3073,6 +3117,8 @@ mod tests {
                     response_model: None,
                     output_preview: String::new(),
                     output_preview_truncated: false,
+                    expected_artifact_size_bytes: artifact.size_bytes,
+                    expected_artifact_sha256: artifact.sha256.clone(),
                 },
                 artifact,
             )
@@ -3145,6 +3191,8 @@ mod tests {
                     response_model: None,
                     output_preview: String::new(),
                     output_preview_truncated: false,
+                    expected_artifact_size_bytes: artifact.size_bytes,
+                    expected_artifact_sha256: artifact.sha256.clone(),
                 },
                 artifact,
             )

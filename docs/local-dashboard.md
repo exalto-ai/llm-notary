@@ -177,7 +177,7 @@ states and a focal action.
 | Vault unavailable | Unlock the OS credential store or supply the configured private passphrase file, then restart. Do not move encrypted bundles outside their initialized vault profile. |
 | Notary directory unavailable | Check network access and directory configuration. An explicit local notary endpoint is appropriate only for local/self-hosted development. |
 | Operation interrupted | A running job was stopped by service restart. Inspect its safe code and use Retry finalization. |
-| Missing artifact | Keep the catalog, encrypted bundle directory, and finalized package directory together. The API intentionally does not accept a replacement filesystem path. |
+| Missing artifact | Keep metadata and its filesystem directories or private S3 prefix together. Check `artifact_missing`, `artifact_corrupt`, `artifact_backend_unavailable`, or `artifact_backend_unconfigured`; the API intentionally does not accept a replacement path or object key. |
 | Safe failure code | Use the code for diagnosis, then inspect local process logs. Logs omit credentials, headers, and evidence plaintext but may contain configured paths, so do not share them verbatim. |
 
 ## Documentation fixture and screenshots

@@ -28,6 +28,11 @@ daemon-e2e = ["llm-notary-core/daemon-e2e"]
 anyhow = "1.0"
 argon2 = "0.5"
 async-trait = "0.1"
+aws-sdk-s3 = { version = "1.140", default-features = false, features = [
+    "default-https-client",
+    "rt-tokio",
+    "rustls",
+] }
 axum = { version = "0.8", features = ["macros"] }
 base64 = "0.22"
 bytes = "1.10"
@@ -65,6 +70,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 
 [dev-dependencies]
 llm-notary-core = { path = "../llm-notary-core", features = ["test-utils"] }
-testcontainers-modules = { version = "0.15", default-features = false, features = ["postgres"] }
+testcontainers-modules = { version = "0.15", default-features = false, features = ["minio", "postgres"] }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { version = "0.3", features = ["fmt"] }

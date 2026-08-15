@@ -83,7 +83,22 @@ fn validate_completion(completion: &CaptureCompletion) -> MetadataResult<()> {
         "capture_completed_at_out_of_range",
     )?;
     validate_i64(completion.duration_ms, "duration_out_of_range")?;
-    validate_i64(completion.response_bytes, "response_bytes_out_of_range")
+    validate_i64(completion.response_bytes, "response_bytes_out_of_range")?;
+    validate_i64(
+        completion.expected_artifact_size_bytes,
+        "artifact_size_out_of_range",
+    )?;
+    if completion.expected_artifact_sha256.len() != 64
+        || !completion
+            .expected_artifact_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(MetadataStoreError::InvalidInput(
+            "invalid_expected_artifact_sha256",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_proof_progress(progress: FinalizationProofProgress) -> MetadataResult<()> {
@@ -396,9 +411,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sqlite_adapter_migrates_schema_versions_one_through_six() {
+    async fn sqlite_adapter_migrates_schema_versions_one_through_seven() {
         let directory = tempfile::tempdir().unwrap();
-        for version in 1..=6 {
+        for version in 1..=7 {
             let database = directory.path().join(format!("schema-v{version}.db"));
             crate::sqlite_catalog::create_schema_fixture(&database, version).unwrap();
             let store: Arc<dyn MetadataStore> = Arc::new(
@@ -411,21 +426,19 @@ mod tests {
                 .begin_capture(conformance::new_capture(&capture_id, 1))
                 .await
                 .unwrap();
+            let artifact = conformance::artifact(
+                &capture_id,
+                crate::artifact_store::ArtifactKind::DeferredBundle,
+                version as u8,
+            );
+            let mut completion = conformance::completion(&capture_id, 2, 200);
+            completion.expected_artifact_size_bytes = artifact.size_bytes;
+            completion.expected_artifact_sha256 = artifact.sha256.clone();
             store
-                .prepare_capture_completion(conformance::completion(&capture_id, 2, 200))
+                .prepare_capture_completion(completion.clone())
                 .await
                 .unwrap();
-            store
-                .complete_capture(
-                    conformance::completion(&capture_id, 2, 200),
-                    conformance::artifact(
-                        &capture_id,
-                        crate::artifact_store::ArtifactKind::DeferredBundle,
-                        version as u8,
-                    ),
-                )
-                .await
-                .unwrap();
+            store.complete_capture(completion, artifact).await.unwrap();
             assert_eq!(
                 store
                     .captures(CaptureFilters {
@@ -488,7 +501,7 @@ mod tests {
                     row.get(0)
                 })
                 .unwrap();
-            assert_eq!(migrated, 6);
+            assert_eq!(migrated, 7);
         }
     }
 }

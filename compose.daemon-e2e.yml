@@ -84,6 +84,60 @@ services:
       - ALL
     restart: "no"
 
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: daemon-e2e-access-key
+      MINIO_ROOT_PASSWORD: synthetic-daemon-e2e-secret-key
+    volumes:
+      - minio-state:/data
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["mc"]
+    command: ["mb", "--ignore-existing", "e2e/llm-notary-daemon-e2e"]
+    environment:
+      MC_HOST_e2e: http://daemon-e2e-access-key:synthetic-daemon-e2e-secret-key@minio:9000
+      MC_CONFIG_DIR: /tmp/.mc
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+
+  minio-client:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    entrypoint: ["mc"]
+    environment:
+      MC_HOST_e2e: http://daemon-e2e-access-key:synthetic-daemon-e2e-secret-key@minio:9000
+      MC_CONFIG_DIR: /tmp/.mc
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+
   provider:
     image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
     depends_on:
@@ -157,6 +211,8 @@ services:
     command: ["--config", "/etc/llm-notary/config.toml"]
     environment:
       LLM_NOTARY_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
+      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
+      LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
       LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
       LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_FINALIZATION_PAUSE_MS:-0}
       XDG_CONFIG_HOME: /state/xdg-config
@@ -195,6 +251,8 @@ services:
     command: ["--config", "/etc/llm-notary/config-postgres.toml"]
     environment:
       LLM_NOTARY_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
+      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
+      LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
       LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
       LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_FINALIZATION_PAUSE_MS:-0}
       LLM_NOTARY_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
@@ -218,9 +276,95 @@ services:
       retries: 30
       start_period: 2s
 
+  daemon-s3:
+    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      provider:
+        condition: service_healthy
+      notary:
+        condition: service_healthy
+    command: ["--config", "/etc/llm-notary/config-s3.toml"]
+    environment:
+      LLM_NOTARY_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
+      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
+      LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
+      LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
+      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_FINALIZATION_PAUSE_MS:-0}
+      LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
+      LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
+      XDG_CONFIG_HOME: /state/xdg-config
+      XDG_DATA_HOME: /state/xdg-data
+    volumes:
+      - daemon-state:/state
+      - fixture-state:/fixtures:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8788/readyz"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  daemon-postgres-s3:
+    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+      minio-init:
+        condition: service_completed_successfully
+      provider:
+        condition: service_healthy
+      notary:
+        condition: service_healthy
+    command: ["--config", "/etc/llm-notary/config-postgres-s3.toml"]
+    environment:
+      LLM_NOTARY_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
+      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
+      LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
+      LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
+      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_FINALIZATION_PAUSE_MS:-0}
+      LLM_NOTARY_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+      LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
+      LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
+      XDG_CONFIG_HOME: /state/xdg-config
+      XDG_DATA_HOME: /state/xdg-data
+    volumes:
+      - daemon-state:/state
+      - fixture-state:/fixtures:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8788/readyz"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
 volumes:
   daemon-state:
   fixture-state:
+  minio-state:
   postgres-state:
 
 networks:

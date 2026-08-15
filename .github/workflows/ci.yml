@@ -146,7 +146,9 @@ jobs:
               - '.github/workflows/ci.yml'
               - 'Cargo.lock'
               - 'crates/llm-notary-client/Cargo.toml'
+              - 'crates/llm-notary-client/src/artifact_*.rs'
               - 'crates/llm-notary-client/src/local_cli.rs'
+              - 'crates/llm-notary-client/src/s3_artifact_store.rs'
               - 'crates/llm-notary-client/src/update.rs'
 
   rust:
@@ -194,10 +196,14 @@ jobs:
           cargo test -p llm-notary-platform service_admission::tests -- --ignored
       - name: Run PostgreSQL-backed daemon metadata tests
         run: cargo test -p llm-notary-client postgres_metadata_store::tests -- --ignored --nocapture
+      - name: Run S3-compatible daemon artifact tests
+        run: cargo test -p llm-notary-client s3_artifact_store::tests::minio_conforms_and_detects_missing_corrupt_and_oversized_objects -- --ignored --nocapture
       - name: Run single-daemon persistence matrix
         run: |
           scripts/test-daemon-persistence-e2e.sh sqlite filesystem 1 full
           DAEMON_E2E_SKIP_BUILD=1 DAEMON_E2E_POSTGRES_SCENARIOS=extended scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 full
+          DAEMON_E2E_SKIP_BUILD=1 scripts/test-daemon-persistence-e2e.sh sqlite s3 1 full
+          DAEMON_E2E_SKIP_BUILD=1 scripts/test-daemon-persistence-e2e.sh postgres s3 1 full
 
   windows-update:
     name: Windows client update
@@ -216,6 +222,9 @@ jobs:
         run: |
           cargo test --locked -p llm-notary-client update::tests --lib
           cargo test --locked -p llm-notary-client local_cli::tests::skill_install --lib
+          cargo test --locked -p llm-notary-client artifact_store::tests --lib
+          cargo test --locked -p llm-notary-client artifact_router::tests --lib
+          cargo test --locked -p llm-notary-client s3_artifact_store::tests --lib
 
   app:
     name: SPA

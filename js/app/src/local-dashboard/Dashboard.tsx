@@ -1057,6 +1057,7 @@ function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
           <Fact label="Provider proxy" value={status.proxy_listener} />
           <Fact label="Admin & dashboard" value={status.admin_listener} />
           <Fact label="Metadata" value={`${status.metadata_backend} (${status.metadata_status})`} />
+          <Fact label="Artifacts" value={`${status.artifact_backend} (${status.artifact_status})`} />
           <Fact label="API version" value="v1" />
           <Fact label="Service version" value={status.version} />
           <Fact label="Build" value={status.build_id} />

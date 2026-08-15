@@ -35,6 +35,14 @@ allowlist before it resolves or connects upstream.
 7. After the final response, the notary signs a deferred receipt and the local
    daemon vault-encrypts its client checkpoint as `.llmcapture`.
 
+The daemon writes that encrypted checkpoint and finalized `.llmtrace` packages
+through an immutable artifact-store contract. Local filesystem storage is the
+default; an operator may explicitly select a private S3-compatible namespace.
+S3 does not add a new evidence format or encryption layer: `.llmcapture` is
+vault-encrypted before upload, while `.llmtrace` remains the exact independently
+verifiable archive. The daemon verifies stored size and SHA-256 before metadata
+publishes either artifact.
+
 The notary learns the selected provider hostname, ciphertext sizes, timing,
 and protocol metadata. It does not receive the provider credential, prompt, or
 response plaintext. The local daemon necessarily sees all three.

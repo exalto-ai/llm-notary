@@ -72,6 +72,8 @@ pub(crate) fn completion(
         response_model: Some("gpt-5-verified".to_owned()),
         output_preview: "Quarterly pricing is available.".to_owned(),
         output_preview_truncated: false,
+        expected_artifact_size_bytes: 11,
+        expected_artifact_sha256: format!("{:064x}", 1),
     }
 }
 
@@ -180,7 +182,9 @@ async fn capture_lifecycle(store: Arc<dyn MetadataStore>) {
     );
 
     let bundle = artifact("lifecycle-complete", ArtifactKind::DeferredBundle, 3);
-    let completed = completion("lifecycle-complete", 40, 200);
+    let mut completed = completion("lifecycle-complete", 40, 200);
+    completed.expected_artifact_size_bytes = bundle.size_bytes;
+    completed.expected_artifact_sha256 = bundle.sha256.clone();
     store
         .prepare_capture_completion(completed.clone())
         .await
@@ -217,6 +221,29 @@ async fn capture_lifecycle(store: Arc<dyn MetadataStore>) {
             .prepare_capture_completion(conflicting_staged)
             .await
             .is_err()
+    );
+    let mut conflicting_expectation = completed.clone();
+    conflicting_expectation.expected_artifact_sha256 = "ff".repeat(32);
+    assert!(
+        store
+            .prepare_capture_completion(conflicting_expectation)
+            .await
+            .is_err()
+    );
+    let mut wrong_bundle = bundle.clone();
+    wrong_bundle.sha256 = "ee".repeat(32);
+    assert!(
+        store
+            .complete_capture(completed.clone(), wrong_bundle)
+            .await
+            .is_err()
+    );
+    assert!(
+        store
+            .artifacts("lifecycle-complete")
+            .await
+            .unwrap()
+            .is_empty()
     );
     store
         .complete_capture(completed.clone(), bundle.clone())
@@ -288,11 +315,11 @@ async fn preview_search(store: Arc<dyn MetadataStore>, full_text_search: bool) {
     store.begin_capture(separated).await.unwrap();
     let mut separated_completion = completion(&separated_id, 21, 200);
     separated_completion.output_preview = "No repeated phrase here.".to_owned();
+    let separated_artifact = artifact(&separated_id, ArtifactKind::DeferredBundle, 8);
+    separated_completion.expected_artifact_size_bytes = separated_artifact.size_bytes;
+    separated_completion.expected_artifact_sha256 = separated_artifact.sha256.clone();
     store
-        .complete_capture(
-            separated_completion,
-            artifact(&separated_id, ArtifactKind::DeferredBundle, 8),
-        )
+        .complete_capture(separated_completion, separated_artifact)
         .await
         .unwrap();
 
@@ -302,11 +329,11 @@ async fn preview_search(store: Arc<dyn MetadataStore>, full_text_search: bool) {
     store.begin_capture(unicode).await.unwrap();
     let mut unicode_completion = completion(&unicode_id, 31, 200);
     unicode_completion.output_preview = "International text fixture".to_owned();
+    let unicode_artifact = artifact(&unicode_id, ArtifactKind::DeferredBundle, 9);
+    unicode_completion.expected_artifact_size_bytes = unicode_artifact.size_bytes;
+    unicode_completion.expected_artifact_sha256 = unicode_artifact.sha256.clone();
     store
-        .complete_capture(
-            unicode_completion,
-            artifact(&unicode_id, ArtifactKind::DeferredBundle, 9),
-        )
+        .complete_capture(unicode_completion, unicode_artifact)
         .await
         .unwrap();
 
@@ -316,11 +343,11 @@ async fn preview_search(store: Arc<dyn MetadataStore>, full_text_search: bool) {
     store.begin_capture(boundary).await.unwrap();
     let mut boundary_completion = completion(&boundary_id, 41, 200);
     boundary_completion.output_preview = "omega boundary".to_owned();
+    let boundary_artifact = artifact(&boundary_id, ArtifactKind::DeferredBundle, 10);
+    boundary_completion.expected_artifact_size_bytes = boundary_artifact.size_bytes;
+    boundary_completion.expected_artifact_sha256 = boundary_artifact.sha256.clone();
     store
-        .complete_capture(
-            boundary_completion,
-            artifact(&boundary_id, ArtifactKind::DeferredBundle, 10),
-        )
+        .complete_capture(boundary_completion, boundary_artifact)
         .await
         .unwrap();
 
@@ -1491,6 +1518,18 @@ async fn invalid_limits_and_ranges(store: Arc<dyn MetadataStore>) {
             .complete_capture(invalid_completion, valid_artifact.clone())
             .await,
         "response_bytes_out_of_range",
+    );
+    let mut invalid_expectation = completion("invalid-completion", 2, 200);
+    invalid_expectation.expected_artifact_size_bytes = u64::MAX;
+    assert_invalid(
+        store.prepare_capture_completion(invalid_expectation).await,
+        "artifact_size_out_of_range",
+    );
+    let mut invalid_expectation = completion("invalid-completion", 2, 200);
+    invalid_expectation.expected_artifact_sha256 = "NOT-A-DIGEST".to_owned();
+    assert_invalid(
+        store.prepare_capture_completion(invalid_expectation).await,
+        "invalid_expected_artifact_sha256",
     );
     let mut oversized_artifact = valid_artifact;
     let mut invalid_digest = oversized_artifact.clone();

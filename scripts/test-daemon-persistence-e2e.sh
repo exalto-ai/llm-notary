@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo "usage: $0 [smoke|full]" >&2
-  echo "       $0 {sqlite|postgres} filesystem 1 {smoke|full}" >&2
+  echo "       $0 {sqlite|postgres} {filesystem|s3} 1 {smoke|full}" >&2
 }
 
 metadata_engine=sqlite
@@ -21,7 +21,7 @@ elif [[ $# -ne 0 ]]; then
   usage
   exit 2
 fi
-if [[ ( $metadata_engine != sqlite && $metadata_engine != postgres ) || $artifact_engine != filesystem || $replica_count != 1 || ( $profile != smoke && $profile != full ) ]]; then
+if [[ ( $metadata_engine != sqlite && $metadata_engine != postgres ) || ( $artifact_engine != filesystem && $artifact_engine != s3 ) || $replica_count != 1 || ( $profile != smoke && $profile != full ) ]]; then
   echo "unsupported daemon E2E matrix entry: $metadata_engine $artifact_engine $replica_count $profile" >&2
   usage
   exit 2
@@ -33,13 +33,24 @@ if [[ $postgres_scenarios != core && $postgres_scenarios != extended ]]; then
   exit 2
 fi
 
-if [[ $metadata_engine == postgres ]]; then
-  daemon_service=daemon-postgres
-  daemon_config=/etc/llm-notary/config-postgres.toml
-else
-  daemon_service=daemon
-  daemon_config=/etc/llm-notary/config.toml
-fi
+case "$metadata_engine:$artifact_engine" in
+  sqlite:filesystem)
+    daemon_service=daemon
+    daemon_config=/etc/llm-notary/config.toml
+    ;;
+  postgres:filesystem)
+    daemon_service=daemon-postgres
+    daemon_config=/etc/llm-notary/config-postgres.toml
+    ;;
+  sqlite:s3)
+    daemon_service=daemon-s3
+    daemon_config=/etc/llm-notary/config-s3.toml
+    ;;
+  postgres:s3)
+    daemon_service=daemon-postgres-s3
+    daemon_config=/etc/llm-notary/config-postgres-s3.toml
+    ;;
+esac
 
 if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
   echo "Docker with the Compose plugin is required" >&2
@@ -60,7 +71,7 @@ cleanup() {
   set +e
   if [[ $result -ne 0 ]]; then
     "${compose[@]}" ps >&2
-    "${compose[@]}" logs --no-color setup postgres migrator provider notary daemon daemon-postgres >&2
+    "${compose[@]}" logs --no-color setup postgres migrator minio minio-init provider notary daemon daemon-postgres daemon-s3 daemon-postgres-s3 >&2
   fi
   if [[ ${DAEMON_E2E_KEEP:-0} == 1 ]]; then
     echo "preserving Docker E2E project $project_name" >&2
@@ -129,6 +140,18 @@ assert_json() {
   fi
 }
 
+assert_json_while_daemon_stopped() {
+  local json=$1
+  local expression=$2
+  shift 2
+  if ! printf '%s' "$json" | "${compose[@]}" run --rm --no-deps -T \
+    --entrypoint jq "$daemon_service" -e "$@" "$expression" >/dev/null; then
+    echo "JSON assertion failed: $expression" >&2
+    printf '%s\n' "$json" >&2
+    return 1
+  fi
+}
+
 json_value() {
   local json=$1
   local expression=$2
@@ -155,6 +178,89 @@ wait_for_postgres() {
   done
   echo "PostgreSQL did not become healthy" >&2
   return 1
+}
+
+wait_for_minio() {
+  local attempts=0
+  local container_id
+  local health
+  while (( attempts < 60 )); do
+    container_id=$("${compose[@]}" ps --quiet minio)
+    if [[ -n $container_id ]]; then
+      health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)
+      if [[ $health == healthy ]]; then
+        return 0
+      fi
+      if [[ $health == exited || $health == dead ]]; then
+        break
+      fi
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  echo "MinIO did not become healthy" >&2
+  return 1
+}
+
+minio_mc() {
+  "${compose[@]}" run --rm --no-deps -T minio-client "$@"
+}
+
+artifact_target() {
+  local capture_id=$1
+  local kind=$2
+  local extension
+  if [[ $kind == deferred_bundle ]]; then
+    extension=llmcapture
+    if [[ $artifact_engine == filesystem ]]; then
+      printf '/state/bundles/%s.%s' "$capture_id" "$extension"
+      return
+    fi
+  else
+    extension=llmtrace
+    if [[ $artifact_engine == filesystem ]]; then
+      printf '/state/traces/%s.%s' "$capture_id" "$extension"
+      return
+    fi
+  fi
+  printf 'e2e/llm-notary-daemon-e2e/daemon-e2e/artifacts/daemon-private/%s/%s.%s' \
+    "$kind" "$capture_id" "$extension"
+}
+
+artifact_exists() {
+  local target=$1
+  if [[ $artifact_engine == filesystem ]]; then
+    "${compose[@]}" exec -T "$daemon_service" test -f "$target"
+  else
+    minio_mc stat "$target" >/dev/null 2>&1
+  fi
+}
+
+artifact_sha256() {
+  local target=$1
+  if [[ $artifact_engine == filesystem ]]; then
+    "${compose[@]}" exec -T "$daemon_service" sha256sum "$target" | awk '{print $1}'
+  else
+    minio_mc cat "$target" | \
+      "${compose[@]}" exec -T "$daemon_service" sha256sum | awk '{print $1}'
+  fi
+}
+
+artifact_identity() {
+  local target=$1
+  if [[ $artifact_engine == filesystem ]]; then
+    "${compose[@]}" exec -T "$daemon_service" stat -c '%i:%Y:%s' "$target"
+  else
+    minio_mc stat --json "$target"
+  fi
+}
+
+prepare_s3() {
+  echo "starting an isolated MinIO object store"
+  "${compose[@]}" up --detach minio
+  wait_for_minio
+  "${compose[@]}" run --rm --no-deps -T minio-init >/dev/null
+  minio_mc stat e2e/llm-notary-daemon-e2e >/dev/null
 }
 
 postgres_psql() {
@@ -279,11 +385,11 @@ assert_runtime_postgres_outage() {
 
   echo "verifying liveness and readiness during a live PostgreSQL outage"
   "${compose[@]}" stop postgres >/dev/null
-  health_status=$("${compose[@]}" exec -T daemon-postgres \
+  health_status=$("${compose[@]}" exec -T "$daemon_service" \
     curl --silent --output /dev/null --write-out '%{http_code}' \
       --max-time 10 http://127.0.0.1:8788/healthz)
   readiness_status=$(wait_for_daemon_http_status /readyz 503 || true)
-  status_status=$("${compose[@]}" exec -T daemon-postgres \
+  status_status=$("${compose[@]}" exec -T "$daemon_service" \
     curl --silent --output /dev/null --write-out '%{http_code}' \
       --max-time 3 http://127.0.0.1:8788/v1/status)
   if [[ $health_status != 200 || $readiness_status != 503 || $status_status != 503 ]]; then
@@ -294,11 +400,42 @@ assert_runtime_postgres_outage() {
   "${compose[@]}" up --detach postgres
   wait_for_postgres
   wait_for_daemon
-  readiness_status=$("${compose[@]}" exec -T daemon-postgres \
+  readiness_status=$("${compose[@]}" exec -T "$daemon_service" \
     curl --silent --output /dev/null --write-out '%{http_code}' \
       --max-time 10 http://127.0.0.1:8788/readyz)
   if [[ $readiness_status != 200 ]]; then
     echo "PostgreSQL-backed readiness did not recover: /readyz=$readiness_status" >&2
+    return 1
+  fi
+}
+
+assert_runtime_s3_outage() {
+  local health_status
+  local readiness_status
+  local status_status
+
+  echo "verifying liveness and readiness during a live S3 outage"
+  "${compose[@]}" stop minio >/dev/null
+  health_status=$("${compose[@]}" exec -T "$daemon_service" \
+    curl --silent --output /dev/null --write-out '%{http_code}' \
+      --max-time 10 http://127.0.0.1:8788/healthz)
+  readiness_status=$(wait_for_daemon_http_status /readyz 503 || true)
+  status_status=$("${compose[@]}" exec -T "$daemon_service" \
+    curl --silent --output /dev/null --write-out '%{http_code}' \
+      --max-time 10 http://127.0.0.1:8788/v1/status)
+  if [[ $health_status != 200 || $readiness_status != 503 || $status_status != 503 ]]; then
+    echo "unexpected S3 outage probes: /healthz=$health_status /readyz=$readiness_status /v1/status=$status_status" >&2
+    return 1
+  fi
+
+  "${compose[@]}" up --detach minio
+  wait_for_minio
+  wait_for_daemon
+  readiness_status=$("${compose[@]}" exec -T "$daemon_service" \
+    curl --silent --output /dev/null --write-out '%{http_code}' \
+      --max-time 10 http://127.0.0.1:8788/readyz)
+  if [[ $readiness_status != 200 ]]; then
+    echo "S3-backed readiness did not recover: /readyz=$readiness_status" >&2
     return 1
   fi
 }
@@ -312,7 +449,11 @@ if [[ $metadata_engine == postgres ]]; then
   prepare_postgres
 fi
 
-echo "starting a fresh $metadata_engine/filesystem daemon"
+if [[ $artifact_engine == s3 ]]; then
+  prepare_s3
+fi
+
+echo "starting a fresh $metadata_engine/$artifact_engine daemon"
 "${compose[@]}" up --detach "$daemon_service"
 wait_for_daemon
 
@@ -321,22 +462,56 @@ health_json=$("${compose[@]}" exec -T "$daemon_service" \
 assert_json "$health_json" '.service == "llm-notaryd" and .api_version == "v1"'
 
 fresh_status=$(daemon_cli status)
-assert_json "$fresh_status" '.counts.total_captures == 0 and .counts.active_operations == 0'
+assert_json "$fresh_status" '
+  .metadata_backend == $metadata and
+  .metadata_status == "ready" and
+  .artifact_backend == $artifact and
+  .artifact_status == "ready" and
+  .counts.total_captures == 0 and
+  .counts.active_operations == 0
+' --arg metadata "$metadata_engine" --arg artifact "$artifact_engine"
+
+if [[ $artifact_engine == s3 ]]; then
+  "${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
+    "grep -F 'endpoint = \"http://minio:9000\"' '$daemon_config' >/dev/null
+     grep -F 'prefix = \"daemon-e2e/artifacts\"' '$daemon_config' >/dev/null
+     grep -F 'force_path_style = true' '$daemon_config' >/dev/null
+     grep -F 'allow_insecure_http = true' '$daemon_config' >/dev/null"
+fi
 
 if [[ $metadata_engine == postgres ]]; then
   assert_runtime_postgres_outage
 fi
+if [[ $artifact_engine == s3 ]]; then
+  assert_runtime_s3_outage
+fi
 
 echo "seeding deterministic offline persistence fixtures while the daemon is stopped"
 "${compose[@]}" stop "$daemon_service"
-"${compose[@]}" run --rm --no-deps --entrypoint /bin/sh "$daemon_service" -ec '
-  umask 077
-  mkdir -p /state/bundles
-  printf "%s" "encrypted-offline-e2e-fixture" > /state/bundles/cap-e2e-recovered.llmcapture
-  printf "%s" "encrypted-offline-e2e-fixture" > /state/bundles/cap-e2e-finalize.llmcapture
-'
+if [[ $artifact_engine == filesystem ]]; then
+  fixture_locator=/state/bundles/cap-e2e-finalize.llmcapture
+  "${compose[@]}" run --rm --no-deps --entrypoint /bin/sh "$daemon_service" -ec '
+    umask 077
+    mkdir -p /state/bundles
+    printf "%s" "encrypted-offline-e2e-fixture" > /state/bundles/cap-e2e-recovered.llmcapture
+    printf "%s" "encrypted-offline-e2e-fixture" > /state/bundles/cap-e2e-finalize.llmcapture
+  '
+else
+  recovered_object=daemon-e2e/artifacts/daemon-private/deferred_bundle/cap-e2e-recovered.llmcapture
+  finalize_object=daemon-e2e/artifacts/daemon-private/deferred_bundle/cap-e2e-finalize.llmcapture
+  fixture_locator=artifact/v1/s3/ZGFlbW9uLWUyZS9hcnRpZmFjdHMvZGFlbW9uLXByaXZhdGUvZGVmZXJyZWRfYnVuZGxlL2NhcC1lMmUtZmluYWxpemUubGxtY2FwdHVyZQ
+  fixture_metadata='artifact-sha256=43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d;artifact-size=29;artifact-kind=deferred_bundle'
+  printf '%s' 'encrypted-offline-e2e-fixture' | \
+    minio_mc pipe --attr "$fixture_metadata" \
+      "e2e/llm-notary-daemon-e2e/$recovered_object" >/dev/null
+  # Metadata intentionally describes the untampered digest. The same-size
+  # replacement proves reads fail closed on object corruption.
+  printf '%s' 'corrupted-offline-e2e-fixture' | \
+    minio_mc pipe --attr "$fixture_metadata" \
+      "e2e/llm-notary-daemon-e2e/$finalize_object" >/dev/null
+fi
 if [[ $metadata_engine == sqlite ]]; then
-  "${compose[@]}" run --rm --no-deps --entrypoint sqlite3 "$daemon_service" /state/catalog.db >/dev/null <<'SQL'
+  "${compose[@]}" run --rm --no-deps --entrypoint sqlite3 "$daemon_service" /state/catalog.db >/dev/null <<SQL
 PRAGMA foreign_keys = ON;
 BEGIN IMMEDIATE;
 INSERT INTO captures (
@@ -358,25 +533,25 @@ INSERT INTO captures (
     'cap-e2e-finalize', 1700000001000, 1700000001005, 'openai', '/v1/responses',
     'fixture-model', 'fixture-model', 200, 0, 43,
     29, 5, 'offline SQLite fixture', 0,
-    'offline filesystem fixture', 0, 'sha256:offline-fixture',
+    'offline $artifact_engine fixture', 0, 'sha256:offline-fixture',
     'captured', 'not_requested'
 );
 INSERT INTO artifacts (capture_id, kind, path, size_bytes, sha256, state)
 VALUES (
     'cap-e2e-finalize', 'deferred_bundle',
-    '/state/bundles/cap-e2e-finalize.llmcapture', 29,
+    '$fixture_locator', 29,
     '43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d',
     'available'
 );
 INSERT INTO capture_search (capture_id, prompt_preview, output_preview)
 VALUES (
-    'cap-e2e-finalize', 'offline SQLite fixture', 'offline filesystem fixture'
+    'cap-e2e-finalize', 'offline SQLite fixture', 'offline $artifact_engine fixture'
 );
 COMMIT;
 PRAGMA wal_checkpoint(TRUNCATE);
 SQL
 else
-  postgres_psql >/dev/null <<'SQL'
+  postgres_psql >/dev/null <<SQL
 BEGIN;
 INSERT INTO llm_notary_daemon.captures (
     capture_id, created_at_unix_ms, provider, operation, requested_model,
@@ -397,14 +572,14 @@ INSERT INTO llm_notary_daemon.captures (
     'cap-e2e-finalize', 1700000001000, 1700000001005, 'openai', '/v1/responses',
     'fixture-model', 'fixture-model', 200, FALSE, 43,
     29, 5, 'offline PostgreSQL fixture', FALSE,
-    'offline filesystem fixture', FALSE, 'sha256:offline-fixture',
+    'offline $artifact_engine fixture', FALSE, 'sha256:offline-fixture',
     'captured', 'not_requested'
 );
 INSERT INTO llm_notary_daemon.artifacts (
     capture_id, kind, locator, size_bytes, sha256, state
 ) VALUES (
     'cap-e2e-finalize', 'deferred_bundle',
-    '/state/bundles/cap-e2e-finalize.llmcapture', 29,
+    '$fixture_locator', 29,
     '43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d',
     'available'
 );
@@ -414,10 +589,38 @@ INSERT INTO llm_notary_daemon.capture_search (
 VALUES (
     'cap-e2e-finalize',
     to_tsvector('simple', 'offline PostgreSQL fixture'),
-    to_tsvector('simple', 'offline filesystem fixture')
+    to_tsvector('simple', 'offline $artifact_engine fixture')
 );
 COMMIT;
 SQL
+fi
+
+if [[ $artifact_engine == s3 ]]; then
+  if [[ $metadata_engine == sqlite ]]; then
+    "${compose[@]}" run --rm --no-deps --entrypoint sqlite3 "$daemon_service" /state/catalog.db >/dev/null <<'SQL'
+INSERT INTO captures (
+    capture_id, created_at_unix_ms, provider, operation, requested_model,
+    streaming, request_bytes, prompt_preview, prompt_preview_truncated,
+    config_fingerprint, capture_state, finalization_state
+) VALUES (
+    'cap-e2e-missing', 1700000002000, 'openai', '/v1/responses', 'fixture-model',
+    0, 31, 'missing S3 recovery fixture', 0,
+    'sha256:offline-fixture', 'capturing', 'not_requested'
+);
+SQL
+  else
+    postgres_psql >/dev/null <<'SQL'
+INSERT INTO llm_notary_daemon.captures (
+    capture_id, created_at_unix_ms, provider, operation, requested_model,
+    streaming, request_bytes, prompt_preview, prompt_preview_truncated,
+    config_fingerprint, capture_state, finalization_state
+) VALUES (
+    'cap-e2e-missing', 1700000002000, 'openai', '/v1/responses', 'fixture-model',
+    FALSE, 31, 'missing S3 recovery fixture', FALSE,
+    'sha256:offline-fixture', 'capturing', 'not_requested'
+);
+SQL
+  fi
 fi
 
 echo "starting the daemon and verifying recovery plus REST-backed CLI behavior"
@@ -425,11 +628,26 @@ echo "starting the daemon and verifying recovery plus REST-backed CLI behavior"
 wait_for_daemon
 
 recovered_status=$(daemon_cli status)
-assert_json "$recovered_status" '
-  .counts.total_captures == 2 and
-  .counts.capturing == 0 and
-  .counts.ready_to_finalize == 1
-'
+if [[ $artifact_engine == s3 ]]; then
+  assert_json "$recovered_status" '
+    .counts.total_captures == 3 and
+    .counts.capturing == 0 and
+    .counts.failed == 1 and
+    .counts.ready_to_finalize == 1
+  '
+  missing_capture=$(daemon_cli captures show cap-e2e-missing)
+  assert_json "$missing_capture" '
+    .capture.capture_state == "failed" and
+    .capture.failure_code == "interrupted" and
+    (.artifacts | length) == 0
+  '
+else
+  assert_json "$recovered_status" '
+    .counts.total_captures == 2 and
+    .counts.capturing == 0 and
+    .counts.ready_to_finalize == 1
+  '
+fi
 
 recovered_capture=$(daemon_cli captures show cap-e2e-recovered)
 assert_json "$recovered_capture" '
@@ -439,7 +657,11 @@ assert_json "$recovered_capture" '
   .artifacts[0].sha256 == "43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d"
 '
 
-capture_page=$(daemon_cli captures list --query offline --metadata-only)
+capture_search_term=SQLite
+if [[ $metadata_engine == postgres ]]; then
+  capture_search_term=PostgreSQL
+fi
+capture_page=$(daemon_cli captures list --query "$capture_search_term" --metadata-only)
 assert_json "$capture_page" '
   (.items | length) == 1 and
   .items[0].capture_id == "cap-e2e-finalize" and
@@ -449,13 +671,17 @@ assert_json "$capture_page" '
 
 echo "queuing a finalization to exercise durable mutation and failure history"
 finalization=$(daemon_cli finalize cap-e2e-finalize --wait)
+expected_fixture_failure=finalization_error
+if [[ $artifact_engine == s3 ]]; then
+  expected_fixture_failure=artifact_corrupt
+fi
 assert_json "$finalization" '
   .deduplicated == false and
   .operation.capture_id == "cap-e2e-finalize" and
   .operation.state == "failed" and
   .operation.attempt == 1 and
-  .operation.failure_code == "finalization_error"
-'
+  .operation.failure_code == $failure_code
+' --arg failure_code "$expected_fixture_failure"
 operation_id=$(json_value "$finalization" '.operation.operation_id')
 
 events=$(daemon_cli events --capture-id cap-e2e-finalize --all)
@@ -506,8 +732,16 @@ if [[ $profile == full ]]; then
       .output_preview == "offline daemon E2E response")
   ' --arg capture_id "$full_capture_id"
 
-  if "${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
-    "grep -a -F 'offline-daemon-e2e-secret' '/state/bundles/$full_capture_id.llmcapture' >/dev/null"; then
+  full_bundle_target=$(artifact_target "$full_capture_id" deferred_bundle)
+  artifact_exists "$full_bundle_target"
+  if [[ $artifact_engine == filesystem ]]; then
+    credential_exposed=$("${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
+      "grep -a -F 'offline-daemon-e2e-secret' '$full_bundle_target' >/dev/null" && printf yes || true)
+  else
+    credential_exposed=$(minio_mc cat "$full_bundle_target" | \
+      grep -a -F 'offline-daemon-e2e-secret' >/dev/null && printf yes || true)
+  fi
+  if [[ $credential_exposed == yes ]]; then
     echo "encrypted deferred bundle exposed the provider credential" >&2
     exit 1
   fi
@@ -549,6 +783,113 @@ if [[ $profile == full ]]; then
     .trust_source == "explicit_key"
   ' --arg capture_id "$full_capture_id"
 
+  echo "sharing the exact verified package through a loopback hosted-API fixture"
+  "${compose[@]}" exec --detach "$daemon_service" \
+    python3 /usr/local/libexec/llm-notary-e2e-share.py
+  share_fixture_ready=0
+  for _ in $(seq 1 30); do
+    if "${compose[@]}" exec -T "$daemon_service" \
+      curl --fail --silent --show-error http://127.0.0.1:9797/healthz >/dev/null 2>&1; then
+      share_fixture_ready=1
+      break
+    fi
+    sleep 1
+  done
+  if [[ $share_fixture_ready != 1 ]]; then
+    echo "loopback share fixture did not become ready" >&2
+    exit 1
+  fi
+  full_share=$(daemon_cli share "$full_capture_id")
+  assert_json "$full_share" '
+    .capture_id == $capture_id and
+    .share_id == "share-e2e" and
+    .state == "queued" and
+    .visibility == "unlisted"
+  ' --arg capture_id "$full_capture_id"
+  uploaded_share=$("${compose[@]}" exec -T "$daemon_service" \
+    curl --fail --silent --show-error http://127.0.0.1:9797/debug/upload)
+  assert_json "$uploaded_share" '
+    .size_bytes > 0 and .sha256 == $package_sha
+  ' --arg package_sha "$full_package_sha"
+
+  if [[ $artifact_engine == s3 ]]; then
+    full_package_target=$(artifact_target "$full_capture_id" finalized_package)
+    artifact_exists "$full_bundle_target"
+    artifact_exists "$full_package_target"
+    object_paths=$(minio_mc find e2e/llm-notary-daemon-e2e)
+    while IFS= read -r object_path; do
+      [[ -z $object_path || $object_path == e2e/llm-notary-daemon-e2e/daemon-e2e/artifacts/daemon-private/* ]] && continue
+      echo "S3 object escaped the configured prefix/private namespace: $object_path" >&2
+      exit 1
+    done <<<"$object_paths"
+  fi
+
+  echo "running and finalizing a streaming Proxy-TLS capture"
+  stream_response=$("${compose[@]}" exec -T "$daemon_service" \
+    curl --fail --silent --show-error \
+      --dump-header /tmp/daemon-e2e-stream.headers \
+      --header 'authorization: Bearer offline-daemon-e2e-secret' \
+      --header 'content-type: application/json' \
+      --data '{"model":"fixture-model","stream":true,"messages":[{"role":"user","content":"offline streaming E2E prompt"}]}' \
+      http://127.0.0.1:8787/openai/v1/chat/completions)
+  if [[ $stream_response != *'offline '* || $stream_response != *'streaming response'* || $stream_response != *'data: [DONE]'* ]]; then
+    echo "streaming provider response was incomplete" >&2
+    exit 1
+  fi
+  stream_capture_id=$("${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
+    "awk 'tolower(\$1) == \"x-llm-notary-capture-id:\" {gsub(\"\\r\", \"\", \$2); print \$2}' /tmp/daemon-e2e-stream.headers")
+  if [[ $stream_capture_id != cap-* ]]; then
+    echo "streaming Proxy-TLS response omitted a valid capture ID" >&2
+    exit 1
+  fi
+  stream_capture=$(daemon_cli captures show "$stream_capture_id")
+  assert_json "$stream_capture" '
+    .capture.capture_id == $capture_id and
+    .capture.streaming == true and
+    .capture.capture_state == "captured" and
+    .capture.prompt_preview == "user: offline streaming E2E prompt" and
+    .capture.output_preview == "offline streaming response" and
+    any(.artifacts[]; .kind == "deferred_bundle")
+  ' --arg capture_id "$stream_capture_id"
+  stream_finalization=$(daemon_cli finalize "$stream_capture_id" --wait)
+  assert_json "$stream_finalization" '
+    .operation.capture_id == $capture_id and
+    .operation.state == "finalized" and
+    .operation.progress.phase == "complete"
+  ' --arg capture_id "$stream_capture_id"
+  stream_operation_id=$(json_value "$stream_finalization" '.operation.operation_id')
+  stream_trace=$(daemon_cli traces show "$stream_capture_id")
+  assert_json "$stream_trace" '
+    .capture_id == $capture_id and
+    .manifest.source.provider.name == "openai"
+  ' --arg capture_id "$stream_capture_id"
+  stream_verification=$(daemon_cli traces verify "$stream_capture_id")
+  assert_json "$stream_verification" '
+    .capture_id == $capture_id and .verified == true
+  ' --arg capture_id "$stream_capture_id"
+  "${compose[@]}" exec -T "$daemon_service" \
+    curl --fail --silent --show-error \
+      --output /tmp/daemon-e2e-stream.llmtrace \
+      "http://127.0.0.1:8788/v1/captures/$stream_capture_id/package"
+  stream_file_verification=$(daemon_cli traces verify /tmp/daemon-e2e-stream.llmtrace \
+    --trusted-notary-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)
+  assert_json "$stream_file_verification" '
+    .capture_id == $capture_id and .verified == true
+  ' --arg capture_id "$stream_capture_id"
+  stream_package_sha=$("${compose[@]}" exec -T "$daemon_service" \
+    sha256sum /tmp/daemon-e2e-stream.llmtrace | awk '{print $1}')
+  stream_share=$(daemon_cli share "$stream_capture_id")
+  assert_json "$stream_share" '
+    .capture_id == $capture_id and
+    .share_id == "share-e2e" and
+    .state == "queued"
+  ' --arg capture_id "$stream_capture_id"
+  uploaded_stream_share=$("${compose[@]}" exec -T "$daemon_service" \
+    curl --fail --silent --show-error http://127.0.0.1:9797/debug/upload)
+  assert_json "$uploaded_stream_share" '
+    .size_bytes > 0 and .sha256 == $package_sha
+  ' --arg package_sha "$stream_package_sha"
+
   echo "injecting a crash after package publication and before metadata completion"
   "${compose[@]}" stop "$daemon_service"
   "${compose[@]}" rm --force "$daemon_service"
@@ -573,10 +914,10 @@ if [[ $profile == full ]]; then
   crash_finalization=$(daemon_cli finalize "$crash_capture_id")
   crash_operation_id=$(json_value "$crash_finalization" '.operation.operation_id')
 
-  crash_package_path="/state/traces/$crash_capture_id.llmtrace"
+  crash_package_path=$(artifact_target "$crash_capture_id" finalized_package)
   crash_package_ready=0
   for _ in $(seq 1 90); do
-    if "${compose[@]}" exec -T "$daemon_service" test -f "$crash_package_path"; then
+    if artifact_exists "$crash_package_path"; then
       crash_package_ready=1
       break
     fi
@@ -586,8 +927,8 @@ if [[ $profile == full ]]; then
     echo "finalization did not reach the injected post-publication pause" >&2
     exit 1
   fi
-  crash_package_sha=$("${compose[@]}" exec -T "$daemon_service" sha256sum "$crash_package_path" | awk '{print $1}')
-  crash_package_identity=$("${compose[@]}" exec -T "$daemon_service" stat -c '%i:%Y:%s' "$crash_package_path")
+  crash_package_sha=$(artifact_sha256 "$crash_package_path")
+  crash_package_identity=$(artifact_identity "$crash_package_path")
   daemon_container=$("${compose[@]}" ps --quiet "$daemon_service")
   docker kill "$daemon_container" >/dev/null
 
@@ -622,8 +963,8 @@ if [[ $profile == full ]]; then
     .attempt_history[0].state == "finalized" and
     .attempt_history[1].state == "interrupted"
   '
-  retry_package_sha=$("${compose[@]}" exec -T "$daemon_service" sha256sum "$crash_package_path" | awk '{print $1}')
-  retry_package_identity=$("${compose[@]}" exec -T "$daemon_service" stat -c '%i:%Y:%s' "$crash_package_path")
+  retry_package_sha=$(artifact_sha256 "$crash_package_path")
+  retry_package_identity=$(artifact_identity "$crash_package_path")
   if [[ $retry_package_sha != "$crash_package_sha" || $retry_package_identity != "$crash_package_identity" ]]; then
     echo "retry replaced rather than reused the orphan package" >&2
     exit 1
@@ -646,18 +987,35 @@ assert_json "$restart_health" '.service == "llm-notaryd" and .api_version == "v1
 
 restart_status=$(daemon_cli status)
 if [[ $profile == full ]]; then
-  assert_json "$restart_status" '
-    .counts.total_captures == 4 and
-    .counts.finalized == 2 and
-    .counts.failed == 1 and
-    .counts.active_operations == 0
-  '
+  if [[ $artifact_engine == s3 ]]; then
+    assert_json "$restart_status" '
+      .counts.total_captures == 6 and
+      .counts.finalized == 3 and
+      .counts.failed == 2 and
+      .counts.active_operations == 0
+    '
+  else
+    assert_json "$restart_status" '
+      .counts.total_captures == 5 and
+      .counts.finalized == 3 and
+      .counts.failed == 1 and
+      .counts.active_operations == 0
+    '
+  fi
 else
-  assert_json "$restart_status" '
-    .counts.total_captures == 2 and
-    .counts.failed == 1 and
-    .counts.active_operations == 0
-  '
+  if [[ $artifact_engine == s3 ]]; then
+    assert_json "$restart_status" '
+      .counts.total_captures == 3 and
+      .counts.failed == 2 and
+      .counts.active_operations == 0
+    '
+  else
+    assert_json "$restart_status" '
+      .counts.total_captures == 2 and
+      .counts.failed == 1 and
+      .counts.active_operations == 0
+    '
+  fi
 fi
 
 persisted_operation=$(daemon_cli operations show "$operation_id")
@@ -666,8 +1024,8 @@ assert_json "$persisted_operation" '
   .capture_id == "cap-e2e-finalize" and
   .state == "failed" and
   .attempt == 1 and
-  .failure_code == "finalization_error"
-' --arg operation_id "$operation_id"
+  .failure_code == $failure_code
+' --arg operation_id "$operation_id" --arg failure_code "$expected_fixture_failure"
 
 persisted_capture=$(daemon_cli captures show cap-e2e-finalize)
 assert_json "$persisted_capture" '
@@ -707,12 +1065,29 @@ if [[ $profile == full ]]; then
   assert_json "$restart_verification" '
     .capture_id == $capture_id and .verified == true
   ' --arg capture_id "$full_capture_id"
+
+  persisted_stream_operation=$(daemon_cli operations show "$stream_operation_id")
+  assert_json "$persisted_stream_operation" '
+    .operation_id == $operation_id and
+    .capture_id == $capture_id and
+    .state == "finalized"
+  ' --arg operation_id "$stream_operation_id" --arg capture_id "$stream_capture_id"
+  persisted_stream_capture=$(daemon_cli captures show "$stream_capture_id")
+  assert_json "$persisted_stream_capture" '
+    .capture.streaming == true and
+    .capture.finalization_state == "finalized" and
+    any(.artifacts[]; .kind == "finalized_package")
+  '
 fi
 
-artifact_sha=$("${compose[@]}" exec -T "$daemon_service" \
-  sha256sum /state/bundles/cap-e2e-finalize.llmcapture | awk '{print $1}')
-if [[ $artifact_sha != 43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d ]]; then
-  echo "filesystem artifact digest changed across container recreation" >&2
+fixture_target=$(artifact_target cap-e2e-finalize deferred_bundle)
+artifact_sha=$(artifact_sha256 "$fixture_target")
+expected_artifact_sha=43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d
+if [[ $artifact_engine == s3 ]]; then
+  expected_artifact_sha=c726feb8894aaee6ae334622714baf7a3c3bf2315eaea5345688deca2695af45
+fi
+if [[ $artifact_sha != "$expected_artifact_sha" ]]; then
+  echo "$artifact_engine artifact digest changed across container recreation" >&2
   exit 1
 fi
 
@@ -726,8 +1101,14 @@ else
   persisted_count=$(postgres_psql --tuples-only --no-align \
     --command 'SELECT COUNT(*) FROM llm_notary_daemon.captures;')
   expected_count=2
+  if [[ $artifact_engine == s3 ]]; then
+    expected_count=3
+  fi
   if [[ $profile == full ]]; then
-    expected_count=4
+    expected_count=5
+    if [[ $artifact_engine == s3 ]]; then
+      expected_count=6
+    fi
   fi
   if [[ $persisted_count != "$expected_count" ]]; then
     echo "PostgreSQL capture count changed across daemon recreation: $persisted_count" >&2
@@ -741,4 +1122,35 @@ else
   fi
 fi
 
-echo "daemon persistence E2E passed: $metadata_engine filesystem 1 $profile"
+echo "running bounded report-only artifact reconciliation while the daemon is stopped"
+"${compose[@]}" stop "$daemon_service"
+if [[ $artifact_engine == s3 ]]; then
+  orphan_target=$(artifact_target cap-e2e-unreferenced deferred_bundle)
+  printf 'young unreferenced reconciliation fixture' | minio_mc pipe "$orphan_target" >/dev/null
+  young_reconciliation=$("${compose[@]}" run --rm --no-deps -T "$daemon_service" \
+    reconcile-artifacts --config "$daemon_config")
+  assert_json_while_daemon_stopped "$young_reconciliation" '
+    .s3_scanned_objects >= 2 and .s3_unreferenced_candidates == 0
+  '
+fi
+reconciliation=$("${compose[@]}" run --rm --no-deps -T "$daemon_service" \
+  reconcile-artifacts --config "$daemon_config" --orphan-grace-days 0)
+if [[ $artifact_engine == s3 ]]; then
+  assert_json_while_daemon_stopped "$reconciliation" '
+    .status == "findings" and
+    .referenced_artifacts >= 1 and
+    .corrupt_references == 1 and
+    .missing_references == 0 and
+    .s3_scanned_objects >= 2 and
+    .s3_unreferenced_candidates == 1
+  '
+else
+  assert_json_while_daemon_stopped "$reconciliation" '
+    .status == "clean" and
+    .referenced_artifacts >= 1 and
+    .verified_artifacts == .referenced_artifacts and
+    .s3_scanned_objects == 0
+  '
+fi
+
+echo "daemon persistence E2E passed: $metadata_engine $artifact_engine 1 $profile"

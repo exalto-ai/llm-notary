@@ -114,6 +114,77 @@ PostgreSQL even though deferred checkpoints remain vault-encrypted. PostgreSQL
 alone does not make multiple daemon processes safe—keep one process until
 server mode also provides shared artifact storage and fenced work ownership.
 
+### Artifact backend
+
+The filesystem remains the default artifact writer. Existing untagged catalog
+paths and legacy `.llmbundle` files continue to read in place. To write new
+vault-encrypted `.llmcapture` checkpoints and exact `.llmtrace` packages to an
+S3-compatible private bucket, select S3 explicitly:
+
+```toml
+[storage]
+backend = "s3"
+
+[storage.s3]
+bucket = "llm-notary-private"
+```
+
+That minimal form uses AWS S3 in `us-east-1`, the private `llm-notary`
+prefix, HTTPS, virtual-hosted addressing, and bounded timeouts. Set `region`
+for another AWS region. S3-compatible services may also set `endpoint` and
+`force_path_style`; plain HTTP additionally requires the explicit
+`allow_insecure_http = true` opt-in and is intended only for a trusted local
+emulator such as MinIO. Filesystem directories remain available as legacy
+readers when old metadata still points at local artifacts.
+
+Credentials never belong in `config.toml`. Set
+`LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID` and
+`LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY`, or use their `_FILE` forms. An
+optional session token uses `LLM_NOTARY_ARTIFACT_S3_SESSION_TOKEN` or its
+`_FILE` form. A direct value wins without reading the corresponding file.
+Ambient instance metadata and shared SDK profiles are not used.
+
+An explicit endpoint must be an origin with no credentials, path, query, or
+fragment. Give the runtime `GetObject` and `PutObject` access within the
+configured prefix, plus `ListBucket` constrained with `s3:prefix` to the
+managed `daemon-private/` namespace. Readiness uses one bounded, non-mutating
+list request against that namespace; reconciliation uses the same permission.
+Runtime credentials do not need `DeleteObject`. Objects are always addressed
+under `daemon-private/deferred_bundle` or
+`daemon-private/finalized_package`. Neither bucket nor object keys contain
+prompts, outputs, or provider credentials.
+
+The daemon privately spools, hashes, conditionally creates, reads back, and
+verifies each object before metadata can advertise it. A retry reuses an exact
+size/hash match and never overwrites different bytes. Locators record the
+backend, so filesystem and S3 records remain independently readable when the
+selected writer changes. Keep the old S3 profile and credentials configured if
+metadata still references it. Writes go to one selected backend only; there is
+no dual-write migration or automatic copy.
+
+Missing objects return `artifact_missing`; wrong size or hash returns
+`artifact_corrupt`; size limits, immutable collisions, unavailable backends,
+and missing historical backend configuration have separate safe codes. The
+runtime does not automatically delete unreferenced objects. An object left by
+a stop after PUT but before metadata commit remains adoptable by capture
+recovery or finalization retry. Stop the daemon and run the bounded,
+report-only check before cleanup:
+
+```bash
+llm-notaryd reconcile-artifacts --config /etc/llm-notary/config.toml
+```
+
+The JSON report verifies every referenced artifact and counts old,
+unreferenced candidates only beneath the configured managed prefix. The safe
+default ignores objects newer than seven days; `--orphan-grace-days` can
+override that threshold. The command never prints object keys, mutates
+metadata, or deletes bytes, and it follows bounded S3 pages until the complete
+managed prefix has been scanned. Operators may
+remove candidates only after resolving every missing, corrupt, invalid, or
+backend finding, while the daemon remains stopped, and after comparing the
+report with a consistent metadata backup. Never apply that cleanup rule
+outside the managed prefix.
+
 The admin listener is open to local processes by default. Both listeners must
 still use loopback addresses, and the provider proxy never mounts admin
 routes. This is the simplest setup for a single-user workstation and for a
@@ -156,9 +227,11 @@ curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/v1/status"
 Keep the origin fixed to the configured loopback listener. Do not accept an
 origin from untrusted input.
 
-`/healthz` is local process liveness and stays healthy during a database
-outage. `/readyz` runs a bounded metadata probe and returns `503` when the
-selected database cannot serve the daemon schema.
+`/healthz` is local process liveness and stays healthy during a database or S3
+outage. `/readyz` runs bounded probes for metadata and the selected artifact
+writer and returns `503` when either dependency is unavailable. Historical
+inactive artifact readers are checked when an artifact needs them, not by the
+global readiness probe.
 
 When `admin.auth` is configured, API clients may send standard HTTP Basic
 credentials. A browser receives 401, shows the username/password form, and

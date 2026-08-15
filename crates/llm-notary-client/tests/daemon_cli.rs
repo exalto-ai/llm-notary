@@ -11,7 +11,7 @@ use std::{
 
 use llm_notary_client::{
     archive::MAX_ARCHIVE_WIRE_BYTES,
-    artifact_store::{ArtifactKey, ArtifactKind, ArtifactSource},
+    artifact_store::{ArtifactKey, ArtifactKind, ArtifactSource, ArtifactStore},
     config::AgentConfig,
     metadata::{CaptureCompletion, NewCapture},
     persistence::Persistence,
@@ -104,6 +104,8 @@ async fn daemon_and_cli_use_the_versioned_loopback_api_for_reads_and_mutations()
                 response_model: Some("gpt-test".to_owned()),
                 output_preview: "safe output".to_owned(),
                 output_preview_truncated: false,
+                expected_artifact_size_bytes: bundle.size_bytes,
+                expected_artifact_sha256: bundle.sha256.clone(),
             },
             bundle,
         )

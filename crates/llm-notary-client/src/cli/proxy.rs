@@ -19,6 +19,7 @@ use axum::{
 };
 use bytes::{Bytes, BytesMut};
 use http_body_util::BodyExt as _;
+use sha2::{Digest as _, Sha256};
 use tokio::sync::{Mutex, Notify, watch};
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -32,7 +33,9 @@ use super::{
 use crate::{
     DeferredBundle, DeferredCaptureConfig,
     archive::MAX_ARCHIVE_WIRE_BYTES,
-    artifact_store::{ArtifactKey, ArtifactKind, ArtifactSource},
+    artifact_store::{
+        ArtifactKey, ArtifactKind, ArtifactSource, ArtifactStore, ArtifactStoreError,
+    },
     attestable_request_header_bytes, chunked_request_body,
     config::{AgentConfig, ProviderConfig},
     deferred_streaming_request_to, deferred_streaming_request_to_admitted,
@@ -46,8 +49,8 @@ use crate::{
 #[cfg(test)]
 use crate::{
     DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES,
-    artifact_store::FileSystemArtifactStore, sqlite_catalog::SqliteCatalog,
-    sqlite_metadata_store::SqliteMetadataStore,
+    artifact_router::RoutedArtifactStore, artifact_store::FileSystemArtifactStore,
+    sqlite_catalog::SqliteCatalog, sqlite_metadata_store::SqliteMetadataStore,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -189,10 +192,14 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     // fails startup directly and never causes a fallback or unrelated prompt.
     let persistence = Persistence::open(&config).await?;
     let recovery = persistence.reconcile_incomplete_captures().await?;
-    if recovery.recovered_bundles > 0 || recovery.interrupted_captures > 0 {
+    if recovery.recovered_bundles > 0
+        || recovery.interrupted_captures > 0
+        || recovery.pending_publications > 0
+    {
         tracing::warn!(
             recovered_bundles = recovery.recovered_bundles,
             interrupted_captures = recovery.interrupted_captures,
+            pending_publications = recovery.pending_publications,
             "reconciled captures left incomplete by an earlier proxy process"
         );
     }
@@ -231,6 +238,8 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     );
     tracing::info!(address = %state.config.admin.listen, "LLM Notary daemon admin API listening");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let capture_recovery =
+        spawn_capture_recovery_worker(state.persistence.clone(), shutdown_rx.clone());
     let update_checker = crate::update::spawn_background_checker(
         admin_state.update_status.clone(),
         shutdown_rx.clone(),
@@ -298,9 +307,43 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     if let Some(update_checker) = update_checker {
         update_checker.await.context("update checker task exited")?;
     }
+    capture_recovery
+        .await
+        .context("capture recovery worker exited")?;
     state.capture_tasks.wait_idle().await;
     tracing::info!("LLM Notary daemon shut down cleanly");
     Ok(())
+}
+
+fn spawn_capture_recovery_worker(
+    persistence: Persistence,
+    mut shutdown: watch::Receiver<bool>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                result = shutdown.changed() => {
+                    if result.is_err() || *shutdown.borrow() {
+                        return;
+                    }
+                }
+                () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+            }
+            match persistence.reconcile_pending_publications().await {
+                Ok(summary) if summary.recovered_bundles > 0 => {
+                    tracing::info!(
+                        recovered_bundles = summary.recovered_bundles,
+                        pending_publications = summary.pending_publications,
+                        "attached delayed immutable capture artifacts"
+                    );
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    tracing::warn!(%error, "capture artifact recovery is temporarily unavailable");
+                }
+            }
+        }
+    })
 }
 
 fn joined(
@@ -842,6 +885,26 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                         }
                     };
                     let preview = output_preview.finish();
+                    let encrypted = match encrypt_bundle(
+                        bundle,
+                        trace_state.vault.clone(),
+                        &capture_id_for_task,
+                    )
+                    .await
+                    {
+                        Ok(encrypted) => encrypted,
+                        Err(error) => {
+                            let _ = trace_state
+                                .persistence
+                                .metadata
+                                .mark_capture_failed(&capture_id_for_task, "bundle_store_error")
+                                .await;
+                            tracing::warn!(%error, "could not encrypt deferred streaming bundle");
+                            return;
+                        }
+                    };
+                    let (expected_artifact_size_bytes, expected_artifact_sha256) =
+                        artifact_expectation(&encrypted);
                     let completion = CaptureCompletion {
                         capture_id: capture_id_for_task.clone(),
                         completed_at_unix_ms: current_unix_ms().unwrap_or(created_at_unix_ms),
@@ -851,6 +914,8 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                         response_model: preview.response_model,
                         output_preview: preview.text,
                         output_preview_truncated: preview.truncated,
+                        expected_artifact_size_bytes,
+                        expected_artifact_sha256,
                     };
                     if let Err(error) = trace_state
                         .persistence
@@ -866,13 +931,8 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                         tracing::warn!(capture_id = %capture_id_for_task, %error, "could not stage streaming capture completion");
                         return;
                     }
-                    match store_bundle(
-                        &trace_state.persistence,
-                        bundle,
-                        trace_state.vault.clone(),
-                        &capture_id_for_task,
-                    )
-                    .await
+                    match store_bundle(&trace_state.persistence, &capture_id_for_task, encrypted)
+                        .await
                     {
                         Ok(artifact) => {
                             if trace_state
@@ -887,11 +947,15 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                             tracing::info!(capture_id = %capture_id_for_task, provider = provider.host(), elapsed_ms = started.elapsed().as_millis(), "wrote deferred streaming bundle")
                         }
                         Err(error) => {
-                            let _ = trace_state
-                                .persistence
-                                .metadata
-                                .mark_capture_failed(&capture_id_for_task, "bundle_store_error")
-                                .await;
+                            let failure_code =
+                                artifact_failure_code(&error).unwrap_or("bundle_store_error");
+                            if !recoverable_artifact_publication_failure(failure_code) {
+                                let _ = trace_state
+                                    .persistence
+                                    .metadata
+                                    .mark_capture_failed(&capture_id_for_task, failure_code)
+                                    .await;
+                            }
                             tracing::warn!(%error, "could not save deferred streaming bundle")
                         }
                     }
@@ -963,6 +1027,18 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     };
     let response_metadata =
         response_catalog_metadata(provider, &body, state.config.catalog.output_preview_chars);
+    let encrypted = match encrypt_bundle(bundle, state.vault.clone(), &capture_id).await {
+        Ok(encrypted) => encrypted,
+        Err(error) => {
+            let _ = state
+                .persistence
+                .metadata
+                .mark_capture_failed(&capture_id, "bundle_store_error")
+                .await;
+            return Err(error);
+        }
+    };
+    let (expected_artifact_size_bytes, expected_artifact_sha256) = artifact_expectation(&encrypted);
     let completion = CaptureCompletion {
         capture_id: capture_id.clone(),
         completed_at_unix_ms: current_unix_ms().unwrap_or(created_at_unix_ms),
@@ -972,6 +1048,8 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         response_model: response_metadata.response_model,
         output_preview: response_metadata.output_preview,
         output_preview_truncated: response_metadata.output_preview_truncated,
+        expected_artifact_size_bytes,
+        expected_artifact_sha256,
     };
     if let Err(error) = state
         .persistence
@@ -986,21 +1064,17 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
             .await;
         tracing::warn!(capture_id = %capture_id, %error, "could not stage capture completion");
     } else {
-        let artifact = match store_bundle(
-            &state.persistence,
-            bundle,
-            state.vault.clone(),
-            &capture_id,
-        )
-        .await
-        {
+        let artifact = match store_bundle(&state.persistence, &capture_id, encrypted).await {
             Ok(artifact) => artifact,
             Err(error) => {
-                let _ = state
-                    .persistence
-                    .metadata
-                    .mark_capture_failed(&capture_id, "bundle_store_error")
-                    .await;
+                let failure_code = artifact_failure_code(&error).unwrap_or("bundle_store_error");
+                if !recoverable_artifact_publication_failure(failure_code) {
+                    let _ = state
+                        .persistence
+                        .metadata
+                        .mark_capture_failed(&capture_id, failure_code)
+                        .await;
+                }
                 return Err(error);
             }
         };
@@ -1046,20 +1120,31 @@ async fn collect_request_body(mut body: Body, maximum: usize) -> Result<Bytes> {
     Ok(collected.freeze())
 }
 
-async fn store_bundle(
-    persistence: &Persistence,
+async fn encrypt_bundle(
     bundle: DeferredBundle,
     vault: Arc<Vault>,
     expected_capture_id: &str,
-) -> Result<crate::artifact_store::ArtifactRecord> {
+) -> Result<Vec<u8>> {
     anyhow::ensure!(
         bundle.capture_id() == expected_capture_id,
         "deferred bundle capture does not match the active request"
     );
-    let key = ArtifactKey::new(bundle.capture_id(), ArtifactKind::DeferredBundle)?;
-    let encrypted = tokio::task::spawn_blocking(move || bundle.to_encrypted_bytes(&vault))
+    tokio::task::spawn_blocking(move || bundle.to_encrypted_bytes(&vault))
         .await
-        .context("deferred bundle encryption task failed")??;
+        .context("deferred bundle encryption task failed")?
+}
+
+fn artifact_expectation(encrypted: &[u8]) -> (u64, String) {
+    let size = u64::try_from(encrypted.len()).expect("artifact bytes fit in u64");
+    (size, hex::encode(Sha256::digest(encrypted)))
+}
+
+async fn store_bundle(
+    persistence: &Persistence,
+    capture_id: &str,
+    encrypted: Vec<u8>,
+) -> Result<crate::artifact_store::ArtifactRecord> {
+    let key = ArtifactKey::new(capture_id, ArtifactKind::DeferredBundle)?;
     persistence
         .artifacts
         .put(
@@ -1069,6 +1154,16 @@ async fn store_bundle(
         )
         .await
         .map_err(Into::into)
+}
+
+fn artifact_failure_code(error: &anyhow::Error) -> Option<&'static str> {
+    error
+        .downcast_ref::<ArtifactStoreError>()
+        .map(ArtifactStoreError::failure_code)
+}
+
+fn recoverable_artifact_publication_failure(code: &str) -> bool {
+    code == "artifact_backend_unavailable"
 }
 
 async fn next_capture_metadata(state: &AppState) -> Result<(String, u64)> {
@@ -1493,12 +1588,18 @@ mod tests {
 
     fn state() -> AppState {
         let config = AgentConfig::default();
+        let artifacts = RoutedArtifactStore::new(
+            config.storage.backend,
+            FileSystemArtifactStore::new("bundles", "traces"),
+            None,
+        )
+        .unwrap();
         let persistence = Persistence {
             metadata: Arc::new(SqliteMetadataStore::from_catalog(
                 SqliteCatalog::open(std::path::Path::new(":memory:"), true).unwrap(),
                 true,
             )),
-            artifacts: Arc::new(FileSystemArtifactStore::new("bundles", "traces")),
+            artifacts: Arc::new(artifacts),
         };
         AppState {
             notary: "127.0.0.1:7047".parse().unwrap(),
@@ -1529,6 +1630,21 @@ mod tests {
             .await
             .expect("capture drain timed out")
             .expect("capture drain task failed");
+    }
+
+    #[test]
+    fn ambiguous_backend_publication_remains_recoverable() {
+        assert!(recoverable_artifact_publication_failure(
+            "artifact_backend_unavailable"
+        ));
+        for terminal in [
+            "artifact_collision",
+            "artifact_corrupt",
+            "artifact_invalid",
+            "bundle_store_error",
+        ] {
+            assert!(!recoverable_artifact_publication_failure(terminal));
+        }
     }
 
     #[test]

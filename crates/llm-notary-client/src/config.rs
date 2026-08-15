@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES,
-    notary_directory::NotaryEndpoint, sha256_hex,
+    notary_directory::NotaryEndpoint, s3_artifact_store::S3ArtifactStoreConfig, sha256_hex,
 };
 
 /// The versioned identifier for an agent configuration file.
@@ -26,6 +26,13 @@ pub const METADATA_DATABASE_URL_ENV: &str = "LLM_NOTARY_METADATA_DATABASE_URL";
 pub const METADATA_DATABASE_URL_FILE_ENV: &str = "LLM_NOTARY_METADATA_DATABASE_URL_FILE";
 pub const METADATA_MIGRATION_URL_ENV: &str = "LLM_NOTARY_METADATA_MIGRATION_URL";
 pub const METADATA_MIGRATION_URL_FILE_ENV: &str = "LLM_NOTARY_METADATA_MIGRATION_URL_FILE";
+pub const ARTIFACT_S3_ACCESS_KEY_ID_ENV: &str = "LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID";
+pub const ARTIFACT_S3_ACCESS_KEY_ID_FILE_ENV: &str = "LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID_FILE";
+pub const ARTIFACT_S3_SECRET_ACCESS_KEY_ENV: &str = "LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY";
+pub const ARTIFACT_S3_SECRET_ACCESS_KEY_FILE_ENV: &str =
+    "LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY_FILE";
+pub const ARTIFACT_S3_SESSION_TOKEN_ENV: &str = "LLM_NOTARY_ARTIFACT_S3_SESSION_TOKEN";
+pub const ARTIFACT_S3_SESSION_TOKEN_FILE_ENV: &str = "LLM_NOTARY_ARTIFACT_S3_SESSION_TOKEN_FILE";
 
 /// Local proxy configuration. This is intentionally separate from the private
 /// vault state, which contains key references and passphrase KDF parameters.
@@ -104,10 +111,99 @@ impl Default for NotaryConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct StorageConfig {
+    #[serde(default)]
+    pub backend: ArtifactStorageBackend,
     #[serde(default = "default_bundle_dir")]
     pub bundle_dir: PathBuf,
     #[serde(default = "default_finalized_dir")]
     pub finalized_dir: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub s3: Option<S3StorageConfig>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactStorageBackend {
+    #[default]
+    Filesystem,
+    S3,
+}
+
+impl ArtifactStorageBackend {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Filesystem => "filesystem",
+            Self::S3 => "s3",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct S3StorageConfig {
+    pub bucket: String,
+    #[serde(default = "default_s3_region")]
+    pub region: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
+    #[serde(default = "default_s3_prefix")]
+    pub prefix: String,
+    #[serde(default)]
+    pub force_path_style: bool,
+    #[serde(default)]
+    pub allow_insecure_http: bool,
+    #[serde(default = "default_s3_connect_timeout_seconds")]
+    pub connect_timeout_seconds: u64,
+    #[serde(default = "default_s3_operation_timeout_seconds")]
+    pub operation_timeout_seconds: u64,
+}
+
+impl S3StorageConfig {
+    pub(crate) fn artifact_store_config(&self) -> Result<S3ArtifactStoreConfig> {
+        let endpoint = self
+            .endpoint
+            .as_deref()
+            .map(url::Url::parse)
+            .transpose()
+            .context("storage.s3.endpoint must be an absolute URL")?;
+        S3ArtifactStoreConfig::new(
+            endpoint,
+            self.region.clone(),
+            self.bucket.clone(),
+            self.prefix.clone(),
+            self.force_path_style,
+            self.allow_insecure_http,
+            std::time::Duration::from_secs(self.connect_timeout_seconds),
+            std::time::Duration::from_secs(self.operation_timeout_seconds),
+        )
+        .map_err(|error| anyhow::Error::new(error).context("storage.s3 configuration is invalid"))
+    }
+}
+
+pub(crate) struct SecretS3Credentials {
+    access_key_id: String,
+    secret_access_key: String,
+    session_token: Option<String>,
+}
+
+impl SecretS3Credentials {
+    pub(crate) fn access_key_id(&self) -> &str {
+        &self.access_key_id
+    }
+
+    pub(crate) fn secret_access_key(&self) -> &str {
+        &self.secret_access_key
+    }
+
+    pub(crate) fn session_token(&self) -> Option<&str> {
+        self.session_token.as_deref()
+    }
+}
+
+impl fmt::Debug for SecretS3Credentials {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SecretS3Credentials([REDACTED])")
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -262,8 +358,10 @@ impl Default for ProxyConfig {
 impl Default for StorageConfig {
     fn default() -> Self {
         Self {
+            backend: ArtifactStorageBackend::Filesystem,
             bundle_dir: default_bundle_dir(),
             finalized_dir: default_finalized_dir(),
+            s3: None,
         }
     }
 }
@@ -450,14 +548,7 @@ impl AgentConfig {
             u32::MAX
         );
         self.validate_metadata()?;
-        ensure!(
-            !self.storage.bundle_dir.as_os_str().is_empty(),
-            "storage.bundle_dir must not be empty"
-        );
-        ensure!(
-            !self.storage.finalized_dir.as_os_str().is_empty(),
-            "storage.finalized_dir must not be empty"
-        );
+        self.validate_storage()?;
 
         let routes = [
             ("openai", &self.providers.openai),
@@ -500,6 +591,27 @@ impl AgentConfig {
                 }
                 prefixes.push((name, provider.route_prefix.as_str()));
             }
+        }
+        Ok(())
+    }
+
+    fn validate_storage(&self) -> Result<()> {
+        ensure!(
+            !self.storage.bundle_dir.as_os_str().is_empty(),
+            "storage.bundle_dir must not be empty"
+        );
+        ensure!(
+            !self.storage.finalized_dir.as_os_str().is_empty(),
+            "storage.finalized_dir must not be empty"
+        );
+        if self.storage.backend == ArtifactStorageBackend::S3 {
+            ensure!(
+                self.storage.s3.is_some(),
+                "storage.s3 is required when storage.backend = \"s3\""
+            );
+        }
+        if let Some(s3) = &self.storage.s3 {
+            s3.artifact_store_config()?;
         }
         Ok(())
     }
@@ -565,6 +677,35 @@ impl AgentConfig {
             .transpose()
     }
 
+    pub(crate) fn s3_credentials(&self) -> Result<SecretS3Credentials> {
+        ensure!(
+            self.storage.s3.is_some(),
+            "S3 artifact storage is not configured"
+        );
+        let access_key_id = resolve_secret_value(
+            env::var_os(ARTIFACT_S3_ACCESS_KEY_ID_ENV),
+            env::var_os(ARTIFACT_S3_ACCESS_KEY_ID_FILE_ENV),
+            ARTIFACT_S3_ACCESS_KEY_ID_ENV,
+            ARTIFACT_S3_ACCESS_KEY_ID_FILE_ENV,
+        )?;
+        let secret_access_key = resolve_secret_value(
+            env::var_os(ARTIFACT_S3_SECRET_ACCESS_KEY_ENV),
+            env::var_os(ARTIFACT_S3_SECRET_ACCESS_KEY_FILE_ENV),
+            ARTIFACT_S3_SECRET_ACCESS_KEY_ENV,
+            ARTIFACT_S3_SECRET_ACCESS_KEY_FILE_ENV,
+        )?;
+        let session_token = resolve_optional_secret_value(
+            env::var_os(ARTIFACT_S3_SESSION_TOKEN_ENV),
+            env::var_os(ARTIFACT_S3_SESSION_TOKEN_FILE_ENV),
+            ARTIFACT_S3_SESSION_TOKEN_ENV,
+            ARTIFACT_S3_SESSION_TOKEN_FILE_ENV,
+        )?;
+        Ok(SecretS3Credentials {
+            access_key_id,
+            secret_access_key,
+            session_token,
+        })
+    }
     pub(crate) fn postgres_runtime_url(&self) -> Result<SecretDatabaseUrl> {
         ensure!(
             self.catalog.backend == MetadataBackend::Postgres,
@@ -620,8 +761,37 @@ fn resolve_database_url(
     inline_name: &'static str,
     file_name: &'static str,
 ) -> Result<SecretDatabaseUrl> {
-    // The direct value intentionally wins. This lets an operator replace a
-    // mounted secret without needing to remove the file-variable declaration.
+    let value = resolve_secret_value(inline, file, inline_name, file_name)?;
+    let parsed = url::Url::parse(&value).context("PostgreSQL metadata URL is invalid")?;
+    ensure!(
+        matches!(parsed.scheme(), "postgres" | "postgresql"),
+        "PostgreSQL metadata URL must use postgres:// or postgresql://"
+    );
+    Ok(SecretDatabaseUrl(value))
+}
+
+fn resolve_optional_secret_value(
+    inline: Option<OsString>,
+    file: Option<OsString>,
+    inline_name: &'static str,
+    file_name: &'static str,
+) -> Result<Option<String>> {
+    if inline.is_none() && file.is_none() {
+        return Ok(None);
+    }
+    resolve_secret_value(inline, file, inline_name, file_name).map(Some)
+}
+
+fn resolve_secret_value(
+    inline: Option<OsString>,
+    file: Option<OsString>,
+    inline_name: &'static str,
+    file_name: &'static str,
+) -> Result<String> {
+    const MAX_SECRET_BYTES: usize = 16 * 1024;
+
+    // The direct value intentionally wins and prevents the file path from
+    // being opened. This also makes mounted-secret rotations deterministic.
     let value = if let Some(value) = inline {
         value
             .into_string()
@@ -629,19 +799,19 @@ fn resolve_database_url(
     } else if let Some(path) = file {
         let path = PathBuf::from(path);
         let file = fs::File::open(&path)
-            .with_context(|| format!("reading PostgreSQL URL file from {file_name}"))?;
+            .with_context(|| format!("reading secret file from {file_name}"))?;
         ensure!(
             file.metadata()
-                .with_context(|| format!("inspecting PostgreSQL URL file from {file_name}"))?
+                .with_context(|| format!("inspecting secret file from {file_name}"))?
                 .is_file(),
-            "PostgreSQL URL source from {file_name} must be a regular file"
+            "secret source from {file_name} must be a regular file"
         );
         let mut bytes = Vec::new();
-        file.take(16 * 1024 + 1)
+        file.take(u64::try_from(MAX_SECRET_BYTES + 1).expect("secret limit fits in u64"))
             .read_to_end(&mut bytes)
-            .with_context(|| format!("reading PostgreSQL URL file from {file_name}"))?;
-        ensure!(bytes.len() <= 16 * 1024, "PostgreSQL URL file is too large");
-        let mut value = String::from_utf8(bytes).context("PostgreSQL URL file is not UTF-8")?;
+            .with_context(|| format!("reading secret file from {file_name}"))?;
+        ensure!(bytes.len() <= MAX_SECRET_BYTES, "secret file is too large");
+        let mut value = String::from_utf8(bytes).context("secret file is not UTF-8")?;
         if value.ends_with("\r\n") {
             value.truncate(value.len() - 2);
         } else if value.ends_with('\n') {
@@ -649,25 +819,17 @@ fn resolve_database_url(
         }
         value
     } else {
-        bail!("set {inline_name} or {file_name} for the PostgreSQL metadata backend");
+        bail!("set {inline_name} or {file_name}");
     };
-    ensure!(!value.is_empty(), "PostgreSQL metadata URL is empty");
-    ensure!(
-        value.len() <= 16 * 1024,
-        "PostgreSQL metadata URL is too large"
-    );
+    ensure!(!value.is_empty(), "secret value is empty");
+    ensure!(value.len() <= MAX_SECRET_BYTES, "secret value is too large");
     ensure!(
         !value
             .chars()
             .any(|character| matches!(character, '\r' | '\n' | '\0')),
-        "PostgreSQL metadata URL contains invalid control characters"
+        "secret value contains invalid control characters"
     );
-    let parsed = url::Url::parse(&value).context("PostgreSQL metadata URL is invalid")?;
-    ensure!(
-        matches!(parsed.scheme(), "postgres" | "postgresql"),
-        "PostgreSQL metadata URL must use postgres:// or postgresql://"
-    );
-    Ok(SecretDatabaseUrl(value))
+    Ok(value)
 }
 
 fn route_prefixes_overlap(left: &str, right: &str) -> bool {
@@ -743,6 +905,22 @@ fn default_postgres_migration_lock_timeout_seconds() -> u64 {
     60
 }
 
+fn default_s3_prefix() -> String {
+    "llm-notary".to_owned()
+}
+
+fn default_s3_region() -> String {
+    "us-east-1".to_owned()
+}
+
+fn default_s3_connect_timeout_seconds() -> u64 {
+    10
+}
+
+fn default_s3_operation_timeout_seconds() -> u64 {
+    30
+}
+
 fn default_data_dir() -> PathBuf {
     if let Some(path) = env::var_os("XDG_DATA_HOME") {
         PathBuf::from(path).join("llm-notary")
@@ -789,6 +967,8 @@ mod tests {
         assert!(config.catalog.full_text_search);
         assert_eq!(config.catalog.backend, MetadataBackend::Sqlite);
         assert_eq!(config.catalog.postgres, PostgresCatalogConfig::default());
+        assert_eq!(config.storage.backend, ArtifactStorageBackend::Filesystem);
+        assert!(config.storage.s3.is_none());
         assert_eq!(config.proxy.listen.to_string(), "127.0.0.1:8787");
         assert_eq!(config.admin.listen.to_string(), "127.0.0.1:8788");
         assert!(config.admin.auth.is_none());
@@ -900,6 +1080,87 @@ mod tests {
     }
 
     #[test]
+    fn s3_configuration_is_explicit_secure_and_bounded() {
+        let mut config = AgentConfig::default();
+        config.storage.backend = ArtifactStorageBackend::S3;
+        assert!(config.validate().is_err());
+
+        config.storage.s3 = Some(S3StorageConfig {
+            bucket: "llm-notary-artifacts".to_owned(),
+            region: "us-east-1".to_owned(),
+            endpoint: None,
+            prefix: "tenant/daemon".to_owned(),
+            force_path_style: false,
+            allow_insecure_http: false,
+            connect_timeout_seconds: 10,
+            operation_timeout_seconds: 30,
+        });
+        config.validate().unwrap();
+
+        let s3 = config.storage.s3.as_mut().unwrap();
+        s3.endpoint = Some("http://minio:9000".to_owned());
+        assert!(config.validate().is_err());
+        config.storage.s3.as_mut().unwrap().allow_insecure_http = true;
+        config.validate().unwrap();
+
+        config.storage.s3.as_mut().unwrap().prefix = "../other-tenant".to_owned();
+        assert!(config.validate().is_err());
+        config.storage.s3.as_mut().unwrap().prefix = "tenant/daemon/".to_owned();
+        config.validate().unwrap();
+        config.storage.s3.as_mut().unwrap().prefix = "tenant//daemon".to_owned();
+        assert!(config.validate().is_err());
+        config.storage.s3.as_mut().unwrap().prefix = "tenant daemon".to_owned();
+        assert!(config.validate().is_err());
+        config.storage.s3.as_mut().unwrap().prefix = String::new();
+        config.validate().unwrap();
+        config.storage.s3.as_mut().unwrap().prefix = "tenant/daemon".to_owned();
+        config.storage.s3.as_mut().unwrap().bucket = "bucket/escape".to_owned();
+        assert!(config.validate().is_err());
+        config.storage.s3.as_mut().unwrap().bucket = "llm-notary-artifacts".to_owned();
+        config.storage.s3.as_mut().unwrap().region = "region\nother".to_owned();
+        assert!(config.validate().is_err());
+        config.storage.s3.as_mut().unwrap().region = "us-east-1".to_owned();
+        config
+            .storage
+            .s3
+            .as_mut()
+            .unwrap()
+            .operation_timeout_seconds = 0;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn minimal_s3_configuration_uses_aws_defaults() {
+        let encoded = format!(
+            "format = {CONFIG_FORMAT:?}\n\n[storage]\nbackend = \"s3\"\n\n[storage.s3]\nbucket = \"private-artifacts\"\n"
+        );
+        let config: AgentConfig = toml::from_str(&encoded).unwrap();
+        config.validate().unwrap();
+        let s3 = config.storage.s3.unwrap();
+        assert_eq!(s3.region, "us-east-1");
+        assert!(s3.endpoint.is_none());
+        assert_eq!(s3.prefix, "llm-notary");
+        assert!(!s3.force_path_style);
+        assert!(!s3.allow_insecure_http);
+    }
+
+    #[test]
+    fn filesystem_can_retain_an_s3_read_profile() {
+        let mut config = AgentConfig::default();
+        config.storage.s3 = Some(S3StorageConfig {
+            bucket: "llm-notary-artifacts".to_owned(),
+            region: "us-east-1".to_owned(),
+            endpoint: Some("https://s3.example.test".to_owned()),
+            prefix: "llm-notary".to_owned(),
+            force_path_style: false,
+            allow_insecure_http: false,
+            connect_timeout_seconds: 10,
+            operation_timeout_seconds: 30,
+        });
+        config.validate().unwrap();
+    }
+
+    #[test]
     fn inline_database_url_precedes_the_file_source_and_debug_is_redacted() {
         let secret = resolve_database_url(
             Some("postgres://operator:secret@database/daemon".into()),
@@ -934,6 +1195,33 @@ mod tests {
         )
         .unwrap();
         assert_eq!(separate.expose(), "postgres://migrator/database");
+    }
+
+    #[test]
+    fn artifact_credentials_are_redacted_and_inline_values_skip_files() {
+        let access_key = resolve_secret_value(
+            Some("access-canary".into()),
+            Some("/a/path/that/must/not/be/read".into()),
+            ARTIFACT_S3_ACCESS_KEY_ID_ENV,
+            ARTIFACT_S3_ACCESS_KEY_ID_FILE_ENV,
+        )
+        .unwrap();
+        let credentials = SecretS3Credentials {
+            access_key_id: access_key,
+            secret_access_key: "secret-canary".to_owned(),
+            session_token: Some("session-canary".to_owned()),
+        };
+        assert_eq!(credentials.access_key_id(), "access-canary");
+        assert_eq!(credentials.secret_access_key(), "secret-canary");
+        assert_eq!(credentials.session_token(), Some("session-canary"));
+        let debug = format!("{credentials:?}");
+        assert_eq!(debug, "SecretS3Credentials([REDACTED])");
+        assert!(!debug.contains("canary"));
+        assert!(
+            resolve_optional_secret_value(None, None, "DIRECT", "FILE")
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
