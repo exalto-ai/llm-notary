@@ -44,8 +44,8 @@ pub struct StripeConfig {
     pub(crate) secret_key: String,
     pub(crate) webhook_secret: String,
     pub(crate) credit_price_id: String,
-    pub(crate) one_gb_price_id: String,
-    pub(crate) ten_gb_price_id: String,
+    pub(crate) one_gb_price_id: Option<String>,
+    pub(crate) ten_gb_price_id: Option<String>,
     pub(crate) livemode: bool,
 }
 
@@ -143,9 +143,25 @@ impl BillingConfig {
             "LLM_NOTARY_STRIPE_WEBHOOK_SECRET",
             "LLM_NOTARY_STRIPE_WEBHOOK_SECRET_FILE",
         )?;
-        let credit_price_id = optional_env("LLM_NOTARY_STRIPE_CREDIT_PRICE_ID")?;
-        let one_gb_price_id = optional_env("LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID")?;
-        let ten_gb_price_id = optional_env("LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID")?;
+        Self::from_settings(
+            secret_key,
+            webhook_secret,
+            optional_env("LLM_NOTARY_STRIPE_CREDIT_PRICE_ID")?,
+            optional_env("LLM_NOTARY_STRIPE_PRICE_ID")?,
+            optional_env("LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID")?,
+            optional_env("LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID")?,
+        )
+    }
+
+    fn from_settings(
+        secret_key: Option<String>,
+        webhook_secret: Option<String>,
+        credit_price_id: Option<String>,
+        legacy_credit_price_id: Option<String>,
+        one_gb_price_id: Option<String>,
+        ten_gb_price_id: Option<String>,
+    ) -> Result<Self> {
+        let credit_price_id = credit_price_id.or(legacy_credit_price_id);
         if secret_key.is_none()
             && webhook_secret.is_none()
             && credit_price_id.is_none()
@@ -162,12 +178,16 @@ impl BillingConfig {
                 "LLM_NOTARY_STRIPE_WEBHOOK_SECRET or LLM_NOTARY_STRIPE_WEBHOOK_SECRET_FILE must be set"
             )
         })?;
-        let credit_price_id = credit_price_id
-            .ok_or_else(|| anyhow!("LLM_NOTARY_STRIPE_CREDIT_PRICE_ID must be set"))?;
-        let one_gb_price_id = one_gb_price_id
-            .ok_or_else(|| anyhow!("LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID must be set"))?;
-        let ten_gb_price_id = ten_gb_price_id
-            .ok_or_else(|| anyhow!("LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID must be set"))?;
+        let credit_price_id = credit_price_id.ok_or_else(|| {
+            anyhow!(
+                "LLM_NOTARY_STRIPE_CREDIT_PRICE_ID or legacy LLM_NOTARY_STRIPE_PRICE_ID must be set"
+            )
+        })?;
+        if one_gb_price_id.is_some() != ten_gb_price_id.is_some() {
+            bail!(
+                "LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID and LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID must be set together"
+            );
+        }
         let livemode = if secret_key.starts_with("sk_test_") {
             false
         } else if secret_key.starts_with("sk_live_") {
@@ -182,11 +202,22 @@ impl BillingConfig {
             bail!("Stripe webhook secret must be a bounded whsec_ secret");
         }
         for (name, price_id) in [
-            ("LLM_NOTARY_STRIPE_CREDIT_PRICE_ID", &credit_price_id),
-            ("LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID", &one_gb_price_id),
-            ("LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID", &ten_gb_price_id),
+            (
+                "LLM_NOTARY_STRIPE_CREDIT_PRICE_ID or LLM_NOTARY_STRIPE_PRICE_ID",
+                Some(credit_price_id.as_str()),
+            ),
+            (
+                "LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID",
+                one_gb_price_id.as_deref(),
+            ),
+            (
+                "LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID",
+                ten_gb_price_id.as_deref(),
+            ),
         ] {
-            if !price_id.starts_with("price_") || price_id.len() > 255 {
+            if let Some(price_id) = price_id
+                && (!price_id.starts_with("price_") || price_id.len() > 255)
+            {
                 bail!("{name} must be a bounded Stripe Price identifier");
             }
         }
@@ -752,5 +783,36 @@ mod tests {
         let parsed = parse_trusted_proxy_cidrs(Some("127.0.0.0/8, fdaa::/16")).unwrap();
         assert_eq!(parsed.len(), 2);
         assert!(parse_trusted_proxy_cidrs(Some("not-a-network")).is_err());
+    }
+
+    #[test]
+    fn legacy_credit_price_keeps_one_time_billing_available() {
+        let billing = BillingConfig::from_settings(
+            Some("sk_test_fixture".to_owned()),
+            Some("whsec_fixture".to_owned()),
+            None,
+            Some("price_legacy_credit".to_owned()),
+            None,
+            None,
+        )
+        .unwrap();
+        let stripe = billing.stripe.unwrap();
+        assert_eq!(stripe.credit_price_id, "price_legacy_credit");
+        assert!(stripe.one_gb_price_id.is_none());
+        assert!(stripe.ten_gb_price_id.is_none());
+        assert!(!stripe.livemode);
+    }
+
+    #[test]
+    fn subscription_price_settings_must_be_complete() {
+        let result = BillingConfig::from_settings(
+            Some("sk_test_fixture".to_owned()),
+            Some("whsec_fixture".to_owned()),
+            Some("price_credit".to_owned()),
+            None,
+            Some("price_one_gb".to_owned()),
+            None,
+        );
+        assert!(result.is_err());
     }
 }

@@ -183,6 +183,7 @@ struct AccountBillingResponse {
     service_plan: service_admission::ServicePlan,
     billing_status: service_admission::BillingStatus,
     purchase_mode: billing::BillingPurchaseMode,
+    subscriptions_configured: bool,
     entitlements: service_admission::PlanEntitlements,
 }
 
@@ -190,12 +191,14 @@ impl AccountBillingResponse {
     fn new(
         state: service_admission::AccountBillingState,
         purchase_mode: billing::BillingPurchaseMode,
+        subscriptions_configured: bool,
         admission: &AdmissionConfig,
     ) -> Self {
         Self {
             service_plan: state.service_plan,
             billing_status: state.billing_status,
             purchase_mode,
+            subscriptions_configured,
             entitlements: service_admission::plan_entitlements(admission, state.service_plan),
         }
     }
@@ -1307,6 +1310,7 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
         billing: AccountBillingResponse::new(
             billing,
             state.billing.purchase_mode(),
+            state.billing.subscriptions_configured(),
             &state.admission,
         ),
         credits,
@@ -1894,6 +1898,7 @@ async fn cli_me(
         billing: AccountBillingResponse::new(
             billing,
             state.billing.purchase_mode(),
+            state.billing.subscriptions_configured(),
             &state.admission,
         ),
         credits,

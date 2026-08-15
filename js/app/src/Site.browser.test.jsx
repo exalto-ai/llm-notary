@@ -64,6 +64,7 @@ const billingFixture = (overrides = {}) => ({
   service_plan: 'free',
   billing_status: 'active',
   purchase_mode: 'disabled',
+  subscriptions_configured: false,
   entitlements: { monthly_capture_bytes: 50_000_000, monthly_notarization_bytes: 50_000_000, trace_storage_bytes: 1_000_000_000 },
   ...overrides,
 });
@@ -337,7 +338,7 @@ describe('hosted site', () => {
     };
     render(<Dashboard
       {...common}
-      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'live' }), credits: creditsFixture(50_000_000), share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
+      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'live', subscriptions_configured: true }), credits: creditsFixture(50_000_000), share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
       startSubscriptionCheckout={async (plan, idempotencyKey) => {
         checkoutRequest = { plan, idempotencyKey };
         return { checkout_url: 'https://checkout.stripe.com/c/pay/subscription' };
@@ -381,6 +382,8 @@ describe('hosted site', () => {
     render(<Dashboard {...common} user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'test' }), credits, share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }} />);
     await expect.element(page.getByText('Stripe test mode · no real charges')).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Open test Checkout · 1 GB for $10' })).toBeVisible();
+    await expect.element(page.getByText('New subscriptions are temporarily unavailable.')).toBeVisible();
+    await expect.element(page.getByRole('button', { name: '1 GB · $9.99/month' })).toBeDisabled();
   });
 
   test('retries Checkout confirmation and keeps a fresher purchase than the initial list', async () => {

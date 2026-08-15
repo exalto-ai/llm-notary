@@ -2422,6 +2422,46 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn previous_api_credit_writes_default_to_notarization() {
+        let state = test_state().await;
+        super::super::insert_test_github_user(&state.database, "rollback-user", 2, "rollback-user")
+            .await;
+        sqlx::query(
+            "INSERT INTO notary_credit_grants
+                 (id, credit_subject, account_id, amount_bytes, source_kind,
+                  source_reference, idempotency_key, created_at, available_at, display_label)
+             VALUES ('rollback-grant', 'user:rollback-user', 'rollback-user', 100,
+                     'promotion', 'rollback-grant', 'rollback-grant', 1, 1, 'Rollback grant')",
+        )
+        .execute(&state.database)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO notary_credit_debits
+                 (id, credit_subject, account_id, record_digest, allowance_bytes, created_at)
+             VALUES ('rollback-debit', 'user:rollback-user', 'rollback-user', $1, 40, 1)",
+        )
+        .bind("d".repeat(64))
+        .execute(&state.database)
+        .await
+        .unwrap();
+
+        let kinds: (String, String) = sqlx::query_as(
+            "SELECT
+                 (SELECT credit_kind FROM notary_credit_grants WHERE id = 'rollback-grant'),
+                 (SELECT credit_kind FROM notary_credit_debits WHERE id = 'rollback-debit')",
+        )
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(
+            kinds,
+            ("notarization".to_owned(), "notarization".to_owned())
+        );
+    }
+
     fn service_headers(state: &AppState) -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert(
