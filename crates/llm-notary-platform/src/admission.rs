@@ -108,6 +108,23 @@ struct PublicShareRow {
     public_package_safety_override: bool,
 }
 
+fn public_package_metadata(share: &PublicShareRow) -> ApiResult<(&str, i64, &str, &str)> {
+    match (
+        share.package_object_key.as_deref(),
+        share.package_size_bytes,
+        share.package_sha256.as_deref(),
+        share.public_package_safety_version.as_deref(),
+    ) {
+        (Some(key), Some(size), Some(sha256), Some(safety_version)) if size > 0 => {
+            Ok((key, size, sha256, safety_version))
+        }
+        _ => Err(ApiError::internal(anyhow::anyhow!(
+            "admitted share {} is missing retained package metadata",
+            share.id
+        ))),
+    }
+}
+
 #[derive(FromRow)]
 struct ListedShareRow {
     id: String,
@@ -166,13 +183,12 @@ struct PublicShareDetail {
     directory_generation: Option<i64>,
     trust_source: Option<String>,
     trace_sha256: String,
-    package_available: bool,
-    package_size_bytes: Option<i64>,
-    package_sha256: Option<String>,
-    public_package_safety_version: Option<String>,
+    package_size_bytes: i64,
+    package_sha256: String,
+    public_package_safety_version: String,
     public_package_safety_override: bool,
     trace_url: String,
-    package_url: Option<String>,
+    package_url: String,
     share_url: String,
 }
 
@@ -435,6 +451,10 @@ async fn public_share_detail(
     Path(share_id): Path<String>,
 ) -> ApiResult<Response> {
     let share = load_public_share(&state, &headers, &share_id, peer).await?;
+    let (package_size_bytes, package_sha256, safety_version) = {
+        let (_, size, sha256, safety_version) = public_package_metadata(&share)?;
+        (size, sha256.to_owned(), safety_version.to_owned())
+    };
     let detail = PublicShareDetail {
         id: share.id.clone(),
         visibility: share.visibility.clone(),
@@ -452,16 +472,12 @@ async fn public_share_detail(
         directory_generation: share.verified_directory_generation,
         trust_source: share.verified_trust_source,
         trace_sha256: share.public_trace_sha256,
-        package_available: share.package_object_key.is_some(),
-        package_size_bytes: share.package_size_bytes,
-        package_sha256: share.package_sha256,
-        public_package_safety_version: share.public_package_safety_version,
+        package_size_bytes,
+        package_sha256,
+        public_package_safety_version: safety_version,
         public_package_safety_override: share.public_package_safety_override,
         trace_url: format!("/api/public/shares/{}/trace.otlp.json", share.id),
-        package_url: share
-            .package_object_key
-            .as_ref()
-            .map(|_| format!("/api/public/shares/{}/package.llmtrace", share.id)),
+        package_url: format!("/api/public/shares/{}/package.llmtrace", share.id),
         share_url: canonical_share_url(&state, &share.id),
     };
     let mut response = Json(detail).into_response();
@@ -516,7 +532,6 @@ async fn public_share_trace(
         (status = 200, body = Vec<u8>, content_type = "application/vnd.llmnotary.trace-package+zip"),
         (status = 401, body = super::ErrorResponse),
         (status = 404, body = super::ErrorResponse),
-        (status = 410, body = super::ErrorResponse),
         (status = 429, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse),
         (status = 503, body = super::ErrorResponse)
@@ -530,19 +545,8 @@ async fn public_share_package(
     Path(share_id): Path<String>,
 ) -> ApiResult<Response> {
     let share = load_public_share(&state, &headers, &share_id, peer).await?;
-    let (object_key, size_bytes, sha256) = match (
-        share.package_object_key,
-        share.package_size_bytes,
-        share.package_sha256,
-    ) {
-        (Some(key), Some(size), Some(sha256)) => (key, size, sha256),
-        _ => {
-            return Err(ApiError::gone(
-                "the source package was not retained for this legacy share",
-            ));
-        }
-    };
-    let bytes = load_public_bytes(&state, &object_key, size_bytes, &sha256).await?;
+    let (object_key, size_bytes, sha256, _) = public_package_metadata(&share)?;
+    let bytes = load_public_bytes(&state, object_key, size_bytes, sha256).await?;
     Ok(public_bytes(
         bytes,
         super::intake::ARCHIVE_CONTENT_TYPE,
@@ -1313,6 +1317,7 @@ async fn load_public_share(
         share.share_password_hash.as_deref(),
     )
     .await?;
+    public_package_metadata(&share)?;
     Ok(share)
 }
 
@@ -1343,8 +1348,7 @@ async fn load_public_share_optional(
          WHERE publish_jobs.id = $1 AND publish_jobs.state = 'admitted'
            AND publish_jobs.published = TRUE
            AND (publish_jobs.share_expires_at IS NULL OR publish_jobs.share_expires_at > $2)
-           AND publish_jobs.public_trace_object_key IS NOT NULL
-           AND publish_jobs.package_object_key IS NOT NULL",
+           AND publish_jobs.public_trace_object_key IS NOT NULL",
     )
     .bind(share_id)
     .bind(now)

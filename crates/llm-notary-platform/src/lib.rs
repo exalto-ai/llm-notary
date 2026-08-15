@@ -2913,6 +2913,61 @@ mod tests {
         );
 
         sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0025_require_retained_share_packages.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let missing_package = sqlx::query(
+            "INSERT INTO publish_jobs (
+                 id, user_id, idempotency_key, state, archive_format,
+                 declared_size_bytes, declared_sha256, upload_object_key,
+                 intake_object_key, upload_expires_at, created_at, updated_at,
+                 actual_sha256, admitted_at, public_trace_object_key,
+                 public_trace_size_bytes, public_trace_sha256,
+                 provider, provider_host, model
+             ) VALUES (
+                 'invalid-retention', 'legacy-user', 'invalid-retention', 'admitted', $1,
+                 1, $2, 'invalid-upload', 'invalid-intake', 1, 1, 1, $2, 2,
+                 'invalid-trace', 1, $3, 'OpenAI', 'api.openai.com', 'gpt-test'
+             )",
+        )
+        .bind(crate::intake::ARCHIVE_FORMAT)
+        .bind("a".repeat(64))
+        .bind("b".repeat(64))
+        .execute(&database.pool)
+        .await
+        .unwrap_err();
+        assert!(
+            missing_package
+                .to_string()
+                .contains("publish_jobs_admitted_share_facts")
+        );
+        sqlx::query(
+            "INSERT INTO publish_jobs (
+                 id, user_id, idempotency_key, state, archive_format,
+                 declared_size_bytes, declared_sha256, upload_object_key,
+                 intake_object_key, upload_expires_at, created_at, updated_at,
+                 actual_sha256, admitted_at, public_trace_object_key,
+                 public_trace_size_bytes, public_trace_sha256,
+                 provider, provider_host, model, package_object_key,
+                 package_size_bytes, package_sha256, public_package_safety_version
+             ) VALUES (
+                 'retained-package', 'legacy-user', 'retained-package', 'admitted', $1,
+                 1, $2, 'retained-upload', 'retained-intake', 1, 1, 1, $2, 2,
+                 'retained-trace', 1, $3, 'OpenAI', 'api.openai.com', 'gpt-test',
+                 'retained-package', 1, $4, 'llm-notary/public-package-safety/v1'
+             )",
+        )
+        .bind(crate::intake::ARCHIVE_FORMAT)
+        .bind("a".repeat(64))
+        .bind("b".repeat(64))
+        .bind("c".repeat(64))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!(
             "../../../migrations-postgres/0013_account_deletion_cascades.sql"
         ))
         .execute(&database.pool)

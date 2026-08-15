@@ -765,7 +765,7 @@ describe('hosted site', () => {
       authenticated_at_unix_ms: 1_786_000_000_000, verified_at: 1_786_000_001,
       provider: 'anthropic', host: 'api.anthropic.com', model: 'claude-sonnet-4-6',
       verification_state: 'verified', notary_key_id: 'sha256:abc', directory_generation: 42,
-      trust_source: 'hosted_notary_directory', trace_sha256: 'b'.repeat(64), package_available: true,
+      trust_source: 'hosted_notary_directory', trace_sha256: 'b'.repeat(64),
       package_size_bytes: 4096, package_sha256: 'c'.repeat(64),
       public_package_safety_version: 'llm-notary/public-package-safety/v1',
       trace_url: '/api/public/shares/share-12/trace.otlp.json',
@@ -807,9 +807,9 @@ describe('hosted site', () => {
         publisher: 'fixture-user', admitted_at: 1_786_000_000, authenticated_at_unix_ms: 1_786_000_000_000,
         verified_at: 1_786_000_001, provider: 'openai', host: 'api.openai.com', model: 'gpt-5.2',
         verification_state: 'verified', notary_key_id: 'sha256:abc', directory_generation: 42,
-        trust_source: 'hosted_notary_directory', trace_sha256: 'b'.repeat(64), package_available: false,
-        package_size_bytes: null, package_sha256: null, public_package_safety_version: 'llm-notary/public-package-safety/v1',
-        trace_url: '/api/public/shares/protected-share/trace.otlp.json', package_url: null,
+        trust_source: 'hosted_notary_directory', trace_sha256: 'b'.repeat(64),
+        package_size_bytes: 2048, package_sha256: 'c'.repeat(64), public_package_safety_version: 'llm-notary/public-package-safety/v1',
+        trace_url: '/api/public/shares/protected-share/trace.otlp.json', package_url: '/api/public/shares/protected-share/package.llmtrace',
         share_url: 'https://example.test/s/protected-share',
       };
     };

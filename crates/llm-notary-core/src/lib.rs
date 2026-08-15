@@ -1960,14 +1960,6 @@ fn make_capture_with_provider(
     })
 }
 
-/// Verifies in-memory source evidence before it is included in a trace package.
-pub fn verify_capture_value(
-    capture: &Capture,
-    trusted_notary_key: &[u8],
-) -> Result<(CaptureManifest, String, String)> {
-    verify_capture_value_with_provider(capture, trusted_notary_key, &configured_crypto_provider()?)
-}
-
 fn verify_capture_value_with_provider(
     capture: &Capture,
     trusted_notary_key: &[u8],

@@ -155,7 +155,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .site-footer { display: flex; align-items: center; justify-content: space-between; gap: 0; min-height: 58px; padding: 0 16px; border-top: 1px solid var(--line); background: var(--section-muted); color: var(--muted); font: 400 11px/1.4 'Instrument Sans Variable', Arial, sans-serif; }.footer-copyright { white-space: nowrap; }.site-footer nav { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; }.site-footer nav a, .site-footer nav a:hover { padding: 8px 10px; border: 0; background: transparent; color: var(--muted); }
 
 /* Menus and authenticated account views use the same evidence-list grammar. */
-.account-trigger { width: 30px; height: 30px; border-radius: 50%; border-color: var(--line); background: var(--white); }.account-trigger:hover, .account-trigger[aria-expanded="true"] { border-color: var(--action); background: var(--soft); }.account-popover { width: 224px; border-color: var(--line); background: var(--white); padding: 6px; }.account-identity { border-color: var(--line); }.account-popover a, .account-popover button { font-weight: 500; }.account-popover a:hover, .account-popover button:hover { background: var(--soft); }.account-popover .account-theme { border-color: var(--line); border-radius: 0; }
+.account-trigger { width: 30px; height: 30px; border-radius: 50%; border-color: var(--line); background: var(--white); }.account-trigger:hover, .account-trigger[aria-expanded="true"] { border-color: var(--action); background: var(--soft); }.account-popover { width: 224px; border-color: var(--line); background: var(--white); padding: 6px; }.account-identity { border-color: var(--line); }.account-popover a, .account-popover button { font-weight: 500; }.account-popover a:hover, .account-popover button:hover { background: var(--soft); }
 
 .dashboard-shell { min-height: calc(100vh - 108px); max-width: none; margin: 0; padding: 0; }
 .dashboard-auth-loading { display: grid; min-height: calc(100svh - 54px); place-items: center; padding: 32px 16px; }
@@ -191,7 +191,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dashboard-utilization-plot--message { display: grid; place-content: center; gap: 5px; text-align: center; }
 .dashboard-utilization-plot--message strong { font-size: 13px; }
 .dashboard-utilization-plot--message span { color: var(--muted); font-size: 12px; line-height: 1.45; }
-.dashboard-credit-ledger { margin-top: -1px; border-top: 1px solid var(--line); }
 .dashboard-summary { grid-template-columns: minmax(0, 1.5fr) repeat(4, minmax(0, 1fr)); margin: 28px 0 0; border: 1px solid var(--line); background: var(--white); }
 .dashboard-summary div { min-height: 84px; justify-content: center; gap: 6px; padding: 14px 16px; border-color: var(--line); }
 .dashboard-summary span { color: var(--muted); }
@@ -208,7 +207,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dashboard-trace-state--verified i, .dashboard-trace-state--pending i { background: var(--action); }
 .dashboard-trace-actions a { color: var(--action-dark); border-color: currentColor; font-weight: 600; }
 .dashboard-session-list button { border-color: var(--line); font-weight: 600; }
-.dashboard-card { margin: 34px 0; border-color: var(--line); background: var(--white); }
 .cli-approval-shell { display: grid; min-height: calc(100svh - 112px); align-items: center; padding: clamp(40px, 8vh, 88px) 16px; }
 .cli-approval-workspace { display: grid; width: 100%; grid-template-columns: minmax(0, 1.45fr) minmax(340px, .72fr); border: 1px solid var(--line); background: var(--paper); }
 .cli-approval-primary { display: flex; min-height: 390px; align-items: flex-start; justify-content: center; flex-direction: column; padding: clamp(34px, 5vw, 72px); }
@@ -394,8 +392,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .dashboard-credits { margin-top: 40px; border: 0; background: transparent; }
 .dashboard-credits > header { padding: 0 0 20px; border-bottom: 1px solid var(--line); }
 .dashboard-credit-note { padding: 17px 0; border-bottom: 0; }
-.dashboard-credit-ledger { margin-top: 0; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); }
-.dashboard-credit-ledger > div { padding-inline: 16px; }
 .dashboard-credit-offer { padding-inline: 0; }
 .dashboard-credit-purchase { margin-top: 34px; padding: 20px 0; border-top: 1px solid var(--line); border-bottom: 0; }
 .dashboard-checkout-state { padding-inline: 0; }
@@ -413,7 +409,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .dashboard-summary { margin-top: 24px; }
   .dashboard-utilization { margin-top: 40px; }
   .dashboard-credits { margin-top: 32px; }
-  .dashboard-credit-ledger > div { padding-inline: 16px; }
   .dashboard-credit-purchase { margin-top: 28px; }
   .dashboard-purchase-history, .dashboard-credit-history { margin-top: 28px; padding-inline: 0; }
   .dashboard-traces, .dashboard-sessions, .dashboard-api-keys { margin-top: 32px; }

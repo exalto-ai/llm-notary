@@ -161,8 +161,11 @@ Every API replica serves HTTP and runs cleanup and admission work.
 PostgreSQL coordinates claims with row locking and `SKIP LOCKED`, so replicas
 do not process a claimed job concurrently.
 
-Fly keeps two API Machines running. Add capacity only after confirming the Neon
-connection budget:
+Fly does not keep an API Machine running between requests. Each Machine exits
+after the configured idle grace period once durable work is clear, and Fly
+autostarts a stopped Machine for the next Flycast request. The deployment sets
+`min_machines_running = 0`, so every provisioned Machine may be stopped at the
+same time. Add capacity only after confirming the Neon connection budget:
 
 ```bash
 fly scale count 3 -a llm-notary-prod-api

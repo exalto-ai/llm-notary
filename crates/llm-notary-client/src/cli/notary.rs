@@ -271,15 +271,6 @@ pub fn cached_key_at(public_key: &[u8], authenticated_unix_ms: u64) -> Result<(S
     Ok((record.key_id.clone(), "directory".to_owned()))
 }
 
-pub fn cached_record_for_key(public_key: &[u8]) -> Result<NotaryDirectoryRecord> {
-    let requested_id = key_id(public_key);
-    validated_store()?
-        .records
-        .into_iter()
-        .find(|record| record.key_id == requested_id)
-        .ok_or_else(|| anyhow!("notary key {requested_id} has no cached endpoint"))
-}
-
 pub fn cached_record_for_bundle(
     bundle: &DeferredBundle,
 ) -> Result<(Vec<u8>, NotaryDirectoryRecord)> {

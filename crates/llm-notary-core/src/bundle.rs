@@ -1,15 +1,14 @@
 //! Deferred bundle finalization and offline-verifiable trace packages.
 
+#[cfg(test)]
 use std::{fs, path::Path};
-#[cfg(feature = "cli")]
+#[cfg(all(feature = "cli", test))]
 use std::{fs::OpenOptions, io::Write as _, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tlsn::attestation::CryptoProvider;
 
-#[cfg(feature = "cli")]
-use crate::vault::Vault;
 use crate::{
     Capture, CaptureManifest, DeferredBundle, FinalizationPhase, FinalizationProgress,
     FinalizationProgressObserver,
@@ -72,79 +71,15 @@ impl VerifiedTraceManifest {
     }
 }
 
-/// Reads enough verified-package metadata to select a previously cached trust
-/// anchor before full offline verification.
-pub fn trace_package_notary_key(path: &Path) -> Result<Vec<u8>> {
-    read_trace_manifest(path)?.notary_public_key()
-}
-
 /// Reads the embedded notary key from already-snapshotted `.llmtrace` bytes.
 pub fn trace_package_notary_key_bytes(bytes: &[u8]) -> Result<Vec<u8>> {
     trace_manifest_from_archive(&read_trace_package_archive(bytes)?)?.notary_public_key()
-}
-
-/// Reads the authenticated provider-connection timestamp recorded in a
-/// verified-package manifest. Callers must still perform full package
-/// verification before trusting the value.
-pub fn trace_package_created_at_unix_ms(path: &Path) -> Result<u64> {
-    Ok(read_trace_manifest(path)?.created_at_unix_ms())
 }
 
 /// Reads the authenticated provider-connection time from already-snapshotted
 /// `.llmtrace` bytes. Full verification is still required before trusting it.
 pub fn trace_package_created_at_unix_ms_bytes(bytes: &[u8]) -> Result<u64> {
     Ok(trace_manifest_from_archive(&read_trace_package_archive(bytes)?)?.created_at_unix_ms())
-}
-
-/// Completes a deferred proof and atomically writes an offline-verifiable
-/// `.llmtrace` archive.
-#[cfg(feature = "cli")]
-pub async fn finalize_bundle(
-    bundle_path: &Path,
-    output_path: &Path,
-    trusted_notary_key: &[u8],
-    vault: &Vault,
-    notary: &NotaryEndpoint,
-    max_attestable_http_bytes: usize,
-    max_frame_bytes: usize,
-) -> Result<PathBuf> {
-    finalize_bundle_with_progress(
-        bundle_path,
-        output_path,
-        trusted_notary_key,
-        vault,
-        notary,
-        max_attestable_http_bytes,
-        max_frame_bytes,
-        &|_| {},
-    )
-    .await
-}
-
-/// Completes a deferred proof, reports milestones, and atomically writes it.
-#[cfg(feature = "cli")]
-#[allow(clippy::too_many_arguments)]
-pub async fn finalize_bundle_with_progress(
-    bundle_path: &Path,
-    output_path: &Path,
-    trusted_notary_key: &[u8],
-    vault: &Vault,
-    notary: &NotaryEndpoint,
-    max_attestable_http_bytes: usize,
-    max_frame_bytes: usize,
-    progress: FinalizationProgressObserver<'_>,
-) -> Result<PathBuf> {
-    let bundle = DeferredBundle::load(bundle_path, vault)?;
-    let bytes = finalize_bundle_bytes_with_progress(
-        &bundle,
-        trusted_notary_key,
-        notary,
-        max_attestable_http_bytes,
-        max_frame_bytes,
-        progress,
-    )
-    .await?;
-    write_trace_package_bytes(output_path, &bytes)
 }
 
 /// Completes a decoded deferred bundle, reports milestones, and returns the
@@ -173,61 +108,6 @@ pub async fn finalize_bundle_bytes_with_progress(
         bundle.provider_name().to_owned(),
     )?;
     build_trace_package_bytes(&capture, trusted_notary_key)
-}
-
-/// Completes a hosted finalization with a one-time coordinator ticket.
-#[cfg(feature = "cli")]
-#[allow(clippy::too_many_arguments)]
-pub async fn finalize_bundle_admitted(
-    bundle_path: &Path,
-    output_path: &Path,
-    trusted_notary_key: &[u8],
-    vault: &Vault,
-    notary: &NotaryEndpoint,
-    max_attestable_http_bytes: usize,
-    max_frame_bytes: usize,
-    admission_ticket: &str,
-) -> Result<PathBuf> {
-    finalize_bundle_admitted_with_progress(
-        bundle_path,
-        output_path,
-        trusted_notary_key,
-        vault,
-        notary,
-        max_attestable_http_bytes,
-        max_frame_bytes,
-        admission_ticket,
-        &|_| {},
-    )
-    .await
-}
-
-/// Completes admitted finalization, reports milestones, and writes the package.
-#[cfg(feature = "cli")]
-#[allow(clippy::too_many_arguments)]
-pub async fn finalize_bundle_admitted_with_progress(
-    bundle_path: &Path,
-    output_path: &Path,
-    trusted_notary_key: &[u8],
-    vault: &Vault,
-    notary: &NotaryEndpoint,
-    max_attestable_http_bytes: usize,
-    max_frame_bytes: usize,
-    admission_ticket: &str,
-    progress: FinalizationProgressObserver<'_>,
-) -> Result<PathBuf> {
-    let bundle = DeferredBundle::load(bundle_path, vault)?;
-    let bytes = finalize_bundle_admitted_bytes_with_progress(
-        &bundle,
-        trusted_notary_key,
-        notary,
-        max_attestable_http_bytes,
-        max_frame_bytes,
-        admission_ticket,
-        progress,
-    )
-    .await?;
-    write_trace_package_bytes(output_path, &bytes)
 }
 
 /// Completes admitted finalization from a decoded private bundle, reports
@@ -307,7 +187,7 @@ fn build_trace_package_bytes_with_provider(
     })
 }
 
-#[cfg(feature = "cli")]
+#[cfg(all(feature = "cli", test))]
 fn write_trace_package_bytes(output_path: &Path, bytes: &[u8]) -> Result<PathBuf> {
     if output_path.exists() {
         bail!(
@@ -319,7 +199,7 @@ fn write_trace_package_bytes(output_path: &Path, bytes: &[u8]) -> Result<PathBuf
     Ok(output_path.to_path_buf())
 }
 
-#[cfg(feature = "cli")]
+#[cfg(all(feature = "cli", test))]
 fn write_atomic_trace(output_path: &Path, bytes: &[u8]) -> Result<()> {
     let parent = output_path
         .parent()
@@ -381,19 +261,7 @@ fn write_atomic_trace(output_path: &Path, bytes: &[u8]) -> Result<()> {
     )
 }
 
-/// Verifies a trace package and re-runs the deterministic provider adapter.
-pub fn verify_trace_package(
-    path: &Path,
-    trusted_notary_key: &[u8],
-) -> Result<VerifiedTraceManifest> {
-    Ok(verify_trace_package_with_provider(
-        path,
-        trusted_notary_key,
-        &configured_crypto_provider()?,
-    )?
-    .manifest)
-}
-
+#[cfg(test)]
 pub(crate) fn verify_trace_package_with_provider(
     path: &Path,
     trusted_notary_key: &[u8],
@@ -417,6 +285,7 @@ pub fn verify_trace_package_bytes(
     )
 }
 
+#[cfg(test)]
 fn verify_trace_package_bytes_with_provider(
     bytes: &[u8],
     trusted_notary_key: &[u8],
@@ -531,12 +400,6 @@ pub fn verify_trace_package_archive_with_provider_for_test(
     )
 }
 
-fn read_trace_manifest(path: &Path) -> Result<VerifiedTraceManifest> {
-    let bytes = read_trace_package_file(path)?;
-    let archive = read_trace_package_archive(&bytes)?;
-    trace_manifest_from_archive(&archive)
-}
-
 /// Parses and version-checks the source manifest from a canonical archive
 /// that has already passed entry, size, metadata, and hash validation.
 /// Its fields remain untrusted until the complete package verifier succeeds.
@@ -553,6 +416,7 @@ pub fn trace_manifest_from_archive(
     Ok(manifest)
 }
 
+#[cfg(test)]
 fn read_trace_package_file(path: &Path) -> Result<Vec<u8>> {
     if path
         .extension()
@@ -584,7 +448,7 @@ mod tests {
             let bundle = directory.path().join(name);
             fs::write(&bundle, b"encrypted private retry state").unwrap();
 
-            let error = verify_trace_package(&bundle, &[0; 33]).unwrap_err();
+            let error = read_trace_package_file(&bundle).unwrap_err();
 
             assert!(error.to_string().contains("private retry state"));
         }

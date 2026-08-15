@@ -85,7 +85,7 @@ jobs:
       LLM_NOTARY_API_KEY: ${{ secrets.LLM_NOTARY_API_KEY }}
       LLM_NOTARY_VAULT_PASSPHRASE_FILE: ${{ runner.temp }}/llm-notary-vault-passphrase
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@1.95.0
       - name: Install LLM Notary
         run: cargo install --locked --path crates/llm-notary-client

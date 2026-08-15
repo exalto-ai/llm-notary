@@ -7,7 +7,7 @@ WORKDIR /app
 # Keep dependency compilation in a layer whose inputs are the Cargo manifests,
 # rather than the application source. A source-only change should therefore
 # rebuild the small application crate instead of all TLSNotary dependencies.
-RUN cargo install cargo-chef --version 0.1.77 --locked
+RUN cargo install cargo-chef --version 0.1.78 --locked
 
 FROM chef AS planner
 
@@ -29,10 +29,14 @@ FROM chef AS builder
 # Cook the dependency graph before copying application source into this stage.
 # The flags deliberately match the production build below, so BuildKit can
 # reuse the compiled dependencies on normal source-only changes.
+# cargo-chef 0.1.78 still generates manifests that trigger Cargo 1.95's
+# target-edition warning (https://github.com/LukeMathWalker/cargo-chef/issues/350).
+# Quiet only the synthetic cook step; keep the application build below verbose
+# so project warnings remain visible.
 COPY --from=planner /app/recipe.json recipe.json
 COPY --from=planner /app/vendor/tlsn ./vendor/tlsn
 COPY --from=planner /app/vendor/tlsn-utils ./vendor/tlsn-utils
-RUN cargo chef cook --release --recipe-path recipe.json --package llm-notary-server --package llm-notary-platform
+RUN CARGO_TERM_QUIET=true cargo chef cook --release --recipe-path recipe.json --package llm-notary-server --package llm-notary-platform
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
@@ -84,7 +88,7 @@ FROM chef AS daemon-builder
 COPY --from=planner /app/recipe.json recipe.json
 COPY --from=planner /app/vendor/tlsn ./vendor/tlsn
 COPY --from=planner /app/vendor/tlsn-utils ./vendor/tlsn-utils
-RUN cargo chef cook --release --recipe-path recipe.json --package llm-notary-client
+RUN CARGO_TERM_QUIET=true cargo chef cook --release --recipe-path recipe.json --package llm-notary-client
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
