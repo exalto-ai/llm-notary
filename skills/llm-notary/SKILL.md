@@ -12,8 +12,9 @@ handles configured local authentication without exposing a password in a URL.
 ## Start safely
 
 1. Run `llm-notary --json status` before acting on daemon state.
-2. Use `llm-notary --json captures list` to obtain capture identifiers. Operate
-   only on identifiers returned by the daemon.
+2. Use `llm-notary --json captures list --metadata-only` to obtain capture
+   identifiers and timestamps without placing stored prompt or output previews
+   in the agent transcript. Operate only on identifiers returned by the daemon.
 3. Prefer a documented CLI command. When the CLI does not expose the requested
    operation, fetch `/openapi.json` from the configured loopback admin origin
    and follow that installed contract rather than a memorized route or schema.
@@ -30,6 +31,8 @@ handles configured local authentication without exposing a password in a URL.
 - Treat a `.llmtrace` as disclosed evidence, not as private input. Explain that
   its request and response bodies remain visible even though header values are
   hidden by policy.
+- Run `llm-notary traces show` only when the user explicitly asks to disclose
+  the finalized request and response bodies in the current agent transcript.
 - Never describe a successfully opened capture or package as cryptographically
   verified. Use `llm-notary traces verify` and report its exact result.
 - Never share a trace without the user's separate approval. Default to an

@@ -187,12 +187,13 @@ const publicDocs = readFileSync(resolve(appRoot, 'src/main.jsx'), 'utf8');
 if (!publicDocs.includes('curl -fsSL https://llm-notary.exalto.ai/install.sh | sh')
   || !publicDocs.includes('cargo install --locked --path crates/llm-notary-client')
   || !publicDocs.includes('llm-notary skill install --target all')
+  || !publicDocs.includes('--metadata-only')
   || !publicDocs.includes('The JSON directory is not separately signed')
   || !publicDocs.includes('"status_url":"/v1/shares/…"')) {
-  throw new Error('Public-site documentation is missing the website/source install, trust-directory, or local share-status boundary');
+  throw new Error('Public-site documentation is missing install, agent-metadata, trust-directory, or local share-status guidance');
 }
 
-for (const required of ['llm-notaryd', 'llm-notary status', 'llm-notary captures list', 'llm-notary skill install', '--json']) {
+for (const required of ['llm-notaryd', 'llm-notary status', 'llm-notary captures list', 'llm-notary skill install', '--metadata-only', '--json']) {
   if (!workflowContent.includes(required)) throw new Error(`Workflow documentation is missing daemon/CLI guidance: ${required}`);
 }
 

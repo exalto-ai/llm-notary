@@ -344,6 +344,9 @@ struct CaptureListArgs {
     /// Traverse every remaining page and emit one combined result.
     #[arg(long)]
     all: bool,
+    /// Omit prompt and output previews from structured output.
+    #[arg(long)]
+    metadata_only: bool,
 }
 
 #[derive(Args, Debug, Default)]
@@ -671,36 +674,50 @@ fn skill_destinations(args: &SkillInstallArgs) -> Result<Vec<SkillDestination>, 
         }]);
     }
 
-    let home = user_home_directory()?;
+    let claude_config_dir = first_nonempty_path([std::env::var_os("CLAUDE_CONFIG_DIR")]);
     let target = args
         .target
         .ok_or_else(|| CliError::invalid("skill install requires --target or --skills-dir"))?;
-    Ok(skill_target_destinations(target, &home))
+    let home = if target == SkillTarget::Claude && claude_config_dir.is_some() {
+        None
+    } else {
+        Some(user_home_directory()?)
+    };
+    skill_target_destinations(target, home.as_deref(), claude_config_dir.as_deref())
 }
 
-fn skill_target_destinations(target: SkillTarget, home: &Path) -> Vec<SkillDestination> {
+fn skill_target_destinations(
+    target: SkillTarget,
+    home: Option<&Path>,
+    claude_config_dir: Option<&Path>,
+) -> Result<Vec<SkillDestination>, CliError> {
+    let home = || home.ok_or_else(|| CliError::invalid("could not locate the user home directory"));
+    let claude_config_dir = match claude_config_dir {
+        Some(path) => path.to_path_buf(),
+        None => home()?.join(".claude"),
+    };
     let mut destinations = Vec::new();
     match target {
         SkillTarget::Codex => destinations.push(SkillDestination {
             agent: "codex",
-            path: home.join(".agents/skills").join(AGENT_SKILL_NAME),
+            path: home()?.join(".agents/skills").join(AGENT_SKILL_NAME),
         }),
         SkillTarget::Claude => destinations.push(SkillDestination {
             agent: "claude",
-            path: home.join(".claude/skills").join(AGENT_SKILL_NAME),
+            path: claude_config_dir.join("skills").join(AGENT_SKILL_NAME),
         }),
         SkillTarget::All => {
             destinations.push(SkillDestination {
                 agent: "codex",
-                path: home.join(".agents/skills").join(AGENT_SKILL_NAME),
+                path: home()?.join(".agents/skills").join(AGENT_SKILL_NAME),
             });
             destinations.push(SkillDestination {
                 agent: "claude",
-                path: home.join(".claude/skills").join(AGENT_SKILL_NAME),
+                path: claude_config_dir.join("skills").join(AGENT_SKILL_NAME),
             });
         }
     }
-    destinations
+    Ok(destinations)
 }
 
 fn user_home_directory() -> Result<PathBuf, CliError> {
@@ -1187,7 +1204,12 @@ async fn execute(
         CliCommand::Status => client.request(Method::GET, "/v1/status", &[]).await,
         CliCommand::Captures { command } => match command {
             CapturesCommand::List(args) => {
-                list_request(client, "/v1/captures", capture_query(args), args.all).await
+                let mut response =
+                    list_request(client, "/v1/captures", capture_query(args), args.all).await?;
+                if args.metadata_only {
+                    remove_capture_previews(&mut response)?;
+                }
+                Ok(response)
             }
             CapturesCommand::Show(args) => {
                 validate_identifier(&args.id, "cap-")?;
@@ -1483,6 +1505,25 @@ fn capture_query(args: &CaptureListArgs) -> Vec<(String, String)> {
     push_number(&mut query, "limit", args.limit);
     push_string(&mut query, "cursor", args.cursor.as_deref());
     query
+}
+
+fn remove_capture_previews(value: &mut Value) -> Result<(), CliError> {
+    let items = value
+        .get_mut("items")
+        .and_then(Value::as_array_mut)
+        .ok_or_else(incomplete_page_error)?;
+    for item in items {
+        let item = item.as_object_mut().ok_or_else(incomplete_page_error)?;
+        for field in [
+            "prompt_preview",
+            "prompt_preview_truncated",
+            "output_preview",
+            "output_preview_truncated",
+        ] {
+            item.remove(field);
+        }
+    }
+    Ok(())
 }
 
 fn operation_query(args: &OperationListArgs) -> Vec<(String, String)> {
@@ -1851,6 +1892,7 @@ mod tests {
             vec!["llm-notary", "status"],
             vec!["llm-notary", "captures", "list"],
             vec!["llm-notary", "captures", "list", "--all"],
+            vec!["llm-notary", "captures", "list", "--metadata-only"],
             vec![
                 "llm-notary",
                 "captures",
@@ -2073,16 +2115,94 @@ mod tests {
     #[test]
     fn skill_install_target_paths_and_home_fallback_are_portable() {
         let home = PathBuf::from("user-home");
-        let destinations = skill_target_destinations(SkillTarget::All, &home);
+        let destinations = skill_target_destinations(
+            SkillTarget::All,
+            Some(&home),
+            Some(Path::new("claude-config")),
+        )
+        .unwrap();
 
         assert_eq!(destinations[0].agent, "codex");
         assert_eq!(destinations[0].path, home.join(".agents/skills/llm-notary"));
         assert_eq!(destinations[1].agent, "claude");
-        assert_eq!(destinations[1].path, home.join(".claude/skills/llm-notary"));
+        assert_eq!(
+            destinations[1].path,
+            PathBuf::from("claude-config/skills/llm-notary")
+        );
         assert_eq!(
             first_nonempty_path([Some(OsString::new()), Some(OsString::from("fallback-home")),]),
             Some(PathBuf::from("fallback-home"))
         );
+        let default_claude =
+            skill_target_destinations(SkillTarget::Claude, Some(&home), None).unwrap();
+        assert_eq!(
+            default_claude[0].path,
+            home.join(".claude/skills/llm-notary")
+        );
+        let override_without_home =
+            skill_target_destinations(SkillTarget::Claude, None, Some(Path::new("claude-config")))
+                .unwrap();
+        assert_eq!(
+            override_without_home[0].path,
+            PathBuf::from("claude-config/skills/llm-notary")
+        );
+    }
+
+    #[test]
+    fn capture_metadata_only_omits_preview_fields() {
+        let mut value = json!({
+            "items": [{
+                "capture_id": "cap-example",
+                "created_at_unix_ms": 123,
+                "prompt_preview": "private prompt",
+                "prompt_preview_truncated": false,
+                "output_preview": "private output",
+                "output_preview_truncated": false,
+            }],
+            "next_cursor": null,
+        });
+
+        remove_capture_previews(&mut value).unwrap();
+
+        assert_eq!(value["items"][0]["capture_id"], "cap-example");
+        assert_eq!(value["items"][0]["created_at_unix_ms"], 123);
+        assert!(value["items"][0].get("prompt_preview").is_none());
+        assert!(value["items"][0].get("output_preview").is_none());
+    }
+
+    #[tokio::test]
+    async fn capture_metadata_only_is_applied_to_daemon_output() {
+        let router = Router::new().route(
+            "/v1/captures",
+            get(|| async {
+                Json(json!({
+                    "items": [{
+                        "capture_id": "cap-example",
+                        "prompt_preview": "private prompt",
+                        "prompt_preview_truncated": false,
+                        "output_preview": "private output",
+                        "output_preview_truncated": false,
+                    }],
+                    "next_cursor": null,
+                }))
+            }),
+        );
+        let (address, server) = serve(router).await;
+        let client = AdminClient::new(address, None).unwrap();
+        let command = CliCommand::Captures {
+            command: CapturesCommand::List(CaptureListArgs {
+                metadata_only: true,
+                ..CaptureListArgs::default()
+            }),
+        };
+
+        let response = execute(&client, &command, &mut Vec::new(), false)
+            .await
+            .unwrap();
+
+        assert!(response["items"][0].get("prompt_preview").is_none());
+        assert!(response["items"][0].get("output_preview").is_none());
+        server.abort();
     }
 
     #[cfg(unix)]

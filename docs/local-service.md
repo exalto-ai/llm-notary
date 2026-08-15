@@ -149,7 +149,7 @@ UTF-8 file and pass its path rather than the secret itself:
 ```bash
 llm-notary status
 llm-notary --admin-password-file /private/admin-password status
-llm-notary --config /path/to/config.toml captures list --json
+llm-notary --config /path/to/config.toml captures list --metadata-only --json
 ```
 
 On Unix, the password file must not be accessible to group or other users.
@@ -174,12 +174,13 @@ nonzero exit status and uses the bounded
 `{"error":{"code":"...","message":"..."}}` envelope without a duplicate
 plain-text diagnostic. List filters map directly to server-side REST filters,
 and accepted mutations print the durable operation or job identifier without
-waiting indefinitely:
+waiting indefinitely. Capture-list JSON includes stored prompt and output
+previews; use `--metadata-only` before sending it to an agent transcript:
 
 ```bash
 llm-notary captures list --query sanitized --provider openai --limit 20
 llm-notary captures list --cursor "$next_cursor"
-llm-notary captures list --provider openai --all --json
+llm-notary captures list --provider openai --all --metadata-only --json
 llm-notary captures show cap-example
 llm-notary finalize cap-example --wait
 llm-notary operations list --state failed --kind finalization

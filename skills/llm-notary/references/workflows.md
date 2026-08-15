@@ -10,22 +10,32 @@ Check the service, then list captures using server-side filters:
 
 ```bash
 llm-notary --json status
-llm-notary --json captures list --provider openai --limit 20
-llm-notary --json captures list --finalization-state finalized --limit 20
-llm-notary --json captures show cap-example
+llm-notary --json captures list --metadata-only --provider openai --limit 20
+llm-notary --json captures list --metadata-only --finalization-state finalized --limit 20
+llm-notary captures show cap-example
 ```
 
-Use safe catalog metadata by default. Do not print prompt or output previews
-unless the user explicitly asks and the local preview policy permits it.
+Use `--metadata-only` whenever structured capture-list output enters an agent
+transcript. Raw capture-list JSON includes stored prompt and output previews.
+The human-readable `captures list` and `captures show` output also omit those
+previews. Do not print previews unless the user explicitly asks and the local
+preview policy permits it.
 When selecting the newest or oldest result, do not infer list order. Follow all
 relevant pages and compare the returned timestamps unless the running daemon's
 contract explicitly guarantees an order.
 
-Show or verify a finalized capture:
+Verify a finalized capture without printing its disclosed bodies:
+
+```bash
+llm-notary --json traces verify cap-example
+```
+
+`traces show` prints the canonical disclosed request and response bodies. Run
+it only after the user explicitly asks to place that content in the current
+agent transcript:
 
 ```bash
 llm-notary --json traces show cap-example
-llm-notary --json traces verify cap-example
 ```
 
 For a portable file that is not cataloged by this daemon, the only supported

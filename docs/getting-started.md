@@ -110,15 +110,17 @@ llm-notary skill install --target claude
 llm-notary skill install --target all
 ```
 
-Codex receives it under `~/.agents/skills/llm-notary`; Claude Code receives it
-under `~/.claude/skills/llm-notary`. For another compatible agent, provide its
-skills directory and the installer will create the `llm-notary` child:
+Codex receives it under `~/.agents/skills/llm-notary`. Claude Code receives it
+under `$CLAUDE_CONFIG_DIR/skills/llm-notary` when that environment variable is
+nonempty and under `~/.claude/skills/llm-notary` otherwise. For another
+compatible agent, provide its skills directory and the installer will create
+the `llm-notary` child:
 
 ```bash
 llm-notary skill install --skills-dir /path/to/agent/skills
 ```
 
-Claude Code detects changes inside an existing `~/.claude/skills` directory.
+Claude Code detects changes inside its existing personal `skills` directory.
 If that top-level directory did not exist when the current Claude Code session
 started, restart Claude Code after installation so it discovers the skill.
 
@@ -245,6 +247,10 @@ Find the capture without decrypting every bundle:
 llm-notary captures list --provider openai --limit 20
 llm-notary captures show cap-example
 ```
+
+Human capture output omits stored prompt and output previews. For structured
+capture discovery that enters an agent transcript, use `llm-notary --json
+captures list --metadata-only`; raw capture-list JSON includes those previews.
 
 ## Finalize and verify
 

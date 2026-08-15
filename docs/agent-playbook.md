@@ -12,14 +12,15 @@ llm-notary skill install --target claude
 llm-notary skill install --target all
 ```
 
-Codex installs under `~/.agents/skills`; Claude Code installs under
-`~/.claude/skills`. Use `llm-notary skill install --skills-dir
+Codex installs under `~/.agents/skills`. Claude Code installs under
+`$CLAUDE_CONFIG_DIR/skills` when that environment variable is nonempty and
+under `~/.claude/skills` otherwise. Use `llm-notary skill install --skills-dir
 /path/to/agent/skills` for another Agent Skills compatible client. The
 installer appends the `llm-notary` skill directory, reports `installed`,
 `current`, or `updated`, and emits the same result as structured data with
 `--json`.
 
-Claude Code detects changes inside an existing `~/.claude/skills` directory
+Claude Code detects changes inside its existing personal `skills` directory
 without a restart. If that top-level directory did not exist when the current
 Claude Code session started, restart Claude Code after installation so it can
 watch and discover the new directory.
@@ -47,7 +48,9 @@ the endpoint and schema authority.
 4. Find captures through `/v1/captures` and act on returned `cap-…`
    identifiers. Never ask for or submit an arbitrary local filesystem path.
    Search input may contain punctuation; the service treats it as text
-   boundaries rather than raw full-text-search syntax.
+   boundaries rather than raw full-text-search syntax. Capture responses
+   include stored prompt and output previews, so project each item to safe
+   metadata before command output enters the agent transcript.
 5. Treat finalization as asynchronous. Save the returned `op-…` identifier and
    poll its documented operation URL until `finalized`, `failed`, or
    `interrupted`. Use `attempt_history` when explaining retries.
@@ -106,11 +109,13 @@ returned by the service:
 
 ```bash
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&capture_state=captured&limit=10"
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&capture_state=captured&limit=10" \
+  | jq '.items |= map({capture_id, created_at_unix_ms, provider, requested_model, capture_state, finalization_state, finalization_eligible, failure_code})'
 
 capture_id=cap-example
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id"
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id" \
+  | jq 'del(.capture.prompt_preview, .capture.prompt_preview_truncated, .capture.output_preview, .capture.output_preview_truncated)'
 ```
 
 After explicit user approval, queue finalization. A `202 Accepted` response has
