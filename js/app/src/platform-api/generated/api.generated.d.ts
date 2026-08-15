@@ -750,6 +750,7 @@ export interface components {
             entitlements: components["schemas"]["PlanEntitlements"];
             purchase_mode: components["schemas"]["BillingPurchaseMode"];
             service_plan: components["schemas"]["ServicePlan"];
+            subscriptions_configured: boolean;
         };
         AdmissionLimits: {
             /** Format: int64 */

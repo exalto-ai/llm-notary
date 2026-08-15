@@ -3303,6 +3303,7 @@
           "service_plan",
           "billing_status",
           "purchase_mode",
+          "subscriptions_configured",
           "entitlements"
         ],
         "properties": {
@@ -3317,6 +3318,9 @@
           },
           "service_plan": {
             "$ref": "#/components/schemas/ServicePlan"
+          },
+          "subscriptions_configured": {
+            "type": "boolean"
           }
         }
       },

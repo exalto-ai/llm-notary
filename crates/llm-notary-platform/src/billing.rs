@@ -96,8 +96,8 @@ impl BillingService {
                         secret_key: "sk_test_fixture".to_owned(),
                         webhook_secret: "whsec_fixture_secret".to_owned(),
                         credit_price_id: "price_fixture".to_owned(),
-                        one_gb_price_id: "price_one_gb_fixture".to_owned(),
-                        ten_gb_price_id: "price_ten_gb_fixture".to_owned(),
+                        one_gb_price_id: Some("price_one_gb_fixture".to_owned()),
+                        ten_gb_price_id: Some("price_ten_gb_fixture".to_owned()),
                         livemode: false,
                     },
                     true,
@@ -118,12 +118,30 @@ impl BillingService {
         })
     }
 
+    fn subscription_stripe(&self) -> ApiResult<&StripeClient> {
+        let stripe = self.stripe()?;
+        if !stripe.subscriptions_configured() {
+            return Err(ApiError::coded(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "billing_unavailable",
+                "Hosted subscription billing is not configured",
+            ));
+        }
+        Ok(stripe)
+    }
+
     pub(crate) fn purchase_mode(&self) -> BillingPurchaseMode {
         match self.stripe.as_ref() {
             None => BillingPurchaseMode::Disabled,
             Some(stripe) if stripe.livemode => BillingPurchaseMode::Live,
             Some(_) => BillingPurchaseMode::Test,
         }
+    }
+
+    pub(crate) fn subscriptions_configured(&self) -> bool {
+        self.stripe
+            .as_ref()
+            .is_some_and(StripeClient::subscriptions_configured)
     }
 }
 
@@ -134,8 +152,8 @@ struct StripeClient {
     secret_key: Arc<str>,
     webhook_secret: Arc<str>,
     credit_price_id: Arc<str>,
-    one_gb_price_id: Arc<str>,
-    ten_gb_price_id: Arc<str>,
+    one_gb_price_id: Option<Arc<str>>,
+    ten_gb_price_id: Option<Arc<str>>,
     livemode: bool,
     allow_local_checkout_url: bool,
     request_timeout: Duration,
@@ -157,8 +175,8 @@ impl StripeClient {
             secret_key: Arc::from(config.secret_key),
             webhook_secret: Arc::from(config.webhook_secret),
             credit_price_id: Arc::from(config.credit_price_id),
-            one_gb_price_id: Arc::from(config.one_gb_price_id),
-            ten_gb_price_id: Arc::from(config.ten_gb_price_id),
+            one_gb_price_id: config.one_gb_price_id.map(Arc::from),
+            ten_gb_price_id: config.ten_gb_price_id.map(Arc::from),
             livemode: config.livemode,
             allow_local_checkout_url,
             request_timeout: STRIPE_REQUEST_TIMEOUT,
@@ -172,10 +190,20 @@ impl StripeClient {
 
     fn subscription_price_id(&self, plan: ServicePlan) -> Result<&str> {
         match plan {
-            ServicePlan::OneGb => Ok(self.one_gb_price_id.as_ref()),
-            ServicePlan::TenGb => Ok(self.ten_gb_price_id.as_ref()),
+            ServicePlan::OneGb => self
+                .one_gb_price_id
+                .as_deref()
+                .ok_or_else(|| anyhow!("the 1 GB Stripe Price is not configured")),
+            ServicePlan::TenGb => self
+                .ten_gb_price_id
+                .as_deref()
+                .ok_or_else(|| anyhow!("the 10 GB Stripe Price is not configured")),
             ServicePlan::Free => bail!("the Free plan has no Stripe Price"),
         }
+    }
+
+    fn subscriptions_configured(&self) -> bool {
+        self.one_gb_price_id.is_some() && self.ten_gb_price_id.is_some()
     }
 
     async fn retrieve_subscription_price(
@@ -847,7 +875,7 @@ async fn create_subscription_checkout_session(
     jar: CookieJar,
     Json(request): Json<CreateSubscriptionCheckoutRequest>,
 ) -> ApiResult<Json<CreateSubscriptionCheckoutResponse>> {
-    let stripe = state.billing.stripe()?.clone();
+    let stripe = state.billing.subscription_stripe()?.clone();
     let user = authenticated_web_user(&state, &jar).await?;
     validate_idempotency_key(&request.idempotency_key)?;
     let plan = request.plan.service_plan();
@@ -2085,9 +2113,9 @@ fn subscription_price(subscription: &StripeSubscription) -> ApiResult<&str> {
 }
 
 fn plan_for_price(stripe: &StripeClient, price_id: &str) -> ApiResult<ServicePlan> {
-    if price_id == stripe.one_gb_price_id.as_ref() {
+    if stripe.one_gb_price_id.as_deref() == Some(price_id) {
         Ok(ServicePlan::OneGb)
-    } else if price_id == stripe.ten_gb_price_id.as_ref() {
+    } else if stripe.ten_gb_price_id.as_deref() == Some(price_id) {
         Ok(ServicePlan::TenGb)
     } else {
         Err(stripe_invalid("Stripe subscription uses an unknown Price"))
@@ -3047,6 +3075,30 @@ mod tests {
     }
 
     #[test]
+    fn one_time_billing_stays_available_without_subscription_prices() {
+        let billing = BillingService::from_config(
+            &BillingConfig {
+                stripe: Some(StripeConfig {
+                    secret_key: "sk_test_fixture".to_owned(),
+                    webhook_secret: "whsec_fixture_secret".to_owned(),
+                    credit_price_id: "price_fixture".to_owned(),
+                    one_gb_price_id: None,
+                    ten_gb_price_id: None,
+                    livemode: false,
+                }),
+            },
+            &Url::parse("https://example.test").unwrap(),
+            reqwest::Client::new(),
+        )
+        .unwrap();
+
+        assert_eq!(billing.purchase_mode(), BillingPurchaseMode::Test);
+        assert!(!billing.subscriptions_configured());
+        assert!(billing.stripe().is_ok());
+        assert!(billing.subscription_stripe().is_err());
+    }
+
+    #[test]
     fn expired_subscription_checkout_keeps_a_valid_local_binding() {
         let billing = BillingService::for_test(
             Url::parse("http://127.0.0.1:1/v1/").unwrap(),
@@ -3239,8 +3291,8 @@ mod tests {
                 secret_key: "sk_test_fixture".to_owned(),
                 webhook_secret: "whsec_fixture_secret".to_owned(),
                 credit_price_id: "price_fixture".to_owned(),
-                one_gb_price_id: "price_one_gb_fixture".to_owned(),
-                ten_gb_price_id: "price_ten_gb_fixture".to_owned(),
+                one_gb_price_id: Some("price_one_gb_fixture".to_owned()),
+                ten_gb_price_id: Some("price_ten_gb_fixture".to_owned()),
                 livemode: false,
             },
             true,

@@ -1537,7 +1537,7 @@ export function Dashboard({
   const [creditHistory, setCreditHistory] = useState(null);
   const [creditHistoryCursor, setCreditHistoryCursor] = useState(null);
   const [loadingMoreCreditHistory, setLoadingMoreCreditHistory] = useState(false);
-  const [billing, setBilling] = useState(user.billing || { service_plan: 'free', billing_status: 'active', purchase_mode: 'disabled' });
+  const [billing, setBilling] = useState(user.billing || { service_plan: 'free', billing_status: 'active', purchase_mode: 'disabled', subscriptions_configured: false });
   const [purchases, setPurchases] = useState(null);
   const [purchaseError, setPurchaseError] = useState(null);
   const [checkoutReturnStatus, setCheckoutReturnStatus] = useState(null);
@@ -1850,6 +1850,7 @@ export function Dashboard({
   const activeCount = user.share_stats?.in_progress ?? 0;
   const purchaseMode = billing.purchase_mode || 'disabled';
   const checkoutEnabled = purchaseMode === 'test' || purchaseMode === 'live';
+  const subscriptionCheckoutEnabled = checkoutEnabled && billing.subscriptions_configured === true;
   const displayedCheckoutStatus = checkoutReturnStatus || (returnedCheckout === 'success' ? 'waiting' : returnedCheckout === 'cancelled' ? 'cancelled' : null);
   return <main className="dashboard-shell dashboard-shell--account">
     <DashboardMobileNavigation activeView={activeView} traceCount={user.share_stats?.total ?? '—'} />
@@ -1879,7 +1880,7 @@ export function Dashboard({
           {credits && <section className="dashboard-credits" aria-labelledby="credit-balance-title">
             <header><div><span className="eyebrow">Current plan</span><h2 id="credit-balance-title">{planLabel(billing.service_plan)}</h2></div><div className="dashboard-credit-meta"><span>{billing.billing_status} · {planDetails[billing.service_plan]?.price}</span><span>Usage resets {sessionDate(credits.reset_at)}</span></div></header>
             <div className="dashboard-plan-actions">
-              {billing.service_plan === 'free' ? <><div><b>Increase monthly allowances</b><span>Subscription changes are handled securely by Stripe.</span></div><div>{['one_gb', 'ten_gb'].map((plan) => <button type="button" key={plan} onClick={() => choosePlan(plan)} disabled={!checkoutEnabled || Boolean(startingPlan)}>{startingPlan === plan ? 'Opening Checkout…' : `${planLabel(plan)} · ${planDetails[plan].price}`}</button>)}</div></> : <><div><b>{planLabel(billing.service_plan)} subscription</b><span>Change plans, update payment details, or cancel in Stripe.</span></div><button type="button" onClick={manageSubscription} disabled={!checkoutEnabled || Boolean(startingPlan)}>{startingPlan === 'portal' ? 'Opening portal…' : 'Manage subscription'}</button></>}
+              {billing.service_plan === 'free' ? <><div><b>Increase monthly allowances</b><span>{subscriptionCheckoutEnabled ? 'Subscription changes are handled securely by Stripe.' : 'New subscriptions are temporarily unavailable.'}</span></div><div>{['one_gb', 'ten_gb'].map((plan) => <button type="button" key={plan} onClick={() => choosePlan(plan)} disabled={!subscriptionCheckoutEnabled || Boolean(startingPlan)}>{startingPlan === plan ? 'Opening Checkout…' : `${planLabel(plan)} · ${planDetails[plan].price}`}</button>)}</div></> : <><div><b>{planLabel(billing.service_plan)} subscription</b><span>Change plans, update payment details, or cancel in Stripe.</span></div><button type="button" onClick={manageSubscription} disabled={!checkoutEnabled || Boolean(startingPlan)}>{startingPlan === 'portal' ? 'Opening portal…' : 'Manage subscription'}</button></>}
             </div>
             {subscriptionStatus === 'cancelled' && <p className="dashboard-checkout-state">Subscription Checkout was cancelled. Your plan did not change.</p>}
             {subscriptionStatus === 'waiting' && <p className="dashboard-checkout-state" role="status">Checkout completed. Waiting for Stripe to activate your plan…</p>}
