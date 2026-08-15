@@ -1,8 +1,10 @@
 //! Versioned local configuration for the proxy and capture catalog.
 
 use std::{
-    env, fs,
-    io::{ErrorKind, Write as _},
+    env,
+    ffi::OsString,
+    fmt, fs,
+    io::{ErrorKind, Read as _, Write as _},
     net::SocketAddr,
     path::{Path, PathBuf},
 };
@@ -19,6 +21,11 @@ use crate::{
 
 /// The versioned identifier for an agent configuration file.
 pub const CONFIG_FORMAT: &str = "llm-notary/agent-config/v1";
+
+pub const METADATA_DATABASE_URL_ENV: &str = "LLM_NOTARY_METADATA_DATABASE_URL";
+pub const METADATA_DATABASE_URL_FILE_ENV: &str = "LLM_NOTARY_METADATA_DATABASE_URL_FILE";
+pub const METADATA_MIGRATION_URL_ENV: &str = "LLM_NOTARY_METADATA_MIGRATION_URL";
+pub const METADATA_MIGRATION_URL_FILE_ENV: &str = "LLM_NOTARY_METADATA_MIGRATION_URL_FILE";
 
 /// Local proxy configuration. This is intentionally separate from the private
 /// vault state, which contains key references and passphrase KDF parameters.
@@ -106,6 +113,8 @@ pub struct StorageConfig {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogConfig {
+    #[serde(default)]
+    pub backend: MetadataBackend,
     #[serde(default = "default_catalog_path")]
     pub path: PathBuf,
     #[serde(default = "default_preview_chars")]
@@ -114,6 +123,85 @@ pub struct CatalogConfig {
     pub output_preview_chars: usize,
     #[serde(default = "default_true")]
     pub full_text_search: bool,
+    #[serde(default, skip_serializing_if = "PostgresCatalogConfig::is_default")]
+    pub postgres: PostgresCatalogConfig,
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MetadataBackend {
+    #[default]
+    Sqlite,
+    Postgres,
+}
+
+impl MetadataBackend {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sqlite => "sqlite",
+            Self::Postgres => "postgres",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresCatalogConfig {
+    #[serde(default)]
+    pub ssl_mode: PostgresSslMode,
+    #[serde(default = "default_postgres_max_connections")]
+    pub max_connections: u32,
+    #[serde(default = "default_postgres_connect_timeout_seconds")]
+    pub connect_timeout_seconds: u64,
+    #[serde(default = "default_postgres_acquire_timeout_seconds")]
+    pub acquire_timeout_seconds: u64,
+    #[serde(default = "default_postgres_migration_lock_timeout_seconds")]
+    pub migration_lock_timeout_seconds: u64,
+}
+
+impl Default for PostgresCatalogConfig {
+    fn default() -> Self {
+        Self {
+            ssl_mode: PostgresSslMode::VerifyFull,
+            max_connections: default_postgres_max_connections(),
+            connect_timeout_seconds: default_postgres_connect_timeout_seconds(),
+            acquire_timeout_seconds: default_postgres_acquire_timeout_seconds(),
+            migration_lock_timeout_seconds: default_postgres_migration_lock_timeout_seconds(),
+        }
+    }
+}
+
+impl PostgresCatalogConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostgresSslMode {
+    /// Test-only or explicitly trusted local networks. Bytes are plaintext.
+    Disable,
+    /// Encrypts the connection without validating the server hostname.
+    Require,
+    /// Encrypts and validates the server certificate and hostname.
+    #[default]
+    VerifyFull,
+}
+
+/// A PostgreSQL connection URL whose debug output never contains credentials.
+pub(crate) struct SecretDatabaseUrl(String);
+
+impl SecretDatabaseUrl {
+    pub(crate) fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Debug for SecretDatabaseUrl {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("SecretDatabaseUrl([REDACTED])")
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -183,10 +271,12 @@ impl Default for StorageConfig {
 impl Default for CatalogConfig {
     fn default() -> Self {
         Self {
+            backend: MetadataBackend::Sqlite,
             path: default_catalog_path(),
             prompt_preview_chars: default_preview_chars(),
             output_preview_chars: default_preview_chars(),
             full_text_search: true,
+            postgres: PostgresCatalogConfig::default(),
         }
     }
 }
@@ -248,6 +338,23 @@ impl AgentConfig {
         let config: Self = toml::from_str(&source)
             .with_context(|| format!("parsing agent configuration {}", path.display()))?;
         config.validate()?;
+        Ok(config)
+    }
+
+    /// Loads only enough configuration for the one-shot metadata migrator.
+    /// Unrelated listener, vault, provider, and notary settings are neither
+    /// initialized nor validated by that command.
+    pub(crate) fn load_for_metadata_migration(path: &Path) -> Result<Self> {
+        let source = fs::read_to_string(path)
+            .with_context(|| format!("reading agent configuration {}", path.display()))?;
+        let config: Self = toml::from_str(&source)
+            .with_context(|| format!("parsing agent configuration {}", path.display()))?;
+        ensure!(
+            config.format == CONFIG_FORMAT,
+            "unsupported agent configuration format: {}",
+            config.format
+        );
+        config.validate_metadata()?;
         Ok(config)
     }
 
@@ -342,10 +449,7 @@ impl AgentConfig {
             "notary.max_frame_bytes must be between 1 and {}",
             u32::MAX
         );
-        ensure!(
-            !self.catalog.path.as_os_str().is_empty(),
-            "catalog.path must not be empty"
-        );
+        self.validate_metadata()?;
         ensure!(
             !self.storage.bundle_dir.as_os_str().is_empty(),
             "storage.bundle_dir must not be empty"
@@ -400,6 +504,41 @@ impl AgentConfig {
         Ok(())
     }
 
+    fn validate_metadata(&self) -> Result<()> {
+        match self.catalog.backend {
+            MetadataBackend::Sqlite => {
+                ensure!(
+                    !self.catalog.path.as_os_str().is_empty(),
+                    "catalog.path must not be empty for the SQLite backend"
+                );
+                ensure!(
+                    self.catalog.postgres.is_default(),
+                    "non-default catalog.postgres settings require catalog.backend = \"postgres\""
+                );
+            }
+            MetadataBackend::Postgres => {
+                let postgres = &self.catalog.postgres;
+                ensure!(
+                    (1..=64).contains(&postgres.max_connections),
+                    "catalog.postgres.max_connections must be between 1 and 64"
+                );
+                ensure!(
+                    (1..=300).contains(&postgres.connect_timeout_seconds),
+                    "catalog.postgres.connect_timeout_seconds must be between 1 and 300"
+                );
+                ensure!(
+                    (1..=300).contains(&postgres.acquire_timeout_seconds),
+                    "catalog.postgres.acquire_timeout_seconds must be between 1 and 300"
+                );
+                ensure!(
+                    (1..=300).contains(&postgres.migration_lock_timeout_seconds),
+                    "catalog.postgres.migration_lock_timeout_seconds must be between 1 and 300"
+                );
+            }
+        }
+        Ok(())
+    }
+
     /// Returns a stable identifier for the complete, non-secret configuration
     /// that governed a capture.
     pub fn fingerprint(&self) -> Result<String> {
@@ -425,6 +564,110 @@ impl AgentConfig {
             })
             .transpose()
     }
+
+    pub(crate) fn postgres_runtime_url(&self) -> Result<SecretDatabaseUrl> {
+        ensure!(
+            self.catalog.backend == MetadataBackend::Postgres,
+            "PostgreSQL metadata is not selected"
+        );
+        resolve_database_url(
+            env::var_os(METADATA_DATABASE_URL_ENV),
+            env::var_os(METADATA_DATABASE_URL_FILE_ENV),
+            METADATA_DATABASE_URL_ENV,
+            METADATA_DATABASE_URL_FILE_ENV,
+        )
+    }
+
+    pub(crate) fn postgres_migration_url(&self) -> Result<SecretDatabaseUrl> {
+        ensure!(
+            self.catalog.backend == MetadataBackend::Postgres,
+            "PostgreSQL metadata is not selected"
+        );
+        resolve_migration_database_url(
+            env::var_os(METADATA_DATABASE_URL_ENV),
+            env::var_os(METADATA_DATABASE_URL_FILE_ENV),
+            env::var_os(METADATA_MIGRATION_URL_ENV),
+            env::var_os(METADATA_MIGRATION_URL_FILE_ENV),
+        )
+    }
+}
+
+fn resolve_migration_database_url(
+    runtime_inline: Option<OsString>,
+    runtime_file: Option<OsString>,
+    migration_inline: Option<OsString>,
+    migration_file: Option<OsString>,
+) -> Result<SecretDatabaseUrl> {
+    if migration_inline.is_none() && migration_file.is_none() {
+        return resolve_database_url(
+            runtime_inline,
+            runtime_file,
+            METADATA_DATABASE_URL_ENV,
+            METADATA_DATABASE_URL_FILE_ENV,
+        );
+    }
+    resolve_database_url(
+        migration_inline,
+        migration_file,
+        METADATA_MIGRATION_URL_ENV,
+        METADATA_MIGRATION_URL_FILE_ENV,
+    )
+}
+
+fn resolve_database_url(
+    inline: Option<OsString>,
+    file: Option<OsString>,
+    inline_name: &'static str,
+    file_name: &'static str,
+) -> Result<SecretDatabaseUrl> {
+    // The direct value intentionally wins. This lets an operator replace a
+    // mounted secret without needing to remove the file-variable declaration.
+    let value = if let Some(value) = inline {
+        value
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("{inline_name} is not valid UTF-8"))?
+    } else if let Some(path) = file {
+        let path = PathBuf::from(path);
+        let file = fs::File::open(&path)
+            .with_context(|| format!("reading PostgreSQL URL file from {file_name}"))?;
+        ensure!(
+            file.metadata()
+                .with_context(|| format!("inspecting PostgreSQL URL file from {file_name}"))?
+                .is_file(),
+            "PostgreSQL URL source from {file_name} must be a regular file"
+        );
+        let mut bytes = Vec::new();
+        file.take(16 * 1024 + 1)
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("reading PostgreSQL URL file from {file_name}"))?;
+        ensure!(bytes.len() <= 16 * 1024, "PostgreSQL URL file is too large");
+        let mut value = String::from_utf8(bytes).context("PostgreSQL URL file is not UTF-8")?;
+        if value.ends_with("\r\n") {
+            value.truncate(value.len() - 2);
+        } else if value.ends_with('\n') {
+            value.pop();
+        }
+        value
+    } else {
+        bail!("set {inline_name} or {file_name} for the PostgreSQL metadata backend");
+    };
+    ensure!(!value.is_empty(), "PostgreSQL metadata URL is empty");
+    ensure!(
+        value.len() <= 16 * 1024,
+        "PostgreSQL metadata URL is too large"
+    );
+    ensure!(
+        !value
+            .chars()
+            .any(|character| matches!(character, '\r' | '\n' | '\0')),
+        "PostgreSQL metadata URL contains invalid control characters"
+    );
+    let parsed = url::Url::parse(&value).context("PostgreSQL metadata URL is invalid")?;
+    ensure!(
+        matches!(parsed.scheme(), "postgres" | "postgresql"),
+        "PostgreSQL metadata URL must use postgres:// or postgresql://"
+    );
+    Ok(SecretDatabaseUrl(value))
 }
 
 fn route_prefixes_overlap(left: &str, right: &str) -> bool {
@@ -484,6 +727,22 @@ fn default_true() -> bool {
     true
 }
 
+fn default_postgres_max_connections() -> u32 {
+    8
+}
+
+fn default_postgres_connect_timeout_seconds() -> u64 {
+    10
+}
+
+fn default_postgres_acquire_timeout_seconds() -> u64 {
+    10
+}
+
+fn default_postgres_migration_lock_timeout_seconds() -> u64 {
+    60
+}
+
 fn default_data_dir() -> PathBuf {
     if let Some(path) = env::var_os("XDG_DATA_HOME") {
         PathBuf::from(path).join("llm-notary")
@@ -528,6 +787,8 @@ mod tests {
         assert!(config.providers.openrouter.enabled);
         assert_eq!(config.catalog.prompt_preview_chars, 1_000);
         assert!(config.catalog.full_text_search);
+        assert_eq!(config.catalog.backend, MetadataBackend::Sqlite);
+        assert_eq!(config.catalog.postgres, PostgresCatalogConfig::default());
         assert_eq!(config.proxy.listen.to_string(), "127.0.0.1:8787");
         assert_eq!(config.admin.listen.to_string(), "127.0.0.1:8788");
         assert!(config.admin.auth.is_none());
@@ -600,8 +861,116 @@ mod tests {
     #[test]
     fn default_configuration_round_trips_as_toml() {
         let config = AgentConfig::default();
-        let parsed: AgentConfig =
-            toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
+        let encoded = toml::to_string_pretty(&config).unwrap();
+        assert!(!encoded.contains("[catalog.postgres]"));
+        let parsed: AgentConfig = toml::from_str(&encoded).unwrap();
         parsed.validate().unwrap();
+    }
+
+    #[test]
+    fn postgres_configuration_is_explicit_and_bounded() {
+        let mut config = AgentConfig::default();
+        config.catalog.backend = MetadataBackend::Postgres;
+        config.validate().unwrap();
+        assert_eq!(
+            config.catalog.postgres.ssl_mode,
+            PostgresSslMode::VerifyFull,
+            "remote PostgreSQL connections must verify certificates and hostnames by default"
+        );
+        config.catalog.postgres.max_connections = 0;
+        assert!(config.validate().is_err());
+
+        config.catalog.backend = MetadataBackend::Sqlite;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn minimal_postgres_configuration_uses_safe_defaults() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(
+            &path,
+            format!("format = {CONFIG_FORMAT:?}\n\n[catalog]\nbackend = \"postgres\"\n"),
+        )
+        .unwrap();
+
+        let config = AgentConfig::load_for_metadata_migration(&path).unwrap();
+        assert_eq!(config.catalog.backend, MetadataBackend::Postgres);
+        assert_eq!(config.catalog.postgres, PostgresCatalogConfig::default());
+    }
+
+    #[test]
+    fn inline_database_url_precedes_the_file_source_and_debug_is_redacted() {
+        let secret = resolve_database_url(
+            Some("postgres://operator:secret@database/daemon".into()),
+            Some("/a/path/that/must/not/be/read".into()),
+            METADATA_DATABASE_URL_ENV,
+            METADATA_DATABASE_URL_FILE_ENV,
+        )
+        .unwrap();
+        assert_eq!(
+            secret.expose(),
+            "postgres://operator:secret@database/daemon"
+        );
+        assert_eq!(format!("{secret:?}"), "SecretDatabaseUrl([REDACTED])");
+    }
+
+    #[test]
+    fn migration_url_defaults_to_runtime_and_allows_a_privileged_override() {
+        let shared = resolve_migration_database_url(
+            Some("postgres://runtime/database".into()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(shared.expose(), "postgres://runtime/database");
+
+        let separate = resolve_migration_database_url(
+            Some("postgres://runtime/database".into()),
+            None,
+            Some("postgres://migrator/database".into()),
+            Some("/a/path/that/must/not/be/read".into()),
+        )
+        .unwrap();
+        assert_eq!(separate.expose(), "postgres://migrator/database");
+    }
+
+    #[test]
+    fn database_url_file_trims_only_one_line_ending() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("database-url");
+        fs::write(&path, b"postgres://database/daemon\r\n").unwrap();
+        let secret = resolve_database_url(
+            None,
+            Some(path.into_os_string()),
+            METADATA_DATABASE_URL_ENV,
+            METADATA_DATABASE_URL_FILE_ENV,
+        )
+        .unwrap();
+        assert_eq!(secret.expose(), "postgres://database/daemon");
+    }
+
+    #[test]
+    fn database_url_failures_do_not_echo_secrets_or_secret_paths() {
+        let inline_canary = "postgres://operator:canary-password@[invalid";
+        let inline_error = resolve_database_url(
+            Some(inline_canary.into()),
+            None,
+            METADATA_DATABASE_URL_ENV,
+            METADATA_DATABASE_URL_FILE_ENV,
+        )
+        .unwrap_err();
+        assert!(!format!("{inline_error:#}").contains(inline_canary));
+
+        let path_canary = "/does/not/exist/canary-database-secret";
+        let file_error = resolve_database_url(
+            None,
+            Some(path_canary.into()),
+            METADATA_DATABASE_URL_ENV,
+            METADATA_DATABASE_URL_FILE_ENV,
+        )
+        .unwrap_err();
+        assert!(!format!("{file_error:#}").contains(path_canary));
     }
 }

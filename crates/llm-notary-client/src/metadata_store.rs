@@ -59,6 +59,10 @@ impl StdError for MetadataStoreError {
 pub trait MetadataStore: Send + Sync {
     fn backend_name(&self) -> &'static str;
 
+    /// Verifies that the backend can serve the exact schema understood by
+    /// this binary. Implementations must not mutate schema or data.
+    async fn readiness(&self) -> MetadataResult<()>;
+
     async fn begin_capture(&self, capture: NewCapture) -> MetadataResult<()>;
     async fn mark_capture_failed(&self, capture_id: &str, failure_code: &str)
     -> MetadataResult<()>;

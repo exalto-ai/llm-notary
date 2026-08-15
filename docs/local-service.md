@@ -87,6 +87,33 @@ listen = "127.0.0.1:8788"
 # public_key = "02..."
 ```
 
+### Metadata backend
+
+SQLite remains the default, and existing catalogs open in place. To run one
+daemon with PostgreSQL instead, change only the backend:
+
+```toml
+[catalog]
+backend = "postgres"
+```
+
+```bash
+export LLM_NOTARY_METADATA_DATABASE_URL='postgresql://…'
+llm-notaryd migrate --config /path/to/config.toml
+llm-notaryd --config /path/to/config.toml
+```
+
+Use `LLM_NOTARY_METADATA_DATABASE_URL_FILE` for a mounted secret. The defaults
+verify the database certificate and hostname and use up to eight pooled
+connections. Separate migration credentials, TLS/pool tuning, role grants, and
+backup steps are covered in [PostgreSQL operations](database-operations.md).
+
+The migrator touches only the daemon-owned schema; runtime startup never
+migrates or falls back to SQLite. Prompt and output previews are plaintext in
+PostgreSQL even though deferred checkpoints remain vault-encrypted. PostgreSQL
+alone does not make multiple daemon processes safe—keep one process until
+server mode also provides shared artifact storage and fenced work ownership.
+
 The admin listener is open to local processes by default. Both listeners must
 still use loopback addresses, and the provider proxy never mounts admin
 routes. This is the simplest setup for a single-user workstation and for a
@@ -109,7 +136,7 @@ dependency.
 
 ## Health, discovery, and authentication
 
-The dashboard shell, its static assets, `GET /healthz`, and
+The dashboard shell, its static assets, `GET /healthz`, `GET /readyz`, and
 `GET /openapi.json` are always public on the loopback admin listener. With the
 default configuration, `/v1` is also available without credentials. OpenAPI
 describes each operation as accepting anonymous access or HTTP Basic because
@@ -121,12 +148,17 @@ Start with the default flow:
 export LLM_NOTARY_ADMIN_ORIGIN=http://127.0.0.1:8788
 
 curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/healthz"
+curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/readyz"
 curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/openapi.json" > /tmp/llm-notary-openapi.json
 curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/v1/status"
 ```
 
 Keep the origin fixed to the configured loopback listener. Do not accept an
 origin from untrusted input.
+
+`/healthz` is local process liveness and stays healthy during a database
+outage. `/readyz` runs a bounded metadata probe and returns `503` when the
+selected database cannot serve the daemon schema.
 
 When `admin.auth` is configured, API clients may send standard HTTP Basic
 credentials. A browser receives 401, shows the username/password form, and

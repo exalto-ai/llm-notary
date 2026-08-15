@@ -200,3 +200,75 @@ pub struct MetadataCounts {
     pub failed: u64,
     pub active_operations: u64,
 }
+
+/// Converts user search text into the deliberately small phrase/token subset
+/// supported identically by SQLite FTS5 and PostgreSQL web search queries.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum CaptureSearchPart {
+    Token(String),
+    Phrase(Vec<String>),
+}
+
+impl CaptureSearchPart {
+    pub(crate) fn expression(&self) -> String {
+        match self {
+            Self::Token(token) => format!("\"{token}\""),
+            Self::Phrase(tokens) => format!("\"{}\"", tokens.join(" ")),
+        }
+    }
+}
+
+pub(crate) fn capture_search_parts(input: &str) -> Option<Vec<CaptureSearchPart>> {
+    fn push_token(
+        token: &mut String,
+        phrase: &mut Vec<String>,
+        output: &mut Vec<CaptureSearchPart>,
+        quoted: bool,
+    ) {
+        if token.is_empty() {
+            return;
+        }
+        if quoted {
+            phrase.push(std::mem::take(token));
+        } else {
+            output.push(CaptureSearchPart::Token(std::mem::take(token)));
+        }
+    }
+
+    fn push_phrase(phrase: &mut Vec<String>, output: &mut Vec<CaptureSearchPart>) {
+        if !phrase.is_empty() {
+            output.push(CaptureSearchPart::Phrase(std::mem::take(phrase)));
+        }
+    }
+
+    let mut output = Vec::new();
+    let mut phrase = Vec::new();
+    let mut token = String::new();
+    let mut quoted = false;
+    for character in input.chars() {
+        if character == '"' {
+            push_token(&mut token, &mut phrase, &mut output, quoted);
+            if quoted {
+                push_phrase(&mut phrase, &mut output);
+            }
+            quoted = !quoted;
+        } else if character.is_alphanumeric() || character == '_' {
+            token.push(character);
+        } else {
+            push_token(&mut token, &mut phrase, &mut output, quoted);
+        }
+    }
+    push_token(&mut token, &mut phrase, &mut output, quoted);
+    push_phrase(&mut phrase, &mut output);
+    (!output.is_empty()).then_some(output)
+}
+
+pub(crate) fn capture_search_expression(input: &str) -> Option<String> {
+    capture_search_parts(input).map(|parts| {
+        parts
+            .iter()
+            .map(CaptureSearchPart::expression)
+            .collect::<Vec<_>>()
+            .join(" ")
+    })
+}

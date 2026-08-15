@@ -31,6 +31,7 @@ where
     F: Fn() -> Fut,
     Fut: Future<Output = Arc<dyn MetadataStore>>,
 {
+    make_store().await.readiness().await.unwrap();
     capture_lifecycle(make_store().await).await;
     preview_search(make_store().await, full_text_search).await;
     capture_filters_pagination_and_counts(make_store().await).await;
@@ -295,11 +296,40 @@ async fn preview_search(store: Arc<dyn MetadataStore>, full_text_search: bool) {
         .await
         .unwrap();
 
+    let mut unicode = new_capture("search-unicode", 30);
+    unicode.prompt_preview = "Résumé CAFÉ 東京".to_owned();
+    let unicode_id = unicode.capture_id.clone();
+    store.begin_capture(unicode).await.unwrap();
+    let mut unicode_completion = completion(&unicode_id, 31, 200);
+    unicode_completion.output_preview = "International text fixture".to_owned();
+    store
+        .complete_capture(
+            unicode_completion,
+            artifact(&unicode_id, ArtifactKind::DeferredBundle, 9),
+        )
+        .await
+        .unwrap();
+
+    let mut boundary = new_capture("search-field-boundary", 40);
+    boundary.prompt_preview = "Boundary alpha".to_owned();
+    let boundary_id = boundary.capture_id.clone();
+    store.begin_capture(boundary).await.unwrap();
+    let mut boundary_completion = completion(&boundary_id, 41, 200);
+    boundary_completion.output_preview = "omega boundary".to_owned();
+    store
+        .complete_capture(
+            boundary_completion,
+            artifact(&boundary_id, ArtifactKind::DeferredBundle, 10),
+        )
+        .await
+        .unwrap();
+
     let query = |value: &str| CaptureFilters {
         query: Some(value.to_owned()),
         limit: 20,
         ..CaptureFilters::default()
     };
+    assert!(store.captures(query("")).await.unwrap().is_empty());
     if !full_text_search {
         for value in [
             "quarterly-pricing",
@@ -317,6 +347,15 @@ async fn preview_search(store: Arc<dyn MetadataStore>, full_text_search: bool) {
     for value in ["quarterly-pricing", "**quarterly**"] {
         assert_eq!(store.captures(query(value)).await.unwrap().len(), 2);
     }
+    assert_eq!(store.captures(query("QUARTERLY")).await.unwrap().len(), 2);
+    for value in ["café", "東京"] {
+        assert_eq!(
+            ids(&store.captures(query(value)).await.unwrap(), |capture| {
+                &capture.capture_id
+            }),
+            vec!["search-unicode"]
+        );
+    }
     assert_eq!(
         ids(
             &store
@@ -327,8 +366,34 @@ async fn preview_search(store: Arc<dyn MetadataStore>, full_text_search: bool) {
         ),
         vec!["search-adjacent"]
     );
+    assert!(
+        store
+            .captures(query("\"alpha omega\""))
+            .await
+            .unwrap()
+            .is_empty(),
+        "a quoted phrase must not cross prompt/output fields"
+    );
+    assert_eq!(
+        ids(
+            &store.captures(query("alpha omega")).await.unwrap(),
+            |capture| &capture.capture_id,
+        ),
+        vec!["search-field-boundary"],
+        "unquoted terms may match across prompt/output fields"
+    );
+    assert_eq!(
+        ids(
+            &store.captures(query("\"quarterly pricing")).await.unwrap(),
+            |capture| &capture.capture_id,
+        ),
+        vec!["search-adjacent"]
+    );
     for value in ["\"pricing quarterly\"", "definitely-not-present-xyz", "**"] {
-        assert!(store.captures(query(value)).await.unwrap().is_empty());
+        assert!(
+            store.captures(query(value)).await.unwrap().is_empty(),
+            "query unexpectedly matched: {value}"
+        );
     }
 }
 

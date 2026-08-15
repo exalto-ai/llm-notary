@@ -17,6 +17,7 @@ bundle_dir = "/state/bundles"
 finalized_dir = "/state/traces"
 
 [catalog]
+backend = "sqlite"
 path = "/state/catalog.db"
 prompt_preview_chars = 1000
 output_preview_chars = 1000

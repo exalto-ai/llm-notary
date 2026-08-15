@@ -61,6 +61,7 @@ use crate::{
 const API_VERSION: &str = "v1";
 const SESSION_COOKIE: &str = "llm_notary_admin_session";
 const SESSION_MAX_AGE_SECONDS: u64 = 43_200;
+const METADATA_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const DASHBOARD_HEADER: &str = "x-llm-notary-request";
 const DASHBOARD_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 const DESKTOP_DASHBOARD_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self' tauri://localhost http://tauri.localhost https://tauri.localhost";
@@ -135,6 +136,7 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
         .route("/dashboard/", get(dashboard_index))
         .route("/assets/{*path}", get(dashboard_asset))
         .route("/healthz", get(health))
+        .route("/readyz", get(readiness))
         .route("/openapi.json", get(openapi))
         .route("/v1/session", post(start_session))
         .merge(protected)
@@ -218,14 +220,14 @@ fn embedded_dashboard_response(path: &str, desktop_embed: bool) -> Response {
         description = "Loopback administration API. Routes are available without credentials by default; configure admin.auth to require HTTP Basic authentication."
     ),
     paths(
-        health, openapi, start_session, end_session, status, notaries, captures, capture,
+        health, readiness, openapi, start_session, end_session, status, notaries, captures, capture,
         start_finalization, operations, operation, retry_operation, trace,
         download_package, verify_trace, events, account_status, start_account_connection,
         end_account_connection, poll_account_connection, share_capture,
         share_status
     ),
     components(schemas(
-        HealthResponse, StatusResponse, CountsResponse, UpdateStatusResponse, NotariesResponse, NotaryResponse,
+        HealthResponse, ReadinessResponse, StatusResponse, CountsResponse, UpdateStatusResponse, NotariesResponse, NotaryResponse,
         PageQuery, CaptureResponse, CaptureDetailResponse, ArtifactResponse,
         OperationSummaryResponse, OperationResponse, OperationProgressResponse,
         OperationProofProgressResponse, OperationAttemptResponse,
@@ -262,6 +264,23 @@ async fn health() -> Json<HealthResponse> {
         api_version: API_VERSION.into(),
         build_id: crate::cli::BUILD_ID.into(),
     })
+}
+
+#[utoipa::path(get, path = "/readyz", summary = "Check service readiness", description = "Runs a bounded metadata dependency probe. PostgreSQL outages or schema mismatches make readiness fail while /healthz remains local liveness.", responses((status = 200, body = ReadinessResponse), (status = 503, body = ErrorEnvelope)), tag = "local-admin")]
+async fn readiness(State(state): State<AdminState>) -> Result<Json<ReadinessResponse>, ApiError> {
+    match tokio::time::timeout(
+        METADATA_PROBE_TIMEOUT,
+        state.persistence.metadata.readiness(),
+    )
+    .await
+    {
+        Ok(Ok(_)) => Ok(Json(ReadinessResponse {
+            service: "llm-notaryd".into(),
+            status: "ready".into(),
+            metadata_backend: state.persistence.metadata.backend_name().into(),
+        })),
+        Ok(Err(_)) | Err(_) => Err(ApiError::service_unavailable("metadata_not_ready")),
+    }
 }
 
 #[utoipa::path(get, path = "/openapi.json", summary = "Get the OpenAPI contract", description = "Returns the exact OpenAPI 3.1 contract implemented by this local service.", responses((status = 200, description = "OpenAPI 3.1 document")), tag = "local-admin")]
@@ -353,20 +372,24 @@ async fn require_auth(State(state): State<AdminState>, request: Request, next: N
     }
 }
 
-#[utoipa::path(get, path = "/v1/status", summary = "Get local service status", description = "Returns listener addresses, vault and notary configuration, preview limits, and current capture counts.", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/status", summary = "Get local service status", description = "Returns listener addresses, metadata readiness, vault and notary configuration, preview limits, and current capture counts.", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>, ApiError> {
-    let counts = state
-        .persistence
-        .metadata
-        .counts()
-        .await
-        .map_err(|_| ApiError::internal("metadata_query_failed"))?;
+    let metadata = state.persistence.metadata.clone();
+    let counts = tokio::time::timeout(METADATA_PROBE_TIMEOUT, async move {
+        metadata.readiness().await?;
+        metadata.counts().await
+    })
+    .await
+    .map_err(|_| ApiError::service_unavailable("metadata_not_ready"))?
+    .map_err(|_| ApiError::service_unavailable("metadata_not_ready"))?;
     let update = state.update_status.read().await;
     Ok(Json(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),
         build_id: crate::cli::BUILD_ID.into(),
         proxy_listener: state.config.proxy.listen.to_string(),
         admin_listener: state.config.admin.listen.to_string(),
+        metadata_backend: state.persistence.metadata.backend_name().into(),
+        metadata_status: "ready".into(),
         vault: Vault::status().unwrap_or("unavailable").into(),
         notary: if state.config.notary.endpoint.is_some() {
             "configured"
@@ -1208,11 +1231,23 @@ pub(crate) fn spawn_finalization_worker(
             if *shutdown.borrow() {
                 return Ok(());
             }
-            let operation = persistence
+            let operation = match persistence
                 .metadata
                 .claim_next_finalization(now_ms()?)
                 .await
-                .context("claim finalization")?;
+            {
+                Ok(operation) => operation,
+                Err(error) => {
+                    tracing::warn!(
+                        error = %error,
+                        "finalization worker could not reach the metadata backend; retrying"
+                    );
+                    if wait_for_worker_retry(&mut shutdown).await {
+                        return Ok(());
+                    }
+                    continue;
+                }
+            };
             let Some(operation) = operation else {
                 tokio::select! {
                     () = work_available.notified() => {},
@@ -1227,42 +1262,70 @@ pub(crate) fn spawn_finalization_worker(
             };
             let result = finalize_operation(&persistence, &config, &vault, &operation).await;
             let now = now_ms()?;
-            match result {
-                Ok(artifact) => {
-                    let outcome = persistence
-                        .metadata
-                        .complete_finalization(&operation.operation_id, artifact, now)
-                        .await?;
-                    require_terminal_operation_result(outcome)?;
-                }
-                Err(error) => {
-                    let code = auth::hosted_admission_error(&error)
-                        .map(|error| error.code())
-                        .or_else(|| {
-                            crate::notary_admission_error(&error).map(|error| {
-                                if error.rejection()
-                                    == crate::NotaryAdmissionRejection::FinalizationCreditsExhausted
-                                {
-                                    "finalization_credits_exhausted"
-                                } else {
-                                    "notary_capacity"
-                                }
-                            })
+            let failure_code = result.as_ref().err().map(|error| {
+                auth::hosted_admission_error(error)
+                    .map(|error| error.code())
+                    .or_else(|| {
+                        crate::notary_admission_error(error).map(|error| {
+                            if error.rejection()
+                                == crate::NotaryAdmissionRejection::FinalizationCreditsExhausted
+                            {
+                                "finalization_credits_exhausted"
+                            } else {
+                                "notary_capacity"
+                            }
                         })
-                        .unwrap_or("finalization_error");
-                    let outcome = persistence
-                        .metadata
-                        .fail_operation(&operation.operation_id, now, code)
-                        .await?;
-                    require_terminal_operation_result(outcome)?;
-                    tracing::warn!(operation_id = %operation.operation_id, failure_code = code, "finalization operation failed");
+                    })
+                    .unwrap_or("finalization_error")
+            });
+            loop {
+                let transition = match (&result, failure_code) {
+                    (Ok(artifact), None) => {
+                        persistence
+                            .metadata
+                            .complete_finalization(&operation.operation_id, artifact.clone(), now)
+                            .await
+                    }
+                    (Err(_), Some(code)) => {
+                        persistence
+                            .metadata
+                            .fail_operation(&operation.operation_id, now, code)
+                            .await
+                    }
+                    _ => unreachable!("finalization result and failure code must agree"),
+                };
+                match transition {
+                    Ok(outcome) => {
+                        require_terminal_operation_result(outcome)?;
+                        break;
+                    }
+                    Err(error) => {
+                        tracing::warn!(
+                            operation_id = %operation.operation_id,
+                            error = %error,
+                            "finalization worker could not persist a terminal transition; retrying"
+                        );
+                        if wait_for_worker_retry(&mut shutdown).await {
+                            return Ok(());
+                        }
+                    }
                 }
+            }
+            if let Some(code) = failure_code {
+                tracing::warn!(operation_id = %operation.operation_id, failure_code = code, "finalization operation failed");
             }
             if *shutdown.borrow() {
                 return Ok(());
             }
         }
     })
+}
+
+async fn wait_for_worker_retry(shutdown: &mut watch::Receiver<bool>) -> bool {
+    tokio::select! {
+        () = tokio::time::sleep(std::time::Duration::from_secs(2)) => false,
+        result = shutdown.changed() => result.is_err() || *shutdown.borrow(),
+    }
 }
 
 fn require_terminal_operation_result(outcome: TerminalOperationResult) -> Result<()> {
@@ -1575,6 +1638,13 @@ struct HealthResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
+struct ReadinessResponse {
+    service: String,
+    status: String,
+    metadata_backend: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
 struct CountsResponse {
     total_captures: u64,
     capturing: u64,
@@ -1603,6 +1673,8 @@ struct StatusResponse {
     build_id: String,
     proxy_listener: String,
     admin_listener: String,
+    metadata_backend: String,
+    metadata_status: String,
     vault: String,
     notary: String,
     preview_chars: usize,
@@ -2332,6 +2404,7 @@ mod tests {
         assert!(body["components"]["securitySchemes"]["basicAuth"].is_object());
         for path in [
             "/healthz",
+            "/readyz",
             "/openapi.json",
             "/v1/status",
             "/v1/notaries",
@@ -2405,7 +2478,7 @@ mod tests {
                 documented_operations += 1;
             }
         }
-        assert_eq!(documented_operations, 22);
+        assert_eq!(documented_operations, 23);
     }
 
     #[tokio::test]
@@ -2599,6 +2672,22 @@ mod tests {
                     .unwrap();
             assert_eq!(body["error"]["code"], "invalid_query_parameter");
         }
+    }
+
+    #[tokio::test]
+    async fn readiness_probes_metadata_without_authentication() {
+        let directory = tempfile::tempdir().unwrap();
+        let response = router(protected_state(directory.path()).await)
+            .unwrap()
+            .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: serde_json::Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["status"], "ready");
+        assert_eq!(body["metadata_backend"], "sqlite");
     }
 
     #[tokio::test]

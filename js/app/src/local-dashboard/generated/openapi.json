@@ -47,6 +47,38 @@
         }
       }
     },
+    "/readyz": {
+      "get": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Check service readiness",
+        "description": "Runs a bounded metadata dependency probe. PostgreSQL outages or schema mismatches make readiness fail while /healthz remains local liveness.",
+        "operationId": "readiness",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadinessResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/account": {
       "get": {
         "tags": [
@@ -1271,7 +1303,7 @@
           "local-admin"
         ],
         "summary": "Get local service status",
-        "description": "Returns listener addresses, vault and notary configuration, preview limits, and current capture counts.",
+        "description": "Returns listener addresses, metadata readiness, vault and notary configuration, preview limits, and current capture counts.",
         "operationId": "status",
         "responses": {
           "200": {
@@ -1285,6 +1317,16 @@
             }
           },
           "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
             "description": "",
             "content": {
               "application/json": {
@@ -2404,6 +2446,25 @@
           }
         }
       },
+      "ReadinessResponse": {
+        "type": "object",
+        "required": [
+          "service",
+          "status",
+          "metadata_backend"
+        ],
+        "properties": {
+          "metadata_backend": {
+            "type": "string"
+          },
+          "service": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
       "ShareResponse": {
         "type": "object",
         "required": [
@@ -2494,6 +2555,8 @@
           "build_id",
           "proxy_listener",
           "admin_listener",
+          "metadata_backend",
+          "metadata_status",
           "vault",
           "notary",
           "preview_chars",
@@ -2509,6 +2572,12 @@
           },
           "counts": {
             "$ref": "#/components/schemas/CountsResponse"
+          },
+          "metadata_backend": {
+            "type": "string"
+          },
+          "metadata_status": {
+            "type": "string"
           },
           "notary": {
             "type": "string"

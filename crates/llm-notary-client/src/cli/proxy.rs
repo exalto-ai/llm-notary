@@ -184,14 +184,9 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     if max_attestable_http_bytes == 0 {
         bail!("maximum attestable HTTP bytes must be non-zero");
     }
-    let hosted_admission = config.notary.endpoint.is_none();
-    let notary = match config.notary_endpoint()? {
-        Some(notary) => notary,
-        None => discover_notary().await?,
-    };
-    let vault = Vault::open_or_init_interactive().context(
-        "opening the local bundle vault (set LLM_NOTARY_VAULT_PASSPHRASE_FILE before first start when an OS vault is unavailable)",
-    )?;
+    // Open and validate persistence before notary discovery or interactive
+    // vault initialization. A PostgreSQL outage or unmigrated schema therefore
+    // fails startup directly and never causes a fallback or unrelated prompt.
     let persistence = Persistence::open(&config).await?;
     let recovery = persistence.reconcile_incomplete_captures().await?;
     if recovery.recovered_bundles > 0 || recovery.interrupted_captures > 0 {
@@ -201,6 +196,14 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
             "reconciled captures left incomplete by an earlier proxy process"
         );
     }
+    let hosted_admission = config.notary.endpoint.is_none();
+    let notary = match config.notary_endpoint()? {
+        Some(notary) => notary,
+        None => discover_notary().await?,
+    };
+    let vault = Vault::open_or_init_interactive().context(
+        "opening the local bundle vault (set LLM_NOTARY_VAULT_PASSPHRASE_FILE before first start when an OS vault is unavailable)",
+    )?;
     let state = AppState {
         notary: notary.clone(),
         max_frame_bytes,
