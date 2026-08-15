@@ -721,7 +721,7 @@ async fn issue_admission(
         ));
     }
     let policy = policy_for_pool(&state.admission, pool);
-    let (record_digest, allowance) = validate_ticket_request(&request, policy)?;
+    let (record_digest, requested_allowance) = validate_ticket_request(&request, policy)?;
     let token = random_token();
     let directory_generation = i64::try_from(state.notary_directory.generation)
         .map_err(|_| ApiError::internal(anyhow::anyhow!("directory generation is too large")))?;
@@ -737,6 +737,15 @@ async fn issue_admission(
         now,
     )
     .await?;
+    let allowance = if request.mode == AdmissionMode::Capture {
+        bounded_capture_allowance(
+            requested_allowance,
+            available_credit_bytes(&mut transaction, &credit_subject, CreditKind::Capture, now)
+                .await?,
+        )?
+    } else {
+        requested_allowance
+    };
     {
         preflight_credits(
             &mut transaction,
@@ -776,11 +785,15 @@ async fn issue_admission(
     transaction.commit().await.map_err(database_error)?;
 
     metrics::counter!("llm_notary_admission_tickets_total", "pool" => pool.as_str(), "mode" => request.mode.as_str()).increment(1);
+    let mut limits = admission_limits(policy);
+    if request.mode == AdmissionMode::Capture {
+        limits.max_attestable_http_bytes = allowance;
+    }
     Ok(Json(AdmissionTicketResponse {
         ticket: token,
         expires_at,
         directory_generation: state.notary_directory.generation,
-        limits: admission_limits(policy),
+        limits,
     }))
 }
 
@@ -1945,16 +1958,7 @@ async fn preflight_credits(
             };
         }
     }
-    let available = available_grants(transaction, credit_subject, credit_kind, now)
-        .await?
-        .iter()
-        .map(|(_, remaining)| *remaining)
-        .sum::<i64>()
-        .saturating_add(if credit_kind == CreditKind::Notarization {
-            credit_adjustment_total(&mut **transaction, credit_subject).await?
-        } else {
-            0
-        });
+    let available = available_credit_bytes(transaction, credit_subject, credit_kind, now).await?;
     if available < allowance {
         return Err(ApiError::coded(
             StatusCode::PAYMENT_REQUIRED,
@@ -1963,6 +1967,38 @@ async fn preflight_credits(
         ));
     }
     Ok(())
+}
+
+async fn available_credit_bytes(
+    transaction: &mut Transaction<'_, Postgres>,
+    credit_subject: &str,
+    credit_kind: CreditKind,
+    now: i64,
+) -> ApiResult<i64> {
+    Ok(
+        available_grants(transaction, credit_subject, credit_kind, now)
+            .await?
+            .iter()
+            .map(|(_, remaining)| *remaining)
+            .sum::<i64>()
+            .saturating_add(if credit_kind == CreditKind::Notarization {
+                credit_adjustment_total(&mut **transaction, credit_subject).await?
+            } else {
+                0
+            }),
+    )
+}
+
+fn bounded_capture_allowance(session_max: i64, available: i64) -> ApiResult<i64> {
+    let allowance = session_max.min(available);
+    if allowance <= 0 {
+        return Err(ApiError::coded(
+            StatusCode::PAYMENT_REQUIRED,
+            credit_exhausted_code(CreditKind::Capture),
+            credit_exhausted_message(CreditKind::Capture),
+        ));
+    }
+    Ok(allowance)
 }
 
 async fn available_grants(
@@ -2589,6 +2625,18 @@ mod tests {
                 trace_storage_bytes: None,
             }
         );
+    }
+
+    #[test]
+    fn capture_tickets_use_the_last_partial_allowance() {
+        assert_eq!(
+            bounded_capture_allowance(8 << 20, 50_000_000).unwrap(),
+            8 << 20
+        );
+        assert_eq!(bounded_capture_allowance(8 << 20, 1_024).unwrap(), 1_024);
+        let exhausted = bounded_capture_allowance(8 << 20, 0).unwrap_err();
+        assert_eq!(exhausted.status, StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(exhausted.code, "capture_credits_exhausted");
     }
 
     #[test]

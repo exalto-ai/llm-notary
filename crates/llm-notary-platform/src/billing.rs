@@ -980,6 +980,28 @@ async fn create_subscription_checkout_session(
             .await
             .map_err(stripe_api_error)?
     };
+    validate_subscription_session_binding(&stripe, &row.0, &session)?;
+    if session.status.as_deref() == Some("expired") {
+        sqlx::query(
+            "UPDATE billing_subscription_checkouts
+             SET state = 'expired', provider_checkout_session_id = COALESCE(
+                     provider_checkout_session_id, $1
+                 ), updated_at = $2
+             WHERE id = $3 AND account_id = $4
+               AND state IN ('creating', 'checkout_open')
+               AND (provider_checkout_session_id IS NULL OR provider_checkout_session_id = $1)",
+        )
+        .bind(&session.id)
+        .bind(now)
+        .bind(&row.0)
+        .bind(&user.0)
+        .execute(&state.database)
+        .await
+        .map_err(database_error)?;
+        return Err(ApiError::conflict(
+            "Subscription Checkout expired; start a new Checkout",
+        ));
+    }
     validate_created_subscription_session(&stripe, &row.0, &session)?;
     let checkout_url = session
         .url
@@ -1355,10 +1377,21 @@ fn validate_created_subscription_session(
     checkout_id: &str,
     session: &StripeCheckoutSession,
 ) -> ApiResult<()> {
+    validate_subscription_session_binding(stripe, checkout_id, session)?;
+    if session.status.as_deref() != Some("open") {
+        return Err(stripe_invalid("Stripe Checkout Session is not open"));
+    }
+    Ok(())
+}
+
+fn validate_subscription_session_binding(
+    stripe: &StripeClient,
+    checkout_id: &str,
+    session: &StripeCheckoutSession,
+) -> ApiResult<()> {
     validate_stripe_id(&session.id, "cs_").map_err(stripe_invalid_error)?;
     if session.livemode != stripe.livemode
         || session.mode.as_deref() != Some("subscription")
-        || session.status.as_deref() != Some("open")
         || session.client_reference_id.as_deref() != Some(checkout_id)
         || session.metadata.get("billing_kind").map(String::as_str) != Some("subscription")
         || session
@@ -2996,6 +3029,40 @@ mod tests {
         assert_eq!(
             cancel.as_str(),
             "https://llm-notary.example/#/dashboard/credits?subscription=cancelled"
+        );
+    }
+
+    #[test]
+    fn expired_subscription_checkout_keeps_a_valid_local_binding() {
+        let billing = BillingService::for_test(
+            Url::parse("http://127.0.0.1:1/v1/").unwrap(),
+            Url::parse("https://example.test").unwrap(),
+        );
+        let stripe = billing.stripe().unwrap();
+        let session: StripeCheckoutSession = serde_json::from_value(serde_json::json!({
+            "id": "cs_expired_fixture",
+            "url": null,
+            "mode": "subscription",
+            "status": "expired",
+            "livemode": false,
+            "payment_status": "unpaid",
+            "amount_total": null,
+            "currency": null,
+            "client_reference_id": "checkout-fixture",
+            "metadata": {
+                "billing_kind": "subscription",
+                "subscription_checkout_id": "checkout-fixture",
+                "schema_version": "2"
+            },
+            "payment_intent": null,
+            "subscription": null,
+            "customer": null,
+            "line_items": null
+        }))
+        .unwrap();
+        validate_subscription_session_binding(stripe, "checkout-fixture", &session).unwrap();
+        assert!(
+            validate_created_subscription_session(stripe, "checkout-fixture", &session).is_err()
         );
     }
 

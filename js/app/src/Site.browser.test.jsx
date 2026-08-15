@@ -337,13 +337,16 @@ describe('hosted site', () => {
     };
     render(<Dashboard
       {...common}
-      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'live' }), credits: creditsFixture(), share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
+      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'live' }), credits: creditsFixture(50_000_000), share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
       startSubscriptionCheckout={async (plan, idempotencyKey) => {
         checkoutRequest = { plan, idempotencyKey };
         return { checkout_url: 'https://checkout.stripe.com/c/pay/subscription' };
       }}
     />);
 
+    expect(document.body.textContent).toContain('50.0 MB');
+    expect(document.body.textContent).toContain('of 1.0 GB');
+    expect(document.body.textContent).not.toContain('47.7 MB');
     await page.getByRole('button', { name: '1 GB · $9.99/month' }).click();
     expect(checkoutRequest.plan).toBe('one_gb');
     expect(checkoutRequest.idempotencyKey).toMatch(/^[a-zA-Z0-9_-]+$/);

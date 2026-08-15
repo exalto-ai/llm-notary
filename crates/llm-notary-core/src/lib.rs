@@ -1497,6 +1497,7 @@ pub async fn run_notary_session_after_prelude(
         max_frame_bytes,
         None,
         None,
+        None,
     )
     .await
     .map(|_| ())
@@ -1508,6 +1509,11 @@ pub struct HostedNotarySessionResult {
     pub authenticated_transcript_bytes: usize,
 }
 
+/// Persists the authenticated capture size before the notary returns its
+/// receipt. Hosted services use this to make exact allowance settlement
+/// recoverable across coordinator outages and process restarts.
+pub type HostedCaptureSettlementRecorder = Box<dyn FnOnce(usize) -> Result<()> + Send>;
+
 /// Runs a coordinator-admitted hosted session with effective limits already
 /// intersected with the notary's process-local maxima.
 pub async fn run_hosted_notary_session_after_prelude(
@@ -1516,6 +1522,7 @@ pub async fn run_hosted_notary_session_after_prelude(
     signing_key: Arc<SigningKey>,
     allowed_hosts: Arc<Vec<String>>,
     limits: HostedNotarySessionLimits,
+    capture_settlement_recorder: Option<HostedCaptureSettlementRecorder>,
 ) -> Result<HostedNotarySessionResult> {
     let authenticated_transcript_bytes = run_notary_session_with_limits(
         socket,
@@ -1528,6 +1535,7 @@ pub async fn run_hosted_notary_session_after_prelude(
         limits.max_frame_bytes,
         limits.expected_record_digest,
         limits.expected_transcript_bytes,
+        capture_settlement_recorder,
     )
     .await?;
     Ok(HostedNotarySessionResult {
@@ -1547,6 +1555,7 @@ async fn run_notary_session_with_limits(
     max_frame_bytes: usize,
     expected_record_digest: Option<[u8; 32]>,
     expected_transcript_bytes: Option<usize>,
+    capture_settlement_recorder: Option<HostedCaptureSettlementRecorder>,
 ) -> Result<usize> {
     validate_notary_frame_limit(max_frame_bytes)?;
     match mode {
@@ -1557,6 +1566,7 @@ async fn run_notary_session_with_limits(
                 allowed_hosts,
                 max_total_private_chunk_bytes,
                 max_frame_bytes,
+                capture_settlement_recorder,
             )
             .await
         }
@@ -1582,6 +1592,7 @@ async fn run_deferred_capture_session(
     allowed_hosts: Arc<Vec<String>>,
     max_transcript_bytes: usize,
     max_frame_bytes: usize,
+    capture_settlement_recorder: Option<HostedCaptureSettlementRecorder>,
 ) -> Result<usize> {
     let session = Session::new(socket.compat());
     let (driver, mut handle) = session.split();
@@ -1641,6 +1652,10 @@ async fn run_deferred_capture_session(
         || request.record_digest != deferred.record_digest()
     {
         bail!("client deferred checkpoint does not match notary session state");
+    }
+    if let Some(record_settlement) = capture_settlement_recorder {
+        record_settlement(transcript_bytes)
+            .context("persisting hosted capture allowance settlement")?;
     }
     let receipt = issue_deferred_receipt(
         &signing_key,

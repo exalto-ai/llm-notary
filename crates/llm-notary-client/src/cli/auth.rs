@@ -235,6 +235,11 @@ pub(crate) fn hosted_admission_denial(code: &str) -> HostedAdmissionError {
             "capture_credits_exhausted",
             "The monthly hosted capture allowance is exhausted. Wait for the monthly reset or change plans.",
         ),
+        "billing_review" => (
+            StatusCode::PAYMENT_REQUIRED,
+            "billing_review",
+            "Hosted capture and notarization are unavailable while billing is under review. Open Plan & usage to manage the subscription.",
+        ),
         _ => (
             StatusCode::BAD_GATEWAY,
             "hosted_admission_denied",
@@ -1184,6 +1189,11 @@ mod tests {
         assert_eq!(exhausted.status(), StatusCode::PAYMENT_REQUIRED);
         assert_eq!(exhausted.code(), "finalization_credits_exhausted");
         assert!(exhausted.message().contains("monthly reset"));
+
+        let billing_review = hosted_admission_denial("billing_review");
+        assert_eq!(billing_review.status(), StatusCode::PAYMENT_REQUIRED);
+        assert_eq!(billing_review.code(), "billing_review");
+        assert!(billing_review.message().contains("Plan & usage"));
 
         let unknown = hosted_admission_denial("secret-value-from-an-upstream-error");
         assert_eq!(unknown.status(), StatusCode::BAD_GATEWAY);

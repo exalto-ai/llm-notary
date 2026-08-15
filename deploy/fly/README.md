@@ -19,7 +19,16 @@ app's `.fly.dev` hostname, so no custom DNS is required.
 
 The checked-in configuration targets the `llm-notary-prod` organization. Create
 the three apps and provision a private Flycast address for the API before the
-first deployment. The notary's TLS handler can use Fly's shared IPv4 routing.
+first deployment. Create the notary's private settlement-outbox volume once;
+it contains only lease settlement metadata and lets exact capture accounting
+survive restarts and Machine replacement:
+
+```bash
+fly volumes create notary_data --region sjc --size 1 \
+  -a llm-notary-prod-notary
+```
+
+The notary's TLS handler can use Fly's shared IPv4 routing.
 Create a Neon PostgreSQL database and stage its pooled connection URL as the
 `DATABASE_URL` Fly secret and its direct connection URL as the
 `DATABASE_MIGRATIONS_URL` Fly secret before deploying the API; staging avoids

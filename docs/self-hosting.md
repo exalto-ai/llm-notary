@@ -197,6 +197,12 @@ Every hosted capture or finalization obtains a short-lived one-time ticket from
 and renews a PostgreSQL-backed lease while work continues. New sessions fail
 closed if the coordinator is unavailable.
 
+Set `LLM_NOTARY_RELEASE_OUTBOX_DIR` to a private persistent directory writable
+by the notary. It stores only lease IDs, notary instance IDs, outcomes, and byte
+counts. The notary writes a successful capture's exact count before returning
+its receipt and keeps retrying coordinator settlement across process restarts.
+The supplied Compose configuration mounts a dedicated named volume there.
+
 The shared admission service token authenticates only the notary's internal
 redeem, renew, and release calls. It is never sent to local clients and is
 unrelated to provider credentials or session-sharing access tokens.

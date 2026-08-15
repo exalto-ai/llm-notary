@@ -385,7 +385,7 @@ export function VerificationPage({ verifyFile = verifyTracePackage }) {
         <input ref={inputRef} type="file" onChange={(event) => chooseFile(event.target.files[0] || null)} />
         <span>{file ? 'Package selected' : 'Drop one .llmtrace package here'}</span>
         <strong>{file ? file.name : 'or choose a file'}</strong>
-        <small>{file ? fileSize(file.size) : 'Maximum package size: 128 MiB'}</small>
+        <small>{file ? binaryFileSize(file.size) : 'Maximum package size: 128 MiB'}</small>
       </label>
       {file && <label className="verification-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /><span>I understand that this package may contain sensitive content.</span></label>}
       <div className="verification-actions"><button className="button button-dark" type="submit" disabled={!file || !consent || status === 'uploading'}>{status === 'uploading' ? 'Checking package…' : 'Verify package'}</button>{file && <button className="button" type="button" onClick={resetVerification}>Clear</button>}</div>
@@ -1197,7 +1197,7 @@ export function SharePage({ shareId, loadShare = getPublicShare, loadTrace = get
     <div className="share-page-layout">
       <section className="share-transcript" aria-labelledby="shared-conversation-title"><header><h2 id="shared-conversation-title">Conversation</h2><span>{messageCount} {messageCount === 1 ? 'message' : 'messages'}</span></header><SharedConversation spans={spans} /></section>
       <aside className="share-evidence-rail"><span className="eyebrow">Verification</span><dl><div><dt>Provider</dt><dd><ProviderIdentity provider={share.provider} /></dd></div><div><dt>Host</dt><dd>{share.host}</dd></div><div><dt>Authenticated</dt><dd>{authenticated}</dd></div><div><dt>Visibility</dt><dd>{share.visibility}{share.password_protected ? ' · password protected' : ''}</dd></div>{share.expires_at && <div><dt>Expires</dt><dd>{sessionDate(share.expires_at)}</dd></div>}</dl>
-        {share.package_url ? share.password_protected ? <button className="share-package-download" type="button" onClick={saveProtectedPackage}><span>Package</span><b>Download .llmtrace</b><small>{fileSize(share.package_size_bytes || 0)} · SHA-256 included</small></button> : <a className="share-package-download" href={share.package_url}><span>Package</span><b>Download .llmtrace</b><small>{fileSize(share.package_size_bytes || 0)} · SHA-256 included</small></a> : <p className="share-legacy-package">Exact package unavailable for this older share.</p>}
+        {share.package_url ? share.password_protected ? <button className="share-package-download" type="button" onClick={saveProtectedPackage}><span>Package</span><b>Download .llmtrace</b><small>{binaryFileSize(share.package_size_bytes || 0)} · SHA-256 included</small></button> : <a className="share-package-download" href={share.package_url}><span>Package</span><b>Download .llmtrace</b><small>{binaryFileSize(share.package_size_bytes || 0)} · SHA-256 included</small></a> : <p className="share-legacy-package">Exact package unavailable for this older share.</p>}
         {packageError && <p className="share-package-error" role="alert">{packageError}</p>}
         <details className="share-technical"><summary>Hashes and notary</summary><dl><div><dt>Trace SHA-256</dt><dd><code>{share.trace_sha256}</code></dd></div>{share.package_sha256 && <div><dt>Package SHA-256</dt><dd><code>{share.package_sha256}</code></dd></div>}<div><dt>Notary key</dt><dd><code>{share.notary_key_id || 'Not recorded'}</code></dd></div><div><dt>Directory generation</dt><dd>{share.directory_generation ?? 'Not recorded'}</dd></div><div><dt>Safety contract</dt><dd><code>{share.public_package_safety_version || 'Legacy'}</code></dd></div></dl></details>
         <button className="share-report-button" type="button" onClick={() => setReportOpen(true)}>Report this trace</button>
@@ -1211,11 +1211,18 @@ function sessionDate(unixSeconds) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(unixSeconds * 1000));
 }
 
-function fileSize(bytes) {
+function binaryFileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function decimalSize(bytes) {
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(1)} KB`;
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 
 function shareStateLabel(state) {
@@ -1393,7 +1400,7 @@ function CreditUtilizationFallback({ credits }) {
   return <section className="dashboard-utilization dashboard-utilization--loading" role="status" aria-label="Loading daily utilization">
     <header><div><span className="eyebrow">Notarization usage</span><h2>Last 30 days</h2></div><span>MB · UTC</span></header>
     <div className="dashboard-utilization-plot dashboard-utilization-plot--loading"><i /></div>
-    <dl><div><dt><i className="dashboard-utilization-period" />30-day use</dt><dd>—</dd></div><div><dt>Available</dt><dd>{fileSize(notarization.total_remaining_bytes)}</dd></div><div><dt>Overall budget</dt><dd>{fileSize(notarization.total_granted_bytes)}</dd></div></dl>
+    <dl><div><dt><i className="dashboard-utilization-period" />30-day use</dt><dd>—</dd></div><div><dt>Available</dt><dd>{decimalSize(notarization.total_remaining_bytes)}</dd></div><div><dt>Overall budget</dt><dd>{decimalSize(notarization.total_granted_bytes)}</dd></div></dl>
   </section>;
 }
 
@@ -1865,7 +1872,7 @@ export function Dashboard({
             <div><span>Admitted traces</span><b>{shares === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>
-          {credits && <Suspense fallback={<CreditUtilizationFallback credits={credits} />}><CreditUtilizationChart credits={credits} formatBytes={fileSize} historyDebits={creditUtilizationHistory} historyError={creditUtilizationError} /></Suspense>}
+          {credits && <Suspense fallback={<CreditUtilizationFallback credits={credits} />}><CreditUtilizationChart credits={credits} formatBytes={decimalSize} historyDebits={creditUtilizationHistory} historyError={creditUtilizationError} /></Suspense>}
         </>}
         {activeView === 'credits' && <>
           <header className="dashboard-page-header"><span className="eyebrow">Billing</span><h1>Plan & usage</h1><p>Manage your subscription and track capture, notarization, and trace storage separately.</p></header>
@@ -1882,13 +1889,13 @@ export function Dashboard({
             {billing.billing_status === 'review' && subscriptionStatus !== 'review' && <p className="dashboard-checkout-state" role="alert">Billing needs attention. Hosted capture, notarization, and trace uploads are paused until it is resolved.</p>}
             <p className="dashboard-credit-note">Capture and notarization have separate monthly allowances. Extra purchases add only notarization and do not expire.</p>
             <div className="dashboard-usage-ledger" aria-label="Plan usage breakdown">
-              <div><span>Capture available</span><b>{fileSize(credits.capture.total_remaining_bytes)}</b><small>{fileSize(credits.capture.included_monthly_remaining_bytes)} included this month</small></div>
-              <div><span>Notarization available</span><b>{fileSize(credits.notarization.total_remaining_bytes)}</b><small>{fileSize(credits.notarization.included_monthly_remaining_bytes)} monthly · {fileSize(credits.notarization.supplemental_remaining_bytes)} extra</small></div>
-              <div><span>Trace storage</span><b>{fileSize(user.share_stats?.stored_bytes ?? 0)}</b><small>{billing.entitlements?.trace_storage_bytes == null ? 'No fixed plan limit*' : `of ${fileSize(billing.entitlements.trace_storage_bytes)}`}</small></div>
+              <div><span>Capture available</span><b>{decimalSize(credits.capture.total_remaining_bytes)}</b><small>{decimalSize(credits.capture.included_monthly_remaining_bytes)} included this month</small></div>
+              <div><span>Notarization available</span><b>{decimalSize(credits.notarization.total_remaining_bytes)}</b><small>{decimalSize(credits.notarization.included_monthly_remaining_bytes)} monthly · {decimalSize(credits.notarization.supplemental_remaining_bytes)} extra</small></div>
+              <div><span>Trace storage</span><b>{decimalSize(user.share_stats?.stored_bytes ?? 0)}</b><small>{billing.entitlements?.trace_storage_bytes == null ? 'No fixed plan limit*' : `of ${decimalSize(billing.entitlements.trace_storage_bytes)}`}</small></div>
             </div>
             {billing.entitlements?.trace_storage_bytes == null && <p className="dashboard-usage-footnote">*Fair-use and abuse controls still apply. Per-file safety limits remain in place.</p>}
             {creditError && <p className="dashboard-session-error" role="alert">{creditError}</p>}
-            {creditOffers?.map((offer) => <article className="dashboard-credit-offer" key={offer.id}><div><span className="eyebrow">Available offer</span><b>{offer.title}</b><p>{offer.description} Claim by {sessionDate(offer.claim_expires_at)}.</p></div><button type="button" onClick={() => claimOffer(offer)} disabled={claimingOffer === offer.id}>{claimingOffer === offer.id ? 'Claiming…' : `Claim ${fileSize(offer.amount_bytes)}`}</button></article>)}
+            {creditOffers?.map((offer) => <article className="dashboard-credit-offer" key={offer.id}><div><span className="eyebrow">Available offer</span><b>{offer.title}</b><p>{offer.description} Claim by {sessionDate(offer.claim_expires_at)}.</p></div><button type="button" onClick={() => claimOffer(offer)} disabled={claimingOffer === offer.id}>{claimingOffer === offer.id ? 'Claiming…' : `Claim ${decimalSize(offer.amount_bytes)}`}</button></article>)}
             {checkoutEnabled ? <section className="dashboard-credit-purchase" aria-labelledby="buy-credit-title">
               <div className="dashboard-credit-purchase-copy"><span className="eyebrow">Extra notarization · $10 per GB</span><h3 id="buy-credit-title">Buy {quantityGb} GB</h3>{purchaseMode === 'test' && <strong className="dashboard-billing-mode" role="status">Stripe test mode · no real charges</strong>}<p>{purchaseMode === 'test' ? `$${quantityGb * 10}.00 USD test purchase · use a Stripe test card` : `$${quantityGb * 10}.00 USD · one-time payment through Stripe`}</p></div>
               <div className="dashboard-credit-quantity" role="group" aria-label="Credit quantity">{[1, 5, 10, 20].map((quantity) => <button key={quantity} type="button" aria-label={`${quantity} GB`} aria-pressed={quantityGb === quantity} onClick={() => { setQuantityGb(quantity); setCheckoutAttemptKey(null); }}>{quantity}<small aria-hidden="true">GB</small></button>)}</div>
@@ -1898,7 +1905,7 @@ export function Dashboard({
             {checkoutReturnMessages[displayedCheckoutStatus] && <p className="dashboard-checkout-state" role="status">{checkoutReturnMessages[displayedCheckoutStatus]}</p>}
             {purchaseError && <p className="dashboard-session-error" role="alert">{purchaseError}</p>}
             <div className="dashboard-purchase-history"><h3>Purchases</h3>{purchases === null && !purchaseError ? <p>Loading purchases…</p> : purchases?.length ? purchases.map((purchase) => <div key={purchase.id}><span className={`dashboard-purchase-state dashboard-purchase-state--${purchase.state}`}><i aria-hidden="true" />{purchase.state.replaceAll('_', ' ')}</span><b>{purchase.quantity_gb} GB · ${(purchase.amount_cents / 100).toFixed(2)}</b><time>{sessionDate(purchase.created_at)}</time></div>) : <p>No credit purchases yet.</p>}</div>
-            {creditHistory?.length > 0 && <div className="dashboard-credit-history"><h3>Usage activity</h3>{creditHistory.map((entry) => { const addsCredit = entry.kind === 'grant' || (entry.kind === 'adjustment' && entry.amount_bytes > 0); return <div key={`${entry.kind}-${entry.id}`}><span className={`dashboard-credit-sign dashboard-credit-sign--${entry.kind}`}>{addsCredit ? '+' : '−'}{fileSize(Math.abs(entry.amount_bytes))}</span><span><small>{entry.credit_kind}</small>{entry.display_label}</span><time>{sessionDate(entry.created_at)}</time></div>; })}{creditHistoryCursor && <button className="dashboard-load-more" type="button" onClick={loadMoreCreditHistory} disabled={loadingMoreCreditHistory}>{loadingMoreCreditHistory ? 'Loading…' : 'Load older activity'}</button>}</div>}
+            {creditHistory?.length > 0 && <div className="dashboard-credit-history"><h3>Usage activity</h3>{creditHistory.map((entry) => { const addsCredit = entry.kind === 'grant' || (entry.kind === 'adjustment' && entry.amount_bytes > 0); return <div key={`${entry.kind}-${entry.id}`}><span className={`dashboard-credit-sign dashboard-credit-sign--${entry.kind}`}>{addsCredit ? '+' : '−'}{decimalSize(Math.abs(entry.amount_bytes))}</span><span><small>{entry.credit_kind}</small>{entry.display_label}</span><time>{sessionDate(entry.created_at)}</time></div>; })}{creditHistoryCursor && <button className="dashboard-load-more" type="button" onClick={loadMoreCreditHistory} disabled={loadingMoreCreditHistory}>{loadingMoreCreditHistory ? 'Loading…' : 'Load older activity'}</button>}</div>}
           </section>}
         </>}
         {activeView === 'settings' && <>

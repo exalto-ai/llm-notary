@@ -23,6 +23,10 @@ also keeps the platform's per-file package safety limit.
 Capture and notarization use independent ledgers. Redeeming a hosted capture
 ticket temporarily reserves its per-session ceiling, then a successful session
 settles that reservation to the authenticated TLS application-data byte count.
+The notary persists that exact count before returning the capture receipt and
+replays settlement from its private outbox until the coordinator accepts it.
+When less than the normal per-session ceiling remains, the final ticket is
+capped to that remaining balance instead of stranding it.
 Service failures release the reservation; client and transport failures retain
 it to prevent repeated incomplete sessions from bypassing the allowance.
 Redeeming a finalization ticket debits the immutable authenticated allowance
