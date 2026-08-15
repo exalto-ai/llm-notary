@@ -27,6 +27,7 @@ required-features = ["test-utils"]
 
 [dependencies]
 anyhow = "1.0"
+argon2 = "0.5"
 aws-sdk-s3 = { version = "1.140", default-features = false, features = [
     "default-https-client",
     "rt-tokio",

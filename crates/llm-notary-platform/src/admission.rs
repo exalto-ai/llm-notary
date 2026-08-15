@@ -1,15 +1,27 @@
-use std::time::{Duration, Instant};
+use std::{
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
+
+#[cfg(test)]
+use std::sync::Arc;
 
 use anyhow::{Result, bail};
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     Json,
     body::Body,
-    extract::{Path, Query, State},
-    http::{HeaderValue, StatusCode, header},
+    extract::{ConnectInfo, Path, Query, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::Sha256;
 use sqlx::FromRow;
+#[cfg(test)]
+use tokio::sync::Semaphore;
 use tracing::Span;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -31,7 +43,7 @@ use super::{
         acquire_verification_capacity, verify_package,
     },
     pagination,
-    publish::PublishJobRow,
+    publish::{MAX_SHARE_PASSWORD_BYTES, PublishJobRow, run_share_password_work},
     unix_timestamp,
 };
 
@@ -39,11 +51,43 @@ const ADMISSION_INTERVAL_SECS: u64 = 2;
 const CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
 const MAX_JOBS_PER_TICK: usize = 4;
 const LIBRARY_PREVIEW_CHARS: usize = 180;
+const SHARE_PASSWORD_HEADER: &str = "x-share-password";
+const MAX_REPORT_MESSAGE_CHARS: usize = 500;
+const SHARE_RATE_LIMIT_KEY_PURPOSE: &[u8] = b"llm-notary/share-rate-limit/v1";
+const RATE_LIMIT_CLEANUP_INTERVAL_SECS: u64 = 10 * 60;
+const RATE_LIMIT_RETENTION_SECS: i64 = 24 * 60 * 60;
+
+#[derive(Clone, Copy)]
+struct ShareRateLimit {
+    action: &'static str,
+    max_requests: i64,
+    window_secs: i64,
+    error_code: &'static str,
+    error_message: &'static str,
+}
+
+const SHARE_PASSWORD_RATE_LIMIT: ShareRateLimit = ShareRateLimit {
+    action: "password",
+    max_requests: 10,
+    window_secs: 60,
+    error_code: "share_password_rate_limited",
+    error_message: "Too many password attempts were made from this network",
+};
+
+const SHARE_REPORT_RATE_LIMIT: ShareRateLimit = ShareRateLimit {
+    action: "report",
+    max_requests: 5,
+    window_secs: 60 * 60,
+    error_code: "share_report_rate_limited",
+    error_message: "Too many reports were submitted from this network",
+};
 
 #[derive(FromRow)]
 struct PublicShareRow {
     id: String,
     visibility: String,
+    share_expires_at: Option<i64>,
+    share_password_hash: Option<String>,
     publisher: String,
     admitted_at: i64,
     provider: String,
@@ -73,6 +117,7 @@ struct ListedShareRow {
     authenticated_provider_connection_unix_ms: Option<i64>,
     library_input_preview: Option<String>,
     library_output_preview: Option<String>,
+    password_protected: bool,
     page_authenticated_at_unix_ms: i64,
 }
 
@@ -99,6 +144,7 @@ struct ListedShareSummary {
     authenticated_at_unix_ms: Option<i64>,
     input_preview: Option<String>,
     output_preview: Option<String>,
+    password_protected: bool,
     share_url: String,
 }
 
@@ -106,6 +152,8 @@ struct ListedShareSummary {
 struct PublicShareDetail {
     id: String,
     visibility: String,
+    password_protected: bool,
+    expires_at: Option<i64>,
     publisher: String,
     admitted_at: i64,
     authenticated_at_unix_ms: Option<i64>,
@@ -126,6 +174,41 @@ struct PublicShareDetail {
     trace_url: String,
     package_url: Option<String>,
     share_url: String,
+}
+
+#[derive(Clone, Copy, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum ShareReportReason {
+    SensitiveInformation,
+    Harassment,
+    IllegalContent,
+    Spam,
+    Other,
+}
+
+impl ShareReportReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SensitiveInformation => "sensitive_information",
+            Self::Harassment => "harassment",
+            Self::IllegalContent => "illegal_content",
+            Self::Spam => "spam",
+            Self::Other => "other",
+        }
+    }
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct CreateShareReport {
+    reason: ShareReportReason,
+    #[schema(max_length = 500)]
+    message: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+struct ShareReportReceipt {
+    received: bool,
 }
 
 struct AdmittedArtifacts {
@@ -157,6 +240,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(public_share_detail))
         .routes(routes!(public_share_trace))
         .routes(routes!(public_share_package))
+        .routes(routes!(create_share_report))
 }
 
 #[utoipa::path(
@@ -202,8 +286,11 @@ async fn listed_shares(
         "SELECT publish_jobs.id, users.display_name AS publisher, publish_jobs.provider,
                 publish_jobs.model,
                 publish_jobs.authenticated_provider_connection_unix_ms,
-                publish_jobs.library_input_preview,
-                publish_jobs.library_output_preview,
+                CASE WHEN publish_jobs.share_password_hash IS NULL
+                     THEN publish_jobs.library_input_preview END AS library_input_preview,
+                CASE WHEN publish_jobs.share_password_hash IS NULL
+                     THEN publish_jobs.library_output_preview END AS library_output_preview,
+                publish_jobs.share_password_hash IS NOT NULL AS password_protected,
                 COALESCE(
                     publish_jobs.authenticated_provider_connection_unix_ms,
                     '-9223372036854775808'::BIGINT
@@ -212,10 +299,20 @@ async fn listed_shares(
          JOIN users ON users.id = publish_jobs.user_id
          WHERE publish_jobs.state = 'admitted'
            AND publish_jobs.visibility = 'listed'
+           AND publish_jobs.published = TRUE
+           AND (publish_jobs.share_expires_at IS NULL OR publish_jobs.share_expires_at > $6)
            AND publish_jobs.public_trace_object_key IS NOT NULL
            AND publish_jobs.package_object_key IS NOT NULL
            AND ($1::TEXT IS NULL OR publish_jobs.provider = $1)
-           AND ($2::TEXT IS NULL OR publish_jobs.library_search_text ~* $2)
+           AND ($2::TEXT IS NULL OR (
+                publish_jobs.share_password_hash IS NULL
+                AND publish_jobs.library_search_text ~* $2
+           ) OR (
+                publish_jobs.share_password_hash IS NOT NULL
+                AND LOWER(CONCAT_WS(
+                    ' ', publish_jobs.provider, publish_jobs.model, users.display_name
+                )) ~* $2
+           ))
            AND ($3::TEXT IS NULL OR (
                 COALESCE(
                     publish_jobs.authenticated_provider_connection_unix_ms,
@@ -235,6 +332,7 @@ async fn listed_shares(
             .map(|position| position.authenticated_at_unix_ms),
     )
     .bind(i64::try_from(limit + 1).map_err(|error| ApiError::internal(error.into()))?)
+    .bind(unix_timestamp()?)
     .fetch_all(&state.database)
     .await
     .map_err(database_error)?;
@@ -255,6 +353,7 @@ async fn listed_shares(
             authenticated_at_unix_ms: share.authenticated_provider_connection_unix_ms,
             input_preview: share.library_input_preview,
             output_preview: share.library_output_preview,
+            password_protected: share.password_protected,
         })
         .collect();
     Ok(Json(Page {
@@ -319,22 +418,28 @@ fn library_search_regex(value: &str) -> String {
     get,
     path = "/api/public/shares/{share_id}",
     summary = "Get one verified-session share by its stable ID",
-    params(("share_id" = String, Path)),
+    params(("share_id" = String, Path), ("X-Share-Password" = Option<String>, Header, description = "Base64url-encoded UTF-8 password for a protected share")),
     responses(
         (status = 200, body = PublicShareDetail),
+        (status = 401, body = super::ErrorResponse),
         (status = 404, body = super::ErrorResponse),
+        (status = 429, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse)
     ),
     tag = "sharing"
 )]
 async fn public_share_detail(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(share_id): Path<String>,
 ) -> ApiResult<Response> {
-    let share = load_public_share(&state, &share_id).await?;
+    let share = load_public_share(&state, &headers, &share_id, peer).await?;
     let detail = PublicShareDetail {
         id: share.id.clone(),
         visibility: share.visibility.clone(),
+        password_protected: share.share_password_hash.is_some(),
+        expires_at: share.share_expires_at,
         publisher: share.publisher,
         admitted_at: share.admitted_at,
         authenticated_at_unix_ms: share.authenticated_provider_connection_unix_ms,
@@ -368,10 +473,12 @@ async fn public_share_detail(
     get,
     path = "/api/public/shares/{share_id}/trace.otlp.json",
     summary = "Download the admitted canonical OpenTelemetry trace",
-    params(("share_id" = String, Path)),
+    params(("share_id" = String, Path), ("X-Share-Password" = Option<String>, Header, description = "Base64url-encoded UTF-8 password for a protected share")),
     responses(
         (status = 200, body = serde_json::Value, content_type = "application/json"),
+        (status = 401, body = super::ErrorResponse),
         (status = 404, body = super::ErrorResponse),
+        (status = 429, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse),
         (status = 503, body = super::ErrorResponse)
     ),
@@ -379,9 +486,11 @@ async fn public_share_detail(
 )]
 async fn public_share_trace(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(share_id): Path<String>,
 ) -> ApiResult<Response> {
-    let share = load_public_share(&state, &share_id).await?;
+    let share = load_public_share(&state, &headers, &share_id, peer).await?;
     let bytes = load_public_bytes(
         &state,
         &share.public_trace_object_key,
@@ -402,11 +511,13 @@ async fn public_share_trace(
     get,
     path = "/api/public/shares/{share_id}/package.llmtrace",
     summary = "Download the exact admitted portable proof package",
-    params(("share_id" = String, Path)),
+    params(("share_id" = String, Path), ("X-Share-Password" = Option<String>, Header, description = "Base64url-encoded UTF-8 password for a protected share")),
     responses(
         (status = 200, body = Vec<u8>, content_type = "application/vnd.llmnotary.trace-package+zip"),
+        (status = 401, body = super::ErrorResponse),
         (status = 404, body = super::ErrorResponse),
         (status = 410, body = super::ErrorResponse),
+        (status = 429, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse),
         (status = 503, body = super::ErrorResponse)
     ),
@@ -414,9 +525,11 @@ async fn public_share_trace(
 )]
 async fn public_share_package(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(share_id): Path<String>,
 ) -> ApiResult<Response> {
-    let share = load_public_share(&state, &share_id).await?;
+    let share = load_public_share(&state, &headers, &share_id, peer).await?;
     let (object_key, size_bytes, sha256) = match (
         share.package_object_key,
         share.package_size_bytes,
@@ -439,12 +552,64 @@ async fn public_share_package(
     ))
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/public/shares/{share_id}/reports",
+    summary = "Report a published share",
+    params(("share_id" = String, Path), ("X-Share-Password" = Option<String>, Header, description = "Base64url-encoded UTF-8 password for a protected share")),
+    request_body = CreateShareReport,
+    responses(
+        (status = 200, body = ShareReportReceipt),
+        (status = 400, body = super::ErrorResponse),
+        (status = 401, body = super::ErrorResponse),
+        (status = 404, body = super::ErrorResponse),
+        (status = 429, body = super::ErrorResponse),
+        (status = 500, body = super::ErrorResponse)
+    ),
+    tag = "sharing"
+)]
+async fn create_share_report(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(share_id): Path<String>,
+    Json(request): Json<CreateShareReport>,
+) -> ApiResult<Json<ShareReportReceipt>> {
+    let share = load_public_share(&state, &headers, &share_id, peer).await?;
+    let message = normalize_report_message(request.message)?;
+    let now = unix_timestamp()?;
+    enforce_share_request_limit(
+        &state,
+        &headers,
+        peer,
+        &share.id,
+        now,
+        SHARE_REPORT_RATE_LIMIT,
+    )
+    .await?;
+    sqlx::query(
+        "INSERT INTO share_reports
+             (id, share_id, reason, message, created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $5)",
+    )
+    .bind(Uuid::new_v4().to_string())
+    .bind(share.id)
+    .bind(request.reason.as_str())
+    .bind(message)
+    .bind(now)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    Ok(Json(ShareReportReceipt { received: true }))
+}
+
 pub fn spawn(state: AppState) {
     if !state.publish.enabled() {
         return;
     }
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(ADMISSION_INTERVAL_SECS));
+        let mut next_rate_limit_cleanup = Instant::now();
         loop {
             interval.tick().await;
             if let Err(error) = recover_stale_claims(&state).await {
@@ -465,6 +630,13 @@ pub fn spawn(state: AppState) {
             }
             if let Err(error) = update_queue_metrics(&state).await {
                 tracing::error!(%error, "updating share admission metrics failed");
+            }
+            if Instant::now() >= next_rate_limit_cleanup {
+                if let Err(error) = purge_expired_share_rate_limits(&state).await {
+                    tracing::error!(%error, "purging expired share rate limits failed");
+                }
+                next_rate_limit_cleanup =
+                    Instant::now() + Duration::from_secs(RATE_LIMIT_CLEANUP_INTERVAL_SECS);
             }
         }
     });
@@ -1124,18 +1296,34 @@ async fn recover_stale_claims(state: &AppState) -> Result<()> {
     Ok(())
 }
 
-async fn load_public_share(state: &AppState, share_id: &str) -> ApiResult<PublicShareRow> {
-    load_public_share_optional(state, share_id)
+async fn load_public_share(
+    state: &AppState,
+    headers: &HeaderMap,
+    share_id: &str,
+    peer: SocketAddr,
+) -> ApiResult<PublicShareRow> {
+    let share = load_public_share_optional(state, share_id)
         .await?
-        .ok_or_else(|| ApiError::not_found("share was not found"))
+        .ok_or_else(|| ApiError::not_found("share was not found"))?;
+    require_share_password(
+        state,
+        headers,
+        share_id,
+        peer,
+        share.share_password_hash.as_deref(),
+    )
+    .await?;
+    Ok(share)
 }
 
 async fn load_public_share_optional(
     state: &AppState,
     share_id: &str,
 ) -> ApiResult<Option<PublicShareRow>> {
+    let now = unix_timestamp()?;
     sqlx::query_as(
         "SELECT publish_jobs.id, publish_jobs.visibility,
+                publish_jobs.share_expires_at, publish_jobs.share_password_hash,
                 users.display_name AS publisher,
                 publish_jobs.admitted_at, publish_jobs.provider,
                 publish_jobs.provider_host, publish_jobs.model,
@@ -1153,13 +1341,185 @@ async fn load_public_share_optional(
          FROM publish_jobs
          JOIN users ON users.id = publish_jobs.user_id
          WHERE publish_jobs.id = $1 AND publish_jobs.state = 'admitted'
+           AND publish_jobs.published = TRUE
+           AND (publish_jobs.share_expires_at IS NULL OR publish_jobs.share_expires_at > $2)
            AND publish_jobs.public_trace_object_key IS NOT NULL
            AND publish_jobs.package_object_key IS NOT NULL",
     )
     .bind(share_id)
+    .bind(now)
     .fetch_optional(&state.database)
     .await
     .map_err(database_error)
+}
+
+async fn require_share_password(
+    state: &AppState,
+    headers: &HeaderMap,
+    share_id: &str,
+    peer: SocketAddr,
+    password_hash: Option<&str>,
+) -> ApiResult<()> {
+    let Some(password_hash) = password_hash else {
+        return Ok(());
+    };
+    let encoded_password = headers.get(SHARE_PASSWORD_HEADER).ok_or_else(|| {
+        ApiError::coded(
+            StatusCode::UNAUTHORIZED,
+            "share_password_required",
+            "This share requires a password",
+        )
+    })?;
+    let now = unix_timestamp()?;
+    enforce_share_request_limit(
+        state,
+        headers,
+        peer,
+        share_id,
+        now,
+        SHARE_PASSWORD_RATE_LIMIT,
+    )
+    .await?;
+    let password =
+        decode_share_password(encoded_password).map_err(|()| invalid_share_password())?;
+    let valid = verify_share_password(password, password_hash.to_owned()).await?;
+    if !valid {
+        return Err(invalid_share_password());
+    }
+    Ok(())
+}
+
+fn decode_share_password(value: &HeaderValue) -> Result<Vec<u8>, ()> {
+    let encoded = value.to_str().map_err(|_| ())?;
+    if encoded.len() > MAX_SHARE_PASSWORD_BYTES.div_ceil(3) * 4 {
+        return Err(());
+    }
+    let password = URL_SAFE_NO_PAD.decode(encoded.as_bytes()).map_err(|_| ())?;
+    if password.len() > MAX_SHARE_PASSWORD_BYTES {
+        return Err(());
+    }
+    Ok(password)
+}
+
+async fn verify_share_password(password: Vec<u8>, password_hash: String) -> ApiResult<bool> {
+    run_share_password_work(move || {
+        PasswordHash::new(&password_hash)
+            .ok()
+            .is_some_and(|parsed| {
+                Argon2::default()
+                    .verify_password(&password, &parsed)
+                    .is_ok()
+            })
+    })
+    .await
+}
+
+fn invalid_share_password() -> ApiError {
+    ApiError::coded(
+        StatusCode::UNAUTHORIZED,
+        "share_password_invalid",
+        "The share password is incorrect",
+    )
+}
+
+async fn enforce_share_request_limit(
+    state: &AppState,
+    headers: &HeaderMap,
+    peer: SocketAddr,
+    share_id: &str,
+    now: i64,
+    rate_limit: ShareRateLimit,
+) -> ApiResult<()> {
+    let subject_key = share_rate_limit_subject_key(state, headers, peer, rate_limit.action)?;
+    let window_reset_before = now - rate_limit.window_secs;
+    let request_count = sqlx::query_scalar::<_, i64>(
+        "INSERT INTO share_request_limits
+             (share_id, subject_key_sha256, action, window_started_at, request_count, updated_at)
+         VALUES ($1, $2, $3, $4, 1, $4)
+         ON CONFLICT (share_id, subject_key_sha256, action) DO UPDATE
+         SET window_started_at = CASE
+                 WHEN share_request_limits.window_started_at <= $5 THEN $4
+                 ELSE share_request_limits.window_started_at
+             END,
+             request_count = CASE
+                 WHEN share_request_limits.window_started_at <= $5 THEN 1
+                 ELSE share_request_limits.request_count + 1
+             END,
+             updated_at = $4
+         WHERE share_request_limits.window_started_at <= $5
+            OR share_request_limits.request_count < $6
+         RETURNING request_count",
+    )
+    .bind(share_id)
+    .bind(subject_key)
+    .bind(rate_limit.action)
+    .bind(now)
+    .bind(window_reset_before)
+    .bind(rate_limit.max_requests)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?;
+    if request_count.is_none() {
+        return Err(ApiError::coded(
+            StatusCode::TOO_MANY_REQUESTS,
+            rate_limit.error_code,
+            rate_limit.error_message,
+        ));
+    }
+    Ok(())
+}
+
+async fn purge_expired_share_rate_limits(state: &AppState) -> Result<()> {
+    let cutoff = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?
+        - RATE_LIMIT_RETENTION_SECS;
+    sqlx::query("DELETE FROM share_request_limits WHERE updated_at < $1")
+        .bind(cutoff)
+        .execute(&state.database)
+        .await?;
+    sqlx::query("DELETE FROM share_password_change_limits WHERE updated_at < $1")
+        .bind(cutoff)
+        .execute(&state.database)
+        .await?;
+    Ok(())
+}
+
+fn share_rate_limit_subject_key(
+    state: &AppState,
+    headers: &HeaderMap,
+    peer: SocketAddr,
+    action: &str,
+) -> ApiResult<String> {
+    let client_ip =
+        super::service_admission::resolve_client_ip(headers, Some(peer), &state.admission)?;
+    let client = super::service_admission::normalized_client_address(client_ip);
+    let version = state.admission.anonymous_subject_key_version.to_string();
+    let mut hmac = Hmac::<Sha256>::new_from_slice(&state.admission.anonymous_subject_hmac_key)
+        .map_err(|_| ApiError::internal(anyhow::anyhow!("invalid anonymous subject key")))?;
+    for value in [
+        SHARE_RATE_LIMIT_KEY_PURPOSE,
+        version.as_bytes(),
+        action.as_bytes(),
+        client.as_bytes(),
+    ] {
+        hmac.update(&(value.len() as u64).to_be_bytes());
+        hmac.update(value);
+    }
+    Ok(format!(
+        "v{}:{}",
+        state.admission.anonymous_subject_key_version,
+        hex::encode(hmac.finalize().into_bytes())
+    ))
+}
+
+fn normalize_report_message(message: Option<String>) -> ApiResult<Option<String>> {
+    let message = message.map(|message| message.trim().to_owned());
+    match message {
+        Some(message) if message.chars().count() > MAX_REPORT_MESSAGE_CHARS => Err(
+            ApiError::bad_request("report message must contain at most 500 characters"),
+        ),
+        Some(message) if message.is_empty() => Ok(None),
+        message => Ok(message),
+    }
 }
 
 async fn load_public_bytes(
@@ -1201,6 +1561,14 @@ fn add_discovery_headers(response: &mut Response, visibility: &str) {
         header::X_CONTENT_TYPE_OPTIONS,
         HeaderValue::from_static("nosniff"),
     );
+    response.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("private, no-store"),
+    );
+    response.headers_mut().insert(
+        header::VARY,
+        HeaderValue::from_static(SHARE_PASSWORD_HEADER),
+    );
     if visibility == "unlisted" {
         response.headers_mut().insert(
             "x-robots-tag",
@@ -1220,10 +1588,6 @@ fn public_bytes(
     response
         .headers_mut()
         .insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    response.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("public, max-age=31536000, immutable"),
-    );
     response.headers_mut().insert(
         "x-content-sha256",
         HeaderValue::from_str(sha256).expect("SHA-256 is a valid header value"),
@@ -1585,6 +1949,10 @@ mod tests {
             response.headers().get(header::CONTENT_DISPOSITION).unwrap(),
             "attachment; filename=\"llm-notary-share.llmtrace\""
         );
+        assert_eq!(
+            response.headers().get(header::CACHE_CONTROL).unwrap(),
+            "private, no-store"
+        );
     }
 
     #[test]
@@ -1597,5 +1965,62 @@ mod tests {
             "listed",
         );
         assert!(!response.headers().contains_key("x-robots-tag"));
+    }
+
+    #[test]
+    fn report_messages_are_trimmed_and_bounded() {
+        assert_eq!(
+            normalize_report_message(Some("  concise reason  ".to_owned())).unwrap(),
+            Some("concise reason".to_owned())
+        );
+        assert_eq!(
+            normalize_report_message(Some("   ".to_owned())).unwrap(),
+            None
+        );
+        assert!(normalize_report_message(Some("x".repeat(501))).is_err());
+    }
+
+    #[tokio::test]
+    async fn protected_share_passwords_round_trip_utf8_and_bound_verification() {
+        use argon2::{
+            PasswordHasher,
+            password_hash::{SaltString, rand_core::OsRng},
+        };
+
+        let password = "пароль\n🔐123";
+        let hash = Argon2::default()
+            .hash_password(password.as_bytes(), &SaltString::generate(&mut OsRng))
+            .unwrap()
+            .to_string();
+        let encoded = URL_SAFE_NO_PAD.encode(password.as_bytes());
+        let header = HeaderValue::from_str(&encoded).unwrap();
+        let decoded = decode_share_password(&header).unwrap();
+        assert_eq!(decoded, password.as_bytes());
+        assert!(verify_share_password(decoded, hash.clone()).await.unwrap());
+
+        let wrong = URL_SAFE_NO_PAD.encode("wrong-password".as_bytes());
+        let wrong = decode_share_password(&HeaderValue::from_str(&wrong).unwrap()).unwrap();
+        assert!(!verify_share_password(wrong, hash.clone()).await.unwrap());
+
+        let capacity = Arc::new(Semaphore::new(1));
+        let _held = capacity.clone().acquire_owned().await.unwrap();
+        let saturated =
+            super::super::publish::run_share_password_work_with_capacity(capacity, || true).await;
+        assert!(matches!(
+            saturated,
+            Err(ApiError {
+                code: "share_password_capacity",
+                ..
+            })
+        ));
+
+        let oversized = URL_SAFE_NO_PAD.encode(vec![b'x'; MAX_SHARE_PASSWORD_BYTES + 1]);
+        assert!(decode_share_password(&HeaderValue::from_str(&oversized).unwrap()).is_err());
+        assert!(decode_share_password(&HeaderValue::from_static("not base64")).is_err());
+        assert!(
+            !verify_share_password(password.as_bytes().to_vec(), "invalid-hash".to_owned())
+                .await
+                .unwrap()
+        );
     }
 }

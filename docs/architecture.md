@@ -135,7 +135,10 @@ the current prototype.
 
 Local capture, finalization, and verification never imply sharing.
 Sharing requires a separately authorized and explicit action plus an Unlisted
-or Listed choice. Both modes are public to anyone with the stable link.
+or Listed choice. Owners can later unpublish, set an expiry, or require a
+password on the stable link. These are hosted access controls, not a change to
+the package disclosure: admission still receives and inspects the complete
+shared `.llmtrace`.
 
 The platform receives the complete `.llmtrace`, including disclosed request
 and response bodies, and may inspect them to scan and reproduce the trace. It never

@@ -585,6 +585,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/public/shares/{share_id}/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Report a published share */
+        post: operations["create_share_report"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/public/shares/{share_id}/trace.otlp.json": {
         parameters: {
             query?: never;
@@ -650,8 +667,8 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Explicitly change a share's visibility */
-        patch: operations["update_share_visibility"];
+        /** Change a share's publication access settings */
+        patch: operations["update_share_settings"];
         trace?: never;
     };
     "/api/shares/{share_id}/complete": {
@@ -842,6 +859,10 @@ export interface components {
             size_bytes: number;
             visibility: components["schemas"]["ShareVisibility"];
         };
+        CreateShareReport: {
+            message?: string | null;
+            reason: components["schemas"]["ShareReportReason"];
+        };
         CreateShareResponse: {
             share: components["schemas"]["ShareResponse"];
             upload?: null | components["schemas"]["UploadInstructions"];
@@ -923,6 +944,7 @@ export interface components {
             input_preview?: string | null;
             model: string;
             output_preview?: string | null;
+            password_protected: boolean;
             provider: string;
             publisher: string;
             share_url: string;
@@ -1017,6 +1039,7 @@ export interface components {
                 input_preview?: string | null;
                 model: string;
                 output_preview?: string | null;
+                password_protected: boolean;
                 provider: string;
                 publisher: string;
                 share_url: string;
@@ -1031,10 +1054,14 @@ export interface components {
                 admitted_at?: number | null;
                 /** Format: int64 */
                 created_at: number;
+                /** Format: int64 */
+                expires_at?: number | null;
                 failure_code?: string | null;
                 force: boolean;
                 id: string;
                 package_url?: string | null;
+                password_protected: boolean;
+                published: boolean;
                 share_url?: string | null;
                 state: string;
                 status_url: string;
@@ -1067,6 +1094,8 @@ export interface components {
             authenticated_at_unix_ms?: number | null;
             /** Format: int64 */
             directory_generation?: number | null;
+            /** Format: int64 */
+            expires_at?: number | null;
             host: string;
             id: string;
             model: string;
@@ -1076,6 +1105,7 @@ export interface components {
             /** Format: int64 */
             package_size_bytes?: number | null;
             package_url?: string | null;
+            password_protected: boolean;
             provider: string;
             public_package_safety_override: boolean;
             public_package_safety_version?: string | null;
@@ -1127,15 +1157,24 @@ export interface components {
         };
         /** @enum {string} */
         ServicePlan: "free" | "paid";
+        /** @enum {string} */
+        ShareReportReason: "sensitive_information" | "harassment" | "illegal_content" | "spam" | "other";
+        ShareReportReceipt: {
+            received: boolean;
+        };
         ShareResponse: {
             /** Format: int64 */
             admitted_at?: number | null;
             /** Format: int64 */
             created_at: number;
+            /** Format: int64 */
+            expires_at?: number | null;
             failure_code?: string | null;
             force: boolean;
             id: string;
             package_url?: string | null;
+            password_protected: boolean;
+            published: boolean;
             share_url?: string | null;
             state: string;
             status_url: string;
@@ -1155,8 +1194,16 @@ export interface components {
         ShareVisibility: "unlisted" | "listed";
         /** Format: binary */
         TracePackageBody: string;
-        UpdateShareVisibility: {
-            visibility: components["schemas"]["ShareVisibility"];
+        UpdateShareSettings: {
+            /**
+             * Format: int32
+             * @description Days from now until expiry. Zero removes the current expiry.
+             */
+            expires_in_days?: number | null;
+            /** @description A new password, or an empty string to remove the current password. */
+            password?: string | null;
+            published?: boolean | null;
+            visibility?: null | components["schemas"]["ShareVisibility"];
         };
         UploadInstructions: {
             /** Format: int64 */
@@ -2721,7 +2768,10 @@ export interface operations {
     public_share_detail: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Base64url-encoded UTF-8 password for a protected share */
+                "X-Share-Password"?: string | null;
+            };
             path: {
                 share_id: string;
             };
@@ -2737,7 +2787,23 @@ export interface operations {
                     "application/json": components["schemas"]["PublicShareDetail"];
                 };
             };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2758,7 +2824,10 @@ export interface operations {
     public_share_package: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Base64url-encoded UTF-8 password for a protected share */
+                "X-Share-Password"?: string | null;
+            };
             path: {
                 share_id: string;
             };
@@ -2774,6 +2843,14 @@ export interface operations {
                     "application/vnd.llmnotary.trace-package+zip": number[];
                 };
             };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2783,6 +2860,14 @@ export interface operations {
                 };
             };
             410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2808,10 +2893,81 @@ export interface operations {
             };
         };
     };
+    create_share_report: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @description Base64url-encoded UTF-8 password for a protected share */
+                "X-Share-Password"?: string | null;
+            };
+            path: {
+                share_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateShareReport"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareReportReceipt"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     public_share_trace: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Base64url-encoded UTF-8 password for a protected share */
+                "X-Share-Password"?: string | null;
+            };
             path: {
                 share_id: string;
             };
@@ -2827,7 +2983,23 @@ export interface operations {
                     "application/json": unknown;
                 };
             };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3025,7 +3197,7 @@ export interface operations {
             };
         };
     };
-    update_share_visibility: {
+    update_share_settings: {
         parameters: {
             query?: never;
             header?: never;
@@ -3036,7 +3208,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UpdateShareVisibility"];
+                "application/json": components["schemas"]["UpdateShareSettings"];
             };
         };
         responses: {
@@ -3048,6 +3220,14 @@ export interface operations {
                     "application/json": components["schemas"]["ShareResponse"];
                 };
             };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             401: {
                 headers: {
                     [name: string]: unknown;
@@ -3056,7 +3236,23 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: {
                 headers: {
                     [name: string]: unknown;
                 };

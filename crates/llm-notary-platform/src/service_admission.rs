@@ -1890,7 +1890,7 @@ fn account_credit_subject(user_id: &str) -> String {
     format!("user:{user_id}")
 }
 
-fn resolve_client_ip(
+pub(crate) fn resolve_client_ip(
     headers: &HeaderMap,
     peer: Option<SocketAddr>,
     config: &AdmissionConfig,
@@ -1922,7 +1922,7 @@ fn canonical_ip(ip: IpAddr) -> IpAddr {
     }
 }
 
-fn normalized_client_address(ip: IpAddr) -> String {
+pub(crate) fn normalized_client_address(ip: IpAddr) -> String {
     match canonical_ip(ip) {
         IpAddr::V4(address) => format!("v4:{address}"),
         IpAddr::V6(address) => {
