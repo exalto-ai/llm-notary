@@ -222,11 +222,12 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         )?
     };
     if let Some(cluster) = &cluster {
+        let api_origin = auth::configured_api_origin()?;
         persistence
             .metadata
             .register_replica(
                 cluster.identity(),
-                &config.cluster_compatibility_sha256()?,
+                &config.cluster_compatibility_sha256_for_api_origin(&api_origin.to_string())?,
                 cluster.lease_seconds(),
             )
             .await?;
@@ -281,6 +282,10 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         state.persistence.clone(),
         state.config.clone(),
         cluster.clone(),
+        cluster
+            .as_ref()
+            .map(|_| state.vault.compatibility_sha256())
+            .transpose()?,
     )
     .await?;
     let admin = crate::admin::router(admin_state.clone())?;
@@ -356,16 +361,46 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     if let Some(cluster) = &cluster {
         cluster.mark_draining();
         if matches!(&exit, Exit::Requested) {
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(std::time::Duration::from_secs(
+                cluster.withdrawal_delay_seconds(),
+            ))
+            .await;
         }
     }
     tracing::info!("LLM Notary daemon draining before shutdown");
     let _ = shutdown_tx.send(true);
+    let mut forced_cluster_shutdown = false;
     match exit {
         Exit::Requested => {
-            joined(proxy_server.await, "proxy server")?;
-            joined(admin_server.await, "admin server")?;
-            joined(worker.await, "finalization worker")?;
+            if let Some(cluster) = &cluster {
+                let graceful = tokio::time::timeout(
+                    std::time::Duration::from_secs(cluster.shutdown_grace_seconds()),
+                    async {
+                        joined((&mut proxy_server).await, "proxy server")?;
+                        joined((&mut admin_server).await, "admin server")?;
+                        joined((&mut worker).await, "finalization worker")?;
+                        Ok::<_, anyhow::Error>(())
+                    },
+                )
+                .await;
+                match graceful {
+                    Ok(result) => result?,
+                    Err(_) => {
+                        forced_cluster_shutdown = true;
+                        tracing::warn!(
+                            shutdown_grace_seconds = cluster.shutdown_grace_seconds(),
+                            "cluster shutdown grace expired; stopping remaining local tasks"
+                        );
+                        proxy_server.abort();
+                        admin_server.abort();
+                        worker.abort();
+                    }
+                }
+            } else {
+                joined(proxy_server.await, "proxy server")?;
+                joined(admin_server.await, "admin server")?;
+                joined(worker.await, "finalization worker")?;
+            }
         }
         Exit::Proxy(result) => {
             result?;
@@ -402,13 +437,21 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     if let Some(update_checker) = update_checker {
         update_checker.await.context("update checker task exited")?;
     }
-    capture_recovery
-        .await
-        .context("capture recovery worker exited")?;
-    state.capture_tasks.wait_idle().await;
+    if forced_cluster_shutdown {
+        capture_recovery.abort();
+    } else {
+        capture_recovery
+            .await
+            .context("capture recovery worker exited")?;
+        state.capture_tasks.wait_idle().await;
+    }
     let _ = heartbeat_shutdown_tx.send(true);
-    joined(heartbeat.await, "cluster heartbeat")?;
-    if let Some(cluster) = &cluster {
+    if forced_cluster_shutdown {
+        heartbeat.abort();
+    } else {
+        joined(heartbeat.await, "cluster heartbeat")?;
+    }
+    if let (Some(cluster), false) = (&cluster, forced_cluster_shutdown) {
         state
             .persistence
             .metadata
@@ -978,6 +1021,12 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
             .begin_capture(new_capture)
             .await?;
     }
+    let mut capture_claim_lease = match (&state.cluster, &capture_claim) {
+        (Some(cluster), Some(claim)) => Some(
+            cluster.keep_capture_claim_alive(state.persistence.metadata.clone(), claim.clone()),
+        ),
+        _ => None,
+    };
     let started = Instant::now();
     let capture = DeferredCaptureConfig {
         capture_id: capture_id.clone(),
@@ -1024,6 +1073,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         let trace_state = state.clone();
         let capture_id_for_task = capture_id.clone();
         let capture_claim_for_task = capture_claim.clone();
+        let capture_claim_lease_for_task = capture_claim_lease.take();
         let response_preview_limit = state.config.catalog.output_preview_chars;
         let (body_sender, body_receiver) = tokio::sync::mpsc::channel(32);
         // Register before detaching. Once both graceful servers have stopped,
@@ -1032,6 +1082,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         let capture_task = state.capture_tasks.track();
         tokio::spawn(async move {
             let _capture_task = capture_task;
+            let _capture_claim_lease = capture_claim_lease_for_task;
             let mut upstream = upstream;
             let mut received_first_chunk = false;
             let mut client_connected = true;

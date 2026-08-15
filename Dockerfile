@@ -185,6 +185,9 @@ RUN cp /etc/llm-notary/config.toml /etc/llm-notary/config-s3.toml \
         'instance_id = "__INSTANCE_ID__"' \
         'heartbeat_interval_seconds = 2' \
         'lease_seconds = 8' \
+        'claim_max_runtime_seconds = 60' \
+        'withdrawal_delay_seconds = 4' \
+        'shutdown_grace_seconds = 45' \
         'trusted_ingress = true' \
         'vault_compatibility_sha256 = "__VAULT_COMPATIBILITY__"' \
         '' \

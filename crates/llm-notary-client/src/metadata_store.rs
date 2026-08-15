@@ -216,6 +216,9 @@ pub trait MetadataStore: Send + Sync {
     ) -> MetadataResult<()> {
         Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
     }
+    async fn replica_ready(&self, _identity: &ReplicaIdentity) -> MetadataResult<bool> {
+        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+    }
     async fn release_replica(&self, _identity: &ReplicaIdentity) -> MetadataResult<()> {
         Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
     }

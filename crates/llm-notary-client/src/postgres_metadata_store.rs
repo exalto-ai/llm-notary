@@ -71,6 +71,27 @@ impl PostgresMetadataStore {
         ssl_mode: PostgresSslMode,
         full_text_search: bool,
     ) -> MetadataResult<Self> {
+        Self::connect_mode(
+            database_url,
+            max_connections,
+            connect_timeout,
+            acquire_timeout,
+            ssl_mode,
+            full_text_search,
+            false,
+        )
+        .await
+    }
+
+    async fn connect_mode(
+        database_url: &str,
+        max_connections: u32,
+        connect_timeout: Duration,
+        acquire_timeout: Duration,
+        ssl_mode: PostgresSslMode,
+        full_text_search: bool,
+        clustered: bool,
+    ) -> MetadataResult<Self> {
         if max_connections == 0 {
             return Err(MetadataStoreError::InvalidInput(
                 "invalid_postgres_pool_size",
@@ -87,7 +108,7 @@ impl PostgresMetadataStore {
                 .connect_with(options)
                 .await
                 .map_err(|error| db(anyhow!(error).context("opening daemon PostgreSQL pool")))?;
-            Self::from_pool(pool, full_text_search).await
+            Self::from_pool_mode(pool, full_text_search, clustered).await
         })
         .await
         .map_err(|_| {
@@ -99,11 +120,20 @@ impl PostgresMetadataStore {
 
     /// Wraps an existing pool after verifying the daemon-owned migration journal.
     async fn from_pool(pool: PgPool, full_text_search: bool) -> MetadataResult<Self> {
+        Self::from_pool_mode(pool, full_text_search, false).await
+    }
+
+    async fn from_pool_mode(
+        pool: PgPool,
+        full_text_search: bool,
+        clustered: bool,
+    ) -> MetadataResult<Self> {
         require_current_schema(&pool).await?;
+        require_runtime_profile(&pool, clustered).await?;
         Ok(Self {
             pool,
             full_text_search,
-            clustered: false,
+            clustered,
         })
     }
 
@@ -116,17 +146,16 @@ impl PostgresMetadataStore {
         ssl_mode: PostgresSslMode,
         full_text_search: bool,
     ) -> MetadataResult<Self> {
-        let mut store = Self::connect(
+        Self::connect_mode(
             database_url,
             max_connections,
             connect_timeout,
             acquire_timeout,
             ssl_mode,
             full_text_search,
+            true,
         )
-        .await?;
-        store.clustered = true;
-        Ok(store)
+        .await
     }
 
     fn require_local_mutation(&self) -> MetadataResult<()> {
@@ -298,6 +327,22 @@ pub async fn configure_cluster_compatibility(
             .await
             .context("opening cluster compatibility connection timed out")?
             .context("opening cluster compatibility connection")?;
+    let active_legacy_work: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM llm_notary_daemon.captures
+             WHERE capture_state='capturing' AND capture_fence IS NULL
+             UNION ALL
+             SELECT 1 FROM llm_notary_daemon.operations
+             WHERE state='running' AND claim_fence IS NULL
+         )",
+    )
+    .fetch_one(&mut connection)
+    .await
+    .context("checking for unfenced active daemon work")?;
+    ensure!(
+        !active_legacy_work,
+        "cluster activation requires a quiesced daemon with no unfenced active work"
+    );
     sqlx::query(
         "INSERT INTO llm_notary_daemon.cluster_invariants
              (singleton, compatibility_sha256)
@@ -369,6 +414,22 @@ async fn require_current_schema(pool: &PgPool) -> MetadataResult<()> {
         .await
         .map_err(|error| db(anyhow!(error).context("probing daemon metadata tables")))?;
     Ok(())
+}
+
+async fn require_runtime_profile(pool: &PgPool, clustered: bool) -> MetadataResult<()> {
+    let cluster_pinned: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM llm_notary_daemon.cluster_invariants WHERE singleton=TRUE
+         )",
+    )
+    .fetch_one(pool)
+    .await
+    .map_err(|error| db(anyhow!(error).context("checking daemon runtime profile")))?;
+    match (clustered, cluster_pinned) {
+        (false, true) => Err(MetadataStoreError::InvalidInput("cluster_profile_required")),
+        (true, false) => Err(MetadataStoreError::InvalidInput("cluster_not_initialized")),
+        _ => Ok(()),
+    }
 }
 
 fn db(error: anyhow::Error) -> MetadataStoreError {
@@ -667,7 +728,8 @@ impl MetadataStore for PostgresMetadataStore {
     }
 
     async fn readiness(&self) -> MetadataResult<()> {
-        require_current_schema(&self.pool).await
+        require_current_schema(&self.pool).await?;
+        require_runtime_profile(&self.pool, self.clustered).await
     }
 
     async fn begin_capture(&self, capture: NewCapture) -> MetadataResult<()> {
@@ -1152,7 +1214,8 @@ impl MetadataStore for PostgresMetadataStore {
 
     async fn artifacts(&self, capture_id: &str) -> MetadataResult<Vec<ArtifactRecord>> {
         let rows = sqlx::query(
-            "SELECT capture_id, kind, locator, size_bytes, sha256
+            "SELECT capture_id, kind, locator, size_bytes, sha256,
+                    publication_id::text AS publication_id
              FROM llm_notary_daemon.artifacts
              WHERE capture_id = $1 AND state = 'available' ORDER BY kind",
         )
@@ -1167,12 +1230,16 @@ impl MetadataStore for PostgresMetadataStore {
                 let locator: String = row.try_get("locator")?;
                 let size_bytes: i64 = row.try_get("size_bytes")?;
                 let sha256: String = row.try_get("sha256")?;
-                ArtifactRecord::new(
+                let record = ArtifactRecord::new(
                     ArtifactKey::new(&capture_id, ArtifactKind::try_from(kind.as_str())?)?,
                     ArtifactLocator::from_stored(locator)?,
                     size_bytes.try_into()?,
                     sha256,
-                )
+                )?;
+                match row.try_get::<Option<String>, _>("publication_id")? {
+                    Some(publication_id) => record.with_publication_id(publication_id),
+                    None => Ok(record),
+                }
             })
             .collect::<anyhow::Result<Vec<_>>>()
             .map_err(db)
@@ -2085,34 +2152,25 @@ impl MetadataStore for PostgresMetadataStore {
         if changed != 1 {
             return Err(MetadataStoreError::Fenced);
         }
-        sqlx::query(
-            "UPDATE llm_notary_daemon.captures SET
-                claim_lease_expires_at=clock_timestamp()+make_interval(secs => $3)
-             WHERE capture_state='capturing' AND owner_instance_id=$1
-               AND owner_incarnation_id=$2::uuid AND claim_lease_expires_at>clock_timestamp()",
-        )
-        .bind(identity.instance_id())
-        .bind(identity.incarnation_id())
-        .bind(lease)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| db(anyhow!(error).context("renewing replica capture claims")))?;
-        sqlx::query(
-            "UPDATE llm_notary_daemon.operations SET
-                claim_lease_expires_at=clock_timestamp()+make_interval(secs => $3)
-             WHERE state='running' AND owner_instance_id=$1
-               AND owner_incarnation_id=$2::uuid AND claim_lease_expires_at>clock_timestamp()",
-        )
-        .bind(identity.instance_id())
-        .bind(identity.incarnation_id())
-        .bind(lease)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| db(anyhow!(error).context("renewing replica finalization claims")))?;
         transaction
             .commit()
             .await
             .map_err(|error| db(anyhow!(error).context("committing replica heartbeat")))
+    }
+
+    async fn replica_ready(&self, identity: &ReplicaIdentity) -> MetadataResult<bool> {
+        sqlx::query_scalar(
+            "SELECT EXISTS(
+                 SELECT 1 FROM llm_notary_daemon.replicas
+                 WHERE instance_id=$1 AND incarnation_id=$2::uuid
+                   AND lease_expires_at>clock_timestamp()
+             )",
+        )
+        .bind(identity.instance_id())
+        .bind(identity.incarnation_id())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|error| db(anyhow!(error).context("checking replica lease readiness")))
     }
 
     async fn release_replica(&self, identity: &ReplicaIdentity) -> MetadataResult<()> {
@@ -2327,6 +2385,11 @@ impl MetadataStore for PostgresMetadataStore {
         validate_completion(&completion)?;
         validate_artifact(&artifact)?;
         require_artifact(&artifact, &claim.capture_id, ArtifactKind::DeferredBundle)?;
+        if artifact.publication_id() != Some(claim.publication_id.as_str()) {
+            return Err(MetadataStoreError::InvalidInput(
+                "artifact_publication_mismatch",
+            ));
+        }
         if artifact.size_bytes != completion.expected_artifact_size_bytes
             || artifact.sha256 != completion.expected_artifact_sha256
         {
@@ -2434,11 +2497,6 @@ impl MetadataStore for PostgresMetadataStore {
              candidate AS (
                 SELECT c.capture_id FROM llm_notary_daemon.captures c
                 WHERE c.capture_state='capturing' AND c.claim_lease_expires_at <= clock_timestamp()
-                  AND NOT EXISTS (
-                    SELECT 1 FROM llm_notary_daemon.replicas r
-                    WHERE r.instance_id=c.owner_instance_id
-                      AND r.incarnation_id=c.owner_incarnation_id
-                      AND r.lease_expires_at > clock_timestamp())
                 ORDER BY c.claim_lease_expires_at,c.capture_id FOR UPDATE SKIP LOCKED LIMIT 1)
              UPDATE llm_notary_daemon.captures c SET owner_instance_id=$1,
                 owner_incarnation_id=$2::uuid,capture_fence=$3::uuid,
@@ -2728,6 +2786,11 @@ impl MetadataStore for PostgresMetadataStore {
             .as_deref()
             .ok_or_else(|| db(anyhow!("finalization has no capture")))?;
         require_artifact(&artifact, capture_id, ArtifactKind::FinalizedPackage)?;
+        if artifact.publication_id() != Some(claim.publication_id.as_str()) {
+            return Err(MetadataStoreError::InvalidInput(
+                "artifact_publication_mismatch",
+            ));
+        }
         let mut tx = self
             .pool
             .begin()
@@ -2846,10 +2909,6 @@ impl MetadataStore for PostgresMetadataStore {
             "WITH moment AS (SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS unix_ms),
              candidate AS (SELECT o.operation_id FROM llm_notary_daemon.operations o
                 WHERE o.state='running' AND o.claim_lease_expires_at<=clock_timestamp()
-                  AND NOT EXISTS (SELECT 1 FROM llm_notary_daemon.replicas r
-                    WHERE r.instance_id=o.owner_instance_id
-                      AND r.incarnation_id=o.owner_incarnation_id
-                      AND r.lease_expires_at>clock_timestamp())
                 ORDER BY o.claim_lease_expires_at,o.operation_id FOR UPDATE SKIP LOCKED LIMIT 1)
              UPDATE llm_notary_daemon.operations o SET state='interrupted',completed_at_unix_ms=moment.unix_ms,failure_code='claim_expired'
              FROM candidate,moment WHERE o.operation_id=candidate.operation_id RETURNING o.operation_id,o.capture_id,o.attempt,o.completed_at_unix_ms",
@@ -2886,8 +2945,16 @@ impl MetadataStore for PostgresMetadataStore {
     ) -> MetadataResult<()> {
         let created = invalid_i64(created_at_unix_ms, "timestamp_out_of_range")?;
         let expires = invalid_i64(expires_at_unix_ms, "timestamp_out_of_range")?;
-        sqlx::query("INSERT INTO llm_notary_daemon.dashboard_sessions(token_hash,created_at_unix_ms,expires_at_unix_ms) VALUES($1,$2,$3)")
-            .bind(token_hash.as_slice()).bind(created).bind(expires).execute(&self.pool).await
+        let ttl = expires
+            .checked_sub(created)
+            .ok_or(MetadataStoreError::InvalidInput("invalid_session_expiry"))?;
+        if !(1..=86_400_000).contains(&ttl) {
+            return Err(MetadataStoreError::InvalidInput("invalid_session_expiry"));
+        }
+        sqlx::query("WITH moment AS (SELECT floor(extract(epoch FROM clock_timestamp())*1000)::bigint AS unix_ms)
+             INSERT INTO llm_notary_daemon.dashboard_sessions(token_hash,created_at_unix_ms,expires_at_unix_ms)
+             SELECT $1,moment.unix_ms,moment.unix_ms+$2 FROM moment")
+            .bind(token_hash.as_slice()).bind(ttl).execute(&self.pool).await
             .map_err(|error| db(anyhow!(error).context("creating dashboard session")))?;
         Ok(())
     }
@@ -3107,10 +3174,11 @@ mod tests {
         postgres::Postgres,
         testcontainers::{ContainerAsync, ImageExt, runners::AsyncRunner},
     };
+    use tokio::sync::Barrier;
 
     use crate::{
         FinalizationPhase,
-        artifact_store::ArtifactKind,
+        artifact_store::{ArtifactKind, ArtifactLocator},
         config::PostgresSslMode,
         metadata::{CaptureFilters, NewCapture, TerminalOperationResult},
         metadata_store::{
@@ -3324,18 +3392,90 @@ mod tests {
             Err(MetadataStoreError::Fenced)
         ));
 
-        sqlx::query("UPDATE llm_notary_daemon.captures SET capture_state='captured',http_status=200 WHERE capture_id=$1")
-            .bind(capture_id).execute(&store.pool).await.unwrap();
+        let mut bundle = conformance::artifact(capture_id, ArtifactKind::DeferredBundle, 2);
+        bundle.locator = ArtifactLocator::from_stored(
+            "artifact/v1/s3/Y2x1c3Rlci1jYXB0dXJlLWRlZmVycmVkLWJ1bmRsZQ",
+        )
+        .unwrap();
+        let bundle = bundle
+            .with_publication_id(&recovered.claim.publication_id)
+            .unwrap();
+        let mut completion = conformance::completion(capture_id, 9, 200);
+        completion.expected_artifact_size_bytes = bundle.size_bytes;
+        completion.expected_artifact_sha256 = bundle.sha256.clone();
+        assert!(matches!(
+            store
+                .prepare_capture_completion_claimed(completion.clone(), &original, 20)
+                .await,
+            Err(MetadataStoreError::Fenced)
+        ));
+        assert!(matches!(
+            store
+                .complete_capture_claimed(completion.clone(), bundle.clone(), &original)
+                .await,
+            Err(MetadataStoreError::Fenced)
+        ));
+        assert!(matches!(
+            store.fail_capture_claimed(&original, "stale_owner").await,
+            Err(MetadataStoreError::Fenced)
+        ));
+        store
+            .prepare_capture_completion_claimed(completion.clone(), &recovered.claim, 20)
+            .await
+            .unwrap();
+        store
+            .complete_capture_claimed(completion, bundle, &recovered.claim)
+            .await
+            .unwrap();
+
         let (operation, _) = store
             .enqueue_finalization(capture_id, 10)
             .await
             .unwrap()
             .unwrap();
-        let old_finalization = store
-            .claim_next_finalization_clustered(&collision, &uuid::Uuid::new_v4().to_string(), 20)
+        let second = ReplicaIdentity::new("daemon-b").unwrap();
+        store
+            .register_replica(&second, TEST_CLUSTER_COMPATIBILITY, 20)
             .await
-            .unwrap()
             .unwrap();
+        let barrier = Arc::new(Barrier::new(2));
+        let first_contender = {
+            let store = store.clone();
+            let identity = collision.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .claim_next_finalization_clustered(
+                        &identity,
+                        &uuid::Uuid::new_v4().to_string(),
+                        20,
+                    )
+                    .await
+            })
+        };
+        let second_contender = {
+            let store = store.clone();
+            let identity = second.clone();
+            let barrier = barrier.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                store
+                    .claim_next_finalization_clustered(
+                        &identity,
+                        &uuid::Uuid::new_v4().to_string(),
+                        20,
+                    )
+                    .await
+            })
+        };
+        let first_claim = first_contender.await.unwrap().unwrap();
+        let second_claim = second_contender.await.unwrap().unwrap();
+        assert_eq!(
+            usize::from(first_claim.is_some()) + usize::from(second_claim.is_some()),
+            1
+        );
+        let old_finalization = first_claim.or(second_claim).unwrap();
         assert_eq!(
             old_finalization.operation.operation_id,
             operation.operation_id
@@ -3353,15 +3493,6 @@ mod tests {
         );
         sqlx::query("UPDATE llm_notary_daemon.operations SET claim_lease_expires_at=clock_timestamp()-interval '1 second' WHERE operation_id=$1")
             .bind(&operation.operation_id).execute(&store.pool).await.unwrap();
-        assert!(
-            store
-                .interrupt_next_expired_finalization()
-                .await
-                .unwrap()
-                .is_none()
-        );
-        sqlx::query("UPDATE llm_notary_daemon.replicas SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE instance_id=$1")
-            .bind(collision.instance_id()).execute(&store.pool).await.unwrap();
         assert_eq!(
             store.interrupt_next_expired_finalization().await.unwrap(),
             Some(operation.operation_id.clone())
@@ -3384,18 +3515,39 @@ mod tests {
                 .await,
             Err(MetadataStoreError::Fenced)
         ));
+        let mut stale_package =
+            conformance::artifact(capture_id, ArtifactKind::FinalizedPackage, 3);
+        stale_package.locator = ArtifactLocator::from_stored(
+            "artifact/v1/s3/Y2x1c3Rlci1jYXB0dXJlLWZpbmFsaXplZC1wYWNrYWdl",
+        )
+        .unwrap();
+        let stale_package = stale_package
+            .with_publication_id(&old_finalization.publication_id)
+            .unwrap();
+        assert!(matches!(
+            store
+                .complete_finalization_claimed(&old_finalization, stale_package, 13)
+                .await,
+            Err(MetadataStoreError::Fenced)
+        ));
+        assert!(matches!(
+            store
+                .fail_operation_claimed(&old_finalization, 13, "stale_failure")
+                .await,
+            Err(MetadataStoreError::Fenced)
+        ));
         store
             .retry_operation(&operation.operation_id, 13)
             .await
             .unwrap()
             .unwrap();
-        let second = ReplicaIdentity::new("daemon-b").unwrap();
-        store
-            .register_replica(&second, TEST_CLUSTER_COMPATIBILITY, 20)
-            .await
-            .unwrap();
+        let retry_owner = if old_finalization.owner == collision {
+            second.clone()
+        } else {
+            collision.clone()
+        };
         let winner = store
-            .claim_next_finalization_clustered(&second, &uuid::Uuid::new_v4().to_string(), 20)
+            .claim_next_finalization_clustered(&retry_owner, &uuid::Uuid::new_v4().to_string(), 20)
             .await
             .unwrap()
             .unwrap();
@@ -3410,7 +3562,7 @@ mod tests {
 
         let token_hash = [7_u8; 32];
         store
-            .create_dashboard_session(&token_hash, 1, 4_000_000_000_000)
+            .create_dashboard_session(&token_hash, 1, 60_001)
             .await
             .unwrap();
         assert!(store.dashboard_session_valid(&token_hash, 0).await.unwrap());
@@ -3420,6 +3572,35 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(stored, token_hash);
+
+        let expired_token_hash = [8_u8; 32];
+        store
+            .create_dashboard_session(&expired_token_hash, 0, 1_000)
+            .await
+            .unwrap();
+        sqlx::query(
+            "UPDATE llm_notary_daemon.dashboard_sessions SET created_at_unix_ms=0, expires_at_unix_ms=1 WHERE token_hash=$1",
+        )
+        .bind(expired_token_hash.as_slice())
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        assert!(
+            !store
+                .dashboard_session_valid(&expired_token_hash, 0)
+                .await
+                .unwrap()
+        );
+        assert_eq!(store.prune_dashboard_sessions(0, 10).await.unwrap(), 1);
+        let expired_stored: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM llm_notary_daemon.dashboard_sessions WHERE token_hash=$1)",
+        )
+        .bind(expired_token_hash.as_slice())
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert!(!expired_stored);
+        assert!(store.dashboard_session_valid(&token_hash, 0).await.unwrap());
         store.revoke_dashboard_session(&token_hash).await.unwrap();
         assert!(!store.dashboard_session_valid(&token_hash, 0).await.unwrap());
 
@@ -3441,28 +3622,24 @@ mod tests {
         let old = directory_record(9);
         let new = directory_record(10);
         let source = "https://api.example/api/notary";
+        let first_directory = NotaryDirectory {
+            format: DIRECTORY_FORMAT_V3.into(),
+            generation: 1,
+            active_key_id: old.key_id.clone(),
+            notaries: vec![old.clone()],
+        };
         store
-            .pin_notary_directory(
-                NotaryDirectory {
-                    format: DIRECTORY_FORMAT_V3.into(),
-                    generation: 1,
-                    active_key_id: old.key_id.clone(),
-                    notaries: vec![old.clone()],
-                },
-                source,
-            )
+            .pin_notary_directory(first_directory.clone(), source)
             .await
             .unwrap();
+        let second_directory = NotaryDirectory {
+            format: DIRECTORY_FORMAT_V3.into(),
+            generation: 2,
+            active_key_id: new.key_id.clone(),
+            notaries: vec![new.clone()],
+        };
         let updated = store
-            .pin_notary_directory(
-                NotaryDirectory {
-                    format: DIRECTORY_FORMAT_V3.into(),
-                    generation: 2,
-                    active_key_id: new.key_id.clone(),
-                    notaries: vec![new],
-                },
-                source,
-            )
+            .pin_notary_directory(second_directory.clone(), source)
             .await
             .unwrap();
         assert_eq!(updated.generation, 2);
@@ -3475,19 +3652,113 @@ mod tests {
                 .status,
             NotaryKeyStatus::Retired
         );
+
+        let replayed = store
+            .pin_notary_directory(second_directory.clone(), source)
+            .await
+            .unwrap();
+        assert_eq!(replayed.generation, updated.generation);
+        assert_eq!(replayed.directory_sha256, updated.directory_sha256);
+        assert_eq!(replayed.directory_source, updated.directory_source);
+        assert_eq!(
+            replayed
+                .records
+                .iter()
+                .find(|record| record.key_id == old.key_id)
+                .unwrap()
+                .status,
+            NotaryKeyStatus::Retired
+        );
+
+        let mirror_source = "https://mirror.example/api/notary";
+        assert!(
+            store
+                .pin_notary_directory(second_directory.clone(), mirror_source)
+                .await
+                .is_err()
+        );
+        let source_unchanged = store.notary_trust_snapshot().await.unwrap().unwrap();
+        assert_eq!(source_unchanged.generation, updated.generation);
+        assert_eq!(source_unchanged.directory_sha256, updated.directory_sha256);
+        assert_eq!(source_unchanged.directory_source, source);
+        assert_eq!(
+            source_unchanged
+                .records
+                .iter()
+                .find(|record| record.key_id == old.key_id)
+                .unwrap()
+                .status,
+            NotaryKeyStatus::Retired
+        );
+
+        let mut conflicting_new = new.clone();
+        conflicting_new.host = "conflict.example".into();
         assert!(
             store
                 .pin_notary_directory(
                     NotaryDirectory {
                         format: DIRECTORY_FORMAT_V3.into(),
-                        generation: 1,
-                        active_key_id: old.key_id.clone(),
-                        notaries: vec![old],
+                        generation: 2,
+                        active_key_id: conflicting_new.key_id.clone(),
+                        notaries: vec![conflicting_new],
                     },
                     source,
                 )
                 .await
                 .is_err()
+        );
+        assert!(
+            store
+                .pin_notary_directory(first_directory, source)
+                .await
+                .is_err()
+        );
+
+        let mut revoked_old = old.clone();
+        revoked_old.status = NotaryKeyStatus::Revoked;
+        let revoked = store
+            .pin_notary_directory(
+                NotaryDirectory {
+                    format: DIRECTORY_FORMAT_V3.into(),
+                    generation: 3,
+                    active_key_id: new.key_id.clone(),
+                    notaries: vec![new.clone(), revoked_old],
+                },
+                source,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            revoked
+                .records
+                .iter()
+                .find(|record| record.key_id == old.key_id)
+                .unwrap()
+                .status,
+            NotaryKeyStatus::Revoked
+        );
+        let mut attempted_restore = old.clone();
+        attempted_restore.status = NotaryKeyStatus::Retired;
+        let non_resurrected = store
+            .pin_notary_directory(
+                NotaryDirectory {
+                    format: DIRECTORY_FORMAT_V3.into(),
+                    generation: 4,
+                    active_key_id: new.key_id.clone(),
+                    notaries: vec![new, attempted_restore],
+                },
+                source,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            non_resurrected
+                .records
+                .iter()
+                .find(|record| record.key_id == old.key_id)
+                .unwrap()
+                .status,
+            NotaryKeyStatus::Revoked
         );
         assert_eq!(
             store
@@ -3496,7 +3767,7 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .generation,
-            2
+            4
         );
     }
 

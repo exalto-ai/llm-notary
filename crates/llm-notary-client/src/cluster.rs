@@ -1,10 +1,21 @@
 //! Explicit multi-replica runtime identity and lifecycle.
 
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicU8, Ordering},
+    },
+    time::Duration,
+};
+
+use tokio::sync::watch;
 
 use crate::{
     config::ClusterConfig,
-    metadata_store::{CaptureClaim, MetadataResult, MetadataStoreError, ReplicaIdentity},
+    metadata_store::{
+        CaptureClaim, FinalizationClaim, MetadataResult, MetadataStore, MetadataStoreError,
+        ReplicaIdentity,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -19,6 +30,9 @@ pub(crate) struct ClusterRuntime {
     identity: ReplicaIdentity,
     heartbeat_interval_seconds: u64,
     lease_seconds: u64,
+    claim_max_runtime_seconds: u64,
+    withdrawal_delay_seconds: u64,
+    shutdown_grace_seconds: u64,
     lifecycle: AtomicU8,
 }
 
@@ -34,6 +48,9 @@ impl ClusterRuntime {
             identity,
             heartbeat_interval_seconds: config.heartbeat_interval_seconds,
             lease_seconds: config.lease_seconds,
+            claim_max_runtime_seconds: config.claim_max_runtime_seconds,
+            withdrawal_delay_seconds: config.withdrawal_delay_seconds,
+            shutdown_grace_seconds: config.shutdown_grace_seconds,
             lifecycle: AtomicU8::new(Lifecycle::Starting as u8),
         })
     }
@@ -48,6 +65,76 @@ impl ClusterRuntime {
 
     pub(crate) const fn lease_seconds(&self) -> u64 {
         self.lease_seconds
+    }
+
+    pub(crate) const fn withdrawal_delay_seconds(&self) -> u64 {
+        self.withdrawal_delay_seconds
+    }
+
+    pub(crate) const fn shutdown_grace_seconds(&self) -> u64 {
+        self.shutdown_grace_seconds
+    }
+
+    pub(crate) fn keep_capture_claim_alive(
+        &self,
+        metadata: Arc<dyn MetadataStore>,
+        claim: CaptureClaim,
+    ) -> ClaimLeaseGuard {
+        self.keep_claim_alive(metadata, ClaimToRenew::Capture(claim))
+    }
+
+    pub(crate) fn keep_finalization_claim_alive(
+        &self,
+        metadata: Arc<dyn MetadataStore>,
+        claim: FinalizationClaim,
+    ) -> ClaimLeaseGuard {
+        self.keep_claim_alive(metadata, ClaimToRenew::Finalization(Box::new(claim)))
+    }
+
+    fn keep_claim_alive(
+        &self,
+        metadata: Arc<dyn MetadataStore>,
+        claim: ClaimToRenew,
+    ) -> ClaimLeaseGuard {
+        let (shutdown, mut stopped) = watch::channel(false);
+        let renewal_interval = Duration::from_secs(self.heartbeat_interval_seconds);
+        let maximum_runtime = Duration::from_secs(self.claim_max_runtime_seconds);
+        let lease_seconds = self.lease_seconds;
+        tokio::spawn(async move {
+            let started = tokio::time::Instant::now();
+            loop {
+                tokio::select! {
+                    result = stopped.changed() => {
+                        if result.is_err() || *stopped.borrow() { return; }
+                    }
+                    () = tokio::time::sleep(renewal_interval) => {}
+                }
+                if started.elapsed() >= maximum_runtime {
+                    tracing::warn!(
+                        "cluster work claim reached its maximum runtime; allowing lease expiry"
+                    );
+                    return;
+                }
+                let result = match &claim {
+                    ClaimToRenew::Capture(claim) => {
+                        metadata.renew_capture_claim(claim, lease_seconds).await
+                    }
+                    ClaimToRenew::Finalization(claim) => {
+                        metadata
+                            .renew_finalization_claim(claim, lease_seconds)
+                            .await
+                    }
+                };
+                match result {
+                    Ok(()) => {}
+                    Err(MetadataStoreError::Fenced) => return,
+                    Err(error) => {
+                        tracing::warn!(error = %error, "cluster work claim renewal failed; retrying until the lease expires")
+                    }
+                }
+            }
+        });
+        ClaimLeaseGuard { shutdown }
     }
 
     pub(crate) fn capture_claim(&self, capture_id: impl Into<String>) -> CaptureClaim {
@@ -74,5 +161,20 @@ impl ClusterRuntime {
             2 => Lifecycle::Draining,
             _ => Lifecycle::Starting,
         }
+    }
+}
+
+enum ClaimToRenew {
+    Capture(CaptureClaim),
+    Finalization(Box<FinalizationClaim>),
+}
+
+pub(crate) struct ClaimLeaseGuard {
+    shutdown: watch::Sender<bool>,
+}
+
+impl Drop for ClaimLeaseGuard {
+    fn drop(&mut self) {
+        let _ = self.shutdown.send(true);
     }
 }

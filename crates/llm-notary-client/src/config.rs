@@ -69,6 +69,16 @@ pub struct ClusterConfig {
     pub heartbeat_interval_seconds: u64,
     #[serde(default = "default_cluster_lease_seconds")]
     pub lease_seconds: u64,
+    /// Hard ceiling after which a work claim stops renewing even if its task
+    /// is still pending, so a wedged provider/notary operation is recoverable.
+    #[serde(default = "default_cluster_claim_max_runtime_seconds")]
+    pub claim_max_runtime_seconds: u64,
+    /// Time kept ready=false but live before listeners begin graceful shutdown.
+    #[serde(default = "default_cluster_withdrawal_delay_seconds")]
+    pub withdrawal_delay_seconds: u64,
+    /// Bounded time for admitted streams and current work to finish on SIGTERM.
+    #[serde(default = "default_cluster_shutdown_grace_seconds")]
+    pub shutdown_grace_seconds: u64,
     /// Confirms that non-loopback listeners sit behind authenticated,
     /// TLS-terminated infrastructure which does not replay provider requests.
     #[serde(default)]
@@ -85,6 +95,9 @@ impl Default for ClusterConfig {
             instance_id: None,
             heartbeat_interval_seconds: default_cluster_heartbeat_seconds(),
             lease_seconds: default_cluster_lease_seconds(),
+            claim_max_runtime_seconds: default_cluster_claim_max_runtime_seconds(),
+            withdrawal_delay_seconds: default_cluster_withdrawal_delay_seconds(),
+            shutdown_grace_seconds: default_cluster_shutdown_grace_seconds(),
             trusted_ingress: false,
             vault_compatibility_sha256: None,
         }
@@ -667,6 +680,20 @@ impl AgentConfig {
             "cluster.lease_seconds must be between 3 and 300 and at least three heartbeat intervals"
         );
         ensure!(
+            self.cluster.claim_max_runtime_seconds >= self.cluster.lease_seconds
+                && self.cluster.claim_max_runtime_seconds <= 86_400,
+            "cluster.claim_max_runtime_seconds must be at least the lease and no more than 86400"
+        );
+        ensure!(
+            (1..=120).contains(&self.cluster.withdrawal_delay_seconds),
+            "cluster.withdrawal_delay_seconds must be between 1 and 120"
+        );
+        ensure!(
+            self.cluster.shutdown_grace_seconds >= self.cluster.withdrawal_delay_seconds
+                && self.cluster.shutdown_grace_seconds <= 3_600,
+            "cluster.shutdown_grace_seconds must be at least the withdrawal delay and no more than 3600"
+        );
+        ensure!(
             self.catalog.backend == MetadataBackend::Postgres,
             "cluster mode requires catalog.backend = \"postgres\""
         );
@@ -767,10 +794,19 @@ impl AgentConfig {
     /// migrator. The replica slot name is intentionally excluded; every other
     /// configured trust, storage, listener, and lease setting must agree.
     pub fn cluster_compatibility_sha256(&self) -> Result<String> {
+        self.cluster_compatibility_sha256_for_api_origin(crate::cli::DEFAULT_PUBLIC_ORIGIN)
+    }
+
+    /// Includes the normalized hosted API origin because it is the authority
+    /// from which replicas advance shared notary trust and request admission.
+    pub fn cluster_compatibility_sha256_for_api_origin(&self, api_origin: &str) -> Result<String> {
         ensure!(self.cluster.enabled, "cluster mode is not enabled");
         let mut normalized = self.clone();
         normalized.cluster.instance_id = None;
-        Ok(sha256_hex(toml::to_string(&normalized)?.as_bytes()))
+        let normalized = toml::to_string(&normalized)?;
+        Ok(sha256_hex(
+            format!("llm-notary-cluster/v1\n{normalized}\napi-origin={api_origin}\n").as_bytes(),
+        ))
     }
 
     pub fn notary_endpoint(&self) -> Result<Option<NotaryEndpoint>> {
@@ -1008,6 +1044,18 @@ fn default_cluster_heartbeat_seconds() -> u64 {
 
 fn default_cluster_lease_seconds() -> u64 {
     20
+}
+
+fn default_cluster_claim_max_runtime_seconds() -> u64 {
+    3_600
+}
+
+fn default_cluster_withdrawal_delay_seconds() -> u64 {
+    8
+}
+
+fn default_cluster_shutdown_grace_seconds() -> u64 {
+    120
 }
 
 fn default_postgres_max_connections() -> u32 {

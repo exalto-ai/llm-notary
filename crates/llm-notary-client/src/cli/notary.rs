@@ -155,6 +155,12 @@ pub(crate) fn merge_shared_trust(
     {
         bail!("notary directory source is not a public directory URL");
     }
+    if current
+        .as_ref()
+        .is_some_and(|current| current.directory_source != directory_source)
+    {
+        bail!("notary directory source differs from the pinned cluster authority");
+    }
     let store = current.map_or_else(TrustStore::default, |current| TrustStore {
         format: DIRECTORY_FORMAT_V3.to_owned(),
         generation: current.generation,

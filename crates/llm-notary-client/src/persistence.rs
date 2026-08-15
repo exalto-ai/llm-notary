@@ -149,9 +149,9 @@ impl Persistence {
         match self
             .artifacts
             .find_scoped(&key, &recovery.claim.publication_id, MAX_ARCHIVE_WIRE_BYTES)
-            .await?
+            .await
         {
-            Some(artifact)
+            Ok(Some(artifact))
                 if artifact.size_bytes == completion.expected_artifact_size_bytes
                     && artifact.sha256 == completion.expected_artifact_sha256 =>
             {
@@ -160,13 +160,29 @@ impl Persistence {
                     .await?;
                 summary.recovered_bundles = 1;
             }
-            Some(_) => anyhow::bail!("stored artifact does not match the prepared capture claim"),
-            None => {
+            Ok(Some(_)) => {
                 self.metadata
-                    .renew_capture_claim(&recovery.claim, cluster.lease_seconds())
+                    .fail_capture_claimed(&recovery.claim, "artifact_integrity")
                     .await?;
-                summary.pending_publications = 1;
+                summary.interrupted_captures = 1;
             }
+            Ok(None) => {
+                self.metadata
+                    .fail_capture_claimed(&recovery.claim, "artifact_missing")
+                    .await?;
+                summary.interrupted_captures = 1;
+            }
+            Err(
+                crate::artifact_store::ArtifactStoreError::Integrity { .. }
+                | crate::artifact_store::ArtifactStoreError::TooLarge { .. }
+                | crate::artifact_store::ArtifactStoreError::Conflict { .. },
+            ) => {
+                self.metadata
+                    .fail_capture_claimed(&recovery.claim, "artifact_integrity")
+                    .await?;
+                summary.interrupted_captures = 1;
+            }
+            Err(error) => return Err(error.into()),
         }
         Ok(summary)
     }

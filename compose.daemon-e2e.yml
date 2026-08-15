@@ -400,13 +400,14 @@ services:
       LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
       LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
       LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
+      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_CLUSTER_FINALIZATION_PAUSE_MS:-0}
       LLM_NOTARY_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
       LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
       LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
       XDG_CONFIG_HOME: /state/xdg-config
       XDG_DATA_HOME: /state/xdg-data
     volumes:
-      - daemon-state:/state
+      - daemon-state:/state:ro
       - fixture-state:/fixtures:ro
     read_only: true
     tmpfs:
@@ -444,13 +445,14 @@ services:
       LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
       LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
       LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
+      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_CLUSTER_FINALIZATION_PAUSE_MS:-0}
       LLM_NOTARY_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
       LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
       LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
       XDG_CONFIG_HOME: /state/xdg-config
       XDG_DATA_HOME: /state/xdg-data
     volumes:
-      - daemon-state:/state
+      - daemon-state:/state:ro
       - fixture-state:/fixtures:ro
     read_only: true
     tmpfs:
@@ -477,6 +479,7 @@ services:
     entrypoint: ["llm-notaryd"]
     command: ["--config", "/state/config-cluster-a.toml", "migrate"]
     environment:
+      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
       LLM_NOTARY_METADATA_MIGRATION_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
     volumes:
       - daemon-state:/state:ro

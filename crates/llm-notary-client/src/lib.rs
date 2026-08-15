@@ -134,11 +134,12 @@ async fn run_daemon_migrator(config_path: Option<PathBuf>) -> Result<()> {
     .await
     .map_err(|_| anyhow::anyhow!("local daemon PostgreSQL metadata migration failed"))?;
     if config.cluster.enabled {
+        let api_origin = cli::auth::configured_api_origin()?;
         postgres_metadata_store::configure_cluster_compatibility(
             database_url.expose(),
             postgres.ssl_mode,
             Duration::from_secs(postgres.connect_timeout_seconds),
-            &config.cluster_compatibility_sha256()?,
+            &config.cluster_compatibility_sha256_for_api_origin(&api_origin.to_string())?,
         )
         .await
         .map_err(|_| anyhow::anyhow!("cluster compatibility configuration failed"))?;

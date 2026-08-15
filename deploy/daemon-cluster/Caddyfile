@@ -13,7 +13,7 @@
 		health_uri /readyz
 		health_port 8788
 		health_interval 5s
-		health_timeout 2s
+		health_timeout 3s
 		flush_interval -1
 		transport http {
 			versions 1.1
@@ -31,7 +31,7 @@
 		lb_try_duration 0s
 		health_uri /readyz
 		health_interval 5s
-		health_timeout 2s
+		health_timeout 3s
 		flush_interval -1
 		transport http {
 			versions 1.1

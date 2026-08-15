@@ -6,7 +6,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
@@ -65,7 +65,8 @@ use crate::{
 const API_VERSION: &str = "v1";
 const SESSION_COOKIE: &str = "llm_notary_admin_session";
 const SESSION_MAX_AGE_SECONDS: u64 = 43_200;
-const DEPENDENCY_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const DEPENDENCY_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+const DEPENDENCY_PROBE_CACHE_TTL: Duration = Duration::from_secs(1);
 const DASHBOARD_HEADER: &str = "x-llm-notary-request";
 const DASHBOARD_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
 const DESKTOP_DASHBOARD_CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'self' tauri://localhost http://tauri.localhost https://tauri.localhost";
@@ -73,6 +74,9 @@ const DESKTOP_DASHBOARD_CSP: &str = "default-src 'self'; script-src 'self'; styl
 #[derive(RustEmbed)]
 #[folder = "dashboard/"]
 struct DashboardAssets;
+
+type DependencyProbeResult = std::result::Result<(), &'static str>;
+type DependencyProbeCache = Option<(Instant, DependencyProbeResult)>;
 
 #[derive(Clone)]
 pub(crate) struct AdminState {
@@ -84,6 +88,8 @@ pub(crate) struct AdminState {
     pub(crate) work_available: Arc<Notify>,
     pub(crate) update_status: crate::update::SharedUpdateStatus,
     cluster: Option<Arc<ClusterRuntime>>,
+    vault_compatibility_sha256: Option<String>,
+    dependency_probe: Arc<Mutex<DependencyProbeCache>>,
 }
 
 impl AdminState {
@@ -91,6 +97,7 @@ impl AdminState {
         persistence: Persistence,
         config: Arc<AgentConfig>,
         cluster: Option<Arc<ClusterRuntime>>,
+        vault_compatibility_sha256: Option<String>,
     ) -> Result<Self> {
         if cluster.is_none() {
             let interrupted = persistence
@@ -114,8 +121,68 @@ impl AdminState {
                 crate::update::background_status()
             },
             cluster,
+            vault_compatibility_sha256,
+            dependency_probe: Arc::new(Mutex::new(None)),
         })
     }
+}
+
+async fn probe_dependencies(state: &AdminState) -> std::result::Result<(), &'static str> {
+    let mut cached = state.dependency_probe.lock().await;
+    if let Some((checked_at, result)) = cached.as_ref()
+        && checked_at.elapsed() < DEPENDENCY_PROBE_CACHE_TTL
+    {
+        return *result;
+    }
+
+    let persistence = state.persistence.clone();
+    let cluster = state.cluster.clone();
+    let configured_vault = state.config.cluster.vault_compatibility_sha256.clone();
+    let opened_vault = state.vault_compatibility_sha256.clone();
+    let require_shared_trust = state.cluster.is_some() && state.config.notary.endpoint.is_none();
+    let result = match tokio::time::timeout(DEPENDENCY_PROBE_TIMEOUT, async move {
+        persistence
+            .metadata
+            .readiness()
+            .await
+            .map_err(|_| "metadata_not_ready")?;
+        persistence
+            .artifacts
+            .readiness()
+            .await
+            .map_err(|_| "artifact_not_ready")?;
+        if let Some(cluster) = cluster {
+            if opened_vault != configured_vault {
+                return Err("vault_not_ready");
+            }
+            if !persistence
+                .metadata
+                .replica_ready(cluster.identity())
+                .await
+                .map_err(|_| "replica_lease_not_ready")?
+            {
+                return Err("replica_lease_not_ready");
+            }
+        }
+        if require_shared_trust
+            && persistence
+                .metadata
+                .notary_trust_snapshot()
+                .await
+                .map_err(|_| "notary_trust_not_ready")?
+                .is_none()
+        {
+            return Err("notary_trust_not_ready");
+        }
+        Ok(())
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err("dependency_not_ready"),
+    };
+    *cached = Some((Instant::now(), result));
+    result
 }
 
 pub(crate) fn router(state: AdminState) -> Result<Router> {
@@ -291,41 +358,14 @@ async fn readiness(State(state): State<AdminState>) -> Result<Json<ReadinessResp
     {
         return Err(ApiError::service_unavailable("replica_not_ready"));
     }
-    let persistence = state.persistence.clone();
-    let require_shared_trust = state.cluster.is_some() && state.config.notary.endpoint.is_none();
-    match tokio::time::timeout(DEPENDENCY_PROBE_TIMEOUT, async move {
-        persistence
-            .metadata
-            .readiness()
-            .await
-            .map_err(|_| "metadata_not_ready")?;
-        persistence
-            .artifacts
-            .readiness()
-            .await
-            .map_err(|_| "artifact_not_ready")?;
-        if require_shared_trust
-            && persistence
-                .metadata
-                .notary_trust_snapshot()
-                .await
-                .map_err(|_| "notary_trust_not_ready")?
-                .is_none()
-        {
-            return Err("notary_trust_not_ready");
-        }
-        Ok::<_, &'static str>(())
-    })
-    .await
-    {
-        Ok(Ok(_)) => Ok(Json(ReadinessResponse {
+    match probe_dependencies(&state).await {
+        Ok(()) => Ok(Json(ReadinessResponse {
             service: "llm-notaryd".into(),
             status: "ready".into(),
             metadata_backend: state.persistence.metadata.backend_name().into(),
             artifact_backend: state.persistence.artifacts.backend_name().into(),
         })),
-        Ok(Err(code)) => Err(ApiError::service_unavailable(code)),
-        Err(_) => Err(ApiError::service_unavailable("dependency_not_ready")),
+        Err(code) => Err(ApiError::service_unavailable(code)),
     }
 }
 
@@ -340,7 +380,7 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
     ApiDoc::openapi()
 }
 
-#[utoipa::path(post, path = "/v1/session", summary = "Start a dashboard session", description = "Exchanges configured HTTP Basic credentials for an HttpOnly browser session cookie. Returns without a cookie when admin authentication is disabled.", responses((status = 204, description = "Dashboard access established"), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/session", summary = "Start a dashboard session", description = "Exchanges configured HTTP Basic credentials for an HttpOnly browser session cookie. Returns without a cookie when admin authentication is disabled.", responses((status = 204, description = "Dashboard access established"), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_session(State(state): State<AdminState>, request: Request) -> Response {
     if state.config.admin.auth.is_none() {
         return StatusCode::NO_CONTENT.into_response();
@@ -367,6 +407,14 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
         {
             return ApiError::service_unavailable("metadata_not_ready").into_response();
         }
+        if let Err(error) = state
+            .persistence
+            .metadata
+            .prune_dashboard_sessions(created_at, 100)
+            .await
+        {
+            tracing::warn!(%error, "expired dashboard sessions could not be pruned");
+        }
     } else {
         state
             .sessions
@@ -390,7 +438,7 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
     response
 }
 
-#[utoipa::path(delete, path = "/v1/session", summary = "End a dashboard session", description = "Deletes the current browser session and expires its local cookie.", responses((status = 204, description = "Dashboard session ended"), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/session", summary = "End a dashboard session", description = "Deletes the current browser session and expires its local cookie.", responses((status = 204, description = "Dashboard session ended"), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn end_session(State(state): State<AdminState>, request: Request) -> Response {
     if let Some(session) = session_from_headers(request.headers()) {
         if state.cluster.is_some() {
@@ -468,28 +516,10 @@ fn session_hash(token: &str) -> [u8; 32] {
 
 #[utoipa::path(get, path = "/v1/status", summary = "Get local service status", description = "Returns listener addresses, bounded metadata and artifact-writer readiness, vault and notary configuration, preview limits, and current capture counts.", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>, ApiError> {
-    if state
-        .cluster
-        .as_ref()
-        .is_some_and(|cluster| cluster.lifecycle() != Lifecycle::Ready)
-    {
-        return Err(ApiError::service_unavailable("replica_not_ready"));
-    }
     let metadata = state.persistence.metadata.clone();
-    let artifacts = state.persistence.artifacts.clone();
-    let require_shared_trust = state.cluster.is_some() && state.config.notary.endpoint.is_none();
+    let probe_state = state.clone();
     let counts = tokio::time::timeout(DEPENDENCY_PROBE_TIMEOUT, async move {
-        metadata.readiness().await.map_err(|_| ())?;
-        artifacts.readiness().await.map_err(|_| ())?;
-        if require_shared_trust
-            && metadata
-                .notary_trust_snapshot()
-                .await
-                .map_err(|_| ())?
-                .is_none()
-        {
-            return Err(());
-        }
+        probe_dependencies(&probe_state).await.map_err(|_| ())?;
         metadata.counts().await.map_err(|_| ())
     })
     .await
@@ -645,7 +675,7 @@ struct CaptureQuery {
     offset: Option<u64>,
 }
 
-#[utoipa::path(get, path = "/v1/captures", summary = "Search local captures", description = "Lists the local capture catalog with opaque cursor pagination, punctuation-safe preview search, and exact metadata filters. The legacy offset parameter is rejected; restart traversal without a cursor instead.", params(("query" = Option<String>, Query), ("model" = Option<String>, Query), ("provider" = Option<String>, Query), ("capture_state" = Option<String>, Query), ("finalization_state" = Option<String>, Query), ("streaming" = Option<bool>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200), ("cursor" = Option<String>, Query), ("offset" = Option<u64>, Query)), responses((status = 200, body = Page<CaptureResponse>), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures", summary = "Search local captures", description = "Lists the local capture catalog with opaque cursor pagination, punctuation-safe preview search, and exact metadata filters. The legacy offset parameter is rejected; restart traversal without a cursor instead.", params(("query" = Option<String>, Query), ("model" = Option<String>, Query), ("provider" = Option<String>, Query), ("capture_state" = Option<String>, Query), ("finalization_state" = Option<String>, Query), ("streaming" = Option<bool>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200), ("cursor" = Option<String>, Query), ("offset" = Option<u64>, Query)), responses((status = 200, body = Page<CaptureResponse>), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn captures(
     State(state): State<AdminState>,
     query: Result<Query<CaptureQuery>, QueryRejection>,
@@ -712,7 +742,7 @@ async fn captures(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/captures/{capture_id}", summary = "Get a capture", description = "Returns safe capture metadata, retained artifact digests, and finalization history for one capture.", params(("capture_id" = String, Path)), responses((status = 200, body = CaptureDetailResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures/{capture_id}", summary = "Get a capture", description = "Returns safe capture metadata, retained artifact digests, and finalization history for one capture.", params(("capture_id" = String, Path)), responses((status = 200, body = CaptureDetailResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn capture(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -764,7 +794,7 @@ async fn capture(
     }))
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/finalizations", summary = "Queue capture finalization", description = "Queues durable proof generation for an eligible captured provider response or returns its existing finalization operation. Captures with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.", params(("capture_id" = String, Path)), responses((status = 202, body = FinalizationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/finalizations", summary = "Queue capture finalization", description = "Queues durable proof generation for an eligible captured provider response or returns its existing finalization operation. Captures with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.", params(("capture_id" = String, Path)), responses((status = 202, body = FinalizationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_finalization(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -816,7 +846,7 @@ struct OperationQuery {
     cursor: Option<String>,
 }
 
-#[utoipa::path(get, path = "/v1/operations", summary = "List background operations", description = "Lists bounded operation summaries, including milestone progress, with opaque cursor pagination and optional state, kind, and capture filters. Fetch one operation for its complete attempt history.", params(("state" = Option<String>, Query), ("kind" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200), ("cursor" = Option<String>, Query)), responses((status = 200, body = Page<OperationSummaryResponse>), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/operations", summary = "List background operations", description = "Lists bounded operation summaries, including milestone progress, with opaque cursor pagination and optional state, kind, and capture filters. Fetch one operation for its complete attempt history.", params(("state" = Option<String>, Query), ("kind" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200), ("cursor" = Option<String>, Query)), responses((status = 200, body = Page<OperationSummaryResponse>), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn operations(
     State(state): State<AdminState>,
     query: Result<Query<OperationQuery>, QueryRejection>,
@@ -867,7 +897,7 @@ async fn operations(
     Ok(Json(page))
 }
 
-#[utoipa::path(get, path = "/v1/operations/{operation_id}", summary = "Get an operation", description = "Returns the current state, milestone progress, and complete attempt history for one durable operation.", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/operations/{operation_id}", summary = "Get an operation", description = "Returns the current state, milestone progress, and complete attempt history for one durable operation.", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn operation(
     State(state): State<AdminState>,
     Path(operation_id): Path<String>,
@@ -886,7 +916,7 @@ async fn operation(
     Ok(Json(value))
 }
 
-#[utoipa::path(post, path = "/v1/operations/{operation_id}/retry", summary = "Retry an operation", description = "Requeues a failed or restart-interrupted operation while preserving its durable identity and attempt history.", params(("operation_id" = String, Path)), responses((status = 202, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/operations/{operation_id}/retry", summary = "Retry an operation", description = "Requeues a failed or restart-interrupted operation while preserving its durable identity and attempt history.", params(("operation_id" = String, Path)), responses((status = 202, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn retry_operation(
     State(state): State<AdminState>,
     Path(operation_id): Path<String>,
@@ -909,7 +939,7 @@ async fn retry_operation(
     Ok((StatusCode::ACCEPTED, Json(value)))
 }
 
-#[utoipa::path(get, path = "/v1/captures/{capture_id}/trace", summary = "Decode a finalized trace", description = "Returns the finalized package manifest and canonical OpenTelemetry trace for inspection.", params(("capture_id" = String, Path)), responses((status = 200, body = TraceResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures/{capture_id}/trace", summary = "Decode a finalized trace", description = "Returns the finalized package manifest and canonical OpenTelemetry trace for inspection.", params(("capture_id" = String, Path)), responses((status = 200, body = TraceResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn trace(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -930,7 +960,7 @@ async fn trace(
     Ok(Json(value))
 }
 
-#[utoipa::path(get, path = "/v1/captures/{capture_id}/package", summary = "Download a finalized verified package", description = "Returns the exact stored canonical .llmtrace bytes as the primary portable verification artifact.", params(("capture_id" = String, Path)), responses((status = 200, body = Vec<u8>, content_type = "application/vnd.llmnotary.trace-package+zip"), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/captures/{capture_id}/package", summary = "Download a finalized verified package", description = "Returns the exact stored canonical .llmtrace bytes as the primary portable verification artifact.", params(("capture_id" = String, Path)), responses((status = 200, body = Vec<u8>, content_type = "application/vnd.llmnotary.trace-package+zip"), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn download_package(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -962,7 +992,7 @@ async fn download_package(
         .into_response())
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/trace:verify", summary = "Verify a finalized trace", description = "Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.", params(("capture_id" = String, Path)), responses((status = 200, body = VerificationResponse), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/trace:verify", summary = "Verify a finalized trace", description = "Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.", params(("capture_id" = String, Path)), responses((status = 200, body = VerificationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn verify_trace(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -1032,7 +1062,7 @@ struct EventQuery {
     limit: Option<u32>,
 }
 
-#[utoipa::path(get, path = "/v1/events", summary = "List service events", description = "Lists redacted event history with opaque back-pagination and a separate high-water cursor for following new events.", params(("cursor" = Option<String>, Query), ("after" = Option<String>, Query), ("severity" = Option<String>, Query), ("event_type" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("operation_id" = Option<String>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200)), responses((status = 200, body = EventListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/events", summary = "List service events", description = "Lists redacted event history with opaque back-pagination and a separate high-water cursor for following new events.", params(("cursor" = Option<String>, Query), ("after" = Option<String>, Query), ("severity" = Option<String>, Query), ("event_type" = Option<String>, Query), ("capture_id" = Option<String>, Query), ("operation_id" = Option<String>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200)), responses((status = 200, body = EventListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn events(
     State(state): State<AdminState>,
     query: Result<Query<EventQuery>, QueryRejection>,
@@ -1135,7 +1165,7 @@ async fn events(
     }))
 }
 
-#[utoipa::path(get, path = "/v1/account", summary = "Get the LLM Notary account connection", description = "Reports whether this local service has an account connection used for hosted admission, credits, and sharing.", responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/account", summary = "Get the LLM Notary account connection", description = "Reports whether this local service has an account connection used for hosted admission, credits, and sharing.", responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn account_status(
     State(state): State<AdminState>,
 ) -> Result<Json<AccountConnectionResponse>, ApiError> {
@@ -1174,7 +1204,7 @@ fn default_device_name() -> String {
     auth::DEFAULT_DEVICE_NAME.to_owned()
 }
 
-#[utoipa::path(post, path = "/v1/account", summary = "Connect an LLM Notary account", description = "Starts browser approval for an account connection used for hosted admission, credits, and sharing. Browser approval is unavailable while the daemon uses an injected API key.", request_body = AccountConnectionRequest, responses((status = 202, body = AccountConnectionStartedResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/account", summary = "Connect an LLM Notary account", description = "Starts browser approval for an account connection used for hosted admission, credits, and sharing. Browser approval is unavailable while the daemon uses an injected API key.", request_body = AccountConnectionRequest, responses((status = 202, body = AccountConnectionStartedResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_account_connection(
     State(state): State<AdminState>,
     Json(body): Json<AccountConnectionRequest>,
@@ -1203,7 +1233,7 @@ async fn start_account_connection(
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
-#[utoipa::path(get, path = "/v1/account/{request_id}", summary = "Poll account authorization", description = "Checks a pending LLM Notary account approval after its required polling interval.", params(("request_id" = String, Path)), responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/account/{request_id}", summary = "Poll account authorization", description = "Checks a pending LLM Notary account approval after its required polling interval.", params(("request_id" = String, Path)), responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn poll_account_connection(
     State(state): State<AdminState>,
     Path(request_id): Path<String>,
@@ -1251,7 +1281,7 @@ async fn poll_account_connection(
     }
 }
 
-#[utoipa::path(delete, path = "/v1/account", summary = "Disconnect the LLM Notary account", description = "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.", responses((status = 204, description = "Account disconnected; hosted sessions return to public access"), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/account", summary = "Disconnect the LLM Notary account", description = "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.", responses((status = 204, description = "Account disconnected; hosted sessions return to public access"), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn end_account_connection(State(state): State<AdminState>) -> Result<StatusCode, ApiError> {
     let _credentials = state.account_credentials.lock().await;
     if auth::api_key_mode_active()
@@ -1290,7 +1320,7 @@ struct CreateShareRequest {
     force: bool,
 }
 
-#[utoipa::path(post, path = "/v1/captures/{capture_id}/shares", summary = "Share a finalized verified session", description = "Verifies one finalized capture locally, applies the public disclosure safety policy, and uploads the exact package. Force overrides only unexplained high-entropy values.", params(("capture_id" = String, Path)), request_body = CreateShareRequest, responses((status = 202, body = ShareResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/captures/{capture_id}/shares", summary = "Share a finalized verified session", description = "Verifies one finalized capture locally, applies the public disclosure safety policy, and uploads the exact package. Force overrides only unexplained high-entropy values.", params(("capture_id" = String, Path)), request_body = CreateShareRequest, responses((status = 202, body = ShareResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn share_capture(
     State(state): State<AdminState>,
     Path(capture_id): Path<String>,
@@ -1643,6 +1673,12 @@ async fn finalize_operation(
     claim: Option<&FinalizationClaim>,
     cluster: Option<&ClusterRuntime>,
 ) -> Result<ArtifactRecord> {
+    let _claim_lease = match (cluster, claim) {
+        (Some(cluster), Some(claim)) => {
+            Some(cluster.keep_finalization_claim_alive(persistence.metadata.clone(), claim.clone()))
+        }
+        _ => None,
+    };
     let last_proof_update = AtomicU64::new(0);
     let (progress_sender, mut progress_receiver) = tokio::sync::mpsc::unbounded_channel();
     let progress_metadata = persistence.metadata.clone();
@@ -2610,7 +2646,7 @@ mod tests {
         config.storage.finalized_dir = directory.join("traces");
         config.admin.auth = auth;
         let persistence = Persistence::open(&config).await.unwrap();
-        AdminState::new(persistence, Arc::new(config), None)
+        AdminState::new(persistence, Arc::new(config), None, None)
             .await
             .unwrap()
     }

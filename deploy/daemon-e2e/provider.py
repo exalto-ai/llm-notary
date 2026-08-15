@@ -4,6 +4,7 @@
 import json
 import os
 import ssl
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -49,7 +50,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(400)
             return
         if request.get("stream") is True:
-            self.respond_stream()
+            slow = "rolling drain" in json.dumps(request).lower()
+            self.respond_stream(delay_seconds=1.0 if slow else 0.0)
             return
         self.respond_json(
             {
@@ -83,7 +85,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def respond_stream(self) -> None:
+    def respond_stream(self, delay_seconds: float = 0.0) -> None:
         events = [
             {
                 "id": "chatcmpl-daemon-e2e-stream",
@@ -121,16 +123,22 @@ class Handler(BaseHTTPRequestHandler):
                 ],
             },
         ]
-        body = b"".join(
+        chunks = [
             b"data: " + json.dumps(event, separators=(",", ":")).encode() + b"\n\n"
             for event in events
-        ) + b"data: [DONE]\n\n"
+        ]
+        chunks.append(b"data: [DONE]\n\n")
+        body = b"".join(chunks)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        for chunk in chunks:
+            self.wfile.write(chunk)
+            self.wfile.flush()
+            if delay_seconds:
+                time.sleep(delay_seconds)
 
     def log_message(self, message: str, *args: object) -> None:
         print(f"provider fixture: {self.address_string()} {message % args}", flush=True)

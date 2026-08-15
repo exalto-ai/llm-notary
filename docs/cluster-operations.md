@@ -64,6 +64,9 @@ enabled = true
 instance_id = "daemon-a" # unique and stable for this replica slot
 heartbeat_interval_seconds = 5
 lease_seconds = 20
+claim_max_runtime_seconds = 3600
+withdrawal_delay_seconds = 8
+shutdown_grace_seconds = 120
 trusted_ingress = true
 vault_compatibility_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
@@ -139,9 +142,17 @@ example; place it behind the environment's TLS and network controls.
 Use `GET /healthz` only for process liveness. Use `GET /readyz` to select load
 balancer backends. Readiness fails while starting or draining and when the
 PostgreSQL schema, selected S3 namespace, shared vault, or directory trust is
-unavailable. `/v1/status`
+unavailable. Dependency probes are serialized and cached for one second per
+replica so load-balancer polling cannot stampede PostgreSQL or S3. `/v1/status`
 identifies the runtime profile, instance, incarnation, lifecycle, and backend
-status without exposing URLs or credentials.
+status without exposing URLs or credentials. Its capture and operation counts
+are cluster-wide; listener addresses, lifecycle, incarnation, and build data
+describe the responding replica.
+
+The bundled `llm-notary` CLI intentionally remains a loopback, single-daemon
+client and rejects the cluster's non-loopback listener configuration. Cluster
+operators and automation should use the authenticated HTTPS admin frontend and
+the generated OpenAPI clients. Do not point the CLI at an individual replica.
 
 On SIGTERM the replica first enters `draining`, making readiness fail and
 rejecting new proxy captures. A short withdrawal interval lets the load
@@ -149,7 +160,10 @@ balancer observe that state. Existing HTTP streams and the finalization already
 owned by the replica finish while heartbeats continue; queued work remains for
 another replica. If the process is paused or killed, PostgreSQL time determines
 lease expiry, one peer records the interruption, and an explicit retry receives
-a new fence.
+a new fence. Configure the orchestrator's termination grace period to exceed
+`withdrawal_delay_seconds + shutdown_grace_seconds`; after the bounded grace
+expires, the process aborts remaining local tasks and peers recover expired
+claims.
 
 Dashboard session bearer values are returned only as secure cookies. The
 database stores a domain-separated SHA-256 digest, so a session issued on one
@@ -170,6 +184,10 @@ The disposable two-replica validation is:
 scripts/test-daemon-persistence-e2e.sh postgres s3 2 full
 ```
 
-It exercises shared sessions, cross-replica capture/finalization/download and
-verification, one fenced owner, peer removal, and the health-aware no-replay
-ingress with PostgreSQL 17 and MinIO.
+It exercises shared hashed sessions, non-replaying ingress traffic,
+cross-replica capture/finalization/download and verification, event high-water
+paging, PostgreSQL and MinIO outages, vault mismatch rejection, duplicate
+instance fencing, stale artifact and terminal fencing, exactly-once expiry and
+retry, peer removal, bounded finalization drain, and a rolling replacement with
+an admitted streaming request and queued peer work against PostgreSQL 17 and
+MinIO.
