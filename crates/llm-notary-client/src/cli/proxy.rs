@@ -30,17 +30,24 @@ use super::{
     notary::{parse_directory, pin},
 };
 use crate::{
-    DeferredBundle, DeferredCaptureConfig, attestable_request_header_bytes,
-    catalog::{Catalog, NewCapture},
-    chunked_request_body,
+    DeferredBundle, DeferredCaptureConfig,
+    archive::MAX_ARCHIVE_WIRE_BYTES,
+    artifact_store::{ArtifactKey, ArtifactKind, ArtifactSource},
+    attestable_request_header_bytes, chunked_request_body,
     config::{AgentConfig, ProviderConfig},
-    deferred_streaming_request_to, deferred_streaming_request_to_admitted, notary_admission_error,
+    deferred_streaming_request_to, deferred_streaming_request_to_admitted,
+    metadata::{CaptureCompletion, NewCapture},
+    notary_admission_error,
     notary_directory::{NotaryDirectory, NotaryDirectoryRecord, NotaryEndpoint},
+    persistence::Persistence,
     vault::Vault,
 };
 
 #[cfg(test)]
-use crate::{DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES};
+use crate::{
+    DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES,
+    artifact_store::FileSystemArtifactStore, catalog::Catalog, metadata_store::SqliteMetadataStore,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Provider {
@@ -118,11 +125,10 @@ pub struct ProxyArgs {
 #[derive(Clone)]
 pub(crate) struct AppState {
     notary: NotaryEndpoint,
-    bundle_dir: PathBuf,
     max_frame_bytes: usize,
     max_attestable_http_bytes: usize,
     pub(crate) vault: Arc<Vault>,
-    pub(crate) catalog: Arc<Catalog>,
+    pub(crate) persistence: Persistence,
     pub(crate) config: Arc<AgentConfig>,
     config_fingerprint: Arc<str>,
     serial: Arc<Mutex<u64>>,
@@ -166,7 +172,6 @@ impl Drop for CaptureTaskGuard {
 pub async fn run(args: ProxyArgs) -> Result<()> {
     let (config, config_path) = load_agent_config(args.config.as_deref())?;
     let listen = config.proxy.listen;
-    let bundle_dir = config.storage.bundle_dir.clone();
     let max_frame_bytes = config.notary.max_frame_bytes;
     let max_attestable_http_bytes = config.proxy.max_attestable_http_bytes;
     if max_frame_bytes == 0 || max_frame_bytes > u32::MAX as usize {
@@ -178,7 +183,6 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     if max_attestable_http_bytes == 0 {
         bail!("maximum attestable HTTP bytes must be non-zero");
     }
-    std::fs::create_dir_all(&bundle_dir)?;
     let hosted_admission = config.notary.endpoint.is_none();
     let notary = match config.notary_endpoint()? {
         Some(notary) => notary,
@@ -187,7 +191,8 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     let vault = Vault::open_or_init_interactive().context(
         "opening the local bundle vault (set LLM_NOTARY_VAULT_PASSPHRASE_FILE before first start when an OS vault is unavailable)",
     )?;
-    let (catalog, recovery) = Catalog::open_for_proxy(&config)?;
+    let persistence = Persistence::open(&config).await?;
+    let recovery = persistence.reconcile_incomplete_captures().await?;
     if recovery.recovered_bundles > 0 || recovery.interrupted_captures > 0 {
         tracing::warn!(
             recovered_bundles = recovery.recovered_bundles,
@@ -197,11 +202,10 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     }
     let state = AppState {
         notary: notary.clone(),
-        bundle_dir,
         max_frame_bytes,
         max_attestable_http_bytes,
         vault: Arc::new(vault),
-        catalog: Arc::new(catalog),
+        persistence,
         config_fingerprint: Arc::from(config.fingerprint()?),
         config: Arc::new(config),
         serial: Arc::new(Mutex::new(0)),
@@ -209,7 +213,8 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         capture_tasks: CaptureTasks::default(),
     };
     let app = router(state.clone());
-    let admin_state = crate::admin::AdminState::new(state.catalog.clone(), state.config.clone())?;
+    let admin_state =
+        crate::admin::AdminState::new(state.persistence.clone(), state.config.clone()).await?;
     let admin = crate::admin::router(admin_state.clone())?;
     let listener = tokio::net::TcpListener::bind(listen).await?;
     let admin_listener = tokio::net::TcpListener::bind(state.config.admin.listen).await?;
@@ -227,7 +232,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         shutdown_rx.clone(),
     );
     let mut worker = crate::admin::spawn_finalization_worker(
-        state.catalog.clone(),
+        state.persistence.clone(),
         state.config.clone(),
         state.vault.clone(),
         admin_state.work_available.clone(),
@@ -724,18 +729,22 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     let outbound = outbound.body(chunked_request_body(input))?;
 
     let (capture_id, created_at_unix_ms) = next_capture_metadata(&state).await?;
-    state.catalog.begin_capture(&NewCapture {
-        capture_id: capture_id.clone(),
-        created_at_unix_ms,
-        provider: provider.name().to_owned(),
-        operation,
-        requested_model: request_metadata.requested_model.clone(),
-        streaming,
-        request_bytes: request_body_bytes,
-        prompt_preview: request_metadata.prompt_preview,
-        prompt_preview_truncated: request_metadata.prompt_preview_truncated,
-        config_fingerprint: state.config_fingerprint.to_string(),
-    })?;
+    state
+        .persistence
+        .metadata
+        .begin_capture(NewCapture {
+            capture_id: capture_id.clone(),
+            created_at_unix_ms,
+            provider: provider.name().to_owned(),
+            operation,
+            requested_model: request_metadata.requested_model.clone(),
+            streaming,
+            request_bytes: request_body_bytes,
+            prompt_preview: request_metadata.prompt_preview,
+            prompt_preview_truncated: request_metadata.prompt_preview_truncated,
+            config_fingerprint: state.config_fingerprint.to_string(),
+        })
+        .await?;
     let started = Instant::now();
     let capture = DeferredCaptureConfig {
         capture_id: capture_id.clone(),
@@ -762,8 +771,10 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         Ok(upstream) => upstream,
         Err(error) => {
             let _ = state
-                .catalog
-                .mark_capture_failed(&capture_id, "notary_error");
+                .persistence
+                .metadata
+                .mark_capture_failed(&capture_id, "notary_error")
+                .await;
             return Err(error);
         }
     };
@@ -814,24 +825,57 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
             drop(body_sender);
             match bundle.await {
                 Ok(Ok(bundle)) => {
-                    match save_bundle(&trace_state.bundle_dir, &bundle, &trace_state.vault) {
-                        Ok(path) => {
-                            let response_bytes = output_preview.response_bytes;
-                            let preview = output_preview.finish();
-                            let completed_at = current_unix_ms().unwrap_or(created_at_unix_ms);
+                    let response_bytes = match u64::try_from(output_preview.response_bytes) {
+                        Ok(response_bytes) => response_bytes,
+                        Err(_) => {
+                            let _ = trace_state
+                                .persistence
+                                .metadata
+                                .mark_capture_failed(&capture_id_for_task, "response_size_overflow")
+                                .await;
+                            tracing::warn!(capture_id = %capture_id_for_task, "provider response size does not fit durable metadata");
+                            return;
+                        }
+                    };
+                    let preview = output_preview.finish();
+                    let completion = CaptureCompletion {
+                        capture_id: capture_id_for_task.clone(),
+                        completed_at_unix_ms: current_unix_ms().unwrap_or(created_at_unix_ms),
+                        duration_ms: elapsed_ms(started),
+                        http_status: status.as_u16(),
+                        response_bytes,
+                        response_model: preview.response_model,
+                        output_preview: preview.text,
+                        output_preview_truncated: preview.truncated,
+                    };
+                    if let Err(error) = trace_state
+                        .persistence
+                        .metadata
+                        .prepare_capture_completion(completion.clone())
+                        .await
+                    {
+                        let _ = trace_state
+                            .persistence
+                            .metadata
+                            .mark_capture_failed(&capture_id_for_task, "metadata_prepare_error")
+                            .await;
+                        tracing::warn!(capture_id = %capture_id_for_task, %error, "could not stage streaming capture completion");
+                        return;
+                    }
+                    match store_bundle(
+                        &trace_state.persistence,
+                        bundle,
+                        trace_state.vault.clone(),
+                        &capture_id_for_task,
+                    )
+                    .await
+                    {
+                        Ok(artifact) => {
                             if trace_state
-                                .catalog
-                                .complete_capture(
-                                    &capture_id_for_task,
-                                    completed_at,
-                                    elapsed_ms(started),
-                                    status.as_u16(),
-                                    response_bytes,
-                                    preview.response_model.as_deref(),
-                                    &preview.text,
-                                    preview.truncated,
-                                    &path,
-                                )
+                                .persistence
+                                .metadata
+                                .complete_capture(completion, artifact)
+                                .await
                                 .is_err()
                             {
                                 tracing::warn!(capture_id = %capture_id_for_task, "could not index deferred streaming bundle");
@@ -840,22 +884,28 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                         }
                         Err(error) => {
                             let _ = trace_state
-                                .catalog
-                                .mark_capture_failed(&capture_id_for_task, "bundle_store_error");
+                                .persistence
+                                .metadata
+                                .mark_capture_failed(&capture_id_for_task, "bundle_store_error")
+                                .await;
                             tracing::warn!(%error, "could not save deferred streaming bundle")
                         }
                     }
                 }
                 Ok(Err(error)) => {
                     let _ = trace_state
-                        .catalog
-                        .mark_capture_failed(&capture_id_for_task, "capture_error");
+                        .persistence
+                        .metadata
+                        .mark_capture_failed(&capture_id_for_task, "capture_error")
+                        .await;
                     tracing::warn!(%error, "stream ended without an LLM Notary deferred bundle")
                 }
                 Err(error) => {
                     let _ = trace_state
-                        .catalog
-                        .mark_capture_failed(&capture_id_for_task, "capture_task_error");
+                        .persistence
+                        .metadata
+                        .mark_capture_failed(&capture_id_for_task, "capture_task_error")
+                        .await;
                     tracing::warn!(%error, "stream deferred capture task exited")
                 }
             }
@@ -880,8 +930,10 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
             Ok(chunk) => body.extend_from_slice(&chunk),
             Err(error) => {
                 let _ = state
-                    .catalog
-                    .mark_capture_failed(&capture_id, "response_error");
+                    .persistence
+                    .metadata
+                    .mark_capture_failed(&capture_id, "response_error")
+                    .await;
                 return Err(error.into());
             }
         }
@@ -890,44 +942,73 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         Ok(Ok(bundle)) => bundle,
         Ok(Err(error)) => {
             let _ = state
-                .catalog
-                .mark_capture_failed(&capture_id, "capture_error");
+                .persistence
+                .metadata
+                .mark_capture_failed(&capture_id, "capture_error")
+                .await;
             return Err(error);
         }
         Err(error) => {
             let _ = state
-                .catalog
-                .mark_capture_failed(&capture_id, "capture_task_error");
+                .persistence
+                .metadata
+                .mark_capture_failed(&capture_id, "capture_task_error")
+                .await;
             return Err(error).context("deferred bundle task exited");
-        }
-    };
-    let path = match save_bundle(&state.bundle_dir, &bundle, &state.vault) {
-        Ok(path) => path,
-        Err(error) => {
-            let _ = state
-                .catalog
-                .mark_capture_failed(&capture_id, "bundle_store_error");
-            return Err(error);
         }
     };
     let response_metadata =
         response_catalog_metadata(provider, &body, state.config.catalog.output_preview_chars);
-    if state
-        .catalog
-        .complete_capture(
-            &capture_id,
-            current_unix_ms().unwrap_or(created_at_unix_ms),
-            elapsed_ms(started),
-            status.as_u16(),
-            body.len(),
-            response_metadata.response_model.as_deref(),
-            &response_metadata.output_preview,
-            response_metadata.output_preview_truncated,
-            &path,
-        )
-        .is_err()
+    let completion = CaptureCompletion {
+        capture_id: capture_id.clone(),
+        completed_at_unix_ms: current_unix_ms().unwrap_or(created_at_unix_ms),
+        duration_ms: elapsed_ms(started),
+        http_status: status.as_u16(),
+        response_bytes: u64::try_from(body.len())?,
+        response_model: response_metadata.response_model,
+        output_preview: response_metadata.output_preview,
+        output_preview_truncated: response_metadata.output_preview_truncated,
+    };
+    if let Err(error) = state
+        .persistence
+        .metadata
+        .prepare_capture_completion(completion.clone())
+        .await
     {
-        tracing::warn!(capture_id = %capture_id, "could not index deferred bundle");
+        let _ = state
+            .persistence
+            .metadata
+            .mark_capture_failed(&capture_id, "metadata_prepare_error")
+            .await;
+        tracing::warn!(capture_id = %capture_id, %error, "could not stage capture completion");
+    } else {
+        let artifact = match store_bundle(
+            &state.persistence,
+            bundle,
+            state.vault.clone(),
+            &capture_id,
+        )
+        .await
+        {
+            Ok(artifact) => artifact,
+            Err(error) => {
+                let _ = state
+                    .persistence
+                    .metadata
+                    .mark_capture_failed(&capture_id, "bundle_store_error")
+                    .await;
+                return Err(error);
+            }
+        };
+        if state
+            .persistence
+            .metadata
+            .complete_capture(completion, artifact)
+            .await
+            .is_err()
+        {
+            tracing::warn!(capture_id = %capture_id, "could not index deferred bundle");
+        }
     }
     tracing::info!(capture_id = %capture_id, provider = host, "wrote deferred bundle");
 
@@ -961,15 +1042,29 @@ async fn collect_request_body(mut body: Body, maximum: usize) -> Result<Bytes> {
     Ok(collected.freeze())
 }
 
-fn save_bundle(
-    bundle_dir: &std::path::Path,
-    bundle: &DeferredBundle,
-    vault: &Vault,
-) -> Result<PathBuf> {
-    std::fs::create_dir_all(bundle_dir)?;
-    let path = bundle_dir.join(format!("{}.llmcapture", bundle.capture_id()));
-    bundle.save(&path, vault)?;
-    Ok(path)
+async fn store_bundle(
+    persistence: &Persistence,
+    bundle: DeferredBundle,
+    vault: Arc<Vault>,
+    expected_capture_id: &str,
+) -> Result<crate::artifact_store::ArtifactRecord> {
+    anyhow::ensure!(
+        bundle.capture_id() == expected_capture_id,
+        "deferred bundle capture does not match the active request"
+    );
+    let key = ArtifactKey::new(bundle.capture_id(), ArtifactKind::DeferredBundle)?;
+    let encrypted = tokio::task::spawn_blocking(move || bundle.to_encrypted_bytes(&vault))
+        .await
+        .context("deferred bundle encryption task failed")??;
+    persistence
+        .artifacts
+        .put(
+            &key,
+            ArtifactSource::from_bytes(encrypted),
+            MAX_ARCHIVE_WIRE_BYTES,
+        )
+        .await
+        .map_err(Into::into)
 }
 
 async fn next_capture_metadata(state: &AppState) -> Result<(String, u64)> {
@@ -1394,13 +1489,19 @@ mod tests {
 
     fn state() -> AppState {
         let config = AgentConfig::default();
+        let persistence = Persistence {
+            metadata: Arc::new(SqliteMetadataStore::from_catalog(
+                Catalog::open(std::path::Path::new(":memory:"), true).unwrap(),
+                true,
+            )),
+            artifacts: Arc::new(FileSystemArtifactStore::new("bundles", "traces")),
+        };
         AppState {
             notary: "127.0.0.1:7047".parse().unwrap(),
-            bundle_dir: PathBuf::from("bundles"),
             max_frame_bytes: DEFAULT_NOTARY_MAX_FRAME_BYTES,
             max_attestable_http_bytes: DEFAULT_MAX_ATTESTABLE_HTTP_BYTES,
             vault: Arc::new(Vault::test_only()),
-            catalog: Arc::new(Catalog::open(std::path::Path::new(":memory:"), true).unwrap()),
+            persistence,
             config_fingerprint: Arc::from(config.fingerprint().unwrap()),
             config: Arc::new(config),
             serial: Arc::new(Mutex::new(0)),

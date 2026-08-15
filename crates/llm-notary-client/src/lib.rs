@@ -12,10 +12,14 @@ use clap::Parser;
 pub use llm_notary_core::*;
 
 pub mod admin;
-pub mod catalog;
+pub mod artifact_store;
+mod catalog;
 pub mod cli;
 pub mod config;
 mod local_cli;
+pub mod metadata;
+pub mod metadata_store;
+pub mod persistence;
 pub mod update;
 
 #[derive(Parser, Debug)]

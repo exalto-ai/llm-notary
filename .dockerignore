@@ -1,6 +1,6 @@
-# The notary image only requires its Rust package and the vendored TLSNotary
-# sources. Keeping the context narrow prevents unrelated web and doc changes
-# from invalidating its cached build layer.
+# The Rust images require workspace sources, pinned protocol dependencies, and
+# the small assets embedded in the daemon CLI. Keeping the context narrow
+# prevents unrelated web and doc changes from invalidating cached build layers.
 *
 !Cargo.toml
 !Cargo.lock
@@ -12,6 +12,15 @@
 !js/desktop/
 !js/desktop/src-tauri/
 !js/desktop/src-tauri/Cargo.toml
+!deploy/
+!deploy/daemon-e2e/
+!deploy/daemon-e2e/config.toml
+!deploy/daemon-e2e/provider.py
+!config/
+!config/updater-public-key.txt
+!skills/
+!skills/llm-notary/
+!skills/llm-notary/**
 !vendor/
 !vendor/tlsn/
 !vendor/tlsn/**

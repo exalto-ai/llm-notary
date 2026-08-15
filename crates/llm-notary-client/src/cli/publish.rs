@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::collections::BTreeMap;
 
 use crate::{
     archive::{ARCHIVE_CONTENT_TYPE, ARCHIVE_FORMAT},
@@ -16,32 +16,9 @@ use crate::{
     sha256_hex,
 };
 use anyhow::{Context, Result, anyhow, bail};
-use clap::{Args, ValueEnum};
+use clap::ValueEnum;
 use reqwest::{Method, Response, StatusCode, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-
-#[derive(Args, Debug)]
-pub struct ShareArgs {
-    /// One finalized `.llmtrace` package produced by LLM Notary.
-    package: PathBuf,
-
-    /// Hex-encoded secp256k1 key used to verify the package's notary evidence.
-    #[arg(long)]
-    trusted_notary_key: Option<String>,
-
-    /// Whether the share appears in the public Library index.
-    #[arg(long, value_enum, default_value_t = ShareVisibility::Unlisted)]
-    visibility: ShareVisibility,
-
-    /// Accept unexplained high-entropy values after reviewing the disclosure.
-    /// Concrete secret detections and verification failures remain blocked.
-    #[arg(long)]
-    force: bool,
-
-    /// Print the share result as one JSON object.
-    #[arg(long)]
-    json: bool,
-}
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -124,57 +101,27 @@ pub(crate) enum ShareStatusError {
     Unavailable,
 }
 
-pub async fn run(args: ShareArgs) -> Result<()> {
-    let (output, capture_id, key_id) = share_package(
-        &args.package,
-        args.trusted_notary_key.as_deref(),
-        args.visibility,
-        args.force,
-    )
-    .await?;
-    if args.json {
-        println!("{}", serde_json::to_string(&output)?);
-    } else {
-        println!("submitted verified trace package: {capture_id}");
-        println!("trusted notary key: {key_id}");
-        println!("share: {}", output.share_id);
-        println!("state: {}", output.state);
-        println!("status: {}", output.status_url);
-        println!("visibility: {}", output.visibility.as_str());
-    }
-    Ok(())
-}
-
-pub(crate) async fn share_package(
-    package: &std::path::Path,
+/// Verifies and shares exact already-snapshotted package bytes.
+pub(crate) async fn share_package_bytes(
+    archive: &[u8],
     trusted_key: Option<&str>,
     visibility: ShareVisibility,
     force: bool,
 ) -> Result<(ShareOutput, String, String)> {
-    reject_bundle_path(package)?;
-    // Snapshot the finalized package before verification. Verification and
-    // upload operate on these exact immutable bytes even if the source file
-    // changes concurrently.
-    let archive = fs::read(package).with_context(|| {
-        format!(
-            "reading finalized package {}; nothing was uploaded",
-            package.display()
-        )
-    })?;
-    let embedded_key = trace_package_notary_key_bytes(&archive)
+    let embedded_key = trace_package_notary_key_bytes(archive)
         .context("validating finalized .llmtrace; nothing was uploaded")?;
     let (trusted_notary_key, key_id) = match trusted_key {
         Some(value) => notary::explicit_key(value)?,
         None => {
-            let created_at = trace_package_created_at_unix_ms_bytes(&archive)?;
+            let created_at = trace_package_created_at_unix_ms_bytes(archive)?;
             let (key_id, _) = notary::cached_key_at(&embedded_key, created_at)?;
             (embedded_key, key_id)
         }
     };
-    let verified = verify_trace_package_bytes(&archive, &trusted_notary_key)
+    let verified = verify_trace_package_bytes(archive, &trusted_notary_key)
         .context("local trace package verification failed; nothing was uploaded")?;
     validate_public_trace_package_with_context_and_force(
-        &archive,
+        archive,
         PublicPackageSafetyContext {
             provider_host: verified.manifest.provider_host(),
             request_path: &verified.request_path,
@@ -182,7 +129,7 @@ pub(crate) async fn share_package(
         force,
     )
     .context("local public disclosure safety check failed; nothing was uploaded")?;
-    let archive_sha256 = sha256_hex(&archive);
+    let archive_sha256 = sha256_hex(archive);
 
     // Everything above is intentionally local so malformed packages never
     // create a share. Authenticate first to recover the configured
@@ -193,7 +140,7 @@ pub(crate) async fn share_package(
         .context("the package notary is no longer trusted; nothing was uploaded")?;
     let share = submit_archive(
         &authenticated,
-        &archive,
+        archive,
         &archive_sha256,
         &archive_idempotency_key(&archive_sha256, visibility, force),
         visibility,
@@ -515,18 +462,6 @@ fn absolute_same_origin_url(origin: &ApiOrigin, value: &str) -> Result<String> {
     Ok(url.to_string())
 }
 
-fn reject_bundle_path(path: &std::path::Path) -> Result<()> {
-    if path
-        .extension()
-        .is_some_and(|extension| extension == "llmcapture" || extension == "llmbundle")
-    {
-        bail!(
-            "encrypted capture files cannot be shared; finalize the capture through the local administration API first"
-        );
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
@@ -629,9 +564,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_private_bundle_paths_and_cross_origin_status_urls() {
-        assert!(reject_bundle_path(PathBuf::from("secret.llmcapture").as_path()).is_err());
-        assert!(reject_bundle_path(PathBuf::from("secret.llmbundle").as_path()).is_err());
+    fn rejects_cross_origin_status_urls() {
         assert!(
             absolute_status_url(
                 &ApiOrigin::parse("https://llmnotary.example").unwrap(),

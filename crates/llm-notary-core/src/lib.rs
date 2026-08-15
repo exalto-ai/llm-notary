@@ -84,6 +84,45 @@ pub mod vault;
 
 use crate::notary_directory::{NotaryEndpoint, NotaryTransport};
 
+#[cfg(feature = "daemon-e2e")]
+const DAEMON_E2E_ROOT_CA_DER_ENV: &str = "LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER";
+#[cfg(feature = "daemon-e2e")]
+const MAX_DAEMON_E2E_ROOT_CA_BYTES: u64 = 64 << 10;
+
+/// Selects the protocol trust roots. The private-root override is impossible
+/// in production binaries because its code is absent unless the dedicated
+/// Docker E2E feature is compiled, and it still requires an explicit path.
+fn configured_protocol_root_store() -> Result<RootCertStore> {
+    #[cfg(feature = "daemon-e2e")]
+    if let Some(path) = std::env::var_os(DAEMON_E2E_ROOT_CA_DER_ENV) {
+        let metadata = std::fs::symlink_metadata(&path)
+            .with_context(|| format!("reading Docker E2E root CA metadata at {:?}", path))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            bail!("Docker E2E root CA must be one regular DER file");
+        }
+        if metadata.len() == 0 || metadata.len() > MAX_DAEMON_E2E_ROOT_CA_BYTES {
+            bail!("Docker E2E root CA has an invalid size");
+        }
+        let certificate = std::fs::read(&path)
+            .with_context(|| format!("reading Docker E2E root CA at {:?}", path))?;
+        return Ok(RootCertStore {
+            roots: vec![tlsn::webpki::CertificateDer(certificate)],
+        });
+    }
+    Ok(RootCertStore::mozilla())
+}
+
+pub(crate) fn configured_crypto_provider() -> Result<CryptoProvider> {
+    #[cfg(feature = "daemon-e2e")]
+    if std::env::var_os(DAEMON_E2E_ROOT_CA_DER_ENV).is_some() {
+        return Ok(CryptoProvider {
+            cert: tlsn::verifier::ServerCertVerifier::new(&configured_protocol_root_store()?)?,
+            ..CryptoProvider::default()
+        });
+    }
+    Ok(CryptoProvider::default())
+}
+
 /// Default cap for one serialized control-protocol frame.
 pub const DEFAULT_NOTARY_MAX_FRAME_BYTES: usize = 128 << 20;
 /// Shared HTTP transcript budget for local capture and deferred finalization.
@@ -883,6 +922,33 @@ impl DeferredBundle {
         Ok(state)
     }
 
+    /// Serializes this pending bundle and encrypts it with the local vault.
+    ///
+    /// The returned bytes retain the same private, credential-bearing
+    /// contents as a saved `.llmcapture` file and must be stored accordingly.
+    #[cfg(feature = "cli")]
+    pub fn to_encrypted_bytes(&self, vault: &crate::vault::Vault) -> Result<Vec<u8>> {
+        let bytes = bincode::serialize(self).context("serializing deferred bundle")?;
+        vault.encrypt(&bytes)
+    }
+
+    /// Decrypts, deserializes, and validates a pending bundle.
+    ///
+    /// This applies the same format, identifier, provider, checkpoint, and
+    /// receipt-binding checks as [`Self::load`].
+    #[cfg(feature = "cli")]
+    pub fn from_encrypted_bytes(encrypted: &[u8], vault: &crate::vault::Vault) -> Result<Self> {
+        let bundle: Self =
+            bincode::deserialize(&vault.decrypt(encrypted)?).context("decoding deferred bundle")?;
+        if bundle.format != DEFERRED_BUNDLE_FORMAT {
+            bail!("unsupported deferred bundle format: {}", bundle.format);
+        }
+        validate_capture_id(&bundle.capture_id)?;
+        validate_provider_name(&bundle.provider_name, bundle.receipt.server_name())?;
+        bundle.checkpoint()?;
+        Ok(bundle)
+    }
+
     /// Writes this pending bundle encrypted with the local vault.
     #[cfg(feature = "cli")]
     pub fn save(&self, path: &Path, vault: &crate::vault::Vault) -> Result<()> {
@@ -903,8 +969,7 @@ impl DeferredBundle {
             std::process::id(),
             rand::random::<u64>()
         ));
-        let bytes = bincode::serialize(self).context("serializing deferred bundle")?;
-        let encrypted = vault.encrypt(&bytes)?;
+        let encrypted = self.to_encrypted_bytes(vault)?;
         let result = (|| -> Result<()> {
             write_private_file(&staging, &encrypted)?;
             fs::rename(&staging, path)
@@ -920,15 +985,7 @@ impl DeferredBundle {
     #[cfg(feature = "cli")]
     pub fn load(path: &Path, vault: &crate::vault::Vault) -> Result<Self> {
         let encrypted = fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-        let bundle: Self = bincode::deserialize(&vault.decrypt(&encrypted)?)
-            .context("decoding deferred bundle")?;
-        if bundle.format != DEFERRED_BUNDLE_FORMAT {
-            bail!("unsupported deferred bundle format: {}", bundle.format);
-        }
-        validate_capture_id(&bundle.capture_id)?;
-        validate_provider_name(&bundle.provider_name, bundle.receipt.server_name())?;
-        bundle.checkpoint()?;
-        Ok(bundle)
+        Self::from_encrypted_bytes(&encrypted, vault)
     }
 }
 
@@ -1106,7 +1163,7 @@ async fn deferred_streaming_request_to_with_admission(
     let (tls_connection, prover) = prover.connect(
         TlsClientConfig::builder()
             .server_name(ServerName::Dns(server_name.try_into()?))
-            .root_store(RootCertStore::mozilla())
+            .root_store(configured_protocol_root_store()?)
             .build()?,
     )?;
     let tls_connection = TokioIo::new(tls_connection.compat());
@@ -1368,7 +1425,8 @@ async fn finalize_deferred_bundle_to_with_admission(
         .handshake_data(bundle.handshake_data.clone())
         .transcript(state.transcript().clone())
         .transcript_commitments(transcript_secrets, transcript_commitments);
-    let (attestation_request, secrets) = attestation_builder.build(&CryptoProvider::default())?;
+    let crypto_provider = configured_crypto_provider()?;
+    let (attestation_request, secrets) = attestation_builder.build(&crypto_provider)?;
     handle.close();
     let mut socket = driver_task.await??;
     write_frame(
@@ -1379,7 +1437,7 @@ async fn finalize_deferred_bundle_to_with_admission(
     .await?;
     let attestation: Attestation =
         bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
-    attestation_request.validate(&attestation, &CryptoProvider::default())?;
+    attestation_request.validate(&attestation, &crypto_provider)?;
     Ok(LocalProof {
         server_name: bundle.receipt.server_name.clone(),
         attestation: bincode::serialize(&attestation)?,
@@ -1600,7 +1658,7 @@ async fn run_deferred_capture_session(
     let (verifier, server_name) = match handle
         .new_verifier(
             VerifierConfig::builder()
-                .root_store(RootCertStore::mozilla())
+                .root_store(configured_protocol_root_store()?)
                 .build()?,
         )?
         .commit()
@@ -1848,7 +1906,12 @@ pub fn make_capture(
     capture_id: String,
     provider_name: String,
 ) -> Result<Capture> {
-    make_capture_with_provider(proof, capture_id, provider_name, &CryptoProvider::default())
+    make_capture_with_provider(
+        proof,
+        capture_id,
+        provider_name,
+        &configured_crypto_provider()?,
+    )
 }
 
 fn make_capture_with_provider(
@@ -1902,7 +1965,7 @@ pub fn verify_capture_value(
     capture: &Capture,
     trusted_notary_key: &[u8],
 ) -> Result<(CaptureManifest, String, String)> {
-    verify_capture_value_with_provider(capture, trusted_notary_key, &CryptoProvider::default())
+    verify_capture_value_with_provider(capture, trusted_notary_key, &configured_crypto_provider()?)
 }
 
 fn verify_capture_value_with_provider(
@@ -2045,7 +2108,11 @@ fn verified_connection_metadata(
     transcript: &tlsn::transcript::TlsTranscript,
     server_name: &str,
 ) -> Result<(HandshakeData, ConnectionInfo, ServerEphemKey)> {
-    verified_connection_metadata_with_roots(transcript, server_name, &RootCertStore::mozilla())
+    verified_connection_metadata_with_roots(
+        transcript,
+        server_name,
+        &configured_protocol_root_store()?,
+    )
 }
 
 fn verified_connection_metadata_with_roots(
@@ -3052,6 +3119,24 @@ mod tests {
         assert!(bundle_debug.contains("cap-test"));
         assert!(bundle_debug.contains(&format!("<redacted: {} bytes>", bundle.checkpoint.len())));
         assert!(!bundle_debug.contains(&format!("{:?}", bundle.checkpoint)));
+
+        #[cfg(feature = "cli")]
+        {
+            let vault = crate::vault::Vault::test_only();
+            let encrypted = bundle.to_encrypted_bytes(&vault).unwrap();
+            let decoded = DeferredBundle::from_encrypted_bytes(&encrypted, &vault).unwrap();
+            assert_eq!(decoded.capture_id(), bundle.capture_id());
+            assert_eq!(decoded.provider_name(), bundle.provider_name());
+            assert_eq!(decoded.created_at_unix_ms(), bundle.created_at_unix_ms());
+            assert_eq!(decoded.record_digest_hex(), bundle.record_digest_hex());
+
+            let mut corrupted = encrypted.clone();
+            *corrupted.last_mut().unwrap() ^= 1;
+            assert!(DeferredBundle::from_encrypted_bytes(&corrupted, &vault).is_err());
+
+            let wrong_vault = crate::vault::Vault::test_only_with_key([8; 32]);
+            assert!(DeferredBundle::from_encrypted_bytes(&encrypted, &wrong_vault).is_err());
+        }
 
         let mut record_tampered = bundle.clone();
         *record_tampered.checkpoint.last_mut().unwrap() ^= 1;

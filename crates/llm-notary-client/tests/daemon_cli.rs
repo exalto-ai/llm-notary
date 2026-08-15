@@ -10,8 +10,11 @@ use std::{
 };
 
 use llm_notary_client::{
-    catalog::{Catalog, NewCapture},
+    archive::MAX_ARCHIVE_WIRE_BYTES,
+    artifact_store::{ArtifactKey, ArtifactKind, ArtifactSource},
     config::AgentConfig,
+    metadata::{CaptureCompletion, NewCapture},
+    persistence::Persistence,
 };
 
 struct Daemon(Option<Child>);
@@ -63,12 +66,10 @@ async fn daemon_and_cli_use_the_versioned_loopback_api_for_reads_and_mutations()
     ));
     config.validate().unwrap();
 
-    fs::create_dir_all(&config.storage.bundle_dir).unwrap();
-    let bundle = config.storage.bundle_dir.join("cap-daemon-cli.llmcapture");
-    fs::write(&bundle, b"encrypted test fixture").unwrap();
-    let catalog = Catalog::open_for_config(&config).unwrap();
-    catalog
-        .begin_capture(&NewCapture {
+    let persistence = Persistence::open(&config).await.unwrap();
+    persistence
+        .metadata
+        .begin_capture(NewCapture {
             capture_id: "cap-daemon-cli".to_owned(),
             created_at_unix_ms: 1,
             provider: "openai".to_owned(),
@@ -80,21 +81,35 @@ async fn daemon_and_cli_use_the_versioned_loopback_api_for_reads_and_mutations()
             prompt_preview_truncated: false,
             config_fingerprint: "sha256:fixture".to_owned(),
         })
+        .await
         .unwrap();
-    catalog
-        .complete_capture(
-            "cap-daemon-cli",
-            2,
-            1,
-            200,
-            20,
-            Some("gpt-test"),
-            "safe output",
-            false,
-            &bundle,
+    let bundle = persistence
+        .artifacts
+        .put(
+            &ArtifactKey::new("cap-daemon-cli", ArtifactKind::DeferredBundle).unwrap(),
+            ArtifactSource::from_bytes(b"encrypted test fixture".to_vec()),
+            MAX_ARCHIVE_WIRE_BYTES,
         )
+        .await
         .unwrap();
-    drop(catalog);
+    persistence
+        .metadata
+        .complete_capture(
+            CaptureCompletion {
+                capture_id: "cap-daemon-cli".to_owned(),
+                completed_at_unix_ms: 2,
+                duration_ms: 1,
+                http_status: 200,
+                response_bytes: 20,
+                response_model: Some("gpt-test".to_owned()),
+                output_preview: "safe output".to_owned(),
+                output_preview_truncated: false,
+            },
+            bundle,
+        )
+        .await
+        .unwrap();
+    drop(persistence);
 
     let config_path = directory.path().join("config.toml");
     fs::write(&config_path, toml::to_string_pretty(&config).unwrap()).unwrap();

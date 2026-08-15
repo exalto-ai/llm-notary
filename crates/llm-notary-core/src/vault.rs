@@ -460,6 +460,14 @@ impl Vault {
             config_path: PathBuf::from("test-vault"),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_only_with_key(key: [u8; 32]) -> Self {
+        Self {
+            key,
+            config_path: PathBuf::from("test-vault"),
+        }
+    }
 }
 
 #[cfg(test)]

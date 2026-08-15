@@ -83,23 +83,67 @@ struct PackageDigest<'a> {
     files: &'a [ArchiveFile],
 }
 
+/// The five already-produced entries that make up a verified trace package.
+///
+/// Naming the entries in the type prevents in-memory callers from supplying
+/// arbitrary paths or omitting part of the versioned package contract.
+pub(crate) struct TracePackageArchiveEntries<'a> {
+    pub(crate) evidence_tlsn: &'a [u8],
+    pub(crate) manifest_json: &'a [u8],
+    pub(crate) request_disclosed_http: &'a [u8],
+    pub(crate) response_disclosed_http: &'a [u8],
+    pub(crate) trace_otlp_json: &'a [u8],
+}
+
+impl<'a> TracePackageArchiveEntries<'a> {
+    fn into_files(self) -> BTreeMap<String, &'a [u8]> {
+        BTreeMap::from([
+            ("evidence.tlsn".to_owned(), self.evidence_tlsn),
+            ("manifest.json".to_owned(), self.manifest_json),
+            (
+                "request.disclosed.http".to_owned(),
+                self.request_disclosed_http,
+            ),
+            (
+                "response.disclosed.http".to_owned(),
+                self.response_disclosed_http,
+            ),
+            ("trace.otlp.json".to_owned(), self.trace_otlp_json),
+        ])
+    }
+}
+
 /// Builds the exact bytes uploaded by `llm-notary publish`.
 pub fn build_trace_package_archive(package: &Path) -> Result<Vec<u8>> {
     require_plain_directory(package)?;
     require_exact_package_entries(package)?;
 
-    let mut files = BTreeMap::new();
+    let evidence_tlsn = read_regular_package_file(package, "evidence.tlsn")?;
+    let manifest_json = read_regular_package_file(package, "manifest.json")?;
+    let request_disclosed_http = read_regular_package_file(package, "request.disclosed.http")?;
+    let response_disclosed_http = read_regular_package_file(package, "response.disclosed.http")?;
+    let trace_otlp_json = read_regular_package_file(package, "trace.otlp.json")?;
+    let entries = TracePackageArchiveEntries {
+        evidence_tlsn: &evidence_tlsn,
+        manifest_json: &manifest_json,
+        request_disclosed_http: &request_disclosed_http,
+        response_disclosed_http: &response_disclosed_http,
+        trace_otlp_json: &trace_otlp_json,
+    };
+    build_trace_package_archive_from_entries(entries)
+}
+
+/// Builds a canonical archive directly from its complete in-memory package.
+pub(crate) fn build_trace_package_archive_from_entries(
+    entries: TracePackageArchiveEntries,
+) -> Result<Vec<u8>> {
+    let files = entries.into_files();
     let mut file_manifest = Vec::with_capacity(PACKAGE_FILES.len());
     let mut total_size = 0u64;
     for name in PACKAGE_FILES {
-        let path = package.join(name);
-        let metadata = fs::symlink_metadata(&path)
-            .with_context(|| format!("reading trace package entry {}", path.display()))?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            bail!("trace package entry must be a regular file: {name}");
-        }
-        let bytes =
-            fs::read(&path).with_context(|| format!("reading trace package entry {name}"))?;
+        let bytes = files
+            .get(name)
+            .expect("typed package entries contain every required file");
         total_size = total_size
             .checked_add(bytes.len() as u64)
             .ok_or_else(|| anyhow!("trace package size overflow"))?;
@@ -109,9 +153,8 @@ pub fn build_trace_package_archive(package: &Path) -> Result<Vec<u8>> {
         file_manifest.push(ArchiveFile {
             path: name.to_owned(),
             size_bytes: bytes.len() as u64,
-            sha256: sha256_hex(&bytes),
+            sha256: sha256_hex(bytes),
         });
-        files.insert(name.to_owned(), bytes);
     }
     require_package_format(
         files
@@ -135,13 +178,23 @@ pub fn build_trace_package_archive(package: &Path) -> Result<Vec<u8>> {
     render_trace_package_archive(&archive_manifest, &files)
 }
 
-fn render_trace_package_archive(
+fn read_regular_package_file(package: &Path, name: &str) -> Result<Vec<u8>> {
+    let path = package.join(name);
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("reading trace package entry {}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!("trace package entry must be a regular file: {name}");
+    }
+    fs::read(&path).with_context(|| format!("reading trace package entry {name}"))
+}
+
+fn render_trace_package_archive<V: AsRef<[u8]>>(
     manifest: &TracePackageArchiveManifest,
-    files: &BTreeMap<String, Vec<u8>>,
+    files: &BTreeMap<String, V>,
 ) -> Result<Vec<u8>> {
     let manifest_bytes = serde_json::to_vec(manifest).context("encoding archive manifest")?;
     let package_size = files.values().try_fold(0u64, |size, file| {
-        size.checked_add(file.len() as u64)
+        size.checked_add(file.as_ref().len() as u64)
             .ok_or_else(|| anyhow!("trace package size overflow"))
     })?;
     let capacity = archive_capacity(package_size, manifest_bytes.len() as u64)?;
@@ -154,9 +207,9 @@ fn render_trace_package_archive(
     Ok(archive)
 }
 
-fn write_trace_package_archive<W: Write + Seek>(
+fn write_trace_package_archive<W: Write + Seek, V: AsRef<[u8]>>(
     manifest_bytes: &[u8],
-    files: &BTreeMap<String, Vec<u8>>,
+    files: &BTreeMap<String, V>,
     output: W,
 ) -> Result<W> {
     let mut writer = ZipWriter::new(output);
@@ -172,7 +225,12 @@ fn write_trace_package_archive<W: Write + Seek>(
             .start_file(name, options)
             .with_context(|| format!("starting archive entry {name}"))?;
         writer
-            .write_all(files.get(name).expect("required package file was loaded"))
+            .write_all(
+                files
+                    .get(name)
+                    .expect("required package file was loaded")
+                    .as_ref(),
+            )
             .with_context(|| format!("writing archive entry {name}"))?;
     }
     writer.finish().context("finalizing trace package archive")
@@ -669,6 +727,29 @@ mod tests {
                 fs::read(package.0.join(name)).unwrap()
             );
         }
+    }
+
+    #[test]
+    fn in_memory_and_directory_builders_produce_identical_bytes() {
+        let package = fixture_package();
+
+        let from_directory = build_trace_package_archive(&package.0).unwrap();
+        let evidence = fs::read(package.0.join("evidence.tlsn")).unwrap();
+        let manifest = fs::read(package.0.join("manifest.json")).unwrap();
+        let request = fs::read(package.0.join("request.disclosed.http")).unwrap();
+        let response = fs::read(package.0.join("response.disclosed.http")).unwrap();
+        let trace = fs::read(package.0.join("trace.otlp.json")).unwrap();
+        let from_memory = build_trace_package_archive_from_entries(TracePackageArchiveEntries {
+            evidence_tlsn: &evidence,
+            manifest_json: &manifest,
+            request_disclosed_http: &request,
+            response_disclosed_http: &response,
+            trace_otlp_json: &trace,
+        })
+        .unwrap();
+
+        assert_eq!(from_memory, from_directory);
+        validate_trace_package_archive(&from_memory).unwrap();
     }
 
     #[test]

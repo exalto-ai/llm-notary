@@ -1,140 +1,20 @@
 //! SQLite-backed local capture inventory and preview search.
 
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::Mutex,
-};
+use std::{fs, path::Path, sync::Mutex};
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
-use serde::{Deserialize, Serialize};
 
-use crate::{config::AgentConfig, sha256_hex};
+use crate::artifact_store::{
+    ArtifactAvailability, ArtifactKey, ArtifactKind, ArtifactLocator, ArtifactRecord,
+};
+use crate::metadata::{
+    CaptureCompletion, CapturePagePosition, CaptureSummary, Event, MetadataCounts, NewCapture,
+    Operation, OperationAttempt, OperationPagePosition,
+};
+use crate::metadata_store::TerminalOperationResult;
 
 const CATALOG_SCHEMA_VERSION: i64 = 6;
-
-/// The durable capture fields that are safe and useful to query locally.
-#[derive(Clone, Debug)]
-pub struct NewCapture {
-    pub capture_id: String,
-    pub created_at_unix_ms: u64,
-    pub provider: String,
-    pub operation: String,
-    pub requested_model: Option<String>,
-    pub streaming: bool,
-    pub request_bytes: usize,
-    pub prompt_preview: String,
-    pub prompt_preview_truncated: bool,
-    pub config_fingerprint: String,
-}
-
-/// One searchable capture summary.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CaptureSummary {
-    pub capture_id: String,
-    pub created_at_unix_ms: u64,
-    pub completed_at_unix_ms: Option<u64>,
-    pub provider: String,
-    pub operation: String,
-    pub requested_model: Option<String>,
-    pub response_model: Option<String>,
-    pub http_status: Option<u16>,
-    pub streaming: bool,
-    pub request_bytes: u64,
-    pub response_bytes: Option<u64>,
-    pub duration_ms: Option<u64>,
-    pub capture_state: String,
-    pub finalization_state: String,
-    pub prompt_preview: String,
-    pub prompt_preview_truncated: bool,
-    pub output_preview: String,
-    pub output_preview_truncated: bool,
-    pub failure_code: Option<String>,
-}
-
-/// One persisted administration operation. Error details are represented by
-/// bounded codes rather than arbitrary strings from providers or local paths.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Operation {
-    pub operation_id: String,
-    pub kind: String,
-    pub capture_id: Option<String>,
-    pub state: String,
-    pub attempt: u32,
-    pub created_at_unix_ms: u64,
-    pub started_at_unix_ms: Option<u64>,
-    pub completed_at_unix_ms: Option<u64>,
-    pub failure_code: Option<String>,
-    pub progress_phase: String,
-    pub progress_updated_at_unix_ms: u64,
-    pub proof_bytes_completed: u64,
-    pub proof_bytes_total: u64,
-    pub proof_commitments_completed: u64,
-    pub proof_commitments_total: u64,
-}
-
-/// One durable attempt belonging to an operation. Attempt history is kept
-/// separately because retries deliberately preserve the operation identity.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OperationAttempt {
-    pub attempt: u32,
-    pub state: String,
-    pub started_at_unix_ms: u64,
-    pub completed_at_unix_ms: Option<u64>,
-    pub failure_code: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Event {
-    pub event_id: u64,
-    pub created_at_unix_ms: u64,
-    pub event_type: String,
-    pub capture_id: Option<String>,
-    pub operation_id: Option<String>,
-    pub severity: String,
-    pub message: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct CapturePagePosition {
-    pub created_at_unix_ms: u64,
-    pub capture_id: String,
-}
-
-impl From<&CaptureSummary> for CapturePagePosition {
-    fn from(capture: &CaptureSummary) -> Self {
-        Self {
-            created_at_unix_ms: capture.created_at_unix_ms,
-            capture_id: capture.capture_id.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-pub struct OperationPagePosition {
-    pub created_at_unix_ms: u64,
-    pub operation_id: String,
-}
-
-impl From<&Operation> for OperationPagePosition {
-    fn from(operation: &Operation) -> Self {
-        Self {
-            created_at_unix_ms: operation.created_at_unix_ms,
-            operation_id: operation.operation_id.clone(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct CatalogCounts {
-    pub total_captures: u64,
-    pub capturing: u64,
-    pub ready_to_finalize: u64,
-    pub finalized: u64,
-    pub failed: u64,
-    pub active_operations: u64,
-}
 
 #[derive(Clone, Debug, Default)]
 pub struct CaptureFilters<'a> {
@@ -172,25 +52,8 @@ pub struct EventFilters<'a> {
     pub limit: usize,
 }
 
-/// One stored local artifact belonging to a capture.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Artifact {
-    pub kind: String,
-    pub path: PathBuf,
-    pub size_bytes: u64,
-    pub sha256: String,
-}
-
-/// The result of reconciling captures that were active when the prior process
-/// stopped.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RecoverySummary {
-    pub recovered_bundles: usize,
-    pub interrupted_captures: usize,
-}
-
 /// A single-process SQLite capture inventory.
-pub struct Catalog {
+pub(crate) struct Catalog {
     connection: Mutex<Connection>,
     full_text_search: bool,
 }
@@ -222,24 +85,6 @@ impl Catalog {
         })
     }
 
-    /// Opens the configured catalog without changing capture state. This is
-    /// safe for concurrent read-only CLI commands while a proxy is capturing.
-    pub fn open_for_config(config: &AgentConfig) -> Result<Self> {
-        Self::open(&config.catalog.path, config.catalog.full_text_search)
-    }
-
-    /// Opens the configured catalog and recovers any source bundle saved just
-    /// before an earlier proxy process stopped. Only proxy startup performs
-    /// recovery so catalog readers cannot mistake a live capture for an
-    /// interrupted one. The capture row is intentionally written before
-    /// capture begins, so its identifier also determines the encrypted bundle
-    /// filename without reading private bundle contents.
-    pub fn open_for_proxy(config: &AgentConfig) -> Result<(Self, RecoverySummary)> {
-        let catalog = Self::open_for_config(config)?;
-        let recovery = catalog.reconcile_incomplete_captures(&config.storage.bundle_dir)?;
-        Ok((catalog, recovery))
-    }
-
     /// Records the start of a capture before the notary connection begins.
     pub fn begin_capture(&self, capture: &NewCapture) -> Result<()> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
@@ -269,169 +114,187 @@ impl Catalog {
     /// contain provider or credential material.
     pub fn mark_capture_failed(&self, capture_id: &str, failure_code: &str) -> Result<()> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
-        connection.execute(
+        let transaction = connection.unchecked_transaction()?;
+        let current = transaction
+            .query_row(
+                "SELECT capture_state, failure_code FROM captures WHERE capture_id = ?",
+                params![capture_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow::anyhow!("capture does not exist"))?;
+        if current.0 == "failed" && current.1.as_deref() == Some(failure_code) {
+            return Ok(());
+        }
+        anyhow::ensure!(current.0 == "capturing", "capture is not active");
+        let changed = transaction.execute(
             "UPDATE captures
              SET capture_state = 'failed', failure_code = ?
-             WHERE capture_id = ?",
+             WHERE capture_id = ? AND capture_state = 'capturing'",
             params![failure_code, capture_id],
         )?;
+        anyhow::ensure!(changed == 1, "active capture transition was lost");
+        transaction.commit()?;
         Ok(())
     }
 
-    /// Makes one encrypted source bundle available in the capture inventory.
-    #[allow(clippy::too_many_arguments)]
-    pub fn complete_capture(
-        &self,
-        capture_id: &str,
-        completed_at_unix_ms: u64,
-        duration_ms: u64,
-        http_status: u16,
-        response_bytes: usize,
-        response_model: Option<&str>,
-        output_preview: &str,
-        output_preview_truncated: bool,
-        bundle_path: &Path,
-    ) -> Result<()> {
-        let (size_bytes, sha256) = artifact_digest(bundle_path)?;
-        let path = bundle_path.to_string_lossy().into_owned();
+    /// Stages completion fields without advertising an artifact as available.
+    pub fn prepare_capture_completion(&self, completion: &CaptureCompletion) -> Result<()> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let transaction = connection.unchecked_transaction()?;
-        transaction.execute(
+        let current = transaction
+            .query_row(
+                "SELECT capture_state, completed_at_unix_ms IS NOT NULL
+                 FROM captures WHERE capture_id = ?",
+                params![completion.capture_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow::anyhow!("capture does not exist"))?;
+        anyhow::ensure!(
+            current.0 == "capturing" || current.0 == "captured",
+            "capture cannot accept completion metadata"
+        );
+        if current.1 {
+            anyhow::ensure!(
+                capture_completion_matches(&transaction, completion)?,
+                "capture completion conflicts with persisted metadata"
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(current.0 == "capturing", "capture is not active");
+        let changed = transaction.execute(
+            "UPDATE captures SET
+                completed_at_unix_ms = ?, duration_ms = ?, http_status = ?, response_bytes = ?,
+                response_model = ?, output_preview = ?, output_preview_truncated = ?
+             WHERE capture_id = ? AND capture_state = 'capturing'
+               AND completed_at_unix_ms IS NULL",
+            params![
+                i64::try_from(completion.completed_at_unix_ms)?,
+                i64::try_from(completion.duration_ms)?,
+                i64::from(completion.http_status),
+                i64::try_from(completion.response_bytes)?,
+                completion.response_model.as_deref(),
+                completion.output_preview.as_str(),
+                completion.output_preview_truncated,
+                completion.capture_id,
+            ],
+        )?;
+        anyhow::ensure!(changed == 1, "capture completion staging was lost");
+        transaction.commit()?;
+        Ok(())
+    }
+
+    /// Commits capture completion and a previously stored artifact atomically.
+    pub fn complete_capture_record(
+        &self,
+        completion: &CaptureCompletion,
+        artifact: &ArtifactRecord,
+    ) -> Result<()> {
+        require_artifact(
+            artifact,
+            &completion.capture_id,
+            ArtifactKind::DeferredBundle,
+        )?;
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let transaction = connection.unchecked_transaction()?;
+        let (current_state, completion_prepared) = transaction
+            .query_row(
+                "SELECT capture_state, completed_at_unix_ms IS NOT NULL
+                 FROM captures WHERE capture_id = ?",
+                params![completion.capture_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| anyhow::anyhow!("capture does not exist"))?;
+        if current_state == "captured" {
+            anyhow::ensure!(
+                capture_completion_matches(&transaction, completion)?
+                    && artifact_exists_exact(&transaction, artifact)?,
+                "capture completion conflicts with persisted metadata"
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(current_state == "capturing", "capture is not active");
+        if completion_prepared {
+            anyhow::ensure!(
+                capture_completion_matches(&transaction, completion)?,
+                "capture completion conflicts with staged metadata"
+            );
+        }
+        let changed = transaction.execute(
             "UPDATE captures SET
                 completed_at_unix_ms = ?, duration_ms = ?, http_status = ?, response_bytes = ?,
                 response_model = ?, output_preview = ?, output_preview_truncated = ?,
                 capture_state = 'captured', failure_code = NULL
-             WHERE capture_id = ?",
+             WHERE capture_id = ? AND capture_state = 'capturing'",
             params![
-                i64::try_from(completed_at_unix_ms)?,
-                i64::try_from(duration_ms)?,
-                i64::from(http_status),
-                i64::try_from(response_bytes)?,
-                response_model,
-                output_preview,
-                output_preview_truncated,
-                capture_id,
+                i64::try_from(completion.completed_at_unix_ms)?,
+                i64::try_from(completion.duration_ms)?,
+                i64::from(completion.http_status),
+                i64::try_from(completion.response_bytes)?,
+                completion.response_model.as_deref(),
+                completion.output_preview.as_str(),
+                completion.output_preview_truncated,
+                completion.capture_id,
             ],
         )?;
-        transaction.execute(
-            "INSERT INTO artifacts (capture_id, kind, path, size_bytes, sha256, state)
-             VALUES (?, 'deferred_bundle', ?, ?, ?, 'available')
-             ON CONFLICT(capture_id, kind) DO UPDATE SET
-                path = excluded.path,
-                size_bytes = excluded.size_bytes,
-                sha256 = excluded.sha256,
-                state = 'available'",
-            params![capture_id, path, i64::try_from(size_bytes)?, sha256,],
-        )?;
+        if changed != 1 {
+            anyhow::bail!("active capture transition was lost");
+        }
+        insert_artifact(&transaction, artifact)?;
         if self.full_text_search {
             transaction.execute(
                 "DELETE FROM capture_search WHERE capture_id = ?",
-                params![capture_id],
+                params![completion.capture_id],
             )?;
             transaction.execute(
                 "INSERT INTO capture_search(capture_id, prompt_preview, output_preview)
                  VALUES (?, (SELECT prompt_preview FROM captures WHERE capture_id = ?), ?)",
-                params![capture_id, capture_id, output_preview],
+                params![
+                    completion.capture_id,
+                    completion.capture_id,
+                    completion.output_preview.as_str()
+                ],
             )?;
         }
         transaction.commit()?;
         Ok(())
     }
 
-    /// Records one finalized package without removing its source bundle.
-    pub fn record_finalized_package(&self, capture_id: &str, path: &Path) -> Result<()> {
-        let (size_bytes, sha256) = artifact_digest(path)?;
+    /// Returns captures left active when a single-daemon process stopped.
+    pub fn capturing_ids(&self) -> Result<Vec<String>> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
-        let transaction = connection.unchecked_transaction()?;
-        transaction.execute(
-            "INSERT INTO artifacts (capture_id, kind, path, size_bytes, sha256, state)
-             VALUES (?, 'finalized_package', ?, ?, ?, 'available')
-             ON CONFLICT(capture_id, kind) DO UPDATE SET
-                path = excluded.path,
-                size_bytes = excluded.size_bytes,
-                sha256 = excluded.sha256,
-                state = 'available'",
-            params![
-                capture_id,
-                path.to_string_lossy(),
-                i64::try_from(size_bytes)?,
-                sha256,
-            ],
-        )?;
-        transaction.execute(
-            "UPDATE captures SET finalization_state = 'finalized' WHERE capture_id = ?",
-            params![capture_id],
-        )?;
-        transaction.commit()?;
-        Ok(())
+        let mut statement = connection
+            .prepare("SELECT capture_id FROM captures WHERE capture_state = 'capturing'")?;
+        statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
     }
 
-    /// Reconciles `capturing` rows from an earlier process. A present bundle is
-    /// made visible as captured evidence; a missing bundle is marked as an
-    /// interrupted capture instead of appearing to run forever.
-    pub fn reconcile_incomplete_captures(&self, bundle_dir: &Path) -> Result<RecoverySummary> {
-        let capture_ids = {
-            let connection = self.connection.lock().expect("catalog mutex poisoned");
-            let mut statement = connection
-                .prepare("SELECT capture_id FROM captures WHERE capture_state = 'capturing'")?;
-            statement
-                .query_map([], |row| row.get::<_, String>(0))?
-                .collect::<std::result::Result<Vec<_>, _>>()?
-        };
-
-        let mut summary = RecoverySummary::default();
-        for capture_id in capture_ids {
-            let current_path = bundle_dir.join(format!("{capture_id}.llmcapture"));
-            let legacy_path = bundle_dir.join(format!("{capture_id}.llmbundle"));
-            let path = if current_path.is_file() {
-                current_path
-            } else {
-                legacy_path
-            };
-            if path.is_file() {
-                self.recover_bundle(&capture_id, &path)?;
-                summary.recovered_bundles += 1;
-            } else {
-                self.mark_capture_failed(&capture_id, "interrupted")?;
-                summary.interrupted_captures += 1;
-            }
-        }
-        Ok(summary)
-    }
-
-    fn recover_bundle(&self, capture_id: &str, path: &Path) -> Result<()> {
-        let (size_bytes, sha256) = artifact_digest(path)?;
+    /// Recovers one durable deferred bundle found by the artifact backend.
+    pub fn recover_capture_record(
+        &self,
+        capture_id: &str,
+        artifact: &ArtifactRecord,
+    ) -> Result<()> {
+        require_artifact(artifact, capture_id, ArtifactKind::DeferredBundle)?;
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let transaction = connection.unchecked_transaction()?;
-        transaction.execute(
+        let changed = transaction.execute(
             "UPDATE captures SET capture_state = 'captured', failure_code = NULL
-             WHERE capture_id = ?",
+             WHERE capture_id = ? AND capture_state = 'capturing'",
             params![capture_id],
         )?;
-        transaction.execute(
-            "INSERT INTO artifacts (capture_id, kind, path, size_bytes, sha256, state)
-             VALUES (?, 'deferred_bundle', ?, ?, ?, 'available')
-             ON CONFLICT(capture_id, kind) DO UPDATE SET
-                path = excluded.path,
-                size_bytes = excluded.size_bytes,
-                sha256 = excluded.sha256,
-                state = 'available'",
-            params![
-                capture_id,
-                path.to_string_lossy(),
-                i64::try_from(size_bytes)?,
-                sha256,
-            ],
-        )?;
+        if changed != 1 {
+            anyhow::bail!("capture is not recoverable");
+        }
+        insert_artifact(&transaction, artifact)?;
         if self.full_text_search {
             transaction.execute(
                 "DELETE FROM capture_search WHERE capture_id = ?",
                 params![capture_id],
-            )?;
-            transaction.execute(
-                "INSERT INTO capture_search(capture_id, prompt_preview, output_preview)
-                 VALUES (?, (SELECT prompt_preview FROM captures WHERE capture_id = ?), '')",
-                params![capture_id, capture_id],
             )?;
         }
         transaction.commit()?;
@@ -440,6 +303,7 @@ impl Catalog {
 
     /// Lists captures, optionally filtering their prompt and output previews
     /// with SQLite FTS5 and/or filtering their requested model.
+    #[cfg(test)]
     pub fn list_captures(
         &self,
         query: Option<&str>,
@@ -563,31 +427,42 @@ impl Catalog {
             .map_err(Into::into)
     }
 
-    pub fn artifacts(&self, capture_id: &str) -> Result<Vec<Artifact>> {
+    /// Returns backend-neutral artifact records while preserving legacy raw
+    /// filesystem locators from the unchanged SQLite schema.
+    pub fn artifact_records(&self, capture_id: &str) -> Result<Vec<ArtifactRecord>> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let mut statement = connection.prepare(
-            "SELECT kind, path, size_bytes, sha256
+            "SELECT capture_id, kind, path, size_bytes, sha256, state
              FROM artifacts WHERE capture_id = ? ORDER BY kind",
         )?;
-        let rows = statement.query_map(params![capture_id], |row| {
-            Ok(Artifact {
-                kind: row.get(0)?,
-                path: PathBuf::from(row.get::<_, String>(1)?),
-                size_bytes: row.get::<_, i64>(2)?.try_into().map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        2,
-                        rusqlite::types::Type::Integer,
-                        Box::new(error),
+        let rows = statement
+            .query_map(params![capture_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        rows.into_iter()
+            .map(
+                |(capture_id, kind, locator, size_bytes, sha256, availability)| {
+                    ArtifactRecord::new(
+                        ArtifactKey::new(capture_id, ArtifactKind::try_from(kind.as_str())?)?,
+                        ArtifactLocator::from_stored(locator)?,
+                        size_bytes.try_into()?,
+                        sha256,
+                        ArtifactAvailability::try_from(availability.as_str())?,
                     )
-                })?,
-                sha256: row.get(3)?,
-            })
-        })?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+                },
+            )
+            .collect()
     }
 
-    pub fn counts(&self) -> Result<CatalogCounts> {
+    pub fn counts(&self) -> Result<MetadataCounts> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         connection
             .query_row(
@@ -602,7 +477,7 @@ impl Catalog {
                  FROM captures",
                 [],
                 |row| {
-                    Ok(CatalogCounts {
+                    Ok(MetadataCounts {
                         total_captures: row.get::<_, i64>(0)?.try_into().unwrap_or(0),
                         capturing: row
                             .get::<_, Option<i64>>(1)?
@@ -805,17 +680,59 @@ impl Catalog {
     ) -> Result<bool> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let transaction = connection.unchecked_transaction()?;
-        let previous_phase = transaction
+        let previous = transaction
             .query_row(
-                "SELECT progress_phase FROM operations
+                "SELECT progress_phase, proof_bytes_completed, proof_bytes_total,
+                        proof_commitments_completed, proof_commitments_total
+                 FROM operations
                  WHERE operation_id = ? AND state = 'running'",
                 params![operation_id],
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
+                        row.get::<_, i64>(4)?,
+                    ))
+                },
             )
             .optional()?;
-        let Some(previous_phase) = previous_phase else {
+        let Some((
+            previous_phase,
+            bytes_completed,
+            bytes_total,
+            commitments_completed,
+            commitments_total,
+        )) = previous
+        else {
             return Ok(false);
         };
+        let bytes_completed = u64::try_from(bytes_completed)?;
+        let bytes_total = u64::try_from(bytes_total)?;
+        let commitments_completed = u64::try_from(commitments_completed)?;
+        let commitments_total = u64::try_from(commitments_total)?;
+        if previous_phase == "proving"
+            && bytes_completed == progress.bytes_completed
+            && bytes_total == progress.bytes_total
+            && commitments_completed == progress.commitments_completed
+            && commitments_total == progress.commitments_total
+        {
+            return Ok(false);
+        }
+        anyhow::ensure!(
+            progress.bytes_completed >= bytes_completed
+                && progress.commitments_completed >= commitments_completed,
+            "proof progress cannot decrease"
+        );
+        anyhow::ensure!(
+            bytes_total == 0 || progress.bytes_total == bytes_total,
+            "proof byte total cannot change after it is established"
+        );
+        anyhow::ensure!(
+            commitments_total == 0 || progress.commitments_total == commitments_total,
+            "proof commitment total cannot change after it is established"
+        );
         transaction.execute(
             "UPDATE operations
              SET progress_phase = 'proving', progress_updated_at_unix_ms = ?,
@@ -851,57 +768,111 @@ impl Catalog {
         Ok(true)
     }
 
-    pub fn finish_operation(&self, operation_id: &str, now: u64) -> Result<()> {
+    pub fn complete_finalization(
+        &self,
+        operation_id: &str,
+        artifact: &ArtifactRecord,
+        now: u64,
+    ) -> Result<TerminalOperationResult> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let transaction = connection.unchecked_transaction()?;
-        transaction.execute(
+        let Some((current_state, capture_id)) = transaction
+            .query_row(
+                "SELECT state, capture_id FROM operations WHERE operation_id = ?",
+                params![operation_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(TerminalOperationResult::NotFound);
+        };
+        validate_persisted_operation_state(&current_state)?;
+        let capture_id = capture_id.context("finalization operation has no capture")?;
+        require_artifact(artifact, &capture_id, ArtifactKind::FinalizedPackage)?;
+        if current_state == "finalized" {
+            anyhow::ensure!(
+                artifact_exists_exact(&transaction, artifact)?,
+                "finalized operation artifact does not match persisted metadata"
+            );
+            return Ok(TerminalOperationResult::AlreadyApplied);
+        }
+        if current_state != "running" {
+            return Ok(TerminalOperationResult::Conflict { current_state });
+        }
+
+        insert_artifact(&transaction, artifact)?;
+        let changed = transaction.execute(
             "UPDATE operations
              SET state = 'finalized', completed_at_unix_ms = ?, failure_code = NULL,
                  progress_phase = 'complete', progress_updated_at_unix_ms = ?
-             WHERE operation_id = ?",
+             WHERE operation_id = ? AND state = 'running'",
             params![i64::try_from(now)?, i64::try_from(now)?, operation_id],
         )?;
-        transaction.execute(
+        anyhow::ensure!(changed == 1, "running operation transition was lost");
+        let changed = transaction.execute(
             "UPDATE operation_attempts SET state = 'finalized', completed_at_unix_ms = ?, failure_code = NULL WHERE operation_id = ? AND attempt = (SELECT attempt FROM operations WHERE operation_id = ?)",
             params![i64::try_from(now)?, operation_id, operation_id],
         )?;
-        transaction.execute(
+        anyhow::ensure!(changed == 1, "running operation has no current attempt");
+        let changed = transaction.execute(
             "UPDATE captures SET finalization_state = 'finalized' WHERE capture_id = (SELECT capture_id FROM operations WHERE operation_id = ?)",
             params![operation_id],
         )?;
-        let capture_id: Option<String> = transaction.query_row(
-            "SELECT capture_id FROM operations WHERE operation_id = ?",
-            params![operation_id],
-            |row| row.get(0),
-        )?;
+        anyhow::ensure!(changed == 1, "finalization operation has no capture");
         insert_event(
             &transaction,
             now,
             "finalization_completed",
-            capture_id.as_deref(),
+            Some(&capture_id),
             Some(operation_id),
             "success",
             "Finalization completed",
         )?;
         transaction.commit()?;
-        Ok(())
+        Ok(TerminalOperationResult::Applied)
     }
 
-    pub fn fail_operation(&self, operation_id: &str, now: u64, failure_code: &str) -> Result<()> {
+    pub fn fail_operation(
+        &self,
+        operation_id: &str,
+        now: u64,
+        failure_code: &str,
+    ) -> Result<TerminalOperationResult> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let transaction = connection.unchecked_transaction()?;
-        transaction.execute(
-            "UPDATE operations SET state = 'failed', completed_at_unix_ms = ?, failure_code = ? WHERE operation_id = ?",
+        let Some((current_state, current_failure_code)) = transaction
+            .query_row(
+                "SELECT state, failure_code FROM operations WHERE operation_id = ?",
+                params![operation_id],
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?)),
+            )
+            .optional()?
+        else {
+            return Ok(TerminalOperationResult::NotFound);
+        };
+        validate_persisted_operation_state(&current_state)?;
+        if current_state == "failed" && current_failure_code.as_deref() == Some(failure_code) {
+            return Ok(TerminalOperationResult::AlreadyApplied);
+        }
+        if current_state != "running" {
+            return Ok(TerminalOperationResult::Conflict { current_state });
+        }
+
+        let changed = transaction.execute(
+            "UPDATE operations SET state = 'failed', completed_at_unix_ms = ?, failure_code = ? WHERE operation_id = ? AND state = 'running'",
             params![i64::try_from(now)?, failure_code, operation_id],
         )?;
-        transaction.execute(
+        anyhow::ensure!(changed == 1, "running operation transition was lost");
+        let changed = transaction.execute(
             "UPDATE operation_attempts SET state = 'failed', completed_at_unix_ms = ?, failure_code = ? WHERE operation_id = ? AND attempt = (SELECT attempt FROM operations WHERE operation_id = ?)",
             params![i64::try_from(now)?, failure_code, operation_id, operation_id],
         )?;
-        transaction.execute(
+        anyhow::ensure!(changed == 1, "running operation has no current attempt");
+        let changed = transaction.execute(
             "UPDATE captures SET finalization_state = 'failed' WHERE capture_id = (SELECT capture_id FROM operations WHERE operation_id = ?)",
             params![operation_id],
         )?;
+        anyhow::ensure!(changed == 1, "finalization operation has no capture");
         let capture_id: Option<String> = transaction.query_row(
             "SELECT capture_id FROM operations WHERE operation_id = ?",
             params![operation_id],
@@ -917,7 +888,7 @@ impl Catalog {
             "Finalization failed",
         )?;
         transaction.commit()?;
-        Ok(())
+        Ok(TerminalOperationResult::Applied)
     }
 
     pub fn recover_operations(&self, now: u64) -> Result<usize> {
@@ -1004,13 +975,6 @@ impl Catalog {
             .map_err(Into::into)
     }
 
-    pub fn operations(&self, limit: usize) -> Result<Vec<Operation>> {
-        self.filtered_operations(&OperationFilters {
-            limit,
-            ..OperationFilters::default()
-        })
-    }
-
     pub fn filtered_operations(&self, filters: &OperationFilters<'_>) -> Result<Vec<Operation>> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let mut sql = "SELECT * FROM operations WHERE 1 = 1".to_owned();
@@ -1068,6 +1032,7 @@ impl Catalog {
             .map_err(Into::into)
     }
 
+    #[cfg(test)]
     pub fn events(&self, before: Option<u64>, limit: usize) -> Result<Vec<Event>> {
         self.filtered_events(&EventFilters {
             before,
@@ -1076,6 +1041,7 @@ impl Catalog {
         })
     }
 
+    #[cfg(test)]
     pub fn filtered_events(&self, filters: &EventFilters<'_>) -> Result<Vec<Event>> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         filtered_events(&connection, filters)
@@ -1107,6 +1073,7 @@ impl Catalog {
         Ok((events, high_water))
     }
 
+    #[cfg(test)]
     pub fn event_high_water(&self, filters: &EventFilters<'_>) -> Result<Option<u64>> {
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         event_high_water(&connection, filters)
@@ -1188,6 +1155,17 @@ fn event_high_water(connection: &Connection, filters: &EventFilters<'_>) -> Resu
         .map_err(Into::into)
 }
 
+fn validate_persisted_operation_state(state: &str) -> Result<()> {
+    anyhow::ensure!(
+        matches!(
+            state,
+            "queued" | "running" | "interrupted" | "failed" | "finalized"
+        ),
+        "operation has an invalid persisted state"
+    );
+    Ok(())
+}
+
 fn capture_search_expression(input: &str) -> Option<String> {
     fn push_token(
         token: &mut String,
@@ -1235,6 +1213,20 @@ fn capture_search_expression(input: &str) -> Option<String> {
 }
 
 fn migrate(connection: &mut Connection) -> Result<()> {
+    migrate_to(connection, CATALOG_SCHEMA_VERSION)
+}
+
+#[cfg(test)]
+pub(crate) fn create_schema_fixture(path: &Path, version: i64) -> Result<()> {
+    let mut connection = Connection::open(path)?;
+    migrate_to(&mut connection, version)
+}
+
+fn migrate_to(connection: &mut Connection, target_version: i64) -> Result<()> {
+    anyhow::ensure!(
+        (1..=CATALOG_SCHEMA_VERSION).contains(&target_version),
+        "invalid catalog migration target"
+    );
     connection.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (
             version INTEGER PRIMARY KEY
@@ -1248,7 +1240,7 @@ fn migrate(connection: &mut Connection) -> Result<()> {
     if version > CATALOG_SCHEMA_VERSION {
         anyhow::bail!("capture catalog was created by a newer client version");
     }
-    if version == 0 {
+    if version == 0 && target_version >= 1 {
         let transaction = connection.transaction()?;
         transaction.execute_batch(
             "CREATE TABLE captures (
@@ -1293,7 +1285,7 @@ fn migrate(connection: &mut Connection) -> Result<()> {
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (1)", [])?;
         transaction.commit()?;
     }
-    if version < 2 {
+    if version < 2 && target_version >= 2 {
         let transaction = connection.transaction()?;
         transaction.execute_batch(
             "CREATE TABLE IF NOT EXISTS operations (
@@ -1325,7 +1317,7 @@ fn migrate(connection: &mut Connection) -> Result<()> {
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (2)", [])?;
         transaction.commit()?;
     }
-    if version < 3 {
+    if version < 3 && target_version >= 3 {
         let transaction = connection.transaction()?;
         transaction.execute_batch(
             "CREATE TABLE operation_attempts (
@@ -1351,7 +1343,7 @@ fn migrate(connection: &mut Connection) -> Result<()> {
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (3)", [])?;
         transaction.commit()?;
     }
-    if version < 4 {
+    if version < 4 && target_version >= 4 {
         let transaction = connection.transaction()?;
         transaction.execute(
             "UPDATE captures SET capture_state = 'captured' WHERE capture_state = 'pending'",
@@ -1360,7 +1352,7 @@ fn migrate(connection: &mut Connection) -> Result<()> {
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (4)", [])?;
         transaction.commit()?;
     }
-    if version < 5 {
+    if version < 5 && target_version >= 5 {
         let transaction = connection.transaction()?;
         transaction.execute_batch(
             "CREATE INDEX IF NOT EXISTS captures_page_idx
@@ -1371,7 +1363,7 @@ fn migrate(connection: &mut Connection) -> Result<()> {
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (5)", [])?;
         transaction.commit()?;
     }
-    if version < 6 {
+    if version < 6 && target_version >= 6 {
         let transaction = connection.transaction()?;
         transaction.execute_batch(
             "ALTER TABLE operations
@@ -1403,62 +1395,93 @@ fn migrate(connection: &mut Connection) -> Result<()> {
     Ok(())
 }
 
-fn artifact_digest(path: &Path) -> Result<(u64, String)> {
-    let metadata = fs::metadata(path)
-        .with_context(|| format!("reading artifact metadata {}", path.display()))?;
-    if metadata.is_file() {
-        let bytes =
-            fs::read(path).with_context(|| format!("reading artifact {}", path.display()))?;
-        return Ok((metadata.len(), sha256_hex(&bytes)));
+fn require_artifact(artifact: &ArtifactRecord, capture_id: &str, kind: ArtifactKind) -> Result<()> {
+    if artifact.key.capture_id() != capture_id {
+        anyhow::bail!("artifact capture does not match metadata transition");
     }
-    if !metadata.is_dir() {
-        anyhow::bail!(
-            "artifact {} is neither a file nor directory",
-            path.display()
-        );
+    if artifact.key.kind() != kind {
+        anyhow::bail!("artifact kind does not match metadata transition");
     }
-
-    let mut files = Vec::new();
-    collect_files(path, path, &mut files)?;
-    files.sort();
-    let mut canonical = Vec::new();
-    let mut size_bytes = 0_u64;
-    for file in files {
-        let relative = file
-            .strip_prefix(path)
-            .expect("artifact file remains below its root")
-            .to_string_lossy();
-        let bytes =
-            fs::read(&file).with_context(|| format!("reading artifact file {}", file.display()))?;
-        size_bytes = size_bytes
-            .checked_add(u64::try_from(bytes.len())?)
-            .ok_or_else(|| anyhow::anyhow!("artifact size overflow"))?;
-        canonical.extend_from_slice(relative.as_bytes());
-        canonical.push(0);
-        canonical.extend_from_slice(&bytes);
-    }
-    Ok((size_bytes, sha256_hex(&canonical)))
-}
-
-fn collect_files(root: &Path, directory: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-    for entry in
-        fs::read_dir(directory).with_context(|| format!("reading {}", directory.display()))?
-    {
-        let entry = entry?;
-        let path = entry.path();
-        let kind = entry.file_type()?;
-        if kind.is_file() {
-            files.push(path);
-        } else if kind.is_dir() {
-            collect_files(root, &path, files)?;
-        } else if path != root {
-            anyhow::bail!(
-                "artifact contains unsupported filesystem entry {}",
-                path.display()
-            );
-        }
+    if artifact.availability != ArtifactAvailability::Available {
+        anyhow::bail!("artifact is not available");
     }
     Ok(())
+}
+
+fn insert_artifact(
+    transaction: &rusqlite::Transaction<'_>,
+    artifact: &ArtifactRecord,
+) -> Result<()> {
+    let changed = transaction.execute(
+        "INSERT INTO artifacts (capture_id, kind, path, size_bytes, sha256, state)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(capture_id, kind) DO NOTHING",
+        params![
+            artifact.key.capture_id(),
+            artifact.key.kind().as_str(),
+            artifact.locator.as_stored(),
+            i64::try_from(artifact.size_bytes)?,
+            artifact.sha256.as_str(),
+            artifact.availability.as_str(),
+        ],
+    )?;
+    anyhow::ensure!(
+        changed == 1 || artifact_exists_exact(transaction, artifact)?,
+        "artifact metadata conflicts with an existing immutable record"
+    );
+    Ok(())
+}
+
+fn artifact_exists_exact(
+    transaction: &rusqlite::Transaction<'_>,
+    artifact: &ArtifactRecord,
+) -> Result<bool> {
+    transaction
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM artifacts
+                WHERE capture_id = ? AND kind = ? AND path = ?
+                  AND size_bytes = ? AND sha256 = ? AND state = ?
+             )",
+            params![
+                artifact.key.capture_id(),
+                artifact.key.kind().as_str(),
+                artifact.locator.as_stored(),
+                i64::try_from(artifact.size_bytes)?,
+                artifact.sha256.as_str(),
+                artifact.availability.as_str(),
+            ],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+}
+
+fn capture_completion_matches(
+    transaction: &rusqlite::Transaction<'_>,
+    completion: &CaptureCompletion,
+) -> Result<bool> {
+    transaction
+        .query_row(
+            "SELECT EXISTS(
+                SELECT 1 FROM captures
+                WHERE capture_id = ?
+                  AND completed_at_unix_ms = ? AND duration_ms = ? AND http_status = ?
+                  AND response_bytes = ? AND response_model IS ?
+                  AND output_preview = ? AND output_preview_truncated = ?
+             )",
+            params![
+                completion.capture_id,
+                i64::try_from(completion.completed_at_unix_ms)?,
+                i64::try_from(completion.duration_ms)?,
+                i64::from(completion.http_status),
+                i64::try_from(completion.response_bytes)?,
+                completion.response_model.as_deref(),
+                completion.output_preview,
+                completion.output_preview_truncated,
+            ],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
 }
 
 fn capture_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureSummary> {
@@ -1650,46 +1673,57 @@ mod tests {
         }
     }
 
+    fn deferred_artifact(id: &str) -> ArtifactRecord {
+        ArtifactRecord::new(
+            ArtifactKey::new(id, ArtifactKind::DeferredBundle).unwrap(),
+            ArtifactLocator::from_stored(format!("test-artifacts/{id}.llmcapture")).unwrap(),
+            10,
+            "00".repeat(32),
+            ArtifactAvailability::Available,
+        )
+        .unwrap()
+    }
+
+    fn complete_capture(catalog: &Catalog, id: &str, status: u16, output: &str) {
+        catalog
+            .complete_capture_record(
+                &CaptureCompletion {
+                    capture_id: id.to_owned(),
+                    completed_at_unix_ms: 2,
+                    duration_ms: 1,
+                    http_status: status,
+                    response_bytes: 24,
+                    response_model: Some("gpt-5".to_owned()),
+                    output_preview: output.to_owned(),
+                    output_preview_truncated: false,
+                },
+                &deferred_artifact(id),
+            )
+            .unwrap();
+    }
+
     #[test]
     fn catalog_lists_and_searches_plain_text_previews() {
         let directory = tempfile::tempdir().unwrap();
-        let bundle = directory.path().join("cap-1.llmcapture");
-        fs::write(&bundle, b"ciphertext").unwrap();
         let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
         catalog.begin_capture(&new_capture("cap-1")).unwrap();
-        catalog
-            .complete_capture(
-                "cap-1",
-                2,
-                1,
-                200,
-                24,
-                Some("gpt-5"),
-                "Quarterly pricing is available.",
-                false,
-                &bundle,
-            )
-            .unwrap();
+        complete_capture(&catalog, "cap-1", 200, "Quarterly pricing is available.");
 
         let matches = catalog.list_captures(Some("quarterly"), None).unwrap();
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].requested_model.as_deref(), Some("gpt-5"));
         assert_eq!(matches[0].capture_state, "captured");
         assert!(matches[0].output_preview.contains("pricing"));
-        assert_eq!(catalog.artifacts("cap-1").unwrap().len(), 1);
+        assert_eq!(catalog.artifact_records("cap-1").unwrap().len(), 1);
     }
 
     #[test]
     fn migrates_completed_capture_state_to_captured() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("catalog.db");
-        let bundle = directory.path().join("cap-1.llmcapture");
-        fs::write(&bundle, b"ciphertext").unwrap();
         let catalog = Catalog::open(&path, true).unwrap();
         catalog.begin_capture(&new_capture("cap-1")).unwrap();
-        catalog
-            .complete_capture("cap-1", 2, 1, 200, 24, None, "done", false, &bundle)
-            .unwrap();
+        complete_capture(&catalog, "cap-1", 200, "done");
         {
             let connection = catalog.connection.lock().unwrap();
             connection
@@ -1731,23 +1765,9 @@ mod tests {
     #[test]
     fn capture_search_treats_punctuation_as_text_boundaries() {
         let directory = tempfile::tempdir().unwrap();
-        let bundle = directory.path().join("cap-1.llmcapture");
-        fs::write(&bundle, b"ciphertext").unwrap();
         let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
         catalog.begin_capture(&new_capture("cap-1")).unwrap();
-        catalog
-            .complete_capture(
-                "cap-1",
-                2,
-                1,
-                200,
-                24,
-                Some("gpt-5"),
-                "Quarterly pricing is available.",
-                false,
-                &bundle,
-            )
-            .unwrap();
+        complete_capture(&catalog, "cap-1", 200, "Quarterly pricing is available.");
 
         for query in [
             "quarterly-pricing",
@@ -1785,86 +1805,11 @@ mod tests {
     }
 
     #[test]
-    fn reconciliation_makes_a_saved_bundle_searchable_after_an_interruption() {
-        let directory = tempfile::tempdir().unwrap();
-        let bundle_dir = directory.path().join("bundles");
-        fs::create_dir_all(&bundle_dir).unwrap();
-        let bundle = bundle_dir.join("cap-1.llmcapture");
-        fs::write(&bundle, b"ciphertext").unwrap();
-        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
-        catalog.begin_capture(&new_capture("cap-1")).unwrap();
-
-        assert_eq!(
-            catalog.reconcile_incomplete_captures(&bundle_dir).unwrap(),
-            RecoverySummary {
-                recovered_bundles: 1,
-                interrupted_captures: 0,
-            }
-        );
-        let capture = catalog.capture("cap-1").unwrap().unwrap();
-        assert_eq!(capture.capture_state, "captured");
-        assert_eq!(catalog.artifacts("cap-1").unwrap().len(), 1);
-        assert_eq!(
-            catalog
-                .list_captures(Some("quarterly"), None)
-                .unwrap()
-                .len(),
-            1
-        );
-    }
-
-    #[test]
-    fn reconciliation_recovers_a_legacy_llmbundle() {
-        let directory = tempfile::tempdir().unwrap();
-        let bundle_dir = directory.path().join("bundles");
-        fs::create_dir_all(&bundle_dir).unwrap();
-        let bundle = bundle_dir.join("cap-legacy.llmbundle");
-        fs::write(&bundle, b"legacy ciphertext").unwrap();
-        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
-        catalog.begin_capture(&new_capture("cap-legacy")).unwrap();
-
-        assert_eq!(
-            catalog.reconcile_incomplete_captures(&bundle_dir).unwrap(),
-            RecoverySummary {
-                recovered_bundles: 1,
-                interrupted_captures: 0,
-            }
-        );
-        let artifact = catalog.artifacts("cap-legacy").unwrap().remove(0);
-        assert_eq!(artifact.path, bundle);
-    }
-
-    #[test]
-    fn reconciliation_marks_missing_bundles_interrupted() {
-        let directory = tempfile::tempdir().unwrap();
-        let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
-        catalog.begin_capture(&new_capture("cap-1")).unwrap();
-
-        assert_eq!(
-            catalog
-                .reconcile_incomplete_captures(&directory.path().join("bundles"))
-                .unwrap(),
-            RecoverySummary {
-                recovered_bundles: 0,
-                interrupted_captures: 1,
-            }
-        );
-        assert_eq!(
-            catalog.capture("cap-1").unwrap().unwrap().capture_state,
-            "failed"
-        );
-    }
-
-    #[test]
     fn finalization_operations_are_deduplicated_recovered_and_retryable() {
         let directory = tempfile::tempdir().unwrap();
-        let bundle = directory.path().join("cap-1.llmcapture");
-        fs::write(&bundle, b"encrypted bundle fixture").unwrap();
         let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
         catalog.begin_capture(&new_capture("cap-1")).unwrap();
-        catalog
-            .complete_capture("cap-1", 2, 1, 200, 10, None, "done", false, &bundle)
-            .unwrap();
+        complete_capture(&catalog, "cap-1", 200, "done");
         assert_eq!(catalog.counts().unwrap().ready_to_finalize, 1);
 
         let (queued, duplicate) = catalog.enqueue_finalization("cap-1", 3).unwrap().unwrap();
@@ -2037,15 +1982,11 @@ mod tests {
     #[test]
     fn provider_error_capture_is_not_queued_or_retried_for_finalization() {
         let directory = tempfile::tempdir().unwrap();
-        let bundle = directory.path().join("cap-auth-error.llmcapture");
-        fs::write(&bundle, b"encrypted provider error fixture").unwrap();
         let catalog = Catalog::open(&directory.path().join("catalog.db"), true).unwrap();
         catalog
             .begin_capture(&new_capture("cap-auth-error"))
             .unwrap();
-        catalog
-            .complete_capture("cap-auth-error", 2, 1, 401, 48, None, "", false, &bundle)
-            .unwrap();
+        complete_capture(&catalog, "cap-auth-error", 401, "");
 
         assert!(
             catalog

@@ -8,23 +8,21 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tlsn::attestation::CryptoProvider;
 
+#[cfg(feature = "cli")]
+use crate::vault::Vault;
 use crate::{
-    Capture, CaptureManifest,
+    Capture, CaptureManifest, DeferredBundle, FinalizationPhase, FinalizationProgress,
+    FinalizationProgressObserver,
     archive::{
-        VERIFIED_TRACE_PACKAGE_FORMAT, ValidatedTracePackageArchive, read_trace_package_archive,
+        TracePackageArchiveEntries, VERIFIED_TRACE_PACKAGE_FORMAT, ValidatedTracePackageArchive,
+        build_trace_package_archive_from_entries, read_trace_package_archive,
     },
+    configured_crypto_provider, finalize_deferred_bundle_to_admitted_with_progress,
+    finalize_deferred_bundle_to_with_progress, make_capture,
     normalize::{render_public_trace, verified_inference_from_capture},
+    notary_directory::NotaryEndpoint,
     public::NORMALIZER_VERSION,
     sha256_hex, verify_capture_value_with_provider,
-};
-#[cfg(feature = "cli")]
-use crate::{
-    DeferredBundle, FinalizationPhase, FinalizationProgress, FinalizationProgressObserver,
-    archive::{build_trace_package_archive, create_staging_directory},
-    finalize_deferred_bundle_to_admitted_with_progress, finalize_deferred_bundle_to_with_progress,
-    make_capture,
-    notary_directory::NotaryEndpoint,
-    vault::Vault,
 };
 
 /// Metadata binding a normalized trace to the included TLSNotary evidence.
@@ -137,9 +135,51 @@ pub async fn finalize_bundle_with_progress(
     progress: FinalizationProgressObserver<'_>,
 ) -> Result<PathBuf> {
     let bundle = DeferredBundle::load(bundle_path, vault)?;
+    let bytes = finalize_bundle_bytes_with_progress(
+        &bundle,
+        trusted_notary_key,
+        notary,
+        max_attestable_http_bytes,
+        max_frame_bytes,
+        progress,
+    )
+    .await?;
+    write_trace_package_bytes(output_path, &bytes)
+}
+
+/// Completes a deferred proof from an already-decoded private bundle and
+/// returns the canonical `.llmtrace` bytes.
+pub async fn finalize_bundle_bytes(
+    bundle: &DeferredBundle,
+    trusted_notary_key: &[u8],
+    notary: &NotaryEndpoint,
+    max_attestable_http_bytes: usize,
+    max_frame_bytes: usize,
+) -> Result<Vec<u8>> {
+    finalize_bundle_bytes_with_progress(
+        bundle,
+        trusted_notary_key,
+        notary,
+        max_attestable_http_bytes,
+        max_frame_bytes,
+        &|_| {},
+    )
+    .await
+}
+
+/// Completes a decoded deferred bundle, reports milestones, and returns the
+/// canonical `.llmtrace` bytes.
+pub async fn finalize_bundle_bytes_with_progress(
+    bundle: &DeferredBundle,
+    trusted_notary_key: &[u8],
+    notary: &NotaryEndpoint,
+    max_attestable_http_bytes: usize,
+    max_frame_bytes: usize,
+    progress: FinalizationProgressObserver<'_>,
+) -> Result<Vec<u8>> {
     let proof = finalize_deferred_bundle_to_with_progress(
         notary,
-        &bundle,
+        bundle,
         trusted_notary_key,
         max_attestable_http_bytes,
         max_frame_bytes,
@@ -152,7 +192,7 @@ pub async fn finalize_bundle_with_progress(
         bundle.capture_id().to_owned(),
         bundle.provider_name().to_owned(),
     )?;
-    write_trace_package(&capture, output_path, trusted_notary_key)
+    build_trace_package_bytes(&capture, trusted_notary_key)
 }
 
 /// Completes a hosted finalization with a one-time coordinator ticket.
@@ -197,9 +237,56 @@ pub async fn finalize_bundle_admitted_with_progress(
     progress: FinalizationProgressObserver<'_>,
 ) -> Result<PathBuf> {
     let bundle = DeferredBundle::load(bundle_path, vault)?;
+    let bytes = finalize_bundle_admitted_bytes_with_progress(
+        &bundle,
+        trusted_notary_key,
+        notary,
+        max_attestable_http_bytes,
+        max_frame_bytes,
+        admission_ticket,
+        progress,
+    )
+    .await?;
+    write_trace_package_bytes(output_path, &bytes)
+}
+
+/// Completes hosted finalization from an already-decoded private bundle and
+/// returns the canonical `.llmtrace` bytes.
+pub async fn finalize_bundle_admitted_bytes(
+    bundle: &DeferredBundle,
+    trusted_notary_key: &[u8],
+    notary: &NotaryEndpoint,
+    max_attestable_http_bytes: usize,
+    max_frame_bytes: usize,
+    admission_ticket: &str,
+) -> Result<Vec<u8>> {
+    finalize_bundle_admitted_bytes_with_progress(
+        bundle,
+        trusted_notary_key,
+        notary,
+        max_attestable_http_bytes,
+        max_frame_bytes,
+        admission_ticket,
+        &|_| {},
+    )
+    .await
+}
+
+/// Completes admitted finalization from a decoded private bundle, reports
+/// milestones, and returns the canonical `.llmtrace` bytes.
+#[allow(clippy::too_many_arguments)]
+pub async fn finalize_bundle_admitted_bytes_with_progress(
+    bundle: &DeferredBundle,
+    trusted_notary_key: &[u8],
+    notary: &NotaryEndpoint,
+    max_attestable_http_bytes: usize,
+    max_frame_bytes: usize,
+    admission_ticket: &str,
+    progress: FinalizationProgressObserver<'_>,
+) -> Result<Vec<u8>> {
     let proof = finalize_deferred_bundle_to_admitted_with_progress(
         notary,
-        &bundle,
+        bundle,
         trusted_notary_key,
         max_attestable_http_bytes,
         max_frame_bytes,
@@ -213,30 +300,34 @@ pub async fn finalize_bundle_admitted_with_progress(
         bundle.capture_id().to_owned(),
         bundle.provider_name().to_owned(),
     )?;
-    write_trace_package(&capture, output_path, trusted_notary_key)
+    build_trace_package_bytes(&capture, trusted_notary_key)
 }
 
-#[cfg(feature = "cli")]
-fn write_trace_package(
-    capture: &Capture,
-    output_path: &Path,
-    trusted_notary_key: &[u8],
-) -> Result<PathBuf> {
-    write_trace_package_with_provider(
+fn build_trace_package_bytes(capture: &Capture, trusted_notary_key: &[u8]) -> Result<Vec<u8>> {
+    build_trace_package_bytes_with_provider(
         capture,
-        output_path,
         trusted_notary_key,
-        &CryptoProvider::default(),
+        &configured_crypto_provider()?,
     )
 }
 
-#[cfg(feature = "cli")]
+#[cfg(all(feature = "cli", test))]
 pub(crate) fn write_trace_package_with_provider(
     capture: &Capture,
     output_path: &Path,
     trusted_notary_key: &[u8],
     crypto_provider: &CryptoProvider,
 ) -> Result<PathBuf> {
+    let bytes =
+        build_trace_package_bytes_with_provider(capture, trusted_notary_key, crypto_provider)?;
+    write_trace_package_bytes(output_path, &bytes)
+}
+
+fn build_trace_package_bytes_with_provider(
+    capture: &Capture,
+    trusted_notary_key: &[u8],
+    crypto_provider: &CryptoProvider,
+) -> Result<Vec<u8>> {
     let (source, request, response) =
         verify_capture_value_with_provider(capture, trusted_notary_key, crypto_provider)?;
     let inference = verified_inference_from_capture(&source, &request, &response)?;
@@ -248,42 +339,26 @@ pub(crate) fn write_trace_package_with_provider(
         trace_sha256: sha256_hex(&trace),
     };
 
-    write_package_archive(output_path, capture, &trace, &manifest)?;
-    Ok(output_path.to_path_buf())
+    let manifest_json = serde_json::to_vec_pretty(&manifest)?;
+    build_trace_package_archive_from_entries(TracePackageArchiveEntries {
+        evidence_tlsn: &capture.evidence,
+        manifest_json: &manifest_json,
+        request_disclosed_http: &capture.request_disclosed,
+        response_disclosed_http: &capture.response,
+        trace_otlp_json: &trace,
+    })
 }
 
 #[cfg(feature = "cli")]
-fn write_package_archive(
-    output_path: &Path,
-    capture: &Capture,
-    trace: &[u8],
-    manifest: &VerifiedTraceManifest,
-) -> Result<()> {
+fn write_trace_package_bytes(output_path: &Path, bytes: &[u8]) -> Result<PathBuf> {
     if output_path.exists() {
         bail!(
             "refusing to overwrite existing trace package: {}",
             output_path.display()
         );
     }
-    let staging = create_staging_directory(output_path)?;
-
-    let result = (|| -> Result<()> {
-        fs::write(staging.join("evidence.tlsn"), &capture.evidence)?;
-        fs::write(
-            staging.join("request.disclosed.http"),
-            &capture.request_disclosed,
-        )?;
-        fs::write(staging.join("response.disclosed.http"), &capture.response)?;
-        fs::write(staging.join("trace.otlp.json"), trace)?;
-        fs::write(
-            staging.join("manifest.json"),
-            serde_json::to_vec_pretty(manifest)?,
-        )?;
-        let archive = build_trace_package_archive(&staging)?;
-        write_atomic_trace(output_path, &archive)
-    })();
-    let _ = fs::remove_dir_all(&staging);
-    result
+    write_atomic_trace(output_path, bytes)?;
+    Ok(output_path.to_path_buf())
 }
 
 #[cfg(feature = "cli")]
@@ -353,10 +428,12 @@ pub fn verify_trace_package(
     path: &Path,
     trusted_notary_key: &[u8],
 ) -> Result<VerifiedTraceManifest> {
-    Ok(
-        verify_trace_package_with_provider(path, trusted_notary_key, &CryptoProvider::default())?
-            .manifest,
-    )
+    Ok(verify_trace_package_with_provider(
+        path,
+        trusted_notary_key,
+        &configured_crypto_provider()?,
+    )?
+    .manifest)
 }
 
 pub(crate) fn verify_trace_package_with_provider(
@@ -378,7 +455,7 @@ pub fn verify_trace_package_bytes(
         archive,
         sha256_hex(bytes),
         trusted_notary_key,
-        &CryptoProvider::default(),
+        &configured_crypto_provider()?,
     )
 }
 
@@ -407,7 +484,7 @@ pub fn verify_trace_package_archive(
         archive,
         package_sha256,
         trusted_notary_key,
-        &CryptoProvider::default(),
+        &configured_crypto_provider()?,
     )
 }
 

@@ -2,8 +2,6 @@
 
 use std::{
     collections::HashMap,
-    fs,
-    path::PathBuf,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -39,18 +37,27 @@ use llm_notary_core::pagination::{
 
 use crate::{
     DeferredBundle,
-    archive::{ARCHIVE_CONTENT_TYPE, read_trace_package_archive},
-    bundle::{
-        finalize_bundle_admitted_with_progress, finalize_bundle_with_progress,
-        trace_package_created_at_unix_ms, trace_package_notary_key, verify_trace_package,
+    archive::{ARCHIVE_CONTENT_TYPE, MAX_ARCHIVE_WIRE_BYTES, read_trace_package_archive},
+    artifact_store::{
+        ArtifactKey, ArtifactKind, ArtifactRecord, ArtifactSource, ArtifactStoreError,
     },
-    catalog::{
-        CaptureFilters, CapturePagePosition, CaptureSummary, Catalog, Event, EventFilters,
-        Operation, OperationAttempt, OperationFilters, OperationPagePosition,
+    bundle::{
+        finalize_bundle_admitted_bytes_with_progress, finalize_bundle_bytes_with_progress,
+        trace_package_created_at_unix_ms_bytes, trace_package_notary_key_bytes,
+        verify_trace_package_bytes,
     },
     cli::{DEFAULT_PUBLIC_ORIGIN, auth, notary, proxy, publish},
     config::AgentConfig,
+    metadata::{
+        CapturePagePosition, CaptureSummary, Event, Operation, OperationAttempt,
+        OperationPagePosition,
+    },
+    metadata_store::{
+        CaptureFilters, EventFilters, MetadataStore, MetadataStoreError, OperationFilters,
+        TerminalOperationResult,
+    },
     notary_directory::{NotaryDirectoryRecord, NotaryKeyStatus, key_id},
+    persistence::Persistence,
     vault::Vault,
 };
 
@@ -67,7 +74,7 @@ struct DashboardAssets;
 
 #[derive(Clone)]
 pub(crate) struct AdminState {
-    catalog: Arc<Catalog>,
+    persistence: Persistence,
     config: Arc<AgentConfig>,
     sessions: Arc<Mutex<HashMap<String, u64>>>,
     pending_authorizations: Arc<Mutex<HashMap<String, auth::PendingAuthorization>>>,
@@ -77,13 +84,16 @@ pub(crate) struct AdminState {
 }
 
 impl AdminState {
-    pub(crate) fn new(catalog: Arc<Catalog>, config: Arc<AgentConfig>) -> Result<Self> {
-        let interrupted = catalog.recover_operations(now_ms()?)?;
+    pub(crate) async fn new(persistence: Persistence, config: Arc<AgentConfig>) -> Result<Self> {
+        let interrupted = persistence
+            .metadata
+            .interrupt_running_operations(now_ms()?)
+            .await?;
         if interrupted > 0 {
             tracing::warn!(interrupted, "recovered interrupted finalization operations");
         }
         Ok(Self {
-            catalog,
+            persistence,
             config,
             sessions: Arc::new(Mutex::new(HashMap::new())),
             pending_authorizations: Arc::new(Mutex::new(HashMap::new())),
@@ -348,11 +358,12 @@ async fn require_auth(State(state): State<AdminState>, request: Request, next: N
 
 #[utoipa::path(get, path = "/v1/status", summary = "Get local service status", description = "Returns listener addresses, vault and notary configuration, preview limits, and current capture counts.", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>, ApiError> {
-    let catalog = state.catalog.clone();
-    let counts = tokio::task::spawn_blocking(move || catalog.counts())
+    let counts = state
+        .persistence
+        .metadata
+        .counts()
         .await
-        .map_err(|_| ApiError::internal("catalog_task_failed"))?
-        .map_err(|_| ApiError::internal("catalog_query_failed"))?;
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?;
     let update = state.update_status.read().await;
     Ok(Json(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),
@@ -473,7 +484,7 @@ async fn captures(
         return Err(ApiError::bad_request("offset_pagination_removed"));
     }
     if let Some(created_after) = query.created_after_unix_ms {
-        validate_sqlite_query_integer(created_after)?;
+        validate_persisted_query_integer(created_after)?;
     }
     let limit = PageQuery {
         limit: query.limit,
@@ -502,25 +513,24 @@ async fn captures(
         .transpose()
         .map_err(pagination_api_error)?;
     if let Some(position) = cursor.as_ref() {
-        validate_sqlite_cursor_integer(position.created_at_unix_ms)?;
+        validate_persisted_cursor_integer(position.created_at_unix_ms)?;
     }
-    let catalog = state.catalog.clone();
-    let values = tokio::task::spawn_blocking(move || {
-        catalog.filtered_captures(&CaptureFilters {
-            query: query.query.as_deref(),
-            model: query.model.as_deref(),
-            provider: query.provider.as_deref(),
-            capture_state: query.capture_state.as_deref(),
-            finalization_state: query.finalization_state.as_deref(),
+    let values = state
+        .persistence
+        .metadata
+        .captures(CaptureFilters {
+            query: query.query,
+            model: query.model,
+            provider: query.provider,
+            capture_state: query.capture_state,
+            finalization_state: query.finalization_state,
             streaming: query.streaming,
             created_after_unix_ms: query.created_after_unix_ms,
-            cursor: cursor.as_ref(),
+            cursor,
             limit: limit + 1,
         })
-    })
-    .await
-    .map_err(|_| ApiError::internal("catalog_task_failed"))?
-    .map_err(|_| ApiError::bad_request("invalid_capture_filter"))?;
+        .await
+        .map_err(metadata_api_error)?;
     let page = Page::from_limit_plus_one(values, limit, &scope, |capture| {
         CapturePagePosition::from(capture)
     })
@@ -537,36 +547,40 @@ async fn capture(
     Path(capture_id): Path<String>,
 ) -> Result<Json<CaptureDetailResponse>, ApiError> {
     validate_id(&capture_id, "cap-")?;
-    let catalog = state.catalog.clone();
-    let capture_id_for_query = capture_id.clone();
-    let capture = tokio::task::spawn_blocking(move || catalog.capture(&capture_id_for_query))
+    let capture = state
+        .persistence
+        .metadata
+        .capture(&capture_id)
         .await
-        .map_err(|_| ApiError::internal("catalog_task_failed"))?
-        .map_err(|_| ApiError::internal("catalog_query_failed"))?
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?
         .ok_or_else(|| ApiError::not_found("capture_not_found"))?;
-    let catalog = state.catalog.clone();
-    let artifacts = tokio::task::spawn_blocking(move || catalog.artifacts(&capture_id))
+    let artifacts = state
+        .persistence
+        .metadata
+        .artifacts(&capture_id)
         .await
-        .map_err(|_| ApiError::internal("catalog_task_failed"))?
-        .map_err(|_| ApiError::internal("catalog_query_failed"))?;
-    let catalog = state.catalog.clone();
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?;
     let capture_id = capture.capture_id.clone();
-    let finalizations = tokio::task::spawn_blocking(move || -> Result<Vec<OperationResponse>> {
-        catalog
-            .operations_for_capture(&capture_id)?
-            .into_iter()
-            .map(|operation| operation_response(&catalog, operation))
-            .collect()
-    })
-    .await
-    .map_err(|_| ApiError::internal("catalog_task_failed"))?
-    .map_err(|_| ApiError::internal("catalog_query_failed"))?;
+    let operations = state
+        .persistence
+        .metadata
+        .operations_for_capture(&capture_id)
+        .await
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?;
+    let mut finalizations = Vec::with_capacity(operations.len());
+    for operation in operations {
+        finalizations.push(
+            operation_response(&state.persistence.metadata, operation)
+                .await
+                .map_err(|_| ApiError::internal("metadata_query_failed"))?,
+        );
+    }
     Ok(Json(CaptureDetailResponse {
         capture: capture.into(),
         artifacts: artifacts
             .into_iter()
             .map(|artifact| ArtifactResponse {
-                kind: artifact.kind,
+                kind: artifact.key.kind().as_str().to_owned(),
                 size_bytes: artifact.size_bytes,
                 sha256: artifact.sha256,
             })
@@ -581,31 +595,33 @@ async fn start_finalization(
     Path(capture_id): Path<String>,
 ) -> Result<(StatusCode, Json<FinalizationResponse>), ApiError> {
     validate_id(&capture_id, "cap-")?;
-    let catalog = state.catalog.clone();
-    let capture_id_for_eligibility = capture_id.clone();
-    let capture = tokio::task::spawn_blocking(move || catalog.capture(&capture_id_for_eligibility))
+    let capture = state
+        .persistence
+        .metadata
+        .capture(&capture_id)
         .await
-        .map_err(|_| ApiError::internal("catalog_task_failed"))?
-        .map_err(|_| ApiError::internal("catalog_query_failed"))?
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?
         .filter(|capture| capture.capture_state == "captured")
         .ok_or_else(|| ApiError::not_found("captured_response_not_found"))?;
     if finalization_ineligibility_code(&capture).is_some() {
         return Err(ApiError::finalization_ineligible());
     }
-    let catalog = state.catalog.clone();
-    let queued =
-        tokio::task::spawn_blocking(move || -> Result<Option<(OperationResponse, bool)>> {
-            let queued = catalog.enqueue_finalization(&capture_id, now_ms()?)?;
-            queued
-                .map(|(operation, deduplicated)| {
-                    Ok((operation_response(&catalog, operation)?, deduplicated))
-                })
-                .transpose()
-        })
+    let queued = state
+        .persistence
+        .metadata
+        .enqueue_finalization(
+            &capture_id,
+            now_ms().map_err(|_| ApiError::internal("clock_failed"))?,
+        )
         .await
-        .map_err(|_| ApiError::internal("catalog_task_failed"))?
         .map_err(|_| ApiError::internal("finalization_queue_failed"))?
         .ok_or_else(|| ApiError::not_found("captured_response_not_found"))?;
+    let queued = (
+        operation_response(&state.persistence.metadata, queued.0)
+            .await
+            .map_err(|_| ApiError::internal("metadata_query_failed"))?,
+        queued.1,
+    );
     state.work_available.notify_one();
     Ok((
         StatusCode::ACCEPTED,
@@ -650,28 +666,23 @@ async fn operations(
         .transpose()
         .map_err(pagination_api_error)?;
     if let Some(position) = cursor.as_ref() {
-        validate_sqlite_cursor_integer(position.created_at_unix_ms)?;
+        validate_persisted_cursor_integer(position.created_at_unix_ms)?;
     }
-    let catalog = state.catalog.clone();
-    let values = tokio::task::spawn_blocking(move || {
-        catalog
-            .filtered_operations(&OperationFilters {
-                state: query.state.as_deref(),
-                kind: query.kind.as_deref(),
-                capture_id: query.capture_id.as_deref(),
-                cursor: cursor.as_ref(),
-                limit: limit + 1,
-            })
-            .map(|operations| {
-                operations
-                    .into_iter()
-                    .map(OperationSummaryResponse::from)
-                    .collect::<Vec<_>>()
-            })
-    })
-    .await
-    .map_err(|_| ApiError::internal("catalog_task_failed"))?
-    .map_err(|_| ApiError::internal("catalog_query_failed"))?;
+    let values = state
+        .persistence
+        .metadata
+        .operations(OperationFilters {
+            state: query.state,
+            kind: query.kind,
+            capture_id: query.capture_id,
+            cursor,
+            limit: limit + 1,
+        })
+        .await
+        .map_err(metadata_api_error)?
+        .into_iter()
+        .map(OperationSummaryResponse::from)
+        .collect::<Vec<_>>();
     let page =
         Page::from_limit_plus_one(values, limit, &scope, |operation| OperationPagePosition {
             created_at_unix_ms: operation.created_at_unix_ms,
@@ -687,17 +698,16 @@ async fn operation(
     Path(operation_id): Path<String>,
 ) -> Result<Json<OperationResponse>, ApiError> {
     validate_id(&operation_id, "op-")?;
-    let catalog = state.catalog.clone();
-    let value = tokio::task::spawn_blocking(move || -> Result<Option<OperationResponse>> {
-        catalog
-            .operation(&operation_id)?
-            .map(|operation| operation_response(&catalog, operation))
-            .transpose()
-    })
-    .await
-    .map_err(|_| ApiError::internal("catalog_task_failed"))?
-    .map_err(|_| ApiError::internal("catalog_query_failed"))?
-    .ok_or_else(|| ApiError::not_found("operation_not_found"))?;
+    let operation = state
+        .persistence
+        .metadata
+        .operation(&operation_id)
+        .await
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?
+        .ok_or_else(|| ApiError::not_found("operation_not_found"))?;
+    let value = operation_response(&state.persistence.metadata, operation)
+        .await
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?;
     Ok(Json(value))
 }
 
@@ -707,17 +717,19 @@ async fn retry_operation(
     Path(operation_id): Path<String>,
 ) -> Result<(StatusCode, Json<OperationResponse>), ApiError> {
     validate_id(&operation_id, "op-")?;
-    let catalog = state.catalog.clone();
-    let value = tokio::task::spawn_blocking(move || -> Result<Option<OperationResponse>> {
-        catalog
-            .retry_operation(&operation_id, now_ms()?)?
-            .map(|operation| operation_response(&catalog, operation))
-            .transpose()
-    })
-    .await
-    .map_err(|_| ApiError::internal("catalog_task_failed"))?
-    .map_err(|_| ApiError::internal("operation_retry_failed"))?
-    .ok_or_else(|| ApiError::conflict("operation_not_retryable"))?;
+    let operation = state
+        .persistence
+        .metadata
+        .retry_operation(
+            &operation_id,
+            now_ms().map_err(|_| ApiError::internal("clock_failed"))?,
+        )
+        .await
+        .map_err(|_| ApiError::internal("operation_retry_failed"))?
+        .ok_or_else(|| ApiError::conflict("operation_not_retryable"))?;
+    let value = operation_response(&state.persistence.metadata, operation)
+        .await
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?;
     state.work_available.notify_one();
     Ok((StatusCode::ACCEPTED, Json(value)))
 }
@@ -728,9 +740,8 @@ async fn trace(
     Path(capture_id): Path<String>,
 ) -> Result<Json<TraceResponse>, ApiError> {
     validate_id(&capture_id, "cap-")?;
-    let path = finalized_path(&state.catalog, &capture_id).await?;
+    let bytes = finalized_bytes(&state.persistence, &capture_id).await?;
     let value = tokio::task::spawn_blocking(move || -> Result<TraceResponse> {
-        let bytes = fs::read(path)?;
         let archive = read_trace_package_archive(&bytes)?;
         Ok(TraceResponse {
             capture_id,
@@ -750,11 +761,7 @@ async fn download_package(
     Path(capture_id): Path<String>,
 ) -> Result<Response, ApiError> {
     validate_id(&capture_id, "cap-")?;
-    let path = finalized_path(&state.catalog, &capture_id).await?;
-    let bytes = tokio::task::spawn_blocking(move || fs::read(path))
-        .await
-        .map_err(|_| ApiError::internal("package_task_failed"))?
-        .map_err(|_| ApiError::not_found("finalized_trace_not_found"))?;
+    let bytes = finalized_bytes(&state.persistence, &capture_id).await?;
     let content_disposition =
         HeaderValue::from_str(&format!("attachment; filename=\"{capture_id}.llmtrace\""))
             .map_err(|_| ApiError::internal("package_filename_invalid"))?;
@@ -786,26 +793,26 @@ async fn verify_trace(
     Path(capture_id): Path<String>,
 ) -> Result<Json<VerificationResponse>, ApiError> {
     validate_id(&capture_id, "cap-")?;
-    let path = finalized_path(&state.catalog, &capture_id).await?;
+    let bytes = finalized_bytes(&state.persistence, &capture_id).await?;
     let verified_at_unix_ms = now_ms().map_err(|_| ApiError::internal("clock_error"))?;
     let configured_key = state
         .config
         .notary_public_key()
         .map_err(|_| ApiError::internal("notary_configuration_invalid"))?;
     let value = tokio::task::spawn_blocking(move || -> Result<VerificationResponse> {
-        let embedded_key = trace_package_notary_key(&path)?;
+        let embedded_key = trace_package_notary_key_bytes(&bytes)?;
         let (trusted_key, notary_key_id, trust_source) = match configured_key {
             Some(key) => {
                 let key_id = key_id(&key);
                 (key, key_id, "configuration".to_owned())
             }
             None => {
-                let created_at = trace_package_created_at_unix_ms(&path)?;
+                let created_at = trace_package_created_at_unix_ms_bytes(&bytes)?;
                 let (key_id, trust) = notary::cached_key_at(&embedded_key, created_at)?;
                 (embedded_key, key_id, trust)
             }
         };
-        let manifest = verify_trace_package(&path, &trusted_key)?;
+        let manifest = verify_trace_package_bytes(&bytes, &trusted_key)?.manifest;
         Ok(VerificationResponse {
             capture_id: manifest.capture_id().into(),
             verified: true,
@@ -841,7 +848,7 @@ async fn events(
 ) -> Result<Json<EventListResponse>, ApiError> {
     let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
     if let Some(created_after) = query.created_after_unix_ms {
-        validate_sqlite_query_integer(created_after)?;
+        validate_persisted_query_integer(created_after)?;
     }
     let limit = PageQuery {
         limit: query.limit,
@@ -865,7 +872,7 @@ async fn events(
         .transpose()
         .map_err(pagination_api_error)?;
     if let Some(position) = after.as_ref() {
-        validate_sqlite_cursor_integer(position.event_id)?;
+        validate_persisted_cursor_integer(position.event_id)?;
     }
     let page_scope = CursorScope::new(
         "/v1/events",
@@ -891,11 +898,12 @@ async fn events(
         .transpose()
         .map_err(pagination_api_error)?;
     if let Some(position) = cursor.as_ref() {
-        validate_sqlite_cursor_integer(position.event_id)?;
+        validate_persisted_cursor_integer(position.event_id)?;
     }
-    let catalog = state.catalog.clone();
-    let (values, high_water) = tokio::task::spawn_blocking(move || {
-        let filters = EventFilters {
+    let snapshot = state
+        .persistence
+        .metadata
+        .events_snapshot(EventFilters {
             before: if after.is_none() {
                 cursor.as_ref().map(|position| position.event_id)
             } else {
@@ -909,23 +917,23 @@ async fn events(
             } else {
                 None
             },
-            severity: query.severity.as_deref(),
-            event_type: query.event_type.as_deref(),
-            capture_id: query.capture_id.as_deref(),
-            operation_id: query.operation_id.as_deref(),
+            severity: query.severity,
+            event_type: query.event_type,
+            capture_id: query.capture_id,
+            operation_id: query.operation_id,
             created_after_unix_ms: query.created_after_unix_ms,
             limit: limit + 1,
-        };
-        catalog.filtered_events_with_high_water(&filters)
-    })
-    .await
-    .map_err(|_| ApiError::internal("catalog_task_failed"))?
-    .map_err(|_| ApiError::internal("catalog_query_failed"))?;
-    let page = Page::from_limit_plus_one(values, limit, &page_scope, |event| EventPagePosition {
-        event_id: event.event_id,
+        })
+        .await
+        .map_err(metadata_api_error)?;
+    let page = Page::from_limit_plus_one(snapshot.events, limit, &page_scope, |event| {
+        EventPagePosition {
+            event_id: event.event_id,
+        }
     })
     .map_err(pagination_api_error)?;
-    let high_water_cursor = high_water
+    let high_water_cursor = snapshot
+        .high_water
         .map(|event_id| encode_cursor(&follow_scope, &EventPagePosition { event_id }))
         .transpose()
         .map_err(pagination_api_error)?;
@@ -1095,10 +1103,10 @@ async fn share_capture(
     Json(body): Json<CreateShareRequest>,
 ) -> Result<(StatusCode, Json<ShareResponse>), ApiError> {
     validate_id(&capture_id, "cap-")?;
-    let path = finalized_path(&state.catalog, &capture_id).await?;
+    let bytes = finalized_bytes(&state.persistence, &capture_id).await?;
     let _credentials = state.account_credentials.lock().await;
-    let (share, verified_capture_id, _) = publish::share_package(
-        &path,
+    let (share, verified_capture_id, _) = publish::share_package_bytes(
+        &bytes,
         state.config.notary.public_key.as_deref(),
         body.visibility.into(),
         body.force,
@@ -1150,21 +1158,45 @@ async fn share_status(
     }))
 }
 
-async fn finalized_path(catalog: &Arc<Catalog>, capture_id: &str) -> Result<PathBuf, ApiError> {
-    let catalog = catalog.clone();
-    let capture_id = capture_id.to_owned();
-    tokio::task::spawn_blocking(move || catalog.artifacts(&capture_id))
+async fn artifact_record(
+    persistence: &Persistence,
+    capture_id: &str,
+    kind: ArtifactKind,
+) -> Result<ArtifactRecord, ApiError> {
+    persistence
+        .metadata
+        .artifacts(capture_id)
         .await
-        .map_err(|_| ApiError::internal("catalog_task_failed"))?
-        .map_err(|_| ApiError::internal("catalog_query_failed"))?
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?
         .into_iter()
-        .find(|artifact| artifact.kind == "finalized_package")
-        .map(|artifact| artifact.path)
+        .find(|artifact| artifact.key.kind() == kind)
         .ok_or_else(|| ApiError::not_found("finalized_trace_not_found"))
 }
 
+async fn finalized_bytes(persistence: &Persistence, capture_id: &str) -> Result<Vec<u8>, ApiError> {
+    let record = artifact_record(persistence, capture_id, ArtifactKind::FinalizedPackage).await?;
+    let verified = persistence
+        .artifacts
+        .read_verified(&record, MAX_ARCHIVE_WIRE_BYTES)
+        .await
+        .map_err(map_artifact_read_error)?;
+    verified.into_bytes().await.map_err(map_artifact_read_error)
+}
+
+fn map_artifact_read_error(error: ArtifactStoreError) -> ApiError {
+    match error {
+        ArtifactStoreError::NotFound { .. } => ApiError::not_found("finalized_trace_not_found"),
+        ArtifactStoreError::TooLarge { .. }
+        | ArtifactStoreError::Integrity { .. }
+        | ArtifactStoreError::Unavailable
+        | ArtifactStoreError::InvalidInput { .. }
+        | ArtifactStoreError::Conflict { .. }
+        | ArtifactStoreError::Backend { .. } => ApiError::internal("artifact_read_failed"),
+    }
+}
+
 pub(crate) fn spawn_finalization_worker(
-    catalog: Arc<Catalog>,
+    persistence: Persistence,
     config: Arc<AgentConfig>,
     vault: Arc<Vault>,
     work_available: Arc<Notify>,
@@ -1175,12 +1207,11 @@ pub(crate) fn spawn_finalization_worker(
             if *shutdown.borrow() {
                 return Ok(());
             }
-            let catalog_for_claim = catalog.clone();
-            let operation = tokio::task::spawn_blocking(move || {
-                catalog_for_claim.claim_next_finalization(now_ms()?)
-            })
-            .await
-            .context("claim finalization task exited")??;
+            let operation = persistence
+                .metadata
+                .claim_next_finalization(now_ms()?)
+                .await
+                .context("claim finalization")?;
             let Some(operation) = operation else {
                 tokio::select! {
                     () = work_available.notified() => {},
@@ -1193,32 +1224,38 @@ pub(crate) fn spawn_finalization_worker(
                 }
                 continue;
             };
-            let result = finalize_operation(&catalog, &config, &vault, &operation).await;
+            let result = finalize_operation(&persistence, &config, &vault, &operation).await;
             let now = now_ms()?;
-            if result.is_ok() {
-                catalog.finish_operation(&operation.operation_id, now)?;
-            } else {
-                let code = result
-                    .as_ref()
-                    .err()
-                    .and_then(|error| {
-                        auth::hosted_admission_error(error)
-                            .map(|error| error.code())
-                            .or_else(|| {
-                                crate::notary_admission_error(error).map(|error| {
-                                    if error.rejection()
-                                        == crate::NotaryAdmissionRejection::FinalizationCreditsExhausted
-                                    {
-                                        "finalization_credits_exhausted"
-                                    } else {
-                                        "notary_capacity"
-                                    }
-                                })
+            match result {
+                Ok(artifact) => {
+                    let outcome = persistence
+                        .metadata
+                        .complete_finalization(&operation.operation_id, artifact, now)
+                        .await?;
+                    require_terminal_operation_result(outcome)?;
+                }
+                Err(error) => {
+                    let code = auth::hosted_admission_error(&error)
+                        .map(|error| error.code())
+                        .or_else(|| {
+                            crate::notary_admission_error(&error).map(|error| {
+                                if error.rejection()
+                                    == crate::NotaryAdmissionRejection::FinalizationCreditsExhausted
+                                {
+                                    "finalization_credits_exhausted"
+                                } else {
+                                    "notary_capacity"
+                                }
                             })
-                    })
-                    .unwrap_or("finalization_error");
-                catalog.fail_operation(&operation.operation_id, now, code)?;
-                tracing::warn!(operation_id = %operation.operation_id, failure_code = code, "finalization operation failed");
+                        })
+                        .unwrap_or("finalization_error");
+                    let outcome = persistence
+                        .metadata
+                        .fail_operation(&operation.operation_id, now, code)
+                        .await?;
+                    require_terminal_operation_result(outcome)?;
+                    tracing::warn!(operation_id = %operation.operation_id, failure_code = code, "finalization operation failed");
+                }
             }
             if *shutdown.borrow() {
                 return Ok(());
@@ -1227,33 +1264,67 @@ pub(crate) fn spawn_finalization_worker(
     })
 }
 
+fn require_terminal_operation_result(outcome: TerminalOperationResult) -> Result<()> {
+    match outcome {
+        TerminalOperationResult::Applied | TerminalOperationResult::AlreadyApplied => Ok(()),
+        TerminalOperationResult::NotFound => {
+            anyhow::bail!("claimed finalization operation no longer exists")
+        }
+        TerminalOperationResult::Conflict { current_state } => {
+            anyhow::bail!("claimed finalization operation is already {current_state}")
+        }
+    }
+}
+
 async fn finalize_operation(
-    catalog: &Catalog,
+    persistence: &Persistence,
     config: &AgentConfig,
-    vault: &Vault,
+    vault: &Arc<Vault>,
     operation: &Operation,
-) -> Result<()> {
+) -> Result<ArtifactRecord> {
     let last_proof_update = AtomicU64::new(0);
+    let (progress_sender, mut progress_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let progress_metadata = persistence.metadata.clone();
+    let progress_operation_id = operation.operation_id.clone();
+    let progress_recorder = tokio::spawn(async move {
+        while let Some((progress, now)) = progress_receiver.recv().await {
+            let result = match progress {
+                crate::FinalizationProgress::Phase(phase) => {
+                    progress_metadata
+                        .update_operation_progress(&progress_operation_id, phase, now)
+                        .await
+                }
+                crate::FinalizationProgress::Proof(proof) => {
+                    progress_metadata
+                        .update_operation_proof_progress(&progress_operation_id, proof, now)
+                        .await
+                }
+            };
+            if let Err(error) = result {
+                tracing::warn!(
+                    operation_id = %progress_operation_id,
+                    error = %error,
+                    "could not persist finalization progress"
+                );
+            }
+        }
+    });
     let report_progress = |progress| {
-        let result = match progress {
-            crate::FinalizationProgress::Phase(phase) => now_ms().and_then(|now| {
-                catalog
-                    .update_operation_progress(&operation.operation_id, phase, now)
-                    .map(|_| ())
-            }),
-            crate::FinalizationProgress::Proof(proof) => now_ms().and_then(|now| {
+        let result = now_ms().map(|now| match progress {
+            crate::FinalizationProgress::Phase(_) => {
+                let _ = progress_sender.send((progress, now));
+            }
+            crate::FinalizationProgress::Proof(proof) => {
                 let last = last_proof_update.load(Ordering::Relaxed);
                 let complete = proof.bytes_completed == proof.bytes_total
                     && proof.commitments_completed == proof.commitments_total;
                 if last != 0 && !complete && now.saturating_sub(last) < 1_000 {
-                    return Ok(());
+                    return;
                 }
                 last_proof_update.store(now, Ordering::Relaxed);
-                catalog
-                    .update_operation_proof_progress(&operation.operation_id, proof, now)
-                    .map(|_| ())
-            }),
-        };
+                let _ = progress_sender.send((progress, now));
+            }
+        });
         if let Err(error) = result {
             tracing::warn!(
                 operation_id = %operation.operation_id,
@@ -1266,31 +1337,71 @@ async fn finalize_operation(
         .capture_id
         .as_deref()
         .context("finalization operation has no capture")?;
-    let bundle_path = catalog
-        .artifacts(capture_id)?
+    let bundle_record = persistence
+        .metadata
+        .artifacts(capture_id)
+        .await?
         .into_iter()
-        .find(|artifact| artifact.kind == "deferred_bundle")
-        .map(|artifact| artifact.path)
+        .find(|artifact| artifact.key.kind() == ArtifactKind::DeferredBundle)
         .context("capture has no encrypted deferred bundle")?;
-    let output = config
-        .storage
-        .finalized_dir
-        .join(format!("{capture_id}.llmtrace"));
-    if output.is_file() {
-        let embedded_key = trace_package_notary_key(&output)?;
+    let bundle_bytes = persistence
+        .artifacts
+        .read_verified(&bundle_record, MAX_ARCHIVE_WIRE_BYTES)
+        .await?
+        .into_bytes()
+        .await?;
+    let bundle_vault = vault.clone();
+    let bundle = tokio::task::spawn_blocking(move || {
+        DeferredBundle::from_encrypted_bytes(&bundle_bytes, &bundle_vault)
+    })
+    .await
+    .context("deferred bundle decryption task failed")??;
+    anyhow::ensure!(
+        bundle.capture_id() == capture_id,
+        "deferred bundle capture does not match finalization operation"
+    );
+    let finalized_key = ArtifactKey::new(capture_id, ArtifactKind::FinalizedPackage)?;
+    if let Some(existing) = persistence
+        .artifacts
+        .find(&finalized_key, MAX_ARCHIVE_WIRE_BYTES)
+        .await?
+    {
+        let bytes = persistence
+            .artifacts
+            .read_verified(&existing, MAX_ARCHIVE_WIRE_BYTES)
+            .await?
+            .into_bytes()
+            .await?;
+        let (bytes, embedded_key, created_at) = tokio::task::spawn_blocking(move || {
+            let embedded_key = trace_package_notary_key_bytes(&bytes)?;
+            let created_at = trace_package_created_at_unix_ms_bytes(&bytes)?;
+            Ok::<_, anyhow::Error>((bytes, embedded_key, created_at))
+        })
+        .await
+        .context("finalized package inspection task failed")??;
         let key = match config.notary_public_key()? {
             Some(key) => key,
             None => {
-                let created_at = trace_package_created_at_unix_ms(&output)?;
                 notary::cached_key_at(&embedded_key, created_at)?;
                 embedded_key
             }
         };
-        verify_trace_package(&output, &key)?;
-        catalog.record_finalized_package(capture_id, &output)?;
-        return Ok(());
+        let verified_capture_id = tokio::task::spawn_blocking(move || {
+            verify_trace_package_bytes(&bytes, &key)
+                .map(|verified| verified.manifest.capture_id().to_owned())
+        })
+        .await
+        .context("finalized package verification task failed")??;
+        anyhow::ensure!(
+            verified_capture_id == capture_id,
+            "finalized package capture does not match finalization operation"
+        );
+        drop(progress_sender);
+        progress_recorder
+            .await
+            .context("progress recorder exited")?;
+        return Ok(existing);
     }
-    let bundle = DeferredBundle::load(&bundle_path, vault)?;
     let hosted_admission = config.notary.endpoint.is_none();
     let (key, endpoint) = match (config.notary_public_key()?, config.notary_endpoint()?) {
         (Some(key), Some(endpoint)) => {
@@ -1305,18 +1416,16 @@ async fn finalize_operation(
         }
         _ => anyhow::bail!("notary endpoint and public key configuration are inconsistent"),
     };
-    let path = if hosted_admission {
+    let package_result = if hosted_admission {
         let allowance = bundle.finalization_allowance_bytes()?;
         if allowance > config.proxy.max_attestable_http_bytes {
             anyhow::bail!("bundle exceeds the current local finalization byte limit");
         }
         let admission =
             auth::issue_finalization_admission(&bundle.record_digest_hex(), allowance).await?;
-        finalize_bundle_admitted_with_progress(
-            &bundle_path,
-            &output,
+        finalize_bundle_admitted_bytes_with_progress(
+            &bundle,
             &key,
-            vault,
             &endpoint,
             config
                 .proxy
@@ -1326,22 +1435,49 @@ async fn finalize_operation(
             &admission.ticket,
             &report_progress,
         )
-        .await?
+        .await
     } else {
-        finalize_bundle_with_progress(
-            &bundle_path,
-            &output,
+        finalize_bundle_bytes_with_progress(
+            &bundle,
             &key,
-            vault,
             &endpoint,
             config.proxy.max_attestable_http_bytes,
             config.notary.max_frame_bytes,
             &report_progress,
         )
-        .await?
+        .await
     };
-    catalog.record_finalized_package(capture_id, &path)?;
-    Ok(())
+    drop(progress_sender);
+    progress_recorder
+        .await
+        .context("progress recorder exited")?;
+    let package = package_result?;
+    let record = persistence
+        .artifacts
+        .put(
+            &finalized_key,
+            ArtifactSource::from_bytes(package),
+            MAX_ARCHIVE_WIRE_BYTES,
+        )
+        .await?;
+    #[cfg(feature = "daemon-e2e")]
+    if let Some(milliseconds) =
+        std::env::var_os("LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS")
+    {
+        let milliseconds = milliseconds
+            .to_str()
+            .context("Docker E2E finalization pause must be UTF-8")?
+            .parse::<u64>()
+            .context("Docker E2E finalization pause must be milliseconds")?;
+        anyhow::ensure!(
+            milliseconds <= 60_000,
+            "Docker E2E finalization pause exceeds 60 seconds"
+        );
+        if milliseconds > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(milliseconds)).await;
+        }
+    }
+    Ok(record)
 }
 
 fn validate_id(value: &str, prefix: &str) -> Result<(), ApiError> {
@@ -1447,8 +1583,8 @@ struct CountsResponse {
     active_operations: u64,
 }
 
-impl From<crate::catalog::CatalogCounts> for CountsResponse {
-    fn from(value: crate::catalog::CatalogCounts) -> Self {
+impl From<crate::metadata::MetadataCounts> for CountsResponse {
+    fn from(value: crate::metadata::MetadataCounts) -> Self {
         Self {
             total_captures: value.total_captures,
             capturing: value.capturing,
@@ -1683,15 +1819,20 @@ impl From<&Operation> for OperationProgressResponse {
     }
 }
 
-fn operation_response(catalog: &Catalog, value: Operation) -> Result<OperationResponse> {
-    let attempt_history = catalog
-        .operation_attempts(&value.operation_id)?
+async fn operation_response(
+    metadata: &Arc<dyn MetadataStore>,
+    value: Operation,
+) -> Result<OperationResponse> {
+    let attempt_history = metadata
+        .operation_attempts(&value.operation_id)
+        .await?
         .into_iter()
         .map(Into::into)
         .collect();
     let eligible_capture = match value.capture_id.as_deref() {
-        Some(capture_id) => catalog
-            .capture(capture_id)?
+        Some(capture_id) => metadata
+            .capture(capture_id)
+            .await?
             .is_some_and(|capture| finalization_eligible(&capture)),
         None => false,
     };
@@ -1876,16 +2017,23 @@ fn pagination_api_error(error: PaginationError) -> ApiError {
     }
 }
 
-fn validate_sqlite_cursor_integer(value: u64) -> Result<(), ApiError> {
+fn validate_persisted_cursor_integer(value: u64) -> Result<(), ApiError> {
     i64::try_from(value)
         .map(|_| ())
         .map_err(|_| pagination_api_error(PaginationError::MalformedCursor))
 }
 
-fn validate_sqlite_query_integer(value: u64) -> Result<(), ApiError> {
+fn validate_persisted_query_integer(value: u64) -> Result<(), ApiError> {
     i64::try_from(value)
         .map(|_| ())
         .map_err(|_| ApiError::bad_request("invalid_query_parameter"))
+}
+
+fn metadata_api_error(error: MetadataStoreError) -> ApiError {
+    match error.invalid_code() {
+        Some(code) => ApiError::bad_request(code),
+        None => ApiError::internal("metadata_query_failed"),
+    }
 }
 
 impl ApiError {
@@ -2010,11 +2158,11 @@ mod tests {
         }
     }
 
-    fn state(directory: &std::path::Path) -> AdminState {
-        state_with_auth(directory, None)
+    async fn state(directory: &std::path::Path) -> AdminState {
+        state_with_auth(directory, None).await
     }
 
-    fn protected_state(directory: &std::path::Path) -> AdminState {
+    async fn protected_state(directory: &std::path::Path) -> AdminState {
         let salt = SaltString::encode_b64(b"llm-notary-test-salt").unwrap();
         let password_hash = Argon2::default()
             .hash_password(b"correct horse battery staple", &salt)
@@ -2027,9 +2175,10 @@ mod tests {
                 password_hash,
             }),
         )
+        .await
     }
 
-    fn state_with_auth(
+    async fn state_with_auth(
         directory: &std::path::Path,
         auth: Option<crate::config::AdminAuthConfig>,
     ) -> AdminState {
@@ -2038,11 +2187,10 @@ mod tests {
         config.storage.bundle_dir = directory.join("bundles");
         config.storage.finalized_dir = directory.join("traces");
         config.admin.auth = auth;
-        AdminState::new(
-            Arc::new(Catalog::open_for_config(&config).unwrap()),
-            Arc::new(config),
-        )
-        .unwrap()
+        let persistence = Persistence::open(&config).await.unwrap();
+        AdminState::new(persistence, Arc::new(config))
+            .await
+            .unwrap()
     }
 
     fn basic_header(username: &str, password: &str) -> String {
@@ -2071,7 +2219,7 @@ mod tests {
     #[tokio::test]
     async fn admin_routes_are_open_by_default() {
         let directory = tempfile::tempdir().unwrap();
-        let response = router(state(directory.path()))
+        let response = router(state(directory.path()).await)
             .unwrap()
             .oneshot(Request::get("/v1/status").body(Body::empty()).unwrap())
             .await
@@ -2083,7 +2231,7 @@ mod tests {
     #[tokio::test]
     async fn protected_routes_reject_missing_or_wrong_auth_without_echoing_it() {
         let directory = tempfile::tempdir().unwrap();
-        let app = router(protected_state(directory.path())).unwrap();
+        let app = router(protected_state(directory.path()).await).unwrap();
         let wrong_header = basic_header("local-admin", "deliberately-wrong-secret");
         for value in [None, Some(wrong_header.as_str())] {
             let mut request = Request::builder().uri("/v1/status");
@@ -2148,7 +2296,7 @@ mod tests {
             // callsite-interest cache without a subscriber.
             tracing::info!(request_path = "/v1/status", "capturing admin request logs");
             runtime.block_on(async {
-                router(protected_state(directory.path()))
+                router(protected_state(directory.path()).await)
                     .unwrap()
                     .oneshot(
                         Request::get(format!("/v1/status?query={secret}"))
@@ -2170,7 +2318,7 @@ mod tests {
     #[tokio::test]
     async fn openapi_covers_every_admin_route_and_is_public() {
         let directory = tempfile::tempdir().unwrap();
-        let response = router(state(directory.path()))
+        let response = router(state(directory.path()).await)
             .unwrap()
             .oneshot(Request::get("/openapi.json").body(Body::empty()).unwrap())
             .await
@@ -2262,11 +2410,12 @@ mod tests {
     #[tokio::test]
     async fn package_download_returns_the_exact_stored_llmtrace() {
         let directory = tempfile::tempdir().unwrap();
-        let state = state(directory.path());
+        let state = state(directory.path()).await;
         let capture_id = "cap-download";
         state
-            .catalog
-            .begin_capture(&crate::catalog::NewCapture {
+            .persistence
+            .metadata
+            .begin_capture(crate::metadata::NewCapture {
                 capture_id: capture_id.to_owned(),
                 created_at_unix_ms: 1,
                 provider: "openai".to_owned(),
@@ -2278,13 +2427,69 @@ mod tests {
                 prompt_preview_truncated: false,
                 config_fingerprint: "sha256:test".to_owned(),
             })
+            .await
             .unwrap();
-        let package = directory.path().join("cap-download.llmtrace");
-        let expected = b"exact canonical archive bytes";
-        fs::write(&package, expected).unwrap();
+        let deferred = state
+            .persistence
+            .artifacts
+            .put(
+                &ArtifactKey::new(capture_id, ArtifactKind::DeferredBundle).unwrap(),
+                ArtifactSource::from_bytes(b"encrypted bundle fixture".to_vec()),
+                MAX_ARCHIVE_WIRE_BYTES,
+            )
+            .await
+            .unwrap();
         state
-            .catalog
-            .record_finalized_package(capture_id, &package)
+            .persistence
+            .metadata
+            .complete_capture(
+                crate::metadata::CaptureCompletion {
+                    capture_id: capture_id.to_owned(),
+                    completed_at_unix_ms: 2,
+                    duration_ms: 1,
+                    http_status: 200,
+                    response_bytes: 1,
+                    response_model: Some("gpt-5".to_owned()),
+                    output_preview: String::new(),
+                    output_preview_truncated: false,
+                },
+                deferred,
+            )
+            .await
+            .unwrap();
+        let expected = b"exact canonical archive bytes";
+        let key = ArtifactKey::new(capture_id, ArtifactKind::FinalizedPackage).unwrap();
+        let artifact = state
+            .persistence
+            .artifacts
+            .put(
+                &key,
+                ArtifactSource::from_bytes(expected.to_vec()),
+                MAX_ARCHIVE_WIRE_BYTES,
+            )
+            .await
+            .unwrap();
+        let operation = state
+            .persistence
+            .metadata
+            .enqueue_finalization(capture_id, 3)
+            .await
+            .unwrap()
+            .unwrap()
+            .0;
+        let running = state
+            .persistence
+            .metadata
+            .claim_next_finalization(4)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(running.operation_id, operation.operation_id);
+        state
+            .persistence
+            .metadata
+            .complete_finalization(&running.operation_id, artifact, 5)
+            .await
             .unwrap();
 
         let response = router(state)
@@ -2372,7 +2577,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_numeric_queries_use_the_json_error_envelope() {
         let directory = tempfile::tempdir().unwrap();
-        let app = router(state(directory.path())).unwrap();
+        let app = router(state(directory.path()).await).unwrap();
         for path in [
             "/v1/captures?limit=-1",
             "/v1/operations?limit=-1",
@@ -2397,14 +2602,15 @@ mod tests {
 
     #[tokio::test]
     async fn capture_pages_are_stable_across_ties_and_new_inserts() {
-        use crate::catalog::NewCapture;
+        use crate::metadata::NewCapture;
 
         let directory = tempfile::tempdir().unwrap();
-        let state = state(directory.path());
+        let state = state(directory.path()).await;
         for capture_id in ["cap-a", "cap-b", "cap-c"] {
             state
-                .catalog
-                .begin_capture(&NewCapture {
+                .persistence
+                .metadata
+                .begin_capture(NewCapture {
                     capture_id: capture_id.into(),
                     created_at_unix_ms: 10,
                     provider: "openai".into(),
@@ -2416,6 +2622,7 @@ mod tests {
                     prompt_preview_truncated: false,
                     config_fingerprint: "sha256:test".into(),
                 })
+                .await
                 .unwrap();
         }
         let app = router(state.clone()).unwrap();
@@ -2442,8 +2649,9 @@ mod tests {
         let cursor = first["next_cursor"].as_str().unwrap();
 
         state
-            .catalog
-            .begin_capture(&NewCapture {
+            .persistence
+            .metadata
+            .begin_capture(NewCapture {
                 capture_id: "cap-new".into(),
                 created_at_unix_ms: 11,
                 provider: "openai".into(),
@@ -2455,6 +2663,7 @@ mod tests {
                 prompt_preview_truncated: false,
                 config_fingerprint: "sha256:test".into(),
             })
+            .await
             .unwrap();
         let second = app
             .oneshot(
@@ -2474,14 +2683,15 @@ mod tests {
 
     #[tokio::test]
     async fn cursors_reject_malformed_cross_route_and_changed_filter_requests() {
-        use crate::catalog::NewCapture;
+        use crate::metadata::NewCapture;
 
         let directory = tempfile::tempdir().unwrap();
-        let state = state(directory.path());
+        let state = state(directory.path()).await;
         for capture_id in ["cap-a", "cap-b"] {
             state
-                .catalog
-                .begin_capture(&NewCapture {
+                .persistence
+                .metadata
+                .begin_capture(NewCapture {
                     capture_id: capture_id.into(),
                     created_at_unix_ms: 1,
                     provider: "openai".into(),
@@ -2493,6 +2703,7 @@ mod tests {
                     prompt_preview_truncated: false,
                     config_fingerprint: "sha256:test".into(),
                 })
+                .await
                 .unwrap();
         }
         let app = router(state).unwrap();
@@ -2537,7 +2748,7 @@ mod tests {
     #[tokio::test]
     async fn sqlite_integer_overflow_in_queries_and_forged_cursors_is_a_typed_400() {
         let directory = tempfile::tempdir().unwrap();
-        let app = router(state(directory.path())).unwrap();
+        let app = router(state(directory.path()).await).unwrap();
         let no_text = None::<String>;
         let capture_scope = CursorScope::new(
             "/v1/captures",
@@ -2646,16 +2857,15 @@ mod tests {
 
     #[tokio::test]
     async fn event_history_and_follow_cursors_have_separate_directions() {
-        use crate::catalog::NewCapture;
+        use crate::metadata::NewCapture;
 
         let directory = tempfile::tempdir().unwrap();
-        let state = state(directory.path());
+        let state = state(directory.path()).await;
         for capture_id in ["cap-a", "cap-b"] {
-            let bundle = directory.path().join(format!("{capture_id}.llmcapture"));
-            fs::write(&bundle, b"encrypted bundle").unwrap();
             state
-                .catalog
-                .begin_capture(&NewCapture {
+                .persistence
+                .metadata
+                .begin_capture(NewCapture {
                     capture_id: capture_id.into(),
                     created_at_unix_ms: 1,
                     provider: "openai".into(),
@@ -2667,12 +2877,43 @@ mod tests {
                     prompt_preview_truncated: false,
                     config_fingerprint: "sha256:test".into(),
                 })
+                .await
+                .unwrap();
+            let key = ArtifactKey::new(capture_id, ArtifactKind::DeferredBundle).unwrap();
+            let artifact = state
+                .persistence
+                .artifacts
+                .put(
+                    &key,
+                    ArtifactSource::from_bytes(b"encrypted bundle".to_vec()),
+                    MAX_ARCHIVE_WIRE_BYTES,
+                )
+                .await
                 .unwrap();
             state
-                .catalog
-                .complete_capture(capture_id, 2, 1, 200, 1, None, "", false, &bundle)
+                .persistence
+                .metadata
+                .complete_capture(
+                    crate::metadata::CaptureCompletion {
+                        capture_id: capture_id.into(),
+                        completed_at_unix_ms: 2,
+                        duration_ms: 1,
+                        http_status: 200,
+                        response_bytes: 1,
+                        response_model: None,
+                        output_preview: String::new(),
+                        output_preview_truncated: false,
+                    },
+                    artifact,
+                )
+                .await
                 .unwrap();
-            state.catalog.enqueue_finalization(capture_id, 3).unwrap();
+            state
+                .persistence
+                .metadata
+                .enqueue_finalization(capture_id, 3)
+                .await
+                .unwrap();
         }
         let app = router(state.clone()).unwrap();
         let first = app
@@ -2701,11 +2942,10 @@ mod tests {
             serde_json::from_slice(&older.into_body().collect().await.unwrap().to_bytes()).unwrap();
         assert_eq!(older["items"].as_array().unwrap().len(), 1);
 
-        let bundle = directory.path().join("cap-c.llmcapture");
-        fs::write(&bundle, b"encrypted bundle").unwrap();
         state
-            .catalog
-            .begin_capture(&NewCapture {
+            .persistence
+            .metadata
+            .begin_capture(NewCapture {
                 capture_id: "cap-c".into(),
                 created_at_unix_ms: 2,
                 provider: "openai".into(),
@@ -2717,12 +2957,43 @@ mod tests {
                 prompt_preview_truncated: false,
                 config_fingerprint: "sha256:test".into(),
             })
+            .await
+            .unwrap();
+        let key = ArtifactKey::new("cap-c", ArtifactKind::DeferredBundle).unwrap();
+        let artifact = state
+            .persistence
+            .artifacts
+            .put(
+                &key,
+                ArtifactSource::from_bytes(b"encrypted bundle".to_vec()),
+                MAX_ARCHIVE_WIRE_BYTES,
+            )
+            .await
             .unwrap();
         state
-            .catalog
-            .complete_capture("cap-c", 3, 1, 200, 1, None, "", false, &bundle)
+            .persistence
+            .metadata
+            .complete_capture(
+                crate::metadata::CaptureCompletion {
+                    capture_id: "cap-c".into(),
+                    completed_at_unix_ms: 3,
+                    duration_ms: 1,
+                    http_status: 200,
+                    response_bytes: 1,
+                    response_model: None,
+                    output_preview: String::new(),
+                    output_preview_truncated: false,
+                },
+                artifact,
+            )
+            .await
             .unwrap();
-        state.catalog.enqueue_finalization("cap-c", 4).unwrap();
+        state
+            .persistence
+            .metadata
+            .enqueue_finalization("cap-c", 4)
+            .await
+            .unwrap();
         let newer = app
             .oneshot(
                 Request::get(format!("/v1/events?limit=1&after={high_water}"))
@@ -2739,16 +3010,14 @@ mod tests {
 
     #[tokio::test]
     async fn provider_authentication_error_is_visible_but_ineligible_for_finalization() {
-        use crate::catalog::NewCapture;
+        use crate::metadata::NewCapture;
 
         let directory = tempfile::tempdir().unwrap();
-        let state = state(directory.path());
-        let bundle = directory.path().join("bundles/cap-auth-error.llmcapture");
-        fs::create_dir_all(bundle.parent().unwrap()).unwrap();
-        fs::write(&bundle, b"encrypted provider authentication error").unwrap();
+        let state = state(directory.path()).await;
         state
-            .catalog
-            .begin_capture(&NewCapture {
+            .persistence
+            .metadata
+            .begin_capture(NewCapture {
                 capture_id: "cap-auth-error".into(),
                 created_at_unix_ms: 1,
                 provider: "openai".into(),
@@ -2760,10 +3029,36 @@ mod tests {
                 prompt_preview_truncated: false,
                 config_fingerprint: "sha256:test".into(),
             })
+            .await
+            .unwrap();
+        let key = ArtifactKey::new("cap-auth-error", ArtifactKind::DeferredBundle).unwrap();
+        let artifact = state
+            .persistence
+            .artifacts
+            .put(
+                &key,
+                ArtifactSource::from_bytes(b"encrypted provider authentication error".to_vec()),
+                MAX_ARCHIVE_WIRE_BYTES,
+            )
+            .await
             .unwrap();
         state
-            .catalog
-            .complete_capture("cap-auth-error", 2, 1, 401, 96, None, "", false, &bundle)
+            .persistence
+            .metadata
+            .complete_capture(
+                crate::metadata::CaptureCompletion {
+                    capture_id: "cap-auth-error".into(),
+                    completed_at_unix_ms: 2,
+                    duration_ms: 1,
+                    http_status: 401,
+                    response_bytes: 96,
+                    response_model: None,
+                    output_preview: String::new(),
+                    output_preview_truncated: false,
+                },
+                artifact,
+            )
+            .await
             .unwrap();
         let app = router(state).unwrap();
 
@@ -2810,7 +3105,7 @@ mod tests {
     #[tokio::test]
     async fn dashboard_session_exchanges_basic_credentials_without_persisting_the_password() {
         let directory = tempfile::tempdir().unwrap();
-        let state = protected_state(directory.path());
+        let state = protected_state(directory.path()).await;
         let password = "correct horse battery staple";
         let app = router(state).unwrap();
         let response = app
@@ -2855,7 +3150,7 @@ mod tests {
     #[tokio::test]
     async fn expired_dashboard_sessions_are_rejected_and_removed() {
         let directory = tempfile::tempdir().unwrap();
-        let state = protected_state(directory.path());
+        let state = protected_state(directory.path()).await;
         state.sessions.lock().await.insert("expired".into(), 0);
 
         let response = router(state.clone())
@@ -2876,7 +3171,7 @@ mod tests {
     #[tokio::test]
     async fn dashboard_assets_are_embedded_only_on_the_admin_router() {
         let directory = tempfile::tempdir().unwrap();
-        let app = router(state(directory.path())).unwrap();
+        let app = router(state(directory.path()).await).unwrap();
         let index = app
             .clone()
             .oneshot(Request::get("/").body(Body::empty()).unwrap())
@@ -2907,7 +3202,7 @@ mod tests {
             "text/javascript"
         );
 
-        let embedded = router(state(directory.path()))
+        let embedded = router(state(directory.path()).await)
             .unwrap()
             .oneshot(
                 Request::get("/dashboard?embedded=desktop")
