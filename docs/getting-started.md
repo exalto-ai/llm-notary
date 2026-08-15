@@ -118,6 +118,10 @@ skills directory and the installer will create the `llm-notary` child:
 llm-notary skill install --skills-dir /path/to/agent/skills
 ```
 
+Claude Code detects changes inside an existing `~/.claude/skills` directory.
+If that top-level directory did not exist when the current Claude Code session
+started, restart Claude Code after installation so it discovers the skill.
+
 The installed skill uses the command client first and treats the running
 daemon's `/openapi.json` as the authority for operations the CLI does not
 expose. It never needs a non-loopback listener. If a destination already

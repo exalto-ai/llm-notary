@@ -201,8 +201,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: client-update-windows
-      - name: Test stopped and locked daemon update preflights
-        run: cargo test --locked -p llm-notary-client update::tests --lib
+      - name: Test Windows-specific client workflows
+        run: |
+          cargo test --locked -p llm-notary-client update::tests --lib
+          cargo test --locked -p llm-notary-client local_cli::tests::skill_install --lib
 
   app:
     name: SPA

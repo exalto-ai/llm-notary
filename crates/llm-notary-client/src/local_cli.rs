@@ -1,6 +1,7 @@
 //! Short-lived command client for the versioned loopback administration API.
 
 use std::{
+    ffi::OsString,
     fmt, fs, io,
     path::{Path, PathBuf},
     process::Command as ProcessCommand,
@@ -23,6 +24,7 @@ use crate::{
 
 const API_VERSION: &str = "v1";
 const AGENT_SKILL_NAME: &str = "llm-notary";
+const CLAUDE_SKILL_ACTIVATION_NOTE: &str = "restart Claude Code if its top-level skills directory did not exist when the current session started";
 const AGENT_SKILL_FILES: &[(&str, &str)] = &[
     (
         "SKILL.md",
@@ -670,17 +672,24 @@ fn skill_destinations(args: &SkillInstallArgs) -> Result<Vec<SkillDestination>, 
     }
 
     let home = user_home_directory()?;
+    let target = args
+        .target
+        .ok_or_else(|| CliError::invalid("skill install requires --target or --skills-dir"))?;
+    Ok(skill_target_destinations(target, &home))
+}
+
+fn skill_target_destinations(target: SkillTarget, home: &Path) -> Vec<SkillDestination> {
     let mut destinations = Vec::new();
-    match args.target {
-        Some(SkillTarget::Codex) => destinations.push(SkillDestination {
+    match target {
+        SkillTarget::Codex => destinations.push(SkillDestination {
             agent: "codex",
             path: home.join(".agents/skills").join(AGENT_SKILL_NAME),
         }),
-        Some(SkillTarget::Claude) => destinations.push(SkillDestination {
+        SkillTarget::Claude => destinations.push(SkillDestination {
             agent: "claude",
             path: home.join(".claude/skills").join(AGENT_SKILL_NAME),
         }),
-        Some(SkillTarget::All) => {
+        SkillTarget::All => {
             destinations.push(SkillDestination {
                 agent: "codex",
                 path: home.join(".agents/skills").join(AGENT_SKILL_NAME),
@@ -690,24 +699,26 @@ fn skill_destinations(args: &SkillInstallArgs) -> Result<Vec<SkillDestination>, 
                 path: home.join(".claude/skills").join(AGENT_SKILL_NAME),
             });
         }
-        None => {
-            return Err(CliError::invalid(
-                "skill install requires --target or --skills-dir",
-            ));
-        }
     }
-    Ok(destinations)
+    destinations
 }
 
 fn user_home_directory() -> Result<PathBuf, CliError> {
     #[cfg(windows)]
-    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"));
+    let candidates = [std::env::var_os("USERPROFILE"), std::env::var_os("HOME")];
     #[cfg(not(windows))]
-    let home = std::env::var_os("HOME");
+    let candidates = [std::env::var_os("HOME")];
 
-    home.filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    first_nonempty_path(candidates)
         .ok_or_else(|| CliError::invalid("could not locate the user home directory"))
+}
+
+fn first_nonempty_path<const N: usize>(candidates: [Option<OsString>; N]) -> Option<PathBuf> {
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
 
 fn install_agent_skill_at(
@@ -741,6 +752,8 @@ fn install_agent_skill_at(
             .zip(states)
             .map(|(destination, state)| json!({
                 "agent": destination.agent,
+                "activation_note": (destination.agent == "claude")
+                    .then_some(CLAUDE_SKILL_ACTIVATION_NOTE),
                 "path": destination.path.display().to_string(),
                 "state": state.as_str(),
             }))
@@ -772,9 +785,9 @@ fn inspect_skill_destination(
     let mut current = true;
     for (relative, expected) in AGENT_SKILL_FILES {
         let path = destination.path.join(relative);
-        reject_managed_skill_symlinks(&destination.path, relative)?;
-        match fs::read_to_string(&path) {
-            Ok(actual) if actual == *expected => {}
+        validate_managed_skill_path(&destination.path, relative)?;
+        match fs::read(&path) {
+            Ok(actual) if actual == expected.as_bytes() => {}
             Ok(_) => current = false,
             Err(error) if error.kind() == io::ErrorKind::NotFound => current = false,
             Err(_) => {
@@ -797,12 +810,19 @@ fn inspect_skill_destination(
     }
 }
 
-fn reject_managed_skill_symlinks(root: &Path, relative: &str) -> Result<(), CliError> {
+fn validate_managed_skill_path(root: &Path, relative: &str) -> Result<(), CliError> {
     let mut path = root.to_path_buf();
-    for component in Path::new(relative).components() {
+    let mut components = Path::new(relative).components().peekable();
+    while let Some(component) = components.next() {
         path.push(component);
         match fs::symlink_metadata(&path) {
             Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(skill_conflict(&path));
+            }
+            Ok(metadata) if components.peek().is_some() && !metadata.is_dir() => {
+                return Err(skill_conflict(&path));
+            }
+            Ok(metadata) if components.peek().is_none() && !metadata.is_file() => {
                 return Err(skill_conflict(&path));
             }
             Ok(_) => {}
@@ -852,7 +872,11 @@ fn skill_install_human_output(value: &Value) -> Result<String, CliError> {
                 .get("state")
                 .and_then(Value::as_str)
                 .ok_or_else(|| CliError::new(EXIT_ERROR, "the skill state is incomplete"))?;
-            Ok(format!("{agent}: {state} at {path}"))
+            let mut line = format!("{agent}: {state} at {path}");
+            if let Some(note) = target.get("activation_note").and_then(Value::as_str) {
+                line.push_str(&format!("\n{agent}: {note}"));
+            }
+            Ok(line)
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|lines| lines.join("\n"))
@@ -1991,6 +2015,73 @@ mod tests {
         assert_eq!(
             fs::read_to_string(path.join("personal-notes.md")).unwrap(),
             "keep me\n"
+        );
+    }
+
+    #[test]
+    fn skill_install_force_recovers_an_invalid_utf8_file_and_rejects_a_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("skills/llm-notary");
+        fs::create_dir_all(&path).unwrap();
+        fs::write(path.join("SKILL.md"), [0xff, 0xfe]).unwrap();
+
+        let updated = install_agent_skill_at(
+            &[SkillDestination {
+                agent: "custom",
+                path: path.clone(),
+            }],
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(updated["targets"][0]["state"], "updated");
+        assert_eq!(
+            fs::read_to_string(path.join("SKILL.md")).unwrap(),
+            AGENT_SKILL_FILES[0].1
+        );
+
+        fs::remove_file(path.join("SKILL.md")).unwrap();
+        fs::create_dir(path.join("SKILL.md")).unwrap();
+        let error = install_agent_skill_at(
+            &[SkillDestination {
+                agent: "custom",
+                path,
+            }],
+            true,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "skill_install_conflict");
+    }
+
+    #[test]
+    fn skill_install_human_output_explains_claude_activation() {
+        let value = json!({
+            "skill": AGENT_SKILL_NAME,
+            "targets": [{
+                "agent": "claude",
+                "activation_note": CLAUDE_SKILL_ACTIVATION_NOTE,
+                "path": "/user/.claude/skills/llm-notary",
+                "state": "installed",
+            }],
+        });
+
+        let output = skill_install_human_output(&value).unwrap();
+
+        assert!(output.contains(CLAUDE_SKILL_ACTIVATION_NOTE));
+    }
+
+    #[test]
+    fn skill_install_target_paths_and_home_fallback_are_portable() {
+        let home = PathBuf::from("user-home");
+        let destinations = skill_target_destinations(SkillTarget::All, &home);
+
+        assert_eq!(destinations[0].agent, "codex");
+        assert_eq!(destinations[0].path, home.join(".agents/skills/llm-notary"));
+        assert_eq!(destinations[1].agent, "claude");
+        assert_eq!(destinations[1].path, home.join(".claude/skills/llm-notary"));
+        assert_eq!(
+            first_nonempty_path([Some(OsString::new()), Some(OsString::from("fallback-home")),]),
+            Some(PathBuf::from("fallback-home"))
         );
     }
 

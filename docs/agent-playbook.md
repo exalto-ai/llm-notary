@@ -19,6 +19,11 @@ installer appends the `llm-notary` skill directory, reports `installed`,
 `current`, or `updated`, and emits the same result as structured data with
 `--json`.
 
+Claude Code detects changes inside an existing `~/.claude/skills` directory
+without a restart. If that top-level directory did not exist when the current
+Claude Code session started, restart Claude Code after installation so it can
+watch and discover the new directory.
+
 An existing different skill is left unchanged, and an `--target all` conflict
 is detected before either destination is written. Inspect local modifications
 before using `--force`. Re-run installation after updating the CLI so the
