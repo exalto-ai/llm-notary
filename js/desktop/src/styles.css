@@ -260,14 +260,49 @@ h1, h2, p { margin: 0; }
 .wizard-step h1 { max-width: 620px; margin-top: 9px; font-size: 31px; font-weight: 650; letter-spacing: -.035em; line-height: 1.08; }
 .wizard-step > p { max-width: 610px; margin-top: 12px; color: var(--secondary); font-size: 13px; line-height: 1.55; }
 .welcome-step { justify-content: center; padding-bottom: 12px; }
-.welcome-mark { width: 54px; height: 54px; margin-bottom: 23px; border-radius: 12px; box-shadow: 0 5px 18px rgba(23, 105, 224, .16); }
-.detection-list { overflow: hidden; margin-top: 25px; border: 1px solid var(--separator); border-radius: 10px; }
-.detection-list > div { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; min-height: 43px; align-items: center; gap: 8px; padding: 0 13px; }
-.detection-list > div + div { border-top: 1px solid var(--separator-soft); }
-.detection-list > div > span { display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; background: var(--surface-secondary); color: var(--tertiary); font-size: 11px; }
-.detection-list > div > span.is-found { background: rgba(40, 167, 69, .13); color: var(--green); }
-.detection-list strong { font-size: 11px; font-weight: 550; }
-.detection-list small { color: var(--tertiary); font-size: 10px; }
+.setup-trust-diagram { margin: 25px 0 0; }
+.setup-trust-flow { display: grid; grid-template-columns: 112px 44px 124px 44px minmax(214px, 1fr); min-height: 250px; align-items: center; }
+.setup-trust-node { position: relative; z-index: 1; display: flex; min-height: 142px; align-items: center; flex-direction: column; justify-content: center; padding: 13px 10px; border: 1px solid var(--separator); border-radius: 10px; background: var(--surface); text-align: center; }
+.setup-trust-node > span, .setup-local-label { color: var(--tertiary); font: 600 8px/1.2 "SFMono-Regular", Menlo, monospace; letter-spacing: .045em; text-transform: uppercase; }
+.setup-trust-node strong { margin-top: 24px; font-size: 11px; line-height: 1.25; }
+.setup-trust-node small { margin-top: 6px; color: var(--tertiary); font-size: 8px; line-height: 1.35; }
+.setup-notary-node { min-height: 172px; border-color: #1d1d1f; background: #1d1d1f; color: #fff; }
+.setup-notary-node > span, .setup-notary-node small { color: #aaaab0; }
+.setup-notary-node code { margin-top: 22px; color: #9dc4ff; font-size: 15px; font-weight: 650; letter-spacing: .11em; line-height: 1.3; animation: setup-cipher-witness 600ms steps(2, end) 900ms 3 both; }
+.setup-notary-node strong { margin-top: 10px; font: 550 8px/1.2 "SFMono-Regular", Menlo, monospace; letter-spacing: .025em; }
+.setup-notary-node small { max-width: 104px; }
+.setup-encrypted-track { position: relative; height: 1px; background: var(--separator); }
+.setup-encrypted-track small { position: absolute; top: 12px; left: 50%; color: var(--tertiary); font: 500 7px/1 "SFMono-Regular", Menlo, monospace; transform: translateX(-50%); }
+.setup-encrypted-track i { position: absolute; z-index: 2; top: -10px; left: -15px; display: grid; width: 28px; height: 20px; place-items: center; border-radius: 5px; background: #1d1d1f; color: #9dc4ff; opacity: 0; animation: setup-encrypted-packet 950ms ease-in-out 350ms 1 both; }
+.setup-encrypted-track--local i { animation-delay: 1.45s; }
+.setup-encrypted-track i svg { width: 12px; height: 12px; stroke-width: 1.9; }
+.setup-local-boundary { position: relative; display: grid; min-height: 230px; grid-template-rows: 72px 26px auto; align-content: center; padding: 29px 14px 13px; border: 1px solid rgba(23, 105, 224, .48); border-radius: 12px; background: var(--blue-soft); box-shadow: inset 0 0 0 3px rgba(23, 105, 224, .05); }
+.setup-local-label { position: absolute; top: 11px; left: 13px; color: var(--blue); }
+.setup-local-client { display: flex; width: 152px; min-height: 58px; align-items: center; align-self: center; justify-self: center; gap: 9px; padding: 9px 10px; border: 1px solid var(--separator); border-radius: 9px; background: var(--surface); }
+.setup-local-client img { width: 29px; height: 29px; border-radius: 7px; }
+.setup-local-client strong, .setup-local-client small { display: block; }
+.setup-local-client strong { font-size: 10px; }
+.setup-local-client small { display: flex; align-items: center; gap: 3px; margin-top: 4px; color: var(--blue); font-size: 8px; }
+.setup-local-client small svg { width: 10px; height: 10px; }
+.setup-local-branches { position: relative; width: calc(50% + 1px); height: 26px; justify-self: center; border-left: 1px solid var(--separator); border-right: 1px solid var(--separator); border-bottom: 1px solid var(--separator); }
+.setup-local-path { position: absolute; top: -4px; bottom: -6px; width: 50%; overflow: hidden; }
+.setup-local-path--user { right: 50%; }
+.setup-local-path--capture { left: 50%; }
+.setup-local-path i { position: absolute; top: 0; left: -9px; width: 8px; height: 8px; border: 1px solid #9dc4ff; background: #1d1d1f; opacity: 0; animation: setup-local-packet 650ms ease-out 2.55s 1 both; }
+.setup-local-path--capture i { animation-delay: 2.8s; }
+.setup-local-outputs { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.setup-local-outputs > div { display: flex; min-width: 0; min-height: 52px; align-items: center; gap: 7px; padding: 8px; border: 1px solid var(--separator); border-radius: 8px; background: var(--surface); opacity: 0; animation: setup-output-reveal 380ms ease-out 3.05s 1 forwards; }
+.setup-local-outputs > div:nth-child(2) { animation-delay: 3.25s; }
+.setup-local-outputs > div > svg { width: 15px; height: 15px; flex: 0 0 auto; color: var(--blue); stroke-width: 1.7; }
+.setup-local-outputs strong, .setup-local-outputs small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.setup-local-outputs strong { font-size: 9px; }
+.setup-local-outputs small { margin-top: 3px; color: var(--tertiary); font-size: 7px; }
+.setup-trust-diagram figcaption { display: flex; align-items: center; gap: 6px; margin-top: 8px; color: var(--secondary); font-size: 9px; line-height: 1.4; }
+.setup-trust-diagram figcaption svg { width: 12px; height: 12px; flex: 0 0 auto; color: var(--blue); }
+@keyframes setup-encrypted-packet { 0% { opacity: 0; transform: translateX(0); } 12%, 82% { opacity: 1; } 100% { opacity: 0; transform: translateX(58px); } }
+@keyframes setup-local-packet { 0% { opacity: 0; transform: translate(0, 0); } 15%, 82% { opacity: 1; } 100% { opacity: 0; transform: translate(56px, 28px); } }
+@keyframes setup-output-reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes setup-cipher-witness { 0%, 100% { color: #9dc4ff; } 50% { color: #d5e6ff; } }
 .wizard-actions { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 26px; }
 .protection-options { display: grid; gap: 9px; margin-top: 26px; }
 .protection-options > button { display: grid; grid-template-columns: 20px 25px minmax(0, 1fr); align-items: start; gap: 10px; min-height: 82px; padding: 15px; border: 1px solid var(--separator); border-radius: 10px; background: var(--surface); text-align: left; }
@@ -318,6 +353,11 @@ h1, h2, p { margin: 0; }
 .aside-label { color: var(--blue); font-size: 9px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
 .onboarding-aside h2 { max-width: 310px; margin-top: 10px; font-size: 21px; font-weight: 650; letter-spacing: -.025em; }
 .onboarding-aside > p { max-width: 330px; margin-top: 8px; color: var(--secondary); font-size: 11px; line-height: 1.5; }
+.aside-trust-facts { margin: 31px 0 0; }
+.aside-trust-facts div { padding: 13px 0; border-top: 1px solid var(--separator); }
+.aside-trust-facts div:last-child { border-bottom: 1px solid var(--separator); }
+.aside-trust-facts dt { color: var(--text); font-size: 10px; font-weight: 600; }
+.aside-trust-facts dd { margin: 4px 0 0; color: var(--tertiary); font-size: 9px; line-height: 1.45; }
 .aside-route { position: relative; display: grid; gap: 0; margin-top: 31px; }
 .aside-route::before { position: absolute; top: 18px; bottom: 18px; left: 9px; width: 1px; background: var(--separator); content: ""; }
 .aside-route .native-route-stop { display: grid; grid-template-columns: 20px minmax(0, 1fr); min-height: 62px; align-content: center; column-gap: 12px; text-align: left; }
@@ -337,6 +377,8 @@ h1, h2, p { margin: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition: none !important; }
+  .setup-local-outputs > div { opacity: 1; transform: none; }
+  .setup-encrypted-track i, .setup-local-path i { display: none; }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -367,4 +409,5 @@ h1, h2, p { margin: 0; }
   .mac-button.is-primary { border-color: var(--blue); background: var(--blue); color: #fff; }
   .native-notice { color: #8dbbff; }
   .wizard-warning { color: #ffc275; }
+  .setup-notary-node, .setup-encrypted-track i, .setup-local-path i { border-color: #09090a; background: #09090a; }
 }
