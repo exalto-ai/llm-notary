@@ -199,7 +199,7 @@ pub trait MetadataStore: Send + Sync {
 
     async fn events_snapshot(&self, filters: EventFilters) -> MetadataResult<EventSnapshot>;
 
-    // Cluster-only coordination. SQLite deliberately retains the default
+    // Server-only coordination. SQLite deliberately retains the default
     // rejection so selecting PostgreSQL+S3 never implicitly enables it.
     async fn register_replica(
         &self,
@@ -207,20 +207,20 @@ pub trait MetadataStore: Send + Sync {
         _compatibility_sha256: &str,
         _lease_seconds: u64,
     ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn heartbeat_replica(
         &self,
         _identity: &ReplicaIdentity,
         _lease_seconds: u64,
     ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn replica_ready(&self, _identity: &ReplicaIdentity) -> MetadataResult<bool> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn release_replica(&self, _identity: &ReplicaIdentity) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn begin_capture_claimed(
         &self,
@@ -228,7 +228,7 @@ pub trait MetadataStore: Send + Sync {
         _claim: &CaptureClaim,
         _lease_seconds: u64,
     ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn prepare_capture_completion_claimed(
         &self,
@@ -236,7 +236,7 @@ pub trait MetadataStore: Send + Sync {
         _claim: &CaptureClaim,
         _lease_seconds: u64,
     ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn complete_capture_claimed(
         &self,
@@ -244,21 +244,21 @@ pub trait MetadataStore: Send + Sync {
         _artifact: ArtifactRecord,
         _claim: &CaptureClaim,
     ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn fail_capture_claimed(
         &self,
         _claim: &CaptureClaim,
         _failure_code: &str,
     ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn renew_capture_claim(
         &self,
         _claim: &CaptureClaim,
         _lease_seconds: u64,
     ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn claim_next_stale_capture(
         &self,
@@ -266,15 +266,15 @@ pub trait MetadataStore: Send + Sync {
         _fence_token: &str,
         _lease_seconds: u64,
     ) -> MetadataResult<Option<CaptureRecoveryClaim>> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
-    async fn claim_next_finalization_clustered(
+    async fn claim_next_finalization_claimed(
         &self,
         _identity: &ReplicaIdentity,
         _fence_token: &str,
         _lease_seconds: u64,
     ) -> MetadataResult<Option<FinalizationClaim>> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn update_operation_progress_claimed(
         &self,
@@ -283,14 +283,14 @@ pub trait MetadataStore: Send + Sync {
         _now_unix_ms: u64,
         _lease_seconds: u64,
     ) -> MetadataResult<bool> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn renew_finalization_claim(
         &self,
         _claim: &FinalizationClaim,
         _lease_seconds: u64,
     ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn update_operation_proof_progress_claimed(
         &self,
@@ -299,7 +299,7 @@ pub trait MetadataStore: Send + Sync {
         _now_unix_ms: u64,
         _lease_seconds: u64,
     ) -> MetadataResult<bool> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn complete_finalization_claimed(
         &self,
@@ -307,7 +307,7 @@ pub trait MetadataStore: Send + Sync {
         _artifact: ArtifactRecord,
         _now_unix_ms: u64,
     ) -> MetadataResult<TerminalOperationResult> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn fail_operation_claimed(
         &self,
@@ -315,10 +315,10 @@ pub trait MetadataStore: Send + Sync {
         _now_unix_ms: u64,
         _failure_code: &str,
     ) -> MetadataResult<TerminalOperationResult> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn interrupt_next_expired_finalization(&self) -> MetadataResult<Option<String>> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
 
     async fn create_dashboard_session(
@@ -327,24 +327,24 @@ pub trait MetadataStore: Send + Sync {
         _created_at_unix_ms: u64,
         _expires_at_unix_ms: u64,
     ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn dashboard_session_valid(
         &self,
         _token_hash: &[u8; 32],
         _now_unix_ms: u64,
     ) -> MetadataResult<bool> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn revoke_dashboard_session(&self, _token_hash: &[u8; 32]) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn prune_dashboard_sessions(
         &self,
         _now_unix_ms: u64,
         _limit: usize,
     ) -> MetadataResult<usize> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
 
     async fn pin_notary_directory(
@@ -352,10 +352,10 @@ pub trait MetadataStore: Send + Sync {
         _directory: NotaryDirectory,
         _directory_source: &str,
     ) -> MetadataResult<SharedNotaryTrust> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
     async fn notary_trust_snapshot(&self) -> MetadataResult<Option<SharedNotaryTrust>> {
-        Err(MetadataStoreError::InvalidInput("cluster_not_supported"))
+        Err(MetadataStoreError::InvalidInput("server_not_supported"))
     }
 }
 

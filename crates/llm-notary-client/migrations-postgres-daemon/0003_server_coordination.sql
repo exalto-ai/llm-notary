@@ -36,7 +36,7 @@ ALTER TABLE llm_notary_daemon.operations
         (owner_instance_id IS NOT NULL AND owner_incarnation_id IS NOT NULL AND claim_fence IS NOT NULL
          AND artifact_publication_id IS NOT NULL AND claim_lease_expires_at IS NOT NULL)
     );
-CREATE INDEX operations_cluster_queue_idx
+CREATE INDEX operations_server_queue_idx
     ON llm_notary_daemon.operations(created_at_unix_ms, operation_id)
     WHERE kind = 'finalization' AND state = 'queued';
 CREATE INDEX operations_expired_claim_idx
@@ -59,7 +59,7 @@ CREATE TABLE llm_notary_daemon.dashboard_sessions (
 CREATE INDEX dashboard_sessions_expiry_idx
     ON llm_notary_daemon.dashboard_sessions(expires_at_unix_ms);
 
-CREATE TABLE llm_notary_daemon.cluster_invariants (
+CREATE TABLE llm_notary_daemon.server_invariants (
     singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
     compatibility_sha256 TEXT NOT NULL CHECK (compatibility_sha256 ~ '^[0-9a-f]{64}$'),
     configured_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()

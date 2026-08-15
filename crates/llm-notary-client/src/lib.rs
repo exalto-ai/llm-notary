@@ -16,7 +16,6 @@ mod artifact_reconciliation;
 pub mod artifact_router;
 pub mod artifact_store;
 pub mod cli;
-mod cluster;
 pub mod config;
 mod local_cli;
 pub mod metadata;
@@ -24,6 +23,7 @@ pub mod metadata_store;
 pub mod persistence;
 mod postgres_metadata_store;
 mod s3_artifact_store;
+mod server_runtime;
 mod sqlite_catalog;
 pub mod sqlite_metadata_store;
 pub mod update;
@@ -142,7 +142,7 @@ async fn run_daemon_migrator(config_path: Option<PathBuf>) -> Result<()> {
         let api_origin = cli::auth::configured_api_origin_without_credentials()?;
         let vault = llm_notary_core::vault::Vault::open_server()?;
         let vault_identity = vault.server_identity_sha256()?;
-        postgres_metadata_store::configure_cluster_compatibility(
+        postgres_metadata_store::configure_server_compatibility(
             database_url.expose(),
             postgres.ssl_mode,
             Duration::from_secs(postgres.connect_timeout_seconds),

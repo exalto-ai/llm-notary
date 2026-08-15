@@ -8,11 +8,11 @@ use crate::{
     archive::MAX_ARCHIVE_WIRE_BYTES,
     artifact_router::RoutedArtifactStore,
     artifact_store::{ArtifactKey, ArtifactKind, ArtifactStore, FileSystemArtifactStore},
-    cluster::ClusterRuntime,
     config::{AgentConfig, MetadataBackend},
     metadata_store::MetadataStore,
     postgres_metadata_store::PostgresMetadataStore,
     s3_artifact_store::{S3ArtifactStore, S3ArtifactStoreCredentials},
+    server_runtime::ServerRuntime,
     sqlite_metadata_store::SqliteMetadataStore,
 };
 
@@ -49,7 +49,7 @@ impl Persistence {
                 let database_url = config.postgres_runtime_url()?;
                 Arc::new(
                     if config.server.is_some() {
-                        PostgresMetadataStore::connect_clustered(
+                        PostgresMetadataStore::connect_server(
                             database_url.expose(),
                             postgres.max_connections,
                             std::time::Duration::from_secs(postgres.connect_timeout_seconds),
@@ -122,16 +122,16 @@ impl Persistence {
     /// Atomically adopts at most one capture whose PostgreSQL lease and owner
     /// heartbeat are both expired. The original publication ID is retained so
     /// an ambiguous S3 PUT can only be attached after exact size/hash checks.
-    pub(crate) async fn reconcile_cluster_capture(
+    pub(crate) async fn reconcile_server_capture(
         &self,
-        cluster: &ClusterRuntime,
+        server_runtime: &ServerRuntime,
     ) -> Result<RecoverySummary> {
         let Some(recovery) = self
             .metadata
             .claim_next_stale_capture(
-                cluster.identity(),
-                &cluster.new_fence_token(),
-                cluster.lease_seconds(),
+                server_runtime.identity(),
+                &server_runtime.new_fence_token(),
+                server_runtime.lease_seconds(),
             )
             .await?
         else {

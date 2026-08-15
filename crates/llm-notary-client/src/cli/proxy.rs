@@ -37,7 +37,6 @@ use crate::{
         ArtifactKey, ArtifactKind, ArtifactSource, ArtifactStore, ArtifactStoreError,
     },
     attestable_request_header_bytes, chunked_request_body,
-    cluster::{ClusterRuntime, Lifecycle},
     config::{AgentConfig, ProviderConfig},
     deferred_streaming_request_to, deferred_streaming_request_to_admitted,
     metadata::{CaptureCompletion, NewCapture},
@@ -45,6 +44,7 @@ use crate::{
     notary_admission_error,
     notary_directory::{NotaryDirectory, NotaryDirectoryRecord, NotaryEndpoint},
     persistence::Persistence,
+    server_runtime::{Lifecycle, ServerRuntime},
     vault::Vault,
 };
 
@@ -140,7 +140,7 @@ pub(crate) struct AppState {
     serial: Arc<Mutex<u64>>,
     hosted_admission: bool,
     capture_tasks: CaptureTasks,
-    cluster: Option<Arc<ClusterRuntime>>,
+    server_runtime: Option<Arc<ServerRuntime>>,
 }
 
 #[derive(Clone, Default)]
@@ -194,38 +194,38 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     // Open and validate persistence before notary discovery or interactive
     // vault initialization. A PostgreSQL outage or unmigrated schema therefore
     // fails startup directly and never causes a fallback or unrelated prompt.
-    let cluster = config
+    let server_runtime = config
         .server
         .is_some()
-        .then(ClusterRuntime::from_environment)
+        .then(ServerRuntime::from_environment)
         .transpose()?
         .map(Arc::new);
-    if cluster.is_some() && !auth::api_key_mode_active()? {
+    if server_runtime.is_some() && !auth::api_key_mode_active()? {
         bail!("server mode requires LLM_NOTARY_API_KEY or LLM_NOTARY_API_KEY_FILE");
     }
-    if cluster.is_some() && std::env::var_os("LLM_NOTARY_DESKTOP_CONTROL_STDIN").is_some() {
+    if server_runtime.is_some() && std::env::var_os("LLM_NOTARY_DESKTOP_CONTROL_STDIN").is_some() {
         bail!("desktop child-process control is unavailable in server mode");
     }
     let persistence = Persistence::open(&config).await?;
-    let vault = if cluster.is_some() {
+    let vault = if server_runtime.is_some() {
         Vault::open_server().context("opening the shared server vault")?
     } else {
         Vault::open_or_init_interactive().context(
             "opening the local bundle vault (set LLM_NOTARY_VAULT_PASSPHRASE_FILE before first start when an OS vault is unavailable)",
         )?
     };
-    if let Some(cluster) = &cluster {
+    if let Some(server_runtime) = &server_runtime {
         let api_origin = auth::configured_api_origin()?;
         let vault_identity = vault.server_identity_sha256()?;
         persistence
             .metadata
             .register_replica(
-                cluster.identity(),
+                server_runtime.identity(),
                 &config.server_compatibility_sha256_for_api_origin(
                     &api_origin.to_string(),
                     &vault_identity,
                 )?,
-                cluster.lease_seconds(),
+                server_runtime.lease_seconds(),
             )
             .await?;
     } else {
@@ -245,7 +245,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     let hosted_admission = config.notary.endpoint.is_none();
     let notary = match config.notary_endpoint()? {
         Some(notary) => notary,
-        None if cluster.is_some() => {
+        None if server_runtime.is_some() => {
             let (directory, directory_url) =
                 fetch_notary_directory_from(&super::auth::configured_api_origin()?).await?;
             let trust = persistence
@@ -272,14 +272,14 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         serial: Arc::new(Mutex::new(0)),
         hosted_admission,
         capture_tasks: CaptureTasks::default(),
-        cluster: cluster.clone(),
+        server_runtime: server_runtime.clone(),
     };
     let app = router(state.clone());
     let admin_state = crate::admin::AdminState::new(
         state.persistence.clone(),
         state.config.clone(),
-        cluster.clone(),
-        cluster
+        server_runtime.clone(),
+        server_runtime
             .as_ref()
             .map(|_| state.vault.server_identity_sha256())
             .transpose()?,
@@ -298,20 +298,20 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     tracing::info!(address = %state.config.admin.listen, "LLM Notary daemon admin API listening");
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (heartbeat_shutdown_tx, heartbeat_shutdown_rx) = watch::channel(false);
-    if let Some(cluster) = &cluster {
-        cluster.mark_ready();
+    if let Some(server_runtime) = &server_runtime {
+        server_runtime.mark_ready();
     }
-    let mut heartbeat = spawn_cluster_heartbeat(
+    let mut heartbeat = spawn_server_heartbeat(
         state.persistence.clone(),
-        cluster.clone(),
+        server_runtime.clone(),
         heartbeat_shutdown_rx,
     );
     let capture_recovery = spawn_capture_recovery_worker(
         state.persistence.clone(),
-        cluster.clone(),
+        server_runtime.clone(),
         shutdown_rx.clone(),
     );
-    let update_checker = if cluster.is_none() {
+    let update_checker = if server_runtime.is_none() {
         crate::update::spawn_background_checker(
             admin_state.update_status.clone(),
             shutdown_rx.clone(),
@@ -324,7 +324,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         state.config.clone(),
         state.vault.clone(),
         admin_state.work_available.clone(),
-        cluster.clone(),
+        server_runtime.clone(),
         shutdown_rx.clone(),
     );
     let proxy_shutdown = wait_for_shutdown(shutdown_rx.clone());
@@ -355,23 +355,23 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         result = &mut heartbeat => Exit::Heartbeat(joined(result, "server replica heartbeat")),
         () = shutdown_signal() => Exit::Requested,
     };
-    if let Some(cluster) = &cluster {
-        cluster.mark_draining();
+    if let Some(server_runtime) = &server_runtime {
+        server_runtime.mark_draining();
         if matches!(&exit, Exit::Requested) {
             tokio::time::sleep(std::time::Duration::from_secs(
-                cluster.withdrawal_delay_seconds(),
+                server_runtime.withdrawal_delay_seconds(),
             ))
             .await;
         }
     }
     tracing::info!("LLM Notary daemon draining before shutdown");
     let _ = shutdown_tx.send(true);
-    let mut forced_cluster_shutdown = false;
+    let mut forced_server_shutdown = false;
     match exit {
         Exit::Requested => {
-            if let Some(cluster) = &cluster {
+            if let Some(server_runtime) = &server_runtime {
                 let graceful = tokio::time::timeout(
-                    std::time::Duration::from_secs(cluster.shutdown_grace_seconds()),
+                    std::time::Duration::from_secs(server_runtime.shutdown_grace_seconds()),
                     async {
                         joined((&mut proxy_server).await, "proxy server")?;
                         joined((&mut admin_server).await, "admin server")?;
@@ -383,9 +383,9 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
                 match graceful {
                     Ok(result) => result?,
                     Err(_) => {
-                        forced_cluster_shutdown = true;
+                        forced_server_shutdown = true;
                         tracing::warn!(
-                            shutdown_grace_seconds = cluster.shutdown_grace_seconds(),
+                            shutdown_grace_seconds = server_runtime.shutdown_grace_seconds(),
                             "server shutdown grace expired; stopping remaining local tasks"
                         );
                         proxy_server.abort();
@@ -434,7 +434,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     if let Some(update_checker) = update_checker {
         update_checker.await.context("update checker task exited")?;
     }
-    if forced_cluster_shutdown {
+    if forced_server_shutdown {
         capture_recovery.abort();
     } else {
         capture_recovery
@@ -443,16 +443,16 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         state.capture_tasks.wait_idle().await;
     }
     let _ = heartbeat_shutdown_tx.send(true);
-    if forced_cluster_shutdown {
+    if forced_server_shutdown {
         heartbeat.abort();
     } else {
         joined(heartbeat.await, "server replica heartbeat")?;
     }
-    if let (Some(cluster), false) = (&cluster, forced_cluster_shutdown) {
+    if let (Some(server_runtime), false) = (&server_runtime, forced_server_shutdown) {
         state
             .persistence
             .metadata
-            .release_replica(cluster.identity())
+            .release_replica(server_runtime.identity())
             .await?;
     }
     tracing::info!("LLM Notary daemon shut down cleanly");
@@ -461,7 +461,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
 
 fn spawn_capture_recovery_worker(
     persistence: Persistence,
-    cluster: Option<Arc<ClusterRuntime>>,
+    server_runtime: Option<Arc<ServerRuntime>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -474,14 +474,14 @@ fn spawn_capture_recovery_worker(
                 }
                 () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
             }
-            if cluster
+            if server_runtime
                 .as_ref()
-                .is_some_and(|cluster| cluster.lifecycle() != Lifecycle::Ready)
+                .is_some_and(|server_runtime| server_runtime.lifecycle() != Lifecycle::Ready)
             {
                 continue;
             }
-            let recovery = if let Some(cluster) = &cluster {
-                persistence.reconcile_cluster_capture(cluster).await
+            let recovery = if let Some(server_runtime) = &server_runtime {
+                persistence.reconcile_server_capture(server_runtime).await
             } else {
                 persistence.reconcile_pending_publications().await
             };
@@ -502,13 +502,13 @@ fn spawn_capture_recovery_worker(
     })
 }
 
-fn spawn_cluster_heartbeat(
+fn spawn_server_heartbeat(
     persistence: Persistence,
-    cluster: Option<Arc<ClusterRuntime>>,
+    server_runtime: Option<Arc<ServerRuntime>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<Result<()>> {
     tokio::spawn(async move {
-        let Some(cluster) = cluster else {
+        let Some(server_runtime) = server_runtime else {
             while !*shutdown.borrow() && shutdown.changed().await.is_ok() {}
             return Ok(());
         };
@@ -517,16 +517,16 @@ fn spawn_cluster_heartbeat(
                 result = shutdown.changed() => {
                     if result.is_err() || *shutdown.borrow() { return Ok(()); }
                 }
-                () = tokio::time::sleep(std::time::Duration::from_secs(cluster.heartbeat_interval_seconds())) => {}
+                () = tokio::time::sleep(std::time::Duration::from_secs(server_runtime.heartbeat_interval_seconds())) => {}
             }
             match persistence
                 .metadata
-                .heartbeat_replica(cluster.identity(), cluster.lease_seconds())
+                .heartbeat_replica(server_runtime.identity(), server_runtime.lease_seconds())
                 .await
             {
                 Ok(()) => {}
                 Err(MetadataStoreError::Fenced) => {
-                    cluster.mark_draining();
+                    server_runtime.mark_draining();
                     return Err(MetadataStoreError::Fenced.into());
                 }
                 Err(error) => {
@@ -698,9 +698,9 @@ pub(crate) async fn resolve_notary(record: &NotaryDirectoryRecord) -> Result<Not
 #[axum::debug_handler]
 async fn proxy(State(state): State<AppState>, request: Request) -> Response {
     if state
-        .cluster
+        .server_runtime
         .as_ref()
-        .is_some_and(|cluster| cluster.lifecycle() != Lifecycle::Ready)
+        .is_some_and(|server_runtime| server_runtime.lifecycle() != Lifecycle::Ready)
     {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -990,9 +990,9 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
 
     let (capture_id, created_at_unix_ms) = next_capture_metadata(&state).await?;
     let capture_claim = state
-        .cluster
+        .server_runtime
         .as_ref()
-        .map(|cluster| cluster.capture_claim(capture_id.clone()));
+        .map(|server_runtime| server_runtime.capture_claim(capture_id.clone()));
     let new_capture = NewCapture {
         capture_id: capture_id.clone(),
         created_at_unix_ms,
@@ -1005,11 +1005,11 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         prompt_preview_truncated: request_metadata.prompt_preview_truncated,
         config_fingerprint: state.config_fingerprint.to_string(),
     };
-    if let (Some(cluster), Some(claim)) = (&state.cluster, &capture_claim) {
+    if let (Some(server_runtime), Some(claim)) = (&state.server_runtime, &capture_claim) {
         state
             .persistence
             .metadata
-            .begin_capture_claimed(new_capture, claim, cluster.lease_seconds())
+            .begin_capture_claimed(new_capture, claim, server_runtime.lease_seconds())
             .await?;
     } else {
         state
@@ -1018,9 +1018,10 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
             .begin_capture(new_capture)
             .await?;
     }
-    let mut capture_claim_lease = match (&state.cluster, &capture_claim) {
-        (Some(cluster), Some(claim)) => Some(
-            cluster.keep_capture_claim_alive(state.persistence.metadata.clone(), claim.clone()),
+    let mut capture_claim_lease = match (&state.server_runtime, &capture_claim) {
+        (Some(server_runtime), Some(claim)) => Some(
+            server_runtime
+                .keep_capture_claim_alive(state.persistence.metadata.clone(), claim.clone()),
         ),
         _ => None,
     };
@@ -1160,7 +1161,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
                     };
                     if let Err(error) = prepare_capture(
                         &trace_state.persistence,
-                        trace_state.cluster.as_deref(),
+                        trace_state.server_runtime.as_deref(),
                         capture_claim_for_task.as_ref(),
                         completion.clone(),
                     )
@@ -1319,7 +1320,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     };
     if let Err(error) = prepare_capture(
         &state.persistence,
-        state.cluster.as_deref(),
+        state.server_runtime.as_deref(),
         capture_claim.as_ref(),
         completion.clone(),
     )
@@ -1473,14 +1474,14 @@ async fn fail_capture(
 
 async fn prepare_capture(
     persistence: &Persistence,
-    cluster: Option<&ClusterRuntime>,
+    server_runtime: Option<&ServerRuntime>,
     claim: Option<&CaptureClaim>,
     completion: CaptureCompletion,
 ) -> Result<()> {
-    if let (Some(cluster), Some(claim)) = (cluster, claim) {
+    if let (Some(server_runtime), Some(claim)) = (server_runtime, claim) {
         persistence
             .metadata
-            .prepare_capture_completion_claimed(completion, claim, cluster.lease_seconds())
+            .prepare_capture_completion_claimed(completion, claim, server_runtime.lease_seconds())
             .await?;
     } else {
         persistence
@@ -1967,7 +1968,7 @@ mod tests {
             serial: Arc::new(Mutex::new(0)),
             hosted_admission: false,
             capture_tasks: CaptureTasks::default(),
-            cluster: None,
+            server_runtime: None,
         }
     }
 

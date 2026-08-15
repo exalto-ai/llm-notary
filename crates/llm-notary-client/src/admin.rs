@@ -49,7 +49,6 @@ use crate::{
         verify_trace_package_bytes,
     },
     cli::{DEFAULT_PUBLIC_ORIGIN, auth, notary, proxy, publish},
-    cluster::{ClusterRuntime, Lifecycle},
     config::AgentConfig,
     metadata::TerminalOperationResult,
     metadata::{
@@ -59,6 +58,7 @@ use crate::{
     metadata_store::{FinalizationClaim, MetadataStore, MetadataStoreError},
     notary_directory::{NotaryDirectoryRecord, NotaryKeyStatus, key_id},
     persistence::Persistence,
+    server_runtime::{Lifecycle, ServerRuntime},
     vault::Vault,
 };
 
@@ -87,7 +87,7 @@ pub(crate) struct AdminState {
     account_credentials: Arc<Mutex<()>>,
     pub(crate) work_available: Arc<Notify>,
     pub(crate) update_status: crate::update::SharedUpdateStatus,
-    cluster: Option<Arc<ClusterRuntime>>,
+    server_runtime: Option<Arc<ServerRuntime>>,
     server_vault_identity: Option<String>,
     dependency_probe: Arc<Mutex<DependencyProbeCache>>,
 }
@@ -96,10 +96,10 @@ impl AdminState {
     pub(crate) async fn new(
         persistence: Persistence,
         config: Arc<AgentConfig>,
-        cluster: Option<Arc<ClusterRuntime>>,
+        server_runtime: Option<Arc<ServerRuntime>>,
         server_vault_identity: Option<String>,
     ) -> Result<Self> {
-        if cluster.is_none() {
+        if server_runtime.is_none() {
             let interrupted = persistence
                 .metadata
                 .interrupt_running_operations(now_ms()?)
@@ -115,12 +115,12 @@ impl AdminState {
             pending_authorizations: Arc::new(Mutex::new(HashMap::new())),
             account_credentials: Arc::new(Mutex::new(())),
             work_available: Arc::new(Notify::new()),
-            update_status: if cluster.is_some() {
+            update_status: if server_runtime.is_some() {
                 crate::update::background_status_disabled("server_managed")
             } else {
                 crate::update::background_status()
             },
-            cluster,
+            server_runtime,
             server_vault_identity,
             dependency_probe: Arc::new(Mutex::new(None)),
         })
@@ -136,9 +136,10 @@ async fn probe_dependencies(state: &AdminState) -> std::result::Result<(), &'sta
     }
 
     let persistence = state.persistence.clone();
-    let cluster = state.cluster.clone();
+    let server_runtime = state.server_runtime.clone();
     let opened_vault = state.server_vault_identity.clone();
-    let require_shared_trust = state.cluster.is_some() && state.config.notary.endpoint.is_none();
+    let require_shared_trust =
+        state.server_runtime.is_some() && state.config.notary.endpoint.is_none();
     let result = match tokio::time::timeout(DEPENDENCY_PROBE_TIMEOUT, async move {
         persistence
             .metadata
@@ -150,13 +151,13 @@ async fn probe_dependencies(state: &AdminState) -> std::result::Result<(), &'sta
             .readiness()
             .await
             .map_err(|_| "artifact_not_ready")?;
-        if let Some(cluster) = cluster {
+        if let Some(server_runtime) = server_runtime {
             if opened_vault.is_none() {
                 return Err("vault_not_ready");
             }
             if !persistence
                 .metadata
-                .replica_ready(cluster.identity())
+                .replica_ready(server_runtime.identity())
                 .await
                 .map_err(|_| "replica_lease_not_ready")?
             {
@@ -351,9 +352,9 @@ async fn health() -> Json<HealthResponse> {
 #[utoipa::path(get, path = "/readyz", summary = "Check service readiness", description = "Runs bounded metadata, selected artifact-writer, and shared trust dependency probes. Dependency outages or schema mismatches make readiness fail while /healthz remains local liveness.", responses((status = 200, body = ReadinessResponse), (status = 503, body = ErrorEnvelope)), tag = "local-admin")]
 async fn readiness(State(state): State<AdminState>) -> Result<Json<ReadinessResponse>, ApiError> {
     if state
-        .cluster
+        .server_runtime
         .as_ref()
-        .is_some_and(|cluster| cluster.lifecycle() != Lifecycle::Ready)
+        .is_some_and(|server_runtime| server_runtime.lifecycle() != Lifecycle::Ready)
     {
         return Err(ApiError::service_unavailable("replica_not_ready"));
     }
@@ -395,7 +396,7 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
         Ok(expires_at) => expires_at,
         Err(_) => return ApiError::internal("clock_error").into_response(),
     };
-    if state.cluster.is_some() {
+    if state.server_runtime.is_some() {
         let created_at = expires_at - SESSION_MAX_AGE_SECONDS * 1_000;
         if state
             .persistence
@@ -423,7 +424,7 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
     }
     let cookie = format!(
         "{SESSION_COOKIE}={session}; {}HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_MAX_AGE_SECONDS}",
-        if state.cluster.is_some() {
+        if state.server_runtime.is_some() {
             "Secure; "
         } else {
             ""
@@ -440,7 +441,7 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
 #[utoipa::path(delete, path = "/v1/session", summary = "End a dashboard session", description = "Deletes the current browser session and expires its local cookie.", responses((status = 204, description = "Dashboard session ended"), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn end_session(State(state): State<AdminState>, request: Request) -> Response {
     if let Some(session) = session_from_headers(request.headers()) {
-        if state.cluster.is_some() {
+        if state.server_runtime.is_some() {
             if state
                 .persistence
                 .metadata
@@ -478,7 +479,7 @@ async fn require_auth(State(state): State<AdminState>, request: Request, next: N
         == Some("dashboard")
     {
         match (session_from_headers(request.headers()), now_ms()) {
-            (Some(value), Ok(now)) if state.cluster.is_some() => match state
+            (Some(value), Ok(now)) if state.server_runtime.is_some() => match state
                 .persistence
                 .metadata
                 .dashboard_session_valid(&session_hash(value), now)
@@ -528,24 +529,24 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
     Ok(Json(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),
         build_id: crate::cli::BUILD_ID.into(),
-        runtime_profile: if state.cluster.is_some() {
+        runtime_profile: if state.server_runtime.is_some() {
             "server"
         } else {
             "local"
         }
         .into(),
         instance_id: state
-            .cluster
+            .server_runtime
             .as_ref()
-            .map(|cluster| cluster.identity().instance_id().to_owned()),
+            .map(|server_runtime| server_runtime.identity().instance_id().to_owned()),
         incarnation_id: state
-            .cluster
+            .server_runtime
             .as_ref()
-            .map(|cluster| cluster.identity().incarnation_id().to_owned()),
+            .map(|server_runtime| server_runtime.identity().incarnation_id().to_owned()),
         lifecycle: state
-            .cluster
+            .server_runtime
             .as_ref()
-            .map(|cluster| format!("{:?}", cluster.lifecycle()).to_ascii_lowercase())
+            .map(|server_runtime| format!("{:?}", server_runtime.lifecycle()).to_ascii_lowercase())
             .unwrap_or_else(|| "ready".into()),
         proxy_listener: state.config.proxy.listen.to_string(),
         admin_listener: state.config.admin.listen.to_string(),
@@ -565,7 +566,7 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
         metadata_status: "ready".into(),
         artifact_backend: state.persistence.artifacts.backend_name().into(),
         artifact_status: "ready".into(),
-        vault: if state.cluster.is_some() {
+        vault: if state.server_runtime.is_some() {
             "shared server key"
         } else {
             Vault::status().unwrap_or("unavailable")
@@ -592,7 +593,7 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
 
 #[utoipa::path(get, path = "/v1/notaries", summary = "Get configured notary trust", description = "Returns a safe read-only projection of the local or server-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.", responses((status = 200, body = NotariesResponse), (status = 401, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn notaries(State(state): State<AdminState>) -> Result<Json<NotariesResponse>, ApiError> {
-    let shared = if state.cluster.is_some() && state.config.notary.endpoint.is_none() {
+    let shared = if state.server_runtime.is_some() && state.config.notary.endpoint.is_none() {
         state
             .persistence
             .metadata
@@ -1021,7 +1022,7 @@ async fn verify_trace(
         .notary_public_key()
         .map_err(|_| ApiError::internal("notary_configuration_invalid"))?;
     let shared_trust: Option<SharedNotaryTrust> =
-        if configured_key.is_none() && state.cluster.is_some() {
+        if configured_key.is_none() && state.server_runtime.is_some() {
             state
                 .persistence
                 .metadata
@@ -1254,7 +1255,7 @@ async fn poll_account_connection(
     State(state): State<AdminState>,
     Path(request_id): Path<String>,
 ) -> Result<Json<AccountConnectionResponse>, ApiError> {
-    if state.cluster.is_some() {
+    if state.server_runtime.is_some() {
         return Err(ApiError::api_key_mode());
     }
     if request_id.is_empty()
@@ -1345,7 +1346,7 @@ async fn share_capture(
     validate_id(&capture_id, "cap-")?;
     let bytes = finalized_bytes(&state.persistence, &capture_id).await?;
     let _credentials = state.account_credentials.lock().await;
-    let shared_trust = if state.cluster.is_some() && state.config.notary.endpoint.is_none() {
+    let shared_trust = if state.server_runtime.is_some() && state.config.notary.endpoint.is_none() {
         let (directory, source) = proxy::fetch_notary_directory_from(
             &auth::configured_api_origin()
                 .map_err(|_| ApiError::internal("share_configuration_invalid"))?,
@@ -1470,7 +1471,7 @@ pub(crate) fn spawn_finalization_worker(
     config: Arc<AgentConfig>,
     vault: Arc<Vault>,
     work_available: Arc<Notify>,
-    cluster: Option<Arc<ClusterRuntime>>,
+    server_runtime: Option<Arc<ServerRuntime>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<Result<()>> {
     tokio::spawn(async move {
@@ -1478,9 +1479,9 @@ pub(crate) fn spawn_finalization_worker(
             if *shutdown.borrow() {
                 return Ok(());
             }
-            if cluster
+            if server_runtime
                 .as_ref()
-                .is_some_and(|cluster| cluster.lifecycle() == Lifecycle::Draining)
+                .is_some_and(|server_runtime| server_runtime.lifecycle() == Lifecycle::Draining)
             {
                 tokio::select! {
                     result = shutdown.changed() => {
@@ -1492,7 +1493,7 @@ pub(crate) fn spawn_finalization_worker(
                 }
                 continue;
             }
-            if cluster.is_some() {
+            if server_runtime.is_some() {
                 let mut reaper_unavailable = false;
                 loop {
                     match persistence
@@ -1519,13 +1520,13 @@ pub(crate) fn spawn_finalization_worker(
                     continue;
                 }
             }
-            let (operation, claim) = match &cluster {
-                Some(cluster) => match persistence
+            let (operation, claim) = match &server_runtime {
+                Some(server_runtime) => match persistence
                     .metadata
-                    .claim_next_finalization_clustered(
-                        cluster.identity(),
-                        &cluster.new_fence_token(),
-                        cluster.lease_seconds(),
+                    .claim_next_finalization_claimed(
+                        server_runtime.identity(),
+                        &server_runtime.new_fence_token(),
+                        server_runtime.lease_seconds(),
                     )
                     .await
                 {
@@ -1575,7 +1576,7 @@ pub(crate) fn spawn_finalization_worker(
                 &vault,
                 &operation,
                 claim.as_ref(),
-                cluster.as_deref(),
+                server_runtime.as_deref(),
             )
             .await;
             let now = now_ms()?;
@@ -1687,12 +1688,13 @@ async fn finalize_operation(
     vault: &Arc<Vault>,
     operation: &Operation,
     claim: Option<&FinalizationClaim>,
-    cluster: Option<&ClusterRuntime>,
+    server_runtime: Option<&ServerRuntime>,
 ) -> Result<ArtifactRecord> {
-    let _claim_lease = match (cluster, claim) {
-        (Some(cluster), Some(claim)) => {
-            Some(cluster.keep_finalization_claim_alive(persistence.metadata.clone(), claim.clone()))
-        }
+    let _claim_lease = match (server_runtime, claim) {
+        (Some(server_runtime), Some(claim)) => Some(
+            server_runtime
+                .keep_finalization_claim_alive(persistence.metadata.clone(), claim.clone()),
+        ),
         _ => None,
     };
     let last_proof_update = AtomicU64::new(0);
@@ -1700,7 +1702,7 @@ async fn finalize_operation(
     let progress_metadata = persistence.metadata.clone();
     let progress_operation_id = operation.operation_id.clone();
     let progress_claim = claim.cloned();
-    let progress_lease_seconds = cluster.map(ClusterRuntime::lease_seconds);
+    let progress_lease_seconds = server_runtime.map(ServerRuntime::lease_seconds);
     let progress_recorder = tokio::spawn(async move {
         while let Some((progress, now)) = progress_receiver.recv().await {
             let result = match (progress_claim.as_ref(), progress_lease_seconds, progress) {
@@ -1725,7 +1727,7 @@ async fn finalize_operation(
                         .await
                 }
                 (Some(_), None, _) => Err(MetadataStoreError::InvalidInput(
-                    "cluster_claim_missing_lease",
+                    "server_claim_missing_lease",
                 )),
             };
             if let Err(error) = result {
@@ -1838,7 +1840,7 @@ async fn finalize_operation(
             (key, endpoint)
         }
         (None, None) => {
-            let (key, record) = if cluster.is_some() {
+            let (key, record) = if server_runtime.is_some() {
                 let (directory, source) =
                     proxy::fetch_notary_directory_from(&auth::configured_api_origin()?).await?;
                 let trust = persistence

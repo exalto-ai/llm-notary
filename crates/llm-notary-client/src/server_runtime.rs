@@ -47,12 +47,12 @@ pub(crate) enum Lifecycle {
 }
 
 #[derive(Debug)]
-pub(crate) struct ClusterRuntime {
+pub(crate) struct ServerRuntime {
     identity: ReplicaIdentity,
     lifecycle: AtomicU8,
 }
 
-impl ClusterRuntime {
+impl ServerRuntime {
     pub(crate) fn from_environment() -> MetadataResult<Self> {
         let instance_id = std::env::var(SERVER_INSTANCE_ID_ENV)
             .ok()

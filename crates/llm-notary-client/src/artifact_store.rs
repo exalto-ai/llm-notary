@@ -154,7 +154,7 @@ impl ArtifactRecord {
         })
     }
 
-    /// Binds this record to one cluster artifact-publication claim.
+    /// Binds this record to one server artifact-publication claim.
     ///
     /// The stored value is always the canonical hyphenated lowercase UUID.
     /// Reattaching the same value is idempotent; replacing it is rejected.

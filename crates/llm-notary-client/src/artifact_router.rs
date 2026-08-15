@@ -58,7 +58,7 @@ impl RoutedArtifactStore {
         }
     }
 
-    /// Publishes cluster-owned bytes under a claim-scoped physical S3 key.
+    /// Publishes server-owned bytes under a claim-scoped physical S3 key.
     /// The logical artifact key remains unchanged in metadata.
     pub(crate) async fn put_scoped(
         &self,
@@ -68,7 +68,7 @@ impl RoutedArtifactStore {
         max_bytes: u64,
     ) -> ArtifactResult<ArtifactRecord> {
         if self.writer != ArtifactStorageBackend::S3 {
-            return Err(unconfigured("cluster_requires_s3"));
+            return Err(unconfigured("server_requires_s3"));
         }
         self.s3
             .as_ref()

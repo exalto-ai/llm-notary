@@ -208,7 +208,7 @@ pub struct MetadataCounts {
     pub active_operations: u64,
 }
 
-/// One validated, cluster-wide notary directory revision plus every retained
+/// One validated, server-wide notary directory revision plus every retained
 /// historical key needed to verify older captures.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

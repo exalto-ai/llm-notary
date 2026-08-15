@@ -37,8 +37,8 @@ const LATEST_SCHEMA_VERSION: i64 = 3;
 const INITIAL_MIGRATION: &str = include_str!("../migrations-postgres-daemon/0001_initial.sql");
 const ARTIFACT_EXPECTATION_MIGRATION: &str =
     include_str!("../migrations-postgres-daemon/0002_capture_artifact_expectation.sql");
-const CLUSTER_COORDINATION_MIGRATION: &str =
-    include_str!("../migrations-postgres-daemon/0003_cluster_coordination.sql");
+const SERVER_COORDINATION_MIGRATION: &str =
+    include_str!("../migrations-postgres-daemon/0003_server_coordination.sql");
 const MIGRATIONS: [(i64, &str, &str); 3] = [
     (1, "initial daemon metadata schema", INITIAL_MIGRATION),
     (
@@ -48,8 +48,8 @@ const MIGRATIONS: [(i64, &str, &str); 3] = [
     ),
     (
         3,
-        "cluster replica leases fencing and shared state",
-        CLUSTER_COORDINATION_MIGRATION,
+        "server replica leases, fencing, and shared state",
+        SERVER_COORDINATION_MIGRATION,
     ),
 ];
 
@@ -58,7 +58,7 @@ const MIGRATIONS: [(i64, &str, &str); 3] = [
 pub(crate) struct PostgresMetadataStore {
     pool: PgPool,
     full_text_search: bool,
-    clustered: bool,
+    server_mode: bool,
 }
 
 impl PostgresMetadataStore {
@@ -90,7 +90,7 @@ impl PostgresMetadataStore {
         acquire_timeout: Duration,
         ssl_mode: PostgresSslMode,
         full_text_search: bool,
-        clustered: bool,
+        server_mode: bool,
     ) -> MetadataResult<Self> {
         if max_connections == 0 {
             return Err(MetadataStoreError::InvalidInput(
@@ -108,7 +108,7 @@ impl PostgresMetadataStore {
                 .connect_with(options)
                 .await
                 .map_err(|error| db(anyhow!(error).context("opening daemon PostgreSQL pool")))?;
-            Self::from_pool_mode(pool, full_text_search, clustered).await
+            Self::from_pool_mode(pool, full_text_search, server_mode).await
         })
         .await
         .map_err(|_| {
@@ -127,19 +127,19 @@ impl PostgresMetadataStore {
     async fn from_pool_mode(
         pool: PgPool,
         full_text_search: bool,
-        clustered: bool,
+        server_mode: bool,
     ) -> MetadataResult<Self> {
         require_current_schema(&pool).await?;
-        require_runtime_profile(&pool, clustered).await?;
+        require_runtime_profile(&pool, server_mode).await?;
         Ok(Self {
             pool,
             full_text_search,
-            clustered,
+            server_mode,
         })
     }
 
     /// Opens a runtime pool which rejects every legacy unfenced mutation.
-    pub async fn connect_clustered(
+    pub(crate) async fn connect_server(
         database_url: &str,
         max_connections: u32,
         connect_timeout: Duration,
@@ -160,8 +160,8 @@ impl PostgresMetadataStore {
     }
 
     fn require_local_mutation(&self) -> MetadataResult<()> {
-        if self.clustered {
-            Err(MetadataStoreError::InvalidInput("cluster_requires_claim"))
+        if self.server_mode {
+            Err(MetadataStoreError::InvalidInput("server_requires_claim"))
         } else {
             Ok(())
         }
@@ -303,10 +303,10 @@ pub(crate) async fn migrate_database(
     Ok(())
 }
 
-/// Pins the operator-provided, non-secret cluster compatibility identity after
+/// Pins the operator-provided, non-secret server compatibility identity after
 /// migrations. Exact replay is idempotent; a different profile never replaces
 /// the installed identity.
-pub async fn configure_cluster_compatibility(
+pub(crate) async fn configure_server_compatibility(
     database_url: &str,
     ssl_mode: PostgresSslMode,
     connect_timeout: Duration,
@@ -317,7 +317,7 @@ pub async fn configure_cluster_compatibility(
             && compatibility_sha256
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
-        "cluster compatibility identity is invalid"
+        "server compatibility identity is invalid"
     );
     let options = database_url
         .parse::<PgConnectOptions>()
@@ -326,8 +326,8 @@ pub async fn configure_cluster_compatibility(
     let mut connection =
         tokio::time::timeout(connect_timeout, PgConnection::connect_with(&options))
             .await
-            .context("opening cluster compatibility connection timed out")?
-            .context("opening cluster compatibility connection")?;
+            .context("opening server compatibility connection timed out")?
+            .context("opening server compatibility connection")?;
     let active_legacy_work: bool = sqlx::query_scalar(
         "SELECT EXISTS(
              SELECT 1 FROM llm_notary_daemon.captures
@@ -342,10 +342,10 @@ pub async fn configure_cluster_compatibility(
     .context("checking for unfenced active daemon work")?;
     ensure!(
         !active_legacy_work,
-        "cluster activation requires a quiesced daemon with no unfenced active work"
+        "server activation requires a quiesced daemon with no unfenced active work"
     );
     sqlx::query(
-        "INSERT INTO llm_notary_daemon.cluster_invariants
+        "INSERT INTO llm_notary_daemon.server_invariants
              (singleton, compatibility_sha256)
          VALUES (TRUE, $1)
          ON CONFLICT (singleton) DO NOTHING",
@@ -353,18 +353,18 @@ pub async fn configure_cluster_compatibility(
     .bind(compatibility_sha256)
     .execute(&mut connection)
     .await
-    .context("pinning cluster compatibility identity")?;
+    .context("pinning server compatibility identity")?;
     let configured: String = sqlx::query_scalar(
         "SELECT compatibility_sha256
-         FROM llm_notary_daemon.cluster_invariants
+         FROM llm_notary_daemon.server_invariants
          WHERE singleton = TRUE",
     )
     .fetch_one(&mut connection)
     .await
-    .context("reading cluster compatibility identity")?;
+    .context("reading server compatibility identity")?;
     ensure!(
         configured == compatibility_sha256,
-        "cluster compatibility identity differs from the installed profile"
+        "server compatibility identity differs from the installed profile"
     );
     Ok(())
 }
@@ -417,18 +417,18 @@ async fn require_current_schema(pool: &PgPool) -> MetadataResult<()> {
     Ok(())
 }
 
-async fn require_runtime_profile(pool: &PgPool, clustered: bool) -> MetadataResult<()> {
-    let cluster_pinned: bool = sqlx::query_scalar(
+async fn require_runtime_profile(pool: &PgPool, server_mode: bool) -> MetadataResult<()> {
+    let server_pinned: bool = sqlx::query_scalar(
         "SELECT EXISTS(
-             SELECT 1 FROM llm_notary_daemon.cluster_invariants WHERE singleton=TRUE
+             SELECT 1 FROM llm_notary_daemon.server_invariants WHERE singleton=TRUE
          )",
     )
     .fetch_one(pool)
     .await
     .map_err(|error| db(anyhow!(error).context("checking daemon runtime profile")))?;
-    match (clustered, cluster_pinned) {
-        (false, true) => Err(MetadataStoreError::InvalidInput("cluster_profile_required")),
-        (true, false) => Err(MetadataStoreError::InvalidInput("cluster_not_initialized")),
+    match (server_mode, server_pinned) {
+        (false, true) => Err(MetadataStoreError::InvalidInput("server_profile_required")),
+        (true, false) => Err(MetadataStoreError::InvalidInput("server_not_initialized")),
         _ => Ok(()),
     }
 }
@@ -730,7 +730,7 @@ impl MetadataStore for PostgresMetadataStore {
 
     async fn readiness(&self) -> MetadataResult<()> {
         require_current_schema(&self.pool).await?;
-        require_runtime_profile(&self.pool, self.clustered).await
+        require_runtime_profile(&self.pool, self.server_mode).await
     }
 
     async fn begin_capture(&self, capture: NewCapture) -> MetadataResult<()> {
@@ -2067,20 +2067,20 @@ impl MetadataStore for PostgresMetadataStore {
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
             return Err(MetadataStoreError::InvalidInput(
-                "invalid_cluster_compatibility",
+                "invalid_server_compatibility",
             ));
         }
         let configured = sqlx::query_scalar::<_, String>(
             "SELECT compatibility_sha256
-             FROM llm_notary_daemon.cluster_invariants
+             FROM llm_notary_daemon.server_invariants
              WHERE singleton = TRUE",
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|error| db(anyhow!(error).context("checking cluster compatibility")))?;
+        .map_err(|error| db(anyhow!(error).context("checking server compatibility")))?;
         if configured.as_deref() != Some(compatibility_sha256) {
             return Err(MetadataStoreError::InvalidInput(
-                "cluster_compatibility_mismatch",
+                "server_compatibility_mismatch",
             ));
         }
         let has_filesystem_artifacts: bool = sqlx::query_scalar(
@@ -2091,10 +2091,10 @@ impl MetadataStore for PostgresMetadataStore {
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(|error| db(anyhow!(error).context("checking cluster artifact compatibility")))?;
+        .map_err(|error| db(anyhow!(error).context("checking server artifact compatibility")))?;
         if has_filesystem_artifacts {
             return Err(MetadataStoreError::InvalidInput(
-                "cluster_filesystem_artifacts_present",
+                "server_filesystem_artifacts_present",
             ));
         }
         let lease = lease_i32(lease_seconds)?;
@@ -2116,7 +2116,7 @@ impl MetadataStore for PostgresMetadataStore {
         .bind(lease)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|error| db(anyhow!(error).context("registering cluster replica")))?;
+        .map_err(|error| db(anyhow!(error).context("registering server replica")))?;
         if row.is_none() {
             return Err(MetadataStoreError::InvalidInput(
                 "live_instance_id_collision",
@@ -2148,7 +2148,7 @@ impl MetadataStore for PostgresMetadataStore {
         .bind(lease)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| db(anyhow!(error).context("heartbeating cluster replica")))?
+        .map_err(|error| db(anyhow!(error).context("heartbeating server replica")))?
         .rows_affected();
         if changed != 1 {
             return Err(MetadataStoreError::Fenced);
@@ -2183,7 +2183,7 @@ impl MetadataStore for PostgresMetadataStore {
         .bind(identity.incarnation_id())
         .execute(&self.pool)
         .await
-        .map_err(|error| db(anyhow!(error).context("releasing cluster replica")))?;
+        .map_err(|error| db(anyhow!(error).context("releasing server replica")))?;
         Ok(())
     }
 
@@ -2529,7 +2529,7 @@ impl MetadataStore for PostgresMetadataStore {
         }))
     }
 
-    async fn claim_next_finalization_clustered(
+    async fn claim_next_finalization_claimed(
         &self,
         identity: &ReplicaIdentity,
         fence_token: &str,
@@ -2566,7 +2566,7 @@ impl MetadataStore for PostgresMetadataStore {
         .bind(lease)
         .fetch_optional(&mut *transaction)
         .await
-        .map_err(|error| db(anyhow!(error).context("claiming clustered finalization")))?;
+        .map_err(|error| db(anyhow!(error).context("claiming server finalization")))?;
         let Some(row) = row else {
             return Ok(None);
         };
@@ -3095,9 +3095,9 @@ fn push_event_filters<'a>(query: &mut QueryBuilder<'a, Postgres>, filters: &'a E
 
 fn lease_i32(value: u64) -> MetadataResult<i32> {
     if !(1..=300).contains(&value) {
-        return Err(MetadataStoreError::InvalidInput("invalid_cluster_lease"));
+        return Err(MetadataStoreError::InvalidInput("invalid_server_lease"));
     }
-    i32::try_from(value).map_err(|_| MetadataStoreError::InvalidInput("invalid_cluster_lease"))
+    i32::try_from(value).map_err(|_| MetadataStoreError::InvalidInput("invalid_server_lease"))
 }
 
 async fn lock_live_replica(
@@ -3114,7 +3114,7 @@ async fn lock_live_replica(
     .bind(identity.incarnation_id())
     .fetch_optional(&mut **transaction)
     .await
-    .map_err(|error| db(anyhow!(error).context("locking live cluster replica")))?;
+    .map_err(|error| db(anyhow!(error).context("locking live server replica")))?;
     if live.is_some() {
         Ok(())
     } else {
@@ -3158,7 +3158,7 @@ fn completion_from_row(row: &PgRow) -> anyhow::Result<Option<CaptureCompletion>>
 
 #[cfg(test)]
 mod tests {
-    const TEST_CLUSTER_COMPATIBILITY: &str =
+    const TEST_SERVER_COMPATIBILITY: &str =
         "0000000000000000000000000000000000000000000000000000000000000000";
 
     use std::{
@@ -3193,7 +3193,7 @@ mod tests {
 
     use super::{
         INITIAL_MIGRATION, JOURNAL, MIGRATION_LOCK_NAMESPACE, PostgresMetadataStore,
-        configure_cluster_compatibility, migrate_database,
+        configure_server_compatibility, migrate_database,
     };
 
     struct TestPostgres {
@@ -3300,9 +3300,9 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL 17 container"]
-    async fn cluster_replica_fencing_and_hashed_sessions() {
+    async fn server_replica_fencing_and_hashed_sessions() {
         let server = TestPostgres::start().await;
-        let url = server.create_database("daemon_cluster").await;
+        let url = server.create_database("daemon_server").await;
         migrate_database(
             &url,
             PostgresSslMode::Disable,
@@ -3311,15 +3311,15 @@ mod tests {
         )
         .await
         .unwrap();
-        configure_cluster_compatibility(
+        configure_server_compatibility(
             &url,
             PostgresSslMode::Disable,
             Duration::from_secs(5),
-            TEST_CLUSTER_COMPATIBILITY,
+            TEST_SERVER_COMPATIBILITY,
         )
         .await
         .unwrap();
-        let store = PostgresMetadataStore::connect_clustered(
+        let store = PostgresMetadataStore::connect_server(
             &url,
             8,
             Duration::from_secs(5),
@@ -3332,7 +3332,7 @@ mod tests {
         let first = ReplicaIdentity::new("daemon-a").unwrap();
         let collision = ReplicaIdentity::new("daemon-a").unwrap();
         store
-            .register_replica(&first, TEST_CLUSTER_COMPATIBILITY, 20)
+            .register_replica(&first, TEST_SERVER_COMPATIBILITY, 20)
             .await
             .unwrap();
         let incompatible = ReplicaIdentity::new("daemon-incompatible").unwrap();
@@ -3341,19 +3341,19 @@ mod tests {
                 .register_replica(&incompatible, &"1".repeat(64), 20)
                 .await,
             Err(MetadataStoreError::InvalidInput(
-                "cluster_compatibility_mismatch"
+                "server_compatibility_mismatch"
             ))
         ));
         assert!(matches!(
             store
-                .register_replica(&collision, TEST_CLUSTER_COMPATIBILITY, 20)
+                .register_replica(&collision, TEST_SERVER_COMPATIBILITY, 20)
                 .await,
             Err(MetadataStoreError::InvalidInput(
                 "live_instance_id_collision"
             ))
         ));
 
-        let capture_id = "cap-cluster-fencing";
+        let capture_id = "cap-server-fencing";
         let original = CaptureClaim::new(capture_id, first.clone());
         store
             .begin_capture_claimed(
@@ -3379,7 +3379,7 @@ mod tests {
         sqlx::query("UPDATE llm_notary_daemon.replicas SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE instance_id=$1")
             .bind(first.instance_id()).execute(&store.pool).await.unwrap();
         store
-            .register_replica(&collision, TEST_CLUSTER_COMPATIBILITY, 20)
+            .register_replica(&collision, TEST_SERVER_COMPATIBILITY, 20)
             .await
             .unwrap();
         let recovered = store
@@ -3436,7 +3436,7 @@ mod tests {
             .unwrap();
         let second = ReplicaIdentity::new("daemon-b").unwrap();
         store
-            .register_replica(&second, TEST_CLUSTER_COMPATIBILITY, 20)
+            .register_replica(&second, TEST_SERVER_COMPATIBILITY, 20)
             .await
             .unwrap();
         let barrier = Arc::new(Barrier::new(2));
@@ -3447,7 +3447,7 @@ mod tests {
             tokio::spawn(async move {
                 barrier.wait().await;
                 store
-                    .claim_next_finalization_clustered(
+                    .claim_next_finalization_claimed(
                         &identity,
                         &uuid::Uuid::new_v4().to_string(),
                         20,
@@ -3462,7 +3462,7 @@ mod tests {
             tokio::spawn(async move {
                 barrier.wait().await;
                 store
-                    .claim_next_finalization_clustered(
+                    .claim_next_finalization_claimed(
                         &identity,
                         &uuid::Uuid::new_v4().to_string(),
                         20,
@@ -3548,7 +3548,7 @@ mod tests {
             collision.clone()
         };
         let winner = store
-            .claim_next_finalization_clustered(&retry_owner, &uuid::Uuid::new_v4().to_string(), 20)
+            .claim_next_finalization_claimed(&retry_owner, &uuid::Uuid::new_v4().to_string(), 20)
             .await
             .unwrap()
             .unwrap();
