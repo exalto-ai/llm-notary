@@ -157,7 +157,7 @@ PRAGMA wal_checkpoint(TRUNCATE);
 SQL
 
 echo "starting the daemon and verifying recovery plus REST-backed CLI behavior"
-"${compose[@]}" up --detach daemon
+"${compose[@]}" up --detach --no-deps daemon
 wait_for_daemon
 
 recovered_status=$(daemon_cli status)
@@ -289,7 +289,7 @@ if [[ $profile == full ]]; then
   "${compose[@]}" stop daemon
   "${compose[@]}" rm --force daemon
   export DAEMON_E2E_FINALIZATION_PAUSE_MS=30000
-  "${compose[@]}" up --detach daemon
+  "${compose[@]}" up --detach --no-deps daemon
   wait_for_daemon
 
   crash_response=$("${compose[@]}" exec -T daemon \
@@ -329,7 +329,7 @@ if [[ $profile == full ]]; then
 
   unset DAEMON_E2E_FINALIZATION_PAUSE_MS
   "${compose[@]}" rm --force daemon
-  "${compose[@]}" up --detach daemon
+  "${compose[@]}" up --detach --no-deps daemon
   wait_for_daemon
 
   interrupted=$(daemon_cli operations show "$crash_operation_id")
@@ -373,7 +373,7 @@ fi
 echo "removing and recreating the app container with the same durable volume"
 "${compose[@]}" stop daemon
 "${compose[@]}" rm --force daemon
-"${compose[@]}" up --detach daemon
+"${compose[@]}" up --detach --no-deps daemon
 wait_for_daemon
 
 restart_health=$("${compose[@]}" exec -T daemon \
