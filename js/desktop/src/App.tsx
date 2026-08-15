@@ -772,7 +772,7 @@ function SetupTrustDiagram() {
         </div>
       </section>
     </div>
-    <figcaption><LockKeyhole /> Traffic stays encrypted beyond this Mac. Plaintext and private captures stay local.</figcaption>
+    <figcaption><LockKeyhole /> Traffic is encrypted in transit. The remote notary never sees plaintext; private captures stay on this Mac.</figcaption>
   </figure>;
 }
 
@@ -882,7 +882,7 @@ function OnboardingAside({ step, state, provider }: {
     <h2>{content.title}</h2>
     <p>{content.copy}</p>
     {step === 'welcome' ? <dl className="aside-trust-facts">
-      <div><dt>Remote notary</dt><dd>Provider hostname, encrypted traffic, sizes, timing, and protocol metadata</dd></div>
+      <div><dt>Remote notary</dt><dd>Provider hostname, encrypted traffic, sizes, timing, and protocol metadata—never plaintext</dd></div>
       <div><dt>This Mac</dt><dd>Provider credentials, prompts, responses, and private captures</dd></div>
       <div><dt>Shared later</dt><dd>Only the evidence you explicitly finalize and choose to share</dd></div>
     </dl> : <div className="aside-route">
