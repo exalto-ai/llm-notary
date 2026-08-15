@@ -51,6 +51,8 @@ repository_dir=$(cd -- "$script_dir/.." && pwd)
 compose_file="$repository_dir/compose.daemon-e2e.yml"
 project_name="llm-notary-daemon-e2e-$$"
 compose=(docker compose --project-name "$project_name" --file "$compose_file")
+postgres_migration_files=("$repository_dir"/crates/llm-notary-client/migrations-postgres-daemon/*.sql)
+expected_postgres_migration_count=${#postgres_migration_files[@]}
 
 cleanup() {
   result=$?
@@ -200,8 +202,8 @@ prepare_postgres() {
   local migration_count
   migration_count=$(postgres_psql --tuples-only --no-align \
     --command 'SELECT COUNT(*) FROM llm_notary_daemon.schema_migrations;')
-  if [[ $migration_count != 1 ]]; then
-    echo "unexpected PostgreSQL daemon migration count: $migration_count" >&2
+  if [[ $migration_count != "$expected_postgres_migration_count" ]]; then
+    echo "unexpected PostgreSQL daemon migration count: $migration_count (expected $expected_postgres_migration_count)" >&2
     return 1
   fi
 
@@ -715,8 +717,8 @@ else
   fi
   migration_count=$(postgres_psql --tuples-only --no-align \
     --command 'SELECT COUNT(*) FROM llm_notary_daemon.schema_migrations;')
-  if [[ $migration_count != 1 ]]; then
-    echo "PostgreSQL migration journal changed unexpectedly: $migration_count" >&2
+  if [[ $migration_count != "$expected_postgres_migration_count" ]]; then
+    echo "PostgreSQL migration journal changed unexpectedly: $migration_count (expected $expected_postgres_migration_count)" >&2
     exit 1
   fi
 fi
