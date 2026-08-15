@@ -78,14 +78,16 @@ never stopped or replaced by this flow.
 ## Private capture protection
 
 All `.llmcapture` files remain encrypted before they are written. First run
-offers two choices:
+selects **Protect private captures with Keychain** by default. macOS protects
+the random vault key, and there is no separate password to remember.
 
-- **Protect private captures with Keychain** is the recommended default. The
-  app unlocks the vault through the operating system credential store.
-- **No device protection** is an explicit convenience choice. The capture is
-  still encrypted on disk, but the same local user account has everything
-  needed to open it, so this does not protect against access to that account's
-  application data.
+Advanced options allow a passphrase instead. The passphrase is required again
+when the app opens and is retained only for that app session. It is never
+written to the vault configuration. New passphrase vaults include an encrypted
+key check so the app can reject an incorrect passphrase before starting the
+local service. An empty passphrase is allowed as an explicit convenience
+choice: captures are still encrypted on disk, but this provides no meaningful
+protection to anyone who can access that account's application data.
 
 The app unlocks the vault before launching the daemon and sends the already
 unlocked key through the child's anonymous standard-input pipe. The key is not
@@ -93,10 +95,10 @@ placed in command-line arguments, environment-variable values, logs, or files.
 An environment flag only tells the supervised child to read the key from the
 pipe. Temporary key buffers are cleared when dropped.
 
-An existing passphrase vault created outside the desktop app is detected but
-cannot yet be unlocked in the desktop UI. Vault migration also remains a
-future workflow; the current settings screen explains this instead of silently
-changing protection for existing captures.
+An existing passphrase vault created outside the desktop app can be unlocked in
+the same screen. Vault migration remains a future workflow; the current
+settings screen explains this instead of silently changing protection for
+existing captures.
 
 ## Develop from source
 
@@ -166,6 +168,7 @@ npm --prefix js/desktop run tauri:build:debug
 
 The native lifecycle should also be exercised on clean config, data, and vault
 directories: confirm the no-setup state, complete all four onboarding stages,
-start the service, use the embedded capture workspace, restart it, stop it,
-start it again, and confirm that quitting the desktop app terminates its managed
-child.
+exercise both Keychain and advanced passphrase setup (including the empty
+passphrase warning), start the service, use the embedded capture workspace,
+restart it, stop it, start it again, relaunch and unlock a passphrase vault, and
+confirm that quitting the desktop app terminates its managed child.

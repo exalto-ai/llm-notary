@@ -16,6 +16,7 @@ export type DesktopState = {
   agent_configured: boolean;
   onboarding_complete: boolean;
   vault_mode: string;
+  vault_locked: boolean;
   version: string | null;
   app_build_id: string;
   daemon_build_id: string | null;
@@ -57,6 +58,7 @@ function fallbackState(overrides: Partial<DesktopState> = {}): DesktopState {
     agent_configured: true,
     onboarding_complete: true,
     vault_mode: 'keychain',
+    vault_locked: false,
     version: null,
     app_build_id: 'dev',
     daemon_build_id: null,
@@ -77,6 +79,14 @@ function forcedState(): DesktopState | null {
       agent_configured: false,
       onboarding_complete: false,
       vault_mode: 'not configured',
+      vault_locked: false,
+    });
+  }
+  if (screen === 'unlock') {
+    return fallbackState({
+      running: false,
+      vault_mode: 'passphrase',
+      vault_locked: true,
     });
   }
   if (screen === 'offline') {
@@ -103,6 +113,7 @@ export async function getDesktopState(): Promise<DesktopState> {
       agent_configured: true,
       onboarding_complete: true,
       vault_mode: status.vault === 'OS vault' ? 'keychain' : 'passphrase',
+      vault_locked: false,
       version: status.version,
       app_build_id: 'dev',
       daemon_build_id: status.build_id ?? null,
@@ -117,9 +128,14 @@ export async function getDesktopState(): Promise<DesktopState> {
   }
 }
 
-export async function configureVault(mode: 'keychain' | 'convenience'): Promise<void> {
+export async function configureVault(mode: 'keychain' | 'passphrase', passphrase?: string): Promise<void> {
   if (!isTauri()) return;
-  await invoke('configure_vault', { mode });
+  await invoke('configure_vault', { mode, passphrase });
+}
+
+export async function unlockVault(passphrase: string): Promise<void> {
+  if (!isTauri()) return;
+  await invoke('unlock_vault', { passphrase });
 }
 
 export async function completeOnboarding(): Promise<void> {

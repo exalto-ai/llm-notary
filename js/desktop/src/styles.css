@@ -243,6 +243,19 @@ h1, h2, p { margin: 0; }
 .loading-window { display: flex; width: 100%; height: 100%; align-items: center; justify-content: center; gap: 10px; color: var(--secondary); font-size: 12px; }
 .loading-window img { width: 28px; height: 28px; }
 
+.unlock-window { grid-template-rows: 50px minmax(0, 1fr); }
+.unlock-body { display: grid; min-height: 0; place-items: center; padding: 42px; background: var(--surface); }
+.unlock-card { display: flex; width: min(410px, 100%); flex-direction: column; }
+.unlock-icon { display: grid; width: 48px; height: 48px; place-items: center; margin-bottom: 20px; border-radius: 12px; background: var(--blue-soft); color: var(--blue); }
+.unlock-icon svg { width: 22px; height: 22px; }
+.unlock-card h1 { margin-top: 9px; font-size: 28px; font-weight: 650; letter-spacing: -.035em; }
+.unlock-card > p { margin-top: 10px; color: var(--secondary); font-size: 12px; line-height: 1.5; }
+.unlock-card > label { display: grid; gap: 6px; margin-top: 23px; }
+.unlock-card > label span { font-size: 10px; font-weight: 600; }
+.unlock-card input, .passphrase-fields input { width: 100%; min-height: 35px; padding: 7px 9px; border: 1px solid var(--separator); border-radius: 7px; background: var(--surface); color: var(--text); font-size: 11px; }
+.unlock-card .onboarding-error { width: 100%; margin-top: 9px; }
+.unlock-card > .mac-button { align-self: flex-start; margin-top: 19px; }
+
 .onboarding-window { display: grid; width: 100%; height: 100%; grid-template-rows: 50px 3px minmax(0, 1fr); background: var(--window); }
 .onboarding-toolbar { position: relative; display: flex; align-items: center; padding-right: 16px; border-bottom: 1px solid var(--separator); background: rgba(250, 250, 251, .9); user-select: none; }
 .traffic-light-space { width: 78px; height: 100%; flex: 0 0 78px; }
@@ -319,14 +332,19 @@ h1, h2, p { margin: 0; }
 .protection-options > button { display: grid; grid-template-columns: 20px 25px minmax(0, 1fr); align-items: start; gap: 10px; min-height: 82px; padding: 15px; border: 1px solid var(--separator); border-radius: 10px; background: var(--surface); text-align: left; }
 .protection-options > button:hover { background: var(--surface-hover); }
 .protection-options > button.is-selected { border-color: rgba(23, 105, 224, .7); background: var(--blue-soft); box-shadow: 0 0 0 2px rgba(23, 105, 224, .09); }
-.protection-options > button.is-warning { border-color: rgba(210, 123, 19, .62); background: rgba(210, 123, 19, .08); box-shadow: none; }
 .radio-mark { display: grid; width: 17px; height: 17px; place-items: center; border: 1px solid var(--tertiary); border-radius: 50%; background: var(--surface); }
 .radio-mark > span { width: 9px; height: 9px; border-radius: 50%; background: var(--blue); }
-.is-warning .radio-mark > span { background: var(--orange); }
 .protection-options svg { color: var(--blue); }
-.protection-options .is-warning svg { color: var(--orange); }
 .protection-options strong { display: block; font-size: 12px; font-weight: 600; }
 .protection-options p { margin-top: 4px; color: var(--secondary); font-size: 10px; line-height: 1.45; }
+.advanced-options-toggle { display: inline-flex; align-items: center; align-self: flex-start; gap: 5px; margin-top: 10px; padding: 5px 7px; border: 0; border-radius: 6px; background: transparent; color: var(--secondary); font-size: 10px; }
+.advanced-options-toggle:hover { background: var(--surface-hover); color: var(--text); }
+.advanced-options-toggle svg:last-child { transition: transform 140ms ease; }
+.advanced-options-toggle[aria-expanded="true"] svg:last-child { transform: rotate(180deg); }
+.passphrase-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-top: 10px; }
+.passphrase-fields label { display: grid; gap: 6px; }
+.passphrase-fields label span { font-size: 9px; font-weight: 600; }
+.passphrase-mismatch { grid-column: 1 / -1; color: var(--red); font-size: 9px; }
 .wizard-warning { display: flex; align-items: flex-start; gap: 8px; margin-top: 9px; padding: 10px 12px; border-radius: 8px; background: rgba(210, 123, 19, .1); color: #9a5a0e; font-size: 10px; line-height: 1.45; }
 .configured-protection { display: flex; gap: 12px; margin-top: 26px; padding: 15px; border: 1px solid rgba(40, 167, 69, .25); border-radius: 10px; background: rgba(40, 167, 69, .08); }
 .configured-protection svg { color: var(--green); }

@@ -4,6 +4,7 @@ import {
   Archive,
   BadgeCheck,
   Check,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Clipboard,
@@ -38,6 +39,7 @@ import {
   setLaunchAtLogin,
   startDaemon,
   stopDaemon,
+  unlockVault,
   type DesktopState,
   type DesktopUpdateState,
 } from './bridge';
@@ -56,6 +58,7 @@ type View =
 
 type WorkspaceView = 'captures' | 'finalizations' | 'traces' | 'sharing' | 'activity' | 'settings';
 type OnboardingStep = 'welcome' | 'protection' | 'provider' | 'ready';
+type VaultSetupMode = 'keychain' | 'passphrase';
 
 const providers = [
   {
@@ -247,6 +250,9 @@ function App() {
   };
 
   if (!state) return <LoadingWindow />;
+  if (state.vault_locked) {
+    return <VaultUnlock refresh={refresh} />;
+  }
   if (!state.onboarding_complete) {
     return <Onboarding state={state} refresh={refresh} onFinish={(next) => setView(next)} />;
   }
@@ -315,6 +321,48 @@ function App() {
 
 function LoadingWindow() {
   return <div className="loading-window"><img src={notaryMark} alt="" /><span>Opening LLM Notary…</span></div>;
+}
+
+function VaultUnlock({ refresh }: { refresh: () => Promise<void> }) {
+  const [passphrase, setPassphrase] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const unlock = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await unlockVault(passphrase);
+      setPassphrase('');
+      await startDaemon();
+      await new Promise((resolve) => window.setTimeout(resolve, 700));
+      await refresh();
+    } catch (caught) {
+      setError(errorMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <div className="onboarding-window unlock-window">
+    <header className="onboarding-toolbar" data-tauri-drag-region="deep">
+      <div className="traffic-light-space" data-tauri-drag-region />
+      <strong className="onboarding-window-title" data-tauri-drag-region>LLM Notary</strong>
+      <span className="onboarding-window-context">Locked</span>
+    </header>
+    <main className="unlock-body">
+      <form className="unlock-card" onSubmit={(event) => void unlock(event)}>
+        <span className="unlock-icon"><KeyRound /></span>
+        <span className="wizard-kicker">Private capture vault</span>
+        <h1>Unlock captures on this Mac</h1>
+        <p>Enter the passphrase you chose during setup. LLM Notary keeps it only for this app session.</p>
+        <label><span>Vault passphrase</span><input type="password" autoComplete="current-password" autoFocus value={passphrase} onChange={(event) => setPassphrase(event.target.value)} /></label>
+        {error && <div className="onboarding-error">{error}</div>}
+        <button className="mac-button is-primary is-large" type="submit" disabled={busy}>{busy ? 'Unlocking…' : 'Unlock and start LLM Notary'} <ChevronRight size={15} /></button>
+      </form>
+    </main>
+  </div>;
 }
 
 function Sidebar({ state, view, onNavigate }: { state: DesktopState; view: View; onNavigate: (view: View) => void }) {
@@ -619,7 +667,9 @@ function Onboarding({ state, refresh, onFinish }: {
   onFinish: (view: View) => void;
 }) {
   const [step, setStep] = useState<OnboardingStep>('welcome');
-  const [protectWithKeychain, setProtectWithKeychain] = useState(true);
+  const [protectionMode, setProtectionMode] = useState<VaultSetupMode>('keychain');
+  const [passphrase, setPassphrase] = useState('');
+  const [passphraseConfirmation, setPassphraseConfirmation] = useState('');
   const [selectedProvider, setSelectedProvider] = useState<ProviderId>('openrouter');
   const [model, setModel] = useState('');
   const [busy, setBusy] = useState(false);
@@ -628,11 +678,17 @@ function Onboarding({ state, refresh, onFinish }: {
   const stepIndex = onboardingSteps.indexOf(step);
 
   const configureProtection = async () => {
+    if (protectionMode === 'passphrase' && passphrase !== passphraseConfirmation) {
+      setError('The passphrases do not match.');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
       if (!state.vault_configured) {
-        await configureVault(protectWithKeychain ? 'keychain' : 'convenience');
+        await configureVault(protectionMode, protectionMode === 'passphrase' ? passphrase : undefined);
+        setPassphrase('');
+        setPassphraseConfirmation('');
         await refresh();
       }
       setStep('provider');
@@ -689,8 +745,12 @@ function Onboarding({ state, refresh, onFinish }: {
         {step === 'welcome' && <WelcomeStep state={state} onContinue={() => setStep('protection')} />}
         {step === 'protection' && <ProtectionStep
           configured={state.vault_configured}
-          protectWithKeychain={protectWithKeychain}
-          setProtectWithKeychain={setProtectWithKeychain}
+          mode={protectionMode}
+          setMode={setProtectionMode}
+          passphrase={passphrase}
+          setPassphrase={setPassphrase}
+          passphraseConfirmation={passphraseConfirmation}
+          setPassphraseConfirmation={setPassphraseConfirmation}
           busy={busy}
           onContinue={() => void configureProtection()}
         />}
@@ -776,29 +836,45 @@ function SetupTrustDiagram() {
   </figure>;
 }
 
-function ProtectionStep({ configured, protectWithKeychain, setProtectWithKeychain, busy, onContinue }: {
+function ProtectionStep({ configured, mode, setMode, passphrase, setPassphrase, passphraseConfirmation, setPassphraseConfirmation, busy, onContinue }: {
   configured: boolean;
-  protectWithKeychain: boolean;
-  setProtectWithKeychain: (value: boolean) => void;
+  mode: VaultSetupMode;
+  setMode: (value: VaultSetupMode) => void;
+  passphrase: string;
+  setPassphrase: (value: string) => void;
+  passphraseConfirmation: string;
+  setPassphraseConfirmation: (value: string) => void;
   busy: boolean;
   onContinue: () => void;
 }) {
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const passphrasesMatch = passphrase === passphraseConfirmation;
+  const toggleAdvanced = () => {
+    if (advancedOpen && mode === 'passphrase') setMode('keychain');
+    setAdvancedOpen(!advancedOpen);
+  };
   return <div className="wizard-step">
     <span className="wizard-kicker">Private captures</span>
     <h1>Protect evidence on this Mac</h1>
     <p>A private capture can reconstruct the original provider request, including credentials. It is always encrypted before it is written.</p>
     {configured ? <div className="configured-protection"><BadgeCheck size={22} /><div><strong>Capture protection is already configured</strong><span>This assistant will keep the existing vault unchanged.</span></div></div> : <div className="protection-options" role="radiogroup" aria-label="Private capture protection">
-      <button type="button" role="radio" aria-checked={protectWithKeychain} className={protectWithKeychain ? 'is-selected' : ''} onClick={() => setProtectWithKeychain(true)}>
-        <span className="radio-mark">{protectWithKeychain && <span />}</span><KeyRound size={20} />
+      <button type="button" role="radio" aria-checked={mode === 'keychain'} className={mode === 'keychain' ? 'is-selected' : ''} onClick={() => setMode('keychain')}>
+        <span className="radio-mark">{mode === 'keychain' && <span />}</span><KeyRound size={20} />
         <div><strong>Use Keychain</strong><p>Recommended. macOS protects the vault key; there is no separate password to remember.</p></div>
       </button>
-      <button type="button" role="radio" aria-checked={!protectWithKeychain} className={!protectWithKeychain ? 'is-selected is-warning' : ''} onClick={() => setProtectWithKeychain(false)}>
-        <span className="radio-mark">{!protectWithKeychain && <span />}</span><SlidersHorizontal size={20} />
-        <div><strong>No device protection</strong><p>More convenient, but anyone signed in to this account can open private captures.</p></div>
-      </button>
+      {advancedOpen && <button type="button" role="radio" aria-checked={mode === 'passphrase'} className={mode === 'passphrase' ? 'is-selected' : ''} onClick={() => setMode('passphrase')}>
+        <span className="radio-mark">{mode === 'passphrase' && <span />}</span><SlidersHorizontal size={20} />
+        <div><strong>Use a passphrase</strong><p>Enter it whenever the desktop app opens. LLM Notary does not save it.</p></div>
+      </button>}
     </div>}
-    {!configured && !protectWithKeychain && <div className="wizard-warning"><ShieldCheck size={16} /><span>Capture files stay encrypted, but this choice does not protect them from another person using this account.</span></div>}
-    <div className="wizard-actions"><button className="mac-button is-primary is-large" onClick={onContinue} disabled={busy}>{busy ? 'Saving…' : 'Continue'} <ChevronRight size={15} /></button></div>
+    {!configured && <button type="button" className="advanced-options-toggle" aria-expanded={advancedOpen} onClick={toggleAdvanced}><SlidersHorizontal size={13} /> Advanced options <ChevronDown size={13} /></button>}
+    {!configured && advancedOpen && mode === 'passphrase' && <div className="passphrase-fields">
+      <label><span>Passphrase</span><input type="password" autoComplete="new-password" value={passphrase} onChange={(event) => setPassphrase(event.target.value)} /></label>
+      <label><span>Confirm passphrase</span><input type="password" autoComplete="new-password" value={passphraseConfirmation} onChange={(event) => setPassphraseConfirmation(event.target.value)} /></label>
+      {!passphrasesMatch && <small className="passphrase-mismatch">The passphrases do not match.</small>}
+    </div>}
+    {!configured && advancedOpen && mode === 'passphrase' && passphrasesMatch && passphrase.length === 0 && <div className="wizard-warning"><ShieldCheck size={16} /><span>An empty passphrase provides no device protection. Anyone with this account's app data can open private captures.</span></div>}
+    <div className="wizard-actions"><button className="mac-button is-primary is-large" onClick={onContinue} disabled={busy || (mode === 'passphrase' && !passphrasesMatch)}>{busy ? 'Saving…' : 'Continue'} <ChevronRight size={15} /></button></div>
   </div>;
 }
 
