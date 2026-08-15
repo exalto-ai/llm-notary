@@ -148,9 +148,11 @@ Ambient instance metadata and shared SDK profiles are not used.
 HTTPS is required by default. `allow_insecure_http = true` is only for an
 explicitly trusted local S3 emulator such as MinIO. The endpoint must be an
 origin with no credentials, path, query, or fragment. Give the runtime
-`GetObject` and `PutObject` access only within the configured prefix. The
-report-only reconciliation command additionally needs `ListBucket` constrained
-to that prefix; runtime credentials do not need `DeleteObject`. Objects are
+`GetObject` and `PutObject` access only within the configured prefix, plus
+`ListBucket` constrained with `s3:prefix` to the configured
+`daemon-private/` namespace so readiness can probe that namespace. The
+report-only reconciliation command uses the same listing permission across
+that prefix; runtime credentials do not need `DeleteObject`. Objects are
 always addressed under `daemon-private/deferred_bundle` or
 `daemon-private/finalized_package`. Neither bucket nor object keys contain
 prompts, outputs, or provider credentials.

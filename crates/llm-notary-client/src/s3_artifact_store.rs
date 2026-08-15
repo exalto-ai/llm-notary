@@ -162,13 +162,21 @@ impl S3ArtifactStore {
         })
     }
 
-    /// Performs a bounded, non-mutating bucket-access probe.
+    /// Performs a bounded, non-mutating managed-prefix access probe.
     pub async fn readiness(&self) -> ArtifactResult<()> {
-        let request = self.client.head_bucket().bucket(&self.bucket).send();
+        let request = self
+            .client
+            .list_objects_v2()
+            .bucket(&self.bucket)
+            .prefix(self.managed_prefix())
+            .max_keys(1)
+            .send();
         tokio::time::timeout(self.operation_timeout, request)
             .await
             .map_err(|_| backend(anyhow!("S3 readiness probe timed out")))?
-            .map_err(|error| backend(anyhow!(error).context("probing private artifact bucket")))?;
+            .map_err(|error| {
+                backend(anyhow!(error).context("probing private artifact namespace"))
+            })?;
         Ok(())
     }
 
@@ -197,11 +205,7 @@ impl S3ArtifactStore {
             }
         }
 
-        let managed_prefix = if self.prefix.is_empty() {
-            "daemon-private/".to_owned()
-        } else {
-            format!("{}/daemon-private/", self.prefix)
-        };
+        let managed_prefix = self.managed_prefix();
         let mut inventory = S3ReconciliationInventory::default();
         let mut continuation_token = None;
         let mut seen_continuation_tokens = HashSet::new();
@@ -261,6 +265,14 @@ impl S3ArtifactStore {
             continuation_token = Some(next_token);
         }
         Ok(inventory)
+    }
+
+    fn managed_prefix(&self) -> String {
+        if self.prefix.is_empty() {
+            "daemon-private/".to_owned()
+        } else {
+            format!("{}/daemon-private/", self.prefix)
+        }
     }
 
     fn object_key(&self, key: &ArtifactKey) -> String {
