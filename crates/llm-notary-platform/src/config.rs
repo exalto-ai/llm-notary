@@ -147,7 +147,6 @@ impl BillingConfig {
             secret_key,
             webhook_secret,
             optional_env("LLM_NOTARY_STRIPE_CREDIT_PRICE_ID")?,
-            optional_env("LLM_NOTARY_STRIPE_PRICE_ID")?,
             optional_env("LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID")?,
             optional_env("LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID")?,
         )
@@ -157,11 +156,9 @@ impl BillingConfig {
         secret_key: Option<String>,
         webhook_secret: Option<String>,
         credit_price_id: Option<String>,
-        legacy_credit_price_id: Option<String>,
         one_gb_price_id: Option<String>,
         ten_gb_price_id: Option<String>,
     ) -> Result<Self> {
-        let credit_price_id = credit_price_id.or(legacy_credit_price_id);
         if secret_key.is_none()
             && webhook_secret.is_none()
             && credit_price_id.is_none()
@@ -178,11 +175,8 @@ impl BillingConfig {
                 "LLM_NOTARY_STRIPE_WEBHOOK_SECRET or LLM_NOTARY_STRIPE_WEBHOOK_SECRET_FILE must be set"
             )
         })?;
-        let credit_price_id = credit_price_id.ok_or_else(|| {
-            anyhow!(
-                "LLM_NOTARY_STRIPE_CREDIT_PRICE_ID or legacy LLM_NOTARY_STRIPE_PRICE_ID must be set"
-            )
-        })?;
+        let credit_price_id = credit_price_id
+            .ok_or_else(|| anyhow!("LLM_NOTARY_STRIPE_CREDIT_PRICE_ID must be set"))?;
         if one_gb_price_id.is_some() != ten_gb_price_id.is_some() {
             bail!(
                 "LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID and LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID must be set together"
@@ -203,7 +197,7 @@ impl BillingConfig {
         }
         for (name, price_id) in [
             (
-                "LLM_NOTARY_STRIPE_CREDIT_PRICE_ID or LLM_NOTARY_STRIPE_PRICE_ID",
+                "LLM_NOTARY_STRIPE_CREDIT_PRICE_ID",
                 Some(credit_price_id.as_str()),
             ),
             (
@@ -786,21 +780,22 @@ mod tests {
     }
 
     #[test]
-    fn legacy_credit_price_keeps_one_time_billing_available() {
-        let billing = BillingConfig::from_settings(
+    fn credit_price_setting_is_required() {
+        let result = BillingConfig::from_settings(
             Some("sk_test_fixture".to_owned()),
             Some("whsec_fixture".to_owned()),
             None,
-            Some("price_legacy_credit".to_owned()),
             None,
             None,
-        )
-        .unwrap();
-        let stripe = billing.stripe.unwrap();
-        assert_eq!(stripe.credit_price_id, "price_legacy_credit");
-        assert!(stripe.one_gb_price_id.is_none());
-        assert!(stripe.ten_gb_price_id.is_none());
-        assert!(!stripe.livemode);
+        );
+        let error = match result {
+            Ok(_) => panic!("missing credit Price must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.to_string(),
+            "LLM_NOTARY_STRIPE_CREDIT_PRICE_ID must be set"
+        );
     }
 
     #[test]
@@ -809,7 +804,6 @@ mod tests {
             Some("sk_test_fixture".to_owned()),
             Some("whsec_fixture".to_owned()),
             Some("price_credit".to_owned()),
-            None,
             Some("price_one_gb".to_owned()),
             None,
         );

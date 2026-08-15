@@ -101,10 +101,9 @@ version `2026-02-25.clover`. Subscribe only to these events:
 Stage all five Stripe settings before enabling subscription Checkout. The
 secret key, three Prices, and webhook endpoint must all use the same test or
 live environment. The credit Price is a one-time $10 USD Price; the other two
-are recurring monthly Prices for $9.99 and $49.99. During the migration window,
-the legacy `LLM_NOTARY_STRIPE_PRICE_ID` remains a fallback for only the credit
-Price; subscription Checkout stays disabled until both recurring Price IDs are
-present. Send values over stdin so neither secret enters shell history:
+are recurring monthly Prices for $9.99 and $49.99. Subscription Checkout stays
+disabled until both recurring Price IDs are present. Send values over stdin so
+neither secret enters shell history:
 
 ```bash
 read -rs STRIPE_VALUE
@@ -120,6 +119,15 @@ printf '%s\n' 'LLM_NOTARY_STRIPE_CREDIT_PRICE_ID=price_...' \
 unset STRIPE_VALUE
 ```
 
+After verifying all three explicit Price settings, remove the obsolete
+`LLM_NOTARY_STRIPE_PRICE_ID` secret from the Fly app before deploying this
+release:
+
+```bash
+flyctl secrets unset --stage LLM_NOTARY_STRIPE_PRICE_ID \
+  -a llm-notary-prod-api
+```
+
 The account API exposes the configured purchase mode as `disabled`, `test`, or
 `live`. Verify that the dashboard hides Checkout when disabled and shows its
 test-mode warning before exercising a test Price. Do not promote a test secret,
@@ -128,11 +136,10 @@ Price, or webhook endpoint into a live configuration.
 Migration `0022_subscription_plans.sql` intentionally clears prototype billing,
 credit, and active admission rows while preserving accounts and public traces.
 Take a database backup, drain hosted admission traffic, and deploy the migration
-and matching API/notary images as one coordinated maintenance release.
-Migration `0023_restore_subscription_rollback_compat.sql` supplies a temporary
-`notarization` default for old API grant/debit writes so the immediately
-previous image can serve during rollout or rollback; issue #271 tracks removing
-that default after the rollback window closes.
+and matching API/notary images as one coordinated maintenance release. Migration
+`0024_remove_subscription_rollback_compat.sql` removes the temporary
+`notarization` defaults; every API image kept for rollback must write
+`credit_kind` explicitly.
 
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private
