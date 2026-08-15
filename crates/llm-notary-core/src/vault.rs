@@ -19,6 +19,8 @@ use zeroize::{Zeroize, Zeroizing};
 
 const CONFIG_FORMAT: &str = "llm-notary/vault/v1";
 const BUNDLE_MAGIC: &[u8] = b"LLMNB1";
+const KEY_CHECK_FILE_NAME: &str = "vault.key-check";
+const KEY_CHECK_PLAINTEXT: &[u8] = b"llm-notary vault key check";
 const SERVICE: &str = "LLM Notary";
 const PASSPHRASE_FILE_ENV: &str = "LLM_NOTARY_VAULT_PASSPHRASE_FILE";
 /// Requests that a supervised child read its already-unlocked vault key from
@@ -33,7 +35,7 @@ struct VaultConfig {
     salt_hex: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum VaultMode {
     Os,
@@ -86,12 +88,25 @@ impl Vault {
     /// Opens an initialized vault. Passphrase vaults require the passphrase.
     pub fn open(passphrase: Option<&str>) -> Result<Self> {
         let config_path = config_path()?;
-        let config = read_config(&config_path)?;
-        let key = if env::var_os(CHILD_KEY_STDIN_ENV).is_some() {
-            read_child_key_from_stdin()?
+        let child_key = if env::var_os(CHILD_KEY_STDIN_ENV).is_some() {
+            Some(read_child_key_from_stdin()?)
+        } else {
+            None
+        };
+        Self::open_at(&config_path, passphrase, child_key)
+    }
+
+    fn open_at(
+        config_path: &Path,
+        passphrase: Option<&str>,
+        child_key: Option<[u8; 32]>,
+    ) -> Result<Self> {
+        let config = read_config(config_path)?;
+        let key = if let Some(child_key) = child_key {
+            Zeroizing::new(child_key)
         } else {
             match config.mode {
-                VaultMode::Os => read_os_key()?,
+                VaultMode::Os => Zeroizing::new(read_os_key()?),
                 VaultMode::Passphrase => derive_passphrase_key(
                     passphrase
                         .ok_or_else(|| anyhow::anyhow!("this vault requires a passphrase"))?,
@@ -101,7 +116,15 @@ impl Vault {
                 )?,
             }
         };
-        Ok(Self { key, config_path })
+        if matches!(config.mode, VaultMode::Passphrase)
+            && let Some(key_check) = read_key_check(config_path)?
+        {
+            verify_key_check(&key, &key_check)?;
+        }
+        Ok(Self {
+            key: *key,
+            config_path: config_path.to_owned(),
+        })
     }
 
     /// Initializes an OS-vault-backed key. Existing vaults are left alone.
@@ -128,6 +151,10 @@ impl Vault {
     /// intentionally, but does not protect bundle confidentiality.
     pub fn init_passphrase(passphrase: &str) -> Result<Self> {
         let config_path = config_path()?;
+        Self::init_passphrase_at(&config_path, passphrase)
+    }
+
+    fn init_passphrase_at(config_path: &Path, passphrase: &str) -> Result<Self> {
         if config_path.exists() {
             bail!(
                 "a vault is already initialized at {}",
@@ -138,15 +165,23 @@ impl Vault {
         rand::rng().fill_bytes(&mut salt);
         let salt_hex = hex::encode(salt);
         let key = derive_passphrase_key(passphrase, &salt_hex)?;
-        write_config(
-            &config_path,
+        let key_check_hex = create_key_check(&key)?;
+        write_key_check(config_path, &key_check_hex)?;
+        if let Err(error) = write_config(
+            config_path,
             VaultConfig {
                 format: CONFIG_FORMAT.to_owned(),
                 mode: VaultMode::Passphrase,
                 salt_hex: Some(salt_hex),
             },
-        )?;
-        Ok(Self { key, config_path })
+        ) {
+            let _ = fs::remove_file(key_check_path(config_path));
+            return Err(error);
+        }
+        Ok(Self {
+            key: *key,
+            config_path: config_path.to_owned(),
+        })
     }
 
     /// Encrypts a complete local bundle before it is written to disk.
@@ -202,6 +237,13 @@ impl Vault {
             VaultMode::Os => Ok("OS vault"),
             VaultMode::Passphrase => Ok("passphrase vault"),
         }
+    }
+
+    /// Returns whether this passphrase vault has a verifier that can reject an
+    /// incorrect passphrase before the vault is used. Legacy passphrase vaults
+    /// do not have one and should not be unlocked by unattended frontends.
+    pub fn passphrase_unlock_is_verifiable() -> Result<bool> {
+        passphrase_unlock_is_verifiable_at(&config_path()?)
     }
 }
 
@@ -292,6 +334,49 @@ fn write_config(path: &Path, config: VaultConfig) -> Result<()> {
     Ok(())
 }
 
+fn key_check_path(config_path: &Path) -> PathBuf {
+    config_path.with_file_name(KEY_CHECK_FILE_NAME)
+}
+
+fn read_key_check(config_path: &Path) -> Result<Option<String>> {
+    let path = key_check_path(config_path);
+    match fs::read_to_string(&path) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => {
+            Err(error).with_context(|| format!("reading vault key check {}", path.display()))
+        }
+    }
+}
+
+fn write_key_check(config_path: &Path, encoded: &str) -> Result<()> {
+    let path = key_check_path(config_path);
+    let parent = path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("vault key check path has no parent"))?;
+    fs::create_dir_all(parent)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&path)
+        .with_context(|| format!("creating vault key check {}", path.display()))?;
+    file.write_all(encoded.as_bytes())
+        .with_context(|| format!("writing vault key check {}", path.display()))?;
+    file.sync_all()
+        .with_context(|| format!("syncing vault key check {}", path.display()))?;
+    Ok(())
+}
+
+fn passphrase_unlock_is_verifiable_at(config_path: &Path) -> Result<bool> {
+    let config = read_config(config_path)?;
+    Ok(matches!(config.mode, VaultMode::Passphrase) && read_key_check(config_path)?.is_some())
+}
+
 fn read_os_key() -> Result<[u8; 32]> {
     let entry = keyring::Entry::new(SERVICE, "bundle-key")?;
     let bytes = hex::decode(
@@ -329,15 +414,41 @@ fn decode_child_key_line(value: &str) -> Result<[u8; 32]> {
     Ok(key)
 }
 
-fn derive_passphrase_key(passphrase: &str, salt_hex: &str) -> Result<[u8; 32]> {
+fn derive_passphrase_key(passphrase: &str, salt_hex: &str) -> Result<Zeroizing<[u8; 32]>> {
     let salt = hex::decode(salt_hex)?;
-    let mut key = [0; 32];
+    let mut key = Zeroizing::new([0; 32]);
     let params = Params::new(19 * 1024, 2, 1, Some(32))
         .map_err(|e| anyhow::anyhow!("invalid vault KDF parameters: {e}"))?;
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
-        .hash_password_into(passphrase.as_bytes(), &salt, &mut key)
+        .hash_password_into(passphrase.as_bytes(), &salt, &mut key[..])
         .map_err(|e| anyhow::anyhow!("deriving vault key failed: {e}"))?;
     Ok(key)
+}
+
+fn create_key_check(key: &[u8; 32]) -> Result<String> {
+    let mut nonce = [0; 24];
+    rand::rng().fill_bytes(&mut nonce);
+    let ciphertext = XChaCha20Poly1305::new(key.into())
+        .encrypt(XNonce::from_slice(&nonce), KEY_CHECK_PLAINTEXT)
+        .map_err(|_| anyhow::anyhow!("creating vault key check failed"))?;
+    let mut encoded = nonce.to_vec();
+    encoded.extend_from_slice(&ciphertext);
+    Ok(hex::encode(encoded))
+}
+
+fn verify_key_check(key: &[u8; 32], encoded: &str) -> Result<()> {
+    let check = hex::decode(encoded).context("decoding vault key check")?;
+    if check.len() < 24 + 16 {
+        bail!("vault key check is invalid");
+    }
+    let (nonce, ciphertext) = check.split_at(24);
+    let plaintext = XChaCha20Poly1305::new(key.into())
+        .decrypt(XNonce::from_slice(nonce), ciphertext)
+        .map_err(|_| anyhow::anyhow!("the vault passphrase is incorrect"))?;
+    if plaintext != KEY_CHECK_PLAINTEXT {
+        bail!("vault key check is invalid");
+    }
+    Ok(())
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -401,6 +512,72 @@ mod tests {
             [7; 32]
         );
         assert!(decode_child_key_line("07").is_err());
+    }
+
+    #[test]
+    fn passphrase_key_check_rejects_the_wrong_derived_key() {
+        let encoded = create_key_check(&[7; 32]).unwrap();
+        verify_key_check(&[7; 32], &encoded).unwrap();
+        assert!(verify_key_check(&[8; 32], &encoded).is_err());
+
+        let mut tampered = hex::decode(&encoded).unwrap();
+        *tampered.last_mut().unwrap() ^= 1;
+        assert!(verify_key_check(&[7; 32], &hex::encode(tampered)).is_err());
+    }
+
+    #[test]
+    fn vault_config_keeps_the_v1_wire_shape() {
+        let config: VaultConfig = serde_json::from_value(serde_json::json!({
+            "format": CONFIG_FORMAT,
+            "mode": "passphrase",
+            "salt_hex": "00".repeat(16),
+        }))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(config).unwrap(),
+            serde_json::json!({
+                "format": CONFIG_FORMAT,
+                "mode": "passphrase",
+                "salt_hex": "00".repeat(16),
+            })
+        );
+    }
+
+    #[test]
+    fn passphrase_vault_verifier_is_filesystem_backed() {
+        let root = tempfile::tempdir().unwrap();
+        let config_path = root.path().join("vault.json");
+        let vault = Vault::init_passphrase_at(&config_path, "correct horse").unwrap();
+        let encrypted = vault.encrypt(b"private bundle").unwrap();
+        drop(vault);
+
+        let check_path = key_check_path(&config_path);
+        let original_check = fs::read_to_string(&check_path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(
+                fs::metadata(&check_path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        assert!(passphrase_unlock_is_verifiable_at(&config_path).unwrap());
+        assert!(Vault::open_at(&config_path, Some("wrong horse"), None).is_err());
+
+        let mut tampered = hex::decode(&original_check).unwrap();
+        *tampered.last_mut().unwrap() ^= 1;
+        fs::write(&check_path, hex::encode(tampered)).unwrap();
+        assert!(Vault::open_at(&config_path, Some("correct horse"), None).is_err());
+
+        fs::write(&check_path, original_check).unwrap();
+        let reopened = Vault::open_at(&config_path, Some("correct horse"), None).unwrap();
+        assert_eq!(reopened.decrypt(&encrypted).unwrap(), b"private bundle");
+        drop(reopened);
+
+        fs::remove_file(&check_path).unwrap();
+        assert!(!passphrase_unlock_is_verifiable_at(&config_path).unwrap());
+        let legacy = Vault::open_at(&config_path, Some("correct horse"), None).unwrap();
+        assert_eq!(legacy.decrypt(&encrypted).unwrap(), b"private bundle");
     }
 
     #[cfg(unix)]
