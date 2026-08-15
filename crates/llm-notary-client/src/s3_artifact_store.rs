@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use aws_sdk_s3::{
     Client,
     config::{BehaviorVersion, Credentials, Region, timeout::TimeoutConfig},
-    primitives::{ByteStream, FsBuilder, Length},
+    primitives::{FsBuilder, Length},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest as _, Sha256};
@@ -29,44 +29,72 @@ const KIND_METADATA: &str = "artifact-kind";
 const MAX_CONDITIONAL_ATTEMPTS: usize = 3;
 const AMBIGUOUS_VERIFY_ATTEMPTS: usize = 4;
 const AMBIGUOUS_VERIFY_DELAY: Duration = Duration::from_millis(100);
-const READINESS_SENTINEL_SUFFIX: &str = "daemon-private/.llm-notary-readiness-v1";
-const READINESS_SENTINEL_BYTES: &[u8] = b"llm-notary/s3-readiness/v1\n";
 
 /// Versioned discriminator used by routing stores and persisted metadata.
-pub const S3_ARTIFACT_LOCATOR_PREFIX: &str = "artifact/v1/s3/";
+pub(crate) const S3_ARTIFACT_LOCATOR_PREFIX: &str = "artifact/v1/s3/";
 
 /// Returns whether a locator belongs to the versioned S3 namespace.
 ///
 /// Malformed locators still classify as S3 so routing fails closed in this
 /// backend instead of interpreting them as legacy filesystem paths.
-pub fn is_s3_artifact_locator(locator: &ArtifactLocator) -> bool {
+pub(crate) fn is_s3_artifact_locator(locator: &ArtifactLocator) -> bool {
     locator.as_stored().starts_with(S3_ARTIFACT_LOCATOR_PREFIX)
 }
 
 /// Non-secret connection and namespace settings for daemon-private objects.
 #[derive(Clone, Debug)]
-pub struct S3ArtifactStoreConfig {
-    pub endpoint: Url,
-    pub region: String,
-    pub bucket: String,
-    pub prefix: String,
-    pub force_path_style: bool,
-    /// Permits `http://` only for an explicitly trusted local S3 emulator.
-    pub allow_insecure_http: bool,
-    pub connect_timeout: Duration,
-    pub operation_timeout: Duration,
+pub(crate) struct S3ArtifactStoreConfig {
+    endpoint: Option<Url>,
+    region: String,
+    bucket: String,
+    prefix: String,
+    force_path_style: bool,
+    connect_timeout: Duration,
+    operation_timeout: Duration,
+}
+
+impl S3ArtifactStoreConfig {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new(
+        endpoint: Option<Url>,
+        region: String,
+        bucket: String,
+        prefix: String,
+        force_path_style: bool,
+        allow_insecure_http: bool,
+        connect_timeout: Duration,
+        operation_timeout: Duration,
+    ) -> ArtifactResult<Self> {
+        validate_config(
+            endpoint.as_ref(),
+            &region,
+            &bucket,
+            allow_insecure_http,
+            connect_timeout,
+            operation_timeout,
+        )?;
+        Ok(Self {
+            endpoint,
+            region,
+            bucket,
+            prefix: normalize_prefix(&prefix)?,
+            force_path_style,
+            connect_timeout,
+            operation_timeout,
+        })
+    }
 }
 
 /// Explicit static credentials for one daemon-private S3 namespace.
 #[derive(Clone)]
-pub struct S3ArtifactStoreCredentials {
+pub(crate) struct S3ArtifactStoreCredentials {
     access_key_id: String,
     secret_access_key: String,
     session_token: Option<String>,
 }
 
 impl S3ArtifactStoreCredentials {
-    pub fn new(
+    pub(crate) fn new(
         access_key_id: impl Into<String>,
         secret_access_key: impl Into<String>,
         session_token: Option<String>,
@@ -95,44 +123,26 @@ impl fmt::Debug for S3ArtifactStoreCredentials {
 
 /// Immutable daemon-private storage backed by an S3-compatible API.
 #[derive(Clone)]
-pub struct S3ArtifactStore {
+pub(crate) struct S3ArtifactStore {
     client: Client,
-    endpoint: Url,
-    region: String,
     bucket: String,
     prefix: String,
-    force_path_style: bool,
     operation_timeout: Duration,
 }
 
 /// Bounded, report-only inventory of the configured managed S3 prefix.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct S3ReconciliationInventory {
+pub(crate) struct S3ReconciliationInventory {
     pub scanned_objects: usize,
     pub unreferenced_candidates: usize,
 }
 
-impl fmt::Debug for S3ArtifactStore {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("S3ArtifactStore")
-            .field("endpoint", &self.endpoint)
-            .field("region", &self.region)
-            .field("bucket", &self.bucket)
-            .field("prefix", &self.prefix)
-            .field("force_path_style", &self.force_path_style)
-            .field("operation_timeout", &self.operation_timeout)
-            .finish_non_exhaustive()
-    }
-}
-
 impl S3ArtifactStore {
-    pub fn new(
+    pub(crate) fn new(
         config: S3ArtifactStoreConfig,
         credentials: S3ArtifactStoreCredentials,
     ) -> ArtifactResult<Self> {
-        validate_config(&config, &credentials)?;
-        let prefix = normalize_prefix(&config.prefix)?;
+        validate_credentials(&credentials)?;
         let sdk_credentials = Credentials::new(
             credentials.access_key_id,
             credentials.secret_access_key,
@@ -145,95 +155,40 @@ impl S3ArtifactStore {
             .operation_attempt_timeout(config.operation_timeout)
             .operation_timeout(config.operation_timeout)
             .build();
-        let sdk_config = aws_sdk_s3::Config::builder()
+        let mut sdk_config = aws_sdk_s3::Config::builder()
             .behavior_version(BehaviorVersion::latest())
             .credentials_provider(sdk_credentials)
             .region(Region::new(config.region.clone()))
-            .endpoint_url(config.endpoint.as_str())
             .force_path_style(config.force_path_style)
-            .timeout_config(timeout_config)
-            .build();
+            .timeout_config(timeout_config);
+        if let Some(endpoint) = &config.endpoint {
+            sdk_config = sdk_config.endpoint_url(endpoint.as_str());
+        }
+        let sdk_config = sdk_config.build();
         Ok(Self {
             client: Client::from_conf(sdk_config),
-            endpoint: config.endpoint,
-            region: config.region,
             bucket: config.bucket,
-            prefix,
-            force_path_style: config.force_path_style,
+            prefix: config.prefix,
             operation_timeout: config.operation_timeout,
         })
     }
 
-    /// Performs a bounded, idempotent read/write probe inside the managed prefix.
-    pub async fn readiness(&self) -> ArtifactResult<()> {
-        let object_key = self.readiness_object_key();
+    /// Performs one bounded, non-mutating probe inside the managed prefix.
+    pub(crate) async fn readiness(&self) -> ArtifactResult<()> {
         let request = self
             .client
-            .put_object()
+            .list_objects_v2()
             .bucket(&self.bucket)
-            .key(&object_key)
-            .if_none_match("*")
-            .content_length(
-                i64::try_from(READINESS_SENTINEL_BYTES.len())
-                    .expect("readiness sentinel length fits in i64"),
-            )
-            .body(ByteStream::from_static(READINESS_SENTINEL_BYTES))
+            .prefix(self.managed_prefix())
+            .max_keys(1)
             .send();
-        match tokio::time::timeout(self.operation_timeout, request).await {
-            Err(_) => return Err(backend(anyhow!("S3 readiness sentinel PUT timed out"))),
-            Ok(Ok(_)) => {}
-            Ok(Err(error))
-                if error
-                    .raw_response()
-                    .is_some_and(|response| response.status().as_u16() == 412) => {}
-            Ok(Err(error)) => {
-                return Err(backend(
-                    anyhow!(error).context("conditionally writing S3 readiness sentinel"),
-                ));
-            }
-        }
-
-        let operation = async {
-            let output = self
-                .client
-                .get_object()
-                .bucket(&self.bucket)
-                .key(&object_key)
-                .send()
-                .await
-                .map_err(|error| {
-                    backend(anyhow!(error).context("reading S3 readiness sentinel"))
-                })?;
-            let content_length = output.content_length().ok_or_else(|| {
-                integrity(anyhow!("S3 readiness sentinel omitted Content-Length"))
-            })?;
-            if usize::try_from(content_length).ok() != Some(READINESS_SENTINEL_BYTES.len()) {
-                return Err(integrity(anyhow!(
-                    "S3 readiness sentinel has an unexpected size"
-                )));
-            }
-            let mut body = output.body;
-            let mut observed = Vec::with_capacity(READINESS_SENTINEL_BYTES.len() + 1);
-            while let Some(chunk) = body.try_next().await.map_err(|error| {
-                backend(anyhow!(error).context("streaming S3 readiness sentinel"))
-            })? {
-                if observed.len().saturating_add(chunk.len()) > READINESS_SENTINEL_BYTES.len() {
-                    return Err(integrity(anyhow!(
-                        "S3 readiness sentinel exceeded its exact size"
-                    )));
-                }
-                observed.extend_from_slice(&chunk);
-            }
-            if observed != READINESS_SENTINEL_BYTES {
-                return Err(integrity(anyhow!(
-                    "S3 readiness sentinel bytes do not match"
-                )));
-            }
-            Ok(())
-        };
-        tokio::time::timeout(self.operation_timeout, operation)
+        tokio::time::timeout(self.operation_timeout, request)
             .await
-            .map_err(|_| backend(anyhow!("S3 readiness sentinel GET timed out")))?
+            .map_err(|_| backend(anyhow!("S3 readiness probe timed out")))?
+            .map_err(|error| {
+                backend(anyhow!(error).context("probing the private S3 artifact prefix"))
+            })?;
+        Ok(())
     }
 
     /// Lists only the daemon-owned prefix and reports old objects which are
@@ -283,11 +238,7 @@ impl S3ArtifactStore {
                 .map_err(|error| {
                     backend(anyhow!(error).context("listing private artifact objects"))
                 })?;
-            let readiness_object_key = self.readiness_object_key();
             for object in page.contents() {
-                if object.key() == Some(readiness_object_key.as_str()) {
-                    continue;
-                }
                 inventory.scanned_objects = inventory
                     .scanned_objects
                     .checked_add(1)
@@ -332,14 +283,6 @@ impl S3ArtifactStore {
             "daemon-private/".to_owned()
         } else {
             format!("{}/daemon-private/", self.prefix)
-        }
-    }
-
-    fn readiness_object_key(&self) -> String {
-        if self.prefix.is_empty() {
-            READINESS_SENTINEL_SUFFIX.to_owned()
-        } else {
-            format!("{}/{}", self.prefix, READINESS_SENTINEL_SUFFIX)
         }
     }
 
@@ -889,63 +832,82 @@ async fn create_private_spool() -> ArtifactResult<PrivateSpool> {
 }
 
 fn validate_config(
-    config: &S3ArtifactStoreConfig,
-    credentials: &S3ArtifactStoreCredentials,
+    endpoint: Option<&Url>,
+    region: &str,
+    bucket: &str,
+    allow_insecure_http: bool,
+    connect_timeout: Duration,
+    operation_timeout: Duration,
 ) -> ArtifactResult<()> {
-    if config.endpoint.cannot_be_a_base()
-        || config.endpoint.host_str().is_none()
-        || !config.endpoint.username().is_empty()
-        || config.endpoint.password().is_some()
-        || config.endpoint.path() != "/"
-        || config.endpoint.query().is_some()
-        || config.endpoint.fragment().is_some()
-    {
-        return Err(invalid(
-            "invalid_s3_endpoint",
-            anyhow!(
-                "S3 endpoint must be an origin URL without credentials, path, query, or fragment"
-            ),
-        ));
-    }
-    match config.endpoint.scheme() {
-        "https" => {}
-        "http" if config.allow_insecure_http => {}
-        "http" => {
-            return Err(invalid(
-                "insecure_s3_endpoint",
-                anyhow!("HTTP S3 endpoints require explicit insecure-local opt-in"),
-            ));
-        }
-        _ => {
+    if let Some(endpoint) = endpoint {
+        if endpoint.cannot_be_a_base()
+            || endpoint.host_str().is_none()
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.path() != "/"
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
             return Err(invalid(
                 "invalid_s3_endpoint",
-                anyhow!("S3 endpoint must use HTTPS or explicitly allowed HTTP"),
+                anyhow!(
+                    "S3 endpoint must be an origin URL without credentials, path, query, or fragment"
+                ),
             ));
         }
+        match endpoint.scheme() {
+            "https" => {}
+            "http" if allow_insecure_http => {}
+            "http" => {
+                return Err(invalid(
+                    "insecure_s3_endpoint",
+                    anyhow!("HTTP S3 endpoints require explicit insecure-local opt-in"),
+                ));
+            }
+            _ => {
+                return Err(invalid(
+                    "invalid_s3_endpoint",
+                    anyhow!("S3 endpoint must use HTTPS or explicitly allowed HTTP"),
+                ));
+            }
+        }
+    } else if allow_insecure_http {
+        return Err(invalid(
+            "invalid_s3_endpoint",
+            anyhow!("allow_insecure_http requires an explicit S3 endpoint"),
+        ));
     }
-    if !(1..=128).contains(&config.region.len())
-        || !safe_namespace_component(&config.region)
-        || !(1..=255).contains(&config.bucket.len())
-        || !safe_namespace_component(&config.bucket)
+    if !(1..=128).contains(&region.len())
+        || !safe_namespace_component(region)
+        || !(1..=255).contains(&bucket.len())
+        || !safe_namespace_component(bucket)
     {
         return Err(invalid(
             "invalid_s3_namespace",
             anyhow!("S3 region or bucket is outside its safe length/character bounds"),
         ));
     }
-    if config.connect_timeout.is_zero() || config.operation_timeout.is_zero() {
+    if connect_timeout.is_zero()
+        || connect_timeout > Duration::from_secs(300)
+        || operation_timeout.is_zero()
+        || operation_timeout > Duration::from_secs(300)
+    {
         return Err(invalid(
             "invalid_s3_timeout",
-            anyhow!("S3 connect and operation timeouts must be non-zero"),
+            anyhow!("S3 connect and operation timeouts must be between 1 and 300 seconds"),
         ));
     }
+    Ok(())
+}
+
+fn validate_credentials(credentials: &S3ArtifactStoreCredentials) -> ArtifactResult<()> {
     if credentials.access_key_id.is_empty() || credentials.secret_access_key.is_empty() {
         return Err(invalid(
             "invalid_s3_credentials",
             anyhow!("S3 access key ID and secret access key must not be empty"),
         ));
     }
-    normalize_prefix(&config.prefix).map(|_| ())
+    Ok(())
 }
 
 fn normalize_prefix(prefix: &str) -> ArtifactResult<String> {
@@ -1041,16 +1003,33 @@ mod tests {
     };
 
     fn config(endpoint: &str, allow_insecure_http: bool) -> S3ArtifactStoreConfig {
-        S3ArtifactStoreConfig {
-            endpoint: Url::parse(endpoint).unwrap(),
-            region: "us-east-1".to_owned(),
-            bucket: "daemon-private-test".to_owned(),
-            prefix: "/tenant_1/private-artifacts/".to_owned(),
-            force_path_style: true,
+        config_result(
+            endpoint,
             allow_insecure_http,
-            connect_timeout: Duration::from_secs(3),
-            operation_timeout: Duration::from_secs(10),
-        }
+            "/tenant_1/private-artifacts/",
+            "daemon-private-test",
+            "us-east-1",
+        )
+        .unwrap()
+    }
+
+    fn config_result(
+        endpoint: &str,
+        allow_insecure_http: bool,
+        prefix: &str,
+        bucket: &str,
+        region: &str,
+    ) -> ArtifactResult<S3ArtifactStoreConfig> {
+        S3ArtifactStoreConfig::new(
+            Some(Url::parse(endpoint).unwrap()),
+            region.to_owned(),
+            bucket.to_owned(),
+            prefix.to_owned(),
+            true,
+            allow_insecure_http,
+            Duration::from_secs(3),
+            Duration::from_secs(10),
+        )
     }
 
     fn credentials() -> S3ArtifactStoreCredentials {
@@ -1069,17 +1048,27 @@ mod tests {
             assert!(!debug.contains(secret));
         }
         assert!(matches!(
-            S3ArtifactStore::new(config("http://127.0.0.1:9000", false), credential_fixture,),
+            config_result(
+                "http://127.0.0.1:9000",
+                false,
+                "tenant/private",
+                "daemon-private-test",
+                "us-east-1",
+            ),
             Err(ArtifactStoreError::InvalidInput {
                 code: "insecure_s3_endpoint",
                 ..
             })
         ));
         for prefix in ["../escape", "safe//escape", "unsafe prefix"] {
-            let mut invalid_config = config("https://s3.example.com", false);
-            invalid_config.prefix = prefix.to_owned();
             assert!(matches!(
-                S3ArtifactStore::new(invalid_config, credentials()),
+                config_result(
+                    "https://s3.example.com",
+                    false,
+                    prefix,
+                    "daemon-private-test",
+                    "us-east-1",
+                ),
                 Err(ArtifactStoreError::InvalidInput {
                     code: "invalid_s3_prefix",
                     ..
@@ -1087,14 +1076,24 @@ mod tests {
             ));
         }
         for (field, value) in [("bucket", "unsafe/bucket"), ("region", "unsafe region")] {
-            let mut invalid_config = config("https://s3.example.com", false);
-            if field == "bucket" {
-                invalid_config.bucket = value.to_owned();
+            let bucket = if field == "bucket" {
+                value
             } else {
-                invalid_config.region = value.to_owned();
-            }
+                "daemon-private-test"
+            };
+            let region = if field == "region" {
+                value
+            } else {
+                "us-east-1"
+            };
             assert!(matches!(
-                S3ArtifactStore::new(invalid_config, credentials()),
+                config_result(
+                    "https://s3.example.com",
+                    false,
+                    "tenant/private",
+                    bucket,
+                    region,
+                ),
                 Err(ArtifactStoreError::InvalidInput {
                     code: "invalid_s3_namespace",
                     ..
@@ -1102,19 +1101,29 @@ mod tests {
             ));
         }
         assert!(matches!(
-            S3ArtifactStore::new(
-                config("https://s3.example.com/not-an-origin", false),
-                credentials(),
+            config_result(
+                "https://s3.example.com/not-an-origin",
+                false,
+                "tenant/private",
+                "daemon-private-test",
+                "us-east-1",
             ),
             Err(ArtifactStoreError::InvalidInput {
                 code: "invalid_s3_endpoint",
                 ..
             })
         ));
-        let mut long_prefix = config("https://s3.example.com", false);
-        long_prefix.prefix = "a".repeat(513);
         assert!(matches!(
-            S3ArtifactStore::new(long_prefix, credentials()),
+            S3ArtifactStoreConfig::new(
+                Some(Url::parse("https://s3.example.com").unwrap()),
+                "us-east-1".to_owned(),
+                "daemon-private-test".to_owned(),
+                "a".repeat(513),
+                true,
+                false,
+                Duration::from_secs(3),
+                Duration::from_secs(10),
+            ),
             Err(ArtifactStoreError::InvalidInput {
                 code: "invalid_s3_prefix",
                 ..
@@ -1149,14 +1158,6 @@ mod tests {
         assert_eq!(
             root_store.object_key(&finalized),
             "daemon-private/finalized_package/cap-safe-123.llmtrace"
-        );
-        assert_eq!(
-            store.readiness_object_key(),
-            "tenant_1/private-artifacts/daemon-private/.llm-notary-readiness-v1"
-        );
-        assert_eq!(
-            root_store.readiness_object_key(),
-            "daemon-private/.llm-notary-readiness-v1"
         );
     }
 

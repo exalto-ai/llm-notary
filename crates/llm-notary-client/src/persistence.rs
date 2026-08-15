@@ -11,7 +11,7 @@ use crate::{
     config::{AgentConfig, MetadataBackend},
     metadata_store::MetadataStore,
     postgres_metadata_store::PostgresMetadataStore,
-    s3_artifact_store::{S3ArtifactStore, S3ArtifactStoreConfig, S3ArtifactStoreCredentials},
+    s3_artifact_store::{S3ArtifactStore, S3ArtifactStoreCredentials},
     sqlite_metadata_store::SqliteMetadataStore,
 };
 
@@ -72,18 +72,7 @@ impl Persistence {
             let credentials = config.s3_credentials()?;
             Some(
                 S3ArtifactStore::new(
-                    S3ArtifactStoreConfig {
-                        endpoint: url::Url::parse(&s3.endpoint)?,
-                        region: s3.region.clone(),
-                        bucket: s3.bucket.clone(),
-                        prefix: s3.prefix.clone(),
-                        force_path_style: s3.force_path_style,
-                        allow_insecure_http: s3.allow_insecure_http,
-                        connect_timeout: std::time::Duration::from_secs(s3.connect_timeout_seconds),
-                        operation_timeout: std::time::Duration::from_secs(
-                            s3.operation_timeout_seconds,
-                        ),
-                    },
+                    s3.artifact_store_config()?,
                     S3ArtifactStoreCredentials::new(
                         credentials.access_key_id(),
                         credentials.secret_access_key(),

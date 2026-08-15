@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES,
-    notary_directory::NotaryEndpoint, sha256_hex,
+    notary_directory::NotaryEndpoint, s3_artifact_store::S3ArtifactStoreConfig, sha256_hex,
 };
 
 /// The versioned identifier for an agent configuration file.
@@ -142,8 +142,10 @@ impl ArtifactStorageBackend {
 #[serde(deny_unknown_fields)]
 pub struct S3StorageConfig {
     pub bucket: String,
+    #[serde(default = "default_s3_region")]
     pub region: String,
-    pub endpoint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<String>,
     #[serde(default = "default_s3_prefix")]
     pub prefix: String,
     #[serde(default)]
@@ -154,6 +156,28 @@ pub struct S3StorageConfig {
     pub connect_timeout_seconds: u64,
     #[serde(default = "default_s3_operation_timeout_seconds")]
     pub operation_timeout_seconds: u64,
+}
+
+impl S3StorageConfig {
+    pub(crate) fn artifact_store_config(&self) -> Result<S3ArtifactStoreConfig> {
+        let endpoint = self
+            .endpoint
+            .as_deref()
+            .map(url::Url::parse)
+            .transpose()
+            .context("storage.s3.endpoint must be an absolute URL")?;
+        S3ArtifactStoreConfig::new(
+            endpoint,
+            self.region.clone(),
+            self.bucket.clone(),
+            self.prefix.clone(),
+            self.force_path_style,
+            self.allow_insecure_http,
+            std::time::Duration::from_secs(self.connect_timeout_seconds),
+            std::time::Duration::from_secs(self.operation_timeout_seconds),
+        )
+        .map_err(|error| anyhow::Error::new(error).context("storage.s3 configuration is invalid"))
+    }
 }
 
 pub(crate) struct SecretS3Credentials {
@@ -587,61 +611,7 @@ impl AgentConfig {
             );
         }
         if let Some(s3) = &self.storage.s3 {
-            ensure!(
-                !s3.bucket.is_empty()
-                    && s3.bucket.len() <= 255
-                    && s3.bucket.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-                    }),
-                "storage.s3.bucket must contain 1 to 255 safe ASCII bytes"
-            );
-            ensure!(
-                !s3.region.is_empty()
-                    && s3.region.len() <= 128
-                    && s3.region.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-                    }),
-                "storage.s3.region must contain 1 to 128 safe ASCII bytes"
-            );
-            ensure!(
-                s3.prefix.len() <= 512
-                    && (s3.prefix.is_empty()
-                        || (!s3.prefix.starts_with('/')
-                            && !s3.prefix.ends_with('/')
-                            && s3.prefix.split('/').all(|component| {
-                                !component.is_empty()
-                                    && !matches!(component, "." | "..")
-                                    && component.bytes().all(|byte| {
-                                        byte.is_ascii_alphanumeric()
-                                            || matches!(byte, b'-' | b'_' | b'.')
-                                    })
-                            }))),
-                "storage.s3.prefix must contain only safe, non-empty relative path segments"
-            );
-            ensure!(
-                (1..=300).contains(&s3.connect_timeout_seconds),
-                "storage.s3.connect_timeout_seconds must be between 1 and 300"
-            );
-            ensure!(
-                (1..=300).contains(&s3.operation_timeout_seconds),
-                "storage.s3.operation_timeout_seconds must be between 1 and 300"
-            );
-            let endpoint = url::Url::parse(&s3.endpoint)
-                .context("storage.s3.endpoint must be an absolute URL")?;
-            ensure!(
-                endpoint.scheme() == "https"
-                    || (endpoint.scheme() == "http" && s3.allow_insecure_http),
-                "storage.s3.endpoint must use HTTPS unless allow_insecure_http is explicitly enabled"
-            );
-            ensure!(
-                endpoint.has_host()
-                    && endpoint.username().is_empty()
-                    && endpoint.password().is_none()
-                    && endpoint.query().is_none()
-                    && endpoint.fragment().is_none()
-                    && matches!(endpoint.path(), "" | "/"),
-                "storage.s3.endpoint must be an origin without credentials, query, fragment, or path"
-            );
+            s3.artifact_store_config()?;
         }
         Ok(())
     }
@@ -939,6 +909,10 @@ fn default_s3_prefix() -> String {
     "llm-notary".to_owned()
 }
 
+fn default_s3_region() -> String {
+    "us-east-1".to_owned()
+}
+
 fn default_s3_connect_timeout_seconds() -> u64 {
     10
 }
@@ -1114,7 +1088,7 @@ mod tests {
         config.storage.s3 = Some(S3StorageConfig {
             bucket: "llm-notary-artifacts".to_owned(),
             region: "us-east-1".to_owned(),
-            endpoint: "https://s3.example.test".to_owned(),
+            endpoint: None,
             prefix: "tenant/daemon".to_owned(),
             force_path_style: false,
             allow_insecure_http: false,
@@ -1124,7 +1098,7 @@ mod tests {
         config.validate().unwrap();
 
         let s3 = config.storage.s3.as_mut().unwrap();
-        s3.endpoint = "http://minio:9000".to_owned();
+        s3.endpoint = Some("http://minio:9000".to_owned());
         assert!(config.validate().is_err());
         config.storage.s3.as_mut().unwrap().allow_insecure_http = true;
         config.validate().unwrap();
@@ -1132,7 +1106,7 @@ mod tests {
         config.storage.s3.as_mut().unwrap().prefix = "../other-tenant".to_owned();
         assert!(config.validate().is_err());
         config.storage.s3.as_mut().unwrap().prefix = "tenant/daemon/".to_owned();
-        assert!(config.validate().is_err());
+        config.validate().unwrap();
         config.storage.s3.as_mut().unwrap().prefix = "tenant//daemon".to_owned();
         assert!(config.validate().is_err());
         config.storage.s3.as_mut().unwrap().prefix = "tenant daemon".to_owned();
@@ -1156,12 +1130,27 @@ mod tests {
     }
 
     #[test]
+    fn minimal_s3_configuration_uses_aws_defaults() {
+        let encoded = format!(
+            "format = {CONFIG_FORMAT:?}\n\n[storage]\nbackend = \"s3\"\n\n[storage.s3]\nbucket = \"private-artifacts\"\n"
+        );
+        let config: AgentConfig = toml::from_str(&encoded).unwrap();
+        config.validate().unwrap();
+        let s3 = config.storage.s3.unwrap();
+        assert_eq!(s3.region, "us-east-1");
+        assert!(s3.endpoint.is_none());
+        assert_eq!(s3.prefix, "llm-notary");
+        assert!(!s3.force_path_style);
+        assert!(!s3.allow_insecure_http);
+    }
+
+    #[test]
     fn filesystem_can_retain_an_s3_read_profile() {
         let mut config = AgentConfig::default();
         config.storage.s3 = Some(S3StorageConfig {
             bucket: "llm-notary-artifacts".to_owned(),
             region: "us-east-1".to_owned(),
-            endpoint: "https://s3.example.test".to_owned(),
+            endpoint: Some("https://s3.example.test".to_owned()),
             prefix: "llm-notary".to_owned(),
             force_path_style: false,
             allow_insecure_http: false,

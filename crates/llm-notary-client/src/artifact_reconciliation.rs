@@ -13,10 +13,11 @@ use crate::{
 };
 
 const CAPTURE_PAGE_SIZE: usize = 201;
+const S3_PAGE_SIZE: usize = 1_000;
 
 /// Stable summary printed by the one-shot daemon reconciliation command.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct ArtifactReconciliationReport {
+pub(crate) struct ArtifactReconciliationReport {
     pub status: &'static str,
     pub referenced_artifacts: usize,
     pub verified_artifacts: usize,
@@ -49,16 +50,10 @@ impl ArtifactReconciliationReport {
 /// Verifies every referenced artifact and inventories old, unreferenced
 /// objects under the configured daemon-owned S3 prefix. It never mutates
 /// metadata or deletes bytes.
-pub async fn reconcile_artifacts(
+pub(crate) async fn reconcile_artifacts(
     persistence: &Persistence,
-    s3_page_size: usize,
     orphan_grace_seconds: u64,
 ) -> Result<ArtifactReconciliationReport> {
-    if !(1..=1_000).contains(&s3_page_size) {
-        return Err(anyhow!(
-            "artifact reconciliation S3 page size must be between 1 and 1000"
-        ));
-    }
     let mut referenced = Vec::new();
     let mut cursor = None;
     loop {
@@ -122,7 +117,7 @@ pub async fn reconcile_artifacts(
     let cutoff = i64::try_from(now.saturating_sub(orphan_grace_seconds)).unwrap_or(i64::MAX);
     if let Some(inventory) = persistence
         .artifacts
-        .s3_reconciliation_inventory(&referenced, s3_page_size, cutoff)
+        .s3_reconciliation_inventory(&referenced, S3_PAGE_SIZE, cutoff)
         .await
         .map_err(|_| anyhow!("S3 artifact reconciliation inventory failed"))?
     {
@@ -203,7 +198,7 @@ mod tests {
             .await
             .unwrap();
 
-        let clean = reconcile_artifacts(&persistence, 100, 0).await.unwrap();
+        let clean = reconcile_artifacts(&persistence, 0).await.unwrap();
         assert_eq!(clean.status, "clean");
         assert_eq!(clean.referenced_artifacts, 1);
         assert_eq!(clean.verified_artifacts, 1);
@@ -215,7 +210,7 @@ mod tests {
                 .join(format!("{capture_id}.llmcapture")),
         )
         .unwrap();
-        let missing = reconcile_artifacts(&persistence, 100, 0).await.unwrap();
+        let missing = reconcile_artifacts(&persistence, 0).await.unwrap();
         assert_eq!(missing.status, "findings");
         assert_eq!(missing.missing_references, 1);
         assert_eq!(

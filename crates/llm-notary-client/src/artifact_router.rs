@@ -16,7 +16,7 @@ use crate::{
 
 /// Routes immutable writes to one selected backend while preserving reads from
 /// every explicitly configured historical backend.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RoutedArtifactStore {
     writer: ArtifactStorageBackend,
     filesystem: Arc<FileSystemArtifactStore>,
@@ -24,7 +24,7 @@ pub struct RoutedArtifactStore {
 }
 
 impl RoutedArtifactStore {
-    pub fn new(
+    pub(crate) fn new(
         writer: ArtifactStorageBackend,
         filesystem: FileSystemArtifactStore,
         s3: Option<S3ArtifactStore>,
@@ -39,13 +39,13 @@ impl RoutedArtifactStore {
         })
     }
 
-    pub const fn backend_name(&self) -> &'static str {
+    pub(crate) const fn backend_name(&self) -> &'static str {
         self.writer.as_str()
     }
 
     /// Probes only the selected writer. Historical readers fail closed when a
     /// request needs them, but do not prevent new artifacts from being stored.
-    pub async fn readiness(&self) -> ArtifactResult<()> {
+    pub(crate) async fn readiness(&self) -> ArtifactResult<()> {
         match self.writer {
             ArtifactStorageBackend::Filesystem => self.filesystem.readiness().await,
             ArtifactStorageBackend::S3 => {
@@ -60,7 +60,7 @@ impl RoutedArtifactStore {
 
     /// Produces a bounded, report-only inventory for the configured S3
     /// reader, if present. Only S3-tagged metadata records are considered.
-    pub async fn s3_reconciliation_inventory(
+    pub(crate) async fn s3_reconciliation_inventory(
         &self,
         referenced: &[ArtifactRecord],
         page_size: usize,

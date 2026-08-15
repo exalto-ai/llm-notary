@@ -12,7 +12,7 @@ use clap::{Parser, Subcommand};
 pub use llm_notary_core::*;
 
 pub mod admin;
-pub mod artifact_reconciliation;
+mod artifact_reconciliation;
 pub mod artifact_router;
 pub mod artifact_store;
 pub mod cli;
@@ -22,7 +22,7 @@ pub mod metadata;
 pub mod metadata_store;
 pub mod persistence;
 mod postgres_metadata_store;
-pub mod s3_artifact_store;
+mod s3_artifact_store;
 mod sqlite_catalog;
 pub mod sqlite_metadata_store;
 pub mod update;
@@ -49,12 +49,9 @@ enum DaemonCommand {
     Migrate,
     /// Report missing, corrupt, or unreferenced private artifacts without deleting anything.
     ReconcileArtifacts {
-        /// Maximum managed S3 objects requested per page; all pages are scanned.
-        #[arg(long, default_value_t = 1_000)]
-        page_size: usize,
-        /// Minimum object age before an unreferenced object is reported as a candidate.
-        #[arg(long, default_value_t = 7 * 24 * 60 * 60)]
-        orphan_grace_seconds: u64,
+        /// Minimum age in days before an unreferenced object is reported.
+        #[arg(long, default_value_t = 7)]
+        orphan_grace_days: u64,
     },
 }
 
@@ -63,11 +60,8 @@ pub async fn run_daemon() -> Result<()> {
     let cli = DaemonCli::parse();
     match cli.command {
         Some(DaemonCommand::Migrate) => return run_daemon_migrator(cli.config).await,
-        Some(DaemonCommand::ReconcileArtifacts {
-            page_size,
-            orphan_grace_seconds,
-        }) => {
-            return run_artifact_reconciliation(cli.config, page_size, orphan_grace_seconds).await;
+        Some(DaemonCommand::ReconcileArtifacts { orphan_grace_days }) => {
+            return run_artifact_reconciliation(cli.config, orphan_grace_days).await;
         }
         None => {}
     }
@@ -80,9 +74,13 @@ pub async fn run_daemon() -> Result<()> {
 /// the vault, providers, notary discovery, or listeners.
 async fn run_artifact_reconciliation(
     config_path: Option<PathBuf>,
-    page_size: usize,
-    orphan_grace_seconds: u64,
+    orphan_grace_days: u64,
 ) -> Result<()> {
+    const SECONDS_PER_DAY: u64 = 24 * 60 * 60;
+
+    let orphan_grace_seconds = orphan_grace_days
+        .checked_mul(SECONDS_PER_DAY)
+        .ok_or_else(|| anyhow::anyhow!("artifact reconciliation grace period is too large"))?;
     let path = match config_path {
         Some(path) => path,
         None => config::default_config_path()?,
@@ -91,10 +89,9 @@ async fn run_artifact_reconciliation(
     let persistence = persistence::Persistence::open(&config)
         .await
         .map_err(|_| anyhow::anyhow!("artifact reconciliation could not open persistence"))?;
-    let report =
-        artifact_reconciliation::reconcile_artifacts(&persistence, page_size, orphan_grace_seconds)
-            .await
-            .map_err(|_| anyhow::anyhow!("artifact reconciliation failed"))?;
+    let report = artifact_reconciliation::reconcile_artifacts(&persistence, orphan_grace_seconds)
+        .await
+        .map_err(|_| anyhow::anyhow!("artifact reconciliation failed"))?;
     println!("{}", serde_json::to_string(&report)?);
     Ok(())
 }
@@ -151,10 +148,8 @@ mod tests {
                 "--config",
                 "agent.toml",
                 "reconcile-artifacts",
-                "--page-size",
-                "100",
-                "--orphan-grace-seconds",
-                "3600",
+                "--orphan-grace-days",
+                "1",
             ])
             .is_ok()
         );

@@ -124,19 +124,18 @@ S3-compatible private bucket, select S3 explicitly:
 ```toml
 [storage]
 backend = "s3"
-bundle_dir = "/var/lib/llm-notary/bundles"       # legacy filesystem reader
-finalized_dir = "/var/lib/llm-notary/traces"     # legacy filesystem reader
 
 [storage.s3]
 bucket = "llm-notary-private"
-region = "us-east-1"
-endpoint = "https://s3.example.com"
-prefix = "llm-notary"
-force_path_style = false
-allow_insecure_http = false
-connect_timeout_seconds = 10
-operation_timeout_seconds = 30
 ```
+
+That minimal form uses AWS S3 in `us-east-1`, the private `llm-notary`
+prefix, HTTPS, virtual-hosted addressing, and bounded timeouts. Set `region`
+for another AWS region. S3-compatible services may also set `endpoint` and
+`force_path_style`; plain HTTP additionally requires the explicit
+`allow_insecure_http = true` opt-in and is intended only for a trusted local
+emulator such as MinIO. Filesystem directories remain available as legacy
+readers when old metadata still points at local artifacts.
 
 Credentials never belong in `config.toml`. Set
 `LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID` and
@@ -145,16 +144,13 @@ optional session token uses `LLM_NOTARY_ARTIFACT_S3_SESSION_TOKEN` or its
 `_FILE` form. A direct value wins without reading the corresponding file.
 Ambient instance metadata and shared SDK profiles are not used.
 
-HTTPS is required by default. `allow_insecure_http = true` is only for an
-explicitly trusted local S3 emulator such as MinIO. The endpoint must be an
-origin with no credentials, path, query, or fragment. Give the runtime
-`GetObject` and `PutObject` access only within the configured prefix. Readiness
-conditionally creates and reads back one fixed, private sentinel under the
-configured `daemon-private/` namespace, so it tests the same scoped object
-permissions as artifact publication without listing or deleting objects. The
-report-only reconciliation command additionally needs `ListBucket` constrained
-with `s3:prefix` to that namespace. Runtime credentials do not need
-`DeleteObject`. Objects are always addressed under `daemon-private/deferred_bundle` or
+An explicit endpoint must be an origin with no credentials, path, query, or
+fragment. Give the runtime `GetObject` and `PutObject` access within the
+configured prefix, plus `ListBucket` constrained with `s3:prefix` to the
+managed `daemon-private/` namespace. Readiness uses one bounded, non-mutating
+list request against that namespace; reconciliation uses the same permission.
+Runtime credentials do not need `DeleteObject`. Objects are always addressed
+under `daemon-private/deferred_bundle` or
 `daemon-private/finalized_package`. Neither bucket nor object keys contain
 prompts, outputs, or provider credentials.
 
@@ -175,15 +171,15 @@ recovery or finalization retry. Stop the daemon and run the bounded,
 report-only check before cleanup:
 
 ```bash
-llm-notaryd --config /etc/llm-notary/config.toml reconcile-artifacts \
-  --page-size 1000 --orphan-grace-seconds 604800
+llm-notaryd reconcile-artifacts --config /etc/llm-notary/config.toml
 ```
 
 The JSON report verifies every referenced artifact and counts old,
-unreferenced candidates only beneath the configured managed prefix. It never
-prints object keys, mutates metadata, or deletes bytes. The page size bounds
-each S3 request, while the command follows continuation
-tokens until the complete managed prefix has been scanned. Operators may
+unreferenced candidates only beneath the configured managed prefix. The safe
+default ignores objects newer than seven days; `--orphan-grace-days` can
+override that threshold. The command never prints object keys, mutates
+metadata, or deletes bytes, and it follows bounded S3 pages until the complete
+managed prefix has been scanned. Operators may
 remove candidates only after resolving every missing, corrupt, invalid, or
 backend finding, while the daemon remains stopped, and after comparing the
 report with a consistent metadata backup. Never apply that cleanup rule

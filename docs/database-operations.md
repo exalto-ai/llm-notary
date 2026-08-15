@@ -144,9 +144,9 @@ confirming no capture or finalization is running, snapshot both stores, then
 restart it. For S3, enable object versioning or use a provider snapshot that can
 restore the complete managed prefix to the same point. After a restore, verify
 every advertised artifact locator, size, and SHA-256 before serving traffic by
-running `llm-notaryd --config <path> reconcile-artifacts` while the daemon is
-stopped. Resolve every reported finding; a truncated S3 scan is not a complete
-check. The command is report-only and never deletes objects. No
+running `llm-notaryd reconcile-artifacts --config <path>` while the daemon is
+stopped. Resolve every reported finding. The command is report-only and never
+deletes objects. No
 SQLite-to-PostgreSQL or filesystem-to-S3 importer is provided.
 
 Keep the sum of `catalog.postgres.max_connections` across running daemons plus

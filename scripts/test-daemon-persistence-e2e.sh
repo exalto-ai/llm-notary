@@ -1128,15 +1128,13 @@ if [[ $artifact_engine == s3 ]]; then
   orphan_target=$(artifact_target cap-e2e-unreferenced deferred_bundle)
   printf 'young unreferenced reconciliation fixture' | minio_mc pipe "$orphan_target" >/dev/null
   young_reconciliation=$("${compose[@]}" run --rm --no-deps -T "$daemon_service" \
-    --config "$daemon_config" reconcile-artifacts \
-    --page-size 1 --orphan-grace-seconds 604800)
+    reconcile-artifacts --config "$daemon_config")
   assert_json_while_daemon_stopped "$young_reconciliation" '
     .s3_scanned_objects >= 2 and .s3_unreferenced_candidates == 0
   '
 fi
 reconciliation=$("${compose[@]}" run --rm --no-deps -T "$daemon_service" \
-  --config "$daemon_config" reconcile-artifacts \
-  --page-size 1 --orphan-grace-seconds 0)
+  reconcile-artifacts --config "$daemon_config" --orphan-grace-days 0)
 if [[ $artifact_engine == s3 ]]; then
   assert_json_while_daemon_stopped "$reconciliation" '
     .status == "findings" and
