@@ -550,7 +550,7 @@ async fn public_share_package(
     Ok(public_bytes(
         bytes,
         super::intake::ARCHIVE_CONTENT_TYPE,
-        &sha256,
+        sha256,
         Some(&format!("llm-notary-{share_id}.llmtrace")),
         &share.visibility,
     ))
