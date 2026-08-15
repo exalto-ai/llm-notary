@@ -22,6 +22,7 @@ use axum::{
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use rust_embed::RustEmbed;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use tokio::sync::{Mutex, Notify, watch};
 use tower_http::{
     limit::RequestBodyLimitLayer,
@@ -48,12 +49,14 @@ use crate::{
         verify_trace_package_bytes,
     },
     cli::{DEFAULT_PUBLIC_ORIGIN, auth, notary, proxy, publish},
+    cluster::{ClusterRuntime, Lifecycle},
     config::AgentConfig,
+    metadata::TerminalOperationResult,
     metadata::{
         CaptureFilters, CapturePagePosition, CaptureSummary, Event, EventFilters, Operation,
-        OperationAttempt, OperationFilters, OperationPagePosition, TerminalOperationResult,
+        OperationAttempt, OperationFilters, OperationPagePosition, SharedNotaryTrust,
     },
-    metadata_store::{MetadataStore, MetadataStoreError},
+    metadata_store::{FinalizationClaim, MetadataStore, MetadataStoreError},
     notary_directory::{NotaryDirectoryRecord, NotaryKeyStatus, key_id},
     persistence::Persistence,
     vault::Vault,
@@ -80,16 +83,23 @@ pub(crate) struct AdminState {
     account_credentials: Arc<Mutex<()>>,
     pub(crate) work_available: Arc<Notify>,
     pub(crate) update_status: crate::update::SharedUpdateStatus,
+    cluster: Option<Arc<ClusterRuntime>>,
 }
 
 impl AdminState {
-    pub(crate) async fn new(persistence: Persistence, config: Arc<AgentConfig>) -> Result<Self> {
-        let interrupted = persistence
-            .metadata
-            .interrupt_running_operations(now_ms()?)
-            .await?;
-        if interrupted > 0 {
-            tracing::warn!(interrupted, "recovered interrupted finalization operations");
+    pub(crate) async fn new(
+        persistence: Persistence,
+        config: Arc<AgentConfig>,
+        cluster: Option<Arc<ClusterRuntime>>,
+    ) -> Result<Self> {
+        if cluster.is_none() {
+            let interrupted = persistence
+                .metadata
+                .interrupt_running_operations(now_ms()?)
+                .await?;
+            if interrupted > 0 {
+                tracing::warn!(interrupted, "recovered interrupted finalization operations");
+            }
         }
         Ok(Self {
             persistence,
@@ -98,7 +108,12 @@ impl AdminState {
             pending_authorizations: Arc::new(Mutex::new(HashMap::new())),
             account_credentials: Arc::new(Mutex::new(())),
             work_available: Arc::new(Notify::new()),
-            update_status: crate::update::background_status(),
+            update_status: if cluster.is_some() {
+                crate::update::background_status_disabled("cluster_managed")
+            } else {
+                crate::update::background_status()
+            },
+            cluster,
         })
     }
 }
@@ -267,9 +282,17 @@ async fn health() -> Json<HealthResponse> {
     })
 }
 
-#[utoipa::path(get, path = "/readyz", summary = "Check service readiness", description = "Runs bounded metadata and selected artifact-writer dependency probes. Dependency outages or schema mismatches make readiness fail while /healthz remains local liveness.", responses((status = 200, body = ReadinessResponse), (status = 503, body = ErrorEnvelope)), tag = "local-admin")]
+#[utoipa::path(get, path = "/readyz", summary = "Check service readiness", description = "Runs bounded metadata, selected artifact-writer, and cluster trust dependency probes. Dependency outages or schema mismatches make readiness fail while /healthz remains local liveness.", responses((status = 200, body = ReadinessResponse), (status = 503, body = ErrorEnvelope)), tag = "local-admin")]
 async fn readiness(State(state): State<AdminState>) -> Result<Json<ReadinessResponse>, ApiError> {
+    if state
+        .cluster
+        .as_ref()
+        .is_some_and(|cluster| cluster.lifecycle() != Lifecycle::Ready)
+    {
+        return Err(ApiError::service_unavailable("replica_not_ready"));
+    }
     let persistence = state.persistence.clone();
+    let require_shared_trust = state.cluster.is_some() && state.config.notary.endpoint.is_none();
     match tokio::time::timeout(DEPENDENCY_PROBE_TIMEOUT, async move {
         persistence
             .metadata
@@ -281,6 +304,16 @@ async fn readiness(State(state): State<AdminState>) -> Result<Json<ReadinessResp
             .readiness()
             .await
             .map_err(|_| "artifact_not_ready")?;
+        if require_shared_trust
+            && persistence
+                .metadata
+                .notary_trust_snapshot()
+                .await
+                .map_err(|_| "notary_trust_not_ready")?
+                .is_none()
+        {
+            return Err("notary_trust_not_ready");
+        }
         Ok::<_, &'static str>(())
     })
     .await
@@ -323,13 +356,31 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
         Ok(expires_at) => expires_at,
         Err(_) => return ApiError::internal("clock_error").into_response(),
     };
-    state
-        .sessions
-        .lock()
-        .await
-        .insert(session.clone(), expires_at);
+    if state.cluster.is_some() {
+        let created_at = expires_at - SESSION_MAX_AGE_SECONDS * 1_000;
+        if state
+            .persistence
+            .metadata
+            .create_dashboard_session(&session_hash(&session), created_at, expires_at)
+            .await
+            .is_err()
+        {
+            return ApiError::service_unavailable("metadata_not_ready").into_response();
+        }
+    } else {
+        state
+            .sessions
+            .lock()
+            .await
+            .insert(session.clone(), expires_at);
+    }
     let cookie = format!(
-        "{SESSION_COOKIE}={session}; HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_MAX_AGE_SECONDS}"
+        "{SESSION_COOKIE}={session}; {}HttpOnly; SameSite=Strict; Path=/; Max-Age={SESSION_MAX_AGE_SECONDS}",
+        if state.cluster.is_some() {
+            "Secure; "
+        } else {
+            ""
+        }
     );
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(
@@ -342,7 +393,19 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
 #[utoipa::path(delete, path = "/v1/session", summary = "End a dashboard session", description = "Deletes the current browser session and expires its local cookie.", responses((status = 204, description = "Dashboard session ended"), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn end_session(State(state): State<AdminState>, request: Request) -> Response {
     if let Some(session) = session_from_headers(request.headers()) {
-        state.sessions.lock().await.remove(session);
+        if state.cluster.is_some() {
+            if state
+                .persistence
+                .metadata
+                .revoke_dashboard_session(&session_hash(session))
+                .await
+                .is_err()
+            {
+                return ApiError::service_unavailable("metadata_not_ready").into_response();
+            }
+        } else {
+            state.sessions.lock().await.remove(session);
+        }
     }
     let mut response = StatusCode::NO_CONTENT.into_response();
     response.headers_mut().insert(
@@ -368,6 +431,17 @@ async fn require_auth(State(state): State<AdminState>, request: Request, next: N
         == Some("dashboard")
     {
         match (session_from_headers(request.headers()), now_ms()) {
+            (Some(value), Ok(now)) if state.cluster.is_some() => match state
+                .persistence
+                .metadata
+                .dashboard_session_valid(&session_hash(value), now)
+                .await
+            {
+                Ok(valid) => valid,
+                Err(_) => {
+                    return ApiError::service_unavailable("metadata_not_ready").into_response();
+                }
+            },
             (Some(value), Ok(now)) => {
                 let mut sessions = state.sessions.lock().await;
                 sessions.retain(|_, expires_at| *expires_at > now);
@@ -385,13 +459,37 @@ async fn require_auth(State(state): State<AdminState>, request: Request, next: N
     }
 }
 
+fn session_hash(token: &str) -> [u8; 32] {
+    let mut digest = Sha256::new();
+    digest.update(b"llm-notary/dashboard-session/v1\0");
+    digest.update(token.as_bytes());
+    digest.finalize().into()
+}
+
 #[utoipa::path(get, path = "/v1/status", summary = "Get local service status", description = "Returns listener addresses, bounded metadata and artifact-writer readiness, vault and notary configuration, preview limits, and current capture counts.", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>, ApiError> {
+    if state
+        .cluster
+        .as_ref()
+        .is_some_and(|cluster| cluster.lifecycle() != Lifecycle::Ready)
+    {
+        return Err(ApiError::service_unavailable("replica_not_ready"));
+    }
     let metadata = state.persistence.metadata.clone();
     let artifacts = state.persistence.artifacts.clone();
+    let require_shared_trust = state.cluster.is_some() && state.config.notary.endpoint.is_none();
     let counts = tokio::time::timeout(DEPENDENCY_PROBE_TIMEOUT, async move {
         metadata.readiness().await.map_err(|_| ())?;
         artifacts.readiness().await.map_err(|_| ())?;
+        if require_shared_trust
+            && metadata
+                .notary_trust_snapshot()
+                .await
+                .map_err(|_| ())?
+                .is_none()
+        {
+            return Err(());
+        }
         metadata.counts().await.map_err(|_| ())
     })
     .await
@@ -401,6 +499,25 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
     Ok(Json(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),
         build_id: crate::cli::BUILD_ID.into(),
+        runtime_profile: if state.cluster.is_some() {
+            "cluster"
+        } else {
+            "local"
+        }
+        .into(),
+        instance_id: state
+            .cluster
+            .as_ref()
+            .map(|cluster| cluster.identity().instance_id().to_owned()),
+        incarnation_id: state
+            .cluster
+            .as_ref()
+            .map(|cluster| cluster.identity().incarnation_id().to_owned()),
+        lifecycle: state
+            .cluster
+            .as_ref()
+            .map(|cluster| format!("{:?}", cluster.lifecycle()).to_ascii_lowercase())
+            .unwrap_or_else(|| "ready".into()),
         proxy_listener: state.config.proxy.listen.to_string(),
         admin_listener: state.config.admin.listen.to_string(),
         metadata_backend: state.persistence.metadata.backend_name().into(),
@@ -427,14 +544,27 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
     }))
 }
 
-#[utoipa::path(get, path = "/v1/notaries", summary = "Get configured notary trust", description = "Returns a safe read-only projection of the pinned notary trust history or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.", responses((status = 200, body = NotariesResponse), (status = 401, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/notaries", summary = "Get configured notary trust", description = "Returns a safe read-only projection of the local or cluster-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.", responses((status = 200, body = NotariesResponse), (status = 401, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn notaries(State(state): State<AdminState>) -> Result<Json<NotariesResponse>, ApiError> {
-    notaries_response(&state.config)
+    let shared = if state.cluster.is_some() && state.config.notary.endpoint.is_none() {
+        state
+            .persistence
+            .metadata
+            .notary_trust_snapshot()
+            .await
+            .map_err(|_| ApiError::service_unavailable("notary_trust_not_ready"))?
+    } else {
+        None
+    };
+    notaries_response(&state.config, shared)
         .map(Json)
         .map_err(|_| ApiError::internal("notary_trust_state_invalid"))
 }
 
-fn notaries_response(config: &AgentConfig) -> Result<NotariesResponse> {
+fn notaries_response(
+    config: &AgentConfig,
+    shared: Option<crate::metadata::SharedNotaryTrust>,
+) -> Result<NotariesResponse> {
     if let (Some(endpoint), Some(public_key)) =
         (config.notary_endpoint()?, config.notary_public_key()?)
     {
@@ -455,7 +585,11 @@ fn notaries_response(config: &AgentConfig) -> Result<NotariesResponse> {
         });
     }
 
-    let Some(pinned) = notary::pinned_state()? else {
+    let pinned = match shared {
+        Some(shared) => Some(shared.into()),
+        None => notary::pinned_state()?,
+    };
+    let Some(pinned) = pinned else {
         return Ok(NotariesResponse {
             source: "directory".into(),
             directory_source: None,
@@ -840,6 +974,19 @@ async fn verify_trace(
         .config
         .notary_public_key()
         .map_err(|_| ApiError::internal("notary_configuration_invalid"))?;
+    let shared_trust: Option<SharedNotaryTrust> =
+        if configured_key.is_none() && state.cluster.is_some() {
+            state
+                .persistence
+                .metadata
+                .notary_trust_snapshot()
+                .await
+                .map_err(|_| ApiError::service_unavailable("notary_trust_not_ready"))?
+                .ok_or_else(|| ApiError::service_unavailable("notary_trust_not_ready"))?
+                .into()
+        } else {
+            None
+        };
     let value = tokio::task::spawn_blocking(move || -> Result<VerificationResponse> {
         let embedded_key = trace_package_notary_key_bytes(&bytes)?;
         let (trusted_key, notary_key_id, trust_source) = match configured_key {
@@ -849,7 +996,10 @@ async fn verify_trace(
             }
             None => {
                 let created_at = trace_package_created_at_unix_ms_bytes(&bytes)?;
-                let (key_id, trust) = notary::cached_key_at(&embedded_key, created_at)?;
+                let (key_id, trust) = match &shared_trust {
+                    Some(shared) => notary::shared_key_at(shared, &embedded_key, created_at)?,
+                    None => notary::cached_key_at(&embedded_key, created_at)?,
+                };
                 (embedded_key, key_id, trust)
             }
         };
@@ -1058,6 +1208,9 @@ async fn poll_account_connection(
     State(state): State<AdminState>,
     Path(request_id): Path<String>,
 ) -> Result<Json<AccountConnectionResponse>, ApiError> {
+    if state.cluster.is_some() {
+        return Err(ApiError::api_key_mode());
+    }
     if request_id.is_empty()
         || request_id.len() > 256
         || !request_id
@@ -1146,9 +1299,28 @@ async fn share_capture(
     validate_id(&capture_id, "cap-")?;
     let bytes = finalized_bytes(&state.persistence, &capture_id).await?;
     let _credentials = state.account_credentials.lock().await;
+    let shared_trust = if state.cluster.is_some() && state.config.notary.endpoint.is_none() {
+        let (directory, source) = proxy::fetch_notary_directory_from(
+            &auth::configured_api_origin()
+                .map_err(|_| ApiError::internal("share_configuration_invalid"))?,
+        )
+        .await
+        .map_err(|_| ApiError::service_unavailable("notary_directory_unavailable"))?;
+        Some(
+            state
+                .persistence
+                .metadata
+                .pin_notary_directory(directory, source.as_str())
+                .await
+                .map_err(|_| ApiError::service_unavailable("notary_trust_not_ready"))?,
+        )
+    } else {
+        None
+    };
     let (share, verified_capture_id, _) = publish::share_package_bytes(
         &bytes,
         state.config.notary.public_key.as_deref(),
+        shared_trust.as_ref(),
         body.visibility.into(),
         body.force,
     )
@@ -1252,6 +1424,7 @@ pub(crate) fn spawn_finalization_worker(
     config: Arc<AgentConfig>,
     vault: Arc<Vault>,
     work_available: Arc<Notify>,
+    cluster: Option<Arc<ClusterRuntime>>,
     mut shutdown: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<Result<()>> {
     tokio::spawn(async move {
@@ -1259,22 +1432,84 @@ pub(crate) fn spawn_finalization_worker(
             if *shutdown.borrow() {
                 return Ok(());
             }
-            let operation = match persistence
-                .metadata
-                .claim_next_finalization(now_ms()?)
-                .await
+            if cluster
+                .as_ref()
+                .is_some_and(|cluster| cluster.lifecycle() == Lifecycle::Draining)
             {
-                Ok(operation) => operation,
-                Err(error) => {
-                    tracing::warn!(
-                        error = %error,
-                        "finalization worker could not reach the metadata backend; retrying"
-                    );
+                tokio::select! {
+                    result = shutdown.changed() => {
+                        if result.is_err() || *shutdown.borrow() {
+                            return Ok(());
+                        }
+                    }
+                    () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+                }
+                continue;
+            }
+            if cluster.is_some() {
+                let mut reaper_unavailable = false;
+                loop {
+                    match persistence
+                        .metadata
+                        .interrupt_next_expired_finalization()
+                        .await
+                    {
+                        Ok(Some(_)) => {}
+                        Ok(None) => break,
+                        Err(error) => {
+                            tracing::warn!(
+                                error = %error,
+                                "finalization expiry recovery could not reach the metadata backend; retrying"
+                            );
+                            reaper_unavailable = true;
+                            break;
+                        }
+                    }
+                }
+                if reaper_unavailable {
                     if wait_for_worker_retry(&mut shutdown).await {
                         return Ok(());
                     }
                     continue;
                 }
+            }
+            let (operation, claim) = match &cluster {
+                Some(cluster) => match persistence
+                    .metadata
+                    .claim_next_finalization_clustered(
+                        cluster.identity(),
+                        &cluster.new_fence_token(),
+                        cluster.lease_seconds(),
+                    )
+                    .await
+                {
+                    Ok(Some(claim)) => (Some(claim.operation.clone()), Some(claim)),
+                    Ok(None) => (None, None),
+                    Err(error) => {
+                        tracing::warn!(error = %error, "finalization worker could not reach the metadata backend; retrying");
+                        if wait_for_worker_retry(&mut shutdown).await {
+                            return Ok(());
+                        }
+                        continue;
+                    }
+                },
+                None => match persistence
+                    .metadata
+                    .claim_next_finalization(now_ms()?)
+                    .await
+                {
+                    Ok(operation) => (operation, None),
+                    Err(error) => {
+                        tracing::warn!(
+                            error = %error,
+                            "finalization worker could not reach the metadata backend; retrying"
+                        );
+                        if wait_for_worker_retry(&mut shutdown).await {
+                            return Ok(());
+                        }
+                        continue;
+                    }
+                },
             };
             let Some(operation) = operation else {
                 tokio::select! {
@@ -1288,7 +1523,15 @@ pub(crate) fn spawn_finalization_worker(
                 }
                 continue;
             };
-            let result = finalize_operation(&persistence, &config, &vault, &operation).await;
+            let result = finalize_operation(
+                &persistence,
+                &config,
+                &vault,
+                &operation,
+                claim.as_ref(),
+                cluster.as_deref(),
+            )
+            .await;
             let now = now_ms()?;
             let failure_code = result.as_ref().err().map(|error| {
                 auth::hosted_admission_error(error)
@@ -1309,6 +1552,22 @@ pub(crate) fn spawn_finalization_worker(
             });
             loop {
                 let transition = match (&result, failure_code) {
+                    (Ok(artifact), None) if claim.is_some() => {
+                        persistence
+                            .metadata
+                            .complete_finalization_claimed(
+                                claim.as_ref().expect("checked"),
+                                artifact.clone(),
+                                now,
+                            )
+                            .await
+                    }
+                    (Err(_), Some(code)) if claim.is_some() => {
+                        persistence
+                            .metadata
+                            .fail_operation_claimed(claim.as_ref().expect("checked"), now, code)
+                            .await
+                    }
                     (Ok(artifact), None) => {
                         persistence
                             .metadata
@@ -1326,6 +1585,13 @@ pub(crate) fn spawn_finalization_worker(
                 match transition {
                     Ok(outcome) => {
                         require_terminal_operation_result(outcome)?;
+                        break;
+                    }
+                    Err(MetadataStoreError::Fenced) if claim.is_some() => {
+                        tracing::warn!(
+                            operation_id = %operation.operation_id,
+                            "stale finalization worker was fenced before its terminal transition"
+                        );
                         break;
                     }
                     Err(error) => {
@@ -1374,24 +1640,41 @@ async fn finalize_operation(
     config: &AgentConfig,
     vault: &Arc<Vault>,
     operation: &Operation,
+    claim: Option<&FinalizationClaim>,
+    cluster: Option<&ClusterRuntime>,
 ) -> Result<ArtifactRecord> {
     let last_proof_update = AtomicU64::new(0);
     let (progress_sender, mut progress_receiver) = tokio::sync::mpsc::unbounded_channel();
     let progress_metadata = persistence.metadata.clone();
     let progress_operation_id = operation.operation_id.clone();
+    let progress_claim = claim.cloned();
+    let progress_lease_seconds = cluster.map(ClusterRuntime::lease_seconds);
     let progress_recorder = tokio::spawn(async move {
         while let Some((progress, now)) = progress_receiver.recv().await {
-            let result = match progress {
-                crate::FinalizationProgress::Phase(phase) => {
+            let result = match (progress_claim.as_ref(), progress_lease_seconds, progress) {
+                (Some(claim), Some(lease), crate::FinalizationProgress::Phase(phase)) => {
+                    progress_metadata
+                        .update_operation_progress_claimed(claim, phase, now, lease)
+                        .await
+                }
+                (Some(claim), Some(lease), crate::FinalizationProgress::Proof(proof)) => {
+                    progress_metadata
+                        .update_operation_proof_progress_claimed(claim, proof, now, lease)
+                        .await
+                }
+                (None, _, crate::FinalizationProgress::Phase(phase)) => {
                     progress_metadata
                         .update_operation_progress(&progress_operation_id, phase, now)
                         .await
                 }
-                crate::FinalizationProgress::Proof(proof) => {
+                (None, _, crate::FinalizationProgress::Proof(proof)) => {
                     progress_metadata
                         .update_operation_proof_progress(&progress_operation_id, proof, now)
                         .await
                 }
+                (Some(_), None, _) => Err(MetadataStoreError::InvalidInput(
+                    "cluster_claim_missing_lease",
+                )),
             };
             if let Err(error) = result {
                 tracing::warn!(
@@ -1454,10 +1737,11 @@ async fn finalize_operation(
         "deferred bundle capture does not match finalization operation"
     );
     let finalized_key = ArtifactKey::new(capture_id, ArtifactKind::FinalizedPackage)?;
-    if let Some(existing) = persistence
-        .artifacts
-        .find(&finalized_key, MAX_ARCHIVE_WIRE_BYTES)
-        .await?
+    if claim.is_none()
+        && let Some(existing) = persistence
+            .artifacts
+            .find(&finalized_key, MAX_ARCHIVE_WIRE_BYTES)
+            .await?
     {
         let bytes = persistence
             .artifacts
@@ -1502,8 +1786,18 @@ async fn finalize_operation(
             (key, endpoint)
         }
         (None, None) => {
-            let _ = proxy::refresh_notary_directory().await;
-            let (key, record) = notary::cached_record_for_bundle(&bundle)?;
+            let (key, record) = if cluster.is_some() {
+                let (directory, source) =
+                    proxy::fetch_notary_directory_from(&auth::configured_api_origin()?).await?;
+                let trust = persistence
+                    .metadata
+                    .pin_notary_directory(directory, source.as_str())
+                    .await?;
+                notary::shared_record_for_bundle(&trust, &bundle)?
+            } else {
+                let _ = proxy::refresh_notary_directory().await;
+                notary::cached_record_for_bundle(&bundle)?
+            };
             let endpoint = proxy::resolve_notary(&record).await?;
             (key, endpoint)
         }
@@ -1545,14 +1839,26 @@ async fn finalize_operation(
         .await
         .context("progress recorder exited")?;
     let package = package_result?;
-    let record = persistence
-        .artifacts
-        .put(
-            &finalized_key,
-            ArtifactSource::from_bytes(package),
-            MAX_ARCHIVE_WIRE_BYTES,
-        )
-        .await?;
+    let record = if let Some(claim) = claim {
+        persistence
+            .artifacts
+            .put_scoped(
+                &finalized_key,
+                &claim.publication_id,
+                ArtifactSource::from_bytes(package),
+                MAX_ARCHIVE_WIRE_BYTES,
+            )
+            .await?
+    } else {
+        persistence
+            .artifacts
+            .put(
+                &finalized_key,
+                ArtifactSource::from_bytes(package),
+                MAX_ARCHIVE_WIRE_BYTES,
+            )
+            .await?
+    };
     #[cfg(feature = "daemon-e2e")]
     if let Some(milliseconds) =
         std::env::var_os("LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS")
@@ -1701,6 +2007,10 @@ impl From<crate::metadata::MetadataCounts> for CountsResponse {
 struct StatusResponse {
     version: String,
     build_id: String,
+    runtime_profile: String,
+    instance_id: Option<String>,
+    incarnation_id: Option<String>,
+    lifecycle: String,
     proxy_listener: String,
     admin_listener: String,
     metadata_backend: String,
@@ -2300,7 +2610,7 @@ mod tests {
         config.storage.finalized_dir = directory.join("traces");
         config.admin.auth = auth;
         let persistence = Persistence::open(&config).await.unwrap();
-        AdminState::new(persistence, Arc::new(config))
+        AdminState::new(persistence, Arc::new(config), None)
             .await
             .unwrap()
     }
@@ -2677,7 +2987,7 @@ mod tests {
         config.notary.endpoint = Some("tcp://127.0.0.1:7047".into());
         config.notary.public_key = Some(hex::encode(&public_key));
 
-        let response = notaries_response(&config).unwrap();
+        let response = notaries_response(&config, None).unwrap();
 
         assert_eq!(response.source, "explicit_configuration");
         assert_eq!(response.directory_source, None);

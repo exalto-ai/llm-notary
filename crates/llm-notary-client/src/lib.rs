@@ -16,6 +16,7 @@ mod artifact_reconciliation;
 pub mod artifact_router;
 pub mod artifact_store;
 pub mod cli;
+mod cluster;
 pub mod config;
 mod local_cli;
 pub mod metadata;
@@ -53,6 +54,12 @@ enum DaemonCommand {
         #[arg(long, default_value_t = 7)]
         orphan_grace_days: u64,
     },
+    /// Print the identity of an existing verifier-backed passphrase vault for
+    /// explicit cluster configuration. Never creates or changes vault data.
+    VaultCompatibility,
+    /// Explicitly initialize a passphrase vault from the private passphrase
+    /// file environment variable. Cluster runtime never performs this step.
+    VaultInitPassphrase,
 }
 
 /// Runs the client command line using process arguments.
@@ -63,10 +70,20 @@ pub async fn run_daemon() -> Result<()> {
         Some(DaemonCommand::ReconcileArtifacts { orphan_grace_days }) => {
             return run_artifact_reconciliation(cli.config, orphan_grace_days).await;
         }
+        Some(DaemonCommand::VaultCompatibility) => {
+            let vault = llm_notary_core::vault::Vault::open_existing_noninteractive()?;
+            println!("{}", vault.compatibility_sha256()?);
+            return Ok(());
+        }
+        Some(DaemonCommand::VaultInitPassphrase) => {
+            let passphrase = llm_notary_core::vault::passphrase_from_file_env()?
+                .ok_or_else(|| anyhow::anyhow!("LLM_NOTARY_VAULT_PASSPHRASE_FILE is required"))?;
+            llm_notary_core::vault::Vault::init_passphrase(&passphrase)?;
+            return Ok(());
+        }
         None => {}
     }
     let _telemetry = telemetry::init("llm-notaryd")?;
-    cli::auth::validate_credential_configuration()?;
     cli::proxy::run(cli::proxy::ProxyArgs { config: cli.config }).await
 }
 
@@ -116,6 +133,16 @@ async fn run_daemon_migrator(config_path: Option<PathBuf>) -> Result<()> {
     )
     .await
     .map_err(|_| anyhow::anyhow!("local daemon PostgreSQL metadata migration failed"))?;
+    if config.cluster.enabled {
+        postgres_metadata_store::configure_cluster_compatibility(
+            database_url.expose(),
+            postgres.ssl_mode,
+            Duration::from_secs(postgres.connect_timeout_seconds),
+            &config.cluster_compatibility_sha256()?,
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("cluster compatibility configuration failed"))?;
+    }
     println!("Local daemon PostgreSQL metadata migrations are current");
     Ok(())
 }

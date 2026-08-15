@@ -53,6 +53,7 @@ jobs:
               - 'deploy/daemon-e2e/**'
               - 'rust-toolchain.toml'
               - 'scripts/test-daemon-persistence-e2e.sh'
+              - 'scripts/test-daemon-cluster-e2e.sh'
               - 'crates/**'
               - 'src/**'
               - 'tests/**'
@@ -198,12 +199,13 @@ jobs:
         run: cargo test -p llm-notary-client postgres_metadata_store::tests -- --ignored --nocapture
       - name: Run S3-compatible daemon artifact tests
         run: cargo test -p llm-notary-client s3_artifact_store::tests::minio_conforms_and_detects_missing_corrupt_and_oversized_objects -- --ignored --nocapture
-      - name: Run single-daemon persistence matrix
+      - name: Run daemon persistence and cluster matrix
         run: |
           scripts/test-daemon-persistence-e2e.sh sqlite filesystem 1 full
           DAEMON_E2E_SKIP_BUILD=1 DAEMON_E2E_POSTGRES_SCENARIOS=extended scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 full
           DAEMON_E2E_SKIP_BUILD=1 scripts/test-daemon-persistence-e2e.sh sqlite s3 1 full
           DAEMON_E2E_SKIP_BUILD=1 scripts/test-daemon-persistence-e2e.sh postgres s3 1 full
+          DAEMON_E2E_SKIP_BUILD=1 scripts/test-daemon-persistence-e2e.sh postgres s3 2 full
 
   windows-update:
     name: Windows client update

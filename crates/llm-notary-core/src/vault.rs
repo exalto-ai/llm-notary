@@ -15,6 +15,7 @@ use chacha20poly1305::{
 use directories::ProjectDirs;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use zeroize::{Zeroize, Zeroizing};
 
 const CONFIG_FORMAT: &str = "llm-notary/vault/v1";
@@ -83,6 +84,41 @@ impl Vault {
         } else {
             Self::init_os()
         }
+    }
+
+    /// Opens an already-provisioned, verifier-backed passphrase vault without
+    /// prompting or initializing any material. This is the only cluster-safe
+    /// startup path.
+    pub fn open_existing_noninteractive() -> Result<Self> {
+        if env::var_os(CHILD_KEY_STDIN_ENV).is_some() {
+            bail!("cluster vault cannot be unlocked through child stdin");
+        }
+        let path = config_path()?;
+        let config = read_config(&path).context("opening existing cluster vault configuration")?;
+        if !matches!(config.mode, VaultMode::Passphrase) {
+            bail!("cluster mode requires a passphrase-backed vault");
+        }
+        if read_key_check(&path)?.is_none() {
+            bail!("cluster mode requires a verifier-backed passphrase vault");
+        }
+        let passphrase = passphrase_from_file_env()?
+            .ok_or_else(|| anyhow::anyhow!("cluster vault passphrase file is required"))?;
+        Self::open_at(&path, Some(&passphrase), None)
+    }
+
+    /// Identifies the exact non-secret vault derivation configuration and
+    /// key verifier expected on every replica, without exposing key material.
+    pub fn compatibility_sha256(&self) -> Result<String> {
+        let config = fs::read(&self.config_path)
+            .context("reading vault configuration for compatibility check")?;
+        let key_check = fs::read(key_check_path(&self.config_path))
+            .context("reading vault verifier for compatibility check")?;
+        let mut digest = Sha256::new();
+        digest.update(b"llm-notary/cluster-vault-compatibility/v1\0");
+        digest.update(config);
+        digest.update([0]);
+        digest.update(key_check);
+        Ok(hex::encode(digest.finalize()))
     }
 
     /// Opens an initialized vault. Passphrase vaults require the passphrase.
@@ -556,6 +592,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let config_path = root.path().join("vault.json");
         let vault = Vault::init_passphrase_at(&config_path, "correct horse").unwrap();
+        let compatibility = vault.compatibility_sha256().unwrap();
         let encrypted = vault.encrypt(b"private bundle").unwrap();
         drop(vault);
 
@@ -579,8 +616,18 @@ mod tests {
 
         fs::write(&check_path, original_check).unwrap();
         let reopened = Vault::open_at(&config_path, Some("correct horse"), None).unwrap();
+        assert_eq!(reopened.compatibility_sha256().unwrap(), compatibility);
         assert_eq!(reopened.decrypt(&encrypted).unwrap(), b"private bundle");
         drop(reopened);
+
+        // A vault's config and verifier are one directory-level pair. Use a
+        // second directory to prove that the same passphrase with a different
+        // salt has a different compatibility identity.
+        let other_root = tempfile::tempdir().unwrap();
+        let other_path = other_root.path().join("vault.json");
+        let other = Vault::init_passphrase_at(&other_path, "correct horse").unwrap();
+        assert_ne!(other.compatibility_sha256().unwrap(), compatibility);
+        drop(other);
 
         fs::remove_file(&check_path).unwrap();
         assert!(!passphrase_unlock_is_verifiable_at(&config_path).unwrap());

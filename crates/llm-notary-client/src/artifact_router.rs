@@ -58,6 +58,38 @@ impl RoutedArtifactStore {
         }
     }
 
+    /// Publishes cluster-owned bytes under a claim-scoped physical S3 key.
+    /// The logical artifact key remains unchanged in metadata.
+    pub(crate) async fn put_scoped(
+        &self,
+        key: &ArtifactKey,
+        publication_id: &str,
+        source: ArtifactSource,
+        max_bytes: u64,
+    ) -> ArtifactResult<ArtifactRecord> {
+        if self.writer != ArtifactStorageBackend::S3 {
+            return Err(unconfigured("cluster_requires_s3"));
+        }
+        self.s3
+            .as_ref()
+            .ok_or_else(|| unconfigured("s3"))?
+            .put_scoped(key, publication_id, source, max_bytes)
+            .await
+    }
+
+    pub(crate) async fn find_scoped(
+        &self,
+        key: &ArtifactKey,
+        publication_id: &str,
+        max_bytes: u64,
+    ) -> ArtifactResult<Option<ArtifactRecord>> {
+        self.s3
+            .as_ref()
+            .ok_or_else(|| unconfigured("s3"))?
+            .find_scoped(key, publication_id, max_bytes)
+            .await
+    }
+
     /// Produces a bounded, report-only inventory for the configured S3
     /// reader, if present. Only S3-tagged metadata records are considered.
     pub(crate) async fn s3_reconciliation_inventory(

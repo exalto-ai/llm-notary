@@ -53,7 +53,7 @@
           "local-admin"
         ],
         "summary": "Check service readiness",
-        "description": "Runs bounded metadata and selected artifact-writer dependency probes. Dependency outages or schema mismatches make readiness fail while /healthz remains local liveness.",
+        "description": "Runs bounded metadata, selected artifact-writer, and cluster trust dependency probes. Dependency outages or schema mismatches make readiness fail while /healthz remains local liveness.",
         "operationId": "readiness",
         "responses": {
           "200": {
@@ -907,7 +907,7 @@
           "local-admin"
         ],
         "summary": "Get configured notary trust",
-        "description": "Returns a safe read-only projection of the pinned notary trust history or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.",
+        "description": "Returns a safe read-only projection of the local or cluster-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.",
         "operationId": "notaries",
         "responses": {
           "200": {
@@ -931,6 +931,16 @@
             }
           },
           "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
             "description": "",
             "content": {
               "application/json": {
@@ -2557,6 +2567,8 @@
         "required": [
           "version",
           "build_id",
+          "runtime_profile",
+          "lifecycle",
           "proxy_listener",
           "admin_listener",
           "metadata_backend",
@@ -2585,6 +2597,21 @@
           "counts": {
             "$ref": "#/components/schemas/CountsResponse"
           },
+          "incarnation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "instance_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lifecycle": {
+            "type": "string"
+          },
           "metadata_backend": {
             "type": "string"
           },
@@ -2599,6 +2626,9 @@
             "minimum": 0
           },
           "proxy_listener": {
+            "type": "string"
+          },
+          "runtime_profile": {
             "type": "string"
           },
           "updates": {

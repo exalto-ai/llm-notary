@@ -150,9 +150,10 @@ deletes objects. No
 SQLite-to-PostgreSQL or filesystem-to-S3 importer is provided.
 
 Keep the sum of `catalog.postgres.max_connections` across running daemons plus
-one direct migrator connection within the provider's pool budget. This release
-supports one daemon process with PostgreSQL; shared claiming and recovery are
-not safe until cluster mode is enabled in the later horizontal-scaling layer.
+one direct migrator connection within the provider's pool budget. PostgreSQL
+with filesystem artifacts remains single-process. Multiple daemon replicas are
+supported only by the explicit PostgreSQL-and-S3 profile in [Multi-replica
+daemon operations](cluster-operations.md).
 
 ## Scale and monitor
 

@@ -29,6 +29,7 @@ Use the generated contract when prose and an installed service disagree.
 | Run a local notary or full hosted stack | [Self-hosting](self-hosting.md) |
 | Rotate or revoke notary keys | [Notary key lifecycle](notary-key-lifecycle.md) |
 | Operate PostgreSQL or Neon | [Database operations](database-operations.md) |
+| Run multiple local-daemon replicas | [Multi-replica daemon operations](cluster-operations.md) |
 | Deploy the production Fly.io stack | [Fly.io deployment](../deploy/fly/README.md) |
 | Understand upload staging | [Share intake API v1](share-intake-v1.md) |
 | Understand plans and usage | [Plans and usage](hosted-credits.md) |

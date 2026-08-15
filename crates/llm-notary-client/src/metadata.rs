@@ -2,6 +2,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::notary_directory::NotaryDirectoryRecord;
+
 /// The durable capture fields that are safe and useful to query locally.
 #[derive(Clone, Debug)]
 pub struct NewCapture {
@@ -204,6 +206,18 @@ pub struct MetadataCounts {
     pub finalized: u64,
     pub failed: u64,
     pub active_operations: u64,
+}
+
+/// One validated, cluster-wide notary directory revision plus every retained
+/// historical key needed to verify older captures.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SharedNotaryTrust {
+    pub generation: u64,
+    pub directory_sha256: String,
+    pub directory_source: String,
+    pub active_key_id: String,
+    pub records: Vec<NotaryDirectoryRecord>,
 }
 
 /// Converts user search text into the deliberately small phrase/token subset

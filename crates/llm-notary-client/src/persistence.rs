@@ -8,6 +8,7 @@ use crate::{
     archive::MAX_ARCHIVE_WIRE_BYTES,
     artifact_router::RoutedArtifactStore,
     artifact_store::{ArtifactKey, ArtifactKind, ArtifactStore, FileSystemArtifactStore},
+    cluster::ClusterRuntime,
     config::{AgentConfig, MetadataBackend},
     metadata_store::MetadataStore,
     postgres_metadata_store::PostgresMetadataStore,
@@ -47,15 +48,27 @@ impl Persistence {
                 let postgres = &config.catalog.postgres;
                 let database_url = config.postgres_runtime_url()?;
                 Arc::new(
-                    PostgresMetadataStore::connect(
+                    if config.cluster.enabled {
+                        PostgresMetadataStore::connect_clustered(
+                            database_url.expose(),
+                            postgres.max_connections,
+                            std::time::Duration::from_secs(postgres.connect_timeout_seconds),
+                            std::time::Duration::from_secs(postgres.acquire_timeout_seconds),
+                            postgres.ssl_mode,
+                            config.catalog.full_text_search,
+                        )
+                        .await
+                    } else {
+                        PostgresMetadataStore::connect(
                         database_url.expose(),
                         postgres.max_connections,
                         std::time::Duration::from_secs(postgres.connect_timeout_seconds),
                         std::time::Duration::from_secs(postgres.acquire_timeout_seconds),
                         postgres.ssl_mode,
                         config.catalog.full_text_search,
-                    )
-                    .await
+                        )
+                        .await
+                    }
                     .map_err(|_| {
                         anyhow::anyhow!(
                             "PostgreSQL metadata database is unavailable or its daemon schema is not current; run `llm-notaryd migrate --config <path>`"
@@ -104,6 +117,58 @@ impl Persistence {
     /// an unprepared capture which may still be active in this process.
     pub async fn reconcile_pending_publications(&self) -> Result<RecoverySummary> {
         self.reconcile_captures(false).await
+    }
+
+    /// Atomically adopts at most one capture whose PostgreSQL lease and owner
+    /// heartbeat are both expired. The original publication ID is retained so
+    /// an ambiguous S3 PUT can only be attached after exact size/hash checks.
+    pub(crate) async fn reconcile_cluster_capture(
+        &self,
+        cluster: &ClusterRuntime,
+    ) -> Result<RecoverySummary> {
+        let Some(recovery) = self
+            .metadata
+            .claim_next_stale_capture(
+                cluster.identity(),
+                &cluster.new_fence_token(),
+                cluster.lease_seconds(),
+            )
+            .await?
+        else {
+            return Ok(RecoverySummary::default());
+        };
+        let mut summary = RecoverySummary::default();
+        let Some(completion) = recovery.completion else {
+            self.metadata
+                .fail_capture_claimed(&recovery.claim, "claim_expired")
+                .await?;
+            summary.interrupted_captures = 1;
+            return Ok(summary);
+        };
+        let key = ArtifactKey::new(&recovery.claim.capture_id, ArtifactKind::DeferredBundle)?;
+        match self
+            .artifacts
+            .find_scoped(&key, &recovery.claim.publication_id, MAX_ARCHIVE_WIRE_BYTES)
+            .await?
+        {
+            Some(artifact)
+                if artifact.size_bytes == completion.expected_artifact_size_bytes
+                    && artifact.sha256 == completion.expected_artifact_sha256 =>
+            {
+                self.metadata
+                    .complete_capture_claimed(completion, artifact, &recovery.claim)
+                    .await?;
+                summary.recovered_bundles = 1;
+            }
+            Some(_) => anyhow::bail!("stored artifact does not match the prepared capture claim"),
+            None => {
+                self.metadata
+                    .renew_capture_claim(&recovery.claim, cluster.lease_seconds())
+                    .await?;
+                summary.pending_publications = 1;
+            }
+        }
+        Ok(summary)
     }
 
     async fn reconcile_captures(&self, interrupt_unprepared: bool) -> Result<RecoverySummary> {

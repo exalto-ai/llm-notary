@@ -42,7 +42,11 @@ pub(crate) fn config_path(path: Option<&Path>) -> Result<PathBuf> {
 /// use. Every config-driven command shares this behavior so a fresh install
 /// can start the proxy without a setup command.
 pub(crate) fn load_agent_config(path: Option<&Path>) -> Result<(AgentConfig, PathBuf)> {
+    let explicit = path.is_some();
     let path = config_path(path)?;
+    if explicit {
+        return Ok((AgentConfig::load(&path)?, path));
+    }
     let (config, created) = AgentConfig::load_or_create(&path)?;
     if created {
         eprintln!("created default agent configuration: {}", path.display());

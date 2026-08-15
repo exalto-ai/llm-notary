@@ -41,6 +41,8 @@ pub const ARTIFACT_S3_SESSION_TOKEN_FILE_ENV: &str = "LLM_NOTARY_ARTIFACT_S3_SES
 pub struct AgentConfig {
     pub format: String,
     #[serde(default)]
+    pub cluster: ClusterConfig,
+    #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub admin: AdminConfig,
@@ -52,6 +54,41 @@ pub struct AgentConfig {
     pub catalog: CatalogConfig,
     #[serde(default)]
     pub providers: ProvidersConfig,
+}
+
+/// Explicit multi-replica runtime profile. Merely selecting PostgreSQL and S3
+/// never enables cluster semantics.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClusterConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    /// Stable, operator-readable name for one replica slot.
+    pub instance_id: Option<String>,
+    #[serde(default = "default_cluster_heartbeat_seconds")]
+    pub heartbeat_interval_seconds: u64,
+    #[serde(default = "default_cluster_lease_seconds")]
+    pub lease_seconds: u64,
+    /// Confirms that non-loopback listeners sit behind authenticated,
+    /// TLS-terminated infrastructure which does not replay provider requests.
+    #[serde(default)]
+    pub trusted_ingress: bool,
+    /// Pre-provisioned SHA-256 identity of the exact shared vault config and
+    /// verifier. Runtime replicas may compare it but never establish it.
+    pub vault_compatibility_sha256: Option<String>,
+}
+
+impl Default for ClusterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            instance_id: None,
+            heartbeat_interval_seconds: default_cluster_heartbeat_seconds(),
+            lease_seconds: default_cluster_lease_seconds(),
+            trusted_ingress: false,
+            vault_compatibility_sha256: None,
+        }
+    }
 }
 
 /// Local administration listener. It is deliberately separate from the
@@ -327,6 +364,7 @@ impl Default for AgentConfig {
     fn default() -> Self {
         Self {
             format: CONFIG_FORMAT.to_owned(),
+            cluster: ClusterConfig::default(),
             proxy: ProxyConfig::default(),
             admin: AdminConfig::default(),
             notary: NotaryConfig::default(),
@@ -504,14 +542,24 @@ impl AgentConfig {
             self.proxy.max_attestable_http_bytes > 0,
             "proxy.max_attestable_http_bytes must be non-zero"
         );
-        ensure!(
-            self.proxy.listen.ip().is_loopback(),
-            "proxy.listen must use a loopback address"
-        );
-        ensure!(
-            self.admin.listen.ip().is_loopback(),
-            "admin.listen must use a loopback address"
-        );
+        if self.cluster.enabled {
+            self.validate_cluster()?;
+        } else {
+            ensure!(
+                self.proxy.listen.ip().is_loopback(),
+                "proxy.listen must use a loopback address outside cluster mode"
+            );
+            ensure!(
+                self.admin.listen.ip().is_loopback(),
+                "admin.listen must use a loopback address outside cluster mode"
+            );
+            ensure!(
+                self.cluster.instance_id.is_none()
+                    && !self.cluster.trusted_ingress
+                    && self.cluster.vault_compatibility_sha256.is_none(),
+                "cluster-only settings require cluster.enabled = true"
+            );
+        }
         ensure!(
             self.admin.listen != self.proxy.listen,
             "admin.listen and proxy.listen must be different addresses"
@@ -595,6 +643,61 @@ impl AgentConfig {
         Ok(())
     }
 
+    fn validate_cluster(&self) -> Result<()> {
+        let instance_id =
+            self.cluster.instance_id.as_deref().ok_or_else(|| {
+                anyhow::anyhow!("cluster.instance_id is required in cluster mode")
+            })?;
+        ensure!(
+            !instance_id.is_empty()
+                && instance_id.len() <= 64
+                && instance_id.bytes().all(|byte| {
+                    byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                }),
+            "cluster.instance_id must contain 1 to 64 safe ASCII bytes"
+        );
+        ensure!(
+            (1..=60).contains(&self.cluster.heartbeat_interval_seconds),
+            "cluster.heartbeat_interval_seconds must be between 1 and 60"
+        );
+        ensure!(
+            (3..=300).contains(&self.cluster.lease_seconds)
+                && self.cluster.lease_seconds
+                    >= self.cluster.heartbeat_interval_seconds.saturating_mul(3),
+            "cluster.lease_seconds must be between 3 and 300 and at least three heartbeat intervals"
+        );
+        ensure!(
+            self.catalog.backend == MetadataBackend::Postgres,
+            "cluster mode requires catalog.backend = \"postgres\""
+        );
+        ensure!(
+            self.storage.backend == ArtifactStorageBackend::S3,
+            "cluster mode requires storage.backend = \"s3\""
+        );
+        ensure!(
+            self.admin.auth.is_some(),
+            "cluster mode requires admin authentication"
+        );
+        ensure!(
+            self.cluster.trusted_ingress,
+            "cluster mode requires cluster.trusted_ingress = true"
+        );
+        let vault_identity = self
+            .cluster
+            .vault_compatibility_sha256
+            .as_deref()
+            .ok_or_else(|| {
+                anyhow::anyhow!("cluster.vault_compatibility_sha256 is required in cluster mode")
+            })?;
+        ensure!(
+            vault_identity.len() == 64
+                && vault_identity.bytes().all(|byte| byte.is_ascii_hexdigit())
+                && vault_identity == vault_identity.to_ascii_lowercase(),
+            "cluster.vault_compatibility_sha256 must be 64 lowercase hexadecimal bytes"
+        );
+        Ok(())
+    }
+
     fn validate_storage(&self) -> Result<()> {
         ensure!(
             !self.storage.bundle_dir.as_os_str().is_empty(),
@@ -658,6 +761,16 @@ impl AgentConfig {
             "sha256:{}",
             sha256_hex(toml::to_string(self)?.as_bytes())
         ))
+    }
+
+    /// Returns the non-secret compatibility identity pinned by the cluster
+    /// migrator. The replica slot name is intentionally excluded; every other
+    /// configured trust, storage, listener, and lease setting must agree.
+    pub fn cluster_compatibility_sha256(&self) -> Result<String> {
+        ensure!(self.cluster.enabled, "cluster mode is not enabled");
+        let mut normalized = self.clone();
+        normalized.cluster.instance_id = None;
+        Ok(sha256_hex(toml::to_string(&normalized)?.as_bytes()))
     }
 
     pub fn notary_endpoint(&self) -> Result<Option<NotaryEndpoint>> {
@@ -889,6 +1002,14 @@ fn default_true() -> bool {
     true
 }
 
+fn default_cluster_heartbeat_seconds() -> u64 {
+    5
+}
+
+fn default_cluster_lease_seconds() -> u64 {
+    20
+}
+
 fn default_postgres_max_connections() -> u32 {
     8
 }
@@ -981,6 +1102,68 @@ mod tests {
         assert!(config.validate().is_err());
 
         config.admin.listen = config.proxy.listen;
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn cluster_profile_is_explicit_and_rejects_unsafe_combinations() {
+        let mut config = AgentConfig::default();
+        config.cluster.enabled = true;
+        config.cluster.instance_id = Some("daemon-a".into());
+        config.cluster.trusted_ingress = true;
+        config.cluster.vault_compatibility_sha256 = Some("11".repeat(32));
+        config.proxy.listen = "0.0.0.0:8787".parse().unwrap();
+        config.admin.listen = "0.0.0.0:8788".parse().unwrap();
+        config.admin.auth = Some(AdminAuthConfig {
+            username: "cluster-admin".into(),
+            password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0c2FsdA$yJIR0lVleM2KSPdVmBvsQ9uhA06YIR8aPCbRDbNvXXQ".into(),
+        });
+        config.catalog.backend = MetadataBackend::Postgres;
+        config.catalog.postgres = Some(PostgresCatalogConfig::default());
+        config.storage.backend = ArtifactStorageBackend::S3;
+        config.storage.s3 = Some(S3StorageConfig {
+            bucket: "private-artifacts".into(),
+            region: "us-east-1".into(),
+            endpoint: "https://s3.example.test".into(),
+            prefix: "cluster".into(),
+            force_path_style: false,
+            allow_insecure_http: false,
+            connect_timeout_seconds: 5,
+            operation_timeout_seconds: 10,
+        });
+        config.notary.endpoint = Some("tcp://notary.internal:7047".into());
+        config.notary.public_key =
+            Some("0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798".into());
+        config.validate().unwrap();
+
+        let valid = config.clone();
+        let compatibility = valid.cluster_compatibility_sha256().unwrap();
+        let mut peer = valid.clone();
+        peer.cluster.instance_id = Some("daemon-b".into());
+        assert_eq!(peer.cluster_compatibility_sha256().unwrap(), compatibility);
+        peer.storage.s3.as_mut().unwrap().prefix = "different".into();
+        assert_ne!(peer.cluster_compatibility_sha256().unwrap(), compatibility);
+        config.catalog.backend = MetadataBackend::Sqlite;
+        assert!(config.validate().is_err());
+        config = valid.clone();
+        config.storage.backend = ArtifactStorageBackend::Filesystem;
+        assert!(config.validate().is_err());
+        config = valid.clone();
+        config.admin.auth = None;
+        assert!(config.validate().is_err());
+        config = valid.clone();
+        config.cluster.trusted_ingress = false;
+        assert!(config.validate().is_err());
+        config = valid.clone();
+        config.notary.endpoint = None;
+        config.notary.public_key = None;
+        config.validate().unwrap();
+        assert_ne!(
+            config.cluster_compatibility_sha256().unwrap(),
+            valid.cluster_compatibility_sha256().unwrap()
+        );
+        config = valid;
+        config.cluster.lease_seconds = config.cluster.heartbeat_interval_seconds * 2;
         assert!(config.validate().is_err());
     }
 

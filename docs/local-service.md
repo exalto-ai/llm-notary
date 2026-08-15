@@ -1,7 +1,7 @@
 # Local service and REST API
 
-The `llm-notaryd` process is the only local runtime and the only writer of the
-catalog, vault, artifacts, and durable operation state. The short-lived
+In the default local profile, one `llm-notaryd` process owns the catalog,
+vault, artifacts, and durable operation state. The short-lived
 `llm-notary` command talks to it through the versioned loopback API.
 `llm-notaryd` owns two different loopback listeners:
 
@@ -14,6 +14,8 @@ Both addresses must be distinct and loopback-only. The separation prevents a
 program that can send model requests through the proxy from automatically
 receiving access to capture management. An `/admin` path on the proxy would
 not provide that boundary: a route prefix is organization, not authentication.
+The explicit PostgreSQL-and-S3 multi-replica profile is documented separately
+in [Multi-replica daemon operations](cluster-operations.md).
 
 ## Start and supervise the service
 
@@ -111,8 +113,8 @@ backup steps are covered in [PostgreSQL operations](database-operations.md).
 The migrator touches only the daemon-owned schema; runtime startup never
 migrates or falls back to SQLite. Prompt and output previews are plaintext in
 PostgreSQL even though deferred checkpoints remain vault-encrypted. PostgreSQL
-alone does not make multiple daemon processes safe—keep one process until
-server mode also provides shared artifact storage and fenced work ownership.
+alone does not make multiple daemon processes safe. Keep one process unless
+the explicit PostgreSQL-and-S3 cluster profile is enabled.
 
 ### Artifact backend
 
@@ -376,7 +378,8 @@ which workflow owns each operation:
 | Account connection | `GET /v1/account`, `POST /v1/account`, `GET /v1/account/{request_id}`, `DELETE /v1/account` |
 | Sharing | `POST /v1/captures/{capture_id}/shares`, `GET /v1/shares/{share_id}` |
 
-`GET /v1/notaries` returns a safe read-only view of the locally pinned notary
+`GET /v1/notaries` returns a safe read-only view of the locally pinned or
+cluster-shared notary
 directory and trust history, or the explicitly configured self-hosted endpoint
 and key. Its lifecycle records describe allowed protocol use; they are not an
 endpoint health check.
