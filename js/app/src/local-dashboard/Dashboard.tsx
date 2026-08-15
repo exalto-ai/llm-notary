@@ -5,7 +5,7 @@ import {
 import {
   ActionIcon, AppShell, Badge, Burger, Button, Center, Drawer, Group,
   Loader, NavLink, Paper, PasswordInput, ScrollArea, SimpleGrid,
-  Stack, Tabs, Text, TextInput, ThemeIcon, Title, Tooltip, UnstyledButton,
+  Stack, Switch, Tabs, Text, TextInput, ThemeIcon, Title, Tooltip, UnstyledButton,
   useMantineColorScheme
 } from '@mantine/core';
 import { useDisclosure, useMediaQuery } from '@mantine/hooks';
@@ -590,16 +590,16 @@ function OverviewView({ api, status, navigate }: { api: LocalApi; status: Status
     ['Failed', status.counts.failed, 'danger']
   ] as const;
   return <div className="view-page overview-page"><SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing={0} className="service-grid">
-      <ServiceFact icon={CheckCircle2} label={isServer ? 'Server' : 'Service'} value="Online" detail={isServer ? `${status.instance_id ?? 'replica'} · v${status.version}` : `v${status.version}`} tone="ready" />
+      <ServiceFact icon={CheckCircle2} label={isServer ? 'Server' : 'Service'} value={status.capture_enabled ? 'Online' : 'Online · Capture off'} detail={isServer ? `${status.instance_id ?? 'replica'} · v${status.version}` : `v${status.version}`} tone="ready" />
       <ServiceFact icon={KeyRound} label="Vault" value={status.vault} detail={isServer ? 'Shared by server replicas' : 'Key material stays local'} />
-      <ServiceFact icon={ShieldCheck} label="Notary" value={status.notary === 'directory' ? 'Directory pinned' : 'Configured'} detail="Provider connection delegated" />
+      <ServiceFact icon={ShieldCheck} label="New requests" value={status.capture_enabled ? 'Notarized capture' : 'Direct passthrough'} detail={status.capture_enabled ? 'Provider connection delegated' : 'No notary or evidence artifact'} />
       <ServiceFact icon={Activity} label="Work queue" value={status.counts.active_operations ? 'Active' : 'Idle'} detail={`${status.counts.active_operations} operation${status.counts.active_operations === 1 ? '' : 's'}`} />
     </SimpleGrid>
     <section className="overview-work"><div><Text className="eyebrow">Capture states</Text><div className="count-strip">{stats.map(([label, value, tone]) => <UnstyledButton key={label} onClick={() => navigate({ view: label === 'Finalizing' ? 'finalizations' : 'captures' })}>
       <span className={`count-marker count-marker--${tone}`} /><b>{value}</b><span>{label}</span></UnstyledButton>)}</div></div>
-      <Paper className="next-action"><Text className="eyebrow">Next action</Text><Title order={2}>{status.counts.ready_to_finalize ? 'Finalize captured evidence' : 'Send a provider request'}</Title>
-        <Text>{status.counts.ready_to_finalize ? `${status.counts.ready_to_finalize} capture${status.counts.ready_to_finalize === 1 ? ' is' : 's are'} ready to finalize.` : `Point an SDK at the ${isServer ? 'server' : 'local'} provider proxy to create a private capture.`}</Text>
-        <Button onClick={() => navigate({ view: status.counts.ready_to_finalize ? 'captures' : 'settings' })}>{status.counts.ready_to_finalize ? 'Review captures' : 'View proxy routes'}</Button></Paper>
+      <Paper className="next-action"><Text className="eyebrow">Next action</Text><Title order={2}>{status.counts.ready_to_finalize ? 'Finalize captured evidence' : status.capture_enabled ? 'Send a provider request' : 'Capture requests are off'}</Title>
+        <Text>{status.counts.ready_to_finalize ? `${status.counts.ready_to_finalize} capture${status.counts.ready_to_finalize === 1 ? ' is' : 's are'} ready to finalize.` : status.capture_enabled ? `Point an SDK at the ${isServer ? 'server' : 'local'} provider proxy to create a private capture.` : 'Requests still use the provider proxy, but go directly to the provider and create no evidence.'}</Text>
+        <Button onClick={() => navigate({ view: status.counts.ready_to_finalize ? 'captures' : 'settings' })}>{status.counts.ready_to_finalize ? 'Review captures' : status.capture_enabled ? 'View proxy routes' : 'Turn capture on'}</Button></Paper>
     </section>
     <section className="recent-section"><Group justify="space-between"><div><Text className="eyebrow">Recent activity</Text><Title order={2}>What changed</Title></div><Button variant="subtle" onClick={() => navigate({ view: 'activity' })}>All activity</Button></Group>
       {events.isLoading ? <LoadingState /> : events.error ? <QueryError error={events.error} title="Recent activity is unavailable" /> : <EventList events={events.data?.items.slice(0, 4) ?? []} />}</section>
@@ -1155,6 +1155,24 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
 }
 
 function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
+  const queryClient = useQueryClient();
+  const [captureEnabled, setCaptureEnabled] = useState(status.capture_enabled);
+  const captureMode = useMutation({
+    mutationFn: (enabled: boolean) => api.updateCaptureSetting(enabled),
+    onSuccess: (setting) => {
+      setCaptureEnabled(setting.enabled);
+      queryClient.invalidateQueries({ queryKey: ['status'] });
+      queryClient.invalidateQueries({ queryKey: ['events'] });
+      notifications.show({
+        title: setting.enabled ? 'Capture requests on' : 'Capture requests off',
+        message: setting.enabled
+          ? 'Later provider requests will use the remote notary and create private captures.'
+          : 'Later provider requests will go directly to the provider and create no evidence.'
+      });
+    },
+    onError: (error) => mutationError('Capture mode did not change', error)
+  });
+  useEffect(() => setCaptureEnabled(status.capture_enabled), [status.capture_enabled]);
   const isServer = status.runtime_profile === 'server';
   const accountConnection = useAccountConnection(api);
   const proxyOrigin = status.proxy_origin.replace(/\/$/, '');
@@ -1172,7 +1190,10 @@ function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
     : status.updates.last_checked_unix_ms ? 'Up to date'
     : 'Not checked yet';
 
-  return <div className="view-page"><AccountConnectionCard controller={accountConnection} /><Paper className="appearance-setting">
+  return <div className="view-page"><AccountConnectionCard controller={accountConnection} /><Paper className="capture-mode-setting">
+      <div><Text fw={700}>Capture requests</Text><Text>{captureEnabled ? 'On — requests use the remote notary and create private captures.' : 'Off — requests still pass through the local daemon, go directly to the provider, and create no evidence.'}</Text></div>
+      <Switch aria-label="Capture requests" checked={captureEnabled} disabled={captureMode.isPending} onChange={(event) => captureMode.mutate(event.currentTarget.checked)} />
+    </Paper><Paper className="appearance-setting">
       <Text fw={700}>Theme</Text>
       <SchemeControl />
     </Paper>

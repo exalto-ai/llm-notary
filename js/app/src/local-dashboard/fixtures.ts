@@ -155,6 +155,7 @@ export const fixtureEvents: Event[] = [
 
 export const fixtureStatus: Status = {
   version: '0.1.0', build_id: 'dev', runtime_profile: 'local', lifecycle: 'ready',
+  capture_enabled: true,
   proxy_listener: '127.0.0.1:8787', admin_listener: '127.0.0.1:8788',
   proxy_origin: 'http://127.0.0.1:8787', admin_origin: 'http://127.0.0.1:8788',
   metadata_backend: 'sqlite', metadata_status: 'ready', artifact_backend: 'filesystem', artifact_status: 'ready', vault: 'OS vault', notary: 'directory', preview_chars: 1000,
@@ -340,6 +341,7 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
   };
   let nextEventId = Math.max(...events.map((event) => event.event_id)) + 1;
   let nextActionTime = clock;
+  let captureEnabled = fixtureStatus.capture_enabled;
   const progressingOperations = new Set<string>();
   const operationPolls = new Map<string, number>();
   const shares = new Map<string, { captureId: string; state: string; visibility: ShareVisibility }>();
@@ -401,6 +403,7 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
   };
   const status = (): Status => ({
     ...fixtureStatus,
+    capture_enabled: captureEnabled,
     counts: {
       total_captures: captures.length,
       capturing: captures.filter((capture) => capture.capture_state === 'capturing').length,
@@ -438,6 +441,14 @@ export function createFixtureApi({ nowUnixMs = Date.now() }: { nowUnixMs?: numbe
     session: async () => undefined,
     endSession: async () => undefined,
     status: async () => status(),
+    captureSetting: async () => ({ enabled: captureEnabled }),
+    updateCaptureSetting: async (enabled) => {
+      if (captureEnabled !== enabled) {
+        captureEnabled = enabled;
+        recordEvent(enabled ? 'capture_enabled' : 'capture_disabled', enabled ? 'Capture requests enabled' : 'Capture requests disabled', 'info');
+      }
+      return { enabled: captureEnabled };
+    },
     notaries: async () => structuredClone(fixtureNotaries),
     captures: async (filters = {}) => {
       const limit = Number(filters.limit ?? 50);

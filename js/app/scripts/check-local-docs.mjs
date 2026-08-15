@@ -26,6 +26,7 @@ const expectedOperations = {
   '/openapi.json': { get: ['200'] },
   '/v1/session': { post: ['204', '401', '503'], delete: ['204', '401', '503'] },
   '/v1/status': { get: ['200', '401', '503'] },
+  '/v1/settings/capture': { get: ['200', '401', '503'], put: ['200', '401', '503'] },
   '/v1/notaries': { get: ['200', '401', '500', '503'] },
   '/v1/captures': { get: ['200', '400', '401', '503'] },
   '/v1/captures/{capture_id}': { get: ['200', '401', '404', '503'] },

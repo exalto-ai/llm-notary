@@ -79,6 +79,26 @@ describe('local evidence dashboard', () => {
     expect(localStorage.getItem('mantine-color-scheme-value')).toBe('auto');
   });
 
+  test('changes the authoritative capture mode and explains direct passthrough', async () => {
+    const api = createFixtureApi();
+    renderDashboard('/settings', api);
+    const toggle = page.getByRole('switch', { name: 'Capture requests' });
+    await expect.element(toggle).toBeChecked();
+    await toggle.click();
+    await expect.element(toggle).not.toBeChecked();
+    await expect.element(page.getByText('Off — requests still pass through the local daemon, go directly to the provider, and create no evidence.')).toBeVisible();
+    await expect.poll(async () => (await api.captureSetting()).enabled).toBe(false);
+  });
+
+  test('distinguishes capture-off service readiness on the overview', async () => {
+    const fixture = createFixtureApi();
+    await fixture.updateCaptureSetting(false);
+    renderDashboard('/overview', fixture);
+    await expect.element(page.getByRole('heading', { name: 'Online · Capture off' })).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'Direct passthrough' })).toBeVisible();
+    await expect.element(page.getByText('No notary or evidence artifact')).toBeVisible();
+  });
+
   test('shows public endpoints and deployment-managed updates in server mode', async () => {
     const fixture = createFixtureApi();
     const serverStatus = {

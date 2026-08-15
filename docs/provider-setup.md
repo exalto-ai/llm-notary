@@ -18,6 +18,13 @@ The daemon removes the configured local route prefix before forwarding. A
 caller cannot provide an arbitrary upstream URL. Enabled prefixes must be
 distinct and non-overlapping.
 
+These base URLs do not change when **Capture requests** is off. Traffic still
+crosses the local daemon and remains restricted to the fixed origin in this
+table, but the daemon connects directly over WebPKI HTTPS. It does not use a
+remote notary or create evidence, a capture ID, previews, or a `.llmcapture`.
+That request cannot later be finalized or verified. Turning capture back on
+affects later requests only.
+
 Examples below use `YOUR_MODEL` deliberately. Choose a model available to the
 provider account rather than copying a time-sensitive model name.
 
@@ -144,8 +151,10 @@ and `X-Title` are hidden in a finalized package.
 ## Streaming behavior
 
 Server-Sent Events are relayed as they arrive. The proxy does not synthesize
-events or buffer the full response before returning it. After the provider
-stream ends, one short notary exchange seals the deferred capture.
+events or buffer the full response before returning it. With capture on, one
+short notary exchange seals the deferred capture after the provider stream
+ends. With capture off, both request and response bodies stream through the
+direct provider connection and no sealing work occurs.
 
 The proxy does not implement WebSocket transport. Configure clients to use
 HTTP streaming when they can select between HTTP and WebSockets.

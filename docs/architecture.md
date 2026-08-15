@@ -23,6 +23,23 @@ The notary is not a generic forward proxy. The protocol selects one of four
 fixed provider adapters, and the notary enforces the corresponding hostname
 allowlist before it resolves or connects upstream.
 
+## Runtime capture mode
+
+`llm-notaryd` owns one durable `capture_enabled` setting in its metadata
+backend. Each provider request snapshots that mode once after its fixed route
+is accepted. Changing the setting affects only later requests; an admitted
+capture or direct response stream stays on its original path.
+
+With capture on, the capture flow below is unchanged. With capture off, the
+same loopback route still selects the provider adapter and fixed hostname, but
+the local daemon resolves and connects to that provider itself over WebPKI
+HTTPS. It streams request and response bodies with backpressure and does not
+follow redirects. The remote notary and hosted admission service are absent
+from this path, and the daemon creates no capture row, capture ID, preview, or
+artifact. A direct request therefore produces no evidence that can later be
+finalized or verified. Capture mode is a selection, never an availability
+fallback: neither path retries through the other after a failure.
+
 ## Capture flow
 
 1. A provider client sends an HTTP/1.1 request to a fixed local route.

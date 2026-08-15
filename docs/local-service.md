@@ -17,6 +17,35 @@ not provide that boundary: a route prefix is organization, not authentication.
 The PostgreSQL-and-S3 server profile is documented separately in
 [Server deployment](server-operations.md).
 
+## Pause new captures
+
+Use the **Capture requests** switch in the dashboard Settings page or the
+generated local API:
+
+`GET /v1/settings/capture` reads the authoritative value and
+`PUT /v1/settings/capture` changes it.
+
+```bash
+curl http://127.0.0.1:8788/v1/settings/capture
+curl -X PUT http://127.0.0.1:8788/v1/settings/capture \
+  -H 'content-type: application/json' \
+  -d '{"enabled":false}'
+```
+
+The write returns the authoritative stored value. The setting lives in daemon
+metadata, defaults to on, and survives daemon and desktop restarts. If admin
+authentication is configured, these routes require it like the other `/v1`
+routes.
+
+Off does not stop or bypass the local daemon. Existing configured provider
+URLs continue to work, but new requests stream from `llm-notaryd` directly to
+the adapter's fixed provider origin over HTTPS. There is no remote notary,
+hosted admission, capture row, capture ID, preview, or `.llmcapture`, so nothing
+from that request can later be finalized or verified. Existing captures and
+finalizations remain usable. Enabling capture first initializes trusted notary
+state; if that fails, the API returns
+`capture_enable_initialization_failed` and capture stays off.
+
 ## Start and supervise the service
 
 Run the service in the foreground. It writes the default configuration on

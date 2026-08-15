@@ -35,12 +35,23 @@ local llm-notaryd ── encrypted TLS records ── remote notary ── provi
     │
     ▼
 <capture-id>.llmtrace ── local or hosted verification
+
+capture off: model client ── local llm-notaryd ── direct WebPKI HTTPS ── provider
 ```
 
 The local daemon sees the provider credential, prompt, and response. The
 remote notary resolves and connects to an allowlisted provider and relays the
 encrypted TLS records, but does not receive the application plaintext or API
 key. The local TLS client validates the provider certificate.
+
+The daemon-owned **Capture requests** setting can pause evidence creation
+without changing those loopback URLs. When capture is off, requests still
+cross `llm-notaryd`, but the daemon streams them directly to the fixed provider
+origin over normal WebPKI HTTPS. It does not contact a remote notary, request
+hosted admission, create a capture row or ID, or write an evidence artifact.
+Nothing from that request can later be finalized or verified. Existing
+captures remain available for browsing, finalization, verification, and
+sharing.
 
 Capture stays on the interactive path; private proof generation does not. At
 the end of a provider response, the daemon vault-encrypts a deferred
