@@ -112,28 +112,14 @@ services:
         condition: service_completed_successfully
     restart: "no"
 
-  daemon-a:
+  daemon:
     <<: *daemon
-
-  daemon-b:
-    <<: *daemon
-
-  ingress:
-    image: caddy:2.10.2-alpine
-    environment:
-      PROXY_DOMAIN: ${PROXY_DOMAIN:?run scripts/llm-notary-server.sh init first}
-      ADMIN_DOMAIN: ${ADMIN_DOMAIN:?run scripts/llm-notary-server.sh init first}
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./deploy/daemon-server/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      - daemon-a
-      - daemon-b
-    restart: unless-stopped
+    expose:
+      - "8787"
+      - "8788"
+    deploy:
+      mode: replicated
+      replicas: ${SERVER_REPLICAS:-2}
 
 secrets:
   admin_password:
@@ -154,5 +140,7 @@ secrets:
 volumes:
   postgres-data:
   minio-data:
-  caddy-data:
-  caddy-config:
+
+networks:
+  default:
+    name: ${SERVER_NETWORK_NAME:-llm-notary-server}

@@ -75,7 +75,8 @@ must remain vault-encrypted and local.
 - Deferred private proof generation and deterministic `.llmtrace` archives.
 - Local CLI and dashboard with SQLite/filesystem defaults, plus a server mode
   with PostgreSQL, private S3-compatible storage, and safe multi-replica work
-  coordination behind HTTPS.
+  coordination. The included Compose file is a reference example; production
+  scheduling, ingress, and TLS belong to the operator's platform.
 - Optional consent-based sharing of a finalized session after server-side
   admission verifies and safety-scans its exact source package.
 

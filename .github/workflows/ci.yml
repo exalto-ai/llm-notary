@@ -360,7 +360,15 @@ jobs:
           LLM_NOTARY_SERVER_STATE_DIR="$state" \
             LLM_NOTARY_BOOTSTRAP_API_KEY=llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222 \
             scripts/llm-notary-server.sh init proxy.example.com admin.example.com >/dev/null
-          docker compose --env-file "$state/.env" -f compose.daemon-server.yml config --quiet
+          rendered=$(docker compose --env-file "$state/.env" -f compose.daemon-server.yml config --format json)
+          jq -e '
+            .services.daemon.deploy.mode == "replicated" and
+            .services.daemon.deploy.replicas == 2 and
+            (.services.daemon.expose | sort) == ["8787", "8788"] and
+            (.services | has("daemon-a") | not) and
+            (.services | has("daemon-b") | not) and
+            (.services | has("ingress") | not)
+          ' <<<"$rendered" >/dev/null
           test "$(wc -c < "$state/secrets/server-vault.key")" -eq 32
           test ! -e "$state/secrets/vault-passphrase"
           if LLM_NOTARY_SERVER_STATE_DIR="$state" \

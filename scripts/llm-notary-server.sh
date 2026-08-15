@@ -88,16 +88,17 @@ init() {
 SERVER_STATE_DIR=$state_dir
 SERVER_UID=$(id -u)
 SERVER_GID=$(id -g)
-PROXY_DOMAIN=$proxy_domain
-ADMIN_DOMAIN=$admin_domain
+SERVER_REPLICAS=2
+SERVER_NETWORK_NAME=llm-notary-server
 EOF
   chmod 600 "$env_file" "$state_dir/config.toml" "$state_dir"/secrets/*
 
   echo "Initialized LLM Notary server state at $state_dir"
-  echo "Dashboard: https://$admin_domain"
+  echo "Public admin origin: https://$admin_domain"
   echo "Username: admin"
   echo "Generated password: $admin_password"
   echo "Save that password now, then run: $0 up"
+  echo "This is a reference Compose deployment; your platform owns ingress and TLS."
 }
 
 case ${1:-} in
@@ -107,12 +108,15 @@ case ${1:-} in
     ;;
   up)
     compose up -d --build
+    echo "Started the replicated daemon service."
+    echo "Docker-network endpoints: daemon:8787 (provider proxy), daemon:8788 (admin/readiness)"
+    echo "The reference file intentionally leaves ingress, TLS, and public exposure to your platform."
     ;;
   status)
     compose ps
     ;;
   logs)
-    compose logs --tail=200 -f daemon-a daemon-b ingress
+    compose logs --tail=200 -f daemon
     ;;
   down)
     compose down

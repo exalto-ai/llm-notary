@@ -17,7 +17,7 @@ cleanup() {
   set +e
   if [[ $result -ne 0 ]]; then
     "${compose[@]}" ps >&2
-    "${compose[@]}" logs --no-color postgres server-migrator minio setup provider notary daemon-a daemon-b server-ingress >&2
+    "${compose[@]}" logs --no-color postgres server-migrator minio setup provider notary daemon-a daemon-b test-load-balancer >&2
   fi
   if [[ ${DAEMON_E2E_KEEP:-0} != 1 ]]; then
     "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1
@@ -52,15 +52,15 @@ wait_ready() {
   return 1
 }
 
-wait_ingress_ready() {
+wait_load_balancer_ready() {
   for _ in $(seq 1 60); do
     if "${compose[@]}" exec -T daemon-a curl --fail --silent --max-time 3 \
-        http://server-ingress:8788/readyz >/dev/null 2>&1; then
+        http://test-load-balancer:8788/readyz >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
   done
-  echo "server ingress did not recover a ready backend" >&2
+  echo "test load balancer did not recover a ready backend" >&2
   return 1
 }
 
@@ -116,12 +116,12 @@ if [[ $profile == full ]]; then
   # the terminal event, regardless of which replica claims the operation.
   export DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS=3000
 fi
-"${compose[@]}" up --detach server-ingress
+"${compose[@]}" up --detach test-load-balancer
 
-for service in daemon-a daemon-b server-ingress; do
+for service in daemon-a daemon-b test-load-balancer; do
   wait_healthy "$service"
 done
-wait_ingress_ready
+wait_load_balancer_ready
 
 basic=server-admin:cluster-password
 admin_json() {
@@ -130,10 +130,10 @@ admin_json() {
   shift 2
   "${compose[@]}" exec -T "$service" curl --fail --silent --show-error --user "$basic" "$@" "http://127.0.0.1:8788$path"
 }
-ingress_admin_json() {
+load_balancer_admin_json() {
   local path=$1
   shift
-  "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error --user "$basic" "$@" "http://server-ingress:8788$path"
+  "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error --user "$basic" "$@" "http://test-load-balancer:8788$path"
 }
 session_request() {
   local service=$1
@@ -143,12 +143,12 @@ session_request() {
     --header 'x-llm-notary-request: dashboard' --header "cookie: $cookie" \
     "$@" "http://127.0.0.1:8788$path"
 }
-ingress_session_request() {
+load_balancer_session_request() {
   local path=$1
   shift
   "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error \
     --header 'x-llm-notary-request: dashboard' --header "cookie: $cookie" \
-    "$@" "http://server-ingress:8788$path"
+    "$@" "http://test-load-balancer:8788$path"
 }
 
 status_a=$(admin_json daemon-a /v1/status)
@@ -160,21 +160,21 @@ replicas=$(psql_value 'select count(*) from llm_notary_daemon.replicas where lea
 
 # A raw dashboard token is returned only to this client. PostgreSQL stores the
 # domain-separated 32-byte digest and replica B validates/revokes it.
-headers=$("${compose[@]}" exec -T daemon-a curl --silent --show-error --dump-header - --output /dev/null --user "$basic" --request POST http://server-ingress:8788/v1/session)
+headers=$("${compose[@]}" exec -T daemon-a curl --silent --show-error --dump-header - --output /dev/null --user "$basic" --request POST http://test-load-balancer:8788/v1/session)
 cookie=$(printf '%s\n' "$headers" | awk -F': ' 'tolower($1)=="set-cookie" {sub(/;.*/,"",$2); gsub("\r","",$2); print $2}')
 [[ $cookie == llm_notary_admin_session=* ]] || { echo "server session cookie missing" >&2; exit 1; }
 session_instances=""
 for _ in $(seq 1 10); do
-  session_status=$(ingress_session_request /v1/status)
+  session_status=$(load_balancer_session_request /v1/status)
   session_instance=$(printf '%s' "$session_status" | "${compose[@]}" exec -T daemon-a jq -er '.instance_id')
   session_instances=$(printf '%s\n%s\n' "$session_instances" "$session_instance" | sed '/^$/d' | sort -u | paste -sd, -)
   [[ $session_instances == daemon-a,daemon-b ]] && break
 done
-[[ $session_instances == daemon-a,daemon-b ]] || { echo "ingress did not validate one shared session on both replicas: $session_instances" >&2; exit 1; }
+[[ $session_instances == daemon-a,daemon-b ]] || { echo "test load balancer did not validate one shared session on both replicas: $session_instances" >&2; exit 1; }
 raw_token=${cookie#*=}
 raw_in_database=$(psql_value "select count(*) from llm_notary_daemon.dashboard_sessions where encode(token_hash,'hex')='$raw_token'")
 [[ $raw_in_database == 0 ]] || { echo "raw dashboard bearer token reached PostgreSQL" >&2; exit 1; }
-ingress_session_request /v1/session --request DELETE >/dev/null
+load_balancer_session_request /v1/session --request DELETE >/dev/null
 if session_request daemon-a /v1/status >/dev/null 2>&1; then
   echo "revoked server session remained valid" >&2
   exit 1
@@ -209,7 +209,7 @@ if [[ $profile == full ]]; then
   wait_healthy minio
   wait_ready daemon-a
   wait_ready daemon-b
-  wait_ingress_ready
+  wait_load_balancer_ready
 
   "${compose[@]}" stop postgres >/dev/null
   wait_not_ready daemon-a
@@ -217,7 +217,7 @@ if [[ $profile == full ]]; then
   wait_healthy postgres
   wait_ready daemon-a
   wait_ready daemon-b
-  wait_ingress_ready
+  wait_load_balancer_ready
 
   provider_requests_before=$("${compose[@]}" logs --no-color provider | grep -c 'POST /v1/chat/completions' || true)
   "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error \
@@ -225,16 +225,16 @@ if [[ $profile == full ]]; then
     --header 'authorization: Bearer offline-server-secret' \
     --header 'content-type: application/json' \
     --data '{"model":"fixture-model","messages":[{"role":"user","content":"server cross replica prompt"}]}' \
-    http://server-ingress:8787/openai/v1/chat/completions >/tmp/server-provider-response.json
+    http://test-load-balancer:8787/openai/v1/chat/completions >/tmp/server-provider-response.json
   provider_requests_after=$("${compose[@]}" logs --no-color provider | grep -c 'POST /v1/chat/completions' || true)
-  [[ $((provider_requests_after - provider_requests_before)) == 1 ]] || { echo "ingress replayed one provider request" >&2; exit 1; }
+  [[ $((provider_requests_after - provider_requests_before)) == 1 ]] || { echo "test load balancer replayed one provider request" >&2; exit 1; }
   capture_id=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-llm-notary-capture-id:" {gsub("\r","",$2); print $2}' /tmp/server-capture.headers)
   [[ $capture_id == cap-* ]] || { echo "server capture ID missing" >&2; exit 1; }
   capture_b=$(admin_json daemon-b "/v1/captures/$capture_id")
   printf '%s' "$capture_b" | "${compose[@]}" exec -T daemon-b jq -e --arg id "$capture_id" '.capture.capture_id==$id and .capture.capture_state=="captured" and any(.artifacts[]; .kind=="deferred_bundle")' >/dev/null
 
-  echo "queueing finalization through the ingress"
-  queued=$(ingress_admin_json "/v1/captures/$capture_id/finalizations" --request POST)
+  echo "queueing finalization through the test load balancer"
+  queued=$(load_balancer_admin_json "/v1/captures/$capture_id/finalizations" --request POST)
   operation_id=$(printf '%s' "$queued" | "${compose[@]}" exec -T daemon-b jq -er '.operation.operation_id')
   echo "checking the cross-replica event snapshot"
   event_page_before=$(admin_json daemon-a "/v1/events?limit=1")
@@ -248,7 +248,7 @@ if [[ $profile == full ]]; then
     sleep 1
   done
   [[ $state == finalized ]] || { echo "server finalization timed out" >&2; exit 1; }
-  ingress_admin_json "/v1/captures/$capture_id/package" --output /tmp/server.llmtrace
+  load_balancer_admin_json "/v1/captures/$capture_id/package" --output /tmp/server.llmtrace
   "${compose[@]}" exec -T daemon-a llm-notary traces verify /tmp/server.llmtrace \
     --trusted-notary-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 >/dev/null
   owner_rows=$("${compose[@]}" exec -T postgres psql -U daemon_e2e -d daemon_e2e -Atc "select count(*) from llm_notary_daemon.operations where operation_id='$operation_id' and owner_instance_id in ('daemon-a','daemon-b') and claim_fence is not null")
@@ -442,7 +442,7 @@ if [[ $profile == full ]]; then
   wait_replica_slot_released daemon-a
   "${compose[@]}" up --detach --no-deps daemon-a >/dev/null
   wait_healthy daemon-a
-  wait_healthy server-ingress
+  wait_healthy test-load-balancer
 fi
 
 echo "daemon server E2E passed: postgres s3 2 $profile"
