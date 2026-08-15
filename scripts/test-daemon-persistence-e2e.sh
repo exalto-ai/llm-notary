@@ -419,9 +419,7 @@ assert_runtime_s3_outage() {
   health_status=$("${compose[@]}" exec -T "$daemon_service" \
     curl --silent --output /dev/null --write-out '%{http_code}' \
       --max-time 10 http://127.0.0.1:8788/healthz)
-  readiness_status=$("${compose[@]}" exec -T "$daemon_service" \
-    curl --silent --output /dev/null --write-out '%{http_code}' \
-      --max-time 10 http://127.0.0.1:8788/readyz)
+  readiness_status=$(wait_for_daemon_http_status /readyz 503 || true)
   status_status=$("${compose[@]}" exec -T "$daemon_service" \
     curl --silent --output /dev/null --write-out '%{http_code}' \
       --max-time 10 http://127.0.0.1:8788/v1/status)
