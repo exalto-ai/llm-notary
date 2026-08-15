@@ -41,10 +41,7 @@ impl Persistence {
                 .await?,
             ),
             MetadataBackend::Postgres => {
-                let postgres =
-                    config.catalog.postgres.as_ref().ok_or_else(|| {
-                        anyhow::anyhow!("PostgreSQL metadata settings are missing")
-                    })?;
+                let postgres = &config.catalog.postgres;
                 let database_url = config.postgres_runtime_url()?;
                 Arc::new(
                     PostgresMetadataStore::connect(
@@ -58,7 +55,7 @@ impl Persistence {
                     .await
                     .map_err(|_| {
                         anyhow::anyhow!(
-                            "PostgreSQL metadata database is unavailable or its daemon schema is not current; run `llm-notaryd --config <path> migrate`"
+                            "PostgreSQL metadata database is unavailable or its daemon schema is not current; run `llm-notaryd migrate --config <path>`"
                         )
                     })?,
                 )

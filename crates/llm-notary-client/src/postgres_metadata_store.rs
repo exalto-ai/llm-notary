@@ -34,14 +34,14 @@ const INITIAL_MIGRATION: &str = include_str!("../migrations-postgres-daemon/0001
 
 /// A pooled PostgreSQL metadata backend whose schema has already been migrated.
 #[derive(Clone)]
-pub struct PostgresMetadataStore {
+pub(crate) struct PostgresMetadataStore {
     pool: PgPool,
     full_text_search: bool,
 }
 
 impl PostgresMetadataStore {
     /// Opens a runtime pool and verifies, without mutating, the exact daemon schema version.
-    pub async fn connect(
+    pub(crate) async fn connect(
         database_url: &str,
         max_connections: u32,
         connect_timeout: Duration,
@@ -76,7 +76,7 @@ impl PostgresMetadataStore {
     }
 
     /// Wraps an existing pool after verifying the daemon-owned migration journal.
-    pub async fn from_pool(pool: PgPool, full_text_search: bool) -> MetadataResult<Self> {
+    async fn from_pool(pool: PgPool, full_text_search: bool) -> MetadataResult<Self> {
         require_current_schema(&pool).await?;
         Ok(Self {
             pool,
@@ -89,7 +89,7 @@ impl PostgresMetadataStore {
 ///
 /// This one-shot API expects a direct connection URL and is never called by runtime
 /// construction. The lock timeout bounds coordination with another daemon migrator.
-pub async fn migrate_database(
+pub(crate) async fn migrate_database(
     database_url: &str,
     ssl_mode: PostgresSslMode,
     connect_timeout: Duration,

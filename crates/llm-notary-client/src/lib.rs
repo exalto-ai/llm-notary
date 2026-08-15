@@ -19,7 +19,7 @@ mod local_cli;
 pub mod metadata;
 pub mod metadata_store;
 pub mod persistence;
-pub mod postgres_metadata_store;
+mod postgres_metadata_store;
 mod sqlite_catalog;
 pub mod sqlite_metadata_store;
 pub mod update;
@@ -34,7 +34,7 @@ pub mod update;
 struct DaemonCli {
     /// Versioned local service configuration file. Defaults to the standard
     /// user configuration path and is created on first start.
-    #[arg(long)]
+    #[arg(long, global = true)]
     config: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<DaemonCommand>,
@@ -66,9 +66,7 @@ async fn run_daemon_migrator(config_path: Option<PathBuf>) -> Result<()> {
         None => config::default_config_path()?,
     };
     let config = config::AgentConfig::load_for_metadata_migration(&path)?;
-    let postgres = config.catalog.postgres.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("the daemon metadata migrator requires catalog.backend = \"postgres\"")
-    })?;
+    let postgres = &config.catalog.postgres;
     let database_url = config.postgres_migration_url()?;
     println!("Applying local daemon PostgreSQL metadata migrations");
     postgres_metadata_store::migrate_database(
@@ -100,6 +98,9 @@ mod tests {
         assert!(DaemonCli::try_parse_from(["llm-notaryd", "migrate"]).is_ok());
         assert!(
             DaemonCli::try_parse_from(["llm-notaryd", "--config", "agent.toml", "migrate"]).is_ok()
+        );
+        assert!(
+            DaemonCli::try_parse_from(["llm-notaryd", "migrate", "--config", "agent.toml"]).is_ok()
         );
     }
 }

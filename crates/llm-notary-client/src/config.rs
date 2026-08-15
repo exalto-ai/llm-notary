@@ -123,8 +123,8 @@ pub struct CatalogConfig {
     pub output_preview_chars: usize,
     #[serde(default = "default_true")]
     pub full_text_search: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub postgres: Option<PostgresCatalogConfig>,
+    #[serde(default, skip_serializing_if = "PostgresCatalogConfig::is_default")]
+    pub postgres: PostgresCatalogConfig,
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -144,7 +144,7 @@ impl MetadataBackend {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresCatalogConfig {
     #[serde(default)]
@@ -168,6 +168,12 @@ impl Default for PostgresCatalogConfig {
             acquire_timeout_seconds: default_postgres_acquire_timeout_seconds(),
             migration_lock_timeout_seconds: default_postgres_migration_lock_timeout_seconds(),
         }
+    }
+}
+
+impl PostgresCatalogConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
     }
 }
 
@@ -270,7 +276,7 @@ impl Default for CatalogConfig {
             prompt_preview_chars: default_preview_chars(),
             output_preview_chars: default_preview_chars(),
             full_text_search: true,
-            postgres: None,
+            postgres: PostgresCatalogConfig::default(),
         }
     }
 }
@@ -506,16 +512,12 @@ impl AgentConfig {
                     "catalog.path must not be empty for the SQLite backend"
                 );
                 ensure!(
-                    self.catalog.postgres.is_none(),
-                    "catalog.postgres requires catalog.backend = \"postgres\""
+                    self.catalog.postgres.is_default(),
+                    "non-default catalog.postgres settings require catalog.backend = \"postgres\""
                 );
             }
             MetadataBackend::Postgres => {
-                let postgres = self.catalog.postgres.as_ref().ok_or_else(|| {
-                    anyhow::anyhow!(
-                        "catalog.postgres is required when catalog.backend = \"postgres\""
-                    )
-                })?;
+                let postgres = &self.catalog.postgres;
                 ensure!(
                     (1..=64).contains(&postgres.max_connections),
                     "catalog.postgres.max_connections must be between 1 and 64"
@@ -563,10 +565,6 @@ impl AgentConfig {
             .transpose()
     }
 
-    pub fn metadata_backend_name(&self) -> &'static str {
-        self.catalog.backend.as_str()
-    }
-
     pub(crate) fn postgres_runtime_url(&self) -> Result<SecretDatabaseUrl> {
         ensure!(
             self.catalog.backend == MetadataBackend::Postgres,
@@ -585,13 +583,35 @@ impl AgentConfig {
             self.catalog.backend == MetadataBackend::Postgres,
             "PostgreSQL metadata is not selected"
         );
-        resolve_database_url(
+        resolve_migration_database_url(
+            env::var_os(METADATA_DATABASE_URL_ENV),
+            env::var_os(METADATA_DATABASE_URL_FILE_ENV),
             env::var_os(METADATA_MIGRATION_URL_ENV),
             env::var_os(METADATA_MIGRATION_URL_FILE_ENV),
-            METADATA_MIGRATION_URL_ENV,
-            METADATA_MIGRATION_URL_FILE_ENV,
         )
     }
+}
+
+fn resolve_migration_database_url(
+    runtime_inline: Option<OsString>,
+    runtime_file: Option<OsString>,
+    migration_inline: Option<OsString>,
+    migration_file: Option<OsString>,
+) -> Result<SecretDatabaseUrl> {
+    if migration_inline.is_none() && migration_file.is_none() {
+        return resolve_database_url(
+            runtime_inline,
+            runtime_file,
+            METADATA_DATABASE_URL_ENV,
+            METADATA_DATABASE_URL_FILE_ENV,
+        );
+    }
+    resolve_database_url(
+        migration_inline,
+        migration_file,
+        METADATA_MIGRATION_URL_ENV,
+        METADATA_MIGRATION_URL_FILE_ENV,
+    )
 }
 
 fn resolve_database_url(
@@ -768,7 +788,7 @@ mod tests {
         assert_eq!(config.catalog.prompt_preview_chars, 1_000);
         assert!(config.catalog.full_text_search);
         assert_eq!(config.catalog.backend, MetadataBackend::Sqlite);
-        assert!(config.catalog.postgres.is_none());
+        assert_eq!(config.catalog.postgres, PostgresCatalogConfig::default());
         assert_eq!(config.proxy.listen.to_string(), "127.0.0.1:8787");
         assert_eq!(config.admin.listen.to_string(), "127.0.0.1:8788");
         assert!(config.admin.auth.is_none());
@@ -841,8 +861,9 @@ mod tests {
     #[test]
     fn default_configuration_round_trips_as_toml() {
         let config = AgentConfig::default();
-        let parsed: AgentConfig =
-            toml::from_str(&toml::to_string_pretty(&config).unwrap()).unwrap();
+        let encoded = toml::to_string_pretty(&config).unwrap();
+        assert!(!encoded.contains("[catalog.postgres]"));
+        let parsed: AgentConfig = toml::from_str(&encoded).unwrap();
         parsed.validate().unwrap();
     }
 
@@ -850,19 +871,32 @@ mod tests {
     fn postgres_configuration_is_explicit_and_bounded() {
         let mut config = AgentConfig::default();
         config.catalog.backend = MetadataBackend::Postgres;
-        assert!(config.validate().is_err());
-        config.catalog.postgres = Some(PostgresCatalogConfig::default());
+        config.validate().unwrap();
         assert_eq!(
-            config.catalog.postgres.as_ref().unwrap().ssl_mode,
+            config.catalog.postgres.ssl_mode,
             PostgresSslMode::VerifyFull,
             "remote PostgreSQL connections must verify certificates and hostnames by default"
         );
-        config.validate().unwrap();
-        config.catalog.postgres.as_mut().unwrap().max_connections = 0;
+        config.catalog.postgres.max_connections = 0;
         assert!(config.validate().is_err());
 
         config.catalog.backend = MetadataBackend::Sqlite;
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn minimal_postgres_configuration_uses_safe_defaults() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        fs::write(
+            &path,
+            format!("format = {CONFIG_FORMAT:?}\n\n[catalog]\nbackend = \"postgres\"\n"),
+        )
+        .unwrap();
+
+        let config = AgentConfig::load_for_metadata_migration(&path).unwrap();
+        assert_eq!(config.catalog.backend, MetadataBackend::Postgres);
+        assert_eq!(config.catalog.postgres, PostgresCatalogConfig::default());
     }
 
     #[test]
@@ -879,6 +913,27 @@ mod tests {
             "postgres://operator:secret@database/daemon"
         );
         assert_eq!(format!("{secret:?}"), "SecretDatabaseUrl([REDACTED])");
+    }
+
+    #[test]
+    fn migration_url_defaults_to_runtime_and_allows_a_privileged_override() {
+        let shared = resolve_migration_database_url(
+            Some("postgres://runtime/database".into()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(shared.expose(), "postgres://runtime/database");
+
+        let separate = resolve_migration_database_url(
+            Some("postgres://runtime/database".into()),
+            None,
+            Some("postgres://migrator/database".into()),
+            Some("/a/path/that/must/not/be/read".into()),
+        )
+        .unwrap();
+        assert_eq!(separate.expose(), "postgres://migrator/database");
     }
 
     #[test]

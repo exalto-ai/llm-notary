@@ -164,7 +164,7 @@ postgres_psql() {
 
 run_migrator() {
   local config=${1:-/etc/llm-notary/config-postgres.toml}
-  "${compose[@]}" run --rm --no-deps migrator --config "$config" migrate
+  "${compose[@]}" run --rm --no-deps migrator migrate --config "$config"
 }
 
 expect_postgres_daemon_failure() {
@@ -260,7 +260,7 @@ SQL
   local migration_status
   set +e
   migration_output=$("${compose[@]}" run --rm --no-deps --entrypoint /usr/bin/timeout \
-    migrator 15s llm-notaryd --config /etc/llm-notary/config-postgres.toml migrate 2>&1)
+    migrator 15s llm-notaryd migrate --config /etc/llm-notary/config-postgres.toml 2>&1)
   migration_status=$?
   set -e
   if [[ $migration_status -eq 0 || $migration_status -eq 124 ]]; then

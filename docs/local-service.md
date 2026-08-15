@@ -89,60 +89,30 @@ listen = "127.0.0.1:8788"
 
 ### Metadata backend
 
-SQLite remains the default and keeps using `catalog.path`; existing catalogs
-open in place. These metadata settings are additive fields in the existing
-`llm-notary/agent-config/v1` format, and a missing `backend` means SQLite. An
-operator may instead select PostgreSQL explicitly:
+SQLite remains the default, and existing catalogs open in place. To run one
+daemon with PostgreSQL instead, change only the backend:
 
 ```toml
 [catalog]
 backend = "postgres"
-prompt_preview_chars = 1000
-output_preview_chars = 1000
-full_text_search = true
-
-[catalog.postgres]
-ssl_mode = "verify_full"
-max_connections = 8
-connect_timeout_seconds = 10
-acquire_timeout_seconds = 10
-migration_lock_timeout_seconds = 60
 ```
 
-Connection URLs never belong in this file. Set the runtime URL with
-`LLM_NOTARY_METADATA_DATABASE_URL` or put it in a file and set
-`LLM_NOTARY_METADATA_DATABASE_URL_FILE` to that path. Set the direct migration
-URL separately with `LLM_NOTARY_METADATA_MIGRATION_URL` or its `_FILE`
-equivalent. When both forms for one URL are present, the direct environment
-value wins and the file is not read. The migrator needs a direct PostgreSQL
-session; do not give it a transaction-pooler URL.
-
-`ssl_mode` defaults to `verify_full`, which encrypts the connection and checks
-the certificate and hostname. `require` encrypts without hostname validation.
-Use `disable` only for an explicitly trusted local/test server; remote and Neon
-connections must not use it. A URL query cannot silently weaken the configured
-mode.
-
-Apply migrations before starting the daemon:
-
 ```bash
-llm-notaryd --config /path/to/config.toml migrate
+export LLM_NOTARY_METADATA_DATABASE_URL='postgresql://…'
+llm-notaryd migrate --config /path/to/config.toml
 llm-notaryd --config /path/to/config.toml
 ```
 
-The migrator initializes only the daemon-owned PostgreSQL schema. It does not
-initialize the vault, discover a notary, load account credentials, or bind a
-listener. Runtime startup never applies migrations and never falls back to
-SQLite; an unavailable database or wrong schema version fails startup before
-vault/notary work.
+Use `LLM_NOTARY_METADATA_DATABASE_URL_FILE` for a mounted secret. The defaults
+verify the database certificate and hostname and use up to eight pooled
+connections. Separate migration credentials, TLS/pool tuning, role grants, and
+backup steps are covered in [PostgreSQL operations](database-operations.md).
 
-Budget `max_connections` per daemon plus one temporary direct migration
-connection within the database provider's limit. Back up the daemon PostgreSQL
-schema and the filesystem bundle/trace directories as one recovery set.
-Prompt and output previews are plaintext in the selected metadata database,
-even though deferred checkpoints remain vault-encrypted on disk. PostgreSQL
-alone does not make two daemon replicas safe: keep one process until the
-documented cluster mode adds ownership fencing and shared artifact storage.
+The migrator touches only the daemon-owned schema; runtime startup never
+migrates or falls back to SQLite. Prompt and output previews are plaintext in
+PostgreSQL even though deferred checkpoints remain vault-encrypted. PostgreSQL
+alone does not make multiple daemon processes safe—keep one process until
+server mode also provides shared artifact storage and fenced work ownership.
 
 The admin listener is open to local processes by default. Both listeners must
 still use loopback addresses, and the provider proxy never mounts admin

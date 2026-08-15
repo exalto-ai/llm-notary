@@ -90,15 +90,17 @@ The local daemon migrations live under
 advisory lock. They do not use the hosted platform's `migrations-postgres/`
 directory or SQLx migration journal.
 
-Supply the pooled runtime URL and direct migration URL through the
-`LLM_NOTARY_METADATA_DATABASE_URL` and
-`LLM_NOTARY_METADATA_MIGRATION_URL` secret variables (or their `_FILE`
-forms), then run:
+Select `catalog.backend = "postgres"` and supply
+`LLM_NOTARY_METADATA_DATABASE_URL` (or its `_FILE` form), then run:
 
 ```bash
-llm-notaryd --config /etc/llm-notary/config.toml migrate
+llm-notaryd migrate --config /etc/llm-notary/config.toml
 llm-notaryd --config /etc/llm-notary/config.toml
 ```
+
+By default the migrate command uses the same URL. For least-privilege
+deployments, give the runtime role only data access and override migrations
+with `LLM_NOTARY_METADATA_MIGRATION_URL` or its `_FILE` form.
 
 Keep `catalog.postgres.ssl_mode = "verify_full"` for remote databases and
 provide the CA settings required by the PostgreSQL URL. `require` encrypts but
