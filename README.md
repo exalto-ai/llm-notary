@@ -84,7 +84,7 @@ and a public transparency log are outside the current prototype.
 ## Install
 
 For a guided setup on an Apple silicon Mac running macOS 12 or later, choose
-**Download for macOS** on the [LLM Notary website](https://llm-notary.exalto.ai/),
+**Download for macOS** on the [LLM Notary website](https://notary.exalto.ai/),
 open the DMG, and move LLM Notary to Applications. Production downloads are
 Developer ID signed, notarized by Apple, and stapled for Gatekeeper checks. See
 [Desktop app](docs/desktop-app.md) for the supported workflow and development
@@ -96,7 +96,7 @@ or ARM64 Linux systems. It installs both `llm-notaryd` and `llm-notary` into
 `~/.local/bin` by default:
 
 ```bash
-curl -fsSL https://llm-notary.exalto.ai/install.sh | sh
+curl -fsSL https://notary.exalto.ai/install.sh | sh
 ```
 
 Set `LLM_NOTARY_INSTALL_DIR` to choose another destination. The installer
@@ -219,7 +219,7 @@ is not a signed receipt:
 curl --fail-with-body \
   -H 'Content-Type: application/vnd.llmnotary.trace-package+zip' \
   --data-binary @cap-example.llmtrace \
-  https://llm-notary.exalto.ai/api/verify
+  https://notary.exalto.ai/api/verify
 ```
 
 Use local verification when the package contents should not leave the

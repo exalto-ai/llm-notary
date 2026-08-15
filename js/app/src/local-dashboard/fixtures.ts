@@ -162,12 +162,12 @@ export const fixtureStatus: Status = {
 
 export const fixtureNotaries: Notaries = {
   source: 'directory',
-  directory_source: 'https://llm-notary.exalto.ai/api/notary',
+  directory_source: 'https://notary.exalto.ai/api/notary',
   generation: 12,
   active_key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   notaries: [
     {
-      endpoint: 'tls://notary.exalto.ai:7047', transport: 'tls',
+      endpoint: 'tls://llm-notary-prod-notary.fly.dev:443', transport: 'tls',
       key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', status: 'active',
       valid_from_unix_ms: fixtureNow - hour * 24 * 30, valid_until_unix_ms: null, finalize_until_unix_ms: null
     },

@@ -71,7 +71,7 @@ import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries 
 const loadCreditUtilizationChart = () => import('./CreditUtilizationChart');
 const CreditUtilizationChart = lazy(loadCreditUtilizationChart);
 const appleLogoUrl = new URL('./assets/platforms/apple.svg', import.meta.url).href;
-const installCommand = 'curl -fsSL https://llm-notary.exalto.ai/install.sh | sh';
+const installCommand = 'curl -fsSL https://notary.exalto.ai/install.sh | sh';
 const sourceInstallCommand = `git clone https://github.com/exalto-ai/llm-notary.git
 cd llm-notary
 cargo install --locked --path crates/llm-notary-client`;

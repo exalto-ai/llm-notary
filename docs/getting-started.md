@@ -23,7 +23,7 @@ publication replaces the previous release.
 The app currently supports Apple silicon Macs (M1 or newer) running macOS 12
 Monterey or later.
 
-1. Choose **Download for macOS** on the [LLM Notary website](https://llm-notary.exalto.ai/).
+1. Choose **Download for macOS** on the [LLM Notary website](https://notary.exalto.ai/).
 2. Open the downloaded DMG.
 3. Move LLM Notary to Applications, then launch it.
 
@@ -47,7 +47,7 @@ x86-64 or ARM64 Linux systems. It requires `curl`, `tar`, and either
 `sha256sum` or `shasum`.
 
 ```bash
-curl -fsSL https://llm-notary.exalto.ai/install.sh | sh
+curl -fsSL https://notary.exalto.ai/install.sh | sh
 ```
 
 The installer selects the current complete `latest` build, verifies the selected

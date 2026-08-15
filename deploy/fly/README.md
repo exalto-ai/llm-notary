@@ -3,7 +3,7 @@
 The production deployment runs three Fly apps in `sjc`:
 
 ```text
-internet ── HTTPS ──> llm-notary.exalto.ai
+internet ── HTTPS ──> notary.exalto.ai
                               │
                               └── Flycast HTTP ──> llm-notary-prod-api
 
@@ -60,9 +60,9 @@ The API also needs at least one browser OAuth client, the notary public key,
 and its signing-key directory. Google is the primary sign-in path; stage
 `GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` on the API and set
 its Web application callback to
-`https://llm-notary.exalto.ai/api/auth/google/callback`. The requested Google
+`https://notary.exalto.ai/api/auth/google/callback`. The requested Google
 scopes are only `openid`, `email`, and `profile`. Keep the existing GitHub
-credentials and `https://llm-notary.exalto.ai/api/auth/github/callback` while
+credentials and `https://notary.exalto.ai/api/auth/github/callback` while
 GitHub-backed accounts still need access.
 
 These are Fly runtime secrets, not GitHub Actions secrets. Stage them before
@@ -81,7 +81,7 @@ Treat a client secret pasted into chat, logs, or shell arguments as compromised:
 delete it in Google Cloud, create a replacement, and import only the replacement.
 
 Create the Stripe webhook endpoint at
-`https://llm-notary.exalto.ai/api/billing/stripe/webhook` and pin it to API
+`https://notary.exalto.ai/api/billing/stripe/webhook` and pin it to API
 version `2026-02-25.clover`. Subscribe only to these events:
 
 - `checkout.session.completed`

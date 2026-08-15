@@ -15,7 +15,7 @@ kill_timeout = "30s"
 
 [env]
   LLM_NOTARY_API_LISTEN = "0.0.0.0:8080"
-  LLM_NOTARY_PUBLIC_ORIGIN = "https://llm-notary.exalto.ai"
+  LLM_NOTARY_PUBLIC_ORIGIN = "https://notary.exalto.ai"
   LLM_NOTARY_NOTARY_HOST = "llm-notary-prod-notary.fly.dev"
   LLM_NOTARY_NOTARY_PORT = "443"
   LLM_NOTARY_NOTARY_TRANSPORT = "tls"

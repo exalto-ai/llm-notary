@@ -1276,17 +1276,13 @@ mod tests {
             http: reqwest::Client::new(),
             github_client_id: "client-id".to_owned(),
             github_client_secret: "secret".to_owned(),
-            github_callback_url: Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/github/callback",
-            )
-            .expect("callback"),
+            github_callback_url: Url::parse("https://notary.exalto.ai/api/auth/github/callback")
+                .expect("callback"),
             google_client_id: "google-client-id".to_owned(),
             google_client_secret: "google-secret".to_owned(),
-            google_callback_url: Url::parse(
-                "https://llm-notary.exalto.ai/api/auth/google/callback",
-            )
-            .expect("Google callback"),
-            app_url: Url::parse("https://llm-notary.exalto.ai").expect("app"),
+            google_callback_url: Url::parse("https://notary.exalto.ai/api/auth/google/callback")
+                .expect("Google callback"),
+            app_url: Url::parse("https://notary.exalto.ai").expect("app"),
             secure_cookies: true,
             notary_directory: super::super::tests::directory_key(),
             publish: PublishService::mock(storage.clone()),
