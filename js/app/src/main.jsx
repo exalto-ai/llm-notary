@@ -37,7 +37,9 @@ import { RelayAnimation } from './RelayAnimation';
 import { latestMacosDownloadHref, loadLatestPointer, macosDmgName } from './releaseDownloads';
 import {
   approveCli,
+  createBillingPortalSession,
   createCheckoutSession,
+  createSubscriptionCheckoutSession,
   createApiKey,
   deleteCurrentAccount,
   getApiKeys,
@@ -383,7 +385,7 @@ export function VerificationPage({ verifyFile = verifyTracePackage }) {
         <input ref={inputRef} type="file" onChange={(event) => chooseFile(event.target.files[0] || null)} />
         <span>{file ? 'Package selected' : 'Drop one .llmtrace package here'}</span>
         <strong>{file ? file.name : 'or choose a file'}</strong>
-        <small>{file ? fileSize(file.size) : 'Maximum package size: 128 MiB'}</small>
+        <small>{file ? binaryFileSize(file.size) : 'Maximum package size: 128 MiB'}</small>
       </label>
       {file && <label className="verification-consent"><input type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /><span>I understand that this package may contain sensitive content.</span></label>}
       <div className="verification-actions"><button className="button button-dark" type="submit" disabled={!file || !consent || status === 'uploading'}>{status === 'uploading' ? 'Checking package…' : 'Verify package'}</button>{file && <button className="button" type="button" onClick={resetVerification}>Clear</button>}</div>
@@ -403,12 +405,15 @@ function MotionStudies() {
 
 function PricingSection() {
   return <section className="section pricing" id="pricing" aria-labelledby="pricing-title">
-    <header className="pricing-intro"><span className="eyebrow">Pricing</span><h2 id="pricing-title">Pay as you go.</h2><p>Pay for every megabyte of data you get notarized. One balance works across every supported provider.</p></header>
+    <header className="pricing-intro"><span className="eyebrow">Pricing</span><h2 id="pricing-title">A plan for every proof workload.</h2><p>Every plan includes separate monthly allowances for private capture and notarization, plus space for uploaded trace packages.</p></header>
     <div className="pricing-ledger">
-      <article><header><span>Free tier</span><div><b>$0</b><small>per month</small></div></header><h3>512 MB included every month</h3><ul><li>No credit card required</li><li>Refreshes automatically every month</li><li>Produces the same verifiable package as paid credits</li></ul></article>
-      <article><header><span>One-time purchase</span><div><b>$5</b><small>per GB</small></div></header><h3>Buy additional credits through Stripe.</h3><ul><li>Credits never expire</li><li>Added to your balance after payment</li><li>Use them whenever your free credits run out</li></ul></article>
+      <article><header><span>Free</span><div><b>$0</b><small>per month</small></div></header><h3>Explore verifiable traces.</h3><ul><li>50 MB capture each month</li><li>50 MB notarization each month</li><li>Store up to 1 GB of trace packages</li></ul></article>
+      <article><header><span>1 GB</span><div><b>$9.99</b><small>per month</small></div></header><h3>For regular research.</h3><ul><li>1 GB capture each month</li><li>1 GB notarization each month</li><li>Store up to 10 GB of trace packages</li></ul></article>
+      <article><header><span>10 GB</span><div><b>$49.99</b><small>per month</small></div></header><h3>For sustained workloads.</h3><ul><li>10 GB capture each month</li><li>10 GB notarization each month</li><li>Trace storage without a fixed plan limit*</li></ul></article>
     </div>
-    <a className="pricing-details-link" href="/#/docs/hosted-credits">See how credits work</a>
+    <div className="pricing-addon"><span>Need more notarization?</span><b>$10 per additional GB</b><small>Available on every plan · purchased credits do not expire</small></div>
+    <p className="pricing-fine-print">*No fixed trace-storage limit. Fair-use and abuse controls still apply.</p>
+    <a className="pricing-details-link" href="/#/docs/hosted-credits">See plan and usage details</a>
   </section>;
 }
 
@@ -570,15 +575,16 @@ const docPages = {
     ],
   },
   'hosted-credits': {
-    title: 'Credits and usage',
-    lead: 'Signed-in users get free monthly credits and can buy more for hosted notarization.',
+    title: 'Plans and usage',
+    lead: 'Each subscription has separate monthly capture and notarization allowances, plus storage for uploaded trace packages.',
     blocks: [
-      { heading: 'How credits work', body: 'You spend credits only when LLM Notary notarizes a capture through the hosted service. Capturing locally, retrying the same notarization, verifying a package, and sharing an existing package do not spend credits.' },
-      { heading: 'Free and extra credits', body: 'Public users get 64 MiB each month, while signed-in users get 512 MiB. Eligible accounts can claim a one-time 128 MiB bonus, and purchased credits never expire. LLM Notary uses credits that expire sooner before credits that never expire.' },
-      { heading: 'Buy more credits', body: 'The account dashboard sells credits in one-time increments at $5 USD per GB through Stripe Checkout. Purchased credits never expire and appear in your balance after Stripe confirms the payment. Refunds and disputes remove the corresponding credits; reinstated payments restore them.' },
+      { heading: 'Three plans', body: 'Free includes 50 MB of capture and 50 MB of notarization each month, with up to 1 GB of uploaded trace packages. The $9.99 monthly plan includes 1 GB for each monthly allowance and up to 10 GB of trace packages. The $49.99 monthly plan includes 10 GB for each monthly allowance and no fixed trace-storage ceiling, subject to fair-use and abuse controls.' },
+      { heading: 'Capture and notarization are separate', body: 'A hosted capture reserves capture allowance for its authenticated HTTP byte limit. Turning a capture into a portable proof spends notarization allowance separately. Monthly allowances refresh on the account reset date; unused monthly allowance does not roll over.' },
+      { heading: 'Buy more notarization', body: 'Every plan can buy additional notarization credits for $10 USD per GB through Stripe Checkout. Purchased credits do not expire. LLM Notary consumes monthly notarization allowance before non-expiring purchased credits. Refunds and disputes remove the corresponding credits; reinstated payments restore them.' },
+      { heading: 'Trace storage', body: 'The trace limit is the total declared size of trace-package uploads that are in progress, being checked, or admitted to your account. Rejected, failed, expired, and purged uploads do not count. A per-file safety limit still applies on every plan.' },
       { heading: 'Anonymous allowances are scoped by network address', body: 'Public hosted use derives a rotating, keyed subject from the connection address: one IPv4 address or one IPv6 /64 prefix. Only explicitly trusted reverse proxies may supply the client address. The raw address is not stored in admission records or sent to a notary worker.' },
       { heading: 'An abuse control, not an identity claim', note: 'Network-address scoping is only a coarse abuse control. People behind the same NAT, corporate gateway, or VPN can share an allowance, while one person may appear under different addresses. The derived subject does not identify a person and is not a privacy guarantee.' },
-      { heading: 'Your balance', body: 'The hosted dashboard shows your included and extra credits, monthly reset, next expiration, purchases, offers, and credit activity. A connected local service can retrieve the same account summary with `llm-notary whoami --json`.' },
+      { heading: 'Your usage', body: 'The hosted dashboard shows the current plan, capture and notarization balances, trace storage, monthly reset, purchases, offers, and activity. A connected local service can retrieve the same account summary with `llm-notary whoami --json`.' },
       { heading: 'Evidence is unchanged', body: 'Admission and credit bookkeeping do not change TLSNotary evidence, trace-package verification, local bundle retention, or the trust claim. Self-hosted notaries do not need the hosted credit ledger unless their operator deliberately adopts it.' },
     ],
   },
@@ -722,7 +728,7 @@ const docSubheadings = {
 
 const docNavigation = [
   { label: 'Start', pages: [['overview', 'Overview'], ['getting-started', 'Install options']] },
-  { label: 'Understand', pages: [['how-it-works', 'Trust model'], ['hosted-credits', 'Credits and usage'], ['trace-packages', 'Trace packages']] },
+  { label: 'Understand', pages: [['how-it-works', 'Trust model'], ['hosted-credits', 'Plans and usage'], ['trace-packages', 'Trace packages']] },
   { label: 'Share', pages: [['share', 'Share a session']] },
 ];
 const docOrder = docNavigation.flatMap((group) => group.pages.map(([key]) => key));
@@ -1191,7 +1197,7 @@ export function SharePage({ shareId, loadShare = getPublicShare, loadTrace = get
     <div className="share-page-layout">
       <section className="share-transcript" aria-labelledby="shared-conversation-title"><header><h2 id="shared-conversation-title">Conversation</h2><span>{messageCount} {messageCount === 1 ? 'message' : 'messages'}</span></header><SharedConversation spans={spans} /></section>
       <aside className="share-evidence-rail"><span className="eyebrow">Verification</span><dl><div><dt>Provider</dt><dd><ProviderIdentity provider={share.provider} /></dd></div><div><dt>Host</dt><dd>{share.host}</dd></div><div><dt>Authenticated</dt><dd>{authenticated}</dd></div><div><dt>Visibility</dt><dd>{share.visibility}{share.password_protected ? ' · password protected' : ''}</dd></div>{share.expires_at && <div><dt>Expires</dt><dd>{sessionDate(share.expires_at)}</dd></div>}</dl>
-        {share.package_url ? share.password_protected ? <button className="share-package-download" type="button" onClick={saveProtectedPackage}><span>Package</span><b>Download .llmtrace</b><small>{fileSize(share.package_size_bytes || 0)} · SHA-256 included</small></button> : <a className="share-package-download" href={share.package_url}><span>Package</span><b>Download .llmtrace</b><small>{fileSize(share.package_size_bytes || 0)} · SHA-256 included</small></a> : <p className="share-legacy-package">Exact package unavailable for this older share.</p>}
+        {share.package_url ? share.password_protected ? <button className="share-package-download" type="button" onClick={saveProtectedPackage}><span>Package</span><b>Download .llmtrace</b><small>{binaryFileSize(share.package_size_bytes || 0)} · SHA-256 included</small></button> : <a className="share-package-download" href={share.package_url}><span>Package</span><b>Download .llmtrace</b><small>{binaryFileSize(share.package_size_bytes || 0)} · SHA-256 included</small></a> : <p className="share-legacy-package">Exact package unavailable for this older share.</p>}
         {packageError && <p className="share-package-error" role="alert">{packageError}</p>}
         <details className="share-technical"><summary>Hashes and notary</summary><dl><div><dt>Trace SHA-256</dt><dd><code>{share.trace_sha256}</code></dd></div>{share.package_sha256 && <div><dt>Package SHA-256</dt><dd><code>{share.package_sha256}</code></dd></div>}<div><dt>Notary key</dt><dd><code>{share.notary_key_id || 'Not recorded'}</code></dd></div><div><dt>Directory generation</dt><dd>{share.directory_generation ?? 'Not recorded'}</dd></div><div><dt>Safety contract</dt><dd><code>{share.public_package_safety_version || 'Legacy'}</code></dd></div></dl></details>
         <button className="share-report-button" type="button" onClick={() => setReportOpen(true)}>Report this trace</button>
@@ -1205,11 +1211,18 @@ function sessionDate(unixSeconds) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(unixSeconds * 1000));
 }
 
-function fileSize(bytes) {
+function binaryFileSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes >= 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+}
+
+function decimalSize(bytes) {
+  if (bytes < 1_000) return `${bytes} B`;
+  if (bytes < 1_000_000) return `${(bytes / 1_000).toFixed(1)} KB`;
+  if (bytes >= 1_000_000_000) return `${(bytes / 1_000_000_000).toFixed(1)} GB`;
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
 }
 
 function shareStateLabel(state) {
@@ -1383,17 +1396,28 @@ export function DeleteAccountPanel({ identifier, onDeleted, deleteAccount = dele
 }
 
 function CreditUtilizationFallback({ credits }) {
+  const notarization = credits.notarization;
   return <section className="dashboard-utilization dashboard-utilization--loading" role="status" aria-label="Loading daily utilization">
-    <header><div><span className="eyebrow">Daily utilization</span><h2>Last 30 days</h2></div><span>MB · UTC</span></header>
+    <header><div><span className="eyebrow">Notarization usage</span><h2>Last 30 days</h2></div><span>MB · UTC</span></header>
     <div className="dashboard-utilization-plot dashboard-utilization-plot--loading"><i /></div>
-    <dl><div><dt><i className="dashboard-utilization-period" />30-day use</dt><dd>—</dd></div><div><dt>Available</dt><dd>{fileSize(credits.total_remaining_bytes)}</dd></div><div><dt>Overall budget</dt><dd>{fileSize(credits.total_granted_bytes)}</dd></div></dl>
+    <dl><div><dt><i className="dashboard-utilization-period" />30-day use</dt><dd>—</dd></div><div><dt>Available</dt><dd>{decimalSize(notarization.total_remaining_bytes)}</dd></div><div><dt>Overall budget</dt><dd>{decimalSize(notarization.total_granted_bytes)}</dd></div></dl>
   </section>;
+}
+
+const planDetails = {
+  free: { label: 'Free', price: '$0' },
+  one_gb: { label: '1 GB', price: '$9.99/month' },
+  ten_gb: { label: '10 GB', price: '$49.99/month' },
+};
+
+function planLabel(plan) {
+  return planDetails[plan]?.label || plan;
 }
 
 const dashboardSections = [
   { key: 'overview', label: 'Overview', href: '#/dashboard' },
   { key: 'traces', label: 'Traces', href: '#/dashboard/traces' },
-  { key: 'credits', label: 'Credits', href: '#/dashboard/credits' },
+  { key: 'credits', label: 'Plan & usage', href: '#/dashboard/credits' },
   { key: 'settings', label: 'Settings', href: '#/dashboard/settings' },
 ];
 
@@ -1482,6 +1506,8 @@ export function Dashboard({
   loadBillingPurchases = getBillingPurchases,
   loadBillingPurchase = getBillingPurchase,
   startCheckout = createCheckoutSession,
+  startSubscriptionCheckout = createSubscriptionCheckoutSession,
+  startBillingPortal = createBillingPortalSession,
   openCheckout = (url) => window.location.assign(url),
   loadCurrentUser = getCurrentUser,
   claimOfferRequest = claimCreditOffer,
@@ -1515,9 +1541,11 @@ export function Dashboard({
   const [purchases, setPurchases] = useState(null);
   const [purchaseError, setPurchaseError] = useState(null);
   const [checkoutReturnStatus, setCheckoutReturnStatus] = useState(null);
-  const [quantityGb, setQuantityGb] = useState(5);
+  const [quantityGb, setQuantityGb] = useState(1);
   const [checkoutAttemptKey, setCheckoutAttemptKey] = useState(null);
   const [startingCheckout, setStartingCheckout] = useState(false);
+  const [startingPlan, setStartingPlan] = useState(null);
+  const [subscriptionStatus, setSubscriptionStatus] = useState(null);
   const [creditUtilizationHistory, setCreditUtilizationHistory] = useState(null);
   const [creditUtilizationError, setCreditUtilizationError] = useState(false);
   const creditHistoryGeneration = useRef(0);
@@ -1525,6 +1553,7 @@ export function Dashboard({
   const checkoutQuery = useMemo(() => new URLSearchParams(route.split('?')[1] || ''), [route]);
   const returnedCheckout = checkoutQuery.get('checkout');
   const returnedPurchaseId = checkoutQuery.get('purchase_id');
+  const returnedSubscription = checkoutQuery.get('subscription');
 
   useEffect(() => {
     let cancelled = false;
@@ -1625,6 +1654,40 @@ export function Dashboard({
   }, [checkoutPollBaseDelay, checkoutPollMaxAttempts, loadBillingPurchase, loadCreditHistory, loadCurrentUser, returnedCheckout, returnedPurchaseId]);
 
   useEffect(() => {
+    if (returnedSubscription !== 'success') {
+      setSubscriptionStatus(returnedSubscription === 'cancelled' ? 'cancelled' : null);
+      return undefined;
+    }
+    let cancelled = false;
+    let timer;
+    let attempts = 0;
+    setSubscriptionStatus('waiting');
+    const refresh = async () => {
+      attempts += 1;
+      try {
+        const account = await loadCurrentUser();
+        if (cancelled || !account) return;
+        setCredits(account.credits);
+        setBilling(account.billing);
+        if (account.billing.service_plan !== 'free' || account.billing.billing_status === 'review') {
+          setSubscriptionStatus(account.billing.billing_status === 'active' ? 'active' : 'review');
+          return;
+        }
+      } catch (reason) {
+        if (attempts >= checkoutPollMaxAttempts) setPurchaseError(reason.message);
+      }
+      if (attempts >= checkoutPollMaxAttempts) {
+        setSubscriptionStatus('timeout');
+        return;
+      }
+      const delay = Math.min(checkoutPollBaseDelay * (2 ** Math.min(attempts - 1, 3)), 5_000);
+      timer = window.setTimeout(refresh, delay);
+    };
+    void refresh();
+    return () => { cancelled = true; if (timer) window.clearTimeout(timer); };
+  }, [checkoutPollBaseDelay, checkoutPollMaxAttempts, loadCurrentUser, returnedSubscription]);
+
+  useEffect(() => {
     let cancelled = false;
     loadCreditOffers()
       .then((offers) => { if (!cancelled) setCreditOffers(offers); })
@@ -1715,6 +1778,32 @@ export function Dashboard({
     }
   };
 
+  const choosePlan = async (plan) => {
+    if (!['test', 'live'].includes(billing.purchase_mode)) return;
+    const attemptKey = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    setStartingPlan(plan);
+    setPurchaseError(null);
+    try {
+      const response = await startSubscriptionCheckout(plan, attemptKey);
+      openCheckout(response.checkout_url);
+    } catch (reason) {
+      setPurchaseError(reason.message);
+      setStartingPlan(null);
+    }
+  };
+
+  const manageSubscription = async () => {
+    setStartingPlan('portal');
+    setPurchaseError(null);
+    try {
+      const response = await startBillingPortal();
+      openCheckout(response.portal_url);
+    } catch (reason) {
+      setPurchaseError(reason.message);
+      setStartingPlan(null);
+    }
+  };
+
   const loadMoreSessions = async () => {
     if (!sessionCursor || loadingMoreSessions) return;
     setLoadingMoreSessions(true);
@@ -1769,7 +1858,7 @@ export function Dashboard({
         <nav>
           <a className={activeView === 'overview' ? 'active' : ''} href="#/dashboard" aria-current={activeView === 'overview' ? 'page' : undefined}><span>Overview</span></a>
           <a className={activeView === 'traces' ? 'active' : ''} href="#/dashboard/traces" aria-current={activeView === 'traces' ? 'page' : undefined}><span>Traces</span><small>{user.share_stats?.total ?? '—'}</small></a>
-          <a className={activeView === 'credits' ? 'active' : ''} href="#/dashboard/credits" aria-current={activeView === 'credits' ? 'page' : undefined}><span>Credits</span></a>
+          <a className={activeView === 'credits' ? 'active' : ''} href="#/dashboard/credits" aria-current={activeView === 'credits' ? 'page' : undefined}><span>Plan & usage</span></a>
           <a className={activeView === 'settings' ? 'active' : ''} href="#/dashboard/settings" aria-current={activeView === 'settings' ? 'page' : undefined}><span>Settings</span></a>
         </nav>
       </aside>
@@ -1783,26 +1872,40 @@ export function Dashboard({
             <div><span>Admitted traces</span><b>{shares === null ? '—' : admittedCount}</b></div>
             <div><span>In progress</span><b>{shares === null ? '—' : activeCount}</b></div>
           </div>
-          {credits && <Suspense fallback={<CreditUtilizationFallback credits={credits} />}><CreditUtilizationChart credits={credits} formatBytes={fileSize} historyDebits={creditUtilizationHistory} historyError={creditUtilizationError} /></Suspense>}
+          {credits && <Suspense fallback={<CreditUtilizationFallback credits={credits} />}><CreditUtilizationChart credits={credits} formatBytes={decimalSize} historyDebits={creditUtilizationHistory} historyError={creditUtilizationError} /></Suspense>}
         </>}
         {activeView === 'credits' && <>
-          <header className="dashboard-page-header"><span className="eyebrow">Usage</span><h1>Credits</h1><p>See what you’ve used, what remains, and when credits expire.</p></header>
+          <header className="dashboard-page-header"><span className="eyebrow">Billing</span><h1>Plan & usage</h1><p>Manage your subscription and track capture, notarization, and trace storage separately.</p></header>
           {credits && <section className="dashboard-credits" aria-labelledby="credit-balance-title">
-            <header><div><span className="eyebrow">Credit usage</span><h2 id="credit-balance-title">{fileSize(credits.total_remaining_bytes)} available</h2></div><div className="dashboard-credit-meta"><span>{billing.service_plan} plan · {billing.billing_status}</span><span>Resets {sessionDate(credits.reset_at)}</span></div></header>
-            <p className="dashboard-credit-note">Included credits reset monthly. Purchased credits are added separately and do not expire.</p>
-            <div className="dashboard-credit-ledger" aria-label="Credit balance breakdown"><div><span>Included this month</span><b>{fileSize(credits.included_monthly_remaining_bytes)}</b></div><div><span>Extra credits</span><b>{fileSize(credits.supplemental_remaining_bytes)}</b></div><div><span>Next expiration</span><b>{credits.next_grant_expiration ? sessionDate(credits.next_grant_expiration) : 'None'}</b></div></div>
+            <header><div><span className="eyebrow">Current plan</span><h2 id="credit-balance-title">{planLabel(billing.service_plan)}</h2></div><div className="dashboard-credit-meta"><span>{billing.billing_status} · {planDetails[billing.service_plan]?.price}</span><span>Usage resets {sessionDate(credits.reset_at)}</span></div></header>
+            <div className="dashboard-plan-actions">
+              {billing.service_plan === 'free' ? <><div><b>Increase monthly allowances</b><span>Subscription changes are handled securely by Stripe.</span></div><div>{['one_gb', 'ten_gb'].map((plan) => <button type="button" key={plan} onClick={() => choosePlan(plan)} disabled={!checkoutEnabled || Boolean(startingPlan)}>{startingPlan === plan ? 'Opening Checkout…' : `${planLabel(plan)} · ${planDetails[plan].price}`}</button>)}</div></> : <><div><b>{planLabel(billing.service_plan)} subscription</b><span>Change plans, update payment details, or cancel in Stripe.</span></div><button type="button" onClick={manageSubscription} disabled={!checkoutEnabled || Boolean(startingPlan)}>{startingPlan === 'portal' ? 'Opening portal…' : 'Manage subscription'}</button></>}
+            </div>
+            {subscriptionStatus === 'cancelled' && <p className="dashboard-checkout-state">Subscription Checkout was cancelled. Your plan did not change.</p>}
+            {subscriptionStatus === 'waiting' && <p className="dashboard-checkout-state" role="status">Checkout completed. Waiting for Stripe to activate your plan…</p>}
+            {subscriptionStatus === 'active' && <p className="dashboard-checkout-state" role="status">Your subscription is active and the new monthly allowances are ready.</p>}
+            {subscriptionStatus === 'review' && <p className="dashboard-checkout-state" role="alert">Stripe needs attention before hosted capture, notarization, or uploads can continue. Open subscription management to resolve it.</p>}
+            {subscriptionStatus === 'timeout' && <p className="dashboard-checkout-state" role="status">Stripe is still processing the subscription. Refresh this page in a moment.</p>}
+            {billing.billing_status === 'review' && subscriptionStatus !== 'review' && <p className="dashboard-checkout-state" role="alert">Billing needs attention. Hosted capture, notarization, and trace uploads are paused until it is resolved.</p>}
+            <p className="dashboard-credit-note">Capture and notarization have separate monthly allowances. Extra purchases add only notarization and do not expire.</p>
+            <div className="dashboard-usage-ledger" aria-label="Plan usage breakdown">
+              <div><span>Capture available</span><b>{decimalSize(credits.capture.total_remaining_bytes)}</b><small>{decimalSize(credits.capture.included_monthly_remaining_bytes)} included this month</small></div>
+              <div><span>Notarization available</span><b>{decimalSize(credits.notarization.total_remaining_bytes)}</b><small>{decimalSize(credits.notarization.included_monthly_remaining_bytes)} monthly · {decimalSize(credits.notarization.supplemental_remaining_bytes)} extra</small></div>
+              <div><span>Trace storage</span><b>{decimalSize(user.share_stats?.stored_bytes ?? 0)}</b><small>{billing.entitlements?.trace_storage_bytes == null ? 'No fixed plan limit*' : `of ${decimalSize(billing.entitlements.trace_storage_bytes)}`}</small></div>
+            </div>
+            {billing.entitlements?.trace_storage_bytes == null && <p className="dashboard-usage-footnote">*Fair-use and abuse controls still apply. Per-file safety limits remain in place.</p>}
             {creditError && <p className="dashboard-session-error" role="alert">{creditError}</p>}
-            {creditOffers?.map((offer) => <article className="dashboard-credit-offer" key={offer.id}><div><span className="eyebrow">Available offer</span><b>{offer.title}</b><p>{offer.description} Claim by {sessionDate(offer.claim_expires_at)}.</p></div><button type="button" onClick={() => claimOffer(offer)} disabled={claimingOffer === offer.id}>{claimingOffer === offer.id ? 'Claiming…' : `Claim ${fileSize(offer.amount_bytes)}`}</button></article>)}
+            {creditOffers?.map((offer) => <article className="dashboard-credit-offer" key={offer.id}><div><span className="eyebrow">Available offer</span><b>{offer.title}</b><p>{offer.description} Claim by {sessionDate(offer.claim_expires_at)}.</p></div><button type="button" onClick={() => claimOffer(offer)} disabled={claimingOffer === offer.id}>{claimingOffer === offer.id ? 'Claiming…' : `Claim ${decimalSize(offer.amount_bytes)}`}</button></article>)}
             {checkoutEnabled ? <section className="dashboard-credit-purchase" aria-labelledby="buy-credit-title">
-              <div className="dashboard-credit-purchase-copy"><span className="eyebrow">Extra credits · $5 per GB</span><h3 id="buy-credit-title">Buy {quantityGb} GB</h3>{purchaseMode === 'test' && <strong className="dashboard-billing-mode" role="status">Stripe test mode · no real charges</strong>}<p>{purchaseMode === 'test' ? `$${quantityGb * 5}.00 USD test purchase · use a Stripe test card` : `$${quantityGb * 5}.00 USD · one-time payment through Stripe`}</p></div>
+              <div className="dashboard-credit-purchase-copy"><span className="eyebrow">Extra notarization · $10 per GB</span><h3 id="buy-credit-title">Buy {quantityGb} GB</h3>{purchaseMode === 'test' && <strong className="dashboard-billing-mode" role="status">Stripe test mode · no real charges</strong>}<p>{purchaseMode === 'test' ? `$${quantityGb * 10}.00 USD test purchase · use a Stripe test card` : `$${quantityGb * 10}.00 USD · one-time payment through Stripe`}</p></div>
               <div className="dashboard-credit-quantity" role="group" aria-label="Credit quantity">{[1, 5, 10, 20].map((quantity) => <button key={quantity} type="button" aria-label={`${quantity} GB`} aria-pressed={quantityGb === quantity} onClick={() => { setQuantityGb(quantity); setCheckoutAttemptKey(null); }}>{quantity}<small aria-hidden="true">GB</small></button>)}</div>
-              <button className="dashboard-credit-buy" type="button" onClick={buyCredits} disabled={startingCheckout}>{startingCheckout ? 'Opening Checkout…' : purchaseMode === 'test' ? `Open test Checkout · ${quantityGb} GB for $${quantityGb * 5}` : `Buy ${quantityGb} GB for $${quantityGb * 5}`}</button>
-            </section> : <section className="dashboard-credit-purchase dashboard-credit-purchase--disabled" aria-labelledby="buy-credit-title"><div className="dashboard-credit-purchase-copy"><span className="eyebrow">Extra credits</span><h3 id="buy-credit-title">Purchases unavailable</h3><p>You can’t buy more credits right now.</p></div></section>}
+              <button className="dashboard-credit-buy" type="button" onClick={buyCredits} disabled={startingCheckout}>{startingCheckout ? 'Opening Checkout…' : purchaseMode === 'test' ? `Open test Checkout · ${quantityGb} GB for $${quantityGb * 10}` : `Buy ${quantityGb} GB for $${quantityGb * 10}`}</button>
+            </section> : <section className="dashboard-credit-purchase dashboard-credit-purchase--disabled" aria-labelledby="buy-credit-title"><div className="dashboard-credit-purchase-copy"><span className="eyebrow">Extra notarization</span><h3 id="buy-credit-title">Purchases unavailable</h3><p>You can’t buy more notarization right now.</p></div></section>}
             {displayedCheckoutStatus === 'cancelled' && <p className="dashboard-checkout-state">Checkout was cancelled. No credits were added.</p>}
             {checkoutReturnMessages[displayedCheckoutStatus] && <p className="dashboard-checkout-state" role="status">{checkoutReturnMessages[displayedCheckoutStatus]}</p>}
             {purchaseError && <p className="dashboard-session-error" role="alert">{purchaseError}</p>}
             <div className="dashboard-purchase-history"><h3>Purchases</h3>{purchases === null && !purchaseError ? <p>Loading purchases…</p> : purchases?.length ? purchases.map((purchase) => <div key={purchase.id}><span className={`dashboard-purchase-state dashboard-purchase-state--${purchase.state}`}><i aria-hidden="true" />{purchase.state.replaceAll('_', ' ')}</span><b>{purchase.quantity_gb} GB · ${(purchase.amount_cents / 100).toFixed(2)}</b><time>{sessionDate(purchase.created_at)}</time></div>) : <p>No credit purchases yet.</p>}</div>
-            {creditHistory?.length > 0 && <div className="dashboard-credit-history"><h3>Credit activity</h3>{creditHistory.map((entry) => { const addsCredit = entry.kind === 'grant' || (entry.kind === 'adjustment' && entry.amount_bytes > 0); return <div key={`${entry.kind}-${entry.id}`}><span className={`dashboard-credit-sign dashboard-credit-sign--${entry.kind}`}>{addsCredit ? '+' : '−'}{fileSize(Math.abs(entry.amount_bytes))}</span><span>{entry.display_label}</span><time>{sessionDate(entry.created_at)}</time></div>; })}{creditHistoryCursor && <button className="dashboard-load-more" type="button" onClick={loadMoreCreditHistory} disabled={loadingMoreCreditHistory}>{loadingMoreCreditHistory ? 'Loading…' : 'Load older activity'}</button>}</div>}
+            {creditHistory?.length > 0 && <div className="dashboard-credit-history"><h3>Usage activity</h3>{creditHistory.map((entry) => { const addsCredit = entry.kind === 'grant' || (entry.kind === 'adjustment' && entry.amount_bytes > 0); return <div key={`${entry.kind}-${entry.id}`}><span className={`dashboard-credit-sign dashboard-credit-sign--${entry.kind}`}>{addsCredit ? '+' : '−'}{decimalSize(Math.abs(entry.amount_bytes))}</span><span><small>{entry.credit_kind}</small>{entry.display_label}</span><time>{sessionDate(entry.created_at)}</time></div>; })}{creditHistoryCursor && <button className="dashboard-load-more" type="button" onClick={loadMoreCreditHistory} disabled={loadingMoreCreditHistory}>{loadingMoreCreditHistory ? 'Loading…' : 'Load older activity'}</button>}</div>}
           </section>}
         </>}
         {activeView === 'settings' && <>

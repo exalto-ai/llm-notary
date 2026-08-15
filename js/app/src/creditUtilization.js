@@ -23,7 +23,7 @@ export async function loadRecentDebits(loadPage, now = Date.now(), cancelled = (
     if (cancelled()) return null;
     for (const entry of page.items) {
       const createdAt = entryTimestampMs(entry);
-      if (entry.kind === 'debit' && createdAt !== null && createdAt >= cutoff) entries.push(entry);
+      if (entry.kind === 'debit' && entry.credit_kind === 'notarization' && createdAt !== null && createdAt >= cutoff) entries.push(entry);
     }
 
     const oldest = page.items.length ? entryTimestampMs(page.items[page.items.length - 1]) : null;

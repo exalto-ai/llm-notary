@@ -31,7 +31,7 @@ Use the generated contract when prose and an installed service disagree.
 | Operate PostgreSQL or Neon | [Database operations](database-operations.md) |
 | Deploy the production Fly.io stack | [Fly.io deployment](../deploy/fly/README.md) |
 | Understand upload staging | [Share intake API v1](share-intake-v1.md) |
-| Understand credits and utilization | [Credits and utilization](hosted-credits.md) |
+| Understand plans and usage | [Plans and usage](hosted-credits.md) |
 | Understand admission and public storage | [Share admission v1](share-admission-v1.md) |
 
 ## Contributors

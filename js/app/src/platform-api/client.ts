@@ -214,6 +214,27 @@ export async function createCheckoutSession(quantityGb: number, idempotencyKey: 
   return data;
 }
 
+export async function createSubscriptionCheckoutSession(
+  plan: 'one_gb' | 'ten_gb',
+  idempotencyKey: string,
+) {
+  const { data, error, response } = await client.POST('/api/me/billing/subscription-checkout-sessions', {
+    body: { plan, idempotency_key: idempotencyKey },
+  });
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not start subscription Checkout.'), response.status);
+  }
+  return data;
+}
+
+export async function createBillingPortalSession() {
+  const { data, error, response } = await client.POST('/api/me/billing/portal-sessions');
+  if (!response.ok || !data) {
+    throw new PlatformApiError(errorMessage(error, 'Could not open subscription management.'), response.status);
+  }
+  return data;
+}
+
 export async function revokeCliSession(sessionId: string) {
   const { error, response } = await client.DELETE('/api/cli/sessions/{session_id}', {
     params: { path: { session_id: sessionId } },

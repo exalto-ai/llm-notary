@@ -197,6 +197,12 @@ Every hosted capture or finalization obtains a short-lived one-time ticket from
 and renews a PostgreSQL-backed lease while work continues. New sessions fail
 closed if the coordinator is unavailable.
 
+Set `LLM_NOTARY_RELEASE_OUTBOX_DIR` to a private persistent directory writable
+by the notary. It stores only lease IDs, notary instance IDs, outcomes, and byte
+counts. The notary writes a successful capture's exact count before returning
+its receipt and keeps retrying coordinator settlement across process restarts.
+The supplied Compose configuration mounts a dedicated named volume there.
+
 The shared admission service token authenticates only the notary's internal
 redeem, renew, and release calls. It is never sent to local clients and is
 unrelated to provider credentials or session-sharing access tokens.
@@ -211,8 +217,8 @@ never trust all public peers. Rotate the HMAC key only together with an
 incremented `LLM_NOTARY_ANONYMOUS_SUBJECT_HMAC_KEY_VERSION`, knowing that a new
 version starts new anonymous subjects for the current period.
 
-See [Credits and utilization](hosted-credits.md) for the signed-in account,
-supplemental-credit, and address-scoping model.
+See [Plans and usage](hosted-credits.md) for subscription allowances,
+additional notarization credits, trace storage, and address scoping.
 
 ## Storage and database operations
 

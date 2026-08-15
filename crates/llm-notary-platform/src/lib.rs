@@ -183,17 +183,20 @@ struct AccountBillingResponse {
     service_plan: service_admission::ServicePlan,
     billing_status: service_admission::BillingStatus,
     purchase_mode: billing::BillingPurchaseMode,
+    entitlements: service_admission::PlanEntitlements,
 }
 
 impl AccountBillingResponse {
     fn new(
         state: service_admission::AccountBillingState,
         purchase_mode: billing::BillingPurchaseMode,
+        admission: &AdmissionConfig,
     ) -> Self {
         Self {
             service_plan: state.service_plan,
             billing_status: state.billing_status,
             purchase_mode,
+            entitlements: service_admission::plan_entitlements(admission, state.service_plan),
         }
     }
 }
@@ -203,6 +206,7 @@ struct ShareStats {
     total: i64,
     admitted: i64,
     in_progress: i64,
+    stored_bytes: i64,
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize, ToSchema)]
@@ -535,7 +539,7 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
         (name = "browser-auth", description = "Google- or GitHub-backed browser sessions"),
         (name = "cli-auth", description = "Local service authorization and CLI sessions"),
         (name = "notary-admission", description = "Hosted notary tickets and distributed leases"),
-        (name = "billing", description = "Stripe-hosted finalization credit purchases"),
+        (name = "billing", description = "Stripe-hosted subscriptions and additional notarization purchases"),
         (name = "verification", description = "Anonymous, retention-free portable package verification"),
         (name = "sharing", description = "Authenticated share intake and stable direct links"),
         (name = "library", description = "Small catalog of Listed shares")
@@ -1277,12 +1281,15 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
     let credits = service_admission::account_access(&state, &user.0).await?;
     let billing = service_admission::account_billing_state(&state.database, &user.0).await?;
     let notary_stats = account_notary_stats(&state.database, &user.0).await?;
-    let (total, admitted, in_progress) = sqlx::query_as::<_, (i64, i64, i64)>(
+    let (total, admitted, in_progress, stored_bytes) = sqlx::query_as::<_, (i64, i64, i64, i64)>(
         "SELECT COUNT(*)::BIGINT,
                 COUNT(*) FILTER (WHERE state = 'admitted')::BIGINT,
                 COUNT(*) FILTER (
                     WHERE state IN ('uploading', 'queued', 'verifying')
-                )::BIGINT
+                )::BIGINT,
+                COALESCE(SUM(declared_size_bytes) FILTER (
+                    WHERE state IN ('uploading', 'queued', 'verifying', 'admitted')
+                ), 0)::BIGINT
          FROM publish_jobs WHERE user_id = $1",
     )
     .bind(&user.0)
@@ -1297,13 +1304,18 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
             auth_provider: BrowserAuthProvider::from_database(&user.4)?,
             display_name: user.1,
         },
-        billing: AccountBillingResponse::new(billing, state.billing.purchase_mode()),
+        billing: AccountBillingResponse::new(
+            billing,
+            state.billing.purchase_mode(),
+            &state.admission,
+        ),
         credits,
         notary_stats,
         share_stats: ShareStats {
             total,
             admitted,
             in_progress,
+            stored_bytes,
         },
     }))
 }
@@ -1879,7 +1891,11 @@ async fn cli_me(
             name: principal.credential_name,
         },
         session,
-        billing: AccountBillingResponse::new(billing, state.billing.purchase_mode()),
+        billing: AccountBillingResponse::new(
+            billing,
+            state.billing.purchase_mode(),
+            &state.admission,
+        ),
         credits,
     }))
 }
@@ -2541,6 +2557,8 @@ mod tests {
             "POST /api/cli/token",
             "POST /api/me/api-keys",
             "POST /api/me/billing/checkout-sessions",
+            "POST /api/me/billing/portal-sessions",
+            "POST /api/me/billing/subscription-checkout-sessions",
             "POST /api/verify",
             "POST /api/shares",
             "POST /api/shares/{share_id}/complete",
@@ -3836,9 +3854,9 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO notary_credit_grants
-             (id, credit_subject, account_id, amount_bytes, source_kind,
+             (id, credit_subject, account_id, credit_kind, amount_bytes, source_kind,
               source_reference, idempotency_key, created_at, available_at, display_label)
-             VALUES ('delete-grant', 'user:delete-user', 'delete-user', 100, 'promotion',
+             VALUES ('delete-grant', 'user:delete-user', 'delete-user', 'notarization', 100, 'promotion',
                      'delete-grant', 'delete-grant', 1, 1, 'Test grant')",
         )
         .execute(&pool)
@@ -3846,8 +3864,8 @@ mod tests {
         .unwrap();
         sqlx::query(
             "INSERT INTO notary_credit_debits
-             (id, credit_subject, account_id, record_digest, allowance_bytes, created_at)
-             VALUES ('delete-debit', 'user:delete-user', 'delete-user', $1, 40, 1)",
+             (id, credit_subject, account_id, credit_kind, record_digest, allowance_bytes, created_at)
+             VALUES ('delete-debit', 'user:delete-user', 'delete-user', 'notarization', $1, 40, 1)",
         )
         .bind("d".repeat(64))
         .execute(&pool)

@@ -156,6 +156,7 @@ pub enum FinalizationProgress {
 /// Receives best-effort progress from the finalization pipeline.
 pub type FinalizationProgressObserver<'a> = &'a (dyn Fn(FinalizationProgress) + Send + Sync);
 const NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED: u8 = 6;
+const NOTARY_REJECTION_CAPTURE_CREDITS_EXHAUSTED: u8 = 7;
 pub const NOTARY_CAPACITY_RETRY_AFTER_SECS: u64 = 5;
 
 trait NotaryStream: AsyncRead + AsyncWrite + Send + Unpin {}
@@ -180,6 +181,7 @@ pub enum NotaryAdmissionRejection {
     CaptureDisabled,
     AdmissionDenied,
     CoordinatorUnavailable,
+    CaptureCreditsExhausted,
     FinalizationCreditsExhausted,
 }
 
@@ -191,6 +193,7 @@ impl NotaryAdmissionRejection {
             Self::CaptureDisabled => "capture_disabled",
             Self::AdmissionDenied => "admission_denied",
             Self::CoordinatorUnavailable => "coordinator_unavailable",
+            Self::CaptureCreditsExhausted => "capture_credits_exhausted",
             Self::FinalizationCreditsExhausted => "finalization_credits_exhausted",
         }
     }
@@ -202,6 +205,7 @@ impl NotaryAdmissionRejection {
             NOTARY_REJECTION_CAPTURE_DISABLED => Ok(Self::CaptureDisabled),
             NOTARY_REJECTION_ADMISSION_DENIED => Ok(Self::AdmissionDenied),
             NOTARY_REJECTION_COORDINATOR_UNAVAILABLE => Ok(Self::CoordinatorUnavailable),
+            NOTARY_REJECTION_CAPTURE_CREDITS_EXHAUSTED => Ok(Self::CaptureCreditsExhausted),
             NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED => {
                 Ok(Self::FinalizationCreditsExhausted)
             }
@@ -216,6 +220,7 @@ impl NotaryAdmissionRejection {
             Self::CaptureDisabled => NOTARY_REJECTION_CAPTURE_DISABLED,
             Self::AdmissionDenied => NOTARY_REJECTION_ADMISSION_DENIED,
             Self::CoordinatorUnavailable => NOTARY_REJECTION_COORDINATOR_UNAVAILABLE,
+            Self::CaptureCreditsExhausted => NOTARY_REJECTION_CAPTURE_CREDITS_EXHAUSTED,
             Self::FinalizationCreditsExhausted => NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED,
         }
     }
@@ -279,9 +284,13 @@ impl fmt::Display for NotaryAdmissionError {
                     "notary admission service is temporarily unavailable"
                 )
             }
+            NotaryAdmissionRejection::CaptureCreditsExhausted => write!(
+                formatter,
+                "hosted capture allowance is exhausted; wait for the monthly reset"
+            ),
             NotaryAdmissionRejection::FinalizationCreditsExhausted => write!(
                 formatter,
-                "hosted finalization credits are exhausted; wait for the monthly reset or claim an eligible credit offer"
+                "hosted notarization allowance is exhausted; wait for the monthly reset or buy additional credits"
             ),
         }
     }
@@ -1488,9 +1497,22 @@ pub async fn run_notary_session_after_prelude(
         max_frame_bytes,
         None,
         None,
+        None,
     )
     .await
+    .map(|_| ())
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HostedNotarySessionResult {
+    /// Authenticated TLS application-data ciphertext bytes in both directions.
+    pub authenticated_transcript_bytes: usize,
+}
+
+/// Persists the authenticated capture size before the notary returns its
+/// receipt. Hosted services use this to make exact allowance settlement
+/// recoverable across coordinator outages and process restarts.
+pub type HostedCaptureSettlementRecorder = Box<dyn FnOnce(usize) -> Result<()> + Send>;
 
 /// Runs a coordinator-admitted hosted session with effective limits already
 /// intersected with the notary's process-local maxima.
@@ -1500,8 +1522,9 @@ pub async fn run_hosted_notary_session_after_prelude(
     signing_key: Arc<SigningKey>,
     allowed_hosts: Arc<Vec<String>>,
     limits: HostedNotarySessionLimits,
-) -> Result<()> {
-    run_notary_session_with_limits(
+    capture_settlement_recorder: Option<HostedCaptureSettlementRecorder>,
+) -> Result<HostedNotarySessionResult> {
+    let authenticated_transcript_bytes = run_notary_session_with_limits(
         socket,
         mode,
         signing_key,
@@ -1512,8 +1535,12 @@ pub async fn run_hosted_notary_session_after_prelude(
         limits.max_frame_bytes,
         limits.expected_record_digest,
         limits.expected_transcript_bytes,
+        capture_settlement_recorder,
     )
-    .await
+    .await?;
+    Ok(HostedNotarySessionResult {
+        authenticated_transcript_bytes,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1528,7 +1555,8 @@ async fn run_notary_session_with_limits(
     max_frame_bytes: usize,
     expected_record_digest: Option<[u8; 32]>,
     expected_transcript_bytes: Option<usize>,
-) -> Result<()> {
+    capture_settlement_recorder: Option<HostedCaptureSettlementRecorder>,
+) -> Result<usize> {
     validate_notary_frame_limit(max_frame_bytes)?;
     match mode {
         NotarySessionMode::Capture => {
@@ -1538,6 +1566,7 @@ async fn run_notary_session_with_limits(
                 allowed_hosts,
                 max_total_private_chunk_bytes,
                 max_frame_bytes,
+                capture_settlement_recorder,
             )
             .await
         }
@@ -1563,7 +1592,8 @@ async fn run_deferred_capture_session(
     allowed_hosts: Arc<Vec<String>>,
     max_transcript_bytes: usize,
     max_frame_bytes: usize,
-) -> Result<()> {
+    capture_settlement_recorder: Option<HostedCaptureSettlementRecorder>,
+) -> Result<usize> {
     let session = Session::new(socket.compat());
     let (driver, mut handle) = session.split();
     let driver_task = tokio::spawn(driver);
@@ -1623,6 +1653,10 @@ async fn run_deferred_capture_session(
     {
         bail!("client deferred checkpoint does not match notary session state");
     }
+    if let Some(record_settlement) = capture_settlement_recorder {
+        record_settlement(transcript_bytes)
+            .context("persisting hosted capture allowance settlement")?;
+    }
     let receipt = issue_deferred_receipt(
         &signing_key,
         server_name,
@@ -1632,7 +1666,7 @@ async fn run_deferred_capture_session(
         server_ephemeral_key,
     )?;
     write_frame(&mut socket, &bincode::serialize(&receipt)?, max_frame_bytes).await?;
-    Ok(())
+    Ok(transcript_bytes)
 }
 
 fn application_data_bytes(records: &[tlsn::transcript::Record]) -> Result<usize> {
@@ -1656,7 +1690,7 @@ async fn run_deferred_finalize_session(
     max_frame_bytes: usize,
     expected_record_digest: Option<[u8; 32]>,
     expected_transcript_bytes: Option<usize>,
-) -> Result<()> {
+) -> Result<usize> {
     let request: DeferredFinalizeRequest =
         bincode::deserialize(&read_tokio_frame(&mut socket, max_frame_bytes).await?)?;
     request
@@ -1711,7 +1745,7 @@ async fn run_deferred_finalize_session(
         max_frame_bytes,
     )
     .await?;
-    Ok(())
+    Ok(transcript_bytes)
 }
 
 fn sign_attestation(
@@ -2302,12 +2336,22 @@ mod tests {
 
     #[test]
     fn hosted_policy_rejections_have_stable_wire_codes() {
-        let rejection = NotaryAdmissionRejection::FinalizationCreditsExhausted;
-        assert_eq!(rejection.code(), "finalization_credits_exhausted");
-        assert_eq!(
-            NotaryAdmissionRejection::from_wire(rejection.wire_code()).unwrap(),
-            rejection
-        );
+        for (rejection, code) in [
+            (
+                NotaryAdmissionRejection::CaptureCreditsExhausted,
+                "capture_credits_exhausted",
+            ),
+            (
+                NotaryAdmissionRejection::FinalizationCreditsExhausted,
+                "finalization_credits_exhausted",
+            ),
+        ] {
+            assert_eq!(rejection.code(), code);
+            assert_eq!(
+                NotaryAdmissionRejection::from_wire(rejection.wire_code()).unwrap(),
+                rejection
+            );
+        }
     }
 
     #[tokio::test]

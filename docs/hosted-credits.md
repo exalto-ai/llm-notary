@@ -1,66 +1,92 @@
-# Credits and utilization
+# Plans and usage
 
-Every signed-in hosted account uses the same credit model. An account
-receives included monthly finalization credits and can add more through
-purchases, promotions, or manual adjustments.
+Hosted accounts have separate monthly allowances for capture and notarization,
+plus a limit on stored uploaded trace packages. These controls do not change
+proof strength, notary identity, `.llmtrace` contents, verification, downloads,
+or self-hosted use.
 
-Credits are byte-denominated grants used only when a hosted finalization ticket
-is redeemed. Adding or using them never changes proof strength, notary identity,
-`.llmtrace` contents, verification, publication, sharing, downloads, or
-self-hosted use. Capture itself consumes no credits. Finalization uses the
-immutable authenticated TLS application-data allowance from the source capture
-receipt, not the size of the `.llmtrace` ZIP.
+| Plan | Monthly capture | Monthly notarization | Trace storage | Price |
+| --- | ---: | ---: | ---: | ---: |
+| Free | 50 MB | 50 MB | 1 GB | $0 |
+| 1 GB | 1 GB | 1 GB | 10 GB | $9.99/month |
+| 10 GB | 10 GB | 10 GB | No fixed plan limit* | $49.99/month |
 
-## Monthly and supplemental credits
+All units are decimal: one MB is 1,000,000 bytes and one GB is 1,000,000,000
+bytes. Monthly allowances reset at the first instant of each UTC month and do
+not roll over.
 
-The default monthly included grants are 64 MiB for anonymous Public use and
-512 MiB for a signed-in account. They reset at the first instant of each
-UTC month.
+*Fair-use and abuse controls apply to the 10 GB plan's trace storage. Every plan
+also keeps the platform's per-file package safety limit.
 
-Supplemental grants are separate from monthly included credits. The hosted API
-offers an eligible account one server-defined, one-time 128 MiB bonus. The
-browser sends only the offer identifier; the server fixes the eligibility,
-amount, expiration, source, and per-account claim limit. Previously issued
-non-expiring testing grants remain usable, but the API no longer creates them.
-Manual adjustments and completed purchases use the same append-only grant
-operation. There is no browser endpoint that accepts an arbitrary credit amount
-or source; purchase settlement must create a server-authored `external_purchase`
-grant.
+## What counts
 
-## Stripe purchases
+Capture and notarization use independent ledgers. Redeeming a hosted capture
+ticket temporarily reserves its per-session ceiling, then a successful session
+settles that reservation to the authenticated TLS application-data byte count.
+The notary persists that exact count before returning the capture receipt and
+replays settlement from its private outbox until the coordinator accepts it.
+When less than the normal per-session ceiling remains, the final ticket is
+capped to that remaining balance instead of stranding it.
+Service failures release the reservation; client and transport failures retain
+it to prevent repeated incomplete sessions from bypassing the allowance.
+Redeeming a finalization ticket debits the immutable authenticated allowance
+recorded by the source capture from notarization. A one-time ticket cannot debit
+twice, and retrying finalization for the same capture is idempotent unless the
+requested allowance changes.
 
-The hosted dashboard sells one-time credit increments at a fixed price of
-$5 USD per decimal GB (1,000,000,000 bytes). A purchase can contain 1–20 GB.
-The browser chooses only the quantity and supplies an idempotency key; the API
+Trace storage is the total declared size of uploads that are in progress,
+queued for checking, being checked, or admitted to the account. Rejected,
+failed, expired, and purged uploads do not count. The API serializes concurrent
+upload admissions per account so parallel requests cannot bypass the limit.
+
+## Additional notarization
+
+Every plan can buy 1–20 GB of additional notarization at $10 USD per decimal GB.
+These one-time credits do not expire. The ledger consumes grants that expire
+soonest before non-expiring purchased credits.
+Additional credits do not increase capture or trace-storage allowances.
+
+The browser chooses only a quantity and supplies an idempotency key. The API
 fixes the currency, unit price, byte amount, Stripe Price, account, and payment
 mode. Payment details are collected on Stripe-hosted Checkout and never pass
 through LLM Notary.
 
 Credits are granted only after a signed webhook is reconciled against the
-current Checkout Session, its one line item, PaymentIntent, and Charge. Duplicate
+current Checkout Session, its line item, PaymentIntent, and Charge. Duplicate
 and out-of-order deliveries are safe. The platform stores provider identifiers
 and processing outcomes, not raw webhook bodies, signatures, payment methods,
-or customer details. The browser's return from Checkout is only a status hint;
-it cannot grant credits.
+or customer details. Returning to the browser from Checkout cannot grant
+credits.
 
-Purchased credits do not expire. A refund removes the corresponding fraction
-of purchased bytes. A dispute temporarily removes disputed credit and places
-hosted finalization under review; reinstatement restores both. These changes are
-signed, append-only credit activity entries. A full refund returns the account
-to the Free plan when it has no other unrefunded purchase.
+A refund removes the corresponding fraction of purchased bytes. A dispute
+temporarily removes disputed credit and puts hosted service under billing
+review; reinstatement restores both. These changes use signed, append-only
+activity entries.
 
-Finalization debits consume grants that expire soonest, then grants without an
-expiration. Each debit is allocated immutably to its source grants. Retrying
-the same subject and bundle digest does not debit twice, and changing the
-authenticated allowance on that retry is rejected.
+Eligible accounts may also see a server-defined promotional notarization offer.
+The browser sends only its identifier; the server fixes its eligibility, amount,
+expiration, source, and claim limit.
+
+## Subscriptions
+
+New paid subscriptions start in Stripe-hosted Checkout. Existing paid accounts
+use the Stripe Billing Portal to change plan, update payment details, or cancel.
+The platform accepts a plan only when the Stripe Price is active, in the expected
+test or live mode, billed monthly in USD, and exactly $9.99 or $49.99.
+
+Only `active` and `trialing` subscriptions enable paid allowances. A
+`past_due`, `paused`, `unpaid`, or `incomplete` subscription puts the account
+under billing review and blocks new hosted captures, notarizations, and trace
+uploads. A canceled or expired subscription returns the account to Free.
 
 ## Anonymous address scoping
 
-Anonymous Public access does not create an account. The platform groups IPv4
-by individual address and IPv6 by `/64`, then derives a period-scoped opaque
-subject with a versioned keyed HMAC. Credit, ticket, lease, error, and metric
-records contain only that opaque subject. The raw address is not sent to the
-notary and does not enter evidence.
+Anonymous Public access uses the Free monthly capture and notarization
+allowances without creating an account. The platform groups IPv4 by individual
+address and IPv6 by `/64`, then derives a period-scoped opaque subject with a
+versioned keyed HMAC. Credit, ticket, lease, error, and metric records contain
+only that opaque subject. The raw address is not sent to the notary and does not
+enter evidence.
 
 Address scoping is abuse control, not identity. Unrelated users behind one NAT
 may share an allowance. A VPN, proxy, or address change may receive a different
@@ -71,40 +97,50 @@ edge address header only when the immediate socket peer matches an explicitly
 configured trusted proxy network. Direct and untrusted peers are scoped by the
 socket address, so they cannot choose a subject with a forwarding header.
 
-Hosted admission keeps privacy-safe machine codes through the API, local
-service, and notary handshake. Callers can distinguish exhausted credits and
-offer eligibility without receiving an address subject, record digest, ticket,
-or another customer's activity.
-
 ## Account and CLI views
 
 The hosted account response, dashboard, local-service account response, and
-`llm-notary whoami --json` report the same plan, billing status, and credit
-summary: total remaining, included monthly remaining, additional remaining,
-monthly reset, next grant expiration, and bounded grant/debit/adjustment
-history. History labels and errors omit address subjects, record digests,
-tickets, credentials, and other users' activity.
+`llm-notary whoami --json` report the same plan, billing status, separate capture
+and notarization balances, reset date, and bounded activity history. The hosted
+dashboard also shows current trace storage and subscription controls. History
+labels and errors omit address subjects, record digests, tickets, credentials,
+and other users' activity.
 
-The hosted account response also reports whether purchases are `disabled`, in
-Stripe `test` mode, or `live`. The dashboard hides Checkout controls when
-purchases are disabled and labels test mode prominently; test Checkout never
-represents a real charge.
+The account response reports whether Stripe is `disabled`, in `test` mode, or
+`live`. The dashboard hides billing controls when Stripe is disabled and labels
+test mode prominently.
 
 ## Operator configuration
 
-Stripe support is disabled when all three settings are absent. Enabling it
+Stripe support is disabled when all billing settings are absent. Enabling it
 requires the complete set:
 
 - `LLM_NOTARY_STRIPE_SECRET_KEY` or `LLM_NOTARY_STRIPE_SECRET_KEY_FILE`: an
   `sk_test_...` or `sk_live_...` key, supplied directly or through a private
-  file (but never both).
+  file, but never both.
 - `LLM_NOTARY_STRIPE_WEBHOOK_SECRET` or
   `LLM_NOTARY_STRIPE_WEBHOOK_SECRET_FILE`: the matching endpoint's `whsec_...`
-  signing secret, supplied directly or through a private file (but never both).
-- `LLM_NOTARY_STRIPE_PRICE_ID`: the single authoritative `price_...` identifier.
+  signing secret, supplied directly or through a private file, but never both.
+- `LLM_NOTARY_STRIPE_CREDIT_PRICE_ID`: the one-time $10/GB Price.
+- `LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID`: the recurring $9.99/month Price.
+- `LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID`: the recurring $49.99/month Price.
 
 The webhook URL is `/api/billing/stripe/webhook` and its API version is pinned
-to `2026-02-25.clover`. Test keys accept only test-mode Prices and events; live
-keys accept only live-mode data. The publishable key is not required because
-the dashboard redirects to Stripe-hosted Checkout rather than embedding Stripe
-Elements.
+to `2026-02-25.clover`. Configure these events:
+
+- `checkout.session.completed`
+- `checkout.session.async_payment_succeeded`
+- `checkout.session.async_payment_failed`
+- `checkout.session.expired`
+- `customer.subscription.created`
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+- `customer.subscription.paused`
+- `customer.subscription.resumed`
+- `refund.created`, `refund.updated`, and `refund.failed`
+- `charge.dispute.funds_withdrawn`, `charge.dispute.funds_reinstated`, and
+  `charge.dispute.closed`
+
+Test keys accept only test-mode Prices and events; live keys accept only
+live-mode data. A publishable key is not required because all payment and
+subscription screens are hosted by Stripe.

@@ -45,6 +45,29 @@ const loadLibraryTrace = async (id) => ({
   }] }] }]
 });
 
+const balanceFixture = (remaining = 1_024) => ({
+  included_monthly_remaining_bytes: remaining,
+  supplemental_remaining_bytes: 0,
+  total_granted_bytes: remaining,
+  total_remaining_bytes: remaining,
+  total_used_bytes: 0,
+  next_grant_expiration: null,
+});
+
+const creditsFixture = (remaining = 1_024) => ({
+  capture: balanceFixture(remaining),
+  notarization: balanceFixture(remaining),
+  reset_at: 4_102_444_800,
+});
+
+const billingFixture = (overrides = {}) => ({
+  service_plan: 'free',
+  billing_status: 'active',
+  purchase_mode: 'disabled',
+  entitlements: { monthly_capture_bytes: 50_000_000, monthly_notarization_bytes: 50_000_000, trace_storage_bytes: 1_000_000_000 },
+  ...overrides,
+});
+
 describe('hosted site', () => {
   test('encodes every UTF-8 share password as an HTTP-safe value', () => {
     expect(encodeSharePassword('пароль\n🔐123')).toBe('0L_QsNGA0L7Qu9GMCvCflJAxMjM');
@@ -82,12 +105,12 @@ describe('hosted site', () => {
 
     const pricing = document.getElementById('pricing');
     expect(pricing).not.toBeNull();
-    await expect.element(page.getByRole('heading', { name: 'Pay as you go.' })).toBeVisible();
-    await expect.element(page.getByRole('heading', { name: '512 MB included every month' })).toBeVisible();
-    await expect.element(page.getByText('No credit card required')).toBeVisible();
-    await expect.element(page.getByText('Credits never expire')).toBeVisible();
+    await expect.element(page.getByRole('heading', { name: 'A plan for every proof workload.' })).toBeVisible();
+    await expect.element(page.getByText('50 MB capture each month')).toBeVisible();
+    await expect.element(page.getByText('1 GB notarization each month')).toBeVisible();
+    await expect.element(page.getByText('$10 per additional GB')).toBeVisible();
     await expect.element(page.getByText('Credit boundary')).not.toBeInTheDocument();
-    await expect.element(page.getByRole('link', { name: 'See how credits work' })).toHaveAttribute('href', '/#/docs/hosted-credits');
+    await expect.element(page.getByRole('link', { name: 'See plan and usage details' })).toHaveAttribute('href', '/#/docs/hosted-credits');
   });
 
   test('sends the macOS action to install options when the latest pointer is unavailable', async () => {
@@ -194,12 +217,12 @@ describe('hosted site', () => {
     />);
 
     const navigation = page.getByRole('navigation', { name: 'Dashboard navigation' });
-    const trigger = navigation.getByRole('button', { name: 'Dashboard menu: Credits' });
+    const trigger = navigation.getByRole('button', { name: 'Dashboard menu: Plan & usage' });
     await expect.element(trigger).toHaveAttribute('aria-expanded', 'false');
     await trigger.click();
     await expect.element(trigger).toHaveAttribute('aria-expanded', 'true');
     await expect.element(navigation.getByRole('link', { name: /^Traces\s*3$/ })).toBeVisible();
-    await expect.element(navigation.getByRole('link', { name: 'Credits' })).toHaveAttribute('aria-current', 'page');
+    await expect.element(navigation.getByRole('link', { name: 'Plan & usage' })).toHaveAttribute('aria-current', 'page');
     fireEvent.keyDown(window, { key: 'Escape' });
     await expect.element(trigger).toHaveAttribute('aria-expanded', 'false');
   });
@@ -231,6 +254,7 @@ describe('hosted site', () => {
     const entry = (id, label, createdAt) => ({
       id,
       kind: 'grant',
+      credit_kind: 'notarization',
       amount_bytes: 1_024,
       display_label: label,
       created_at: createdAt,
@@ -246,7 +270,7 @@ describe('hosted site', () => {
         : { items: [entry('claimed', 'Claimed credit', 200), entry('initial', 'Initial credit', 100)], next_cursor: 'fresh-cursor' };
     };
     render(<Dashboard
-      user={{ github_login: 'fixture-user', credits: { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null }, share_stats: { total: 0, admitted: 0, in_progress: 0 } }}
+      user={{ github_login: 'fixture-user', billing: billingFixture(), credits: creditsFixture(), share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
       view="credits"
       theme="light"
       onThemeChange={() => {}}
@@ -256,7 +280,7 @@ describe('hosted site', () => {
       loadCreditOffers={async () => [{ id: 'offer-1', title: 'Test credit', description: 'One-time test credit.', amount_bytes: 1_024, claim_expires_at: 4_102_444_800, credit_expires_at: 4_102_444_800 }]}
       loadCreditHistory={loadCreditHistory}
       loadBillingPurchases={async () => []}
-      claimOfferRequest={async () => ({ credits: { included_monthly_remaining_bytes: 2_048, supplemental_remaining_bytes: 0, total_granted_bytes: 2_048, total_remaining_bytes: 2_048, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null } })}
+      claimOfferRequest={async () => ({ credits: creditsFixture(2_048) })}
     />);
 
     await expect.element(page.getByText('Initial credit')).toBeVisible();
@@ -275,7 +299,7 @@ describe('hosted site', () => {
     let checkoutRequest;
     let checkoutUrl;
     render(<Dashboard
-      user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'live' }, credits: { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null }, share_stats: { total: 0, admitted: 0, in_progress: 0 } }}
+      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'live' }), credits: creditsFixture(), share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
       view="credits"
       theme="light"
       onThemeChange={() => {}}
@@ -292,15 +316,54 @@ describe('hosted site', () => {
       openCheckout={(url) => { checkoutUrl = url; }}
     />);
 
-    await page.getByRole('button', { name: '10 GB' }).click();
-    await page.getByRole('button', { name: 'Buy 10 GB for $50' }).click();
+    await page.getByRole('button', { name: '10 GB', exact: true }).click();
+    await page.getByRole('button', { name: 'Buy 10 GB for $100' }).click();
     expect(checkoutRequest.quantityGb).toBe(10);
     expect(checkoutRequest.idempotencyKey).toMatch(/^[a-zA-Z0-9_-]+$/);
     expect(checkoutUrl).toBe('https://checkout.stripe.com/c/pay/test');
   });
 
+  test('opens subscription Checkout for free accounts and the billing portal for subscribers', async () => {
+    let checkoutRequest;
+    let openedUrl;
+    const common = {
+      view: 'credits', theme: 'light', onThemeChange: () => {}, onAccountDeleted: () => {},
+      loadCliSessions: async () => ({ items: [], next_cursor: null }),
+      loadMyShares: async () => ({ items: [], next_cursor: null }),
+      loadCreditOffers: async () => [],
+      loadCreditHistory: async () => ({ items: [], next_cursor: null }),
+      loadBillingPurchases: async () => [],
+      openCheckout: (url) => { openedUrl = url; },
+    };
+    render(<Dashboard
+      {...common}
+      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'live' }), credits: creditsFixture(50_000_000), share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
+      startSubscriptionCheckout={async (plan, idempotencyKey) => {
+        checkoutRequest = { plan, idempotencyKey };
+        return { checkout_url: 'https://checkout.stripe.com/c/pay/subscription' };
+      }}
+    />);
+
+    expect(document.body.textContent).toContain('50.0 MB');
+    expect(document.body.textContent).toContain('of 1.0 GB');
+    expect(document.body.textContent).not.toContain('47.7 MB');
+    await page.getByRole('button', { name: '1 GB · $9.99/month' }).click();
+    expect(checkoutRequest.plan).toBe('one_gb');
+    expect(checkoutRequest.idempotencyKey).toMatch(/^[a-zA-Z0-9_-]+$/);
+    expect(openedUrl).toBe('https://checkout.stripe.com/c/pay/subscription');
+
+    cleanup();
+    render(<Dashboard
+      {...common}
+      user={{ github_login: 'fixture-user', billing: billingFixture({ service_plan: 'one_gb', purchase_mode: 'live' }), credits: creditsFixture(), share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
+      startBillingPortal={async () => ({ portal_url: 'https://billing.stripe.com/p/session/test' })}
+    />);
+    await page.getByRole('button', { name: 'Manage subscription' }).click();
+    expect(openedUrl).toBe('https://billing.stripe.com/p/session/test');
+  });
+
   test('hides Checkout when disabled and labels Stripe test mode unmistakably', async () => {
-    const credits = { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null };
+    const credits = creditsFixture();
     const common = {
       view: 'credits', theme: 'light', onThemeChange: () => {}, onAccountDeleted: () => {},
       loadCliSessions: async () => ({ items: [], next_cursor: null }),
@@ -309,24 +372,24 @@ describe('hosted site', () => {
       loadCreditHistory: async () => ({ items: [], next_cursor: null }),
       loadBillingPurchases: async () => [],
     };
-    render(<Dashboard {...common} user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'disabled' }, credits, share_stats: { total: 0, admitted: 0, in_progress: 0 } }} />);
+    render(<Dashboard {...common} user={{ github_login: 'fixture-user', billing: billingFixture(), credits, share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }} />);
     await expect.element(page.getByRole('heading', { name: 'Purchases unavailable' })).toBeVisible();
-    await expect.element(page.getByText('You can’t buy more credits right now.')).toBeVisible();
+    await expect.element(page.getByText('You can’t buy more notarization right now.')).toBeVisible();
     await expect.element(page.getByRole('group', { name: 'Credit quantity' })).not.toBeInTheDocument();
 
     cleanup();
-    render(<Dashboard {...common} user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'test' }, credits, share_stats: { total: 0, admitted: 0, in_progress: 0 } }} />);
+    render(<Dashboard {...common} user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'test' }), credits, share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }} />);
     await expect.element(page.getByText('Stripe test mode · no real charges')).toBeVisible();
-    await expect.element(page.getByRole('button', { name: 'Open test Checkout · 5 GB for $25' })).toBeVisible();
+    await expect.element(page.getByRole('button', { name: 'Open test Checkout · 1 GB for $10' })).toBeVisible();
   });
 
   test('retries Checkout confirmation and keeps a fresher purchase than the initial list', async () => {
-    const credits = { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null };
+    const credits = creditsFixture();
     let resolveInitialList;
     let pollCalls = 0;
-    const purchase = (state) => ({ id: 'purchase-1', state, quantity_gb: 1, amount_cents: 500, created_at: 1_786_000_000 });
+    const purchase = (state) => ({ id: 'purchase-1', state, quantity_gb: 1, amount_cents: 1_000, created_at: 1_786_000_000 });
     render(<Dashboard
-      user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'test' }, credits, share_stats: { total: 0, admitted: 0, in_progress: 0 } }}
+      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'test' }), credits, share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
       view="credits"
       route="credits?checkout=success&purchase_id=purchase-1"
       theme="light"
@@ -342,7 +405,7 @@ describe('hosted site', () => {
         if (pollCalls === 1) throw new Error('temporary network failure');
         return purchase(pollCalls === 2 ? 'checkout_open' : 'paid');
       }}
-      loadCurrentUser={async () => ({ billing: { service_plan: 'paid', billing_status: 'active', purchase_mode: 'test' }, credits })}
+      loadCurrentUser={async () => ({ billing: billingFixture({ service_plan: 'one_gb', purchase_mode: 'test' }), credits })}
       checkoutPollBaseDelay={0}
       checkoutPollMaxAttempts={4}
     />);
@@ -356,9 +419,9 @@ describe('hosted site', () => {
   });
 
   test('shows a bounded timeout when Stripe confirmation stays nonterminal', async () => {
-    const credits = { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null };
+    const credits = creditsFixture();
     render(<Dashboard
-      user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'test' }, credits, share_stats: { total: 0, admitted: 0, in_progress: 0 } }}
+      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'test' }), credits, share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
       view="credits"
       route="credits?checkout=success&purchase_id=purchase-1"
       theme="light"
@@ -369,7 +432,7 @@ describe('hosted site', () => {
       loadCreditOffers={async () => []}
       loadCreditHistory={async () => ({ items: [], next_cursor: null })}
       loadBillingPurchases={async () => []}
-      loadBillingPurchase={async () => ({ id: 'purchase-1', state: 'checkout_open', quantity_gb: 1, amount_cents: 500, created_at: 1_786_000_000 })}
+      loadBillingPurchase={async () => ({ id: 'purchase-1', state: 'checkout_open', quantity_gb: 1, amount_cents: 1_000, created_at: 1_786_000_000 })}
       checkoutPollBaseDelay={0}
       checkoutPollMaxAttempts={2}
     />);
@@ -382,9 +445,9 @@ describe('hosted site', () => {
     ['refunded', 'This payment was refunded. Its purchased credits are no longer available.'],
     ['disputed', 'This payment is under dispute. Its purchased credits are temporarily unavailable.'],
   ])('renders the %s Checkout terminal state explicitly', async (state, message) => {
-    const credits = { included_monthly_remaining_bytes: 1_024, supplemental_remaining_bytes: 0, total_granted_bytes: 1_024, total_remaining_bytes: 1_024, total_used_bytes: 0, reset_at: 4_102_444_800, next_grant_expiration: null };
+    const credits = creditsFixture();
     render(<Dashboard
-      user={{ github_login: 'fixture-user', billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'test' }, credits, share_stats: { total: 0, admitted: 0, in_progress: 0 } }}
+      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'test' }), credits, share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
       view="credits"
       route="credits?checkout=success&purchase_id=purchase-1"
       theme="light"
@@ -395,8 +458,8 @@ describe('hosted site', () => {
       loadCreditOffers={async () => []}
       loadCreditHistory={async () => ({ items: [], next_cursor: null })}
       loadBillingPurchases={async () => []}
-      loadBillingPurchase={async () => ({ id: 'purchase-1', state, quantity_gb: 1, amount_cents: 500, created_at: 1_786_000_000 })}
-      loadCurrentUser={async () => ({ billing: { service_plan: 'free', billing_status: 'active', purchase_mode: 'test' }, credits })}
+      loadBillingPurchase={async () => ({ id: 'purchase-1', state, quantity_gb: 1, amount_cents: 1_000, created_at: 1_786_000_000 })}
+      loadCurrentUser={async () => ({ billing: billingFixture({ purchase_mode: 'test' }), credits })}
       checkoutPollBaseDelay={0}
     />);
 
@@ -885,7 +948,7 @@ describe('hosted site', () => {
 
   test('renders 30 days of utilization in decimal MB with an accessible summary and overall budget', async () => {
     const today = Date.now() / 1000;
-    render(<CreditUtilizationChart credits={{ total_remaining_bytes: 500_000_000, total_granted_bytes: 750_000_000 }} formatBytes={(bytes) => `${bytes / 1_000_000} MB`} historyDebits={[
+    render(<CreditUtilizationChart credits={{ notarization: { total_remaining_bytes: 500_000_000, total_granted_bytes: 750_000_000 } }} formatBytes={(bytes) => `${bytes / 1_000_000} MB`} historyDebits={[
       { id: 'd1', kind: 'debit', amount_bytes: 1_000_000, display_label: 'Capture A', created_at: today },
       { id: 'd2', kind: 'debit', amount_bytes: 250_000, display_label: 'Capture B', created_at: today - 86400 },
     ]} />);
@@ -898,7 +961,7 @@ describe('hosted site', () => {
   });
 
   test('distinguishes loading, zero-usage, and unavailable utilization states', async () => {
-    const props = { credits: { total_remaining_bytes: 500_000_000, total_granted_bytes: 750_000_000 }, formatBytes: (bytes) => `${bytes / 1_000_000} MB` };
+    const props = { credits: { notarization: { total_remaining_bytes: 500_000_000, total_granted_bytes: 750_000_000 } }, formatBytes: (bytes) => `${bytes / 1_000_000} MB` };
     const rendered = render(<CreditUtilizationChart {...props} historyDebits={null} />);
     await expect.element(page.getByRole('status', { name: 'Loading daily utilization' })).toBeVisible();
 

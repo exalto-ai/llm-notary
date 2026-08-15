@@ -486,17 +486,25 @@ export interface components {
             force?: boolean;
             visibility: components["schemas"]["ShareVisibility"];
         };
-        CreditSummary: {
+        CreditBalanceSummary: {
             /** Format: int64 */
             included_monthly_remaining_bytes: number;
             /** Format: int64 */
             next_grant_expiration?: number | null;
             /** Format: int64 */
-            reset_at: number;
-            /** Format: int64 */
             supplemental_remaining_bytes: number;
             /** Format: int64 */
+            total_granted_bytes: number;
+            /** Format: int64 */
             total_remaining_bytes: number;
+            /** Format: int64 */
+            total_used_bytes: number;
+        };
+        CreditSummary: {
+            capture: components["schemas"]["CreditBalanceSummary"];
+            notarization: components["schemas"]["CreditBalanceSummary"];
+            /** Format: int64 */
+            reset_at: number;
         };
         ErrorBody: {
             code: string;

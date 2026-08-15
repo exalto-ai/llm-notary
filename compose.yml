@@ -111,6 +111,7 @@ services:
       LLM_NOTARY_NOTARY_PUBLIC_KEY: ${LLM_NOTARY_NOTARY_PUBLIC_KEY:?Set LLM_NOTARY_NOTARY_PUBLIC_KEY to the notary SEC1 public key}
       LLM_NOTARY_ADMISSION_API_ORIGIN: http://api:8080
       LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE: /run/secrets/admission_service_token
+      LLM_NOTARY_RELEASE_OUTBOX_DIR: /var/lib/llm-notary/release-outbox
       LLM_NOTARY_NOTARY_DIRECTORY_GENERATION: ${LLM_NOTARY_NOTARY_DIRECTORY_GENERATION:-1}
       LLM_NOTARY_INSTANCE_ID: ${LLM_NOTARY_INSTANCE_ID:-notary-compose-1}
       # Internal-only scrape endpoint. Do not publish it through the gateway.
@@ -124,6 +125,8 @@ services:
       - source: admission_service_token
         target: admission_service_token
     read_only: true
+    volumes:
+      - notary_data:/var/lib/llm-notary
     tmpfs:
       - /tmp
     security_opt:
@@ -153,3 +156,6 @@ secrets:
     file: ${ADMISSION_SERVICE_TOKEN_FILE:?Set ADMISSION_SERVICE_TOKEN_FILE to the shared API/notary admission service-token path}
   anonymous_subject_hmac_key:
     file: ${ANONYMOUS_SUBJECT_HMAC_KEY_FILE:?Set ANONYMOUS_SUBJECT_HMAC_KEY_FILE to the API anonymous-subject HMAC key path}
+
+volumes:
+  notary_data:

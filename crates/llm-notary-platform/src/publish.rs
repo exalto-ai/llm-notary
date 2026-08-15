@@ -262,6 +262,7 @@ pub async fn has_pending_cleanup(state: &AppState) -> ApiResult<bool> {
         (status = 201, body = CreateShareResponse, description = "New or reopened share"),
         (status = 400, body = super::ErrorResponse),
         (status = 401, body = super::ErrorResponse),
+        (status = 402, body = super::ErrorResponse),
         (status = 403, body = super::ErrorResponse),
         (status = 409, body = super::ErrorResponse),
         (status = 500, body = super::ErrorResponse),
@@ -280,6 +281,18 @@ async fn create_publish_job(
     let user_id = authenticated_principal(&state, &headers, ApiScope::PublishWrite)
         .await?
         .user_id;
+    let billing =
+        super::service_admission::account_billing_state(&state.database, &user_id).await?;
+    if billing.billing_status == super::service_admission::BillingStatus::Review {
+        return Err(ApiError::coded(
+            axum::http::StatusCode::PAYMENT_REQUIRED,
+            "billing_review",
+            "Trace uploads are unavailable while billing is under review",
+        ));
+    }
+    let storage_limit =
+        super::service_admission::plan_entitlements(&state.admission, billing.service_plan)
+            .trace_storage_bytes;
     let idempotency_key = idempotency_key(&headers)?;
     let now = unix_timestamp()?;
     let job_id = Uuid::new_v4().to_string();
@@ -295,6 +308,36 @@ async fn create_publish_job(
         .intake_object_key(&user_id, &job_id, 0)
         .map_err(ApiError::internal)?;
     let upload_expires_at = now + state.publish.upload_ttl_secs;
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+        .bind(&user_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    let existing: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM publish_jobs WHERE user_id = $1 AND idempotency_key = $2
+         )",
+    )
+    .bind(&user_id)
+    .bind(&idempotency_key)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if !existing && let Some(storage_limit) = storage_limit {
+        let stored_bytes: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(declared_size_bytes), 0)::BIGINT FROM publish_jobs
+             WHERE user_id = $1
+               AND state IN ('uploading', 'queued', 'verifying', 'admitted')",
+        )
+        .bind(&user_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        if !trace_storage_allows(Some(storage_limit), stored_bytes, request.size_bytes) {
+            return Err(trace_storage_quota_error());
+        }
+    }
     let inserted = sqlx::query(
         "INSERT INTO publish_jobs
          (id, user_id, idempotency_key, state, visibility, force_publication,
@@ -317,9 +360,10 @@ async fn create_publish_job(
     .bind(upload_expires_at)
     .bind(now)
     .bind(now)
-    .execute(&state.database)
+    .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
 
     let mut job = load_job_by_idempotency(&state, &user_id, &idempotency_key).await?;
     if job.archive_format != request.archive_format
@@ -349,6 +393,37 @@ async fn create_publish_job(
             .storage
             .intake_object_key(&user_id, &job.id, job.upload_generation + 1)
             .map_err(ApiError::internal)?;
+        let mut reopen_transaction = state.database.begin().await.map_err(database_error)?;
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
+            .bind(&user_id)
+            .execute(&mut *reopen_transaction)
+            .await
+            .map_err(database_error)?;
+        let current = sqlx::query_as::<_, (String, i64)>(
+            "SELECT state, upload_generation FROM publish_jobs
+             WHERE id = $1 AND user_id = $2 FOR UPDATE",
+        )
+        .bind(&job.id)
+        .bind(&user_id)
+        .fetch_one(&mut *reopen_transaction)
+        .await
+        .map_err(database_error)?;
+        if current.0 == "expired"
+            && let Some(storage_limit) = storage_limit
+        {
+            let stored_bytes: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(declared_size_bytes), 0)::BIGINT FROM publish_jobs
+                 WHERE user_id = $1
+                   AND state IN ('uploading', 'queued', 'verifying', 'admitted')",
+            )
+            .bind(&user_id)
+            .fetch_one(&mut *reopen_transaction)
+            .await
+            .map_err(database_error)?;
+            if !trace_storage_allows(Some(storage_limit), stored_bytes, job.declared_size_bytes) {
+                return Err(trace_storage_quota_error());
+            }
+        }
         let reset = sqlx::query(
             "UPDATE publish_jobs
              SET state = 'uploading', upload_object_key = $1, intake_object_key = $2,
@@ -363,11 +438,12 @@ async fn create_publish_job(
         .bind(now)
         .bind(&job.id)
         .bind(&user_id)
-        .bind(job.upload_generation)
-        .execute(&state.database)
+        .bind(current.1)
+        .execute(&mut *reopen_transaction)
         .await
         .map_err(database_error)?;
         reopened = reset.rows_affected() == 1;
+        reopen_transaction.commit().await.map_err(database_error)?;
         job = load_job_by_idempotency(&state, &user_id, &idempotency_key).await?;
     }
     let upload = if job.state == "uploading" {
@@ -404,6 +480,18 @@ async fn create_publish_job(
         }),
     )
         .into_response())
+}
+
+fn trace_storage_allows(limit: Option<i64>, stored_bytes: i64, requested_bytes: i64) -> bool {
+    limit.is_none_or(|limit| stored_bytes.saturating_add(requested_bytes) <= limit)
+}
+
+fn trace_storage_quota_error() -> ApiError {
+    ApiError::coded(
+        axum::http::StatusCode::PAYMENT_REQUIRED,
+        "trace_storage_quota_exceeded",
+        "This upload would exceed the account's trace storage allowance",
+    )
 }
 
 #[utoipa::path(
@@ -1148,6 +1236,13 @@ mod tests {
     use super::*;
 
     const SHA256: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+    #[test]
+    fn trace_storage_quota_accepts_the_boundary_and_unlimited_plan() {
+        assert!(trace_storage_allows(Some(1_000), 750, 250));
+        assert!(!trace_storage_allows(Some(1_000), 750, 251));
+        assert!(trace_storage_allows(None, i64::MAX, i64::MAX));
+    }
 
     async fn test_state() -> (AppState, MockIntakeStorage, HeaderMap, HeaderMap) {
         let database = super::super::fresh_database().await;

@@ -7,8 +7,8 @@
 - [Overview](%PUBLIC_ORIGIN%/docs): Capture, deferred finalization, portable packages, and shared verified sessions.
 - [Trust and guarantees](%PUBLIC_ORIGIN%/docs/how-it-works): The exact provenance claim, participants, authenticated versus observed data, and limits.
 - [Install options](%PUBLIC_ORIGIN%/docs/getting-started): Choose the guided Apple silicon macOS app or install the CLI and local service for SDKs, coding agents, servers, and automation.
-- [Pricing](%PUBLIC_ORIGIN%/#/pricing): Free monthly notarization and pay-as-you-go credits.
-- [Credits and usage](%PUBLIC_ORIGIN%/docs/hosted-credits): Monthly credits, Stripe purchases, refunds and disputes, promotions, account balances, and public allowances.
+- [Pricing](%PUBLIC_ORIGIN%/#/pricing): Monthly capture, notarization, and trace-storage plans, plus additional notarization credits.
+- [Plans and usage](%PUBLIC_ORIGIN%/docs/hosted-credits): Subscription allowances, Stripe billing, additional notarization, trace storage, and public allowances.
 - [Trace packages](%PUBLIC_ORIGIN%/docs/trace-packages): Finalization, package layout, disclosure, and offline verification.
 - [Verify online](%PUBLIC_ORIGIN%/#/verify): Explicitly upload one finalized package for retention-free hosted verification.
 - [Share](%PUBLIC_ORIGIN%/docs/share): Preview and deliberately share an already-finalized trace package as Unlisted or Listed, then manage unpublish, password, and expiry access from the hosted account.
@@ -19,7 +19,7 @@ The local proxy handles plaintext and provider credentials. The remote notary pa
 
 Public hosted allowances are scoped by a keyed, rotating subject derived from one IPv4 address or one IPv6 /64 prefix. This is a coarse abuse control, not a claim about a person's identity and not a privacy guarantee. Users behind the same NAT, gateway, or VPN may share an allowance.
 
-Signed-in users get 512 MiB to notarize each month, plus 128 MiB that does not expire. Public users get 64 MiB each month. Extra credits cost $5 USD per GB, are purchased through Stripe, and do not expire. Credits are used only when a capture is notarized; capturing, verification, downloads, Library browsing, and self-hosting do not use them.
+Free accounts get 50 MB each of hosted capture and notarization per month and can store up to 1 GB of uploaded trace packages. The $9.99/month plan raises both monthly allowances to 1 GB and trace storage to 10 GB. The $49.99/month plan raises both allowances to 10 GB and has no fixed trace-storage ceiling, subject to fair-use and abuse controls. Every plan can buy non-expiring additional notarization for $10 USD per GB. Verification, downloads, Library browsing, and self-hosting do not use these allowances.
 
 On first use, the daemon creates a user-editable `config.toml` at the standard platform configuration location. It enables routes for the OpenAI API, ChatGPT-authenticated Codex, Anthropic, DeepSeek, and OpenRouter by default; keeps encrypted bundles and finalized packages under the platform data directory; and creates a local SQLite catalog. The catalog indexes short, plain-text prompt and output previews for search, along with provider, model, status, size, duration, and artifact metadata. It does not store header values, cookies, or credentials.
 
