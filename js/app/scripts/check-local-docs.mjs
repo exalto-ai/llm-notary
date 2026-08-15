@@ -5,7 +5,14 @@ import { fileURLToPath } from 'node:url';
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(appRoot, '../..');
 const openapi = JSON.parse(readFileSync(resolve(appRoot, 'src/local-dashboard/generated/openapi.json'), 'utf8'));
-const workflowDocuments = ['README.md', 'docs/local-service.md', 'docs/local-dashboard.md', 'docs/agent-playbook.md'];
+const workflowDocuments = [
+  'README.md',
+  'docs/local-service.md',
+  'docs/local-dashboard.md',
+  'docs/agent-playbook.md',
+  'skills/llm-notary/SKILL.md',
+  'skills/llm-notary/references/workflows.md'
+];
 const workflowContent = workflowDocuments.map((file) => readFileSync(resolve(repoRoot, file), 'utf8')).join('\n');
 
 const basicAuth = openapi.components?.securitySchemes?.basicAuth;
@@ -138,7 +145,8 @@ const markdown = [
   resolve(repoRoot, 'AGENTS.md'),
   resolve(repoRoot, 'DESIGN.md'),
   resolve(repoRoot, 'deploy/fly/README.md'),
-  ...markdownFiles(resolve(repoRoot, 'docs'))
+  ...markdownFiles(resolve(repoRoot, 'docs')),
+  ...markdownFiles(resolve(repoRoot, 'skills'))
 ];
 const consistencySources = [
   ...markdown,
@@ -178,12 +186,13 @@ for (const file of consistencySources) {
 const publicDocs = readFileSync(resolve(appRoot, 'src/main.jsx'), 'utf8');
 if (!publicDocs.includes('curl -fsSL https://llm-notary.exalto.ai/install.sh | sh')
   || !publicDocs.includes('cargo install --locked --path crates/llm-notary-client')
+  || !publicDocs.includes('llm-notary skill install --target all')
   || !publicDocs.includes('The JSON directory is not separately signed')
   || !publicDocs.includes('"status_url":"/v1/shares/…"')) {
   throw new Error('Public-site documentation is missing the website/source install, trust-directory, or local share-status boundary');
 }
 
-for (const required of ['llm-notaryd', 'llm-notary status', 'llm-notary captures list', '--json']) {
+for (const required of ['llm-notaryd', 'llm-notary status', 'llm-notary captures list', 'llm-notary skill install', '--json']) {
   if (!workflowContent.includes(required)) throw new Error(`Workflow documentation is missing daemon/CLI guidance: ${required}`);
 }
 

@@ -95,6 +95,45 @@ The two installed programs have separate jobs:
 `llm-notary` does not start the service and does not open the catalog, vault,
 or artifacts directly.
 
+## Install the portable agent skill
+
+The CLI bundles an [Agent Skills](https://agentskills.io) compatible skill that
+teaches local coding agents how to find captures, finalize selected calls,
+verify traces, diagnose operations, and ask before state-changing or public
+actions. Installing the skill does not contact or start the daemon.
+
+Install it for one supported agent, or both:
+
+```bash
+llm-notary skill install --target codex
+llm-notary skill install --target claude
+llm-notary skill install --target all
+```
+
+Codex receives it under `~/.agents/skills/llm-notary`; Claude Code receives it
+under `~/.claude/skills/llm-notary`. For another compatible agent, provide its
+skills directory and the installer will create the `llm-notary` child:
+
+```bash
+llm-notary skill install --skills-dir /path/to/agent/skills
+```
+
+The installed skill uses the command client first and treats the running
+daemon's `/openapi.json` as the authority for operations the CLI does not
+expose. It never needs a non-loopback listener. If a destination already
+contains different bundled files, installation stops without changing any
+target. Inspect the existing skill before explicitly replacing those files:
+
+```bash
+llm-notary skill install --target all --force
+```
+
+Re-run the install command after updating LLM Notary so the installed skill
+matches the local CLI. The portable source is committed at
+[`skills/llm-notary`](../skills/llm-notary/SKILL.md), and the
+[coding-agent playbook](agent-playbook.md) explains its safety and consent
+boundaries.
+
 ## Start the daemon
 
 ```bash

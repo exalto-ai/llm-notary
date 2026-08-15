@@ -1,8 +1,33 @@
 # Coding-agent playbook for the local service
 
-Give a coding agent the loopback administration origin and this playbook, not
-an old list of CLI commands. The live OpenAPI document is the endpoint and
-schema authority.
+## Install the portable skill
+
+The `llm-notary` release embeds the portable skill from
+[`skills/llm-notary`](../skills/llm-notary/SKILL.md). Install it without
+starting or contacting the daemon:
+
+```bash
+llm-notary skill install --target codex
+llm-notary skill install --target claude
+llm-notary skill install --target all
+```
+
+Codex installs under `~/.agents/skills`; Claude Code installs under
+`~/.claude/skills`. Use `llm-notary skill install --skills-dir
+/path/to/agent/skills` for another Agent Skills compatible client. The
+installer appends the `llm-notary` skill directory, reports `installed`,
+`current`, or `updated`, and emits the same result as structured data with
+`--json`.
+
+An existing different skill is left unchanged, and an `--target all` conflict
+is detected before either destination is written. Inspect local modifications
+before using `--force`. Re-run installation after updating the CLI so the
+installed instructions stay aligned with the release.
+
+The installed skill is the preferred reusable instruction surface. For an
+agent without skill support, give it the loopback administration origin and
+this playbook, not an old list of CLI commands. The live OpenAPI document is
+the endpoint and schema authority.
 
 ## Required behavior
 

@@ -153,6 +153,16 @@ llm-notary status
 llm-notary captures list --limit 20
 ```
 
+Install the bundled portable agent skill so Codex, Claude Code, or another
+compatible local agent can discover the safe capture and trace workflows:
+
+```bash
+llm-notary skill install --target all
+```
+
+See the [coding-agent playbook](docs/agent-playbook.md) for target-specific and
+custom-directory installation, update safety, and the skill's consent rules.
+
 ## Connect a provider client
 
 Keep the provider API key or subscription login in the original client and

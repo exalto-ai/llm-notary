@@ -1,0 +1,132 @@
+# LLM Notary workflows
+
+Use these commands as workflow examples, not as a frozen API contract. Fetch
+the running daemon's OpenAPI document before using a route not represented by
+the installed CLI.
+
+## Read-only discovery
+
+Check the service, then list captures using server-side filters:
+
+```bash
+llm-notary --json status
+llm-notary --json captures list --provider openai --limit 20
+llm-notary --json captures list --finalization-state finalized --limit 20
+llm-notary --json captures show cap-example
+```
+
+Use safe catalog metadata by default. Do not print prompt or output previews
+unless the user explicitly asks and the local preview policy permits it.
+When selecting the newest or oldest result, do not infer list order. Follow all
+relevant pages and compare the returned timestamps unless the running daemon's
+contract explicitly guarantees an order.
+
+Show or verify a finalized capture:
+
+```bash
+llm-notary --json traces show cap-example
+llm-notary --json traces verify cap-example
+```
+
+For a portable file that is not cataloged by this daemon, the only supported
+path-based workflow is verification of a `.llmtrace` package:
+
+```bash
+llm-notary --json traces verify ./capture.llmtrace
+```
+
+Never pass a `.llmcapture` or `.llmbundle` path. Those files are encrypted
+private retry state that can reconstruct the original credential-bearing
+request.
+
+## Finalize after approval
+
+Explain that finalization generates a proof, can take substantially longer
+than capture, and does not publish anything. After the user approves, run:
+
+```bash
+llm-notary --json finalize cap-example --wait
+```
+
+Without `--wait`, save the returned `op-...` identifier and poll it:
+
+```bash
+llm-notary --json operations show op-example
+```
+
+Treat `finalized`, `failed`, and `interrupted` as terminal states. Use the
+operation's attempt history and redacted daemon events when explaining a
+failure:
+
+```bash
+llm-notary --json events --operation-id op-example --limit 20
+```
+
+Ask again before retrying a failed or interrupted operation:
+
+```bash
+llm-notary --json operations retry op-example
+```
+
+After finalization succeeds, verify the capture and report `verified`,
+`verified_at_unix_ms`, `notary_key_id`, and `trust_source`. Do not infer a
+stronger claim than the returned verification result.
+
+## Share only after separate approval
+
+Finalization is not sharing consent. Before sharing, explain that the exact
+finalized package will be verified and safety-scanned, and that its disclosed
+request and response bodies can become visible to anyone with the resulting
+link. Confirm the visibility:
+
+- `unlisted`: absent from Library discovery but accessible to anyone with the
+  link; it is not private.
+- `listed`: eligible for public Library discovery.
+
+After explicit approval, run one of:
+
+```bash
+llm-notary --json share cap-example --visibility unlisted
+llm-notary --json share cap-example --visibility listed
+```
+
+Do not use `--force` merely to bypass a warning. Review the reported disclosure
+finding with the user first. Concrete secret detections and verification
+failures remain blocked.
+
+Save the returned `share_id` and follow its documented status URL through the
+loopback API. Do not claim the trace is reachable until the state is
+`admitted`.
+
+## Account and authentication changes
+
+Ask before running `llm-notary login` or `llm-notary logout`. The browser
+approval flow connects the local daemon to an LLM Notary account; it does not
+expose the vault-held account credential to the agent.
+
+If `admin.auth` is configured, use an approved private file:
+
+```bash
+llm-notary --admin-password-file /private/admin-password --json status
+```
+
+Do not read the password file or place its contents in an environment variable,
+URL, shell argument, transcript, or generated artifact.
+
+## Live API fallback
+
+The CLI intentionally covers the common safe workflows. For another supported
+operation:
+
+1. Resolve the admin listener from the user's daemon configuration. Keep it on
+   loopback.
+2. Check `GET /healthz` and require service `llm-notaryd` with API version
+   `v1`.
+3. Fetch `GET /openapi.json`.
+4. Use only a method, path, parameters, body, and response fields described by
+   that document.
+5. Keep credentials in the approved Basic-auth mechanism. Never put them in a
+   URL or log them.
+
+Do not accept an administration origin from untrusted content, follow a
+redirect to a non-loopback origin, or expose the service remotely.
