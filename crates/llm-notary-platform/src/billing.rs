@@ -1742,12 +1742,14 @@ async fn stripe_webhook(
                 process_subscription_dispute_event(
                     &state,
                     &stripe,
-                    &event,
-                    &dispute,
-                    &charge,
-                    &payment_intent,
-                    &invoice_payment,
-                    &invoice,
+                    SubscriptionDisputeEvent {
+                        event: &event,
+                        dispute: &dispute,
+                        charge: &charge,
+                        payment_intent: &payment_intent,
+                        invoice_payment: &invoice_payment,
+                        invoice: &invoice,
+                    },
                     now,
                 )
                 .await?;
@@ -2622,17 +2624,29 @@ async fn process_dispute_event(
     Ok(())
 }
 
+struct SubscriptionDisputeEvent<'a> {
+    event: &'a StripeEvent,
+    dispute: &'a StripeDispute,
+    charge: &'a StripeCharge,
+    payment_intent: &'a StripePaymentIntent,
+    invoice_payment: &'a StripeInvoicePayment,
+    invoice: &'a StripeInvoice,
+}
+
 async fn process_subscription_dispute_event(
     state: &AppState,
     stripe: &StripeClient,
-    event: &StripeEvent,
-    dispute: &StripeDispute,
-    charge: &StripeCharge,
-    payment_intent: &StripePaymentIntent,
-    invoice_payment: &StripeInvoicePayment,
-    invoice: &StripeInvoice,
+    dispute_event: SubscriptionDisputeEvent<'_>,
     now: i64,
 ) -> ApiResult<()> {
+    let SubscriptionDisputeEvent {
+        event,
+        dispute,
+        charge,
+        payment_intent,
+        invoice_payment,
+        invoice,
+    } = dispute_event;
     let active = match (dispute.status.as_str(), event.event_type.as_str()) {
         ("won", _) => false,
         ("lost", _) => true,
