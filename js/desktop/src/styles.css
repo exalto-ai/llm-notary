@@ -206,6 +206,19 @@ h1, h2, p { margin: 0; }
 .connection-note p { margin-top: 3px; color: var(--secondary); font-size: 10px; line-height: 1.45; }
 
 .preferences-page { width: min(760px, calc(100% - 48px)); }
+.native-account-card { display: grid; gap: 15px; margin-bottom: 25px; padding: 18px; border: 1px solid var(--separator); border-radius: 11px; background: var(--surface); box-shadow: var(--shadow); }
+.native-account-card.is-compact { margin: 0; padding: 0; border: 0; box-shadow: none; }
+.native-account-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.native-account-heading h2 { margin-top: 4px; font-size: 16px; font-weight: 650; }
+.account-state { color: var(--tertiary); font-size: 9px; font-weight: 600; text-transform: uppercase; }
+.account-state--connected { color: var(--green); }.account-state--reauthorization_required { color: var(--orange); }.account-state--unavailable { color: var(--red); }
+.native-account-card p { color: var(--secondary); font-size: 11px; line-height: 1.5; }
+.native-account-identity { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.native-account-identity strong, .native-account-identity span { display: block; }.native-account-identity strong { font-size: 13px; }.native-account-identity span { margin-top: 4px; color: var(--secondary); font-size: 10px; }.native-account-identity small { color: var(--blue); font-size: 9px; font-weight: 600; text-transform: uppercase; }
+.native-account-facts { display: grid; grid-template-columns: repeat(3, 1fr); border-top: 1px solid var(--separator-soft); border-bottom: 1px solid var(--separator-soft); }
+.native-account-facts div { display: grid; gap: 4px; min-height: 50px; padding: 10px 11px 10px 0; }.native-account-facts div + div { border-left: 1px solid var(--separator-soft); padding-left: 11px; }.native-account-facts span { color: var(--tertiary); font-size: 9px; }.native-account-facts strong { font-size: 10px; font-weight: 600; }
+.native-account-links { display: flex; flex-wrap: wrap; gap: 4px; padding-top: 2px; }.native-account-links button { padding: 5px 7px; border: 0; border-radius: 5px; background: transparent; color: var(--blue); font-size: 10px; }.native-account-links button:hover { background: var(--blue-soft); }
+.native-account-authorization { display: grid; gap: 7px; padding-top: 14px; border-top: 1px solid var(--separator-soft); }.native-account-authorization strong { font: 600 20px "SFMono-Regular", Menlo, monospace; letter-spacing: .08em; }.native-account-authorization > span:not(.section-label) { color: var(--secondary); font-size: 10px; line-height: 1.4; }.native-account-authorization > div { display: flex; flex-wrap: wrap; gap: 6px; }
 .preference-section + .preference-section { margin-top: 25px; }
 .preference-section > h2 { margin: 0 0 7px 10px; font-size: 12px; font-weight: 600; }
 .preference-group { overflow: hidden; border: 1px solid var(--separator); border-radius: 11px; background: var(--surface); }
@@ -261,7 +274,7 @@ h1, h2, p { margin: 0; }
 .traffic-light-space { width: 78px; height: 100%; flex: 0 0 78px; }
 .onboarding-window-title { position: absolute; left: 50%; color: var(--secondary); font-size: 12px; font-weight: 550; transform: translateX(-50%); pointer-events: none; }
 .onboarding-window-context { margin-left: auto; color: var(--tertiary); font-size: 10px; }
-.onboarding-progress { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3px; background: var(--separator-soft); }
+.onboarding-progress { display: grid; grid-template-columns: repeat(5, 1fr); gap: 3px; background: var(--separator-soft); }
 .onboarding-progress span { background: transparent; }
 .onboarding-progress span.is-complete { background: var(--blue); }
 .onboarding-body { display: grid; min-height: 0; grid-template-columns: minmax(570px, 1.35fr) minmax(350px, .65fr); }
@@ -377,6 +390,7 @@ h1, h2, p { margin: 0; }
 .ready-url code { font-size: 10px; }
 .split-actions { flex-wrap: wrap; }
 .onboarding-error { width: min(650px, 100%); margin: 9px auto 0; padding: 10px 12px; border-radius: 8px; background: rgba(214, 60, 60, .1); color: var(--red); font-size: 10px; }
+.account-step .native-account-card { margin-top: 24px; }
 
 .onboarding-aside { display: flex; min-width: 0; flex-direction: column; padding: 46px 35px 30px; border-left: 1px solid var(--separator); background: var(--sidebar); }
 .aside-label { color: var(--blue); font-size: 9px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase; }
@@ -403,6 +417,7 @@ h1, h2, p { margin: 0; }
   .onboarding-content { padding-inline: 38px; }
   .onboarding-aside { padding-inline: 25px; }
   .setup-trust-flow { --packet-travel: 68px; grid-template-columns: 90px 40px 100px 40px minmax(210px, 1fr); }
+  .native-account-facts { grid-template-columns: 1fr 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

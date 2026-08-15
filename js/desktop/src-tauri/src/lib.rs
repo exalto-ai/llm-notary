@@ -2,6 +2,7 @@ use std::{
     fs,
     io::Write as _,
     path::{Path, PathBuf},
+    process::Command,
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
@@ -13,6 +14,7 @@ use llm_notary_client::update::{self, ReleaseArtifact};
 use llm_notary_core::vault::{CHILD_KEY_STDIN_ENV, Vault};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use tauri::{
     Manager,
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -20,6 +22,7 @@ use tauri::{
 };
 use tauri_plugin_shell::{ShellExt, process::CommandChild};
 use tauri_plugin_updater::{Update, UpdaterExt};
+use url::{Host, Url};
 use zeroize::Zeroizing;
 
 const ADMIN_ORIGIN: &str = "http://127.0.0.1:8788";
@@ -261,6 +264,147 @@ async fn read_admin_status() -> Result<AdminStatus, String> {
         .json()
         .await
         .map_err(|error| error.to_string())
+}
+
+async fn account_request(
+    method: reqwest::Method,
+    path: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(Duration::from_millis(350))
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|error| error.to_string())?;
+    let mut request = client.request(method, format!("{ADMIN_ORIGIN}{path}"));
+    if let Some(body) = body {
+        request = request.json(&body);
+    }
+    let response = request.send().await.map_err(|error| error.to_string())?;
+    if response.status() == StatusCode::NO_CONTENT {
+        return Ok(Value::Null);
+    }
+    let status = response.status();
+    let payload = response
+        .json::<Value>()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !status.is_success() {
+        return Err(payload
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .unwrap_or("The local account request failed.")
+            .to_owned());
+    }
+    Ok(payload)
+}
+
+fn valid_account_request_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 256
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+#[tauri::command]
+async fn get_account_connection() -> Result<Value, String> {
+    account_request(reqwest::Method::GET, "/v1/account", None).await
+}
+
+#[tauri::command]
+async fn start_account_connection() -> Result<Value, String> {
+    account_request(reqwest::Method::POST, "/v1/account", Some(json!({}))).await
+}
+
+#[tauri::command]
+async fn poll_account_connection(request_id: String) -> Result<Value, String> {
+    if !valid_account_request_id(&request_id) {
+        return Err("Invalid account authorization request.".into());
+    }
+    account_request(
+        reqwest::Method::GET,
+        &format!("/v1/account/{request_id}"),
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn disconnect_account() -> Result<(), String> {
+    account_request(reqwest::Method::DELETE, "/v1/account", None)
+        .await
+        .map(|_| ())
+}
+
+fn validate_account_link(value: &str) -> Result<Url, String> {
+    let url = Url::parse(value).map_err(|_| "The account link is not a valid URL.".to_string())?;
+    let secure = url.scheme() == "https";
+    let loopback_http = url.scheme() == "http"
+        && url.host().is_some_and(|host| match host {
+            Host::Domain(domain) => domain.eq_ignore_ascii_case("localhost"),
+            Host::Ipv4(address) => address.is_loopback(),
+            Host::Ipv6(address) => address.is_loopback(),
+        });
+    let fragment = url.fragment().unwrap_or_default();
+    let route = fragment
+        .split_once('?')
+        .map_or(fragment, |(route, _)| route);
+    let authorization_query = fragment.strip_prefix("/authorize?").is_some_and(|query| {
+        let mut request_id = false;
+        let mut approval_secret = false;
+        for pair in query.split('&') {
+            let Some((key, value)) = pair.split_once('=') else {
+                return false;
+            };
+            if value.is_empty()
+                || value
+                    .bytes()
+                    .any(|byte| byte.is_ascii_control() || byte == b'#')
+            {
+                return false;
+            }
+            match key {
+                "request_id" if !request_id => request_id = true,
+                "approval_secret" if !approval_secret => approval_secret = true,
+                _ => return false,
+            }
+        }
+        request_id && approval_secret
+    });
+    let allowed_route = matches!(
+        route,
+        "/dashboard" | "/dashboard/credits" | "/pricing" | "/dashboard/settings"
+    ) || authorization_query;
+    if (!secure && !loopback_http)
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.path() != "/"
+        || url.query().is_some()
+        || !allowed_route
+    {
+        return Err(
+            "The account link was rejected because it is not a trusted hosted route.".into(),
+        );
+    }
+    Ok(url)
+}
+
+#[tauri::command]
+fn open_account_link(url: String) -> Result<(), String> {
+    let url = validate_account_link(&url)?;
+    #[cfg(target_os = "macos")]
+    let result = Command::new("open").arg(url.as_str()).spawn();
+    #[cfg(target_os = "windows")]
+    let result = Command::new("cmd")
+        .args(["/C", "start", "", url.as_str()])
+        .spawn();
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let result = Command::new("xdg-open").arg(url.as_str()).spawn();
+    result
+        .map(|_| ())
+        .map_err(|error| format!("Could not open the account page: {error}"))
 }
 
 async fn daemon_is_healthy() -> bool {
@@ -979,6 +1123,11 @@ pub fn run() {
         ))
         .invoke_handler(tauri::generate_handler![
             get_desktop_state,
+            get_account_connection,
+            start_account_connection,
+            poll_account_connection,
+            disconnect_account,
+            open_account_link,
             configure_vault,
             unlock_vault,
             complete_onboarding,
@@ -1105,5 +1254,24 @@ mod tests {
         assert!(should_auto_start(true, "convenience", true));
         assert!(!should_auto_start(false, "keychain", true));
         assert!(!should_auto_start(true, "keychain", false));
+    }
+
+    #[test]
+    fn account_links_allow_only_known_routes_and_device_authorization_parameters() {
+        assert!(
+            validate_account_link(
+                "https://notary.example/#/authorize?request_id=abc&approval_secret=xyz"
+            )
+            .is_ok()
+        );
+        assert!(validate_account_link("https://notary.example/#/dashboard/credits").is_ok());
+        assert!(
+            validate_account_link("https://notary.example/#/authorize?request_id=abc").is_err()
+        );
+        assert!(
+            validate_account_link("https://notary.example/#/authorize?request_id=abc&evil=xyz")
+                .is_err()
+        );
+        assert!(validate_account_link("http://example.com/#/dashboard").is_err());
     }
 }

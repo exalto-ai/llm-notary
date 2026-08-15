@@ -37,7 +37,27 @@ Use the sidebar to move between these parts of the local workflow:
 - **Settings** reports safe listener, vault, preview-policy, and notary trust
   state from `GET /v1/notaries`, contains the color-scheme control, and links
   to the live OpenAPI contract. The notary records show configured trust and
-  lifecycle windows, not endpoint health.
+  lifecycle windows, not endpoint health. It also shows the hosted-account
+  connection and credit summary.
+
+## Connect an account (optional)
+
+The Account card in **Share** and **Settings** can start the browser-based
+device authorization flow. It polls the local service automatically at the
+server-provided interval and makes the approval code available for a manual
+check. The local dashboard never receives hosted passwords, provider tokens, or
+API-key values, and connecting an account is not required for local capture,
+finalization, or verification.
+
+When connected, the card shows the display name and provider, device or API-key
+mode, plan and billing state, and the available capture/notarization balances.
+It includes used, remaining, monthly included, supplemental, reset, and next
+expiration values when the account service provides them. Links to the hosted
+account, usage, plans, and settings are derived from the validated account
+origin. Only a browser-approved device session can be disconnected here; API
+keys remain managed by the hosted account settings. Revoked or temporarily
+unavailable connections are shown explicitly and do not delete local
+credentials or captures.
 
 ## Inspect a capture
 

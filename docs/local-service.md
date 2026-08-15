@@ -322,8 +322,13 @@ llm-notary share cap-example --force                 # Only after disclosure rev
 llm-notary logout
 ```
 
-When connected, account inspection includes the same total, monthly,
-additional, reset, and expiration values returned by the hosted account API.
+`whoami` reports an explicit connection state (`disconnected`, `connected`,
+`reauthorization_required`, or `unavailable`) and, when available, the display
+name, sign-in provider, device or API-key mode, plan, billing state, account
+links, and credit balances. Human output is intended for quick inspection;
+`--json` is the stable machine-readable form. When connected, account
+inspection includes the same total, monthly, additional, reset, and expiration
+values returned by the hosted account API.
 The account dashboard retrieves credit activity separately from the paginated
 `GET /api/me/credits/history` route. These fields affect hosted finalization
 only; they do not enter local captures or finalized evidence.

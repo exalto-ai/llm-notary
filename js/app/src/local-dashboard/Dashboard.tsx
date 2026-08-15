@@ -25,7 +25,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue
 } from '@/components/ui/select';
 import { LocalApiError } from './api';
-import type { AccountConnectionStarted, Capture, CaptureDetail, Event, LocalApi, Notary, Operation, OperationSummary, Share, ShareVisibility, Status, Verification } from './api';
+import type { AccountConnection, AccountConnectionStarted, Capture, CaptureDetail, Event, LocalApi, Notary, Operation, OperationSummary, Share, ShareVisibility, Status, Verification } from './api';
 import { abbreviatedKeyId, formatNotaryBoundary, notaryLifecycle, orderNotaries } from '../notaryLifecycle';
 import { ProviderIdentity } from '../ProviderIdentity';
 
@@ -163,6 +163,141 @@ function QueryError({ error, title }: { error: unknown; title?: string }) {
 function mutationError(title: string, error: unknown) {
   const code = error instanceof LocalApiError ? error.code : 'request_failed';
   notifications.show({ color: 'red', title, message: `The service returned ${code}. Review Activity for safe details.` });
+}
+
+type AccountConnectionController = ReturnType<typeof useAccountConnection>;
+
+function useAccountConnection(api: LocalApi) {
+  const queryClient = useQueryClient();
+  const account = useQuery({ queryKey: ['account'], queryFn: api.account, retry: false });
+  const [started, setStarted] = useState<{ flow: AccountConnectionStarted; nextPollAt: number; startedAt: number } | null>(null);
+  const [now, setNow] = useState(Date.now());
+
+  useEffect(() => {
+    if (!started) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [started]);
+
+  const schedule = (flow: AccountConnectionStarted) => {
+    const startedAt = Date.now();
+    setStarted({ flow, startedAt, nextPollAt: startedAt + flow.poll_interval_seconds * 1000 });
+  };
+  const begin = useMutation({
+    mutationFn: api.startAccountConnection,
+    onSuccess: schedule,
+    onError: (error) => mutationError('Could not begin authorization', error)
+  });
+  const poll = useMutation({
+    mutationFn: () => api.pollAccountConnection(started!.flow.request_id),
+    onSuccess: (result) => {
+      queryClient.setQueryData(['account'], result);
+      if (result.signed_in || result.connection_state === 'connected') setStarted(null);
+      else if (started) setStarted({ ...started, nextPollAt: Date.now() + started.flow.poll_interval_seconds * 1000 });
+    },
+    onError: (error) => mutationError('Could not check authorization', error)
+  });
+  const disconnect = useMutation({
+    mutationFn: api.disconnectAccount,
+    onSuccess: () => {
+      setStarted(null);
+      void queryClient.invalidateQueries({ queryKey: ['account'] });
+    },
+    onError: (error) => mutationError('Could not disconnect this device', error)
+  });
+  const expired = Boolean(started && now >= started.startedAt + started.flow.expires_in_seconds * 1000);
+  const pollReady = Boolean(started && !expired && now >= started.nextPollAt);
+
+  useEffect(() => {
+    // A zero interval is used by deterministic dashboard fixtures to require
+    // an explicit check. The daemon clamps real intervals to at least one
+    // second, so only real authorization flows are automatically polled.
+    if (!started || expired || started.flow.poll_interval_seconds === 0 || !pollReady || poll.isPending) return;
+    poll.mutate();
+  }, [expired, poll, pollReady, started]);
+
+  return {
+    account,
+    started,
+    now,
+    expired,
+    pollReady,
+    begin,
+    poll,
+    disconnect,
+    cancel: () => setStarted(null),
+    refresh: () => account.refetch()
+  };
+}
+
+function accountDisplayName(account: AccountConnection) {
+  return account.display_name || account.github_login || 'LLM Notary account';
+}
+
+function authProviderLabel(provider?: string | null) {
+  if (!provider) return 'Hosted account';
+  return provider === 'google' ? 'Google' : provider === 'github' ? 'GitHub' : provider;
+}
+
+function accountConnectionLabel(account: AccountConnection | undefined, error: unknown) {
+  if (error) return 'Temporarily unavailable';
+  if (!account) return 'Loading account';
+  if (account.connection_state === 'reauthorization_required') return 'Reconnect required';
+  if (account.connection_state === 'unavailable') return 'Temporarily unavailable';
+  if (account.signed_in || account.connection_state === 'connected') return 'Connected';
+  return 'Not connected';
+}
+
+function AccountConnectionCard({
+  controller,
+  compact = false,
+  fixture = false
+}: {
+  controller: AccountConnectionController;
+  compact?: boolean;
+  fixture?: boolean;
+}) {
+  const { account, started, expired, pollReady, begin, poll, cancel, refresh } = controller;
+  const [disconnectOpen, setDisconnectOpen] = useState(false);
+  const { disconnect } = controller;
+  const api = controller.account.data;
+  const canDisconnect = Boolean(api?.signed_in && api.credential_kind !== 'api_key');
+  const disconnectAccount = async () => {
+    if (!canDisconnect) return;
+    setDisconnectOpen(false);
+    disconnect.mutate();
+  };
+  const state = accountConnectionLabel(api, account.error);
+  const connected = Boolean(api?.signed_in || api?.connection_state === 'connected');
+  const unavailable = state === 'Temporarily unavailable';
+  const links = api?.links;
+
+  return <section className={`account-connection-card${compact ? ' account-connection-card--compact' : ''}`} aria-labelledby={compact ? undefined : 'local-account-title'}>
+    <Group justify="space-between" align="flex-start">
+      <div><Text className="eyebrow">Account</Text>{!compact && <Title id="local-account-title" order={2}>Hosted account connection</Title>}</div>
+      <StatusLabel state={connected ? 'ready' : unavailable ? 'unavailable' : api?.connection_state === 'reauthorization_required' ? 'expired' : 'muted'} />
+    </Group>
+    {account.isLoading ? <Loader size="sm" /> : connected && api ? <>
+      <div className="account-connection-identity"><div><b>{accountDisplayName(api)}</b>{api.github_login && api.display_name && <Text>{api.github_login}</Text>}<Text>{authProviderLabel(api.auth_provider)} · {api.credential_name || api.device_name || 'Connected service'}</Text></div>{api.credential_kind === 'api_key' && <Badge variant="light">API key</Badge>}</div>
+      {api.billing && <dl className="account-connection-facts">
+        <Fact label="Plan" value={`${api.billing.service_plan} · ${api.billing.billing_status}`} />
+        {api.billing.purchase_mode && <Fact label="Billing" value={api.billing.purchase_mode} />}
+        {api.credits && <Fact label="Notarization" value={`${formatBytes(api.credits.notarization.total_used_bytes)} used · ${formatBytes(api.credits.notarization.total_remaining_bytes)} remaining`} />}
+        {api.credits && <Fact label="Capture" value={`${formatBytes(api.credits.capture.total_used_bytes)} used · ${formatBytes(api.credits.capture.total_remaining_bytes)} remaining`} />}
+        {api.credits && <Fact label="Monthly included" value={formatBytes(api.credits.notarization.included_monthly_remaining_bytes)} />}
+        {api.credits && <Fact label="Supplemental" value={formatBytes(api.credits.notarization.supplemental_remaining_bytes)} />}
+        {api.credits && <Fact label="Reset" value={formatDate((api.credits.reset_at ?? 0) * 1000)} />}
+        {api.credits?.notarization.next_grant_expiration && <Fact label="Next expiration" value={formatDate(api.credits.notarization.next_grant_expiration * 1000)} />}
+      </dl>}
+      {links && <Group className="account-connection-links" gap="xs"><Button component="a" href={links.account} target="_blank" rel="noreferrer" variant="subtle">Open account</Button><Button component="a" href={links.usage} target="_blank" rel="noreferrer" variant="subtle">Usage and credits</Button><Button component="a" href={links.plans} target="_blank" rel="noreferrer" variant="subtle">Plans and pricing</Button><Button component="a" href={links.settings} target="_blank" rel="noreferrer" variant="subtle">{api.credential_kind === 'api_key' ? 'Manage API keys' : 'Account settings'}</Button></Group>}
+      {canDisconnect && <Button variant="outline" onClick={() => setDisconnectOpen(true)}>Disconnect this device</Button>}
+    </> : <>
+      <Text>{api?.connection_state === 'reauthorization_required' ? 'The local authorization expired or was revoked. Reconnect to restore hosted credits and account-owned sharing.' : unavailable ? 'The account service could not be reached. Local captures and verification remain available.' : 'Connect an account to see hosted credits and use account-owned sharing.'}</Text>
+      <Group><Button variant="outline" loading={begin.isPending} onClick={() => begin.mutate()}>{api?.connection_state === 'reauthorization_required' ? 'Reconnect' : compact ? 'Connect account' : 'Sign in or create account'}</Button>{unavailable && <Button variant="subtle" onClick={() => refresh()}>Refresh</Button>}</Group>
+    </>}
+    {started && <div className="authorization-code"><Text className="eyebrow">Approval code</Text><code>{started.flow.user_code}</code>{!fixture && <a href={started.flow.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a>}{expired ? <Text>Authorization expired. Start again to get a fresh request.</Text> : <Text>{pollReady ? 'Ready to check.' : `Next check in ${Math.max(1, Math.ceil((started.nextPollAt - controller.now) / 1000))}s.`}</Text>}<Group><Button size="xs" variant="subtle" disabled={expired || !pollReady} loading={poll.isPending} onClick={() => poll.mutate()}>Check approval</Button><Button size="xs" variant="subtle" onClick={cancel}>Cancel</Button>{expired && <Button size="xs" variant="subtle" loading={begin.isPending} onClick={() => begin.mutate()}>Try again</Button>}</Group></div>}
+    <AlertDialog open={disconnectOpen} onOpenChange={setDisconnectOpen}><AlertDialogContent className="axis-local-dialog"><AlertDialogHeader><AlertDialogTitle>Disconnect this device?</AlertDialogTitle><AlertDialogDescription>This revokes only the local browser-approved session. It does not sign out the website or delete your hosted account.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Keep connected</AlertDialogCancel><AlertDialogAction disabled={disconnect.isPending} onClick={() => void disconnectAccount()}>{disconnect.isPending ? 'Disconnecting…' : 'Disconnect device'}</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+  </section>;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -804,8 +939,8 @@ function Receipt({ title, fields, verified = false }: { title: string; fields: A
 }
 
 function SharingView({ api, fixture, navigate }: { api: LocalApi; fixture: boolean; navigate: (route: Route) => void }) {
-  const queryClient = useQueryClient();
-  const account = useQuery({ queryKey: ['account'], queryFn: api.account, retry: false });
+  const accountConnection = useAccountConnection(api);
+  const { account } = accountConnection;
   const captures = useInfiniteQuery({
     queryKey: ['captures', 'sharing'],
     queryFn: ({ pageParam }) => api.captures({ finalization_state: 'finalized', limit: 50, cursor: pageParam }),
@@ -816,8 +951,6 @@ function SharingView({ api, fixture, navigate }: { api: LocalApi; fixture: boole
   const [visibility, setVisibility] = useState<ShareVisibility>('unlisted');
   const [confirm, setConfirm] = useState(false);
   const [submitted, setSubmitted] = useState<Share | null>(null);
-  const [started, setStarted] = useState<{ flow: AccountConnectionStarted; nextPollAt: number } | null>(null);
-  const [now, setNow] = useState(Date.now());
   const eligible = captures.data?.pages.flatMap((page) => page.items) ?? [];
   const selectedId = selected ?? eligible[0]?.capture_id ?? null;
   const preview = useQuery({
@@ -838,26 +971,6 @@ function SharingView({ api, fixture, navigate }: { api: LocalApi; fixture: boole
       return state && ['admitted', 'rejected', 'expired', 'failed'].includes(state) ? false : 3_000;
     }
   });
-  useEffect(() => {
-    if (!started) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 250);
-    return () => window.clearInterval(timer);
-  }, [started]);
-  const schedule = (flow: AccountConnectionStarted) => setStarted({ flow, nextPollAt: Date.now() + flow.poll_interval_seconds * 1000 });
-  const beginAccount = useMutation({
-    mutationFn: api.startAccountConnection,
-    onSuccess: schedule,
-    onError: (error) => mutationError('Could not begin authorization', error)
-  });
-  const pollAccount = useMutation({
-    mutationFn: () => api.pollAccountConnection(started!.flow.request_id),
-    onSuccess: (result) => {
-      queryClient.setQueryData(['account'], result);
-      if (result.signed_in) setStarted(null);
-      else if (started) setStarted({ ...started, nextPollAt: Date.now() + started.flow.poll_interval_seconds * 1000 });
-    },
-    onError: (error) => mutationError('Could not check authorization', error)
-  });
   const createShare = useMutation({
     mutationFn: () => api.share(selectedId!, visibility),
     onSuccess: (result) => {
@@ -867,7 +980,6 @@ function SharingView({ api, fixture, navigate }: { api: LocalApi; fixture: boole
     },
     onError: (error) => mutationError('Sharing failed', error)
   });
-  const pollReady = Boolean(started && now >= started.nextPollAt);
   const shareState = share.data?.state ?? submitted?.state;
   const shareUrl = share.data?.share_url ?? submitted?.share_url;
   const packageUrl = share.data?.package_url ?? submitted?.package_url;
@@ -946,8 +1058,7 @@ function SharingView({ api, fixture, navigate }: { api: LocalApi; fixture: boole
         <div className="share-package-preview"><FileCheck2 size={18} /><div><b>.llmtrace included</b><Text>Size and SHA-256 appear on the share.</Text></div></div>
         <div className="sharing-account">
           <Group justify="space-between"><Text className="eyebrow">Account</Text><KeyRound size={16} /></Group>
-          {account.isLoading ? <Loader size="xs" /> : account.error ? <QueryError error={account.error} title="Account connection is unavailable" /> : account.data?.signed_in ? <Group justify="space-between"><div><b>{account.data.github_login}</b><Text>{account.data.credential_name ?? account.data.device_name}</Text>{account.data.credential_kind === 'api_key' && <Text className="eyebrow">API key</Text>}</div><StatusLabel state="ready" /></Group> : <><Text>Connect an account to share this trace.</Text><Button variant="outline" loading={beginAccount.isPending} onClick={() => beginAccount.mutate()}>Connect account</Button></>}
-          {started && <div className="authorization-code"><Text className="eyebrow">Approval code</Text><code>{started.flow.user_code}</code>{!fixture && <a href={started.flow.verification_uri_complete} target="_blank" rel="noreferrer">Open approval page</a>}<Text>{pollReady ? 'Ready to check.' : `Check available in ${Math.max(1, Math.ceil((started.nextPollAt - now) / 1000))}s.`}</Text><Button size="xs" variant="subtle" disabled={!pollReady} loading={pollAccount.isPending} onClick={() => pollAccount.mutate()}>Check approval</Button></div>}
+          <AccountConnectionCard controller={accountConnection} compact={true} fixture={fixture} />
         </div>
       </Paper>
     </div>
@@ -1032,6 +1143,7 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
 
 function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
   const isServer = status.runtime_profile === 'server';
+  const accountConnection = useAccountConnection(api);
   const proxyOrigin = status.proxy_origin.replace(/\/$/, '');
   const openApiUrl = `${window.location.origin}/openapi.json`;
   const copyOpenApi = async () => {
@@ -1047,7 +1159,7 @@ function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
     : status.updates.last_checked_unix_ms ? 'Up to date'
     : 'Not checked yet';
 
-  return <div className="view-page"><Paper className="appearance-setting">
+  return <div className="view-page"><AccountConnectionCard controller={accountConnection} /><Paper className="appearance-setting">
       <Text fw={700}>Theme</Text>
       <SchemeControl />
     </Paper>

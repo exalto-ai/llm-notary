@@ -1618,6 +1618,29 @@
   },
   "components": {
     "schemas": {
+      "AccountActionLinks": {
+        "type": "object",
+        "required": [
+          "account",
+          "usage",
+          "plans",
+          "settings"
+        ],
+        "properties": {
+          "account": {
+            "type": "string"
+          },
+          "plans": {
+            "type": "string"
+          },
+          "settings": {
+            "type": "string"
+          },
+          "usage": {
+            "type": "string"
+          }
+        }
+      },
       "AccountConnectionRequest": {
         "type": "object",
         "properties": {
@@ -1635,6 +1658,12 @@
           "signed_in"
         ],
         "properties": {
+          "auth_provider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "billing": {
             "oneOf": [
               {
@@ -1642,6 +1671,16 @@
               },
               {
                 "$ref": "#/components/schemas/BillingState"
+              }
+            ]
+          },
+          "connection_state": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AccountConnectionState"
               }
             ]
           },
@@ -1673,10 +1712,26 @@
               "null"
             ]
           },
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "github_login": {
             "type": [
               "string",
               "null"
+            ]
+          },
+          "links": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AccountActionLinks"
+              }
             ]
           },
           "signed_in": {
@@ -1719,6 +1774,15 @@
           }
         }
       },
+      "AccountConnectionState": {
+        "type": "string",
+        "enum": [
+          "disconnected",
+          "connected",
+          "reauthorization_required",
+          "unavailable"
+        ]
+      },
       "ArtifactResponse": {
         "type": "object",
         "required": [
@@ -1749,6 +1813,12 @@
         "properties": {
           "billing_status": {
             "type": "string"
+          },
+          "purchase_mode": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "service_plan": {
             "type": "string"
@@ -1960,13 +2030,6 @@
       },
       "CreditBalanceSummary": {
         "type": "object",
-        "required": [
-          "total_granted_bytes",
-          "total_used_bytes",
-          "total_remaining_bytes",
-          "included_monthly_remaining_bytes",
-          "supplemental_remaining_bytes"
-        ],
         "properties": {
           "included_monthly_remaining_bytes": {
             "type": "integer",
@@ -2001,8 +2064,7 @@
         "type": "object",
         "required": [
           "capture",
-          "notarization",
-          "reset_at"
+          "notarization"
         ],
         "properties": {
           "capture": {

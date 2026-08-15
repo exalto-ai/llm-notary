@@ -34,7 +34,9 @@ bundled local service and opens the complete capture workspace. Normal use does
 not require a terminal.
 
 Provider credentials remain in the SDK or coding tool that sends the model
-request. The app does not ask for or store them.
+request. The app does not ask for or store them. After the service starts,
+desktop onboarding offers an optional hosted-account sign-in; skipping it keeps
+the complete local capture and verification workflow available.
 
 See [Desktop app](desktop-app.md) for lifecycle, capture-protection, and
 development details.

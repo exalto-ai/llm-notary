@@ -20,7 +20,7 @@ or file-format promise applies yet.
 
 ## What the app does
 
-The app provides a four-stage first run, supervises the bundled `llm-notaryd`
+The app provides a five-stage first run, supervises the bundled `llm-notaryd`
 process, exposes its status from the menu bar, and contains the complete local
 capture workspace. Users do not need to open a localhost page in a browser.
 Closing the window removes the app from the Dock and leaves the menu-bar
@@ -34,14 +34,31 @@ passphrase vault opens locked and starts capture only after the user unlocks it.
 
 First run detects the local agent config, capture vault, and service before it
 changes anything. It then guides the user through capture protection, choosing
-a provider and optional default model, starting the service, and confirming the
-ready state. Provider credentials remain in the user's coding tool; the desktop
-app never asks for or stores them.
+a provider and optional default model, starting the service, optionally
+connecting a hosted account, and confirming the ready state. Provider
+credentials remain in the user's coding tool; the desktop app never asks for or
+stores them.
 
 The capture workspace is served by the supervised daemon on the fixed loopback
 address `127.0.0.1:8788` and embedded in the native window. The desktop content
 security policy permits that exact local frame; it does not permit public or
 arbitrary remote pages.
+
+## Connect an account (optional)
+
+After the local service starts, onboarding offers an optional hosted-account
+connection. The approval page opens in the system browser, so the desktop app
+never handles the hosted sign-in password or provider credentials. Skipping the
+step does not affect local capture, finalization, or verification.
+
+Settings shows the same account connection card after onboarding. It identifies
+the connected account and sign-in provider, device or API-key mode, plan and
+billing state, and capture/notarization credits (used, remaining, included,
+supplemental, reset, and expiration values when supplied). Account, usage,
+pricing, and settings actions open only validated links returned by the local
+service in the default browser. A browser-approved device session can be
+disconnected from Settings; an injected API key must instead be managed in the
+hosted account settings and is never revoked by the local app.
 
 ## Connect subscription-backed clients
 

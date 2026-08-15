@@ -37,6 +37,40 @@ export type DesktopUpdateState = {
   message: string | null;
 };
 
+export type AccountConnectionState = 'disconnected' | 'connected' | 'reauthorization_required' | 'unavailable';
+
+export type AccountCreditBalance = {
+  total_granted_bytes: number;
+  total_used_bytes: number;
+  total_remaining_bytes: number;
+  included_monthly_remaining_bytes: number;
+  supplemental_remaining_bytes: number;
+  next_grant_expiration?: number | null;
+};
+
+export type AccountConnection = {
+  signed_in: boolean;
+  connection_state?: AccountConnectionState | null;
+  github_login?: string | null;
+  display_name?: string | null;
+  auth_provider?: string | null;
+  device_name?: string | null;
+  credential_kind?: string | null;
+  credential_name?: string | null;
+  billing?: { service_plan: string; billing_status: string; purchase_mode?: string | null } | null;
+  credits?: { capture: AccountCreditBalance; notarization: AccountCreditBalance; reset_at: number } | null;
+  links?: { account: string; usage: string; plans: string; settings: string } | null;
+};
+
+export type AccountConnectionStarted = {
+  request_id: string;
+  user_code: string;
+  verification_uri_complete: string;
+  expires_in_seconds: number;
+  poll_interval_seconds: number;
+  state: string;
+};
+
 const emptyCounts: CaptureCounts = {
   total_captures: 0,
   capturing: 0,
@@ -220,4 +254,42 @@ export async function setLaunchAtLogin(enabled: boolean): Promise<void> {
   const plugin = await import('@tauri-apps/plugin-autostart');
   if (enabled) await plugin.enable();
   else await plugin.disable();
+}
+
+async function browserAccountRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(`/admin-api${path}`, {
+    ...options,
+    headers: { 'content-type': 'application/json', ...(options.headers ?? {}) }
+  });
+  if (!response.ok) throw new Error(`Local account request failed (${response.status})`);
+  if (response.status === 204) return undefined as T;
+  return response.json() as Promise<T>;
+}
+
+export async function getAccountConnection(): Promise<AccountConnection> {
+  if (!isTauri()) return browserAccountRequest<AccountConnection>('/v1/account');
+  return invoke<AccountConnection>('get_account_connection');
+}
+
+export async function startAccountConnection(): Promise<AccountConnectionStarted> {
+  if (!isTauri()) return browserAccountRequest<AccountConnectionStarted>('/v1/account', { method: 'POST', body: '{}' });
+  return invoke<AccountConnectionStarted>('start_account_connection');
+}
+
+export async function pollAccountConnection(requestId: string): Promise<AccountConnection> {
+  if (!isTauri()) return browserAccountRequest<AccountConnection>(`/v1/account/${encodeURIComponent(requestId)}`);
+  return invoke<AccountConnection>('poll_account_connection', { requestId });
+}
+
+export async function disconnectAccount(): Promise<void> {
+  if (!isTauri()) return browserAccountRequest<void>('/v1/account', { method: 'DELETE' });
+  await invoke('disconnect_account');
+}
+
+export async function openAccountLink(url: string): Promise<void> {
+  if (!isTauri()) {
+    window.open(url, '_blank', 'noopener,noreferrer');
+    return;
+  }
+  await invoke('open_account_link', { url });
 }
