@@ -11,7 +11,7 @@ use async_trait::async_trait;
 use aws_sdk_s3::{
     Client,
     config::{BehaviorVersion, Credentials, Region, timeout::TimeoutConfig},
-    primitives::{FsBuilder, Length},
+    primitives::{ByteStream, FsBuilder, Length},
 };
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest as _, Sha256};
@@ -29,6 +29,8 @@ const KIND_METADATA: &str = "artifact-kind";
 const MAX_CONDITIONAL_ATTEMPTS: usize = 3;
 const AMBIGUOUS_VERIFY_ATTEMPTS: usize = 4;
 const AMBIGUOUS_VERIFY_DELAY: Duration = Duration::from_millis(100);
+const READINESS_SENTINEL_SUFFIX: &str = "daemon-private/.llm-notary-readiness-v1";
+const READINESS_SENTINEL_BYTES: &[u8] = b"llm-notary/s3-readiness/v1\n";
 
 /// Versioned discriminator used by routing stores and persisted metadata.
 pub const S3_ARTIFACT_LOCATOR_PREFIX: &str = "artifact/v1/s3/";
@@ -162,22 +164,76 @@ impl S3ArtifactStore {
         })
     }
 
-    /// Performs a bounded, non-mutating managed-prefix access probe.
+    /// Performs a bounded, idempotent read/write probe inside the managed prefix.
     pub async fn readiness(&self) -> ArtifactResult<()> {
+        let object_key = self.readiness_object_key();
         let request = self
             .client
-            .list_objects_v2()
+            .put_object()
             .bucket(&self.bucket)
-            .prefix(self.managed_prefix())
-            .max_keys(1)
+            .key(&object_key)
+            .if_none_match("*")
+            .content_length(
+                i64::try_from(READINESS_SENTINEL_BYTES.len())
+                    .expect("readiness sentinel length fits in i64"),
+            )
+            .body(ByteStream::from_static(READINESS_SENTINEL_BYTES))
             .send();
-        tokio::time::timeout(self.operation_timeout, request)
-            .await
-            .map_err(|_| backend(anyhow!("S3 readiness probe timed out")))?
-            .map_err(|error| {
-                backend(anyhow!(error).context("probing private artifact namespace"))
+        match tokio::time::timeout(self.operation_timeout, request).await {
+            Err(_) => return Err(backend(anyhow!("S3 readiness sentinel PUT timed out"))),
+            Ok(Ok(_)) => {}
+            Ok(Err(error))
+                if error
+                    .raw_response()
+                    .is_some_and(|response| response.status().as_u16() == 412) => {}
+            Ok(Err(error)) => {
+                return Err(backend(
+                    anyhow!(error).context("conditionally writing S3 readiness sentinel"),
+                ));
+            }
+        }
+
+        let operation = async {
+            let output = self
+                .client
+                .get_object()
+                .bucket(&self.bucket)
+                .key(&object_key)
+                .send()
+                .await
+                .map_err(|error| {
+                    backend(anyhow!(error).context("reading S3 readiness sentinel"))
+                })?;
+            let content_length = output.content_length().ok_or_else(|| {
+                integrity(anyhow!("S3 readiness sentinel omitted Content-Length"))
             })?;
-        Ok(())
+            if usize::try_from(content_length).ok() != Some(READINESS_SENTINEL_BYTES.len()) {
+                return Err(integrity(anyhow!(
+                    "S3 readiness sentinel has an unexpected size"
+                )));
+            }
+            let mut body = output.body;
+            let mut observed = Vec::with_capacity(READINESS_SENTINEL_BYTES.len() + 1);
+            while let Some(chunk) = body.try_next().await.map_err(|error| {
+                backend(anyhow!(error).context("streaming S3 readiness sentinel"))
+            })? {
+                if observed.len().saturating_add(chunk.len()) > READINESS_SENTINEL_BYTES.len() {
+                    return Err(integrity(anyhow!(
+                        "S3 readiness sentinel exceeded its exact size"
+                    )));
+                }
+                observed.extend_from_slice(&chunk);
+            }
+            if observed != READINESS_SENTINEL_BYTES {
+                return Err(integrity(anyhow!(
+                    "S3 readiness sentinel bytes do not match"
+                )));
+            }
+            Ok(())
+        };
+        tokio::time::timeout(self.operation_timeout, operation)
+            .await
+            .map_err(|_| backend(anyhow!("S3 readiness sentinel GET timed out")))?
     }
 
     /// Lists only the daemon-owned prefix and reports old objects which are
@@ -227,7 +283,11 @@ impl S3ArtifactStore {
                 .map_err(|error| {
                     backend(anyhow!(error).context("listing private artifact objects"))
                 })?;
+            let readiness_object_key = self.readiness_object_key();
             for object in page.contents() {
+                if object.key() == Some(readiness_object_key.as_str()) {
+                    continue;
+                }
                 inventory.scanned_objects = inventory
                     .scanned_objects
                     .checked_add(1)
@@ -272,6 +332,14 @@ impl S3ArtifactStore {
             "daemon-private/".to_owned()
         } else {
             format!("{}/daemon-private/", self.prefix)
+        }
+    }
+
+    fn readiness_object_key(&self) -> String {
+        if self.prefix.is_empty() {
+            READINESS_SENTINEL_SUFFIX.to_owned()
+        } else {
+            format!("{}/{}", self.prefix, READINESS_SENTINEL_SUFFIX)
         }
     }
 
@@ -1082,6 +1150,14 @@ mod tests {
             root_store.object_key(&finalized),
             "daemon-private/finalized_package/cap-safe-123.llmtrace"
         );
+        assert_eq!(
+            store.readiness_object_key(),
+            "tenant_1/private-artifacts/daemon-private/.llm-notary-readiness-v1"
+        );
+        assert_eq!(
+            root_store.readiness_object_key(),
+            "daemon-private/.llm-notary-readiness-v1"
+        );
     }
 
     #[tokio::test]
@@ -1240,6 +1316,7 @@ mod tests {
             .send()
             .await
             .expect("create MinIO test bucket");
+        store.readiness().await.unwrap();
         store.readiness().await.unwrap();
         conformance::run(Arc::new(store.clone())).await;
 
