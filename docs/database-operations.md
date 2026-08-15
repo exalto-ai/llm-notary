@@ -1,9 +1,9 @@
 # PostgreSQL and Neon operations
 
-The hosted platform API uses PostgreSQL exclusively. This guide covers ongoing
-PostgreSQL/Neon deployment, schema-migration, scaling, and rollback operations.
-SQLite is no longer a supported hosted API backend and no SQLite importer is
-maintained. The local daemon still uses its own SQLite catalog.
+The hosted platform API uses PostgreSQL exclusively. The local daemon uses
+SQLite by default and can be configured with a separate PostgreSQL schema.
+These schemas and migrators are intentionally independent; never point one
+migrator at the other's migration journal.
 
 ## Provision and configure Neon
 
@@ -81,6 +81,71 @@ For source development, run the same migrator before starting the API:
 DATABASE_MIGRATIONS_URL='postgresql://…?sslmode=require' \
 cargo run -p llm-notary-platform --bin llm-notary-api-migrate
 ```
+
+## Operate a PostgreSQL-backed local daemon
+
+The local daemon migrations live under
+`crates/llm-notary-client/migrations-postgres-daemon/`, use the
+`llm_notary_daemon` schema and migration journal, and take a daemon-specific
+advisory lock. They do not use the hosted platform's `migrations-postgres/`
+directory or SQLx migration journal.
+
+Supply the pooled runtime URL and direct migration URL through the
+`LLM_NOTARY_METADATA_DATABASE_URL` and
+`LLM_NOTARY_METADATA_MIGRATION_URL` secret variables (or their `_FILE`
+forms), then run:
+
+```bash
+llm-notaryd --config /etc/llm-notary/config.toml migrate
+llm-notaryd --config /etc/llm-notary/config.toml
+```
+
+Keep `catalog.postgres.ssl_mode = "verify_full"` for remote databases and
+provide the CA settings required by the PostgreSQL URL. `require` encrypts but
+does not validate the server hostname. `disable` is only for an explicitly
+trusted local test server.
+
+Running the migrator again is safe. Concurrent migrators serialize on the
+daemon advisory lock and fail after the configured lock timeout instead of
+waiting indefinitely. The runtime validates the exact schema version but does
+not apply migrations.
+
+Use separate login roles for migration and runtime. The migrator creates the
+schema as its owner, rejects an existing schema owned by another role, and
+revokes public schema access. After the first migration, an administrator can
+grant the runtime role only the access it needs (replace the example role
+names with provisioned roles):
+
+```sql
+GRANT CONNECT ON DATABASE llm_notary TO llm_notary_daemon_runtime;
+GRANT USAGE ON SCHEMA llm_notary_daemon TO llm_notary_daemon_runtime;
+GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
+  IN SCHEMA llm_notary_daemon TO llm_notary_daemon_runtime;
+GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES
+  IN SCHEMA llm_notary_daemon TO llm_notary_daemon_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE llm_notary_daemon_migrator
+  IN SCHEMA llm_notary_daemon
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO llm_notary_daemon_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE llm_notary_daemon_migrator
+  IN SCHEMA llm_notary_daemon
+  GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO llm_notary_daemon_runtime;
+```
+
+The runtime role must not own the schema or have `CREATE`/DDL privileges.
+
+Backups must capture both sides of persistence: the daemon PostgreSQL schema
+contains metadata, operation/event history, artifact locators and searchable
+plaintext previews; the filesystem directories contain the vault-encrypted
+checkpoints and finalized packages. To obtain a mutually consistent point in
+this single-daemon release, stop the daemon after confirming no capture or
+finalization is running, snapshot both stores, then restart it. After a
+restore, verify every advertised artifact locator, size, and SHA-256 before
+serving traffic. No SQLite-to-PostgreSQL importer is provided.
+
+Keep the sum of `catalog.postgres.max_connections` across running daemons plus
+one direct migrator connection within the provider's pool budget. This release
+supports one daemon process with PostgreSQL; shared claiming and recovery are
+not safe until cluster mode is enabled in the later horizontal-scaling layer.
 
 ## Scale and monitor
 

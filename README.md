@@ -73,7 +73,8 @@ must remain vault-encrypted and local.
   versioned key-and-endpoint directory served over authenticated HTTPS;
   self-hosted clients pair an explicit endpoint with an explicit public key.
 - Deferred private proof generation and deterministic `.llmtrace` archives.
-- Local CLI, dashboard, SQLite capture catalog, and versioned loopback REST
+- Local CLI, dashboard, SQLite-by-default capture catalog with optional
+  PostgreSQL metadata, and versioned loopback REST
   API.
 - Optional consent-based sharing of a finalized session after server-side
   admission verifies and safety-scans its exact source package.

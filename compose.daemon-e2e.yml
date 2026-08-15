@@ -45,6 +45,45 @@ services:
       - ALL
     restart: "no"
 
+  postgres:
+    image: postgres:17.7-alpine
+    environment:
+      POSTGRES_DB: daemon_e2e
+      POSTGRES_PASSWORD: synthetic-daemon-e2e-password
+      POSTGRES_USER: daemon_e2e
+    volumes:
+      - postgres-state:/var/lib/postgresql/data
+    tmpfs:
+      - /tmp
+      - /run/postgresql
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "daemon_e2e", "--dbname", "daemon_e2e"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
+  migrator:
+    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["llm-notaryd"]
+    command: ["--config", "/etc/llm-notary/config-postgres.toml", "migrate"]
+    environment:
+      LLM_NOTARY_METADATA_MIGRATION_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+
   provider:
     image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
     depends_on:
@@ -140,9 +179,49 @@ services:
       retries: 30
       start_period: 2s
 
+  daemon-postgres:
+    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    depends_on:
+      setup:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      migrator:
+        condition: service_completed_successfully
+      provider:
+        condition: service_healthy
+      notary:
+        condition: service_healthy
+    command: ["--config", "/etc/llm-notary/config-postgres.toml"]
+    environment:
+      LLM_NOTARY_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
+      LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
+      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_FINALIZATION_PAUSE_MS:-0}
+      LLM_NOTARY_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+      XDG_CONFIG_HOME: /state/xdg-config
+      XDG_DATA_HOME: /state/xdg-data
+    volumes:
+      - daemon-state:/state
+      - fixture-state:/fixtures:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "--show-error", "http://127.0.0.1:8788/readyz"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+      start_period: 2s
+
 volumes:
   daemon-state:
   fixture-state:
+  postgres-state:
 
 networks:
   default:

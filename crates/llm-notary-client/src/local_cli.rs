@@ -1624,11 +1624,13 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             unreachable!("direct commands provide their own human output")
         }
         CliCommand::Status => Ok(format!(
-            "llm-notaryd {} ({})\nproxy {}\nadmin {}\ncaptures {} total, {} ready to finalize, {} finalized, {} failed\noperations {} active\nupdates {}",
+            "llm-notaryd {} ({})\nproxy {}\nadmin {}\nmetadata {} ({})\ncaptures {} total, {} ready to finalize, {} finalized, {} failed\noperations {} active\nupdates {}",
             value_string(value, "/version"),
             value_string(value, "/build_id"),
             value_string(value, "/proxy_listener"),
             value_string(value, "/admin_listener"),
+            value_string(value, "/metadata_backend"),
+            value_string(value, "/metadata_status"),
             value_string(value, "/counts/total_captures"),
             value_string(value, "/counts/ready_to_finalize"),
             value_string(value, "/counts/finalized"),

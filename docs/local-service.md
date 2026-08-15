@@ -87,6 +87,63 @@ listen = "127.0.0.1:8788"
 # public_key = "02..."
 ```
 
+### Metadata backend
+
+SQLite remains the default and keeps using `catalog.path`; existing catalogs
+open in place. These metadata settings are additive fields in the existing
+`llm-notary/agent-config/v1` format, and a missing `backend` means SQLite. An
+operator may instead select PostgreSQL explicitly:
+
+```toml
+[catalog]
+backend = "postgres"
+prompt_preview_chars = 1000
+output_preview_chars = 1000
+full_text_search = true
+
+[catalog.postgres]
+ssl_mode = "verify_full"
+max_connections = 8
+connect_timeout_seconds = 10
+acquire_timeout_seconds = 10
+migration_lock_timeout_seconds = 60
+```
+
+Connection URLs never belong in this file. Set the runtime URL with
+`LLM_NOTARY_METADATA_DATABASE_URL` or put it in a file and set
+`LLM_NOTARY_METADATA_DATABASE_URL_FILE` to that path. Set the direct migration
+URL separately with `LLM_NOTARY_METADATA_MIGRATION_URL` or its `_FILE`
+equivalent. When both forms for one URL are present, the direct environment
+value wins and the file is not read. The migrator needs a direct PostgreSQL
+session; do not give it a transaction-pooler URL.
+
+`ssl_mode` defaults to `verify_full`, which encrypts the connection and checks
+the certificate and hostname. `require` encrypts without hostname validation.
+Use `disable` only for an explicitly trusted local/test server; remote and Neon
+connections must not use it. A URL query cannot silently weaken the configured
+mode.
+
+Apply migrations before starting the daemon:
+
+```bash
+llm-notaryd --config /path/to/config.toml migrate
+llm-notaryd --config /path/to/config.toml
+```
+
+The migrator initializes only the daemon-owned PostgreSQL schema. It does not
+initialize the vault, discover a notary, load account credentials, or bind a
+listener. Runtime startup never applies migrations and never falls back to
+SQLite; an unavailable database or wrong schema version fails startup before
+vault/notary work.
+
+Budget `max_connections` per daemon plus one temporary direct migration
+connection within the database provider's limit. Back up the daemon PostgreSQL
+schema and the filesystem bundle/trace directories as one recovery set.
+Prompt and output previews are plaintext in the selected metadata database,
+even though deferred checkpoints remain vault-encrypted on disk. PostgreSQL
+alone does not make two daemon replicas safe: keep one process until the
+documented cluster mode adds ownership fencing and shared artifact storage.
+
 The admin listener is open to local processes by default. Both listeners must
 still use loopback addresses, and the provider proxy never mounts admin
 routes. This is the simplest setup for a single-user workstation and for a
@@ -109,7 +166,7 @@ dependency.
 
 ## Health, discovery, and authentication
 
-The dashboard shell, its static assets, `GET /healthz`, and
+The dashboard shell, its static assets, `GET /healthz`, `GET /readyz`, and
 `GET /openapi.json` are always public on the loopback admin listener. With the
 default configuration, `/v1` is also available without credentials. OpenAPI
 describes each operation as accepting anonymous access or HTTP Basic because
@@ -121,12 +178,17 @@ Start with the default flow:
 export LLM_NOTARY_ADMIN_ORIGIN=http://127.0.0.1:8788
 
 curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/healthz"
+curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/readyz"
 curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/openapi.json" > /tmp/llm-notary-openapi.json
 curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/v1/status"
 ```
 
 Keep the origin fixed to the configured loopback listener. Do not accept an
 origin from untrusted input.
+
+`/healthz` is local process liveness and stays healthy during a database
+outage. `/readyz` runs a bounded metadata probe and returns `503` when the
+selected database cannot serve the daemon schema.
 
 When `admin.auth` is configured, API clients may send standard HTTP Basic
 credentials. A browser receives 401, shows the username/password form, and

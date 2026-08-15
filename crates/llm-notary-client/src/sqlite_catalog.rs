@@ -9,7 +9,7 @@ use crate::artifact_store::{ArtifactKey, ArtifactKind, ArtifactLocator, Artifact
 use crate::metadata::{
     CaptureCompletion, CaptureFilters, CaptureSummary, Event, EventFilters, IncompleteCapture,
     MetadataCounts, NewCapture, Operation, OperationAttempt, OperationFilters,
-    TerminalOperationResult,
+    TerminalOperationResult, capture_search_expression,
 };
 
 const CATALOG_SCHEMA_VERSION: i64 = 6;
@@ -45,6 +45,23 @@ impl SqliteCatalog {
             connection: Mutex::new(connection),
             full_text_search,
         })
+    }
+
+    pub fn readiness(&self) -> Result<()> {
+        let connection = self.connection.lock().expect("catalog mutex poisoned");
+        let (count, version): (i64, Option<i64>) = connection.query_row(
+            "SELECT COUNT(*), MAX(version) FROM schema_migrations",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        anyhow::ensure!(
+            count == CATALOG_SCHEMA_VERSION && version == Some(CATALOG_SCHEMA_VERSION),
+            "SQLite catalog schema journal does not exactly match version {CATALOG_SCHEMA_VERSION}"
+        );
+        connection.query_row("SELECT COUNT(*) FROM captures", [], |row| {
+            row.get::<_, i64>(0).map(|_| ())
+        })?;
+        Ok(())
     }
 
     /// Records the start of a capture before the notary connection begins.
@@ -1061,52 +1078,6 @@ fn validate_persisted_operation_state(state: &str) -> Result<()> {
         "operation has an invalid persisted state"
     );
     Ok(())
-}
-
-fn capture_search_expression(input: &str) -> Option<String> {
-    fn push_token(
-        token: &mut String,
-        phrase: &mut Vec<String>,
-        output: &mut Vec<String>,
-        quoted: bool,
-    ) {
-        if token.is_empty() {
-            return;
-        }
-        if quoted {
-            phrase.push(std::mem::take(token));
-        } else {
-            output.push(format!("\"{}\"", std::mem::take(token)));
-        }
-    }
-
-    fn push_phrase(phrase: &mut Vec<String>, output: &mut Vec<String>) {
-        if !phrase.is_empty() {
-            output.push(format!("\"{}\"", phrase.join(" ")));
-            phrase.clear();
-        }
-    }
-
-    let mut output = Vec::new();
-    let mut phrase = Vec::new();
-    let mut token = String::new();
-    let mut quoted = false;
-    for character in input.chars() {
-        if character == '"' {
-            push_token(&mut token, &mut phrase, &mut output, quoted);
-            if quoted {
-                push_phrase(&mut phrase, &mut output);
-            }
-            quoted = !quoted;
-        } else if character.is_alphanumeric() || character == '_' {
-            token.push(character);
-        } else {
-            push_token(&mut token, &mut phrase, &mut output, quoted);
-        }
-    }
-    push_token(&mut token, &mut phrase, &mut output, quoted);
-    push_phrase(&mut phrase, &mut output);
-    (!output.is_empty()).then(|| output.join(" "))
 }
 
 fn migrate(connection: &mut Connection) -> Result<()> {

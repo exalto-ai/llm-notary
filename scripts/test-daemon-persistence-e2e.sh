@@ -3,7 +3,7 @@ set -euo pipefail
 
 usage() {
   echo "usage: $0 [smoke|full]" >&2
-  echo "       $0 sqlite filesystem 1 {smoke|full}" >&2
+  echo "       $0 {sqlite|postgres} filesystem 1 {smoke|full}" >&2
 }
 
 metadata_engine=sqlite
@@ -21,10 +21,24 @@ elif [[ $# -ne 0 ]]; then
   usage
   exit 2
 fi
-if [[ $metadata_engine != sqlite || $artifact_engine != filesystem || $replica_count != 1 || ( $profile != smoke && $profile != full ) ]]; then
+if [[ ( $metadata_engine != sqlite && $metadata_engine != postgres ) || $artifact_engine != filesystem || $replica_count != 1 || ( $profile != smoke && $profile != full ) ]]; then
   echo "unsupported daemon E2E matrix entry: $metadata_engine $artifact_engine $replica_count $profile" >&2
   usage
   exit 2
+fi
+
+postgres_scenarios=${DAEMON_E2E_POSTGRES_SCENARIOS:-core}
+if [[ $postgres_scenarios != core && $postgres_scenarios != extended ]]; then
+  echo "DAEMON_E2E_POSTGRES_SCENARIOS must be core or extended" >&2
+  exit 2
+fi
+
+if [[ $metadata_engine == postgres ]]; then
+  daemon_service=daemon-postgres
+  daemon_config=/etc/llm-notary/config-postgres.toml
+else
+  daemon_service=daemon
+  daemon_config=/etc/llm-notary/config.toml
 fi
 
 if ! command -v docker >/dev/null 2>&1 || ! docker compose version >/dev/null 2>&1; then
@@ -44,7 +58,7 @@ cleanup() {
   set +e
   if [[ $result -ne 0 ]]; then
     "${compose[@]}" ps >&2
-    "${compose[@]}" logs --no-color setup provider notary daemon >&2
+    "${compose[@]}" logs --no-color setup postgres migrator provider notary daemon daemon-postgres >&2
   fi
   if [[ ${DAEMON_E2E_KEEP:-0} == 1 ]]; then
     echo "preserving Docker E2E project $project_name" >&2
@@ -60,7 +74,7 @@ wait_for_daemon() {
   local container_id
   local health
   while (( attempts < 60 )); do
-    container_id=$("${compose[@]}" ps --quiet daemon)
+    container_id=$("${compose[@]}" ps --quiet "$daemon_service")
     if [[ -n $container_id ]]; then
       health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)
       if [[ $health == healthy ]]; then
@@ -78,15 +92,15 @@ wait_for_daemon() {
 }
 
 daemon_cli() {
-  "${compose[@]}" exec -T daemon \
-    llm-notary --config /etc/llm-notary/config.toml --json "$@"
+  "${compose[@]}" exec -T "$daemon_service" \
+    llm-notary --config "$daemon_config" --json "$@"
 }
 
 assert_json() {
   local json=$1
   local expression=$2
   shift 2
-  if ! printf '%s' "$json" | "${compose[@]}" exec -T daemon jq -e "$@" "$expression" >/dev/null; then
+  if ! printf '%s' "$json" | "${compose[@]}" exec -T "$daemon_service" jq -e "$@" "$expression" >/dev/null; then
     echo "JSON assertion failed: $expression" >&2
     printf '%s\n' "$json" >&2
     return 1
@@ -96,7 +110,177 @@ assert_json() {
 json_value() {
   local json=$1
   local expression=$2
-  printf '%s' "$json" | "${compose[@]}" exec -T daemon jq -er "$expression"
+  printf '%s' "$json" | "${compose[@]}" exec -T "$daemon_service" jq -er "$expression"
+}
+
+wait_for_postgres() {
+  local attempts=0
+  local container_id
+  local health
+  while (( attempts < 60 )); do
+    container_id=$("${compose[@]}" ps --quiet postgres)
+    if [[ -n $container_id ]]; then
+      health=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$container_id" 2>/dev/null || true)
+      if [[ $health == healthy ]]; then
+        return 0
+      fi
+      if [[ $health == exited || $health == dead ]]; then
+        break
+      fi
+    fi
+    attempts=$((attempts + 1))
+    sleep 1
+  done
+  echo "PostgreSQL did not become healthy" >&2
+  return 1
+}
+
+postgres_psql() {
+  "${compose[@]}" exec -T postgres \
+    psql --set ON_ERROR_STOP=1 --username daemon_e2e --dbname daemon_e2e "$@"
+}
+
+run_migrator() {
+  local config=${1:-/etc/llm-notary/config-postgres.toml}
+  "${compose[@]}" run --rm --no-deps migrator --config "$config" migrate
+}
+
+expect_postgres_daemon_failure() {
+  local scenario=$1
+  local expected=$2
+  local output
+  local status
+  set +e
+  output=$("${compose[@]}" run --rm --no-deps --entrypoint /usr/bin/timeout \
+    daemon-postgres 15s llm-notaryd --config /etc/llm-notary/config-postgres.toml 2>&1)
+  status=$?
+  set -e
+  if [[ $status -eq 0 || $status -eq 124 ]]; then
+    echo "PostgreSQL $scenario probe unexpectedly started the daemon" >&2
+    printf '%s\n' "$output" >&2
+    return 1
+  fi
+  if ! grep -Eqi "$expected" <<<"$output"; then
+    echo "PostgreSQL $scenario probe failed for the wrong reason" >&2
+    printf '%s\n' "$output" >&2
+    return 1
+  fi
+}
+
+prepare_postgres() {
+  echo "starting an isolated PostgreSQL 17.7 database"
+  "${compose[@]}" up --detach postgres
+  wait_for_postgres
+  "${compose[@]}" run --rm --no-deps setup >/dev/null
+
+  echo "verifying the daemon refuses an unmigrated PostgreSQL schema"
+  expect_postgres_daemon_failure unmigrated 'not migrated|daemon schema|schema is not current|migration journal'
+
+  if [[ $postgres_scenarios == extended ]]; then
+    echo "running two PostgreSQL migrators concurrently"
+    set +e
+    (run_migrator >/dev/null) &
+    local first_pid=$!
+    (run_migrator >/dev/null) &
+    local second_pid=$!
+    wait "$first_pid"
+    local first_status=$?
+    wait "$second_pid"
+    local second_status=$?
+    set -e
+    if [[ $first_status -ne 0 || $second_status -ne 0 ]]; then
+      echo "concurrent PostgreSQL migrators did not both complete successfully" >&2
+      return 1
+    fi
+  fi
+
+  echo "applying PostgreSQL metadata migrations twice to prove idempotency"
+  run_migrator >/dev/null
+  run_migrator >/dev/null
+  local migration_count
+  migration_count=$(postgres_psql --tuples-only --no-align \
+    --command 'SELECT COUNT(*) FROM llm_notary_daemon.schema_migrations;')
+  if [[ $migration_count != 1 ]]; then
+    echo "unexpected PostgreSQL daemon migration count: $migration_count" >&2
+    return 1
+  fi
+
+  if [[ $postgres_scenarios == extended ]]; then
+    echo "verifying the PostgreSQL migration advisory-lock timeout"
+    postgres_psql >/dev/null <<'SQL' &
+BEGIN;
+SELECT pg_advisory_xact_lock(hashtextextended('llm-notary/daemon-postgres-migrations/v1', 0));
+SELECT pg_sleep(4);
+COMMIT;
+SQL
+    local lock_holder_pid=$!
+    sleep 1
+    local lock_output
+    local lock_status
+    set +e
+    lock_output=$(run_migrator /etc/llm-notary/config-postgres-lock-timeout.toml 2>&1)
+    lock_status=$?
+    set -e
+    wait "$lock_holder_pid"
+    local postgres_logs
+    postgres_logs=$("${compose[@]}" logs --no-color postgres)
+    if [[ $lock_status -eq 0 ]] || ! grep -Fq 'canceling statement due to lock timeout' <<<"$postgres_logs"; then
+      echo "PostgreSQL migrator did not fail at the configured advisory-lock timeout" >&2
+      printf '%s\n' "$lock_output" >&2
+      return 1
+    fi
+  fi
+
+  echo "verifying bounded failure while PostgreSQL is unavailable"
+  "${compose[@]}" stop postgres >/dev/null
+  expect_postgres_daemon_failure unavailable 'connect|connection|database|pool'
+  local migration_output
+  local migration_status
+  set +e
+  migration_output=$("${compose[@]}" run --rm --no-deps --entrypoint /usr/bin/timeout \
+    migrator 15s llm-notaryd --config /etc/llm-notary/config-postgres.toml migrate 2>&1)
+  migration_status=$?
+  set -e
+  if [[ $migration_status -eq 0 || $migration_status -eq 124 ]]; then
+    echo "PostgreSQL migrator was not bounded while the database was unavailable" >&2
+    printf '%s\n' "$migration_output" >&2
+    return 1
+  fi
+  "${compose[@]}" up --detach postgres
+  wait_for_postgres
+}
+
+assert_runtime_postgres_outage() {
+  local health_status
+  local readiness_status
+  local status_status
+
+  echo "verifying liveness and readiness during a live PostgreSQL outage"
+  "${compose[@]}" stop postgres >/dev/null
+  health_status=$("${compose[@]}" exec -T daemon-postgres \
+    curl --silent --output /dev/null --write-out '%{http_code}' \
+      --max-time 10 http://127.0.0.1:8788/healthz)
+  readiness_status=$("${compose[@]}" exec -T daemon-postgres \
+    curl --silent --output /dev/null --write-out '%{http_code}' \
+      --max-time 10 http://127.0.0.1:8788/readyz)
+  status_status=$("${compose[@]}" exec -T daemon-postgres \
+    curl --silent --output /dev/null --write-out '%{http_code}' \
+      --max-time 3 http://127.0.0.1:8788/v1/status)
+  if [[ $health_status != 200 || $readiness_status != 503 || $status_status != 503 ]]; then
+    echo "unexpected outage probes: /healthz=$health_status /readyz=$readiness_status /v1/status=$status_status" >&2
+    return 1
+  fi
+
+  "${compose[@]}" up --detach postgres
+  wait_for_postgres
+  wait_for_daemon
+  readiness_status=$("${compose[@]}" exec -T daemon-postgres \
+    curl --silent --output /dev/null --write-out '%{http_code}' \
+      --max-time 10 http://127.0.0.1:8788/readyz)
+  if [[ $readiness_status != 200 ]]; then
+    echo "PostgreSQL-backed readiness did not recover: /readyz=$readiness_status" >&2
+    return 1
+  fi
 }
 
 echo "building daemon E2E image"
@@ -104,26 +288,35 @@ if [[ ${DAEMON_E2E_SKIP_BUILD:-0} != 1 ]]; then
   "${compose[@]}" build daemon
 fi
 
-echo "starting a fresh SQLite/filesystem daemon"
-"${compose[@]}" up --detach daemon
+if [[ $metadata_engine == postgres ]]; then
+  prepare_postgres
+fi
+
+echo "starting a fresh $metadata_engine/filesystem daemon"
+"${compose[@]}" up --detach "$daemon_service"
 wait_for_daemon
 
-health_json=$("${compose[@]}" exec -T daemon \
+health_json=$("${compose[@]}" exec -T "$daemon_service" \
   curl --fail --silent --show-error http://127.0.0.1:8788/healthz)
 assert_json "$health_json" '.service == "llm-notaryd" and .api_version == "v1"'
 
 fresh_status=$(daemon_cli status)
 assert_json "$fresh_status" '.counts.total_captures == 0 and .counts.active_operations == 0'
 
+if [[ $metadata_engine == postgres ]]; then
+  assert_runtime_postgres_outage
+fi
+
 echo "seeding deterministic offline persistence fixtures while the daemon is stopped"
-"${compose[@]}" stop daemon
-"${compose[@]}" run --rm --no-deps --entrypoint /bin/sh daemon -ec '
+"${compose[@]}" stop "$daemon_service"
+"${compose[@]}" run --rm --no-deps --entrypoint /bin/sh "$daemon_service" -ec '
   umask 077
   mkdir -p /state/bundles
   printf "%s" "encrypted-offline-e2e-fixture" > /state/bundles/cap-e2e-recovered.llmcapture
   printf "%s" "encrypted-offline-e2e-fixture" > /state/bundles/cap-e2e-finalize.llmcapture
 '
-"${compose[@]}" run --rm --no-deps --entrypoint sqlite3 daemon /state/catalog.db >/dev/null <<'SQL'
+if [[ $metadata_engine == sqlite ]]; then
+  "${compose[@]}" run --rm --no-deps --entrypoint sqlite3 "$daemon_service" /state/catalog.db >/dev/null <<'SQL'
 PRAGMA foreign_keys = ON;
 BEGIN IMMEDIATE;
 INSERT INTO captures (
@@ -162,9 +355,53 @@ VALUES (
 COMMIT;
 PRAGMA wal_checkpoint(TRUNCATE);
 SQL
+else
+  postgres_psql >/dev/null <<'SQL'
+BEGIN;
+INSERT INTO llm_notary_daemon.captures (
+    capture_id, created_at_unix_ms, provider, operation, requested_model,
+    streaming, request_bytes, prompt_preview, prompt_preview_truncated,
+    config_fingerprint, capture_state, finalization_state
+) VALUES (
+    'cap-e2e-recovered', 1700000000000, 'openai', '/v1/responses', 'fixture-model',
+    FALSE, 41, 'offline recovery fixture', FALSE,
+    'sha256:offline-fixture', 'capturing', 'not_requested'
+);
+INSERT INTO llm_notary_daemon.captures (
+    capture_id, created_at_unix_ms, completed_at_unix_ms, provider, operation,
+    requested_model, response_model, http_status, streaming, request_bytes,
+    response_bytes, duration_ms, prompt_preview, prompt_preview_truncated,
+    output_preview, output_preview_truncated, config_fingerprint,
+    capture_state, finalization_state
+) VALUES (
+    'cap-e2e-finalize', 1700000001000, 1700000001005, 'openai', '/v1/responses',
+    'fixture-model', 'fixture-model', 200, FALSE, 43,
+    29, 5, 'offline PostgreSQL fixture', FALSE,
+    'offline filesystem fixture', FALSE, 'sha256:offline-fixture',
+    'captured', 'not_requested'
+);
+INSERT INTO llm_notary_daemon.artifacts (
+    capture_id, kind, locator, size_bytes, sha256, state
+) VALUES (
+    'cap-e2e-finalize', 'deferred_bundle',
+    '/state/bundles/cap-e2e-finalize.llmcapture', 29,
+    '43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d',
+    'available'
+);
+INSERT INTO llm_notary_daemon.capture_search (
+    capture_id, prompt_document, output_document
+)
+VALUES (
+    'cap-e2e-finalize',
+    to_tsvector('simple', 'offline PostgreSQL fixture'),
+    to_tsvector('simple', 'offline filesystem fixture')
+);
+COMMIT;
+SQL
+fi
 
 echo "starting the daemon and verifying recovery plus REST-backed CLI behavior"
-"${compose[@]}" up --detach --no-deps daemon
+"${compose[@]}" up --detach --no-deps "$daemon_service"
 wait_for_daemon
 
 recovered_status=$(daemon_cli status)
@@ -209,7 +446,7 @@ assert_json "$events" '
 
 if [[ $profile == full ]]; then
   echo "running an offline Proxy-TLS capture through the real daemon and notary fixture"
-  provider_response=$("${compose[@]}" exec -T daemon \
+  provider_response=$("${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error \
       --dump-header /tmp/daemon-e2e-capture.headers \
       --header 'authorization: Bearer offline-daemon-e2e-secret' \
@@ -221,7 +458,7 @@ if [[ $profile == full ]]; then
     .model == "fixture-model" and
     .choices[0].message.content == "offline daemon E2E response"
   '
-  full_capture_id=$("${compose[@]}" exec -T daemon /bin/sh -ec \
+  full_capture_id=$("${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
     "awk 'tolower(\$1) == \"x-llm-notary-capture-id:\" {gsub(\"\\r\", \"\", \$2); print \$2}' /tmp/daemon-e2e-capture.headers")
   if [[ $full_capture_id != cap-* ]]; then
     echo "Proxy-TLS response omitted a valid capture ID" >&2
@@ -249,7 +486,7 @@ if [[ $profile == full ]]; then
       .output_preview == "offline daemon E2E response")
   ' --arg capture_id "$full_capture_id"
 
-  if "${compose[@]}" exec -T daemon /bin/sh -ec \
+  if "${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
     "grep -a -F 'offline-daemon-e2e-secret' '/state/bundles/$full_capture_id.llmcapture' >/dev/null"; then
     echo "encrypted deferred bundle exposed the provider credential" >&2
     exit 1
@@ -278,11 +515,11 @@ if [[ $profile == full ]]; then
     .capture_id == $capture_id and .verified == true
   ' --arg capture_id "$full_capture_id"
 
-  "${compose[@]}" exec -T daemon \
+  "${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error \
       --output /tmp/daemon-e2e.llmtrace \
       "http://127.0.0.1:8788/v1/captures/$full_capture_id/package"
-  full_package_sha=$("${compose[@]}" exec -T daemon \
+  full_package_sha=$("${compose[@]}" exec -T "$daemon_service" \
     sha256sum /tmp/daemon-e2e.llmtrace | awk '{print $1}')
   file_verification=$(daemon_cli traces verify /tmp/daemon-e2e.llmtrace \
     --trusted-notary-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)
@@ -293,13 +530,13 @@ if [[ $profile == full ]]; then
   ' --arg capture_id "$full_capture_id"
 
   echo "injecting a crash after package publication and before metadata completion"
-  "${compose[@]}" stop daemon
-  "${compose[@]}" rm --force daemon
+  "${compose[@]}" stop "$daemon_service"
+  "${compose[@]}" rm --force "$daemon_service"
   export DAEMON_E2E_FINALIZATION_PAUSE_MS=30000
-  "${compose[@]}" up --detach --no-deps daemon
+  "${compose[@]}" up --detach --no-deps "$daemon_service"
   wait_for_daemon
 
-  crash_response=$("${compose[@]}" exec -T daemon \
+  crash_response=$("${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error \
       --dump-header /tmp/daemon-e2e-crash.headers \
       --header 'authorization: Bearer offline-daemon-e2e-secret' \
@@ -307,7 +544,7 @@ if [[ $profile == full ]]; then
       --data '{"model":"fixture-model","messages":[{"role":"user","content":"offline crash-window prompt"}]}' \
       http://127.0.0.1:8787/openai/v1/chat/completions)
   assert_json "$crash_response" '.id == "chatcmpl-daemon-e2e"'
-  crash_capture_id=$("${compose[@]}" exec -T daemon /bin/sh -ec \
+  crash_capture_id=$("${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
     "awk 'tolower(\$1) == \"x-llm-notary-capture-id:\" {gsub(\"\\r\", \"\", \$2); print \$2}' /tmp/daemon-e2e-crash.headers")
   if [[ $crash_capture_id != cap-* ]]; then
     echo "crash-window capture omitted a valid capture ID" >&2
@@ -319,7 +556,7 @@ if [[ $profile == full ]]; then
   crash_package_path="/state/traces/$crash_capture_id.llmtrace"
   crash_package_ready=0
   for _ in $(seq 1 90); do
-    if "${compose[@]}" exec -T daemon test -f "$crash_package_path"; then
+    if "${compose[@]}" exec -T "$daemon_service" test -f "$crash_package_path"; then
       crash_package_ready=1
       break
     fi
@@ -329,14 +566,14 @@ if [[ $profile == full ]]; then
     echo "finalization did not reach the injected post-publication pause" >&2
     exit 1
   fi
-  crash_package_sha=$("${compose[@]}" exec -T daemon sha256sum "$crash_package_path" | awk '{print $1}')
-  crash_package_identity=$("${compose[@]}" exec -T daemon stat -c '%i:%Y:%s' "$crash_package_path")
-  daemon_container=$("${compose[@]}" ps --quiet daemon)
+  crash_package_sha=$("${compose[@]}" exec -T "$daemon_service" sha256sum "$crash_package_path" | awk '{print $1}')
+  crash_package_identity=$("${compose[@]}" exec -T "$daemon_service" stat -c '%i:%Y:%s' "$crash_package_path")
+  daemon_container=$("${compose[@]}" ps --quiet "$daemon_service")
   docker kill "$daemon_container" >/dev/null
 
   unset DAEMON_E2E_FINALIZATION_PAUSE_MS
-  "${compose[@]}" rm --force daemon
-  "${compose[@]}" up --detach --no-deps daemon
+  "${compose[@]}" rm --force "$daemon_service"
+  "${compose[@]}" up --detach --no-deps "$daemon_service"
   wait_for_daemon
 
   interrupted=$(daemon_cli operations show "$crash_operation_id")
@@ -365,8 +602,8 @@ if [[ $profile == full ]]; then
     .attempt_history[0].state == "finalized" and
     .attempt_history[1].state == "interrupted"
   '
-  retry_package_sha=$("${compose[@]}" exec -T daemon sha256sum "$crash_package_path" | awk '{print $1}')
-  retry_package_identity=$("${compose[@]}" exec -T daemon stat -c '%i:%Y:%s' "$crash_package_path")
+  retry_package_sha=$("${compose[@]}" exec -T "$daemon_service" sha256sum "$crash_package_path" | awk '{print $1}')
+  retry_package_identity=$("${compose[@]}" exec -T "$daemon_service" stat -c '%i:%Y:%s' "$crash_package_path")
   if [[ $retry_package_sha != "$crash_package_sha" || $retry_package_identity != "$crash_package_identity" ]]; then
     echo "retry replaced rather than reused the orphan package" >&2
     exit 1
@@ -378,12 +615,12 @@ if [[ $profile == full ]]; then
 fi
 
 echo "removing and recreating the app container with the same durable volume"
-"${compose[@]}" stop daemon
-"${compose[@]}" rm --force daemon
-"${compose[@]}" up --detach --no-deps daemon
+"${compose[@]}" stop "$daemon_service"
+"${compose[@]}" rm --force "$daemon_service"
+"${compose[@]}" up --detach --no-deps "$daemon_service"
 wait_for_daemon
 
-restart_health=$("${compose[@]}" exec -T daemon \
+restart_health=$("${compose[@]}" exec -T "$daemon_service" \
   curl --fail --silent --show-error http://127.0.0.1:8788/healthz)
 assert_json "$restart_health" '.service == "llm-notaryd" and .api_version == "v1"'
 
@@ -435,11 +672,11 @@ if [[ $profile == full ]]; then
     .capture.finalization_state == "finalized" and
     any(.artifacts[]; .kind == "finalized_package")
   '
-  "${compose[@]}" exec -T daemon \
+  "${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error \
       --output /tmp/daemon-e2e-after-restart.llmtrace \
       "http://127.0.0.1:8788/v1/captures/$full_capture_id/package"
-  restart_package_sha=$("${compose[@]}" exec -T daemon \
+  restart_package_sha=$("${compose[@]}" exec -T "$daemon_service" \
     sha256sum /tmp/daemon-e2e-after-restart.llmtrace | awk '{print $1}')
   if [[ $restart_package_sha != "$full_package_sha" ]]; then
     echo "verified package digest changed across container recreation" >&2
@@ -452,17 +689,36 @@ if [[ $profile == full ]]; then
   ' --arg capture_id "$full_capture_id"
 fi
 
-artifact_sha=$("${compose[@]}" exec -T daemon \
+artifact_sha=$("${compose[@]}" exec -T "$daemon_service" \
   sha256sum /state/bundles/cap-e2e-finalize.llmcapture | awk '{print $1}')
 if [[ $artifact_sha != 43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d ]]; then
   echo "filesystem artifact digest changed across container recreation" >&2
   exit 1
 fi
 
-integrity=$("${compose[@]}" exec -T daemon sqlite3 /state/catalog.db 'PRAGMA integrity_check;')
-if [[ $integrity != ok ]]; then
-  echo "SQLite integrity check failed: $integrity" >&2
-  exit 1
+if [[ $metadata_engine == sqlite ]]; then
+  integrity=$("${compose[@]}" exec -T "$daemon_service" sqlite3 /state/catalog.db 'PRAGMA integrity_check;')
+  if [[ $integrity != ok ]]; then
+    echo "SQLite integrity check failed: $integrity" >&2
+    exit 1
+  fi
+else
+  persisted_count=$(postgres_psql --tuples-only --no-align \
+    --command 'SELECT COUNT(*) FROM llm_notary_daemon.captures;')
+  expected_count=2
+  if [[ $profile == full ]]; then
+    expected_count=4
+  fi
+  if [[ $persisted_count != "$expected_count" ]]; then
+    echo "PostgreSQL capture count changed across daemon recreation: $persisted_count" >&2
+    exit 1
+  fi
+  migration_count=$(postgres_psql --tuples-only --no-align \
+    --command 'SELECT COUNT(*) FROM llm_notary_daemon.schema_migrations;')
+  if [[ $migration_count != 1 ]]; then
+    echo "PostgreSQL migration journal changed unexpectedly: $migration_count" >&2
+    exit 1
+  fi
 fi
 
-echo "daemon persistence E2E passed: sqlite filesystem 1 $profile"
+echo "daemon persistence E2E passed: $metadata_engine filesystem 1 $profile"

@@ -49,7 +49,10 @@ jobs:
               - 'Cargo.lock'
               - 'build.rs'
               - 'migrations-postgres/**'
+              - 'compose.daemon-e2e.yml'
+              - 'deploy/daemon-e2e/**'
               - 'rust-toolchain.toml'
+              - 'scripts/test-daemon-persistence-e2e.sh'
               - 'crates/**'
               - 'src/**'
               - 'tests/**'
@@ -114,8 +117,10 @@ jobs:
               - 'vendor/tlsn/**'
               - 'vendor/tlsn-utils/**'
               - 'compose.yml'
+              - 'compose.daemon-e2e.yml'
               - 'deploy/**'
               - 'js/app/**'
+              - 'scripts/test-daemon-persistence-e2e.sh'
             cli:
               - '.github/workflows/ci.yml'
               - '.github/workflows/release.yml'
@@ -187,6 +192,12 @@ jobs:
           cargo test -p llm-notary-platform keys_are_one_time_scoped_revocable_expiring_and_account_isolated -- --ignored
           cargo test -p llm-notary-platform listed_share_route_pages_ties_nulls_filters_and_concurrent_inserts -- --ignored
           cargo test -p llm-notary-platform service_admission::tests -- --ignored
+      - name: Run PostgreSQL-backed daemon metadata tests
+        run: cargo test -p llm-notary-client postgres_metadata_store::tests -- --ignored --nocapture
+      - name: Run single-daemon persistence matrix
+        run: |
+          scripts/test-daemon-persistence-e2e.sh sqlite filesystem 1 full
+          DAEMON_E2E_SKIP_BUILD=1 DAEMON_E2E_POSTGRES_SCENARIOS=extended scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 full
 
   windows-update:
     name: Windows client update

@@ -117,6 +117,10 @@ impl MetadataStore for SqliteMetadataStore {
         "sqlite"
     }
 
+    async fn readiness(&self) -> MetadataResult<()> {
+        self.blocking(SqliteCatalog::readiness).await
+    }
+
     async fn begin_capture(&self, capture: NewCapture) -> MetadataResult<()> {
         validate_i64(
             capture.created_at_unix_ms,
@@ -175,6 +179,9 @@ impl MetadataStore for SqliteMetadataStore {
 
     async fn captures(&self, filters: CaptureFilters) -> MetadataResult<Vec<CaptureSummary>> {
         validate_limit(filters.limit)?;
+        if filters.query.as_deref() == Some("") {
+            return Ok(Vec::new());
+        }
         if filters
             .query
             .as_ref()

@@ -44,6 +44,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/readyz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Check service readiness
+         * @description Runs a bounded metadata dependency probe. PostgreSQL outages or schema mismatches make readiness fail while /healthz remains local liveness.
+         */
+        get: operations["readiness"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/account": {
         parameters: {
             query?: never;
@@ -385,7 +405,7 @@ export interface paths {
         };
         /**
          * Get local service status
-         * @description Returns listener addresses, vault and notary configuration, preview limits, and current capture counts.
+         * @description Returns listener addresses, metadata readiness, vault and notary configuration, preview limits, and current capture counts.
          */
         get: operations["status"];
         put?: never;
@@ -699,6 +719,11 @@ export interface components {
             /** @description Cursor for the next page, or `null` when this page exhausts the query. */
             next_cursor?: string | null;
         };
+        ReadinessResponse: {
+            metadata_backend: string;
+            service: string;
+            status: string;
+        };
         ShareResponse: {
             capture_id: string;
             package_url?: string | null;
@@ -722,6 +747,8 @@ export interface components {
             admin_listener: string;
             build_id: string;
             counts: components["schemas"]["CountsResponse"];
+            metadata_backend: string;
+            metadata_status: string;
             notary: string;
             preview_chars: number;
             proxy_listener: string;
@@ -794,6 +821,33 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    readiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReadinessResponse"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
             };
         };
     };
@@ -1534,6 +1588,14 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

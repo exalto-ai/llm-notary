@@ -95,14 +95,16 @@ COPY vendor/tlsn-utils ./vendor/tlsn-utils
 COPY config/updater-public-key.txt ./config/updater-public-key.txt
 COPY skills/llm-notary ./skills/llm-notary
 RUN cargo build --release \
-    -p llm-notary-client --bin llm-notaryd --bin llm-notary
+    -p llm-notary-client \
+    --bin llm-notaryd --bin llm-notary
 
 # The private-root hook and raw notary fixture exist only in this opt-in E2E
 # build. The production `daemon` stage below still copies the feature-free
 # binaries from `daemon-builder`.
 FROM daemon-builder AS daemon-e2e-builder
 RUN cargo build --release -p llm-notary-client --features daemon-e2e \
-    --bin llm-notaryd --bin llm-notary --bin llm-notary-e2e-notary
+    --bin llm-notaryd --bin llm-notary \
+    --bin llm-notary-e2e-notary
 
 FROM debian:bookworm-slim AS daemon
 
@@ -128,4 +130,17 @@ COPY --from=daemon-e2e-builder /app/target/release/llm-notaryd /usr/local/bin/ll
 COPY --from=daemon-e2e-builder /app/target/release/llm-notary /usr/local/bin/llm-notary
 COPY --from=daemon-e2e-builder /app/target/release/llm-notary-e2e-notary /usr/local/bin/llm-notary-e2e-notary
 COPY deploy/daemon-e2e/config.toml /etc/llm-notary/config.toml
+RUN cp /etc/llm-notary/config.toml /etc/llm-notary/config-postgres.toml \
+    && sed -i 's/backend = "sqlite"/backend = "postgres"/' /etc/llm-notary/config-postgres.toml \
+    && printf '%s\n' \
+        '' \
+        '[catalog.postgres]' \
+        'ssl_mode = "disable"' \
+        'max_connections = 8' \
+        'connect_timeout_seconds = 3' \
+        'acquire_timeout_seconds = 3' \
+        'migration_lock_timeout_seconds = 5' \
+        >> /etc/llm-notary/config-postgres.toml \
+    && cp /etc/llm-notary/config-postgres.toml /etc/llm-notary/config-postgres-lock-timeout.toml \
+    && sed -i 's/migration_lock_timeout_seconds = 5/migration_lock_timeout_seconds = 1/' /etc/llm-notary/config-postgres-lock-timeout.toml
 COPY deploy/daemon-e2e/provider.py /usr/local/libexec/llm-notary-e2e-provider.py

@@ -48,6 +48,7 @@ rust-embed = "8.12"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
+sqlx = { version = "0.8", default-features = false, features = ["postgres", "runtime-tokio-rustls"] }
 tempfile = "3.20"
 thiserror = "2.0"
 tokio = { version = "1.45", features = ["full"] }
@@ -64,5 +65,6 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage
 
 [dev-dependencies]
 llm-notary-core = { path = "../llm-notary-core", features = ["test-utils"] }
+testcontainers-modules = { version = "0.15", default-features = false, features = ["postgres"] }
 tower = { version = "0.5", features = ["util"] }
 tracing-subscriber = { version = "0.3", features = ["fmt"] }

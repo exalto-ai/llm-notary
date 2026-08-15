@@ -7,8 +7,9 @@ use anyhow::Result;
 use crate::{
     archive::MAX_ARCHIVE_WIRE_BYTES,
     artifact_store::{ArtifactKey, ArtifactKind, ArtifactStore, FileSystemArtifactStore},
-    config::AgentConfig,
+    config::{AgentConfig, MetadataBackend},
     metadata_store::MetadataStore,
+    postgres_metadata_store::PostgresMetadataStore,
     sqlite_metadata_store::SqliteMetadataStore,
 };
 
@@ -31,15 +32,44 @@ impl Persistence {
     /// Opens the default SQLite and filesystem adapters from the unchanged
     /// desktop configuration shape.
     pub async fn open(config: &AgentConfig) -> Result<Self> {
-        let metadata =
-            SqliteMetadataStore::open(config.catalog.path.clone(), config.catalog.full_text_search)
-                .await?;
+        let metadata: Arc<dyn MetadataStore> = match config.catalog.backend {
+            MetadataBackend::Sqlite => Arc::new(
+                SqliteMetadataStore::open(
+                    config.catalog.path.clone(),
+                    config.catalog.full_text_search,
+                )
+                .await?,
+            ),
+            MetadataBackend::Postgres => {
+                let postgres =
+                    config.catalog.postgres.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("PostgreSQL metadata settings are missing")
+                    })?;
+                let database_url = config.postgres_runtime_url()?;
+                Arc::new(
+                    PostgresMetadataStore::connect(
+                        database_url.expose(),
+                        postgres.max_connections,
+                        std::time::Duration::from_secs(postgres.connect_timeout_seconds),
+                        std::time::Duration::from_secs(postgres.acquire_timeout_seconds),
+                        postgres.ssl_mode,
+                        config.catalog.full_text_search,
+                    )
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "PostgreSQL metadata database is unavailable or its daemon schema is not current; run `llm-notaryd --config <path> migrate`"
+                        )
+                    })?,
+                )
+            }
+        };
         let artifacts = FileSystemArtifactStore::new(
             config.storage.bundle_dir.clone(),
             config.storage.finalized_dir.clone(),
         );
         Ok(Self {
-            metadata: Arc::new(metadata),
+            metadata,
             artifacts: Arc::new(artifacts),
         })
     }

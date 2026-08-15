@@ -127,6 +127,8 @@ available to CI and later storage backends:
 ```bash
 scripts/test-daemon-persistence-e2e.sh smoke
 scripts/test-daemon-persistence-e2e.sh sqlite filesystem 1 full
+scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 smoke
+scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 full
 ```
 
 The smoke test builds and launches the real `llm-notaryd` and `llm-notary`
@@ -137,6 +139,26 @@ checkpoint bytes to exercise filesystem recovery, catalog search/detail,
 finalization enqueue and bounded failure history, events, SQLite integrity,
 and preservation of exact artifact bytes after the daemon container is removed
 and recreated with its durable volume.
+
+The PostgreSQL entries launch `postgres:17.7-alpine` with a project-scoped data
+volume and run the shipped daemon's one-shot `migrate` subcommand before
+starting the service. The harness proves that runtime refuses an unmigrated
+schema and an unavailable database, applies the migration twice to check
+idempotency, and then runs the same REST, restart, artifact, and full Proxy-TLS
+assertions as SQLite. It also stops PostgreSQL beneath a running daemon and
+checks that `/healthz` remains live, `/readyz` returns `503`, and readiness
+recovers after the database restarts. Runtime receives only
+`LLM_NOTARY_METADATA_DATABASE_URL`; the one-shot migrator receives only
+`LLM_NOTARY_METADATA_MIGRATION_URL`. The daemon never applies PostgreSQL schema
+changes during normal service startup.
+
+Set `DAEMON_E2E_POSTGRES_SCENARIOS=extended` on a PostgreSQL matrix entry to
+also run two migrators concurrently and hold the migration advisory lock long
+enough to verify the configured lock timeout. Database names, roles, and
+passwords in this Compose file are fixed synthetic fixtures on an internal-only
+network. This fixture explicitly sets `ssl_mode = "disable"`; production keeps
+the secure TLS default. Never reuse these settings outside the disposable E2E
+project.
 
 The full profile also creates an ephemeral private CA and provider certificate
 inside the Compose project's disposable volume, starts a TLS provider on the
