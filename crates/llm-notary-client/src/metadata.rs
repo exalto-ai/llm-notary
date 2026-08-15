@@ -28,6 +28,9 @@ pub struct CaptureCompletion {
     pub response_model: Option<String>,
     pub output_preview: String,
     pub output_preview_truncated: bool,
+    /// Exact encrypted deferred-artifact bytes this completion is allowed to publish.
+    pub expected_artifact_size_bytes: u64,
+    pub expected_artifact_sha256: String,
 }
 
 /// One capture that was still active when a daemon stopped.
@@ -62,6 +65,8 @@ pub struct CaptureSummary {
     pub prompt_preview_truncated: bool,
     pub output_preview: String,
     pub output_preview_truncated: bool,
+    pub expected_artifact_size_bytes: Option<u64>,
+    pub expected_artifact_sha256: Option<String>,
     pub failure_code: Option<String>,
 }
 

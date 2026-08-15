@@ -12,7 +12,7 @@ use crate::metadata::{
     TerminalOperationResult, capture_search_expression,
 };
 
-const CATALOG_SCHEMA_VERSION: i64 = 6;
+const CATALOG_SCHEMA_VERSION: i64 = 7;
 
 /// A single-process SQLite capture inventory.
 pub(crate) struct SqliteCatalog {
@@ -145,7 +145,8 @@ impl SqliteCatalog {
         let changed = transaction.execute(
             "UPDATE captures SET
                 completed_at_unix_ms = ?, duration_ms = ?, http_status = ?, response_bytes = ?,
-                response_model = ?, output_preview = ?, output_preview_truncated = ?
+                response_model = ?, output_preview = ?, output_preview_truncated = ?,
+                expected_artifact_size_bytes = ?, expected_artifact_sha256 = ?
              WHERE capture_id = ? AND capture_state = 'capturing'
                AND completed_at_unix_ms IS NULL",
             params![
@@ -156,6 +157,8 @@ impl SqliteCatalog {
                 completion.response_model.as_deref(),
                 completion.output_preview.as_str(),
                 completion.output_preview_truncated,
+                i64::try_from(completion.expected_artifact_size_bytes)?,
+                completion.expected_artifact_sha256.as_str(),
                 completion.capture_id,
             ],
         )?;
@@ -175,6 +178,11 @@ impl SqliteCatalog {
             &completion.capture_id,
             ArtifactKind::DeferredBundle,
         )?;
+        anyhow::ensure!(
+            artifact.size_bytes == completion.expected_artifact_size_bytes
+                && artifact.sha256 == completion.expected_artifact_sha256,
+            "artifact does not match the staged capture publication"
+        );
         let connection = self.connection.lock().expect("catalog mutex poisoned");
         let transaction = connection.unchecked_transaction()?;
         let (current_state, completion_prepared) = transaction
@@ -205,6 +213,7 @@ impl SqliteCatalog {
             "UPDATE captures SET
                 completed_at_unix_ms = ?, duration_ms = ?, http_status = ?, response_bytes = ?,
                 response_model = ?, output_preview = ?, output_preview_truncated = ?,
+                expected_artifact_size_bytes = ?, expected_artifact_sha256 = ?,
                 capture_state = 'captured', failure_code = NULL
              WHERE capture_id = ? AND capture_state = 'capturing'",
             params![
@@ -215,6 +224,8 @@ impl SqliteCatalog {
                 completion.response_model.as_deref(),
                 completion.output_preview.as_str(),
                 completion.output_preview_truncated,
+                i64::try_from(completion.expected_artifact_size_bytes)?,
+                completion.expected_artifact_sha256.as_str(),
                 completion.capture_id,
             ],
         )?;
@@ -247,7 +258,8 @@ impl SqliteCatalog {
         let mut statement = connection.prepare(
             "SELECT capture_id, completed_at_unix_ms, duration_ms, http_status,
                     response_bytes, response_model, output_preview,
-                    output_preview_truncated
+                    output_preview_truncated, expected_artifact_size_bytes,
+                    expected_artifact_sha256
              FROM captures WHERE capture_state = 'capturing'",
         )?;
         let mut rows = statement.query([])?;
@@ -258,19 +270,35 @@ impl SqliteCatalog {
             let duration = row.get::<_, Option<i64>>(2)?;
             let http_status = row.get::<_, Option<i64>>(3)?;
             let response_bytes = row.get::<_, Option<i64>>(4)?;
-            let completion = match (completed_at, duration, http_status, response_bytes) {
-                (Some(completed_at), Some(duration), Some(http_status), Some(response_bytes)) => {
-                    Some(CaptureCompletion {
-                        capture_id: capture_id.clone(),
-                        completed_at_unix_ms: completed_at.try_into()?,
-                        duration_ms: duration.try_into()?,
-                        http_status: http_status.try_into()?,
-                        response_bytes: response_bytes.try_into()?,
-                        response_model: row.get(5)?,
-                        output_preview: row.get(6)?,
-                        output_preview_truncated: row.get(7)?,
-                    })
-                }
+            let expected_size = row.get::<_, Option<i64>>(8)?;
+            let expected_sha256 = row.get::<_, Option<String>>(9)?;
+            let completion = match (
+                completed_at,
+                duration,
+                http_status,
+                response_bytes,
+                expected_size,
+                expected_sha256,
+            ) {
+                (
+                    Some(completed_at),
+                    Some(duration),
+                    Some(http_status),
+                    Some(response_bytes),
+                    Some(expected_size),
+                    Some(expected_sha256),
+                ) => Some(CaptureCompletion {
+                    capture_id: capture_id.clone(),
+                    completed_at_unix_ms: completed_at.try_into()?,
+                    duration_ms: duration.try_into()?,
+                    http_status: http_status.try_into()?,
+                    response_bytes: response_bytes.try_into()?,
+                    response_model: row.get(5)?,
+                    output_preview: row.get(6)?,
+                    output_preview_truncated: row.get(7)?,
+                    expected_artifact_size_bytes: expected_size.try_into()?,
+                    expected_artifact_sha256: expected_sha256,
+                }),
                 _ => None,
             };
             captures.push(IncompleteCapture {
@@ -302,6 +330,12 @@ impl SqliteCatalog {
         if self.full_text_search {
             transaction.execute(
                 "DELETE FROM capture_search WHERE capture_id = ?",
+                params![capture_id],
+            )?;
+            transaction.execute(
+                "INSERT INTO capture_search(capture_id, prompt_preview, output_preview)
+                 SELECT capture_id, prompt_preview, output_preview
+                 FROM captures WHERE capture_id = ?",
                 params![capture_id],
             )?;
         }
@@ -1260,6 +1294,17 @@ fn migrate_to(connection: &mut Connection, target_version: i64) -> Result<()> {
         transaction.execute("INSERT INTO schema_migrations(version) VALUES (6)", [])?;
         transaction.commit()?;
     }
+    if version < 7 && target_version >= 7 {
+        let transaction = connection.transaction()?;
+        transaction.execute_batch(
+            "ALTER TABLE captures
+                ADD COLUMN expected_artifact_size_bytes INTEGER;
+             ALTER TABLE captures
+                ADD COLUMN expected_artifact_sha256 TEXT;",
+        )?;
+        transaction.execute("INSERT INTO schema_migrations(version) VALUES (7)", [])?;
+        transaction.commit()?;
+    }
     Ok(())
 }
 
@@ -1331,6 +1376,7 @@ fn capture_completion_matches(
                   AND completed_at_unix_ms = ? AND duration_ms = ? AND http_status = ?
                   AND response_bytes = ? AND response_model IS ?
                   AND output_preview = ? AND output_preview_truncated = ?
+                  AND expected_artifact_size_bytes = ? AND expected_artifact_sha256 = ?
              )",
             params![
                 completion.capture_id,
@@ -1341,6 +1387,8 @@ fn capture_completion_matches(
                 completion.response_model.as_deref(),
                 completion.output_preview,
                 completion.output_preview_truncated,
+                i64::try_from(completion.expected_artifact_size_bytes)?,
+                completion.expected_artifact_sha256,
             ],
             |row| row.get(0),
         )
@@ -1425,6 +1473,18 @@ fn capture_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CaptureSummary>
         prompt_preview_truncated: row.get("prompt_preview_truncated")?,
         output_preview: row.get("output_preview")?,
         output_preview_truncated: row.get("output_preview_truncated")?,
+        expected_artifact_size_bytes: row
+            .get::<_, Option<i64>>("expected_artifact_size_bytes")?
+            .map(TryInto::try_into)
+            .transpose()
+            .map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    21,
+                    rusqlite::types::Type::Integer,
+                    Box::new(error),
+                )
+            })?,
+        expected_artifact_sha256: row.get("expected_artifact_sha256")?,
         failure_code: row.get("failure_code")?,
     })
 }
@@ -1558,6 +1618,8 @@ mod tests {
                     response_model: Some("gpt-5".to_owned()),
                     output_preview: output.to_owned(),
                     output_preview_truncated: false,
+                    expected_artifact_size_bytes: 10,
+                    expected_artifact_sha256: "00".repeat(32),
                 },
                 &deferred_artifact(id),
             )
@@ -1587,6 +1649,8 @@ mod tests {
                      ALTER TABLE operations DROP COLUMN proof_bytes_total;
                      ALTER TABLE operations DROP COLUMN proof_commitments_completed;
                      ALTER TABLE operations DROP COLUMN proof_commitments_total;
+                     ALTER TABLE captures DROP COLUMN expected_artifact_size_bytes;
+                     ALTER TABLE captures DROP COLUMN expected_artifact_sha256;
                      DELETE FROM schema_migrations WHERE version >= 4;",
                 )
                 .unwrap();
@@ -1608,10 +1672,62 @@ mod tests {
             .unwrap();
         assert_eq!(version, CATALOG_SCHEMA_VERSION);
     }
+
+    #[test]
+    fn legacy_prepared_capture_recovery_preserves_its_search_preview() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("catalog.db");
+        create_schema_fixture(&path, 6).unwrap();
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO captures (
+                    capture_id, created_at_unix_ms, completed_at_unix_ms, provider,
+                    operation, requested_model, response_model, http_status, streaming,
+                    request_bytes, response_bytes, duration_ms, prompt_preview,
+                    prompt_preview_truncated, output_preview, output_preview_truncated,
+                    config_fingerprint, capture_state, finalization_state, failure_code
+                 ) VALUES (
+                    'cap-legacy-prepared', 1, 2, 'openai', 'responses', 'gpt-5',
+                    'gpt-5', 200, 0, 12, 24, 1, 'Legacy staged prompt', 0,
+                    'Legacy staged output', 0, 'sha256:test', 'capturing',
+                    'not_requested', NULL
+                 )",
+                [],
+            )
+            .unwrap();
+        drop(connection);
+
+        let catalog = SqliteCatalog::open(&path, true).unwrap();
+        catalog
+            .recover_capture_record(
+                "cap-legacy-prepared",
+                &deferred_artifact("cap-legacy-prepared"),
+            )
+            .unwrap();
+        let matches = catalog
+            .filtered_captures(&CaptureFilters {
+                query: Some("legacy output".to_owned()),
+                limit: 50,
+                ..CaptureFilters::default()
+            })
+            .unwrap();
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].capture_id, "cap-legacy-prepared");
+        assert_eq!(matches[0].expected_artifact_size_bytes, None);
+        assert_eq!(matches[0].expected_artifact_sha256, None);
+    }
+
     #[test]
     fn durable_operation_migration_is_atomic_and_resumable() {
         let mut connection = Connection::open_in_memory().unwrap();
         migrate(&mut connection).unwrap();
+        connection
+            .execute_batch(
+                "ALTER TABLE captures DROP COLUMN expected_artifact_size_bytes;
+                 ALTER TABLE captures DROP COLUMN expected_artifact_sha256;",
+            )
+            .unwrap();
         connection
             .execute("DELETE FROM schema_migrations WHERE version >= 2", [])
             .unwrap();

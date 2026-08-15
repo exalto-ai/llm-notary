@@ -137,12 +137,17 @@ The runtime role must not own the schema or have `CREATE`/DDL privileges.
 
 Backups must capture both sides of persistence: the daemon PostgreSQL schema
 contains metadata, operation/event history, artifact locators and searchable
-plaintext previews; the filesystem directories contain the vault-encrypted
-checkpoints and finalized packages. To obtain a mutually consistent point in
-this single-daemon release, stop the daemon after confirming no capture or
-finalization is running, snapshot both stores, then restart it. After a
-restore, verify every advertised artifact locator, size, and SHA-256 before
-serving traffic. No SQLite-to-PostgreSQL importer is provided.
+plaintext previews; the selected filesystem directories or private S3 prefix
+contain the vault-encrypted checkpoints and finalized packages. To obtain a
+mutually consistent point in this single-daemon release, stop the daemon after
+confirming no capture or finalization is running, snapshot both stores, then
+restart it. For S3, enable object versioning or use a provider snapshot that can
+restore the complete managed prefix to the same point. After a restore, verify
+every advertised artifact locator, size, and SHA-256 before serving traffic by
+running `llm-notaryd --config <path> reconcile-artifacts` while the daemon is
+stopped. Resolve every reported finding; a truncated S3 scan is not a complete
+check. The command is report-only and never deletes objects. No
+SQLite-to-PostgreSQL or filesystem-to-S3 importer is provided.
 
 Keep the sum of `catalog.postgres.max_connections` across running daemons plus
 one direct migrator connection within the provider's pool budget. This release

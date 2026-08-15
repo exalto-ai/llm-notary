@@ -1624,13 +1624,15 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             unreachable!("direct commands provide their own human output")
         }
         CliCommand::Status => Ok(format!(
-            "llm-notaryd {} ({})\nproxy {}\nadmin {}\nmetadata {} ({})\ncaptures {} total, {} ready to finalize, {} finalized, {} failed\noperations {} active\nupdates {}",
+            "llm-notaryd {} ({})\nproxy {}\nadmin {}\nmetadata {} ({})\nartifacts {} ({})\ncaptures {} total, {} ready to finalize, {} finalized, {} failed\noperations {} active\nupdates {}",
             value_string(value, "/version"),
             value_string(value, "/build_id"),
             value_string(value, "/proxy_listener"),
             value_string(value, "/admin_listener"),
             value_string(value, "/metadata_backend"),
             value_string(value, "/metadata_status"),
+            value_string(value, "/artifact_backend"),
+            value_string(value, "/artifact_status"),
             value_string(value, "/counts/total_captures"),
             value_string(value, "/counts/ready_to_finalize"),
             value_string(value, "/counts/finalized"),
@@ -1868,6 +1870,7 @@ fn open_dashboard(url: &str) -> Result<(), CliError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::artifact_store::ArtifactStore as _;
     use axum::{
         Json, Router,
         http::StatusCode as AxumStatus,
@@ -2607,6 +2610,8 @@ mod tests {
                     response_model: Some("gpt-test".into()),
                     output_preview: "safe output".into(),
                     output_preview_truncated: false,
+                    expected_artifact_size_bytes: artifact.size_bytes,
+                    expected_artifact_sha256: artifact.sha256.clone(),
                 },
                 artifact,
             )

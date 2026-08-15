@@ -48,6 +48,9 @@ class Handler(BaseHTTPRequestHandler):
         if request.get("model") != "fixture-model":
             self.send_error(400)
             return
+        if request.get("stream") is True:
+            self.respond_stream()
+            return
         self.respond_json(
             {
                 "id": "chatcmpl-daemon-e2e",
@@ -76,6 +79,55 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(value, separators=(",", ":")).encode()
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def respond_stream(self) -> None:
+        events = [
+            {
+                "id": "chatcmpl-daemon-e2e-stream",
+                "object": "chat.completion.chunk",
+                "created": 1700000000,
+                "model": "fixture-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"role": "assistant", "content": "offline "},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-daemon-e2e-stream",
+                "object": "chat.completion.chunk",
+                "created": 1700000000,
+                "model": "fixture-model",
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": {"content": "streaming response"},
+                        "finish_reason": None,
+                    }
+                ],
+            },
+            {
+                "id": "chatcmpl-daemon-e2e-stream",
+                "object": "chat.completion.chunk",
+                "created": 1700000000,
+                "model": "fixture-model",
+                "choices": [
+                    {"index": 0, "delta": {}, "finish_reason": "stop"}
+                ],
+            },
+        ]
+        body = b"".join(
+            b"data: " + json.dumps(event, separators=(",", ":")).encode() + b"\n\n"
+            for event in events
+        ) + b"data: [DONE]\n\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

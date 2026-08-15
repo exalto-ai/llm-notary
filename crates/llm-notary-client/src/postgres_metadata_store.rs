@@ -29,8 +29,18 @@ use crate::{
 const SCHEMA: &str = "llm_notary_daemon";
 const JOURNAL: &str = "llm_notary_daemon.schema_migrations";
 const MIGRATION_LOCK_NAMESPACE: &str = "llm-notary/daemon-postgres-migrations/v1";
-const LATEST_SCHEMA_VERSION: i64 = 1;
+const LATEST_SCHEMA_VERSION: i64 = 2;
 const INITIAL_MIGRATION: &str = include_str!("../migrations-postgres-daemon/0001_initial.sql");
+const ARTIFACT_EXPECTATION_MIGRATION: &str =
+    include_str!("../migrations-postgres-daemon/0002_capture_artifact_expectation.sql");
+const MIGRATIONS: [(i64, &str, &str); 2] = [
+    (1, "initial daemon metadata schema", INITIAL_MIGRATION),
+    (
+        2,
+        "bind capture completion to encrypted artifact",
+        ARTIFACT_EXPECTATION_MIGRATION,
+    ),
+];
 
 /// A pooled PostgreSQL metadata backend whose schema has already been migrated.
 #[derive(Clone)]
@@ -179,30 +189,33 @@ pub(crate) async fn migrate_database(
         rows.len() <= usize::try_from(LATEST_SCHEMA_VERSION).unwrap_or(0),
         "daemon PostgreSQL schema is newer than this binary"
     );
-    let checksum = hex::encode(Sha256::digest(INITIAL_MIGRATION.as_bytes()));
-    if let Some(row) = rows.first() {
-        ensure!(
-            row.try_get::<i64, _>("version")? == 1,
-            "daemon migration journal has a gap"
-        );
-        ensure!(
-            row.try_get::<String, _>("description")? == "initial daemon metadata schema"
-                && row.try_get::<String, _>("checksum")? == checksum,
-            "daemon migration 1 differs from the installed migration"
-        );
-    } else {
-        sqlx::raw_sql(INITIAL_MIGRATION)
+    for (index, (version, description, migration)) in MIGRATIONS.iter().enumerate() {
+        let checksum = hex::encode(Sha256::digest(migration.as_bytes()));
+        if let Some(row) = rows.get(index) {
+            ensure!(
+                row.try_get::<i64, _>("version")? == *version,
+                "daemon migration journal has a gap"
+            );
+            ensure!(
+                row.try_get::<String, _>("description")? == *description
+                    && row.try_get::<String, _>("checksum")? == checksum,
+                "daemon migration {version} differs from the installed migration"
+            );
+            continue;
+        }
+        sqlx::raw_sql(migration)
             .execute(&mut *transaction)
             .await
-            .context("applying daemon PostgreSQL migration 1")?;
+            .with_context(|| format!("applying daemon PostgreSQL migration {version}"))?;
         sqlx::query(&format!(
-            "INSERT INTO {JOURNAL} (version, description, checksum) VALUES (1, $1, $2)"
+            "INSERT INTO {JOURNAL} (version, description, checksum) VALUES ($1, $2, $3)"
         ))
-        .bind("initial daemon metadata schema")
+        .bind(version)
+        .bind(description)
         .bind(&checksum)
         .execute(&mut *transaction)
         .await
-        .context("recording daemon PostgreSQL migration 1")?;
+        .with_context(|| format!("recording daemon PostgreSQL migration {version}"))?;
     }
     transaction
         .commit()
@@ -242,15 +255,17 @@ async fn require_current_schema(pool: &PgPool) -> MetadataResult<()> {
     .fetch_all(pool)
     .await
     .map_err(|error| db(anyhow!(error).context("reading daemon schema version")))?;
-    let checksum = hex::encode(Sha256::digest(INITIAL_MIGRATION.as_bytes()));
-    let current = rows.first();
-    let exact = rows.len() == 1
-        && current.is_some_and(|row| {
-            row.try_get::<i64, _>("version").ok() == Some(LATEST_SCHEMA_VERSION)
-                && row.try_get::<String, _>("description").ok().as_deref()
-                    == Some("initial daemon metadata schema")
-                && row.try_get::<String, _>("checksum").ok().as_deref() == Some(checksum.as_str())
-        });
+    let exact = rows.len() == MIGRATIONS.len()
+        && rows
+            .iter()
+            .zip(MIGRATIONS.iter())
+            .all(|(row, (version, description, migration))| {
+                let checksum = hex::encode(Sha256::digest(migration.as_bytes()));
+                row.try_get::<i64, _>("version").ok() == Some(*version)
+                    && row.try_get::<String, _>("description").ok().as_deref() == Some(*description)
+                    && row.try_get::<String, _>("checksum").ok().as_deref()
+                        == Some(checksum.as_str())
+            });
     if !exact {
         return Err(db(anyhow!(
             "daemon PostgreSQL schema journal does not exactly match version {LATEST_SCHEMA_VERSION}"
@@ -285,6 +300,20 @@ fn validate_completion(completion: &CaptureCompletion) -> MetadataResult<()> {
     )?;
     invalid_i64(completion.duration_ms, "duration_out_of_range")?;
     invalid_i64(completion.response_bytes, "response_bytes_out_of_range")?;
+    invalid_i64(
+        completion.expected_artifact_size_bytes,
+        "artifact_size_out_of_range",
+    )?;
+    if completion.expected_artifact_sha256.len() != 64
+        || !completion
+            .expected_artifact_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(MetadataStoreError::InvalidInput(
+            "invalid_expected_artifact_sha256",
+        ));
+    }
     Ok(())
 }
 
@@ -369,6 +398,8 @@ fn capture_from_row(row: &PgRow) -> anyhow::Result<CaptureSummary> {
         prompt_preview_truncated: row.try_get("prompt_preview_truncated")?,
         output_preview: row.try_get("output_preview")?,
         output_preview_truncated: row.try_get("output_preview_truncated")?,
+        expected_artifact_size_bytes: row_optional_u64(row, "expected_artifact_size_bytes")?,
+        expected_artifact_sha256: row.try_get("expected_artifact_sha256")?,
         failure_code: row.try_get("failure_code")?,
     })
 }
@@ -506,6 +537,7 @@ async fn completion_matches(
               AND http_status = $4 AND response_bytes = $5
               AND response_model IS NOT DISTINCT FROM $6
               AND output_preview = $7 AND output_preview_truncated = $8
+              AND expected_artifact_size_bytes = $9 AND expected_artifact_sha256 = $10
          )",
     )
     .bind(&completion.capture_id)
@@ -525,6 +557,11 @@ async fn completion_matches(
     .bind(&completion.response_model)
     .bind(&completion.output_preview)
     .bind(completion.output_preview_truncated)
+    .bind(invalid_i64(
+        completion.expected_artifact_size_bytes,
+        "artifact_size_out_of_range",
+    )?)
+    .bind(&completion.expected_artifact_sha256)
     .fetch_one(connection)
     .await
     .map_err(|error| db(anyhow!(error).context("checking capture completion metadata")))
@@ -657,7 +694,8 @@ impl MetadataStore for PostgresMetadataStore {
             "UPDATE llm_notary_daemon.captures SET
                 completed_at_unix_ms = $2, duration_ms = $3, http_status = $4,
                 response_bytes = $5, response_model = $6, output_preview = $7,
-                output_preview_truncated = $8
+                output_preview_truncated = $8, expected_artifact_size_bytes = $9,
+                expected_artifact_sha256 = $10
              WHERE capture_id = $1 AND capture_state = 'capturing'
                AND completed_at_unix_ms IS NULL",
         )
@@ -678,6 +716,11 @@ impl MetadataStore for PostgresMetadataStore {
         .bind(&completion.response_model)
         .bind(&completion.output_preview)
         .bind(completion.output_preview_truncated)
+        .bind(invalid_i64(
+            completion.expected_artifact_size_bytes,
+            "artifact_size_out_of_range",
+        )?)
+        .bind(&completion.expected_artifact_sha256)
         .execute(&mut *transaction)
         .await
         .map_err(|error| db(anyhow!(error).context("preparing capture completion")))?
@@ -703,6 +746,13 @@ impl MetadataStore for PostgresMetadataStore {
             &completion.capture_id,
             ArtifactKind::DeferredBundle,
         )?;
+        if artifact.size_bytes != completion.expected_artifact_size_bytes
+            || artifact.sha256 != completion.expected_artifact_sha256
+        {
+            return Err(db(anyhow!(
+                "artifact does not match the staged capture publication"
+            )));
+        }
         let mut transaction = self
             .pool
             .begin()
@@ -741,7 +791,8 @@ impl MetadataStore for PostgresMetadataStore {
             "UPDATE llm_notary_daemon.captures SET
                 completed_at_unix_ms = $2, duration_ms = $3, http_status = $4,
                 response_bytes = $5, response_model = $6, output_preview = $7,
-                output_preview_truncated = $8, capture_state = 'captured', failure_code = NULL
+                output_preview_truncated = $8, expected_artifact_size_bytes = $9,
+                expected_artifact_sha256 = $10, capture_state = 'captured', failure_code = NULL
              WHERE capture_id = $1 AND capture_state = 'capturing'",
         )
         .bind(&completion.capture_id)
@@ -761,6 +812,11 @@ impl MetadataStore for PostgresMetadataStore {
         .bind(&completion.response_model)
         .bind(&completion.output_preview)
         .bind(completion.output_preview_truncated)
+        .bind(invalid_i64(
+            completion.expected_artifact_size_bytes,
+            "artifact_size_out_of_range",
+        )?)
+        .bind(&completion.expected_artifact_sha256)
         .execute(&mut *transaction)
         .await
         .map_err(|error| db(anyhow!(error).context("completing capture")))?
@@ -793,7 +849,8 @@ impl MetadataStore for PostgresMetadataStore {
         let rows = sqlx::query(
             "SELECT capture_id, completed_at_unix_ms, duration_ms, http_status,
                     response_bytes, response_model, output_preview,
-                    output_preview_truncated
+                    output_preview_truncated, expected_artifact_size_bytes,
+                    expected_artifact_sha256
              FROM llm_notary_daemon.captures
              WHERE capture_state = 'capturing' ORDER BY capture_id",
         )
@@ -807,12 +864,23 @@ impl MetadataStore for PostgresMetadataStore {
                 let duration: Option<i64> = row.try_get("duration_ms")?;
                 let http_status: Option<i32> = row.try_get("http_status")?;
                 let response_bytes: Option<i64> = row.try_get("response_bytes")?;
-                let completion = match (completed_at, duration, http_status, response_bytes) {
+                let expected_size: Option<i64> = row.try_get("expected_artifact_size_bytes")?;
+                let expected_sha256: Option<String> = row.try_get("expected_artifact_sha256")?;
+                let completion = match (
+                    completed_at,
+                    duration,
+                    http_status,
+                    response_bytes,
+                    expected_size,
+                    expected_sha256,
+                ) {
                     (
                         Some(completed_at),
                         Some(duration),
                         Some(http_status),
                         Some(response_bytes),
+                        Some(expected_size),
+                        Some(expected_sha256),
                     ) => Some(CaptureCompletion {
                         capture_id: capture_id.clone(),
                         completed_at_unix_ms: completed_at.try_into()?,
@@ -822,6 +890,8 @@ impl MetadataStore for PostgresMetadataStore {
                         response_model: row.try_get("response_model")?,
                         output_preview: row.try_get("output_preview")?,
                         output_preview_truncated: row.try_get("output_preview_truncated")?,
+                        expected_artifact_size_bytes: expected_size.try_into()?,
+                        expected_artifact_sha256: expected_sha256,
                     }),
                     _ => None,
                 };
@@ -860,11 +930,20 @@ impl MetadataStore for PostgresMetadataStore {
             return Err(db(anyhow!("capture is not recoverable")));
         }
         insert_artifact(&mut transaction, &artifact).await?;
-        sqlx::query("DELETE FROM llm_notary_daemon.capture_search WHERE capture_id = $1")
-            .bind(capture_id)
-            .execute(&mut *transaction)
-            .await
-            .map_err(|error| db(anyhow!(error).context("clearing recovered capture search")))?;
+        sqlx::query(
+            "INSERT INTO llm_notary_daemon.capture_search
+                (capture_id, prompt_document, output_document)
+             SELECT capture_id, to_tsvector('simple', prompt_preview),
+                to_tsvector('simple', output_preview)
+             FROM llm_notary_daemon.captures WHERE capture_id = $1
+             ON CONFLICT (capture_id) DO UPDATE SET
+                prompt_document = excluded.prompt_document,
+                output_document = excluded.output_document",
+        )
+        .bind(capture_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(|error| db(anyhow!(error).context("indexing recovered capture preview")))?;
         transaction
             .commit()
             .await
@@ -1837,6 +1916,7 @@ mod tests {
         time::Duration,
     };
 
+    use sha2::{Digest as _, Sha256};
     use sqlx::{Connection as _, PgConnection, PgPool, postgres::PgPoolOptions};
     use testcontainers_modules::{
         postgres::Postgres,
@@ -1844,12 +1924,16 @@ mod tests {
     };
 
     use crate::{
+        artifact_store::ArtifactKind,
         config::PostgresSslMode,
         metadata::CaptureFilters,
         metadata_store::{MetadataStore, conformance},
     };
 
-    use super::{MIGRATION_LOCK_NAMESPACE, PostgresMetadataStore, migrate_database};
+    use super::{
+        INITIAL_MIGRATION, JOURNAL, MIGRATION_LOCK_NAMESPACE, PostgresMetadataStore,
+        migrate_database,
+    };
 
     struct TestPostgres {
         admin: PgPool,
@@ -2025,6 +2109,91 @@ mod tests {
                 .unwrap();
         assert!(daemon_journal);
         assert!(!hosted_journal);
+
+        let legacy_url = server.create_database("daemon_legacy_prepared").await;
+        let mut legacy = PgConnection::connect(&legacy_url).await.unwrap();
+        sqlx::query("CREATE SCHEMA llm_notary_daemon")
+            .execute(&mut legacy)
+            .await
+            .unwrap();
+        sqlx::raw_sql(&format!(
+            "CREATE TABLE {JOURNAL} (
+                version BIGINT PRIMARY KEY,
+                description TEXT NOT NULL,
+                checksum TEXT NOT NULL,
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
+            );"
+        ))
+        .execute(&mut legacy)
+        .await
+        .unwrap();
+        sqlx::raw_sql(INITIAL_MIGRATION)
+            .execute(&mut legacy)
+            .await
+            .unwrap();
+        sqlx::query(&format!(
+            "INSERT INTO {JOURNAL} (version, description, checksum) VALUES (1, $1, $2)"
+        ))
+        .bind("initial daemon metadata schema")
+        .bind(hex::encode(Sha256::digest(INITIAL_MIGRATION.as_bytes())))
+        .execute(&mut legacy)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO llm_notary_daemon.captures (
+                capture_id, created_at_unix_ms, completed_at_unix_ms, provider,
+                operation, requested_model, response_model, http_status, streaming,
+                request_bytes, response_bytes, duration_ms, prompt_preview,
+                prompt_preview_truncated, output_preview, output_preview_truncated,
+                config_fingerprint, capture_state, finalization_state, failure_code
+             ) VALUES (
+                'cap-legacy-prepared', 1, 2, 'openai', 'responses', 'gpt-5',
+                'gpt-5', 200, FALSE, 12, 24, 1, 'Legacy staged prompt', FALSE,
+                'Legacy staged output', FALSE, 'sha256:test', 'capturing',
+                'not_requested', NULL
+             )",
+        )
+        .execute(&mut legacy)
+        .await
+        .unwrap();
+        drop(legacy);
+        migrate_database(
+            &legacy_url,
+            PostgresSslMode::Disable,
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+        )
+        .await
+        .unwrap();
+        let legacy_store = PostgresMetadataStore::connect(
+            &legacy_url,
+            2,
+            Duration::from_secs(5),
+            Duration::from_secs(5),
+            PostgresSslMode::Disable,
+            true,
+        )
+        .await
+        .unwrap();
+        legacy_store
+            .recover_capture(
+                "cap-legacy-prepared",
+                conformance::artifact("cap-legacy-prepared", ArtifactKind::DeferredBundle, 2),
+            )
+            .await
+            .unwrap();
+        let legacy_matches = legacy_store
+            .captures(CaptureFilters {
+                query: Some("legacy output".to_owned()),
+                limit: 20,
+                ..CaptureFilters::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(legacy_matches.len(), 1);
+        assert_eq!(legacy_matches[0].capture_id, "cap-legacy-prepared");
+        assert_eq!(legacy_matches[0].expected_artifact_size_bytes, None);
+        assert_eq!(legacy_matches[0].expected_artifact_sha256, None);
 
         sqlx::query("CREATE ROLE daemon_runtime LOGIN PASSWORD 'runtime-test-password'")
             .execute(&server.admin)

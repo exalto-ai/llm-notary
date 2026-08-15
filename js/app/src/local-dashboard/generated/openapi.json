@@ -53,7 +53,7 @@
           "local-admin"
         ],
         "summary": "Check service readiness",
-        "description": "Runs a bounded metadata dependency probe. PostgreSQL outages or schema mismatches make readiness fail while /healthz remains local liveness.",
+        "description": "Runs bounded metadata and selected artifact-writer dependency probes. Dependency outages or schema mismatches make readiness fail while /healthz remains local liveness.",
         "operationId": "readiness",
         "responses": {
           "200": {
@@ -1303,7 +1303,7 @@
           "local-admin"
         ],
         "summary": "Get local service status",
-        "description": "Returns listener addresses, metadata readiness, vault and notary configuration, preview limits, and current capture counts.",
+        "description": "Returns listener addresses, bounded metadata and artifact-writer readiness, vault and notary configuration, preview limits, and current capture counts.",
         "operationId": "status",
         "responses": {
           "200": {
@@ -2451,9 +2451,13 @@
         "required": [
           "service",
           "status",
-          "metadata_backend"
+          "metadata_backend",
+          "artifact_backend"
         ],
         "properties": {
+          "artifact_backend": {
+            "type": "string"
+          },
           "metadata_backend": {
             "type": "string"
           },
@@ -2557,6 +2561,8 @@
           "admin_listener",
           "metadata_backend",
           "metadata_status",
+          "artifact_backend",
+          "artifact_status",
           "vault",
           "notary",
           "preview_chars",
@@ -2565,6 +2571,12 @@
         ],
         "properties": {
           "admin_listener": {
+            "type": "string"
+          },
+          "artifact_backend": {
+            "type": "string"
+          },
+          "artifact_status": {
             "type": "string"
           },
           "build_id": {

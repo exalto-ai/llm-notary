@@ -15,8 +15,22 @@ use std::{
 
 use anyhow::{Context as _, Result, anyhow, bail, ensure};
 use async_trait::async_trait;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest as _, Sha256};
 use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWriteExt as _, ReadBuf};
+
+const MAX_ARTIFACT_LOCATOR_BYTES: usize = 8 * 1024;
+const MAX_CAPTURE_ID_BYTES: usize = 256;
+
+/// Versioned discriminator for new filesystem locators. Untagged locators
+/// remain accepted as pre-PR3 filesystem metadata.
+pub const FILESYSTEM_ARTIFACT_LOCATOR_PREFIX: &str = "artifact/v1/filesystem/";
+
+pub fn is_filesystem_artifact_locator(locator: &ArtifactLocator) -> bool {
+    locator
+        .as_stored()
+        .starts_with(FILESYSTEM_ARTIFACT_LOCATOR_PREFIX)
+}
 
 /// The stable type of bytes held by an artifact store.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -68,6 +82,10 @@ impl ArtifactLocator {
     pub fn from_stored(value: impl Into<String>) -> Result<Self> {
         let value = value.into();
         ensure!(!value.is_empty(), "artifact locator must not be empty");
+        ensure!(
+            value.len() <= MAX_ARTIFACT_LOCATOR_BYTES,
+            "artifact locator is too long"
+        );
         ensure!(
             !value.as_bytes().contains(&0),
             "artifact locator must not contain a NUL byte"
@@ -174,6 +192,10 @@ impl ArtifactSource {
     pub const fn size_bytes(&self) -> u64 {
         self.size_bytes
     }
+
+    pub(crate) fn into_parts(self) -> (Pin<Box<dyn AsyncRead + Send>>, u64) {
+        (self.reader, self.size_bytes)
+    }
 }
 
 /// Stable artifact failure classes used by HTTP mapping and retry policy.
@@ -212,6 +234,24 @@ pub enum ArtifactStoreError {
         #[source]
         source: anyhow::Error,
     },
+}
+
+impl ArtifactStoreError {
+    /// Stable metadata/API failure code without backend paths or diagnostics.
+    pub fn failure_code(&self) -> &'static str {
+        match self {
+            Self::NotFound { .. } => "artifact_missing",
+            Self::Unavailable | Self::Backend { .. } => "artifact_backend_unavailable",
+            Self::TooLarge { .. } => "artifact_too_large",
+            Self::Conflict { .. } => "artifact_collision",
+            Self::Integrity { .. } => "artifact_corrupt",
+            Self::InvalidInput {
+                code: "artifact_backend_unconfigured",
+                ..
+            } => "artifact_backend_unconfigured",
+            Self::InvalidInput { .. } => "artifact_invalid",
+        }
+    }
 }
 
 pub type ArtifactResult<T> = std::result::Result<T, ArtifactStoreError>;
@@ -326,6 +366,31 @@ impl FileSystemArtifactStore {
         }
     }
 
+    /// Checks that both selected roots can durably create private files.
+    pub async fn readiness(&self) -> ArtifactResult<()> {
+        let roots = [self.bundle_dir.clone(), self.finalized_dir.clone()];
+        tokio::task::spawn_blocking(move || {
+            for root in roots {
+                create_private_directory(&root).map_err(backend)?;
+                let probe = tempfile::Builder::new()
+                    .prefix(".llm-notary-readiness-")
+                    .tempfile_in(&root)
+                    .map_err(|error| {
+                        backend(anyhow!(error).context("creating artifact readiness probe"))
+                    })?;
+                restrict_file(probe.path()).map_err(backend)?;
+                probe.as_file().sync_all().map_err(|error| {
+                    backend(anyhow!(error).context("syncing artifact readiness probe"))
+                })?;
+                drop(probe);
+                sync_directory(&root).map_err(backend)?;
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|error| backend(anyhow!(error).context("artifact readiness task failed")))?
+    }
+
     fn current_path(&self, key: &ArtifactKey) -> Result<PathBuf> {
         validate_root(self.root(key.kind()))?;
         Ok(self
@@ -352,7 +417,33 @@ impl FileSystemArtifactStore {
     }
 
     fn checked_record_path(&self, record: &ArtifactRecord) -> ArtifactResult<PathBuf> {
-        let locator_path = Path::new(record.locator.as_stored());
+        let decoded;
+        let locator_path = if let Some(encoded) = record
+            .locator
+            .as_stored()
+            .strip_prefix(FILESYSTEM_ARTIFACT_LOCATOR_PREFIX)
+        {
+            if encoded.is_empty() {
+                return Err(invalid(
+                    "invalid_locator",
+                    anyhow!("filesystem artifact locator has no path"),
+                ));
+            }
+            let bytes = URL_SAFE_NO_PAD
+                .decode(encoded)
+                .map_err(|error| invalid("invalid_locator", anyhow!(error)))?;
+            if URL_SAFE_NO_PAD.encode(&bytes) != encoded {
+                return Err(invalid(
+                    "invalid_locator",
+                    anyhow!("filesystem artifact locator is not canonical"),
+                ));
+            }
+            decoded = String::from_utf8(bytes)
+                .map_err(|error| invalid("invalid_locator", anyhow!(error)))?;
+            Path::new(&decoded)
+        } else {
+            Path::new(record.locator.as_stored())
+        };
         let current = self
             .current_path(&record.key)
             .map_err(|error| invalid("invalid_storage_root", error))?;
@@ -468,11 +559,15 @@ impl ArtifactStore for FileSystemArtifactStore {
 fn validate_capture_id(capture_id: &str) -> Result<()> {
     ensure!(
         !capture_id.is_empty()
+            && capture_id.len() <= MAX_CAPTURE_ID_BYTES
             && capture_id != "."
             && capture_id != ".."
             && !capture_id.contains('/')
-            && !capture_id.contains('\\'),
-        "capture ID must be a single, non-empty path component"
+            && !capture_id.contains('\\')
+            && capture_id
+                .bytes()
+                .all(|byte| { byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.') }),
+        "capture ID must be a bounded safe ASCII path component"
     );
     let mut components = Path::new(capture_id).components();
     ensure!(
@@ -506,7 +601,10 @@ fn locator_for_path(path: &Path) -> Result<ArtifactLocator> {
     let value = path
         .to_str()
         .context("filesystem artifact path is not valid UTF-8")?;
-    ArtifactLocator::from_stored(value)
+    ArtifactLocator::from_stored(format!(
+        "{FILESYSTEM_ARTIFACT_LOCATOR_PREFIX}{}",
+        URL_SAFE_NO_PAD.encode(value.as_bytes())
+    ))
 }
 
 fn invalid(code: &'static str, source: anyhow::Error) -> ArtifactStoreError {
@@ -1016,7 +1114,7 @@ fn create_private_directory(path: &Path) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn restrict_file(path: &Path) -> Result<()> {
+pub(crate) fn restrict_file(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt as _;
 
     open_regular_file(path)?
@@ -1025,12 +1123,12 @@ fn restrict_file(path: &Path) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn restrict_file(path: &Path) -> Result<()> {
+pub(crate) fn restrict_file(path: &Path) -> Result<()> {
     restrict_windows_acl(path, "F")
 }
 
 #[cfg(all(not(unix), not(windows)))]
-fn restrict_file(_path: &Path) -> Result<()> {
+pub(crate) fn restrict_file(_path: &Path) -> Result<()> {
     Ok(())
 }
 
@@ -1181,10 +1279,10 @@ mod tests {
             .put(&key(ArtifactKind::FinalizedPackage), source(b"trace"), 5)
             .await
             .unwrap();
-        let path = Path::new(record.locator.as_stored());
+        let path = store.checked_record_path(&record).unwrap();
 
         assert_eq!(
-            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
         assert_eq!(
@@ -1205,7 +1303,7 @@ mod tests {
         let (_directory, store) = fixture();
         let key = key(ArtifactKind::DeferredBundle);
         let record = store.put(&key, source(b"original"), 8).await.unwrap();
-        fs::write(record.locator.as_stored(), b"tampered").unwrap();
+        fs::write(store.checked_record_path(&record).unwrap(), b"tampered").unwrap();
 
         let error = store.read_verified(&record, 8).await.unwrap_err();
 
@@ -1223,9 +1321,21 @@ mod tests {
 
         let record = store.find(&key, 1024).await.unwrap().unwrap();
 
-        assert_eq!(record.locator.as_stored(), legacy_path.to_str().unwrap());
+        assert!(is_filesystem_artifact_locator(&record.locator));
+        assert_eq!(store.checked_record_path(&record).unwrap(), legacy_path);
         assert_eq!(
             bytes(&store, &record, record.size_bytes).await,
+            b"legacy encrypted checkpoint"
+        );
+        let raw_legacy_record = ArtifactRecord::new(
+            record.key.clone(),
+            ArtifactLocator::from_stored(legacy_path.to_string_lossy()).unwrap(),
+            record.size_bytes,
+            record.sha256.clone(),
+        )
+        .unwrap();
+        assert_eq!(
+            bytes(&store, &raw_legacy_record, raw_legacy_record.size_bytes).await,
             b"legacy encrypted checkpoint"
         );
     }
@@ -1235,6 +1345,14 @@ mod tests {
         assert!(ArtifactKey::new("../outside", ArtifactKind::DeferredBundle).is_err());
         assert!(ArtifactKey::new("nested/capture", ArtifactKind::DeferredBundle).is_err());
         assert!(ArtifactKey::new(r"nested\capture", ArtifactKind::DeferredBundle).is_err());
+        assert!(ArtifactKey::new("line\nbreak", ArtifactKind::DeferredBundle).is_err());
+        assert!(
+            ArtifactKey::new(
+                "x".repeat(MAX_CAPTURE_ID_BYTES + 1),
+                ArtifactKind::DeferredBundle
+            )
+            .is_err()
+        );
 
         let (directory, store) = fixture();
         let key = key(ArtifactKind::DeferredBundle);
@@ -1250,6 +1368,21 @@ mod tests {
 
         assert!(matches!(
             store.read_verified(&record, 7).await.unwrap_err(),
+            ArtifactStoreError::InvalidInput {
+                code: "invalid_locator",
+                ..
+            }
+        ));
+
+        let malformed = ArtifactRecord::new(
+            ArtifactKey::new("cap-artifact-test", ArtifactKind::DeferredBundle).unwrap(),
+            ArtifactLocator::from_stored(FILESYSTEM_ARTIFACT_LOCATOR_PREFIX).unwrap(),
+            7,
+            hex::encode(Sha256::digest(b"private")),
+        )
+        .unwrap();
+        assert!(matches!(
+            store.read_verified(&malformed, 7).await.unwrap_err(),
             ArtifactStoreError::InvalidInput {
                 code: "invalid_locator",
                 ..
@@ -1315,6 +1448,10 @@ mod tests {
         let invalid_root = directory.path().join("not-a-directory");
         fs::write(&invalid_root, b"file").unwrap();
         let broken = FileSystemArtifactStore::new(&invalid_root, directory.path().join("traces"));
+        assert!(matches!(
+            broken.readiness().await.unwrap_err(),
+            ArtifactStoreError::Backend { .. }
+        ));
         assert!(matches!(
             broken.put(&key, source(b"one"), 3).await.unwrap_err(),
             ArtifactStoreError::Backend { .. }

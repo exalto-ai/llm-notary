@@ -127,8 +127,12 @@ available to CI and later storage backends:
 ```bash
 scripts/test-daemon-persistence-e2e.sh smoke
 scripts/test-daemon-persistence-e2e.sh sqlite filesystem 1 full
+scripts/test-daemon-persistence-e2e.sh sqlite s3 1 smoke
+scripts/test-daemon-persistence-e2e.sh sqlite s3 1 full
 scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 smoke
 scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 full
+scripts/test-daemon-persistence-e2e.sh postgres s3 1 smoke
+scripts/test-daemon-persistence-e2e.sh postgres s3 1 full
 ```
 
 The smoke test builds and launches the real `llm-notaryd` and `llm-notary`
@@ -139,6 +143,37 @@ checkpoint bytes to exercise filesystem recovery, catalog search/detail,
 finalization enqueue and bounded failure history, events, SQLite integrity,
 and preservation of exact artifact bytes after the daemon container is removed
 and recreated with its durable volume.
+
+The S3 entries add pinned MinIO server and client containers, create a bucket
+inside the Compose project's disposable volume, and use explicit synthetic
+credentials. The generated daemon configuration enables path-style access and
+the fixed `daemon-e2e/artifacts` prefix; insecure HTTP is enabled only for this
+internal MinIO endpoint. The harness verifies that deferred bundles and
+finalized packages use the configured prefix and private namespace, survive
+daemon recreation, and complete the same capture, list/detail, finalization,
+download, verification, and exact-byte sharing path as filesystem storage.
+Both ordinary JSON responses and OpenAI-style SSE streaming responses traverse
+the real proxy/notary fixture, produce finalized packages, and upload those
+exact verified bytes to a loopback-only hosted-share fixture with a synthetic
+API key.
+
+S3 recovery coverage includes a metadata row whose object is missing, a
+same-size object whose digest does not match its metadata, and a package that
+was published before the daemon was killed but whose metadata transaction was
+not completed. The first two must fail closed; retrying the last case must
+reuse the exact immutable object. The harness also stops MinIO beneath the
+running daemon and checks that `/healthz` remains live while `/readyz` and
+`/v1/status` return `503`, then verifies readiness recovery. Object-size
+rejection and a conflicting same-key write are exercised by the artifact-store
+tests rather than this daemon harness because the public daemon API does not
+expose a safe way to inject either condition. Do not substitute a
+successful-looking fixture for those remaining end-to-end cases.
+
+At the end of every matrix row the harness stops the daemon and runs the
+shipped `reconcile-artifacts` command. Filesystem rows must report every
+reference verified. S3 rows must inventory the complete managed prefix and
+report the deliberately corrupt reference without printing keys or deleting
+objects.
 
 The PostgreSQL entries launch `postgres:17.7-alpine` with a project-scoped data
 volume and run the shipped daemon's one-shot `migrate` subcommand before

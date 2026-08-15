@@ -53,7 +53,7 @@ export interface paths {
         };
         /**
          * Check service readiness
-         * @description Runs a bounded metadata dependency probe. PostgreSQL outages or schema mismatches make readiness fail while /healthz remains local liveness.
+         * @description Runs bounded metadata and selected artifact-writer dependency probes. Dependency outages or schema mismatches make readiness fail while /healthz remains local liveness.
          */
         get: operations["readiness"];
         put?: never;
@@ -405,7 +405,7 @@ export interface paths {
         };
         /**
          * Get local service status
-         * @description Returns listener addresses, metadata readiness, vault and notary configuration, preview limits, and current capture counts.
+         * @description Returns listener addresses, bounded metadata and artifact-writer readiness, vault and notary configuration, preview limits, and current capture counts.
          */
         get: operations["status"];
         put?: never;
@@ -720,6 +720,7 @@ export interface components {
             next_cursor?: string | null;
         };
         ReadinessResponse: {
+            artifact_backend: string;
             metadata_backend: string;
             service: string;
             status: string;
@@ -745,6 +746,8 @@ export interface components {
         ShareVisibility: "unlisted" | "listed";
         StatusResponse: {
             admin_listener: string;
+            artifact_backend: string;
+            artifact_status: string;
             build_id: string;
             counts: components["schemas"]["CountsResponse"];
             metadata_backend: string;

@@ -6,10 +6,12 @@ use anyhow::Result;
 
 use crate::{
     archive::MAX_ARCHIVE_WIRE_BYTES,
+    artifact_router::RoutedArtifactStore,
     artifact_store::{ArtifactKey, ArtifactKind, ArtifactStore, FileSystemArtifactStore},
     config::{AgentConfig, MetadataBackend},
     metadata_store::MetadataStore,
     postgres_metadata_store::PostgresMetadataStore,
+    s3_artifact_store::{S3ArtifactStore, S3ArtifactStoreConfig, S3ArtifactStoreCredentials},
     sqlite_metadata_store::SqliteMetadataStore,
 };
 
@@ -19,13 +21,14 @@ use crate::{
 pub struct RecoverySummary {
     pub recovered_bundles: usize,
     pub interrupted_captures: usize,
+    pub pending_publications: usize,
 }
 
 /// The metadata and byte stores used by one daemon process.
 #[derive(Clone)]
 pub struct Persistence {
     pub metadata: Arc<dyn MetadataStore>,
-    pub artifacts: Arc<dyn ArtifactStore>,
+    pub artifacts: Arc<RoutedArtifactStore>,
 }
 
 impl Persistence {
@@ -61,10 +64,39 @@ impl Persistence {
                 )
             }
         };
-        let artifacts = FileSystemArtifactStore::new(
+        let filesystem = FileSystemArtifactStore::new(
             config.storage.bundle_dir.clone(),
             config.storage.finalized_dir.clone(),
         );
+        let s3 = if let Some(s3) = &config.storage.s3 {
+            let credentials = config.s3_credentials()?;
+            Some(
+                S3ArtifactStore::new(
+                    S3ArtifactStoreConfig {
+                        endpoint: url::Url::parse(&s3.endpoint)?,
+                        region: s3.region.clone(),
+                        bucket: s3.bucket.clone(),
+                        prefix: s3.prefix.clone(),
+                        force_path_style: s3.force_path_style,
+                        allow_insecure_http: s3.allow_insecure_http,
+                        connect_timeout: std::time::Duration::from_secs(s3.connect_timeout_seconds),
+                        operation_timeout: std::time::Duration::from_secs(
+                            s3.operation_timeout_seconds,
+                        ),
+                    },
+                    S3ArtifactStoreCredentials::new(
+                        credentials.access_key_id(),
+                        credentials.secret_access_key(),
+                        credentials.session_token().map(str::to_owned),
+                    ),
+                )
+                .map_err(|_| anyhow::anyhow!("S3 artifact storage configuration is invalid"))?,
+            )
+        } else {
+            None
+        };
+        let artifacts = RoutedArtifactStore::new(config.storage.backend, filesystem, s3)
+            .map_err(|_| anyhow::anyhow!("selected artifact storage backend is not configured"))?;
         Ok(Self {
             metadata,
             artifacts: Arc::new(artifacts),
@@ -75,12 +107,32 @@ impl Persistence {
     /// Bytes are inspected by the artifact backend before metadata advertises
     /// them as available.
     pub async fn reconcile_incomplete_captures(&self) -> Result<RecoverySummary> {
+        self.reconcile_captures(true).await
+    }
+
+    /// Retries only captures whose completion descriptor was durably staged.
+    /// Unlike startup recovery, this periodic pass never interrupts or adopts
+    /// an unprepared capture which may still be active in this process.
+    pub async fn reconcile_pending_publications(&self) -> Result<RecoverySummary> {
+        self.reconcile_captures(false).await
+    }
+
+    async fn reconcile_captures(&self, interrupt_unprepared: bool) -> Result<RecoverySummary> {
         let mut summary = RecoverySummary::default();
         for incomplete in self.metadata.incomplete_captures().await? {
             let capture_id = incomplete.capture_id;
             let key = ArtifactKey::new(&capture_id, ArtifactKind::DeferredBundle)?;
+            let completion = incomplete.completion;
+            if completion.is_none() && !interrupt_unprepared {
+                continue;
+            }
             if let Some(artifact) = self.artifacts.find(&key, MAX_ARCHIVE_WIRE_BYTES).await? {
-                if let Some(completion) = incomplete.completion {
+                if let Some(completion) = completion {
+                    anyhow::ensure!(
+                        artifact.size_bytes == completion.expected_artifact_size_bytes
+                            && artifact.sha256 == completion.expected_artifact_sha256,
+                        "stored artifact does not match the prepared capture publication"
+                    );
                     self.metadata.complete_capture(completion, artifact).await?;
                 } else {
                     // Compatibility for captures left by schema-v6 daemons
@@ -88,6 +140,12 @@ impl Persistence {
                     self.metadata.recover_capture(&capture_id, artifact).await?;
                 }
                 summary.recovered_bundles += 1;
+            } else if completion.is_some() {
+                // A storage timeout can be ambiguous: the conditional PUT may
+                // become visible after the process restarts. Keep the staged
+                // completion recoverable and let the bounded background pass
+                // attach exact bytes when they appear.
+                summary.pending_publications += 1;
             } else {
                 self.metadata
                     .mark_capture_failed(&capture_id, "interrupted")
@@ -98,14 +156,13 @@ impl Persistence {
         Ok(summary)
     }
 }
-
 #[cfg(test)]
 mod tests {
     use std::fs;
 
     use crate::{
         archive::MAX_ARCHIVE_WIRE_BYTES,
-        artifact_store::{ArtifactKey, ArtifactKind, ArtifactSource},
+        artifact_store::{ArtifactKey, ArtifactKind, ArtifactSource, ArtifactStore},
         config::AgentConfig,
         metadata::{CaptureCompletion, NewCapture},
     };
@@ -161,6 +218,7 @@ mod tests {
             RecoverySummary {
                 recovered_bundles: 1,
                 interrupted_captures: 1,
+                pending_publications: 0,
             }
         );
         assert_eq!(
@@ -205,6 +263,7 @@ mod tests {
             RecoverySummary {
                 recovered_bundles: 1,
                 interrupted_captures: 0,
+                pending_publications: 0,
             }
         );
         let artifact = persistence
@@ -213,7 +272,9 @@ mod tests {
             .await
             .unwrap()
             .remove(0);
-        assert_eq!(artifact.locator.as_stored(), legacy.to_string_lossy());
+        assert!(crate::artifact_store::is_filesystem_artifact_locator(
+            &artifact.locator
+        ));
     }
 
     #[tokio::test]
@@ -237,6 +298,9 @@ mod tests {
                 response_model: Some("gpt-test".to_owned()),
                 output_preview: "safe response".to_owned(),
                 output_preview_truncated: false,
+                expected_artifact_size_bytes: 17,
+                expected_artifact_sha256:
+                    "45cae64a8ff5cc76f484e8aa131fdd0cd2182a386529c561cb1e500326093391".to_owned(),
             })
             .await
             .unwrap();
@@ -258,6 +322,7 @@ mod tests {
             RecoverySummary {
                 recovered_bundles: 1,
                 interrupted_captures: 0,
+                pending_publications: 0,
             }
         );
         let capture = persistence
@@ -277,6 +342,173 @@ mod tests {
                 .await
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_keeps_a_prepared_capture_pending_until_bytes_appear() {
+        let directory = tempfile::tempdir().unwrap();
+        let persistence = Persistence::open(&config(directory.path())).await.unwrap();
+        persistence
+            .metadata
+            .begin_capture(new_capture("cap-delayed"))
+            .await
+            .unwrap();
+        persistence
+            .metadata
+            .prepare_capture_completion(CaptureCompletion {
+                capture_id: "cap-delayed".to_owned(),
+                completed_at_unix_ms: 2,
+                duration_ms: 1,
+                http_status: 200,
+                response_bytes: 24,
+                response_model: Some("gpt-test".to_owned()),
+                output_preview: "safe response".to_owned(),
+                output_preview_truncated: false,
+                expected_artifact_size_bytes: 17,
+                expected_artifact_sha256:
+                    "45cae64a8ff5cc76f484e8aa131fdd0cd2182a386529c561cb1e500326093391".to_owned(),
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            persistence.reconcile_incomplete_captures().await.unwrap(),
+            RecoverySummary {
+                recovered_bundles: 0,
+                interrupted_captures: 0,
+                pending_publications: 1,
+            }
+        );
+        assert_eq!(
+            persistence
+                .metadata
+                .capture("cap-delayed")
+                .await
+                .unwrap()
+                .unwrap()
+                .capture_state,
+            "capturing"
+        );
+
+        persistence
+            .artifacts
+            .put(
+                &ArtifactKey::new("cap-delayed", ArtifactKind::DeferredBundle).unwrap(),
+                ArtifactSource::from_bytes(b"encrypted fixture".to_vec()),
+                MAX_ARCHIVE_WIRE_BYTES,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            persistence.reconcile_incomplete_captures().await.unwrap(),
+            RecoverySummary {
+                recovered_bundles: 1,
+                interrupted_captures: 0,
+                pending_publications: 0,
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn recovery_rejects_a_same_key_object_that_differs_from_the_prepared_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let persistence = Persistence::open(&config(directory.path())).await.unwrap();
+        persistence
+            .metadata
+            .begin_capture(new_capture("cap-mismatched-publication"))
+            .await
+            .unwrap();
+        persistence
+            .metadata
+            .prepare_capture_completion(CaptureCompletion {
+                capture_id: "cap-mismatched-publication".to_owned(),
+                completed_at_unix_ms: 2,
+                duration_ms: 1,
+                http_status: 200,
+                response_bytes: 24,
+                response_model: Some("gpt-test".to_owned()),
+                output_preview: "safe response".to_owned(),
+                output_preview_truncated: false,
+                expected_artifact_size_bytes: 17,
+                expected_artifact_sha256:
+                    "45cae64a8ff5cc76f484e8aa131fdd0cd2182a386529c561cb1e500326093391".to_owned(),
+            })
+            .await
+            .unwrap();
+        persistence
+            .artifacts
+            .put(
+                &ArtifactKey::new("cap-mismatched-publication", ArtifactKind::DeferredBundle)
+                    .unwrap(),
+                ArtifactSource::from_bytes(b"encrypted fixturE".to_vec()),
+                MAX_ARCHIVE_WIRE_BYTES,
+            )
+            .await
+            .unwrap();
+
+        assert!(persistence.reconcile_incomplete_captures().await.is_err());
+        let capture = persistence
+            .metadata
+            .capture("cap-mismatched-publication")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(capture.capture_state, "capturing");
+        assert!(
+            persistence
+                .metadata
+                .artifacts("cap-mismatched-publication")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn periodic_recovery_never_interrupts_or_adopts_an_unprepared_live_capture() {
+        let directory = tempfile::tempdir().unwrap();
+        let persistence = Persistence::open(&config(directory.path())).await.unwrap();
+        persistence
+            .metadata
+            .begin_capture(new_capture("cap-live"))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            persistence.reconcile_pending_publications().await.unwrap(),
+            RecoverySummary::default()
+        );
+        persistence
+            .artifacts
+            .put(
+                &ArtifactKey::new("cap-live", ArtifactKind::DeferredBundle).unwrap(),
+                ArtifactSource::from_bytes(b"encrypted fixture".to_vec()),
+                MAX_ARCHIVE_WIRE_BYTES,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            persistence.reconcile_pending_publications().await.unwrap(),
+            RecoverySummary::default()
+        );
+        assert_eq!(
+            persistence
+                .metadata
+                .capture("cap-live")
+                .await
+                .unwrap()
+                .unwrap()
+                .capture_state,
+            "capturing"
+        );
+        assert!(
+            persistence
+                .metadata
+                .artifacts("cap-live")
+                .await
+                .unwrap()
+                .is_empty()
         );
     }
 }

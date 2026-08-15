@@ -12,6 +12,8 @@ use clap::{Parser, Subcommand};
 pub use llm_notary_core::*;
 
 pub mod admin;
+pub mod artifact_reconciliation;
+pub mod artifact_router;
 pub mod artifact_store;
 pub mod cli;
 pub mod config;
@@ -20,6 +22,7 @@ pub mod metadata;
 pub mod metadata_store;
 pub mod persistence;
 mod postgres_metadata_store;
+pub mod s3_artifact_store;
 mod sqlite_catalog;
 pub mod sqlite_metadata_store;
 pub mod update;
@@ -44,17 +47,56 @@ struct DaemonCli {
 enum DaemonCommand {
     /// Apply the daemon-owned PostgreSQL metadata migrations and exit.
     Migrate,
+    /// Report missing, corrupt, or unreferenced private artifacts without deleting anything.
+    ReconcileArtifacts {
+        /// Maximum managed S3 objects requested per page; all pages are scanned.
+        #[arg(long, default_value_t = 1_000)]
+        page_size: usize,
+        /// Minimum object age before an unreferenced object is reported as a candidate.
+        #[arg(long, default_value_t = 7 * 24 * 60 * 60)]
+        orphan_grace_seconds: u64,
+    },
 }
 
 /// Runs the client command line using process arguments.
 pub async fn run_daemon() -> Result<()> {
     let cli = DaemonCli::parse();
-    if matches!(cli.command, Some(DaemonCommand::Migrate)) {
-        return run_daemon_migrator(cli.config).await;
+    match cli.command {
+        Some(DaemonCommand::Migrate) => return run_daemon_migrator(cli.config).await,
+        Some(DaemonCommand::ReconcileArtifacts {
+            page_size,
+            orphan_grace_seconds,
+        }) => {
+            return run_artifact_reconciliation(cli.config, page_size, orphan_grace_seconds).await;
+        }
+        None => {}
     }
     let _telemetry = telemetry::init("llm-notaryd")?;
     cli::auth::validate_credential_configuration()?;
     cli::proxy::run(cli::proxy::ProxyArgs { config: cli.config }).await
+}
+
+/// Runs a bounded, report-only artifact reconciliation without initializing
+/// the vault, providers, notary discovery, or listeners.
+async fn run_artifact_reconciliation(
+    config_path: Option<PathBuf>,
+    page_size: usize,
+    orphan_grace_seconds: u64,
+) -> Result<()> {
+    let path = match config_path {
+        Some(path) => path,
+        None => config::default_config_path()?,
+    };
+    let config = config::AgentConfig::load(&path)?;
+    let persistence = persistence::Persistence::open(&config)
+        .await
+        .map_err(|_| anyhow::anyhow!("artifact reconciliation could not open persistence"))?;
+    let report =
+        artifact_reconciliation::reconcile_artifacts(&persistence, page_size, orphan_grace_seconds)
+            .await
+            .map_err(|_| anyhow::anyhow!("artifact reconciliation failed"))?;
+    println!("{}", serde_json::to_string(&report)?);
+    Ok(())
 }
 
 /// Applies only the daemon-owned PostgreSQL metadata migrations.
@@ -101,6 +143,20 @@ mod tests {
         );
         assert!(
             DaemonCli::try_parse_from(["llm-notaryd", "migrate", "--config", "agent.toml"]).is_ok()
+        );
+        assert!(DaemonCli::try_parse_from(["llm-notaryd", "reconcile-artifacts"]).is_ok());
+        assert!(
+            DaemonCli::try_parse_from([
+                "llm-notaryd",
+                "--config",
+                "agent.toml",
+                "reconcile-artifacts",
+                "--page-size",
+                "100",
+                "--orphan-grace-seconds",
+                "3600",
+            ])
+            .is_ok()
         );
     }
 }

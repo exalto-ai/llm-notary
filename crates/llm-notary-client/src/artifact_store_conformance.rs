@@ -22,6 +22,14 @@ async fn read(store: &dyn ArtifactStore, record: &super::ArtifactRecord, limit: 
 
 /// Runs the immutable-write, bounded-read, integrity, and concurrency contract.
 pub(crate) async fn run(store: Arc<dyn ArtifactStore>) {
+    let empty_key = key("cap-conformance-empty", ArtifactKind::DeferredBundle);
+    let empty = store
+        .put(&empty_key, ArtifactSource::from_bytes(Vec::new()), 0)
+        .await
+        .unwrap();
+    assert_eq!(empty.size_bytes, 0);
+    assert_eq!(read(store.as_ref(), &empty, 0).await, Vec::<u8>::new());
+
     let round_trip_key = key("cap-conformance-roundtrip", ArtifactKind::DeferredBundle);
     let content = b"vault-encrypted checkpoint".to_vec();
     let limit = content.len() as u64;
@@ -85,6 +93,17 @@ pub(crate) async fn run(store: Arc<dyn ArtifactStore>) {
             .unwrap_err(),
         ArtifactStoreError::Conflict { .. }
     ));
+    assert!(matches!(
+        store
+            .put(
+                &collision_key,
+                ArtifactSource::from_bytes(b"longer".to_vec()),
+                6,
+            )
+            .await
+            .unwrap_err(),
+        ArtifactStoreError::Conflict { .. }
+    ));
     assert_eq!(read(store.as_ref(), &collision_record, 5).await, b"first");
 
     for (capture_id, bytes, declared) in [
@@ -108,6 +127,17 @@ pub(crate) async fn run(store: Arc<dyn ArtifactStore>) {
             .await
             .unwrap_err(),
         ArtifactStoreError::Integrity { .. }
+    ));
+    let mut wrong_backend_record = corrupt_record.clone();
+    wrong_backend_record.sha256 = hex::encode(Sha256::digest(&content));
+    wrong_backend_record.locator =
+        super::ArtifactLocator::from_stored("artifact/v1/unknown/bm90LWEta2V5").unwrap();
+    assert!(matches!(
+        store
+            .read_verified(&wrong_backend_record, limit)
+            .await
+            .unwrap_err(),
+        ArtifactStoreError::InvalidInput { .. }
     ));
     let concurrent_key = key("cap-conformance-concurrent", ArtifactKind::FinalizedPackage);
     let concurrent_content = b"one immutable object".to_vec();
@@ -136,4 +166,40 @@ pub(crate) async fn run(store: Arc<dyn ArtifactStore>) {
         read(store.as_ref(), &records[0], concurrent_content.len() as u64).await,
         concurrent_content
     );
+
+    let racing_key = key(
+        "cap-conformance-racing-collision",
+        ArtifactKind::FinalizedPackage,
+    );
+    let mut racing_tasks = Vec::new();
+    for index in 0..12 {
+        let store = store.clone();
+        let key = racing_key.clone();
+        let bytes = if index % 2 == 0 {
+            b"candidate-a".to_vec()
+        } else {
+            b"candidate-b".to_vec()
+        };
+        racing_tasks.push(tokio::spawn(async move {
+            store
+                .put(
+                    &key,
+                    ArtifactSource::from_bytes(bytes.clone()),
+                    bytes.len() as u64,
+                )
+                .await
+        }));
+    }
+    let mut successes = Vec::new();
+    let mut conflicts = 0;
+    for task in racing_tasks {
+        match task.await.unwrap() {
+            Ok(record) => successes.push(record),
+            Err(ArtifactStoreError::Conflict { .. }) => conflicts += 1,
+            Err(error) => panic!("unexpected concurrent collision error: {error}"),
+        }
+    }
+    assert!(!successes.is_empty());
+    assert!(conflicts > 0);
+    assert!(successes.iter().all(|record| record == &successes[0]));
 }
