@@ -30,7 +30,7 @@ use super::{
 
 const STRIPE_API_VERSION: &str = "2026-02-25.clover";
 const BYTES_PER_GB: i64 = 1_000_000_000;
-const CENTS_PER_GB: i64 = 500;
+const CENTS_PER_GB: i64 = 1_000;
 const BYTES_PER_CENT: i64 = BYTES_PER_GB / CENTS_PER_GB;
 const MAX_QUANTITY_GB: i64 = 20;
 const MAX_WEBHOOK_BYTES: usize = 1 << 20;
@@ -95,7 +95,9 @@ impl BillingService {
                     StripeConfig {
                         secret_key: "sk_test_fixture".to_owned(),
                         webhook_secret: "whsec_fixture_secret".to_owned(),
-                        price_id: "price_fixture".to_owned(),
+                        credit_price_id: "price_fixture".to_owned(),
+                        one_gb_price_id: "price_one_gb_fixture".to_owned(),
+                        ten_gb_price_id: "price_ten_gb_fixture".to_owned(),
                         livemode: false,
                     },
                     true,
@@ -111,7 +113,7 @@ impl BillingService {
             ApiError::coded(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "billing_unavailable",
-                "Hosted credit purchases are not configured",
+                "Hosted billing is not configured",
             )
         })
     }
@@ -131,7 +133,9 @@ struct StripeClient {
     api_base: Url,
     secret_key: Arc<str>,
     webhook_secret: Arc<str>,
-    price_id: Arc<str>,
+    credit_price_id: Arc<str>,
+    one_gb_price_id: Arc<str>,
+    ten_gb_price_id: Arc<str>,
     livemode: bool,
     allow_local_checkout_url: bool,
     request_timeout: Duration,
@@ -152,7 +156,9 @@ impl StripeClient {
             api_base,
             secret_key: Arc::from(config.secret_key),
             webhook_secret: Arc::from(config.webhook_secret),
-            price_id: Arc::from(config.price_id),
+            credit_price_id: Arc::from(config.credit_price_id),
+            one_gb_price_id: Arc::from(config.one_gb_price_id),
+            ten_gb_price_id: Arc::from(config.ten_gb_price_id),
             livemode: config.livemode,
             allow_local_checkout_url,
             request_timeout: STRIPE_REQUEST_TIMEOUT,
@@ -160,31 +166,165 @@ impl StripeClient {
     }
 
     async fn retrieve_configured_price(&self) -> Result<StripeConfiguredPrice> {
-        self.retrieve_object("prices", self.price_id.as_ref(), "price_")
+        self.retrieve_object("prices", self.credit_price_id.as_ref(), "price_")
             .await
+    }
+
+    fn subscription_price_id(&self, plan: ServicePlan) -> Result<&str> {
+        match plan {
+            ServicePlan::OneGb => Ok(self.one_gb_price_id.as_ref()),
+            ServicePlan::TenGb => Ok(self.ten_gb_price_id.as_ref()),
+            ServicePlan::Free => bail!("the Free plan has no Stripe Price"),
+        }
+    }
+
+    async fn retrieve_subscription_price(
+        &self,
+        plan: ServicePlan,
+    ) -> Result<StripeConfiguredPrice> {
+        self.retrieve_object("prices", self.subscription_price_id(plan)?, "price_")
+            .await
+    }
+
+    async fn create_subscription_checkout_session(
+        &self,
+        checkout_id: &str,
+        account_id: &str,
+        plan: ServicePlan,
+        customer_id: Option<&str>,
+        success_url: &Url,
+        cancel_url: &Url,
+    ) -> Result<StripeCheckoutSession> {
+        let mut form = vec![
+            ("mode", "subscription".to_owned()),
+            ("success_url", success_url.as_str().to_owned()),
+            ("cancel_url", cancel_url.as_str().to_owned()),
+            ("client_reference_id", checkout_id.to_owned()),
+            ("metadata[billing_kind]", "subscription".to_owned()),
+            ("metadata[subscription_checkout_id]", checkout_id.to_owned()),
+            ("metadata[schema_version]", "2".to_owned()),
+            (
+                "subscription_data[metadata][account_id]",
+                account_id.to_owned(),
+            ),
+            (
+                "subscription_data[metadata][service_plan]",
+                plan.as_str().to_owned(),
+            ),
+            (
+                "line_items[0][price]",
+                self.subscription_price_id(plan)?.to_owned(),
+            ),
+            ("line_items[0][quantity]", "1".to_owned()),
+        ];
+        if let Some(customer_id) = customer_id {
+            validate_stripe_id(customer_id, "cus_")?;
+            form.push(("customer", customer_id.to_owned()));
+        }
+        let url = self.api_base.join("checkout/sessions")?;
+        self.send_json(
+            self.http
+                .post(url)
+                .header("Stripe-Version", STRIPE_API_VERSION)
+                .header(
+                    "Idempotency-Key",
+                    format!("subscription-checkout:{checkout_id}"),
+                )
+                .bearer_auth(self.secret_key.as_ref())
+                .form(&form),
+        )
+        .await
+    }
+
+    async fn retrieve_subscription(&self, id: &str) -> Result<StripeSubscription> {
+        self.retrieve_object("subscriptions", id, "sub_").await
+    }
+
+    async fn retrieve_invoice(&self, id: &str) -> Result<StripeInvoice> {
+        self.retrieve_object("invoices", id, "in_").await
+    }
+
+    async fn invoice_payment_for_payment_intent(
+        &self,
+        payment_intent_id: &str,
+    ) -> Result<Option<StripeInvoicePayment>> {
+        validate_stripe_id(payment_intent_id, "pi_")?;
+        let mut url = self.api_base.join("invoice_payments")?;
+        url.query_pairs_mut()
+            .append_pair("payment[type]", "payment_intent")
+            .append_pair("payment[payment_intent]", payment_intent_id)
+            .append_pair("limit", "2");
+        let mut payments: StripeList<StripeInvoicePayment> = self
+            .send_json(
+                self.http
+                    .get(url)
+                    .header("Stripe-Version", STRIPE_API_VERSION)
+                    .bearer_auth(self.secret_key.as_ref()),
+            )
+            .await?;
+        if payments.has_more || payments.data.len() > 1 {
+            bail!("Stripe PaymentIntent is associated with multiple Invoices");
+        }
+        let payment = payments.data.pop();
+        if let Some(payment) = payment.as_ref() {
+            validate_stripe_id(&payment.id, "inpay_")?;
+            if payment.payment.kind != "payment_intent"
+                || payment.payment.payment_intent.as_ref().map(Expandable::id)
+                    != Some(payment_intent_id)
+            {
+                bail!("Stripe InvoicePayment did not match the PaymentIntent filter");
+            }
+        }
+        Ok(payment)
+    }
+
+    async fn create_portal_session(
+        &self,
+        customer_id: &str,
+        return_url: &Url,
+    ) -> Result<StripePortalSession> {
+        validate_stripe_id(customer_id, "cus_")?;
+        let url = self.api_base.join("billing_portal/sessions")?;
+        self.send_json(
+            self.http
+                .post(url)
+                .header("Stripe-Version", STRIPE_API_VERSION)
+                .bearer_auth(self.secret_key.as_ref())
+                .form(&[
+                    ("customer", customer_id),
+                    ("return_url", return_url.as_str()),
+                ]),
+        )
+        .await
     }
 
     async fn create_checkout_session(
         &self,
         purchase_id: &str,
         quantity_gb: i64,
+        customer_id: Option<&str>,
         success_url: &Url,
         cancel_url: &Url,
     ) -> Result<StripeCheckoutSession> {
-        let form = vec![
+        let mut form = vec![
             ("mode", "payment".to_owned()),
             ("success_url", success_url.as_str().to_owned()),
             ("cancel_url", cancel_url.as_str().to_owned()),
             ("client_reference_id", purchase_id.to_owned()),
             ("metadata[purchase_id]", purchase_id.to_owned()),
+            ("metadata[billing_kind]", "credits".to_owned()),
             ("metadata[schema_version]", "1".to_owned()),
             (
                 "payment_intent_data[metadata][purchase_id]",
                 purchase_id.to_owned(),
             ),
-            ("line_items[0][price]", self.price_id.to_string()),
+            ("line_items[0][price]", self.credit_price_id.to_string()),
             ("line_items[0][quantity]", quantity_gb.to_string()),
         ];
+        if let Some(customer_id) = customer_id {
+            validate_stripe_id(customer_id, "cus_")?;
+            form.push(("customer", customer_id.to_owned()));
+        }
         let url = self.api_base.join("checkout/sessions")?;
         self.send_json(
             self.http
@@ -285,6 +425,21 @@ impl StripeClient {
         }
         Ok(url)
     }
+
+    fn validate_portal_url(&self, value: &str) -> Result<Url> {
+        let url = Url::parse(value).context("Stripe Billing Portal URL is invalid")?;
+        let local = self.allow_local_checkout_url
+            && url.scheme() == "http"
+            && matches!(url.host_str(), Some("127.0.0.1" | "localhost"));
+        let stripe = url.scheme() == "https"
+            && url
+                .host_str()
+                .is_some_and(|host| host == "billing.stripe.com");
+        if !local && !stripe {
+            bail!("Stripe Billing Portal URL has an unexpected origin");
+        }
+        Ok(url)
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -300,6 +455,7 @@ struct StripeCheckoutSession {
     client_reference_id: Option<String>,
     metadata: BTreeMap<String, String>,
     payment_intent: Option<Expandable<StripePaymentIntent>>,
+    subscription: Option<Expandable<StripeReference>>,
     customer: Option<Expandable<StripeReference>>,
     line_items: Option<StripeList<StripeLineItem>>,
 }
@@ -364,6 +520,50 @@ struct StripeCharge {
     payment_intent: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct StripeInvoice {
+    id: String,
+    livemode: bool,
+    currency: String,
+    customer: Expandable<StripeReference>,
+    parent: Option<StripeInvoiceParent>,
+}
+
+impl StripeObject for StripeInvoice {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct StripeInvoiceParent {
+    #[serde(rename = "type")]
+    kind: String,
+    subscription_details: Option<StripeInvoiceSubscriptionDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StripeInvoiceSubscriptionDetails {
+    subscription: Expandable<StripeReference>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StripeInvoicePayment {
+    id: String,
+    invoice: Expandable<StripeReference>,
+    livemode: bool,
+    currency: String,
+    status: String,
+    payment: StripeInvoicePaymentSource,
+}
+
+#[derive(Debug, Deserialize)]
+struct StripeInvoicePaymentSource {
+    #[serde(rename = "type")]
+    kind: String,
+    payment_intent: Option<Expandable<StripeReference>>,
+}
+
 impl StripeObject for StripeCharge {
     fn id(&self) -> &str {
         &self.id
@@ -420,6 +620,48 @@ struct StripeConfiguredPrice {
     price_type: String,
     custom_unit_amount: Option<Value>,
     transform_quantity: Option<Value>,
+    recurring: Option<StripeRecurring>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StripeRecurring {
+    interval: String,
+    interval_count: i64,
+    usage_type: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct StripeSubscription {
+    id: String,
+    status: String,
+    livemode: bool,
+    customer: Expandable<StripeReference>,
+    items: StripeList<StripeSubscriptionItem>,
+    #[serde(default)]
+    metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    cancel_at_period_end: bool,
+}
+
+impl StripeObject for StripeSubscription {
+    fn id(&self) -> &str {
+        &self.id
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct StripeSubscriptionItem {
+    price: StripePrice,
+    quantity: Option<i64>,
+    current_period_end: Option<i64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct StripePortalSession {
+    id: String,
+    customer: Expandable<StripeReference>,
+    livemode: bool,
+    url: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -542,12 +784,269 @@ pub struct BillingPurchasesResponse {
     pub purchases: Vec<BillingPurchase>,
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct CreateSubscriptionCheckoutRequest {
+    pub plan: SubscriptionPlan,
+    pub idempotency_key: String,
+}
+
+#[derive(Clone, Copy, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionPlan {
+    OneGb,
+    TenGb,
+}
+
+impl SubscriptionPlan {
+    fn service_plan(self) -> ServicePlan {
+        match self {
+            Self::OneGb => ServicePlan::OneGb,
+            Self::TenGb => ServicePlan::TenGb,
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CreateSubscriptionCheckoutResponse {
+    pub checkout_url: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct CreatePortalSessionResponse {
+    pub portal_url: String,
+}
+
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(create_checkout_session))
+        .routes(routes!(create_subscription_checkout_session))
+        .routes(routes!(create_portal_session))
         .routes(routes!(list_purchases))
         .routes(routes!(get_purchase))
         .routes(routes!(stripe_webhook))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/me/billing/subscription-checkout-sessions",
+    summary = "Create a Stripe-hosted subscription Checkout session",
+    request_body = CreateSubscriptionCheckoutRequest,
+    responses(
+        (status = 200, body = CreateSubscriptionCheckoutResponse),
+        (status = 400, body = ErrorResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 409, body = ErrorResponse),
+        (status = 502, body = ErrorResponse),
+        (status = 503, body = ErrorResponse)
+    ),
+    security(("browserSession" = [])),
+    tag = "billing"
+)]
+async fn create_subscription_checkout_session(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    Json(request): Json<CreateSubscriptionCheckoutRequest>,
+) -> ApiResult<Json<CreateSubscriptionCheckoutResponse>> {
+    let stripe = state.billing.stripe()?.clone();
+    let user = authenticated_web_user(&state, &jar).await?;
+    validate_idempotency_key(&request.idempotency_key)?;
+    let plan = request.plan.service_plan();
+    if super::service_admission::account_billing_state(&state.database, &user.0)
+        .await?
+        .service_plan
+        != ServicePlan::Free
+    {
+        return Err(ApiError::conflict(
+            "Use the billing portal to change an existing subscription",
+        ));
+    }
+    let price = stripe
+        .retrieve_subscription_price(plan)
+        .await
+        .map_err(stripe_api_error)?;
+    validate_subscription_price(&stripe, plan, &price).map_err(stripe_invalid_error)?;
+    let now = unix_timestamp()?;
+    let checkout_id = Uuid::new_v4().to_string();
+    let price_id = stripe
+        .subscription_price_id(plan)
+        .map_err(stripe_invalid_error)?;
+    type CheckoutRow = (String, String, String, String, bool, Option<String>);
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    sqlx::query("SELECT id FROM users WHERE id = $1 FOR UPDATE")
+        .bind(&user.0)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    let has_subscription: bool = sqlx::query_scalar(
+        "SELECT EXISTS(
+             SELECT 1 FROM billing_subscriptions
+             WHERE account_id = $1 AND status NOT IN ('canceled', 'incomplete_expired')
+         )",
+    )
+    .bind(&user.0)
+    .fetch_one(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if has_subscription {
+        return Err(ApiError::conflict(
+            "Use the billing portal to change an existing subscription",
+        ));
+    }
+    let mut row = sqlx::query_as::<_, CheckoutRow>(
+        "SELECT id, target_plan, state, provider_price_id, livemode,
+                provider_checkout_session_id
+         FROM billing_subscription_checkouts
+         WHERE account_id = $1 AND client_idempotency_key = $2",
+    )
+    .bind(&user.0)
+    .bind(&request.idempotency_key)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if row.is_none() {
+        row = sqlx::query_as::<_, CheckoutRow>(
+            "SELECT id, target_plan, state, provider_price_id, livemode,
+                    provider_checkout_session_id
+             FROM billing_subscription_checkouts
+             WHERE account_id = $1 AND state IN ('creating', 'checkout_open')
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(&user.0)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    }
+    let row = if let Some(row) = row {
+        row
+    } else {
+        sqlx::query(
+            "INSERT INTO billing_subscription_checkouts
+                 (id, account_id, client_idempotency_key, target_plan, state, provider,
+                  provider_price_id, livemode, created_at, updated_at)
+             VALUES ($1, $2, $3, $4, 'creating', 'stripe', $5, $6, $7, $7)",
+        )
+        .bind(&checkout_id)
+        .bind(&user.0)
+        .bind(&request.idempotency_key)
+        .bind(plan.as_str())
+        .bind(price_id)
+        .bind(stripe.livemode)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        (
+            checkout_id,
+            plan.as_str().to_owned(),
+            "creating".to_owned(),
+            price_id.to_owned(),
+            stripe.livemode,
+            None,
+        )
+    };
+    transaction.commit().await.map_err(database_error)?;
+    if row.1 != plan.as_str() {
+        return Err(ApiError::conflict(
+            "another subscription Checkout is already open for a different plan",
+        ));
+    }
+    if row.3 != price_id || row.4 != stripe.livemode {
+        return Err(ApiError::conflict(
+            "the existing subscription Checkout uses different billing configuration",
+        ));
+    }
+    if !matches!(row.2.as_str(), "creating" | "checkout_open") {
+        return Err(ApiError::conflict(
+            "subscription Checkout is already complete",
+        ));
+    }
+    let session = if let Some(session_id) = row.5.as_deref() {
+        stripe
+            .retrieve_checkout_session(session_id)
+            .await
+            .map_err(stripe_api_error)?
+    } else {
+        let (success_url, cancel_url) = subscription_return_urls(&state.billing.app_url)?;
+        let customer_id = preferred_customer_id(&state.database, &user.0).await?;
+        stripe
+            .create_subscription_checkout_session(
+                &row.0,
+                &user.0,
+                plan,
+                customer_id.as_deref(),
+                &success_url,
+                &cancel_url,
+            )
+            .await
+            .map_err(stripe_api_error)?
+    };
+    validate_created_subscription_session(&stripe, &row.0, &session)?;
+    let checkout_url = session
+        .url
+        .as_deref()
+        .ok_or_else(|| stripe_invalid("Stripe did not return a Checkout URL"))?;
+    let checkout_url = stripe
+        .validate_checkout_url(checkout_url)
+        .map_err(stripe_invalid_error)?;
+    sqlx::query(
+        "UPDATE billing_subscription_checkouts
+         SET state = 'checkout_open', provider_checkout_session_id = $1, updated_at = $2
+         WHERE id = $3 AND account_id = $4 AND state IN ('creating', 'checkout_open')
+           AND (provider_checkout_session_id IS NULL OR provider_checkout_session_id = $1)",
+    )
+    .bind(&session.id)
+    .bind(now)
+    .bind(&row.0)
+    .bind(&user.0)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    Ok(Json(CreateSubscriptionCheckoutResponse {
+        checkout_url: checkout_url.to_string(),
+    }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/me/billing/portal-sessions",
+    summary = "Create a Stripe Billing Portal session",
+    responses(
+        (status = 200, body = CreatePortalSessionResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 404, body = ErrorResponse),
+        (status = 502, body = ErrorResponse),
+        (status = 503, body = ErrorResponse)
+    ),
+    security(("browserSession" = [])),
+    tag = "billing"
+)]
+async fn create_portal_session(
+    State(state): State<AppState>,
+    jar: CookieJar,
+) -> ApiResult<Json<CreatePortalSessionResponse>> {
+    let stripe = state.billing.stripe()?.clone();
+    let user = authenticated_web_user(&state, &jar).await?;
+    let customer_id = active_subscription_customer_id(&state.database, &user.0)
+        .await?
+        .ok_or_else(|| ApiError::not_found("This account has no active Stripe subscription"))?;
+    let mut return_url = state.billing.app_url.clone();
+    return_url.set_fragment(Some("/dashboard/credits"));
+    let portal = stripe
+        .create_portal_session(&customer_id, &return_url)
+        .await
+        .map_err(stripe_api_error)?;
+    validate_stripe_id(&portal.id, "bps_").map_err(stripe_invalid_error)?;
+    if portal.customer.id() != customer_id || portal.livemode != stripe.livemode {
+        return Err(stripe_invalid(
+            "Stripe Billing Portal Session did not match the account",
+        ));
+    }
+    let portal_url = stripe
+        .validate_portal_url(&portal.url)
+        .map_err(stripe_invalid_error)?;
+    Ok(Json(CreatePortalSessionResponse {
+        portal_url: portal_url.to_string(),
+    }))
 }
 
 const PURCHASE_COLUMNS: &str = "id, account_id, state, currency, unit_amount_cents,
@@ -602,7 +1101,7 @@ async fn create_checkout_session(
     .bind(request.quantity_gb)
     .bind(request.quantity_gb.saturating_mul(BYTES_PER_GB))
     .bind(request.quantity_gb.saturating_mul(CENTS_PER_GB))
-    .bind(stripe.price_id.as_ref())
+    .bind(stripe.credit_price_id.as_ref())
     .bind(stripe.livemode)
     .bind(now)
     .execute(&state.database)
@@ -614,7 +1113,7 @@ async fn create_checkout_session(
         || purchase.unit_amount_cents != CENTS_PER_GB
         || purchase.credit_bytes != request.quantity_gb.saturating_mul(BYTES_PER_GB)
         || purchase.expected_amount_cents != request.quantity_gb.saturating_mul(CENTS_PER_GB)
-        || purchase.provider_price_id != stripe.price_id.as_ref()
+        || purchase.provider_price_id != stripe.credit_price_id.as_ref()
         || purchase.livemode != stripe.livemode
     {
         return Err(ApiError::conflict(
@@ -634,10 +1133,12 @@ async fn create_checkout_session(
             .map_err(stripe_api_error)?
     } else {
         let (success_url, cancel_url) = checkout_return_urls(&state.billing.app_url, &purchase.id)?;
+        let customer_id = preferred_customer_id(&state.database, &user.0).await?;
         stripe
             .create_checkout_session(
                 &purchase.id,
                 purchase.quantity_gb,
+                customer_id.as_deref(),
                 &success_url,
                 &cancel_url,
             )
@@ -761,7 +1262,7 @@ fn validate_checkout_request(request: &CreateCheckoutSessionRequest) -> ApiResul
 
 fn validate_configured_price(stripe: &StripeClient, price: &StripeConfiguredPrice) -> Result<()> {
     validate_stripe_id(&price.id, "price_")?;
-    if price.id != stripe.price_id.as_ref()
+    if price.id != stripe.credit_price_id.as_ref()
         || !price.active
         || price.livemode != stripe.livemode
         || price.currency != "usd"
@@ -774,6 +1275,37 @@ fn validate_configured_price(stripe: &StripeClient, price: &StripeConfiguredPric
         bail!(
             "configured Stripe Price must be an active, matching-environment, one-time USD Price at {CENTS_PER_GB} cents per GB"
         );
+    }
+    Ok(())
+}
+
+fn validate_subscription_price(
+    stripe: &StripeClient,
+    plan: ServicePlan,
+    price: &StripeConfiguredPrice,
+) -> Result<()> {
+    let expected_cents = match plan {
+        ServicePlan::OneGb => 999,
+        ServicePlan::TenGb => 4_999,
+        ServicePlan::Free => bail!("the Free plan has no subscription Price"),
+    };
+    let recurring = price.recurring.as_ref();
+    if price.id != stripe.subscription_price_id(plan)?
+        || !price.active
+        || price.livemode != stripe.livemode
+        || price.currency != "usd"
+        || price.unit_amount != Some(expected_cents)
+        || price.billing_scheme != "per_unit"
+        || price.price_type != "recurring"
+        || recurring.is_none_or(|recurring| {
+            recurring.interval != "month"
+                || recurring.interval_count != 1
+                || recurring.usage_type != "licensed"
+        })
+        || price.custom_unit_amount.is_some()
+        || price.transform_quantity.is_some()
+    {
+        bail!("configured subscription Price does not match the selected monthly USD plan");
     }
     Ok(())
 }
@@ -805,6 +1337,86 @@ fn checkout_return_urls(app_url: &Url, purchase_id: &str) -> ApiResult<(Url, Url
     let success = build("success")?;
     let cancel = build("cancelled")?;
     Ok((success, cancel))
+}
+
+fn subscription_return_urls(app_url: &Url) -> ApiResult<(Url, Url)> {
+    let build = |outcome: &str| -> ApiResult<Url> {
+        let mut url = app_url
+            .join("/")
+            .map_err(|error| ApiError::internal(error.into()))?;
+        url.set_fragment(Some(&format!("/dashboard/credits?subscription={outcome}")));
+        Ok(url)
+    };
+    Ok((build("success")?, build("cancelled")?))
+}
+
+fn validate_created_subscription_session(
+    stripe: &StripeClient,
+    checkout_id: &str,
+    session: &StripeCheckoutSession,
+) -> ApiResult<()> {
+    validate_stripe_id(&session.id, "cs_").map_err(stripe_invalid_error)?;
+    if session.livemode != stripe.livemode
+        || session.mode.as_deref() != Some("subscription")
+        || session.status.as_deref() != Some("open")
+        || session.client_reference_id.as_deref() != Some(checkout_id)
+        || session.metadata.get("billing_kind").map(String::as_str) != Some("subscription")
+        || session
+            .metadata
+            .get("subscription_checkout_id")
+            .map(String::as_str)
+            != Some(checkout_id)
+        || session.metadata.get("schema_version").map(String::as_str) != Some("2")
+    {
+        return Err(stripe_invalid(
+            "Stripe Checkout Session did not match the local subscription",
+        ));
+    }
+    Ok(())
+}
+
+async fn preferred_customer_id(
+    database: &super::DatabasePool,
+    account_id: &str,
+) -> ApiResult<Option<String>> {
+    let subscription_customer = sqlx::query_scalar(
+        "SELECT provider_customer_id FROM billing_subscriptions
+         WHERE account_id = $1
+         ORDER BY (status NOT IN ('canceled', 'incomplete_expired')) DESC,
+                  updated_at DESC
+         LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_optional(database)
+    .await
+    .map_err(database_error)?;
+    if subscription_customer.is_some() {
+        return Ok(subscription_customer);
+    }
+    sqlx::query_scalar(
+        "SELECT provider_customer_id FROM billing_purchases
+         WHERE account_id = $1 AND provider_customer_id IS NOT NULL
+         ORDER BY updated_at DESC, id DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_optional(database)
+    .await
+    .map_err(database_error)
+}
+
+async fn active_subscription_customer_id(
+    database: &super::DatabasePool,
+    account_id: &str,
+) -> ApiResult<Option<String>> {
+    sqlx::query_scalar(
+        "SELECT provider_customer_id FROM billing_subscriptions
+         WHERE account_id = $1 AND status NOT IN ('canceled', 'incomplete_expired')
+         ORDER BY updated_at DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_optional(database)
+    .await
+    .map_err(database_error)
 }
 
 fn validate_created_session(
@@ -934,7 +1546,11 @@ async fn stripe_webhook(
                     "Stripe Checkout response identifier did not match the event",
                 ));
             }
-            process_checkout_event(&state, &stripe, &event, session, now).await?;
+            if session.metadata.get("billing_kind").map(String::as_str) == Some("subscription") {
+                process_subscription_checkout_event(&state, &stripe, &event, session, now).await?;
+            } else {
+                process_checkout_event(&state, &stripe, &event, session, now).await?;
+            }
         }
         "checkout.session.async_payment_failed" | "checkout.session.expired" => {
             let Some(session_id) = object_id else {
@@ -953,7 +1569,34 @@ async fn stripe_webhook(
                     "Stripe Checkout response identifier did not match the event",
                 ));
             }
-            process_checkout_failure_event(&state, &event, session, now).await?;
+            if session.metadata.get("billing_kind").map(String::as_str) == Some("subscription") {
+                process_subscription_checkout_failure(&state, &event, &session, now).await?;
+            } else {
+                process_checkout_failure_event(&state, &event, session, now).await?;
+            }
+        }
+        "customer.subscription.created"
+        | "customer.subscription.updated"
+        | "customer.subscription.deleted"
+        | "customer.subscription.paused"
+        | "customer.subscription.resumed" => {
+            let Some(subscription_id) = object_id else {
+                reject_event(&state.database, &event.id, "missing_object_id", now).await?;
+                return Err(ApiError::bad_request(
+                    "Stripe subscription event has no object identifier",
+                ));
+            };
+            let subscription = stripe
+                .retrieve_subscription(&subscription_id)
+                .await
+                .map_err(stripe_api_error)?;
+            if subscription.id != subscription_id {
+                reject_event(&state.database, &event.id, "object_id_mismatch", now).await?;
+                return Err(ApiError::bad_request(
+                    "Stripe subscription response identifier did not match the event",
+                ));
+            }
+            reconcile_subscription(&state, &stripe, &event, &subscription, now).await?;
         }
         "refund.created" | "refund.updated" | "refund.failed" => {
             let Some(refund_id) = object_id else {
@@ -1047,7 +1690,38 @@ async fn stripe_webhook(
                     "Stripe PaymentIntent response did not match the charge",
                 ));
             }
-            process_dispute_event(&state, &event, &dispute, &charge, &payment_intent, now).await?;
+            if let Some(invoice_payment) = stripe
+                .invoice_payment_for_payment_intent(payment_intent_id)
+                .await
+                .map_err(stripe_api_error)?
+            {
+                let invoice_id = invoice_payment.invoice.id();
+                let invoice = stripe
+                    .retrieve_invoice(invoice_id)
+                    .await
+                    .map_err(stripe_api_error)?;
+                if invoice.id != invoice_id {
+                    reject_event(&state.database, &event.id, "object_id_mismatch", now).await?;
+                    return Err(ApiError::bad_request(
+                        "Stripe Invoice response did not match the charge",
+                    ));
+                }
+                process_subscription_dispute_event(
+                    &state,
+                    &stripe,
+                    &event,
+                    &dispute,
+                    &charge,
+                    &payment_intent,
+                    &invoice_payment,
+                    &invoice,
+                    now,
+                )
+                .await?;
+            } else {
+                process_dispute_event(&state, &event, &dispute, &charge, &payment_intent, now)
+                    .await?;
+            }
         }
         _ => {
             finish_event(&state.database, &event.id, "ignored", None, now).await?;
@@ -1191,6 +1865,259 @@ async fn reject_event(
         processed_at,
     )
     .await
+}
+
+async fn process_subscription_checkout_event(
+    state: &AppState,
+    stripe: &StripeClient,
+    event: &StripeEvent,
+    session: StripeCheckoutSession,
+    now: i64,
+) -> ApiResult<()> {
+    let checkout_id = session
+        .metadata
+        .get("subscription_checkout_id")
+        .filter(|value| {
+            validate_internal_id(value, "invalid subscription checkout binding").is_ok()
+        })
+        .ok_or_else(|| ApiError::bad_request("Stripe subscription Checkout binding is invalid"))?;
+    if session.mode.as_deref() != Some("subscription")
+        || session.status.as_deref() != Some("complete")
+        || session.client_reference_id.as_deref() != Some(checkout_id)
+    {
+        reject_event(&state.database, &event.id, "checkout_mismatch", now).await?;
+        return Err(ApiError::bad_request(
+            "Stripe subscription Checkout Session did not match the local checkout",
+        ));
+    }
+    let subscription_id = session
+        .subscription
+        .as_ref()
+        .map(Expandable::id)
+        .ok_or_else(|| ApiError::bad_request("Stripe Checkout has no subscription"))?;
+    let customer_id = session
+        .customer
+        .as_ref()
+        .map(Expandable::id)
+        .ok_or_else(|| ApiError::bad_request("Stripe Checkout has no customer"))?;
+    validate_stripe_id(subscription_id, "sub_").map_err(stripe_invalid_error)?;
+    validate_stripe_id(customer_id, "cus_").map_err(stripe_invalid_error)?;
+    let row = sqlx::query_as::<_, (String, String, String, String, bool, Option<String>)>(
+        "SELECT account_id, target_plan, state, provider_price_id, livemode,
+                provider_checkout_session_id
+         FROM billing_subscription_checkouts WHERE id = $1",
+    )
+    .bind(checkout_id)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| ApiError::bad_request("Stripe subscription Checkout is not recognized"))?;
+    let plan = parse_subscription_plan(&row.1)?;
+    if row.2 != "checkout_open"
+        || row.3
+            != stripe
+                .subscription_price_id(plan)
+                .map_err(stripe_invalid_error)?
+        || row.4 != stripe.livemode
+        || row.5.as_deref() != Some(&session.id)
+    {
+        reject_event(&state.database, &event.id, "checkout_mismatch", now).await?;
+        return Err(ApiError::bad_request(
+            "Stripe subscription Checkout Session did not match the local checkout",
+        ));
+    }
+    let subscription = stripe
+        .retrieve_subscription(subscription_id)
+        .await
+        .map_err(stripe_api_error)?;
+    validate_subscription(stripe, &row.0, plan, customer_id, &subscription)?;
+    store_subscription(state, &row.0, plan, &subscription, now).await?;
+    sqlx::query(
+        "UPDATE billing_subscription_checkouts
+         SET state = 'completed', provider_customer_id = $1,
+             provider_subscription_id = $2, updated_at = $3
+         WHERE id = $4 AND state = 'checkout_open'",
+    )
+    .bind(customer_id)
+    .bind(subscription_id)
+    .bind(now)
+    .bind(checkout_id)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    finish_event(&state.database, &event.id, "processed", None, now).await
+}
+
+async fn process_subscription_checkout_failure(
+    state: &AppState,
+    event: &StripeEvent,
+    session: &StripeCheckoutSession,
+    now: i64,
+) -> ApiResult<()> {
+    let checkout_id = session
+        .metadata
+        .get("subscription_checkout_id")
+        .ok_or_else(|| ApiError::bad_request("Stripe subscription Checkout binding is missing"))?;
+    sqlx::query(
+        "UPDATE billing_subscription_checkouts SET state = 'expired', updated_at = $1
+         WHERE id = $2 AND provider_checkout_session_id = $3 AND state = 'checkout_open'",
+    )
+    .bind(now)
+    .bind(checkout_id)
+    .bind(&session.id)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    finish_event(&state.database, &event.id, "processed", None, now).await
+}
+
+async fn reconcile_subscription(
+    state: &AppState,
+    stripe: &StripeClient,
+    event: &StripeEvent,
+    subscription: &StripeSubscription,
+    now: i64,
+) -> ApiResult<()> {
+    let existing_account: Option<String> = sqlx::query_scalar(
+        "SELECT account_id FROM billing_subscriptions WHERE provider_subscription_id = $1",
+    )
+    .bind(&subscription.id)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?;
+    let account_id = existing_account
+        .or_else(|| subscription.metadata.get("account_id").cloned())
+        .ok_or_else(|| ApiError::bad_request("Stripe subscription has no account binding"))?;
+    let price_id = subscription_price(subscription)?;
+    let plan = plan_for_price(stripe, price_id)?;
+    validate_subscription(
+        stripe,
+        &account_id,
+        plan,
+        subscription.customer.id(),
+        subscription,
+    )?;
+    store_subscription(state, &account_id, plan, subscription, now).await?;
+    finish_event(&state.database, &event.id, "processed", None, now).await
+}
+
+fn validate_subscription(
+    stripe: &StripeClient,
+    account_id: &str,
+    plan: ServicePlan,
+    customer_id: &str,
+    subscription: &StripeSubscription,
+) -> ApiResult<()> {
+    validate_stripe_id(&subscription.id, "sub_").map_err(stripe_invalid_error)?;
+    validate_stripe_id(customer_id, "cus_").map_err(stripe_invalid_error)?;
+    if subscription.livemode != stripe.livemode
+        || subscription.customer.id() != customer_id
+        || subscription.metadata.get("account_id").map(String::as_str) != Some(account_id)
+        || !matches!(
+            subscription.status.as_str(),
+            "trialing"
+                | "active"
+                | "past_due"
+                | "paused"
+                | "unpaid"
+                | "canceled"
+                | "incomplete"
+                | "incomplete_expired"
+        )
+        || subscription_price(subscription)?
+            != stripe
+                .subscription_price_id(plan)
+                .map_err(stripe_invalid_error)?
+    {
+        return Err(stripe_invalid(
+            "Stripe subscription did not match the local plan",
+        ));
+    }
+    Ok(())
+}
+
+fn subscription_price(subscription: &StripeSubscription) -> ApiResult<&str> {
+    if subscription.items.has_more || subscription.items.data.len() != 1 {
+        return Err(stripe_invalid(
+            "Stripe subscription must contain exactly one item",
+        ));
+    }
+    let item = &subscription.items.data[0];
+    if item.quantity != Some(1) {
+        return Err(stripe_invalid("Stripe subscription quantity must be one"));
+    }
+    Ok(&item.price.id)
+}
+
+fn plan_for_price(stripe: &StripeClient, price_id: &str) -> ApiResult<ServicePlan> {
+    if price_id == stripe.one_gb_price_id.as_ref() {
+        Ok(ServicePlan::OneGb)
+    } else if price_id == stripe.ten_gb_price_id.as_ref() {
+        Ok(ServicePlan::TenGb)
+    } else {
+        Err(stripe_invalid("Stripe subscription uses an unknown Price"))
+    }
+}
+
+fn parse_subscription_plan(value: &str) -> ApiResult<ServicePlan> {
+    match value {
+        "one_gb" => Ok(ServicePlan::OneGb),
+        "ten_gb" => Ok(ServicePlan::TenGb),
+        _ => Err(ApiError::internal(anyhow!("invalid subscription plan"))),
+    }
+}
+
+async fn store_subscription(
+    state: &AppState,
+    account_id: &str,
+    plan: ServicePlan,
+    subscription: &StripeSubscription,
+    now: i64,
+) -> ApiResult<()> {
+    let price_id = subscription_price(subscription)?;
+    let current_period_end = subscription
+        .items
+        .data
+        .first()
+        .and_then(|item| item.current_period_end);
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    let stored = sqlx::query(
+        "INSERT INTO billing_subscriptions
+             (provider_subscription_id, account_id, provider, provider_customer_id,
+              provider_price_id, service_plan, status, livemode, current_period_end,
+              cancel_at_period_end, created_at, updated_at)
+         VALUES ($2, $1, 'stripe', $3, $4, $5, $6, $7, $8, $9, $10, $10)
+         ON CONFLICT (provider_subscription_id) DO UPDATE
+         SET provider_customer_id = EXCLUDED.provider_customer_id,
+             provider_price_id = EXCLUDED.provider_price_id,
+             service_plan = EXCLUDED.service_plan,
+             status = EXCLUDED.status,
+             livemode = EXCLUDED.livemode,
+             current_period_end = EXCLUDED.current_period_end,
+             cancel_at_period_end = EXCLUDED.cancel_at_period_end,
+             updated_at = EXCLUDED.updated_at
+         WHERE billing_subscriptions.account_id = EXCLUDED.account_id",
+    )
+    .bind(account_id)
+    .bind(&subscription.id)
+    .bind(subscription.customer.id())
+    .bind(price_id)
+    .bind(plan.as_str())
+    .bind(&subscription.status)
+    .bind(subscription.livemode)
+    .bind(current_period_end)
+    .bind(subscription.cancel_at_period_end)
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if stored.rows_affected() != 1 {
+        return Err(ApiError::bad_request(
+            "Stripe subscription is already bound to another account",
+        ));
+    }
+    recompute_account_billing_state(&mut transaction, account_id, now).await?;
+    transaction.commit().await.map_err(database_error)
 }
 
 async fn process_checkout_failure_event(
@@ -1662,6 +2589,151 @@ async fn process_dispute_event(
     Ok(())
 }
 
+async fn process_subscription_dispute_event(
+    state: &AppState,
+    stripe: &StripeClient,
+    event: &StripeEvent,
+    dispute: &StripeDispute,
+    charge: &StripeCharge,
+    payment_intent: &StripePaymentIntent,
+    invoice_payment: &StripeInvoicePayment,
+    invoice: &StripeInvoice,
+    now: i64,
+) -> ApiResult<()> {
+    let active = match (dispute.status.as_str(), event.event_type.as_str()) {
+        ("won", _) => false,
+        ("lost", _) => true,
+        (_, "charge.dispute.funds_withdrawn") => true,
+        (_, "charge.dispute.funds_reinstated") => false,
+        _ => {
+            finish_event(&state.database, &event.id, "ignored", None, now).await?;
+            return Ok(());
+        }
+    };
+    let subscription_id = invoice
+        .parent
+        .as_ref()
+        .filter(|parent| parent.kind == "subscription_details")
+        .and_then(|parent| parent.subscription_details.as_ref())
+        .map(|details| details.subscription.id())
+        .ok_or_else(|| ApiError::bad_request("Stripe Invoice has no subscription binding"))?;
+    validate_stripe_id(subscription_id, "sub_").map_err(stripe_invalid_error)?;
+    let subscription = stripe
+        .retrieve_subscription(subscription_id)
+        .await
+        .map_err(stripe_api_error)?;
+    if subscription.id != subscription_id {
+        reject_event(&state.database, &event.id, "object_id_mismatch", now).await?;
+        return Err(ApiError::bad_request(
+            "Stripe Subscription response did not match the Invoice",
+        ));
+    }
+    let existing_account: Option<String> = sqlx::query_scalar(
+        "SELECT account_id FROM billing_subscriptions WHERE provider_subscription_id = $1",
+    )
+    .bind(subscription_id)
+    .fetch_optional(&state.database)
+    .await
+    .map_err(database_error)?;
+    let account_id = existing_account
+        .or_else(|| subscription.metadata.get("account_id").cloned())
+        .ok_or_else(|| ApiError::bad_request("Stripe subscription has no account binding"))?;
+    let plan = plan_for_price(stripe, subscription_price(&subscription)?)?;
+    validate_subscription(
+        stripe,
+        &account_id,
+        plan,
+        invoice.customer.id(),
+        &subscription,
+    )?;
+    let valid = event.livemode == stripe.livemode
+        && invoice_payment.livemode == event.livemode
+        && invoice_payment.currency == "usd"
+        && invoice_payment.status == "paid"
+        && invoice_payment.invoice.id() == invoice.id
+        && invoice_payment.payment.kind == "payment_intent"
+        && invoice_payment
+            .payment
+            .payment_intent
+            .as_ref()
+            .map(Expandable::id)
+            == Some(payment_intent.id.as_str())
+        && invoice.livemode == event.livemode
+        && invoice.currency == "usd"
+        && charge.livemode == event.livemode
+        && charge.payment_intent.as_deref() == Some(payment_intent.id.as_str())
+        && charge.currency == invoice.currency
+        && charge.amount > 0
+        && dispute.currency == invoice.currency
+        && dispute.amount > 0
+        && dispute.amount <= charge.amount;
+    if !valid {
+        reject_event(
+            &state.database,
+            &event.id,
+            "subscription_dispute_mismatch",
+            now,
+        )
+        .await?;
+        return Err(ApiError::bad_request(
+            "Stripe dispute did not match the subscription Invoice",
+        ));
+    }
+    store_subscription(state, &account_id, plan, &subscription, now).await?;
+
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    if !lock_pending_event(&mut transaction, &event.id).await? {
+        transaction.commit().await.map_err(database_error)?;
+        return Ok(());
+    }
+    let stored = sqlx::query(
+        "INSERT INTO billing_subscription_disputes
+             (provider_dispute_id, provider_subscription_id, account_id,
+              provider_charge_id, amount_cents, currency, active, livemode,
+              created_at, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         ON CONFLICT (provider_dispute_id) DO UPDATE
+         SET active = EXCLUDED.active, updated_at = EXCLUDED.updated_at
+         WHERE billing_subscription_disputes.provider_subscription_id =
+                   EXCLUDED.provider_subscription_id
+           AND billing_subscription_disputes.account_id = EXCLUDED.account_id
+           AND billing_subscription_disputes.provider_charge_id = EXCLUDED.provider_charge_id
+           AND billing_subscription_disputes.amount_cents = EXCLUDED.amount_cents
+           AND billing_subscription_disputes.currency = EXCLUDED.currency
+           AND billing_subscription_disputes.livemode = EXCLUDED.livemode",
+    )
+    .bind(&dispute.id)
+    .bind(subscription_id)
+    .bind(&account_id)
+    .bind(&charge.id)
+    .bind(dispute.amount)
+    .bind(&dispute.currency)
+    .bind(active)
+    .bind(event.livemode)
+    .bind(event.created)
+    .bind(now)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if stored.rows_affected() != 1 {
+        finish_event_transaction(
+            &mut transaction,
+            &event.id,
+            "rejected",
+            Some("subscription_dispute_mismatch"),
+            now,
+        )
+        .await?;
+        transaction.commit().await.map_err(database_error)?;
+        return Err(ApiError::bad_request(
+            "Stripe dispute changed its subscription binding",
+        ));
+    }
+    recompute_account_billing_state(&mut transaction, &account_id, now).await?;
+    finish_event_transaction(&mut transaction, &event.id, "processed", None, now).await?;
+    transaction.commit().await.map_err(database_error)
+}
+
 async fn lock_pending_event(
     transaction: &mut Transaction<'_, Postgres>,
     event_id: &str,
@@ -1758,29 +2830,55 @@ async fn recompute_account_billing_state(
     account_id: &str,
     updated_at: i64,
 ) -> ApiResult<()> {
-    let (has_paid_purchase, has_dispute) = sqlx::query_as::<_, (bool, bool)>(
+    let has_dispute = sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(
                     SELECT 1 FROM billing_purchases
-                    WHERE account_id = $1 AND amount_paid_cents > amount_refunded_cents
-                ),
-                EXISTS(
-                    SELECT 1 FROM billing_purchases
                     WHERE account_id = $1 AND amount_disputed_cents > 0
+                    UNION ALL
+                    SELECT 1 FROM billing_subscription_disputes
+                    WHERE account_id = $1 AND active
                 )",
     )
     .bind(account_id)
     .fetch_one(&mut **transaction)
     .await
     .map_err(database_error)?;
+    let subscription = sqlx::query_as::<_, (String, String)>(
+        "SELECT service_plan, status FROM billing_subscriptions
+         WHERE account_id = $1 AND status NOT IN ('canceled', 'incomplete_expired')
+         ORDER BY updated_at DESC LIMIT 1",
+    )
+    .bind(account_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let (service_plan, subscription_review) = match subscription.as_ref() {
+        None => (ServicePlan::Free, false),
+        Some((plan, status)) => {
+            let service_plan = match plan.as_str() {
+                "one_gb" => ServicePlan::OneGb,
+                "ten_gb" => ServicePlan::TenGb,
+                _ => {
+                    return Err(ApiError::internal(anyhow!(
+                        "invalid subscription service plan"
+                    )));
+                }
+            };
+            let review = match status.as_str() {
+                "active" | "trialing" => false,
+                "past_due" | "paused" | "unpaid" | "incomplete" => true,
+                _ => {
+                    return Err(ApiError::internal(anyhow!("invalid subscription status")));
+                }
+            };
+            (service_plan, review)
+        }
+    };
     set_account_billing_state(
         transaction,
         account_id,
-        if has_paid_purchase {
-            ServicePlan::Paid
-        } else {
-            ServicePlan::Free
-        },
-        if has_dispute {
+        service_plan,
+        if has_dispute || subscription_review {
             BillingStatus::Review
         } else {
             BillingStatus::Active
@@ -1888,6 +2986,20 @@ mod tests {
     }
 
     #[test]
+    fn subscription_checkout_returns_to_the_plan_dashboard_hash_route() {
+        let app_url = Url::parse("https://llm-notary.example/base").unwrap();
+        let (success, cancel) = subscription_return_urls(&app_url).unwrap();
+        assert_eq!(
+            success.as_str(),
+            "https://llm-notary.example/#/dashboard/credits?subscription=success"
+        );
+        assert_eq!(
+            cancel.as_str(),
+            "https://llm-notary.example/#/dashboard/credits?subscription=cancelled"
+        );
+    }
+
+    #[test]
     fn configured_price_must_match_the_fixed_credit_offer() {
         let billing = BillingService::for_test(
             Url::parse("http://127.0.0.1:1/v1/").unwrap(),
@@ -1904,10 +3016,125 @@ mod tests {
             price_type: "one_time".to_owned(),
             custom_unit_amount: None,
             transform_quantity: None,
+            recurring: None,
         };
         validate_configured_price(stripe, &price).unwrap();
         price.unit_amount = Some(CENTS_PER_GB + 1);
         assert!(validate_configured_price(stripe, &price).is_err());
+    }
+
+    #[test]
+    fn subscription_prices_must_match_the_two_monthly_plans() {
+        let billing = BillingService::for_test(
+            Url::parse("http://127.0.0.1:1/v1/").unwrap(),
+            Url::parse("https://example.test").unwrap(),
+        );
+        let stripe = billing.stripe().unwrap();
+        let mut price = StripeConfiguredPrice {
+            id: "price_one_gb_fixture".to_owned(),
+            active: true,
+            livemode: false,
+            currency: "usd".to_owned(),
+            unit_amount: Some(999),
+            billing_scheme: "per_unit".to_owned(),
+            price_type: "recurring".to_owned(),
+            custom_unit_amount: None,
+            transform_quantity: None,
+            recurring: Some(StripeRecurring {
+                interval: "month".to_owned(),
+                interval_count: 1,
+                usage_type: "licensed".to_owned(),
+            }),
+        };
+        validate_subscription_price(stripe, ServicePlan::OneGb, &price).unwrap();
+
+        price.id = "price_ten_gb_fixture".to_owned();
+        price.unit_amount = Some(4_999);
+        validate_subscription_price(stripe, ServicePlan::TenGb, &price).unwrap();
+        price.recurring.as_mut().unwrap().interval = "year".to_owned();
+        assert!(validate_subscription_price(stripe, ServicePlan::TenGb, &price).is_err());
+    }
+
+    #[test]
+    fn portal_plan_changes_use_the_configured_price_as_authority() {
+        let billing = BillingService::for_test(
+            Url::parse("http://127.0.0.1:1/v1/").unwrap(),
+            Url::parse("https://example.test").unwrap(),
+        );
+        let stripe = billing.stripe().unwrap();
+        let subscription: StripeSubscription = serde_json::from_value(serde_json::json!({
+            "id": "sub_fixture",
+            "status": "active",
+            "livemode": false,
+            "customer": "cus_fixture",
+            "metadata": { "account_id": "account-1", "service_plan": "one_gb" },
+            "items": {
+                "has_more": false,
+                "data": [{
+                    "price": { "id": "price_ten_gb_fixture" },
+                    "quantity": 1,
+                    "current_period_end": 4_102_444_800_i64
+                }]
+            },
+            "cancel_at_period_end": false
+        }))
+        .unwrap();
+
+        validate_subscription(
+            stripe,
+            "account-1",
+            ServicePlan::TenGb,
+            "cus_fixture",
+            &subscription,
+        )
+        .unwrap();
+        assert_eq!(
+            subscription.items.data[0].current_period_end,
+            Some(4_102_444_800)
+        );
+    }
+
+    #[test]
+    fn recurring_invoice_exposes_its_subscription_binding() {
+        let invoice_payment: StripeInvoicePayment = serde_json::from_value(serde_json::json!({
+            "id": "inpay_fixture",
+            "invoice": "in_fixture",
+            "livemode": false,
+            "currency": "usd",
+            "status": "paid",
+            "payment": {
+                "type": "payment_intent",
+                "payment_intent": "pi_fixture"
+            }
+        }))
+        .unwrap();
+        assert_eq!(invoice_payment.invoice.id(), "in_fixture");
+        assert_eq!(
+            invoice_payment
+                .payment
+                .payment_intent
+                .as_ref()
+                .map(Expandable::id),
+            Some("pi_fixture")
+        );
+        let invoice: StripeInvoice = serde_json::from_value(serde_json::json!({
+            "id": "in_fixture",
+            "livemode": false,
+            "currency": "usd",
+            "customer": "cus_fixture",
+            "parent": {
+                "type": "subscription_details",
+                "subscription_details": { "subscription": "sub_fixture" }
+            }
+        }))
+        .unwrap();
+        let subscription_id = invoice
+            .parent
+            .as_ref()
+            .filter(|parent| parent.kind == "subscription_details")
+            .and_then(|parent| parent.subscription_details.as_ref())
+            .map(|details| details.subscription.id());
+        assert_eq!(subscription_id, Some("sub_fixture"));
     }
 
     #[tokio::test]
@@ -1930,7 +3157,9 @@ mod tests {
             StripeConfig {
                 secret_key: "sk_test_fixture".to_owned(),
                 webhook_secret: "whsec_fixture_secret".to_owned(),
-                price_id: "price_fixture".to_owned(),
+                credit_price_id: "price_fixture".to_owned(),
+                one_gb_price_id: "price_one_gb_fixture".to_owned(),
+                ten_gb_price_id: "price_ten_gb_fixture".to_owned(),
                 livemode: false,
             },
             true,
@@ -2029,7 +3258,7 @@ mod tests {
             "status": if paid { "complete" } else { "open" },
             "livemode": false,
             "payment_status": if paid { "paid" } else { "unpaid" },
-            "amount_total": 1000,
+            "amount_total": 2 * CENTS_PER_GB,
             "currency": "usd",
             "client_reference_id": purchase_id,
             "metadata": { "purchase_id": purchase_id, "schema_version": "1" },
@@ -2037,10 +3266,10 @@ mod tests {
             "payment_intent": if paid {
                 serde_json::json!({
                     "id": "pi_fixture",
-                    "amount_received": 1000,
+                    "amount_received": 2 * CENTS_PER_GB,
                     "currency": "usd",
                     "metadata": { "purchase_id": payment_intent_purchase_id },
-                    "latest_charge": { "id": "ch_fixture", "amount": 1000,
+                    "latest_charge": { "id": "ch_fixture", "amount": 2 * CENTS_PER_GB,
                         "amount_refunded": 0, "currency": "usd", "livemode": false,
                         "payment_intent": "pi_fixture" }
                 })
@@ -2048,7 +3277,7 @@ mod tests {
             "line_items": if paid {
                 serde_json::json!({
                     "has_more": false,
-                    "data": [{ "amount_total": 1000, "currency": "usd", "quantity": 2,
+                    "data": [{ "amount_total": 2 * CENTS_PER_GB, "currency": "usd", "quantity": 2,
                         "price": { "id": "price_fixture" } }]
                 })
             } else { Value::Null }
@@ -2073,7 +3302,7 @@ mod tests {
         let state = state.lock().unwrap();
         Json(serde_json::json!({
             "id": id,
-            "amount": 1000,
+            "amount": 2 * CENTS_PER_GB,
             "amount_refunded": state.amount_refunded,
             "currency": "usd",
             "livemode": false,
@@ -2102,10 +3331,18 @@ mod tests {
         let purchase_id = state.lock().unwrap().purchase_id.clone().unwrap();
         Json(serde_json::json!({
             "id": id,
-            "amount_received": 1000,
+            "amount_received": 2 * CENTS_PER_GB,
             "currency": "usd",
             "latest_charge": "ch_fixture",
             "metadata": { "purchase_id": purchase_id }
+        }))
+    }
+
+    async fn mock_invoice_payments() -> Json<Value> {
+        Json(serde_json::json!({
+            "object": "list",
+            "has_more": false,
+            "data": []
         }))
     }
 
@@ -2150,6 +3387,172 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn subscription_status_and_price_drive_the_account_plan() {
+        let state = test_state(BillingService::disabled_for_test()).await;
+        insert_test_github_user(&state.database, "subscriber", 89, "subscriber").await;
+        let now = unix_timestamp().unwrap();
+        let mut subscription: StripeSubscription = serde_json::from_value(serde_json::json!({
+            "id": "sub_fixture",
+            "status": "active",
+            "livemode": false,
+            "customer": "cus_fixture",
+            "metadata": { "account_id": "subscriber" },
+            "items": {
+                "has_more": false,
+                "data": [{
+                    "price": { "id": "price_one_gb_fixture" },
+                    "quantity": 1,
+                    "current_period_end": now + 2_592_000
+                }]
+            },
+            "cancel_at_period_end": false
+        }))
+        .unwrap();
+
+        store_subscription(&state, "subscriber", ServicePlan::OneGb, &subscription, now)
+            .await
+            .unwrap();
+        let active = crate::service_admission::account_billing_state(&state.database, "subscriber")
+            .await
+            .unwrap();
+        assert_eq!(active.service_plan, ServicePlan::OneGb);
+        assert_eq!(active.billing_status, BillingStatus::Active);
+
+        subscription.items.data[0].price.id = "price_ten_gb_fixture".to_owned();
+        store_subscription(
+            &state,
+            "subscriber",
+            ServicePlan::TenGb,
+            &subscription,
+            now + 1,
+        )
+        .await
+        .unwrap();
+        subscription.status = "past_due".to_owned();
+        store_subscription(
+            &state,
+            "subscriber",
+            ServicePlan::TenGb,
+            &subscription,
+            now + 2,
+        )
+        .await
+        .unwrap();
+        let review = crate::service_admission::account_billing_state(&state.database, "subscriber")
+            .await
+            .unwrap();
+        assert_eq!(review.service_plan, ServicePlan::TenGb);
+        assert_eq!(review.billing_status, BillingStatus::Review);
+
+        subscription.status = "canceled".to_owned();
+        store_subscription(
+            &state,
+            "subscriber",
+            ServicePlan::TenGb,
+            &subscription,
+            now + 3,
+        )
+        .await
+        .unwrap();
+        let canceled =
+            crate::service_admission::account_billing_state(&state.database, "subscriber")
+                .await
+                .unwrap();
+        assert_eq!(canceled.service_plan, ServicePlan::Free);
+        assert_eq!(canceled.billing_status, BillingStatus::Active);
+
+        let replacement: StripeSubscription = serde_json::from_value(serde_json::json!({
+            "id": "sub_replacement",
+            "status": "active",
+            "livemode": false,
+            "customer": "cus_replacement",
+            "metadata": { "account_id": "subscriber" },
+            "items": {
+                "has_more": false,
+                "data": [{
+                    "price": { "id": "price_one_gb_fixture" },
+                    "quantity": 1,
+                    "current_period_end": now + 5_184_000
+                }]
+            },
+            "cancel_at_period_end": false
+        }))
+        .unwrap();
+        store_subscription(
+            &state,
+            "subscriber",
+            ServicePlan::OneGb,
+            &replacement,
+            now + 4,
+        )
+        .await
+        .unwrap();
+        // A delayed event for the canceled subscription updates its history,
+        // not the replacement subscription that now owns the entitlement.
+        store_subscription(
+            &state,
+            "subscriber",
+            ServicePlan::TenGb,
+            &subscription,
+            now + 5,
+        )
+        .await
+        .unwrap();
+        let replaced =
+            crate::service_admission::account_billing_state(&state.database, "subscriber")
+                .await
+                .unwrap();
+        assert_eq!(replaced.service_plan, ServicePlan::OneGb);
+        assert_eq!(replaced.billing_status, BillingStatus::Active);
+        let subscriptions: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM billing_subscriptions WHERE account_id = 'subscriber'",
+        )
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(subscriptions, 2);
+        assert_eq!(
+            active_subscription_customer_id(&state.database, "subscriber")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("cus_replacement")
+        );
+        assert_eq!(
+            preferred_customer_id(&state.database, "subscriber")
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("cus_replacement")
+        );
+
+        sqlx::query(
+            "INSERT INTO billing_subscription_disputes
+                 (provider_dispute_id, provider_subscription_id, account_id,
+                  provider_charge_id, amount_cents, currency, active, livemode,
+                  created_at, updated_at)
+             VALUES ('dp_subscription', 'sub_replacement', 'subscriber',
+                     'ch_subscription', 999, 'usd', TRUE, FALSE, $1, $1)",
+        )
+        .bind(now + 6)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        let mut transaction = state.database.begin().await.unwrap();
+        recompute_account_billing_state(&mut transaction, "subscriber", now + 6)
+            .await
+            .unwrap();
+        transaction.commit().await.unwrap();
+        let disputed =
+            crate::service_admission::account_billing_state(&state.database, "subscriber")
+                .await
+                .unwrap();
+        assert_eq!(disputed.service_plan, ServicePlan::OneGb);
+        assert_eq!(disputed.billing_status, BillingStatus::Review);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn checkout_webhooks_are_idempotent_and_reconcile_refunds_and_disputes() {
         let mock = Arc::new(Mutex::new(MockStripeState {
             dispute_status: "needs_response".to_owned(),
@@ -2164,6 +3567,7 @@ mod tests {
             .route("/v1/charges/{id}", get(mock_charge))
             .route("/v1/disputes/{id}", get(mock_dispute))
             .route("/v1/payment_intents/{id}", get(mock_payment_intent))
+            .route("/v1/invoice_payments", get(mock_invoice_payments))
             .with_state(mock.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -2288,7 +3692,7 @@ mod tests {
         .fetch_one(&state.database)
         .await
         .unwrap();
-        assert_eq!(profile, ("paid".to_owned(), "review".to_owned()));
+        assert_eq!(profile, ("free".to_owned(), "review".to_owned()));
 
         mock.lock().unwrap().dispute_status = "won".to_owned();
         deliver_event(
@@ -2324,9 +3728,9 @@ mod tests {
         .fetch_one(&state.database)
         .await
         .unwrap();
-        assert_eq!(profile, ("paid".to_owned(), "active".to_owned()));
+        assert_eq!(profile, ("free".to_owned(), "active".to_owned()));
 
-        mock.lock().unwrap().amount_refunded = 1000;
+        mock.lock().unwrap().amount_refunded = 2 * CENTS_PER_GB;
         deliver_event(
             &state,
             serde_json::json!({

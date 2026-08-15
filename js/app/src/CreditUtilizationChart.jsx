@@ -26,6 +26,7 @@ function formatMb(value) {
 }
 
 export default function CreditUtilizationChart({ credits, formatBytes, historyDebits = null, historyError = false }) {
+  const notarization = credits.notarization;
   const loading = historyDebits === null;
   const data = aggregateDailyDebits(historyDebits).map((day) => ({
     ...day,
@@ -40,7 +41,7 @@ export default function CreditUtilizationChart({ credits, formatBytes, historyDe
   const summary = `Daily utilization in MB for the last 30 UTC days. Total ${formatMb(totalMb)}. ${usedDays.map((day) => `${day.fullLabel}, ${formatMb(day.mb)}`).join('; ')}.`;
 
   return <section className="dashboard-utilization" aria-labelledby="dashboard-utilization-title">
-    <header><div><span className="eyebrow">Daily utilization</span><h2 id="dashboard-utilization-title">Last 30 days</h2></div><span>MB · UTC</span></header>
+    <header><div><span className="eyebrow">Notarization usage</span><h2 id="dashboard-utilization-title">Last 30 days</h2></div><span>MB · UTC</span></header>
     {historyError ? <div className="dashboard-utilization-plot dashboard-utilization-plot--message" role="alert"><strong>Daily utilization unavailable</strong><span>Refresh the page to try again.</span></div> : loading ? <div className="dashboard-utilization-plot dashboard-utilization-plot--loading" role="status" aria-label="Loading daily utilization"><i /></div> : maxMb === 0 ? <div className="dashboard-utilization-plot dashboard-utilization-plot--message" role="status"><strong>No utilization in the last 30 days</strong><span>Hosted finalization use will appear here in MB.</span></div> :
       <div className="dashboard-utilization-plot" role="img" aria-label={summary}>
         <ResponsiveContainer width="100%" height={190}>
@@ -52,6 +53,6 @@ export default function CreditUtilizationChart({ credits, formatBytes, historyDe
           </BarChart>
         </ResponsiveContainer>
       </div>}
-    <dl><div><dt><i className="dashboard-utilization-period" />30-day use</dt><dd>{loading || historyError ? '—' : formatMb(totalMb)}</dd></div><div><dt>Available</dt><dd>{formatBytes(credits.total_remaining_bytes)}</dd></div><div><dt>Overall budget</dt><dd>{formatBytes(credits.total_granted_bytes)}</dd></div></dl>
+    <dl><div><dt><i className="dashboard-utilization-period" />30-day use</dt><dd>{loading || historyError ? '—' : formatMb(totalMb)}</dd></div><div><dt>Available</dt><dd>{formatBytes(notarization.total_remaining_bytes)}</dd></div><div><dt>Overall budget</dt><dd>{formatBytes(notarization.total_granted_bytes)}</dd></div></dl>
   </section>;
 }

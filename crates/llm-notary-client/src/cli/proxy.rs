@@ -486,12 +486,27 @@ fn proxy_error_response(error: &anyhow::Error) -> Response {
         )
             .into_response();
     };
-    if admission.rejection() == crate::NotaryAdmissionRejection::FinalizationCreditsExhausted {
+    if matches!(
+        admission.rejection(),
+        crate::NotaryAdmissionRejection::CaptureCreditsExhausted
+            | crate::NotaryAdmissionRejection::FinalizationCreditsExhausted
+    ) {
+        let (code, message) = match admission.rejection() {
+            crate::NotaryAdmissionRejection::CaptureCreditsExhausted => (
+                "capture_credits_exhausted",
+                "Hosted capture allowance is exhausted. Wait for the monthly reset.",
+            ),
+            crate::NotaryAdmissionRejection::FinalizationCreditsExhausted => (
+                "finalization_credits_exhausted",
+                "Hosted notarization allowance is exhausted. Wait for the monthly reset or buy additional credits.",
+            ),
+            _ => unreachable!(),
+        };
         let body = serde_json::json!({
             "error": {
                 "type": "hosted_admission",
-                "code": "finalization_credits_exhausted",
-                "message": "Hosted finalization credits are exhausted. Wait for the monthly reset or claim an eligible credit offer.",
+                "code": code,
+                "message": message,
             }
         });
         return (
@@ -517,6 +532,9 @@ fn proxy_error_response(error: &anyhow::Error) -> Response {
         }
         crate::NotaryAdmissionRejection::CoordinatorUnavailable => {
             "LLM Notary admission is temporarily unavailable. Retry shortly."
+        }
+        crate::NotaryAdmissionRejection::CaptureCreditsExhausted => {
+            unreachable!("credit exhaustion is handled before capacity responses")
         }
         crate::NotaryAdmissionRejection::FinalizationCreditsExhausted => {
             unreachable!("credit exhaustion is handled before capacity responses")

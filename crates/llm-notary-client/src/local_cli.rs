@@ -1755,10 +1755,11 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
                 }
                 if let Some(credits) = value.get("credits") {
                     output.push_str(&format!(
-                        "\ncredits {} available ({} included, {} additional)",
-                        format_bytes(value_i64(credits, "/total_remaining_bytes")),
-                        format_bytes(value_i64(credits, "/included_monthly_remaining_bytes")),
-                        format_bytes(value_i64(credits, "/supplemental_remaining_bytes")),
+                        "\nnotarization {} available ({} included, {} additional); capture {} available",
+                        format_bytes(value_i64(credits, "/notarization/total_remaining_bytes")),
+                        format_bytes(value_i64(credits, "/notarization/included_monthly_remaining_bytes")),
+                        format_bytes(value_i64(credits, "/notarization/supplemental_remaining_bytes")),
+                        format_bytes(value_i64(credits, "/capture/total_remaining_bytes")),
                     ));
                 }
                 Ok(output)

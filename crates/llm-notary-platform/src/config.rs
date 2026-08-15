@@ -38,12 +38,14 @@ pub struct BillingConfig {
     pub stripe: Option<StripeConfig>,
 }
 
-/// Stripe secrets and the single authoritative hosted-credit Price.
+/// Stripe secrets and the authoritative recurring-plan and credit Prices.
 #[derive(Clone)]
 pub struct StripeConfig {
     pub(crate) secret_key: String,
     pub(crate) webhook_secret: String,
-    pub(crate) price_id: String,
+    pub(crate) credit_price_id: String,
+    pub(crate) one_gb_price_id: String,
+    pub(crate) ten_gb_price_id: String,
     pub(crate) livemode: bool,
 }
 
@@ -60,7 +62,8 @@ pub struct AdmissionConfig {
     pub global_finalize_concurrency: i64,
     pub public: AdmissionPolicy,
     pub free: AdmissionPolicy,
-    pub paid: AdmissionPolicy,
+    pub one_gb: AdmissionPolicy,
+    pub ten_gb: AdmissionPolicy,
 }
 
 #[derive(Clone, Debug)]
@@ -71,7 +74,8 @@ pub struct AdmissionPolicy {
     pub max_frame_bytes: i64,
     pub max_private_chunk_bytes: i64,
     pub max_private_chunk_commitments: i64,
-    pub monthly_finalization_bytes: i64,
+    pub monthly_notarization_bytes: i64,
+    pub monthly_capture_bytes: i64,
 }
 
 /// Browser OAuth providers and public-origin configuration.
@@ -139,8 +143,15 @@ impl BillingConfig {
             "LLM_NOTARY_STRIPE_WEBHOOK_SECRET",
             "LLM_NOTARY_STRIPE_WEBHOOK_SECRET_FILE",
         )?;
-        let price_id = optional_env("LLM_NOTARY_STRIPE_PRICE_ID")?;
-        if secret_key.is_none() && webhook_secret.is_none() && price_id.is_none() {
+        let credit_price_id = optional_env("LLM_NOTARY_STRIPE_CREDIT_PRICE_ID")?;
+        let one_gb_price_id = optional_env("LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID")?;
+        let ten_gb_price_id = optional_env("LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID")?;
+        if secret_key.is_none()
+            && webhook_secret.is_none()
+            && credit_price_id.is_none()
+            && one_gb_price_id.is_none()
+            && ten_gb_price_id.is_none()
+        {
             return Ok(Self { stripe: None });
         }
         let secret_key = secret_key.ok_or_else(|| {
@@ -151,7 +162,12 @@ impl BillingConfig {
                 "LLM_NOTARY_STRIPE_WEBHOOK_SECRET or LLM_NOTARY_STRIPE_WEBHOOK_SECRET_FILE must be set"
             )
         })?;
-        let price_id = price_id.ok_or_else(|| anyhow!("LLM_NOTARY_STRIPE_PRICE_ID must be set"))?;
+        let credit_price_id = credit_price_id
+            .ok_or_else(|| anyhow!("LLM_NOTARY_STRIPE_CREDIT_PRICE_ID must be set"))?;
+        let one_gb_price_id = one_gb_price_id
+            .ok_or_else(|| anyhow!("LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID must be set"))?;
+        let ten_gb_price_id = ten_gb_price_id
+            .ok_or_else(|| anyhow!("LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID must be set"))?;
         let livemode = if secret_key.starts_with("sk_test_") {
             false
         } else if secret_key.starts_with("sk_live_") {
@@ -165,14 +181,22 @@ impl BillingConfig {
         if !webhook_secret.starts_with("whsec_") || webhook_secret.len() > 256 {
             bail!("Stripe webhook secret must be a bounded whsec_ secret");
         }
-        if !price_id.starts_with("price_") || price_id.len() > 255 {
-            bail!("LLM_NOTARY_STRIPE_PRICE_ID must be a bounded Stripe Price identifier");
+        for (name, price_id) in [
+            ("LLM_NOTARY_STRIPE_CREDIT_PRICE_ID", &credit_price_id),
+            ("LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID", &one_gb_price_id),
+            ("LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID", &ten_gb_price_id),
+        ] {
+            if !price_id.starts_with("price_") || price_id.len() > 255 {
+                bail!("{name} must be a bounded Stripe Price identifier");
+            }
         }
         Ok(Self {
             stripe: Some(StripeConfig {
                 secret_key,
                 webhook_secret,
-                price_id,
+                credit_price_id,
+                one_gb_price_id,
+                ten_gb_price_id,
                 livemode,
             }),
         })
@@ -262,7 +286,8 @@ impl AdmissionConfig {
             )?,
             public: AdmissionPolicy::from_env("PUBLIC", AdmissionPolicy::public())?,
             free: AdmissionPolicy::from_env("FREE", AdmissionPolicy::free())?,
-            paid: AdmissionPolicy::from_env("PAID", AdmissionPolicy::paid())?,
+            one_gb: AdmissionPolicy::from_env("ONE_GB", AdmissionPolicy::one_gb())?,
+            ten_gb: AdmissionPolicy::from_env("TEN_GB", AdmissionPolicy::ten_gb())?,
         })
     }
 
@@ -279,7 +304,8 @@ impl AdmissionConfig {
             global_finalize_concurrency: 2,
             public: AdmissionPolicy::public(),
             free: AdmissionPolicy::free(),
-            paid: AdmissionPolicy::paid(),
+            one_gb: AdmissionPolicy::one_gb(),
+            ten_gb: AdmissionPolicy::ten_gb(),
         }
     }
 }
@@ -293,7 +319,8 @@ impl AdmissionPolicy {
             max_frame_bytes: 16 << 20,
             max_private_chunk_bytes: 64 << 10,
             max_private_chunk_commitments: 32,
-            monthly_finalization_bytes: 64 << 20,
+            monthly_notarization_bytes: 50_000_000,
+            monthly_capture_bytes: 50_000_000,
         }
     }
 
@@ -305,11 +332,12 @@ impl AdmissionPolicy {
             max_frame_bytes: 64 << 20,
             max_private_chunk_bytes: 128 << 10,
             max_private_chunk_commitments: 64,
-            monthly_finalization_bytes: 512 << 20,
+            monthly_notarization_bytes: 50_000_000,
+            monthly_capture_bytes: 50_000_000,
         }
     }
 
-    pub(crate) fn paid() -> Self {
+    pub(crate) fn one_gb() -> Self {
         Self {
             capture_concurrency: 8,
             finalize_concurrency: 4,
@@ -317,9 +345,21 @@ impl AdmissionPolicy {
             max_frame_bytes: 128 << 20,
             max_private_chunk_bytes: 256 << 10,
             max_private_chunk_commitments: 128,
-            // Paying increases service limits; it does not replace the Free
-            // monthly allowance or silently mint purchased credits.
-            monthly_finalization_bytes: 512 << 20,
+            monthly_notarization_bytes: 1_000_000_000,
+            monthly_capture_bytes: 1_000_000_000,
+        }
+    }
+
+    pub(crate) fn ten_gb() -> Self {
+        Self {
+            capture_concurrency: 12,
+            finalize_concurrency: 8,
+            max_attestable_http_bytes: 64 << 20,
+            max_frame_bytes: 256 << 20,
+            max_private_chunk_bytes: 256 << 10,
+            max_private_chunk_commitments: 128,
+            monthly_notarization_bytes: 10_000_000_000,
+            monthly_capture_bytes: 10_000_000_000,
         }
     }
 
@@ -343,10 +383,11 @@ impl AdmissionPolicy {
                 "MAX_PRIVATE_CHUNK_COMMITMENTS",
                 defaults.max_private_chunk_commitments,
             )?,
-            monthly_finalization_bytes: value(
-                "MONTHLY_FINALIZATION_BYTES",
-                defaults.monthly_finalization_bytes,
+            monthly_notarization_bytes: value(
+                "MONTHLY_NOTARIZATION_BYTES",
+                defaults.monthly_notarization_bytes,
             )?,
+            monthly_capture_bytes: value("MONTHLY_CAPTURE_BYTES", defaults.monthly_capture_bytes)?,
         })
     }
 }

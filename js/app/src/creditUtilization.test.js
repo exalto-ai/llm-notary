@@ -5,11 +5,12 @@ const NOW = Date.UTC(2026, 7, 9, 18, 30);
 const TODAY = Date.UTC(2026, 7, 9);
 const DAY_MS = 86_400_000;
 
-function entry({ daysAgo = 0, bytes, kind = 'debit', milliseconds = false }) {
+function entry({ daysAgo = 0, bytes, kind = 'debit', creditKind = 'notarization', milliseconds = false }) {
   const timestamp = TODAY - daysAgo * DAY_MS + 43_200_000;
   return {
     id: `${kind}-${daysAgo}-${bytes}`,
     kind,
+    credit_kind: creditKind,
     amount_bytes: bytes,
     created_at: milliseconds ? timestamp : timestamp / 1000,
     display_label: 'Test entry',
@@ -75,7 +76,7 @@ describe('daily credit utilization', () => {
   test('loads paginated history until it crosses the 30-day boundary', async () => {
     const requests = [];
     const pages = [
-      { items: [entry({ bytes: 500_000 }), entry({ kind: 'grant', bytes: 2_000_000 })], next_cursor: 'page-2' },
+      { items: [entry({ bytes: 500_000 }), entry({ bytes: 750_000, creditKind: 'capture' }), entry({ kind: 'grant', bytes: 2_000_000 })], next_cursor: 'page-2' },
       { items: [entry({ daysAgo: 29, bytes: 250_000 }), entry({ daysAgo: 30, bytes: 1_000_000 })], next_cursor: 'page-3' },
     ];
     const result = await loadRecentDebits(async (options) => {

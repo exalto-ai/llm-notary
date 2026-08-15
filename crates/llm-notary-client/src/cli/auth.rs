@@ -86,10 +86,18 @@ pub(crate) struct BillingState {
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub(crate) struct CreditSummary {
+    pub(crate) capture: CreditBalanceSummary,
+    pub(crate) notarization: CreditBalanceSummary,
+    pub(crate) reset_at: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
+pub(crate) struct CreditBalanceSummary {
+    pub(crate) total_granted_bytes: i64,
+    pub(crate) total_used_bytes: i64,
     pub(crate) total_remaining_bytes: i64,
     pub(crate) included_monthly_remaining_bytes: i64,
     pub(crate) supplemental_remaining_bytes: i64,
-    pub(crate) reset_at: i64,
     pub(crate) next_grant_expiration: Option<i64>,
 }
 
@@ -217,10 +225,15 @@ pub(crate) fn hosted_admission_error(error: &anyhow::Error) -> Option<&HostedAdm
 
 pub(crate) fn hosted_admission_denial(code: &str) -> HostedAdmissionError {
     let (status, code, message) = match code {
-        "finalization_credits_exhausted" => (
+        "finalization_credits_exhausted" | "notarization_credits_exhausted" => (
             StatusCode::PAYMENT_REQUIRED,
             "finalization_credits_exhausted",
-            "Hosted finalization credits are exhausted. Wait for the monthly reset or claim an eligible credit offer.",
+            "Hosted notarization allowance is exhausted. Wait for the monthly reset or buy additional credits.",
+        ),
+        "capture_credits_exhausted" => (
+            StatusCode::PAYMENT_REQUIRED,
+            "capture_credits_exhausted",
+            "The monthly hosted capture allowance is exhausted. Wait for the monthly reset or change plans.",
         ),
         _ => (
             StatusCode::BAD_GATEWAY,
@@ -1076,21 +1089,36 @@ mod tests {
     }
 
     #[test]
-    fn whoami_accepts_older_servers_without_billing_fields() {
+    fn whoami_accepts_separate_capture_and_notarization_balances() {
         let response: WhoamiResponse = serde_json::from_value(serde_json::json!({
             "user": { "github_login": "fixture-user" },
             "credential": { "kind": "cli_session", "name": "fixture device" },
             "session": { "device_name": "fixture device" },
+            "billing": { "service_plan": "one_gb", "billing_status": "active" },
             "credits": {
-                "total_remaining_bytes": 1024,
-                "included_monthly_remaining_bytes": 1024,
-                "supplemental_remaining_bytes": 0,
+                "capture": {
+                    "total_granted_bytes": 1024,
+                    "total_used_bytes": 0,
+                    "total_remaining_bytes": 1024,
+                    "included_monthly_remaining_bytes": 1024,
+                    "supplemental_remaining_bytes": 0,
+                    "next_grant_expiration": null
+                },
+                "notarization": {
+                    "total_granted_bytes": 3072,
+                    "total_used_bytes": 1024,
+                    "total_remaining_bytes": 2048,
+                    "included_monthly_remaining_bytes": 1024,
+                    "supplemental_remaining_bytes": 1024,
+                    "next_grant_expiration": null
+                },
                 "reset_at": 4102444800_i64,
-                "next_grant_expiration": null
             }
         }))
         .unwrap();
-        assert!(response.billing.is_none());
+        assert_eq!(response.billing.unwrap().service_plan, "one_gb");
+        assert_eq!(response.credits.capture.total_remaining_bytes, 1024);
+        assert_eq!(response.credits.notarization.total_remaining_bytes, 2048);
     }
 
     #[test]

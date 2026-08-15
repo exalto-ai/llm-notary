@@ -67,6 +67,8 @@ struct LeaseRequest<'a> {
     notary_instance_id: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     outcome: Option<LeaseCompletionOutcome>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    used_allowance_bytes: Option<i64>,
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -90,6 +92,7 @@ struct CoordinatorErrorResponse {
 enum CoordinatorRejection {
     Capacity,
     Denied,
+    CaptureCreditsExhausted,
     FinalizationCreditsExhausted,
     Unavailable(anyhow::Error),
 }
@@ -297,6 +300,7 @@ impl AdmissionCoordinator {
                 lease_id,
                 notary_instance_id: self.instance_id.as_ref(),
                 outcome: None,
+                used_allowance_bytes: None,
             })
             .send()
             .await?
@@ -304,7 +308,12 @@ impl AdmissionCoordinator {
         Ok(response.json::<LeaseRenewed>().await?.lease_expires_at)
     }
 
-    async fn release(&self, lease_id: &str, outcome: LeaseCompletionOutcome) -> Result<()> {
+    async fn release(
+        &self,
+        lease_id: &str,
+        outcome: LeaseCompletionOutcome,
+        used_allowance_bytes: Option<i64>,
+    ) -> Result<()> {
         self.http
             .post(self.endpoint("/api/internal/notary/leases/release")?)
             .bearer_auth(self.service_token.as_ref())
@@ -312,6 +321,7 @@ impl AdmissionCoordinator {
                 lease_id,
                 notary_instance_id: self.instance_id.as_ref(),
                 outcome: Some(outcome),
+                used_allowance_bytes,
             })
             .send()
             .await?
@@ -326,6 +336,11 @@ fn coordinator_rejection(
 ) -> CoordinatorRejection {
     match status {
         reqwest::StatusCode::TOO_MANY_REQUESTS => CoordinatorRejection::Capacity,
+        reqwest::StatusCode::PAYMENT_REQUIRED
+            if error_code == Some("capture_credits_exhausted") =>
+        {
+            CoordinatorRejection::CaptureCreditsExhausted
+        }
         reqwest::StatusCode::PAYMENT_REQUIRED
             if error_code == Some("finalization_credits_exhausted") =>
         {
@@ -959,6 +974,9 @@ pub async fn run() -> Result<()> {
                             }
                         },
                         CoordinatorRejection::Denied => NotaryAdmissionRejection::AdmissionDenied,
+                        CoordinatorRejection::CaptureCreditsExhausted => {
+                            NotaryAdmissionRejection::CaptureCreditsExhausted
+                        }
                         CoordinatorRejection::FinalizationCreditsExhausted => {
                             NotaryAdmissionRejection::FinalizationCreditsExhausted
                         }
@@ -989,7 +1007,7 @@ pub async fn run() -> Result<()> {
                 Err(error) => {
                     tracing::error!(%error, "coordinator returned invalid notary limits");
                     let _ = admission
-                        .release(&lease.lease_id, LeaseCompletionOutcome::ServiceFailed)
+                        .release(&lease.lease_id, LeaseCompletionOutcome::ServiceFailed, None)
                         .await;
                     let _ = write_notary_admission(
                         &mut stream,
@@ -1006,7 +1024,7 @@ pub async fn run() -> Result<()> {
                 Err(error) => {
                     tracing::error!(%error, "coordinator returned an expired notary lease");
                     let _ = admission
-                        .release(&lease.lease_id, LeaseCompletionOutcome::ServiceFailed)
+                        .release(&lease.lease_id, LeaseCompletionOutcome::ServiceFailed, None)
                         .await;
                     let _ = write_notary_admission(
                         &mut stream,
@@ -1020,7 +1038,7 @@ pub async fn run() -> Result<()> {
             if let Err(error) = write_notary_admission(&mut stream, &prelude, Ok(())).await {
                 tracing::debug!(%error, "could not send notary admission acceptance");
                 let _ = admission
-                    .release(&lease.lease_id, LeaseCompletionOutcome::ClientFailed)
+                    .release(&lease.lease_id, LeaseCompletionOutcome::ClientFailed, None)
                     .await;
                 return;
             }
@@ -1054,24 +1072,40 @@ pub async fn run() -> Result<()> {
             let result = timeout(effective_session_timeout, session_and_lease)
                 .instrument(session_span)
                 .await;
-            let (outcome, lease_outcome) = match result {
-                Ok(Ok(())) => ("completed", LeaseCompletionOutcome::Completed),
+            let (outcome, lease_outcome, used_allowance_bytes) = match result {
+                Ok(Ok(session_result)) => {
+                    let used_allowance_bytes = match mode {
+                        NotarySessionMode::Capture => Some(
+                            i64::try_from(session_result.authenticated_transcript_bytes)
+                                .expect("hosted transcript limit fits in i64"),
+                        ),
+                        NotarySessionMode::Finalize => None,
+                    };
+                    (
+                        "completed",
+                        LeaseCompletionOutcome::Completed,
+                        used_allowance_bytes,
+                    )
+                }
                 Ok(Err(error)) => {
                     tracing::warn!(%error, "notary session failed");
                     // Once the client-controlled proof stream begins, protocol,
                     // validation, and transport errors cannot safely be called a
                     // service failure. Do not mint a restoration for them.
-                    ("failed", LeaseCompletionOutcome::ClientFailed)
+                    ("failed", LeaseCompletionOutcome::ClientFailed, None)
                 }
                 Err(_) => {
                     tracing::warn!("notary session timed out");
-                    ("timed_out", LeaseCompletionOutcome::ClientFailed)
+                    ("timed_out", LeaseCompletionOutcome::ClientFailed, None)
                 }
             };
             if let Some(profile) = profile {
                 profile.finish(outcome).await;
             }
-            if let Err(error) = admission.release(&lease.lease_id, lease_outcome).await {
+            if let Err(error) = admission
+                .release(&lease.lease_id, lease_outcome, used_allowance_bytes)
+                .await
+            {
                 counter!("llm_notary_notary_lease_release_failures_total", "mode" => session_mode_label(mode)).increment(1);
                 tracing::warn!(%error, "admission lease release failed; expiry will recover capacity");
             }
@@ -1359,6 +1393,13 @@ mod tests {
                 Some("service_capacity"),
             ),
             CoordinatorRejection::Capacity
+        ));
+        assert!(matches!(
+            coordinator_rejection(
+                reqwest::StatusCode::PAYMENT_REQUIRED,
+                Some("capture_credits_exhausted"),
+            ),
+            CoordinatorRejection::CaptureCreditsExhausted
         ));
         assert!(matches!(
             coordinator_rejection(

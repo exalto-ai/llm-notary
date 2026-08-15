@@ -398,6 +398,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/me/billing/portal-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a Stripe Billing Portal session */
+        post: operations["create_portal_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me/billing/purchases": {
         parameters: {
             query?: never;
@@ -426,6 +443,23 @@ export interface paths {
         get: operations["get_purchase"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/me/billing/subscription-checkout-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a Stripe-hosted subscription Checkout session */
+        post: operations["create_subscription_checkout_session"];
         delete?: never;
         options?: never;
         head?: never;
@@ -710,9 +744,10 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /** @enum {string} */
-        AccessPool: "public" | "free" | "paid";
+        AccessPool: "public" | "free" | "one_gb" | "ten_gb";
         AccountBillingResponse: {
             billing_status: components["schemas"]["BillingStatus"];
+            entitlements: components["schemas"]["PlanEntitlements"];
             purchase_mode: components["schemas"]["BillingPurchaseMode"];
             service_plan: components["schemas"]["ServicePlan"];
         };
@@ -850,6 +885,9 @@ export interface components {
         CreateCliAuthorization: {
             device_name: string;
         };
+        CreatePortalSessionResponse: {
+            portal_url: string;
+        };
         CreatePublishJob: {
             archive_format: string;
             /** @description Accept unexplained high-entropy values after reviewing the disclosure. */
@@ -867,13 +905,35 @@ export interface components {
             share: components["schemas"]["ShareResponse"];
             upload?: null | components["schemas"]["UploadInstructions"];
         };
+        CreateSubscriptionCheckoutRequest: {
+            idempotency_key: string;
+            plan: components["schemas"]["SubscriptionPlan"];
+        };
+        CreateSubscriptionCheckoutResponse: {
+            checkout_url: string;
+        };
         /** @enum {string} */
         CredentialKind: "cli_session" | "api_key";
+        CreditBalanceSummary: {
+            /** Format: int64 */
+            included_monthly_remaining_bytes: number;
+            /** Format: int64 */
+            next_grant_expiration?: number | null;
+            /** Format: int64 */
+            supplemental_remaining_bytes: number;
+            /** Format: int64 */
+            total_granted_bytes: number;
+            /** Format: int64 */
+            total_remaining_bytes: number;
+            /** Format: int64 */
+            total_used_bytes: number;
+        };
         CreditHistoryEntry: {
             /** Format: int64 */
             amount_bytes: number;
             /** Format: int64 */
             created_at: number;
+            credit_kind: components["schemas"]["CreditKind"];
             display_label: string;
             /** Format: int64 */
             expires_at?: number | null;
@@ -883,6 +943,8 @@ export interface components {
         };
         /** @enum {string} */
         CreditHistoryKind: "grant" | "debit" | "adjustment";
+        /** @enum {string} */
+        CreditKind: "capture" | "notarization";
         CreditOffer: {
             /** Format: int64 */
             amount_bytes: number;
@@ -898,20 +960,10 @@ export interface components {
             offers: components["schemas"]["CreditOffer"][];
         };
         CreditSummary: {
-            /** Format: int64 */
-            included_monthly_remaining_bytes: number;
-            /** Format: int64 */
-            next_grant_expiration?: number | null;
+            capture: components["schemas"]["CreditBalanceSummary"];
+            notarization: components["schemas"]["CreditBalanceSummary"];
             /** Format: int64 */
             reset_at: number;
-            /** Format: int64 */
-            supplemental_remaining_bytes: number;
-            /** Format: int64 */
-            total_granted_bytes: number;
-            /** Format: int64 */
-            total_remaining_bytes: number;
-            /** Format: int64 */
-            total_used_bytes: number;
         };
         ErrorResponse: {
             error: string;
@@ -936,6 +988,8 @@ export interface components {
             lease_id: string;
             notary_instance_id: string;
             outcome?: null | components["schemas"]["LeaseCompletionOutcome"];
+            /** Format: int64 */
+            used_allowance_bytes?: number | null;
         };
         ListedShareSummary: {
             /** Format: int64 */
@@ -1020,6 +1074,7 @@ export interface components {
                 amount_bytes: number;
                 /** Format: int64 */
                 created_at: number;
+                credit_kind: components["schemas"]["CreditKind"];
                 display_label: string;
                 /** Format: int64 */
                 expires_at?: number | null;
@@ -1086,6 +1141,17 @@ export interface components {
             }[];
             /** @description Cursor for the next page, or `null` when this page exhausts the query. */
             next_cursor?: string | null;
+        };
+        PlanEntitlements: {
+            /** Format: int64 */
+            monthly_capture_bytes: number;
+            /** Format: int64 */
+            monthly_notarization_bytes: number;
+            /**
+             * Format: int64
+             * @description `None` means there is no fixed plan ceiling; abuse controls still apply.
+             */
+            trace_storage_bytes?: number | null;
         };
         PublicShareDetail: {
             /** Format: int64 */
@@ -1156,7 +1222,7 @@ export interface components {
             refresh_token: string;
         };
         /** @enum {string} */
-        ServicePlan: "free" | "paid";
+        ServicePlan: "free" | "one_gb" | "ten_gb";
         /** @enum {string} */
         ShareReportReason: "sensitive_information" | "harassment" | "illegal_content" | "spam" | "other";
         ShareReportReceipt: {
@@ -1188,10 +1254,14 @@ export interface components {
             /** Format: int64 */
             in_progress: number;
             /** Format: int64 */
+            stored_bytes: number;
+            /** Format: int64 */
             total: number;
         };
         /** @enum {string} */
         ShareVisibility: "unlisted" | "listed";
+        /** @enum {string} */
+        SubscriptionPlan: "one_gb" | "ten_gb";
         /** Format: binary */
         TracePackageBody: string;
         UpdateShareSettings: {
@@ -2028,7 +2098,23 @@ export interface operations {
                 };
                 content?: never;
             };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2364,6 +2450,57 @@ export interface operations {
             };
         };
     };
+    create_portal_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreatePortalSessionResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_purchases: {
         parameters: {
             query?: never;
@@ -2435,6 +2572,69 @@ export interface operations {
                 };
             };
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_subscription_checkout_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSubscriptionCheckoutRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateSubscriptionCheckoutResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3095,6 +3295,14 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            402: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -79,13 +79,20 @@ version `2026-02-25.clover`. Subscribe only to these events:
 - `checkout.session.async_payment_succeeded`
 - `checkout.session.async_payment_failed`
 - `checkout.session.expired`
+- `customer.subscription.created`
+- `customer.subscription.updated`
+- `customer.subscription.deleted`
+- `customer.subscription.paused`
+- `customer.subscription.resumed`
 - `refund.created`, `refund.updated`, and `refund.failed`
 - `charge.dispute.funds_withdrawn`, `charge.dispute.funds_reinstated`, and
   `charge.dispute.closed`
 
-Stage all three Stripe settings before merging a release that enables billing.
-The secret key, Price, and webhook endpoint must all use the same test or live
-environment. Send values over stdin so neither secret enters shell history:
+Stage all five Stripe settings before merging a release that enables billing.
+The secret key, three Prices, and webhook endpoint must all use the same test or
+live environment. The credit Price is a one-time $10 USD Price; the other two
+are recurring monthly Prices for $9.99 and $49.99. Send values over stdin so
+neither secret enters shell history:
 
 ```bash
 read -rs STRIPE_VALUE
@@ -94,7 +101,9 @@ printf 'LLM_NOTARY_STRIPE_SECRET_KEY=%s\n' "$STRIPE_VALUE" | \
 read -rs STRIPE_VALUE
 printf 'LLM_NOTARY_STRIPE_WEBHOOK_SECRET=%s\n' "$STRIPE_VALUE" | \
   flyctl secrets import --stage -a llm-notary-prod-api
-printf '%s\n' 'LLM_NOTARY_STRIPE_PRICE_ID=price_...' | \
+printf '%s\n' 'LLM_NOTARY_STRIPE_CREDIT_PRICE_ID=price_...' \
+  'LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID=price_...' \
+  'LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID=price_...' | \
   flyctl secrets import --stage -a llm-notary-prod-api
 unset STRIPE_VALUE
 ```
@@ -104,22 +113,20 @@ The account API exposes the configured purchase mode as `disabled`, `test`, or
 test-mode warning before exercising a test Price. Do not promote a test secret,
 Price, or webhook endpoint into a live configuration.
 
-Billing must be rolled out in two stages. First deploy the billing-foundation
-migration and admission code to every API Machine, then verify that every
-Machine runs that release before deploying or enabling Stripe Checkout and
-webhook processing. Once a paid ticket, refund, or dispute adjustment has been
-written, the billing-foundation release is the minimum safe rollback version:
-older API images do not understand paid pools or adjustment rows and must not
-serve traffic. A later release may be rolled back only to a version at or above
-that foundation.
+Migration `0021_subscription_plans.sql` intentionally clears prototype billing,
+credit, and active admission rows while preserving accounts and public traces.
+Take a database backup, drain hosted admission traffic, and deploy the migration
+and matching API/notary images as one coordinated maintenance release. Do not
+roll back to an older image afterward: older binaries do not understand the
+separate capture/notarization ledgers or the `one_gb` and `ten_gb` access pools.
 
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private
 `llm-notary-prod-api.flycast` origin and renews the returned PostgreSQL-backed
 lease while the session is active. New sessions fail closed if that control
 plane is unavailable. Public and signed-in Free sessions share this path;
-their credit subjects determine which grants fund finalization. The reusable
-browser/CLI credential stays between the local daemon and API.
+their credit subjects determine which grants fund capture and notarization.
+The reusable browser/CLI credential stays between the local daemon and API.
 
 Preserve the existing notary directory so finalized packages continue to use
 the same timestamp-scoped trust history. Ongoing PostgreSQL and Neon operations

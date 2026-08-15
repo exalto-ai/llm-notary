@@ -211,8 +211,8 @@ never trust all public peers. Rotate the HMAC key only together with an
 incremented `LLM_NOTARY_ANONYMOUS_SUBJECT_HMAC_KEY_VERSION`, knowing that a new
 version starts new anonymous subjects for the current period.
 
-See [Credits and utilization](hosted-credits.md) for the signed-in account,
-supplemental-credit, and address-scoping model.
+See [Plans and usage](hosted-credits.md) for subscription allowances,
+additional notarization credits, trace storage, and address scoping.
 
 ## Storage and database operations
 

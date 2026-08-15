@@ -1646,13 +1646,14 @@
         },
         "additionalProperties": false
       },
-      "CreditSummary": {
+      "CreditBalanceSummary": {
         "type": "object",
         "required": [
+          "total_granted_bytes",
+          "total_used_bytes",
           "total_remaining_bytes",
           "included_monthly_remaining_bytes",
-          "supplemental_remaining_bytes",
-          "reset_at"
+          "supplemental_remaining_bytes"
         ],
         "properties": {
           "included_monthly_remaining_bytes": {
@@ -1666,15 +1667,39 @@
             ],
             "format": "int64"
           },
-          "reset_at": {
-            "type": "integer",
-            "format": "int64"
-          },
           "supplemental_remaining_bytes": {
             "type": "integer",
             "format": "int64"
           },
+          "total_granted_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
           "total_remaining_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total_used_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "CreditSummary": {
+        "type": "object",
+        "required": [
+          "capture",
+          "notarization",
+          "reset_at"
+        ],
+        "properties": {
+          "capture": {
+            "$ref": "#/components/schemas/CreditBalanceSummary"
+          },
+          "notarization": {
+            "$ref": "#/components/schemas/CreditBalanceSummary"
+          },
+          "reset_at": {
             "type": "integer",
             "format": "int64"
           }
