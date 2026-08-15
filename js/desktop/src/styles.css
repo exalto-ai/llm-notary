@@ -309,8 +309,8 @@ h1, h2, p { margin: 0; }
 .setup-trust-diagram figcaption svg { width: 12px; height: 12px; flex: 0 0 auto; color: var(--blue); }
 @keyframes setup-provider-packet { 0%, 4% { opacity: 0; transform: translateX(0); } 7%, 17% { opacity: 1; } 21%, 100% { opacity: 0; transform: translateX(var(--packet-travel)); } }
 @keyframes setup-notary-packet { 0%, 28% { opacity: 0; transform: translateX(0); } 31%, 41% { opacity: 1; } 45%, 100% { opacity: 0; transform: translateX(var(--packet-travel)); } }
-@keyframes setup-local-packet-user { 0%, 47% { opacity: 0; transform: translate(0, 0); } 50% { opacity: 1; transform: translate(0, 0); } 54% { transform: translate(0, 12px); } 61% { opacity: 1; transform: translate(-55px, 12px); } 65%, 100% { opacity: 0; transform: translate(-55px, 24px); } }
-@keyframes setup-local-packet-capture { 0%, 53% { opacity: 0; transform: translate(0, 0); } 56% { opacity: 1; transform: translate(0, 0); } 60% { transform: translate(0, 12px); } 67% { opacity: 1; transform: translate(55px, 12px); } 71%, 100% { opacity: 0; transform: translate(55px, 24px); } }
+@keyframes setup-local-packet-user { 0%, 47% { right: -4px; opacity: 0; transform: translateY(0); } 50% { right: -4px; opacity: 1; transform: translateY(0); } 54% { right: -4px; transform: translateY(12px); } 61% { right: calc(100% - 4px); opacity: 1; transform: translateY(12px); } 65%, 100% { right: calc(100% - 4px); opacity: 0; transform: translateY(24px); } }
+@keyframes setup-local-packet-capture { 0%, 53% { left: -4px; opacity: 0; transform: translateY(0); } 56% { left: -4px; opacity: 1; transform: translateY(0); } 60% { left: -4px; transform: translateY(12px); } 67% { left: calc(100% - 4px); opacity: 1; transform: translateY(12px); } 71%, 100% { left: calc(100% - 4px); opacity: 0; transform: translateY(24px); } }
 @keyframes setup-output-user { 0%, 64%, 76%, 100% { border-color: var(--separator); background: var(--surface); } 68%, 72% { border-color: rgba(23, 105, 224, .55); background: var(--blue-soft); } }
 @keyframes setup-output-capture { 0%, 70%, 82%, 100% { border-color: var(--separator); background: var(--surface); } 74%, 78% { border-color: rgba(23, 105, 224, .55); background: var(--blue-soft); } }
 @keyframes setup-cipher-witness { 0%, 19%, 34%, 100% { color: #9dc4ff; } 23%, 30% { color: #d5e6ff; } }
@@ -384,7 +384,7 @@ h1, h2, p { margin: 0; }
   .home-grid { grid-template-columns: 1fr; }
   .onboarding-content { padding-inline: 38px; }
   .onboarding-aside { padding-inline: 25px; }
-  .setup-trust-flow { --packet-travel: 56px; grid-template-columns: 96px 28px 106px 28px minmax(210px, 1fr); }
+  .setup-trust-flow { --packet-travel: 68px; grid-template-columns: 90px 40px 100px 40px minmax(210px, 1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {
