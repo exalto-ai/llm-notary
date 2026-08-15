@@ -12,6 +12,7 @@ import {
   Gauge,
   KeyRound,
   ListChecks,
+  LockKeyhole,
   Network,
   Play,
   RefreshCw,
@@ -21,6 +22,8 @@ import {
   SlidersHorizontal,
   Square,
   TerminalSquare,
+  UnlockKeyhole,
+  UserRound,
 } from 'lucide-react';
 import {
   completeOnboarding,
@@ -717,23 +720,60 @@ function Onboarding({ state, refresh, onFinish }: {
 function WelcomeStep({ state, onContinue }: { state: DesktopState; onContinue: () => void }) {
   const fresh = !state.agent_configured && !state.vault_configured;
   return <div className="wizard-step welcome-step">
-    <img className="welcome-mark" src={notaryMark} alt="" />
     <span className="wizard-kicker">Welcome to LLM Notary</span>
-    <h1>{fresh ? 'No setup found on this Mac' : 'Finish setting up LLM Notary'}</h1>
+    <h1>Your model response is readable only where it needs to be.</h1>
     <p>{fresh
-      ? 'We checked the standard application folders. Nothing has been configured yet, so this assistant will create the local service safely.'
-      : 'Some local settings already exist. This assistant will preserve them and finish the desktop setup.'}</p>
-    <div className="detection-list">
-      <DetectionRow label="Service configuration" found={state.agent_configured} />
-      <DetectionRow label="Private capture vault" found={state.vault_configured} />
-      <DetectionRow label="Local capture service" found={state.running} />
-    </div>
+      ? 'LLM Notary witnesses an authenticated provider exchange without giving the remote notary your prompt, response, or credentials.'
+      : 'This Mac already has some LLM Notary settings. Setup will preserve them while keeping the same privacy boundary.'}</p>
+    <SetupTrustDiagram />
     <div className="wizard-actions"><button className="mac-button is-primary is-large" onClick={onContinue}>Continue <ChevronRight size={15} /></button></div>
   </div>;
 }
 
-function DetectionRow({ label, found }: { label: string; found: boolean }) {
-  return <div><span className={found ? 'is-found' : ''}>{found ? <Check size={13} /> : '—'}</span><strong>{label}</strong><small>{found ? 'Found' : 'Not configured'}</small></div>;
+function SetupTrustDiagram() {
+  return <figure
+    className="setup-trust-diagram"
+    role="img"
+    aria-label="The model provider sends an encrypted response through the remote notary to LLM Notary on this Mac. The remote notary sees encrypted protocol data, while plaintext is decrypted locally for you and private evidence can be finalized into a notarized trace."
+  >
+    <div className="setup-trust-flow" aria-hidden="true">
+      <section className="setup-trust-node setup-provider-node">
+        <span>Model provider</span>
+        <strong>Authenticated response</strong>
+        <small>Serves the normal request</small>
+      </section>
+      <div className="setup-encrypted-track setup-encrypted-track--provider">
+        <i><LockKeyhole /></i>
+        <small>Encrypted</small>
+      </div>
+      <section className="setup-trust-node setup-notary-node">
+        <span>Remote notary</span>
+        <code>8F 3C<br />A2 19</code>
+        <strong>Ciphertext witness</strong>
+        <small>No prompt, response, or credentials</small>
+      </section>
+      <div className="setup-encrypted-track setup-encrypted-track--local">
+        <i><LockKeyhole /></i>
+        <small>Encrypted</small>
+      </div>
+      <section className="setup-local-boundary">
+        <span className="setup-local-label">On this Mac</span>
+        <div className="setup-local-client">
+          <img src={notaryMark} alt="" />
+          <div><strong>This app</strong><small><UnlockKeyhole /> Decrypts locally</small></div>
+        </div>
+        <div className="setup-local-branches">
+          <span className="setup-local-path setup-local-path--user"><i /></span>
+          <span className="setup-local-path setup-local-path--capture"><i /></span>
+        </div>
+        <div className="setup-local-outputs">
+          <div><UserRound /><span><strong>You</strong><small>Readable response</small></span></div>
+          <div><FileCheck2 /><span><strong>Notarized trace</strong><small>Only when you finalize</small></span></div>
+        </div>
+      </section>
+    </div>
+    <figcaption><LockKeyhole /> Traffic is encrypted in transit. The remote notary never sees plaintext; private captures stay on this Mac.</figcaption>
+  </figure>;
 }
 
 function ProtectionStep({ configured, protectWithKeychain, setProtectWithKeychain, busy, onContinue }: {
@@ -821,8 +861,8 @@ function OnboardingAside({ step, state, provider }: {
 }) {
   const content = {
     welcome: {
-      title: 'Everything starts locally',
-      copy: 'The desktop app creates and supervises the capture service on this Mac. No browser tab or terminal is required.',
+      title: 'The notary sees ciphertext, not your conversation',
+      copy: 'It participates in the provider connection so the exchange can be authenticated without receiving the application plaintext.',
     },
     protection: {
       title: 'Private before public',
@@ -841,12 +881,16 @@ function OnboardingAside({ step, state, provider }: {
     <span className="aside-label">How it works</span>
     <h2>{content.title}</h2>
     <p>{content.copy}</p>
-    <div className="aside-route">
+    {step === 'welcome' ? <dl className="aside-trust-facts">
+      <div><dt>Remote notary</dt><dd>Provider hostname, encrypted traffic, sizes, timing, and protocol metadata—never plaintext</dd></div>
+      <div><dt>This Mac</dt><dd>Provider credentials, prompts, responses, and private captures</dd></div>
+      <div><dt>Shared later</dt><dd>Only the evidence you explicitly finalize and choose to share</dd></div>
+    </dl> : <div className="aside-route">
       <RouteStop title="Model client" detail="Keeps the credential" active={step === 'ready' || state.running} />
       <RouteStop title="LLM Notary" detail="Captures locally" active={step === 'ready' || state.running} />
       <RouteStop title="Remote notary" detail="Sees encrypted protocol" active={step === 'ready' || state.running} />
       <RouteStop title="Provider" detail="Returns the model response" active={step === 'ready' || state.running} />
-    </div>
+    </div>}
     <div className="aside-privacy"><ShieldCheck size={17} /><span>Prompts, responses, and provider credentials are not sent to the remote notary.</span></div>
   </aside>;
 }
