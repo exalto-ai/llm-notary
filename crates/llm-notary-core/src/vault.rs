@@ -19,6 +19,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 const CONFIG_FORMAT: &str = "llm-notary/vault/v1";
 const BUNDLE_MAGIC: &[u8] = b"LLMNB1";
+const KEY_CHECK_PLAINTEXT: &[u8] = b"llm-notary vault key check";
 const SERVICE: &str = "LLM Notary";
 const PASSPHRASE_FILE_ENV: &str = "LLM_NOTARY_VAULT_PASSPHRASE_FILE";
 /// Requests that a supervised child read its already-unlocked vault key from
@@ -31,6 +32,8 @@ struct VaultConfig {
     format: String,
     mode: VaultMode,
     salt_hex: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key_check_hex: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -101,6 +104,9 @@ impl Vault {
                 )?,
             }
         };
+        if let Some(key_check) = config.key_check_hex.as_deref() {
+            verify_key_check(&key, key_check)?;
+        }
         Ok(Self { key, config_path })
     }
 
@@ -119,6 +125,7 @@ impl Vault {
                 format: CONFIG_FORMAT.to_owned(),
                 mode: VaultMode::Os,
                 salt_hex: None,
+                key_check_hex: None,
             },
         )?;
         Ok(Self { key, config_path })
@@ -138,12 +145,14 @@ impl Vault {
         rand::rng().fill_bytes(&mut salt);
         let salt_hex = hex::encode(salt);
         let key = derive_passphrase_key(passphrase, &salt_hex)?;
+        let key_check_hex = create_key_check(&key)?;
         write_config(
             &config_path,
             VaultConfig {
                 format: CONFIG_FORMAT.to_owned(),
                 mode: VaultMode::Passphrase,
                 salt_hex: Some(salt_hex),
+                key_check_hex: Some(key_check_hex),
             },
         )?;
         Ok(Self { key, config_path })
@@ -340,6 +349,32 @@ fn derive_passphrase_key(passphrase: &str, salt_hex: &str) -> Result<[u8; 32]> {
     Ok(key)
 }
 
+fn create_key_check(key: &[u8; 32]) -> Result<String> {
+    let mut nonce = [0; 24];
+    rand::rng().fill_bytes(&mut nonce);
+    let ciphertext = XChaCha20Poly1305::new(key.into())
+        .encrypt(XNonce::from_slice(&nonce), KEY_CHECK_PLAINTEXT)
+        .map_err(|_| anyhow::anyhow!("creating vault key check failed"))?;
+    let mut encoded = nonce.to_vec();
+    encoded.extend_from_slice(&ciphertext);
+    Ok(hex::encode(encoded))
+}
+
+fn verify_key_check(key: &[u8; 32], encoded: &str) -> Result<()> {
+    let check = hex::decode(encoded).context("decoding vault key check")?;
+    if check.len() < 24 + 16 {
+        bail!("vault key check is invalid");
+    }
+    let (nonce, ciphertext) = check.split_at(24);
+    let plaintext = XChaCha20Poly1305::new(key.into())
+        .decrypt(XNonce::from_slice(nonce), ciphertext)
+        .map_err(|_| anyhow::anyhow!("the vault passphrase is incorrect"))?;
+    if plaintext != KEY_CHECK_PLAINTEXT {
+        bail!("vault key check is invalid");
+    }
+    Ok(())
+}
+
 #[cfg(any(test, feature = "test-utils"))]
 impl Vault {
     #[doc(hidden)]
@@ -403,6 +438,28 @@ mod tests {
         assert!(decode_child_key_line("07").is_err());
     }
 
+    #[test]
+    fn passphrase_key_check_rejects_the_wrong_derived_key() {
+        let encoded = create_key_check(&[7; 32]).unwrap();
+        verify_key_check(&[7; 32], &encoded).unwrap();
+        assert!(verify_key_check(&[8; 32], &encoded).is_err());
+
+        let mut tampered = hex::decode(&encoded).unwrap();
+        *tampered.last_mut().unwrap() ^= 1;
+        assert!(verify_key_check(&[7; 32], &hex::encode(tampered)).is_err());
+    }
+
+    #[test]
+    fn vault_config_without_a_key_check_remains_readable() {
+        let config: VaultConfig = serde_json::from_value(serde_json::json!({
+            "format": CONFIG_FORMAT,
+            "mode": "passphrase",
+            "salt_hex": "00".repeat(16),
+        }))
+        .unwrap();
+        assert!(config.key_check_hex.is_none());
+    }
+
     #[cfg(unix)]
     #[test]
     fn vault_config_is_private_from_creation() {
@@ -423,6 +480,7 @@ mod tests {
                 format: CONFIG_FORMAT.to_owned(),
                 mode: VaultMode::Passphrase,
                 salt_hex: Some("00".repeat(16)),
+                key_check_hex: None,
             },
         )
         .unwrap();
@@ -437,6 +495,7 @@ mod tests {
                     format: CONFIG_FORMAT.to_owned(),
                     mode: VaultMode::Os,
                     salt_hex: None,
+                    key_check_hex: None,
                 },
             )
             .is_err(),
