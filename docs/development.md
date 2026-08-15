@@ -115,6 +115,51 @@ bash deploy/fly/test-resolve-image-digest.sh
 docker compose --env-file /path/to/placeholder.env config --quiet
 ```
 
+Run the complete local-daemon persistence test with no arguments:
+
+```bash
+scripts/test-daemon-persistence-e2e.sh
+```
+
+Pass `smoke` for the shorter recovery check. The explicit matrix form remains
+available to CI and later storage backends:
+
+```bash
+scripts/test-daemon-persistence-e2e.sh smoke
+scripts/test-daemon-persistence-e2e.sh sqlite filesystem 1 full
+```
+
+The smoke test builds and launches the real `llm-notaryd` and `llm-notary`
+binaries in Docker without publishing either loopback listener. It initializes
+the vault and schema, checks `/healthz`, and runs the REST-backed command client.
+It then uses deterministic synthetic rows and deliberately invalid encrypted
+checkpoint bytes to exercise filesystem recovery, catalog search/detail,
+finalization enqueue and bounded failure history, events, SQLite integrity,
+and preservation of exact artifact bytes after the daemon container is removed
+and recreated with its durable volume.
+
+The full profile also creates an ephemeral private CA and provider certificate
+inside the Compose project's disposable volume, starts a TLS provider on the
+`api.openai.com` Docker network alias, and starts the feature-gated raw notary
+fixture. It exercises a successful Proxy-TLS capture, REST-backed list and
+detail, finalization, exact package download, daemon and file verification, and
+package recovery after container recreation. The provider request and response
+are fixed synthetic JSON and no external provider is contacted.
+
+The full profile also pauses one finalization immediately after immutable
+package publication, kills the daemon, and checks that startup marks the first
+attempt interrupted. Retrying must reuse the exact package inode and SHA-256,
+produce one completion event, and finalize a second attempt without replacing
+the orphaned bytes.
+
+The private root hook is compiled only into the `daemon-e2e` image and is used
+only when `LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER` explicitly names a regular DER
+file. The production `daemon` image is built without that feature, ignores the
+E2E variable, retains Mozilla/WebPKI roots, and keeps the fixed provider
+allowlist. The generated CA private key and captured artifacts live only in the
+unique Compose project and are deleted with its volumes. The request uses a
+fixed, clearly synthetic test credential; never substitute a real key.
+
 ## Documentation sources
 
 Keep each surface focused:

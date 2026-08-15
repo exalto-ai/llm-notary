@@ -75,3 +75,57 @@ RUN llm-notary-server --help >/dev/null
 
 EXPOSE 7047
 ENTRYPOINT ["/bin/sh", "-ec", "key_file=${NOTARY_SIGNING_KEY_FILE:-/run/secrets/notary_signing_key}; if ! test -r \"$key_file\"; then echo 'notary signing key file is required and must be readable' >&2; exit 1; fi; exec llm-notary-server --listen 0.0.0.0:7047 --signing-key \"$key_file\" --allow-host api.openai.com --allow-host chatgpt.com --allow-host api.anthropic.com --allow-host api.deepseek.com --allow-host openrouter.ai \"$@\"", "--"]
+
+# The local daemon is intentionally separate from the hosted API/notary
+# runtime images. Cook only its dependency graph so an E2E build does not also
+# compile the hosted PostgreSQL/S3 stack.
+FROM chef AS daemon-builder
+
+COPY --from=planner /app/recipe.json recipe.json
+COPY --from=planner /app/vendor/tlsn ./vendor/tlsn
+COPY --from=planner /app/vendor/tlsn-utils ./vendor/tlsn-utils
+RUN cargo chef cook --release --recipe-path recipe.json --package llm-notary-client
+
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
+COPY js/desktop/src-tauri/Cargo.toml ./js/desktop/src-tauri/Cargo.toml
+RUN mkdir -p js/desktop/src-tauri/src && touch js/desktop/src-tauri/src/lib.rs
+COPY vendor/tlsn ./vendor/tlsn
+COPY vendor/tlsn-utils ./vendor/tlsn-utils
+COPY config/updater-public-key.txt ./config/updater-public-key.txt
+COPY skills/llm-notary ./skills/llm-notary
+RUN cargo build --release \
+    -p llm-notary-client --bin llm-notaryd --bin llm-notary
+
+# The private-root hook and raw notary fixture exist only in this opt-in E2E
+# build. The production `daemon` stage below still copies the feature-free
+# binaries from `daemon-builder`.
+FROM daemon-builder AS daemon-e2e-builder
+RUN cargo build --release -p llm-notary-client --features daemon-e2e \
+    --bin llm-notaryd --bin llm-notary --bin llm-notary-e2e-notary
+
+FROM debian:bookworm-slim AS daemon
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=daemon-builder /app/target/release/llm-notaryd /usr/local/bin/llm-notaryd
+COPY --from=daemon-builder /app/target/release/llm-notary /usr/local/bin/llm-notary
+RUN llm-notaryd --help >/dev/null \
+    && llm-notary --help >/dev/null
+
+ENTRYPOINT ["llm-notaryd"]
+
+# Diagnostics live only in the E2E image. They let the harness inspect the
+# loopback-only service and seed deterministic persistence fixtures without
+# weakening the daemon's production listener or exposing a host port.
+FROM daemon AS daemon-e2e
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl jq openssl python3 sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=daemon-e2e-builder /app/target/release/llm-notaryd /usr/local/bin/llm-notaryd
+COPY --from=daemon-e2e-builder /app/target/release/llm-notary /usr/local/bin/llm-notary
+COPY --from=daemon-e2e-builder /app/target/release/llm-notary-e2e-notary /usr/local/bin/llm-notary-e2e-notary
+COPY deploy/daemon-e2e/config.toml /etc/llm-notary/config.toml
+COPY deploy/daemon-e2e/provider.py /usr/local/libexec/llm-notary-e2e-provider.py

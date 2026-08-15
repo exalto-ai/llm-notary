@@ -14,9 +14,20 @@ path = "src/bin/llm-notary.rs"
 name = "llm-notaryd"
 path = "src/bin/llm-notaryd.rs"
 
+[[bin]]
+name = "llm-notary-e2e-notary"
+path = "src/bin/llm-notary-e2e-notary.rs"
+required-features = ["daemon-e2e"]
+
+[features]
+# Used only by the dedicated daemon Docker E2E target. Production client and
+# daemon builds retain the core crate's Mozilla/WebPKI trust configuration.
+daemon-e2e = ["llm-notary-core/daemon-e2e"]
+
 [dependencies]
 anyhow = "1.0"
 argon2 = "0.5"
+async-trait = "0.1"
 axum = { version = "0.8", features = ["macros"] }
 base64 = "0.22"
 bytes = "1.10"
@@ -38,6 +49,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
 tempfile = "3.20"
+thiserror = "2.0"
 tokio = { version = "1.45", features = ["full"] }
 tokio-stream = "0.1"
 toml = "0.8"

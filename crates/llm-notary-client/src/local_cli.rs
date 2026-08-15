@@ -2560,9 +2560,12 @@ mod tests {
         config.catalog.path = directory.path().join("catalog.db");
         config.storage.bundle_dir = directory.path().join("bundles");
         config.storage.finalized_dir = directory.path().join("traces");
-        let catalog = Arc::new(crate::catalog::Catalog::open_for_config(&config).unwrap());
-        catalog
-            .begin_capture(&crate::catalog::NewCapture {
+        let persistence = crate::persistence::Persistence::open(&config)
+            .await
+            .unwrap();
+        persistence
+            .metadata
+            .begin_capture(crate::metadata::NewCapture {
                 capture_id: "cap-cli-e2e".to_owned(),
                 created_at_unix_ms: 1,
                 provider: "openai".to_owned(),
@@ -2574,24 +2577,42 @@ mod tests {
                 prompt_preview_truncated: false,
                 config_fingerprint: "sha256:fixture".to_owned(),
             })
+            .await
             .unwrap();
-        fs::create_dir_all(&config.storage.bundle_dir).unwrap();
-        let bundle = config.storage.bundle_dir.join("cap-cli-e2e.llmcapture");
-        fs::write(&bundle, b"encrypted fixture").unwrap();
-        catalog
-            .complete_capture(
-                "cap-cli-e2e",
-                2,
-                1,
-                200,
-                20,
-                Some("gpt-test"),
-                "safe output",
-                false,
-                &bundle,
+        let artifact_key = crate::artifact_store::ArtifactKey::new(
+            "cap-cli-e2e",
+            crate::artifact_store::ArtifactKind::DeferredBundle,
+        )
+        .unwrap();
+        let artifact = persistence
+            .artifacts
+            .put(
+                &artifact_key,
+                crate::artifact_store::ArtifactSource::from_bytes(b"encrypted fixture".to_vec()),
+                crate::archive::MAX_ARCHIVE_WIRE_BYTES,
             )
+            .await
             .unwrap();
-        let state = crate::admin::AdminState::new(catalog, Arc::new(config)).unwrap();
+        persistence
+            .metadata
+            .complete_capture(
+                crate::metadata::CaptureCompletion {
+                    capture_id: "cap-cli-e2e".into(),
+                    completed_at_unix_ms: 2,
+                    duration_ms: 1,
+                    http_status: 200,
+                    response_bytes: 20,
+                    response_model: Some("gpt-test".into()),
+                    output_preview: "safe output".into(),
+                    output_preview_truncated: false,
+                },
+                artifact,
+            )
+            .await
+            .unwrap();
+        let state = crate::admin::AdminState::new(persistence, Arc::new(config))
+            .await
+            .unwrap();
         let router = crate::admin::router(state).unwrap();
         let (address, server) = serve(router).await;
         let client = AdminClient::new(address, None).unwrap();
