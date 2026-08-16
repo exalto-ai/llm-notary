@@ -170,7 +170,7 @@ async fn probe_dependencies(state: &AdminState) -> std::result::Result<(), &'sta
                 return Err("vault_not_ready");
             }
             if !persistence
-                .metadata
+                .server_metadata()
                 .replica_ready(server_runtime.identity())
                 .await
                 .map_err(|_| "replica_lease_not_ready")?
@@ -180,7 +180,7 @@ async fn probe_dependencies(state: &AdminState) -> std::result::Result<(), &'sta
         }
         if require_shared_trust
             && persistence
-                .metadata
+                .server_metadata()
                 .notary_trust_snapshot()
                 .await
                 .map_err(|_| "notary_trust_not_ready")?
@@ -418,7 +418,7 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
         let created_at = expires_at - SESSION_MAX_AGE_SECONDS * 1_000;
         if state
             .persistence
-            .metadata
+            .server_metadata()
             .create_dashboard_session(&session_hash(&session), created_at, expires_at)
             .await
             .is_err()
@@ -427,7 +427,7 @@ async fn start_session(State(state): State<AdminState>, request: Request) -> Res
         }
         if let Err(error) = state
             .persistence
-            .metadata
+            .server_metadata()
             .prune_dashboard_sessions(created_at, 100)
             .await
         {
@@ -462,7 +462,7 @@ async fn end_session(State(state): State<AdminState>, request: Request) -> Respo
         if state.server_runtime.is_some() {
             if state
                 .persistence
-                .metadata
+                .server_metadata()
                 .revoke_dashboard_session(&session_hash(session))
                 .await
                 .is_err()
@@ -499,7 +499,7 @@ async fn require_auth(State(state): State<AdminState>, request: Request, next: N
         match (session_from_headers(request.headers()), now_ms()) {
             (Some(value), Ok(now)) if state.server_runtime.is_some() => match state
                 .persistence
-                .metadata
+                .server_metadata()
                 .dashboard_session_valid(&session_hash(value), now)
                 .await
             {
@@ -654,7 +654,7 @@ async fn notaries(State(state): State<AdminState>) -> Result<Json<NotariesRespon
     let shared = if state.server_runtime.is_some() && state.config.notary.endpoint.is_none() {
         state
             .persistence
-            .metadata
+            .server_metadata()
             .notary_trust_snapshot()
             .await
             .map_err(|_| ApiError::service_unavailable("notary_trust_not_ready"))?
@@ -1083,7 +1083,7 @@ async fn verify_trace(
         if configured_key.is_none() && state.server_runtime.is_some() {
             state
                 .persistence
-                .metadata
+                .server_metadata()
                 .notary_trust_snapshot()
                 .await
                 .map_err(|_| ApiError::service_unavailable("notary_trust_not_ready"))?
@@ -1421,7 +1421,7 @@ async fn share_capture(
         Some(
             state
                 .persistence
-                .metadata
+                .server_metadata()
                 .pin_notary_directory(directory, source.as_str())
                 .await
                 .map_err(|_| ApiError::service_unavailable("notary_trust_not_ready"))?,
@@ -1570,7 +1570,7 @@ pub(crate) fn spawn_finalization_worker(
                 let mut reaper_unavailable = false;
                 loop {
                     match persistence
-                        .metadata
+                        .server_metadata()
                         .interrupt_next_expired_finalization()
                         .await
                     {
@@ -1595,7 +1595,7 @@ pub(crate) fn spawn_finalization_worker(
             }
             let (operation, claim) = match &server_runtime {
                 Some(server_runtime) => match persistence
-                    .metadata
+                    .server_metadata()
                     .claim_next_finalization_claimed(
                         server_runtime.identity(),
                         &server_runtime.new_fence_token(),
@@ -1658,7 +1658,7 @@ pub(crate) fn spawn_finalization_worker(
                 let transition = match (&result, failure_code) {
                     (Ok(artifact), None) if claim.is_some() => {
                         persistence
-                            .metadata
+                            .server_metadata()
                             .complete_finalization_claimed(
                                 claim.as_ref().expect("checked"),
                                 artifact.clone(),
@@ -1668,7 +1668,7 @@ pub(crate) fn spawn_finalization_worker(
                     }
                     (Err(_), Some(code)) if claim.is_some() => {
                         persistence
-                            .metadata
+                            .server_metadata()
                             .fail_operation_claimed(claim.as_ref().expect("checked"), now, code)
                             .await
                     }
@@ -1748,15 +1748,18 @@ async fn finalize_operation(
     server_runtime: Option<&ServerRuntime>,
 ) -> Result<ArtifactRecord> {
     let _claim_lease = match (server_runtime, claim) {
-        (Some(server_runtime), Some(claim)) => Some(
-            server_runtime
-                .keep_finalization_claim_alive(persistence.metadata.clone(), claim.clone()),
-        ),
+        (Some(server_runtime), Some(claim)) => {
+            Some(server_runtime.keep_finalization_claim_alive(
+                persistence.server_metadata().clone(),
+                claim.clone(),
+            ))
+        }
         _ => None,
     };
     let last_proof_update = AtomicU64::new(0);
     let (progress_sender, mut progress_receiver) = tokio::sync::mpsc::unbounded_channel();
     let progress_metadata = persistence.metadata.clone();
+    let progress_server_metadata = server_runtime.map(|_| persistence.server_metadata().clone());
     let progress_operation_id = operation.operation_id.clone();
     let progress_claim = claim.cloned();
     let progress_lease_seconds = server_runtime.map(ServerRuntime::lease_seconds);
@@ -1764,12 +1767,16 @@ async fn finalize_operation(
         while let Some((progress, now)) = progress_receiver.recv().await {
             let result = match (progress_claim.as_ref(), progress_lease_seconds, progress) {
                 (Some(claim), Some(lease), crate::FinalizationProgress::Phase(phase)) => {
-                    progress_metadata
+                    progress_server_metadata
+                        .as_ref()
+                        .expect("claimed progress requires server metadata")
                         .update_operation_progress_claimed(claim, phase, now, lease)
                         .await
                 }
                 (Some(claim), Some(lease), crate::FinalizationProgress::Proof(proof)) => {
-                    progress_metadata
+                    progress_server_metadata
+                        .as_ref()
+                        .expect("claimed progress requires server metadata")
                         .update_operation_proof_progress_claimed(claim, proof, now, lease)
                         .await
                 }
@@ -1901,7 +1908,7 @@ async fn finalize_operation(
                 let (directory, source) =
                     proxy::fetch_notary_directory_from(&auth::configured_api_origin()?).await?;
                 let trust = persistence
-                    .metadata
+                    .server_metadata()
                     .pin_notary_directory(directory, source.as_str())
                     .await?;
                 notary::shared_record_for_bundle(&trust, &bundle)?

@@ -208,165 +208,125 @@ pub trait MetadataStore: Send + Sync {
     -> MetadataResult<Vec<OperationAttempt>>;
 
     async fn events_snapshot(&self, filters: EventFilters) -> MetadataResult<EventSnapshot>;
+}
 
-    // Server-only coordination. SQLite deliberately retains the default
-    // rejection so selecting PostgreSQL+S3 never implicitly enables it.
+/// Coordination required by the multi-replica server runtime.
+///
+/// This contract is intentionally separate from [`MetadataStore`]. Local
+/// backends cannot be selected for server work, and adding a server operation
+/// requires the PostgreSQL adapter to implement it at compile time.
+#[async_trait]
+pub trait ServerMetadataStore: MetadataStore {
     async fn register_replica(
         &self,
-        _identity: &ReplicaIdentity,
-        _compatibility_sha256: &str,
-        _lease_seconds: u64,
-    ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        identity: &ReplicaIdentity,
+        compatibility_sha256: &str,
+        lease_seconds: u64,
+    ) -> MetadataResult<()>;
     async fn heartbeat_replica(
         &self,
-        _identity: &ReplicaIdentity,
-        _lease_seconds: u64,
-    ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
-    async fn replica_ready(&self, _identity: &ReplicaIdentity) -> MetadataResult<bool> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
-    async fn release_replica(&self, _identity: &ReplicaIdentity) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        identity: &ReplicaIdentity,
+        lease_seconds: u64,
+    ) -> MetadataResult<()>;
+    async fn replica_ready(&self, identity: &ReplicaIdentity) -> MetadataResult<bool>;
+    async fn release_replica(&self, identity: &ReplicaIdentity) -> MetadataResult<()>;
     async fn begin_capture_claimed(
         &self,
-        _capture: NewCapture,
-        _claim: &CaptureClaim,
-        _lease_seconds: u64,
-    ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        capture: NewCapture,
+        claim: &CaptureClaim,
+        lease_seconds: u64,
+    ) -> MetadataResult<()>;
     async fn prepare_capture_completion_claimed(
         &self,
-        _completion: CaptureCompletion,
-        _claim: &CaptureClaim,
-        _lease_seconds: u64,
-    ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        completion: CaptureCompletion,
+        claim: &CaptureClaim,
+        lease_seconds: u64,
+    ) -> MetadataResult<()>;
     async fn complete_capture_claimed(
         &self,
-        _completion: CaptureCompletion,
-        _artifact: ArtifactRecord,
-        _claim: &CaptureClaim,
-    ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        completion: CaptureCompletion,
+        artifact: ArtifactRecord,
+        claim: &CaptureClaim,
+    ) -> MetadataResult<()>;
     async fn fail_capture_claimed(
         &self,
-        _claim: &CaptureClaim,
-        _failure_code: &str,
-    ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        claim: &CaptureClaim,
+        failure_code: &str,
+    ) -> MetadataResult<()>;
     async fn renew_capture_claim(
         &self,
-        _claim: &CaptureClaim,
-        _lease_seconds: u64,
-    ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        claim: &CaptureClaim,
+        lease_seconds: u64,
+    ) -> MetadataResult<()>;
     async fn claim_next_stale_capture(
         &self,
-        _identity: &ReplicaIdentity,
-        _fence_token: &str,
-        _lease_seconds: u64,
-    ) -> MetadataResult<Option<CaptureRecoveryClaim>> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        identity: &ReplicaIdentity,
+        fence_token: &str,
+        lease_seconds: u64,
+    ) -> MetadataResult<Option<CaptureRecoveryClaim>>;
     async fn claim_next_finalization_claimed(
         &self,
-        _identity: &ReplicaIdentity,
-        _fence_token: &str,
-        _lease_seconds: u64,
-    ) -> MetadataResult<Option<FinalizationClaim>> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        identity: &ReplicaIdentity,
+        fence_token: &str,
+        lease_seconds: u64,
+    ) -> MetadataResult<Option<FinalizationClaim>>;
     async fn update_operation_progress_claimed(
         &self,
-        _claim: &FinalizationClaim,
-        _phase: FinalizationPhase,
-        _now_unix_ms: u64,
-        _lease_seconds: u64,
-    ) -> MetadataResult<bool> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        claim: &FinalizationClaim,
+        phase: FinalizationPhase,
+        now_unix_ms: u64,
+        lease_seconds: u64,
+    ) -> MetadataResult<bool>;
     async fn renew_finalization_claim(
         &self,
-        _claim: &FinalizationClaim,
-        _lease_seconds: u64,
-    ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        claim: &FinalizationClaim,
+        lease_seconds: u64,
+    ) -> MetadataResult<()>;
     async fn update_operation_proof_progress_claimed(
         &self,
-        _claim: &FinalizationClaim,
-        _progress: FinalizationProofProgress,
-        _now_unix_ms: u64,
-        _lease_seconds: u64,
-    ) -> MetadataResult<bool> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        claim: &FinalizationClaim,
+        progress: FinalizationProofProgress,
+        now_unix_ms: u64,
+        lease_seconds: u64,
+    ) -> MetadataResult<bool>;
     async fn complete_finalization_claimed(
         &self,
-        _claim: &FinalizationClaim,
-        _artifact: ArtifactRecord,
-        _now_unix_ms: u64,
-    ) -> MetadataResult<TerminalOperationResult> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        claim: &FinalizationClaim,
+        artifact: ArtifactRecord,
+        now_unix_ms: u64,
+    ) -> MetadataResult<TerminalOperationResult>;
     async fn fail_operation_claimed(
         &self,
-        _claim: &FinalizationClaim,
-        _now_unix_ms: u64,
-        _failure_code: &str,
-    ) -> MetadataResult<TerminalOperationResult> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
-    async fn interrupt_next_expired_finalization(&self) -> MetadataResult<Option<String>> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        claim: &FinalizationClaim,
+        now_unix_ms: u64,
+        failure_code: &str,
+    ) -> MetadataResult<TerminalOperationResult>;
+    async fn interrupt_next_expired_finalization(&self) -> MetadataResult<Option<String>>;
 
     async fn create_dashboard_session(
         &self,
-        _token_hash: &[u8; 32],
-        _created_at_unix_ms: u64,
-        _expires_at_unix_ms: u64,
-    ) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        token_hash: &[u8; 32],
+        created_at_unix_ms: u64,
+        expires_at_unix_ms: u64,
+    ) -> MetadataResult<()>;
     async fn dashboard_session_valid(
         &self,
-        _token_hash: &[u8; 32],
-        _now_unix_ms: u64,
-    ) -> MetadataResult<bool> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
-    async fn revoke_dashboard_session(&self, _token_hash: &[u8; 32]) -> MetadataResult<()> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        token_hash: &[u8; 32],
+        now_unix_ms: u64,
+    ) -> MetadataResult<bool>;
+    async fn revoke_dashboard_session(&self, token_hash: &[u8; 32]) -> MetadataResult<()>;
     async fn prune_dashboard_sessions(
         &self,
-        _now_unix_ms: u64,
-        _limit: usize,
-    ) -> MetadataResult<usize> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        now_unix_ms: u64,
+        limit: usize,
+    ) -> MetadataResult<usize>;
 
     async fn pin_notary_directory(
         &self,
-        _directory: NotaryDirectory,
-        _directory_source: &str,
-    ) -> MetadataResult<SharedNotaryTrust> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
-    async fn notary_trust_snapshot(&self) -> MetadataResult<Option<SharedNotaryTrust>> {
-        Err(MetadataStoreError::InvalidInput("server_not_supported"))
-    }
+        directory: NotaryDirectory,
+        directory_source: &str,
+    ) -> MetadataResult<SharedNotaryTrust>;
+    async fn notary_trust_snapshot(&self) -> MetadataResult<Option<SharedNotaryTrust>>;
 }
 
 #[cfg(test)]
