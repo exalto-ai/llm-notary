@@ -30,8 +30,8 @@
 }
 
 .span-row--source .span-branch {
-  border-color: var(--green-ink);
-  background: var(--green);
+  border-color: var(--action-ink);
+  background: var(--action);
 }
 
 /* Trace data is technical, but it is still one interface—not a code editor. */
@@ -78,7 +78,7 @@
 }
 
 .span-summary:focus-visible {
-  outline: 2px solid var(--green-ink);
+  outline: 2px solid var(--action-ink);
   outline-offset: 3px;
 }
 
@@ -145,7 +145,7 @@
   text-transform: uppercase;
 }
 
-.message-role { color: var(--green-ink); }
+.message-role { color: var(--action-ink); }
 
 .message-part p {
   margin: 4px 0 0;

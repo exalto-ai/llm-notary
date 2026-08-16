@@ -11,7 +11,7 @@ const lifecycleOrder: Record<NotaryStatus, number> = {
   retiring: 1,
   retired: 2,
   revoked: 3,
-  configured: 4
+  configured: 4,
 };
 
 export function notaryLifecycle(status: string) {
@@ -19,37 +19,46 @@ export function notaryLifecycle(status: string) {
     case 'active':
       return {
         label: 'Accepts new captures and finalizations',
-        description: 'May accept new captures and finalizations only while its configured windows permit.'
+        description:
+          'May accept new captures and finalizations only while its configured windows permit.',
       };
     case 'retiring':
       return {
         label: 'Finalization-only',
-        description: 'May finalize compatible existing bundles until its configured cutoff. It does not accept new captures.'
+        description:
+          'May finalize compatible existing bundles until its configured cutoff. It does not accept new captures.',
       };
     case 'retired':
       return {
         label: 'Historical verification only',
-        description: 'Retained only to verify evidence from its configured trust window. It cannot accept captures or finalizations.'
+        description:
+          'Retained only to verify evidence from its configured trust window. It cannot accept captures or finalizations.',
       };
     case 'revoked':
       return {
         label: 'Untrusted',
-        description: 'Revoked and not trusted for capture, finalization, or historical verification.'
+        description:
+          'Revoked and not trusted for capture, finalization, or historical verification.',
       };
     case 'configured':
       return {
         label: 'Explicit self-hosted configuration',
-        description: 'Used because this endpoint and key are configured together locally. It has no hosted-directory lifecycle or health status.'
+        description:
+          'Used because this endpoint and key are configured together locally. It has no hosted-directory lifecycle or health status.',
       };
     default:
       return {
         label: 'Unknown lifecycle',
-        description: 'This client does not recognize the reported lifecycle state and does not present the record as usable.'
+        description:
+          'This client does not recognize the reported lifecycle state and does not present the record as usable.',
       };
   }
 }
 
-export function orderNotaries<T extends NotaryLifecycleRecord>(records: T[], activeKeyId?: string | null): T[] {
+export function orderNotaries<T extends NotaryLifecycleRecord>(
+  records: T[],
+  activeKeyId?: string | null,
+): T[] {
   return [...records].sort((left, right) => {
     const leftSelected = left.key_id === activeKeyId ? -1 : 0;
     const rightSelected = right.key_id === activeKeyId ? -1 : 0;
@@ -72,19 +81,23 @@ export function formatNotaryBoundary(
     kind = 'cutoff',
     missingLabel,
     locales,
-    timeZone
+    timeZone,
   }: {
     kind?: 'lower' | 'cutoff';
     missingLabel?: string;
     locales?: Intl.LocalesArgument;
     timeZone?: string;
-  } = {}
+  } = {},
 ) {
   if (kind === 'lower' && value === 0) return 'No lower bound configured';
   if (value === undefined || value === null) {
-    return missingLabel ?? (kind === 'lower' ? 'No lower bound configured' : 'No cutoff configured');
+    return (
+      missingLabel ?? (kind === 'lower' ? 'No lower bound configured' : 'No cutoff configured')
+    );
   }
   return new Intl.DateTimeFormat(locales, {
-    dateStyle: 'medium', timeStyle: 'short', timeZone
+    dateStyle: 'medium',
+    timeStyle: 'short',
+    timeZone,
   }).format(new Date(value));
 }

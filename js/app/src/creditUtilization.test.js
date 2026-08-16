@@ -5,7 +5,13 @@ const NOW = Date.UTC(2026, 7, 9, 18, 30);
 const TODAY = Date.UTC(2026, 7, 9);
 const DAY_MS = 86_400_000;
 
-function entry({ daysAgo = 0, bytes, kind = 'debit', creditKind = 'notarization', milliseconds = false }) {
+function entry({
+  daysAgo = 0,
+  bytes,
+  kind = 'debit',
+  creditKind = 'notarization',
+  milliseconds = false,
+}) {
   const timestamp = TODAY - daysAgo * DAY_MS + 43_200_000;
   return {
     id: `${kind}-${daysAgo}-${bytes}`,
@@ -28,10 +34,10 @@ describe('daily credit utilization', () => {
   });
 
   test('aggregates same-day debits in decimal megabytes', () => {
-    const result = aggregateDailyDebits([
-      entry({ daysAgo: 2, bytes: 250_000 }),
-      entry({ daysAgo: 2, bytes: 750_000 }),
-    ], NOW);
+    const result = aggregateDailyDebits(
+      [entry({ daysAgo: 2, bytes: 250_000 }), entry({ daysAgo: 2, bytes: 750_000 })],
+      NOW,
+    );
 
     expect(result.find((day) => day.timestamp === TODAY - 2 * DAY_MS)?.mb).toBe(1);
   });
@@ -39,31 +45,40 @@ describe('daily credit utilization', () => {
   test('uses UTC calendar boundaries', () => {
     const justBeforeUtcMidnight = Date.UTC(2026, 7, 8, 23, 59, 59) / 1000;
     const justAfterUtcMidnight = Date.UTC(2026, 7, 9, 0, 0, 1) / 1000;
-    const result = aggregateDailyDebits([
-      { ...entry({ bytes: 400_000 }), created_at: justBeforeUtcMidnight },
-      { ...entry({ bytes: 600_000 }), created_at: justAfterUtcMidnight },
-    ], NOW);
+    const result = aggregateDailyDebits(
+      [
+        { ...entry({ bytes: 400_000 }), created_at: justBeforeUtcMidnight },
+        { ...entry({ bytes: 600_000 }), created_at: justAfterUtcMidnight },
+      ],
+      NOW,
+    );
 
     expect(result.find((day) => day.timestamp === TODAY - DAY_MS)?.mb).toBe(0.4);
     expect(result.find((day) => day.timestamp === TODAY)?.mb).toBe(0.6);
   });
 
   test('accepts API seconds and browser millisecond timestamps', () => {
-    const result = aggregateDailyDebits([
-      entry({ daysAgo: 1, bytes: 500_000 }),
-      entry({ daysAgo: 4, bytes: 250_000, milliseconds: true }),
-    ], NOW);
+    const result = aggregateDailyDebits(
+      [
+        entry({ daysAgo: 1, bytes: 500_000 }),
+        entry({ daysAgo: 4, bytes: 250_000, milliseconds: true }),
+      ],
+      NOW,
+    );
 
     expect(result.find((day) => day.timestamp === TODAY - DAY_MS)?.mb).toBe(0.5);
     expect(result.find((day) => day.timestamp === TODAY - 4 * DAY_MS)?.mb).toBe(0.25);
   });
 
   test('ignores grants, invalid values, and entries outside the window', () => {
-    const result = aggregateDailyDebits([
-      entry({ bytes: 9_000_000, kind: 'grant' }),
-      entry({ daysAgo: 30, bytes: 1_000_000 }),
-      { ...entry({ bytes: 1_000_000 }), amount_bytes: Number.NaN },
-    ], NOW);
+    const result = aggregateDailyDebits(
+      [
+        entry({ bytes: 9_000_000, kind: 'grant' }),
+        entry({ daysAgo: 30, bytes: 1_000_000 }),
+        { ...entry({ bytes: 1_000_000 }), amount_bytes: Number.NaN },
+      ],
+      NOW,
+    );
 
     expect(result.every((day) => day.mb === 0)).toBe(true);
   });
@@ -76,8 +91,18 @@ describe('daily credit utilization', () => {
   test('loads paginated history until it crosses the 30-day boundary', async () => {
     const requests = [];
     const pages = [
-      { items: [entry({ bytes: 500_000 }), entry({ bytes: 750_000, creditKind: 'capture' }), entry({ kind: 'grant', bytes: 2_000_000 })], next_cursor: 'page-2' },
-      { items: [entry({ daysAgo: 29, bytes: 250_000 }), entry({ daysAgo: 30, bytes: 1_000_000 })], next_cursor: 'page-3' },
+      {
+        items: [
+          entry({ bytes: 500_000 }),
+          entry({ bytes: 750_000, creditKind: 'capture' }),
+          entry({ kind: 'grant', bytes: 2_000_000 }),
+        ],
+        next_cursor: 'page-2',
+      },
+      {
+        items: [entry({ daysAgo: 29, bytes: 250_000 }), entry({ daysAgo: 30, bytes: 1_000_000 })],
+        next_cursor: 'page-3',
+      },
     ];
     const result = await loadRecentDebits(async (options) => {
       requests.push(options);

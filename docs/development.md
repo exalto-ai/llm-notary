@@ -223,13 +223,30 @@ allowlist. The generated CA private key and captured artifacts live only in the
 unique Compose project and are deleted with its volumes. The request uses a
 fixed, clearly synthetic test credential; never substitute a real key.
 
+## Frontend source and embedded output
+
+The public SPA is split by domain under `js/app/src/site/`, with
+`js/app/src/main.tsx` as the application shell and router. Keep the public docs
+as structured, task-focused site content rather than treating the deeper
+repository guides as runtime Markdown. The audiences and navigation are
+different; `check-local-docs.mjs` enforces consistency for commands, routes,
+security boundaries, and other high-risk claims across both surfaces.
+
+`crates/llm-notary-client/dashboard/` is intentionally committed build output.
+`llm-notaryd` embeds that directory with `RustEmbed`, while source installs,
+release builds, and desktop sidecar builds can invoke Cargo without Node. Do not
+delete or ignore the directory unless every Rust build path is first replaced
+with a deterministic asset-generation step. After changing the local dashboard,
+run `npm --prefix js/app run build` to regenerate the embedded files; do not edit
+them by hand.
+
 ## Documentation sources
 
 Keep each surface focused:
 
 - `README.md` is the short project entry point.
 - `docs/` contains durable user, reference, operator, and contributor guides.
-- `js/app/src/main.jsx` contains the shorter public-site documentation journey.
+- `js/app/src/site/PublicDocs.tsx` contains the shorter public-site documentation journey.
 - `js/app/public/llms.txt` is the machine-readable public documentation index.
 - generated OpenAPI is the exact route and schema authority.
 - `AGENTS.md` contains repository constraints for coding agents.

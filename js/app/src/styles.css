@@ -60,11 +60,11 @@ a {
   place-items: center;
   border-radius: 50%;
   background: var(--ink);
-  color: var(--green);
+  color: var(--action);
 }
 
 .pen-mark--inverse {
-  background: var(--green);
+  background: var(--action);
   color: var(--ink);
 }
 

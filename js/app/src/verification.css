@@ -219,7 +219,7 @@
 .verification-result--success > header strong {
   padding: 7px 9px;
   border: 1px solid var(--action);
-  color: var(--action-dark);
+  color: var(--action-ink);
   font: 500 10px/1 'IBM Plex Mono', monospace;
   letter-spacing: .04em;
   text-transform: uppercase;

@@ -10,8 +10,10 @@
     "check:local-api": "node scripts/generate-local-api.mjs --check",
     "generate:platform-api": "node scripts/generate-platform-api.mjs",
     "check:platform-api": "node scripts/generate-platform-api.mjs --check",
-    "build": "npm run check:local-api && npm run check:platform-api && npm run build:site && npm run build:dashboard",
+    "build": "npm run check:frontend && npm run check:local-api && npm run check:platform-api && npm run build:site && npm run build:dashboard",
     "build:site": "npm run check:platform-types && vite build",
+    "check:frontend": "biome check .",
+    "format": "biome check --write .",
     "check:platform-types": "tsc -p tsconfig.platform.json",
     "check:dashboard-types": "tsc -p tsconfig.dashboard.json",
     "build:dashboard": "npm run check:dashboard-types && vite build --mode local-dashboard",
@@ -49,6 +51,7 @@
     "vite": "latest"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.8",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

@@ -6,11 +6,13 @@ const authProviderIcons = {
 export type AuthProvider = keyof typeof authProviderIcons;
 
 export function AuthProviderIcon({ provider }: { provider: AuthProvider }) {
-  return <img
-    className="auth-provider-icon"
-    src={authProviderIcons[provider]}
-    alt=""
-    aria-hidden="true"
-    data-auth-provider-icon={provider}
-  />;
+  return (
+    <img
+      className="auth-provider-icon"
+      src={authProviderIcons[provider]}
+      alt=""
+      aria-hidden="true"
+      data-auth-provider-icon={provider}
+    />
+  );
 }

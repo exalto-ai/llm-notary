@@ -49,7 +49,7 @@
 .signal-trace--5 { animation-duration: 10s; animation-delay: -7s; }
 .signal-trace--6 { animation-duration: 14s; animation-direction: reverse; animation-delay: -3s; }
 
-.signal-marks { fill: var(--green); stroke: var(--green-ink); stroke-width: 1; }
+.signal-marks { fill: var(--action); stroke: var(--action-ink); stroke-width: 1; }
 
 @keyframes signal-drift { to { stroke-dashoffset: -240; } }
 
