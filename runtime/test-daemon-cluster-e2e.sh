@@ -249,8 +249,13 @@ if [[ $profile == full ]]; then
   done
   [[ $state == finalized ]] || { echo "server finalization timed out" >&2; exit 1; }
   load_balancer_admin_json "/v1/captures/$capture_id/package" --output /tmp/server.llmtrace
-  "${compose[@]}" exec -T daemon-a llm-notary traces verify /tmp/server.llmtrace \
-    --trusted-notary-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 >/dev/null
+  package_verification=$(admin_json daemon-a /v1/traces:verify \
+    --request POST \
+    --header 'content-type: application/vnd.llmnotary.trace-package+zip' \
+    --header 'x-llm-notary-trusted-notary-key: 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798' \
+    --data-binary @/tmp/server.llmtrace)
+  printf '%s' "$package_verification" | "${compose[@]}" exec -T daemon-a jq -e --arg id "$capture_id" \
+    '.capture_id==$id and .verified==true and .trust_source=="explicit_key"' >/dev/null
   owner_rows=$("${compose[@]}" exec -T postgres psql -U daemon_e2e -d daemon_e2e -Atc "select count(*) from llm_notary_daemon.operations where operation_id='$operation_id' and owner_instance_id in ('daemon-a','daemon-b') and claim_fence is not null")
   [[ $owner_rows == 1 ]] || { echo "finalization did not retain one fenced owner" >&2; exit 1; }
 
