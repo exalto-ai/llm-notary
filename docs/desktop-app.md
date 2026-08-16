@@ -199,7 +199,7 @@ npm --prefix js/desktop run tauri:build:debug
 ```
 
 The native lifecycle should also be exercised on clean config, data, and vault
-directories: confirm the no-setup state, complete all four onboarding stages,
+directories: confirm the no-setup state, complete all five onboarding stages,
 exercise both Keychain and advanced passphrase setup (including the empty
 passphrase warning), start the service, use the embedded capture workspace,
 restart it, stop it, start it again, relaunch and unlock a passphrase vault, and

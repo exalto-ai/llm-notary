@@ -198,8 +198,8 @@ a narrow screen without hiding the session contents.
 Settings provides **System**, **Light**, and **Dark** choices. System follows
 the operating-system preference and is the default. An explicit override is
 stored locally and can always be returned to System. Dark mode uses neutral
-charcoal surfaces; the lime accent remains reserved for verified or ready
-states and a focal action.
+charcoal surfaces; indigo remains the only saturated action and verified-state
+accent.
 
 ## Troubleshooting
 

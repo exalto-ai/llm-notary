@@ -38,8 +38,8 @@ type DocOutlineItem = { block: DocBlock; children: DocBlock[] };
 type DocNavigationGroup = { label: string; pages: Array<readonly [DocPageKey, string]> };
 
 const installCommand = 'curl -fsSL https://notary.exalto.ai/install.sh | sh';
-const sourceInstallCommand = `git clone https://github.com/exalto-ai/notary.git
-cd notary
+const sourceInstallCommand = `git clone https://github.com/exalto-ai/notary-runtime.git
+cd notary-runtime
 cargo install --locked --path crates/llm-notary-daemon --bin llm-notaryd
 cargo install --locked --path crates/llm-notary-cli --bin llm-notary`;
 
@@ -204,7 +204,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Build from source',
-        body: 'To build the same two local programs yourself, use Rust 1.95.0 and the repository toolchain file.',
+        body: 'To build the same two local programs yourself, use Rust 1.95.0 and the public runtime repository toolchain file. That repository contains the complete protocol, daemon, CLI, generic notary, dashboard, updater, and verification implementation. Hosted accounts, billing, admission policy, and the public website are operated separately and are not part of the runtime source tree.',
         code: sourceInstallCommand,
       },
       {
@@ -230,6 +230,16 @@ const docPages: Record<DocPageKey, DocPage> = {
         heading: 'Use the command client',
         body: "`llm-notary` is a short-lived client for the daemon's versioned loopback API. It checks daemon health and never opens the catalog or vault directly. Add `--json` for automation. Raw capture-list JSON includes stored prompt and output previews, so add `--metadata-only` before sending structured capture results to an agent transcript.",
         code: 'llm-notary status\nllm-notary captures list --provider openai\nllm-notary --json captures list --provider openai --metadata-only\nllm-notary operations list --state failed --json\nllm-notary open',
+      },
+      {
+        heading: 'Connect a hosted account when needed',
+        body: 'Local capture, finalization, and verification do not require an account. Connect one to use account allowances, share a finalized trace, or manage the same device from hosted Settings. `llm-notary login` opens a browser approval flow and stores the rotating device credential only in the daemon credential vault. `whoami` shows the connected identity, plan, and balances without revealing the credential; `logout` disconnects that device without deleting local evidence.',
+        code: 'llm-notary login\nllm-notary whoami\nllm-notary logout',
+      },
+      {
+        heading: 'Use an API key for unattended hosts',
+        body: 'Create a deployment-specific, least-privilege key in hosted Account settings and inject it as `LLM_NOTARY_API_KEY` or through the private `LLM_NOTARY_API_KEY_FILE`. The complete key is shown once and never belongs in `config.toml`, logs, or artifacts. One daemon can use an injected API key or a browser-approved device session, never both; revoke API keys from hosted Settings.',
+        code: 'export LLM_NOTARY_API_KEY_FILE=/run/secrets/llm-notary-api-key\nllm-notaryd',
       },
       {
         heading: 'What it controls',

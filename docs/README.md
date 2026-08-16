@@ -28,6 +28,7 @@ Use the generated contract when prose and an installed service disagree.
 | --- | --- |
 | Run a local notary | [Runtime self-hosting](../runtime/docs/self-hosting.md) |
 | Rotate or revoke notary keys | [Runtime notary key lifecycle](../runtime/docs/notary-key-lifecycle.md) |
+| Understand hosted components and request flows | [Hosted platform components and flows](hosted-platform.md) |
 | Operate PostgreSQL or Neon | [Database operations](database-operations.md) |
 | Run clustered daemon replicas | [Runtime cluster operations](../runtime/docs/cluster-operations.md) |
 | Deploy the production Fly.io stack | [Fly.io deployment](../deploy/fly/README.md) |
@@ -38,6 +39,7 @@ Use the generated contract when prose and an installed service disagree.
 ## Contributors
 
 - [Development and validation](development.md)
+- [Documentation coverage checklist](documentation-coverage.md)
 - [Cursor-pagination contract and array inventory](adr/0001-cursor-pagination.md)
 - [Provider-neutral account identities](adr/0002-provider-neutral-identities.md)
 - [Design language](../DESIGN.md)

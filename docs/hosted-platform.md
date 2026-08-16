@@ -1,0 +1,172 @@
+# Hosted platform components and flows
+
+This guide maps the private hosted implementation around the independently
+buildable public runtime. It is an ownership and request-flow reference; the
+generated hosted OpenAPI document remains the exact HTTP contract.
+
+## Component ownership
+
+| Component | Source | State it owns | Trust boundary |
+| --- | --- | --- | --- |
+| Stable web gateway | `deploy/gateway.Caddyfile` | none | Routes public site and API traffic; it is the only component allowed to supply the trusted client-address header |
+| Hosted website | `js/app/` | browser UI state | Renders public docs, verification, Library, sign-in, account, billing, device approval, and share management |
+| Hosted API | `platform/crates/llm-notary-api/` | PostgreSQL accounts, sessions, keys, credits, operations, shares, reports, and cleanup work | Authenticates public and account requests, issues admission tickets, verifies uploads, and owns hosted policy |
+| Generic notary | `runtime/crates/llm-notary-server/` | signing key and process-local capacity | Runs the public Proxy-TLS protocol and provider allowlist without account or billing semantics |
+| Hosted notary adapter | `platform/crates/llm-notary-hosted-server/` | private durable usage-settlement outbox | Injects ticket redemption and settlement through the generic `AdmissionPolicy` and `SessionLifecycle` seams |
+| Local runtime client | `runtime/crates/llm-notary-daemon/` | local vault, capture catalog, artifacts, account credential, and trust cache | Sees provider plaintext; requests hosted admission and sharing without exposing the provider credential to the platform or notary |
+| Hosted PostgreSQL | `platform/migrations/` | authoritative hosted relational state | Separate schema and migration journal from an optional daemon PostgreSQL backend |
+| Private object storage | hosted API configuration | intake objects, admitted exact packages, canonical traces | Receives a finalized disclosure only after an explicit verify or share action; never receives `.llmcapture` |
+
+The root Cargo workspace builds only the hosted API, hosted notary adapter, and
+desktop wrapper. The public runtime is the excluded `runtime/` workspace and
+must pass `runtime/tooling/check-boundary.sh`; it cannot import platform,
+website, billing, or hosted-admission code.
+
+## Identity and authorization flows
+
+Browser sign-in uses Google or GitHub OAuth when the corresponding provider is
+configured. The callback resolves a provider-neutral identity and establishes
+an HttpOnly browser session. Provider access tokens are not retained. Browser
+sessions authorize account, billing, key-management, device-management, and
+share-management operations; they never authorize model-provider requests.
+
+The local daemon uses a browser-approved device session by default:
+
+1. It starts authorization and receives a user code, browser URL, poll secret,
+   expiry, and server-selected polling interval.
+2. The user signs in and approves the named device in the browser.
+3. The daemon polls with the one-time secret, then stores the returned refresh
+   credential in its private credential vault.
+4. Short-lived access tokens authenticate account, admission, and sharing
+   calls. Refresh-token rotation invalidates replay of an older token.
+5. The user can disconnect locally or revoke a device from hosted Settings.
+
+An account API key is the unattended alternative. Browser Settings creates and
+revokes scoped keys, while the daemon accepts one injected key or one stored
+device session, never both. API keys cannot manage keys, browser sessions,
+billing, or account deletion. See [API keys for automation](api-key-automation.md)
+for scopes and secret injection.
+
+## Hosted capture and finalization admission
+
+The same one-operation control plane serves signed-in and anonymous public
+allowances:
+
+1. Immediately before a captured request or finalization, the daemon requests
+   an admission for exactly one `capture` or `finalize` operation. It does not
+   request a renewable lease or trust a locally cached balance.
+2. The API checks identity or the rotating anonymous address subject, billing
+   state, the relevant allowance, and operation-specific limits. A finalization
+   is additionally bound to the source record digest and authenticated-byte
+   allowance.
+3. The daemon places the short-lived ticket only in the protected v3 notary
+   prelude. It does not persist the ticket or add it to evidence, logs, metrics,
+   previews, or errors.
+4. The hosted notary adapter redeems the ticket through the private API before
+   expensive protocol work. The API atomically consumes it, binds the operation
+   to the notary instance, and returns limits that can only tighten the generic
+   notary's process maxima.
+5. After admission, the cryptographic session no longer depends on the API.
+   The adapter durably records authenticated bytes and the terminal outcome in
+   its private outbox.
+6. Settlement retries by operation ID until the API acknowledges the exact
+   mode, byte count, instance, and outcome. Identical retries are idempotent;
+   conflicting reports fail without changing the ledger.
+
+The hosted adapter receives the opaque ticket and authenticated byte counts,
+not the API key, prompt, response, or credential-bearing HTTP headers. The
+generic runtime assigns no account or billing meaning to the admission value.
+The completed lease-to-operation migration is summarized in
+[Plans and usage](hosted-credits.md); production rollout details live in the
+[Fly guide](../deploy/fly/README.md).
+
+## Verification flow
+
+Anonymous hosted verification accepts one finalized `.llmtrace`, applies
+bounded upload and concurrency limits, verifies it against the current trusted
+notary directory, and returns the verification facts and canonical trace. It
+does not create a share, account record, or durable receipt, and it does not
+retain the uploaded package after the request.
+
+This service is a convenience verifier. Independent verification uses the same
+runtime contracts and a chosen trusted-key history. A successful live response
+must not be described as a signed or durable attestation.
+
+## Share and Library flow
+
+Sharing is separate from capture, finalization, and one-off verification:
+
+1. An authenticated daemon creates or resumes a share for one finalized
+   package and explicit `unlisted` or `listed` visibility.
+2. The API reserves account storage and returns a presigned private intake
+   upload. That URL stays inside the daemon and is never returned by the local
+   admin API or dashboard.
+3. The daemon uploads the exact locally verified package and completes the
+   share with its declared size and SHA-256.
+4. A worker re-downloads the intake object, applies the versioned disclosure
+   safety policy, cryptographically verifies the package, reproduces the
+   canonical trace, and materializes bounded Library facts.
+5. Admission stores the exact verified package and canonical trace, then
+   deletes the private intake object. Failed deletion enters the durable cleanup
+   queue.
+6. Unlisted and Listed shares are both readable by anyone with an allowed link.
+   Listed adds Library discovery. Owners can later unpublish, set an expiry, or
+   require a password without changing the retained package bytes.
+
+Visitors can inspect the rendered trace or download the exact admitted package
+for independent verification. Password, expiry, publication state, publisher
+label, popularity, and reports are hosted observations and access controls, not
+cryptographic facts. See [Share intake](share-intake-v1.md) and [Share
+admission](share-admission-v1.md) for the storage and safety contracts.
+
+## Credits and billing flow
+
+Capture bytes, finalization bytes, and stored trace-package bytes are separate
+allowances. Stripe Checkout and the Billing Portal collect payment details;
+the API accepts credit or subscription state only after validating signed
+webhooks against configured live/test mode, Prices, Checkout Sessions, payment
+objects, and account ownership. Webhook retries are idempotent, and raw webhook
+bodies, signatures, and payment methods are not retained.
+
+The account dashboard combines aggregate balances from the account projection
+with cursor-paginated credit activity, purchases, eligible promotions, trace
+storage, connected devices, API keys, and owned shares. Billing controls are
+hidden when Stripe is disabled and visibly marked in test mode. Exact plan,
+settlement, refund, dispute, and subscription behavior is documented in
+[Plans and usage](hosted-credits.md).
+
+## Hosted API route inventory
+
+The generated contract is committed at
+`js/app/src/platform-api/generated/openapi.json`. This inventory assigns every
+operation to one flow so a route cannot land without an owner and documentation
+review.
+
+| Flow | Operations |
+| --- | --- |
+| Health and trust discovery | `GET /api/healthz`, `GET /api/readyz`, `GET /api/notary` |
+| Browser identity | `GET /api/auth/providers`, `GET /api/auth/github`, `GET /api/auth/github/callback`, `GET /api/auth/google`, `GET /api/auth/google/callback`, `POST /api/auth/logout`, `GET /api/me`, `DELETE /api/me` |
+| Device and CLI identity | `POST /api/cli/authorizations`, `GET /api/cli/authorizations/{request_id}/approval`, `POST /api/cli/authorizations/{request_id}/approval`, `POST /api/cli/authorizations/{request_id}/token`, `POST /api/cli/token`, `POST /api/cli/logout`, `GET /api/cli/me`, `GET /api/cli/sessions`, `DELETE /api/cli/sessions/{session_id}` |
+| API keys | `GET /api/me/api-keys`, `POST /api/me/api-keys`, `DELETE /api/me/api-keys/{api_key_id}` |
+| Admission and settlement | `POST /api/notary/admissions`, `POST /api/internal/notary/admissions/redeem`, `POST /api/internal/notary/operations/settle` |
+| Billing and credits | `POST /api/billing/stripe/webhook`, `POST /api/me/billing/checkout-sessions`, `POST /api/me/billing/subscription-checkout-sessions`, `POST /api/me/billing/portal-sessions`, `GET /api/me/billing/purchases`, `GET /api/me/billing/purchases/{purchase_id}`, `GET /api/me/credit-offers`, `POST /api/me/credit-offers/{offer_id}/claim`, `GET /api/me/credits/history` |
+| Share submission and owner management | `POST /api/shares`, `GET /api/shares/{share_id}`, `POST /api/shares/{share_id}/complete`, `PATCH /api/shares/{share_id}`, `GET /api/me/shares` |
+| Public Library and share access | `GET /api/public/shares`, `GET /api/public/shares/{share_id}`, `GET /api/public/shares/{share_id}/trace.otlp.json`, `GET /api/public/shares/{share_id}/package.llmtrace`, `POST /api/public/shares/{share_id}/reports` |
+| Retention-free verification | `POST /api/verify` |
+
+## Deployment and data ownership
+
+The production gateway is stable while website and API Machines are replaceable
+behind it. API migrations run before new API replicas and follow expand/contract
+compatibility. The hosted notary image combines the generic runtime with the
+private adapter and keeps its usage outbox on a durable volume. The notary
+signing key and published directory history must survive deployments so old
+evidence remains verifiable.
+
+PostgreSQL is authoritative for hosted state. Object storage is authoritative
+for retained share packages and traces. The notary outbox is authoritative for
+usage that has been observed but not yet acknowledged. None of those stores may
+receive provider credentials, `.llmcapture`, vault keys, or raw admission
+tickets. See [Database operations](database-operations.md) and [Fly.io
+deployment](../deploy/fly/README.md) for migration, backup, health, and rollout
+procedures.
