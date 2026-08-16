@@ -29,9 +29,25 @@ and authenticated byte allowance of its source capture.
 
 Once admitted, an operation continues under the notary instance's local size,
 concurrency, and timeout limits even if the API becomes unavailable. Usage
-accounting is independent of the active session lifetime, and already-admitted
-operations may put an account slightly over its allowance. The API denies the
-next ticket until allowance is available again.
+accounting is independent of the active session lifetime. Capture settlement
+uses the authenticated TLS application-data ciphertext bytes in both
+directions. Finalization settlement uses the exact authenticated byte allowance
+bound to the admission ticket and record digest. If those bytes become known
+before a later client or protocol failure, they are still charged; a failure
+before authenticated usage is established settles zero bytes.
+
+Each report is keyed by the redeemed operation ID. An identical retry is a
+no-op, while a conflicting mode, byte count, outcome, or notary instance is
+rejected without changing the ledger. The notary persists pending reports and
+retries them after API outages or its own restart. Already-admitted operations
+may therefore put an account slightly over its allowance; the exact usage is
+recorded, the balance can become negative, and the API denies the next ticket
+until allowance is available again.
+
+The redeem request explicitly advertises durable settlement support. This
+keeps API-first rolling deploys safe: an older notary can redeem and finish a
+one-operation session without leaving an operation row that it cannot settle,
+while the updated notary receives the operation ID used by its durable outbox.
 
 The expand/contract rollout temporarily retains the previous lease schema and
 bridge-notary fallback for safe rollback. Only a redemption that omits the

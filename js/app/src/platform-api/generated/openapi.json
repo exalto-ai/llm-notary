@@ -1226,6 +1226,85 @@
         ]
       }
     },
+    "/api/internal/notary/operations/settle": {
+      "post": {
+        "tags": [
+          "notary-admission"
+        ],
+        "summary": "Settle authoritative byte usage for one admitted operation",
+        "operationId": "settle_usage",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UsageSettlementRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Usage settled or identical report already applied"
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "410": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "serviceBearer": []
+          }
+        ]
+      }
+    },
     "/api/me": {
       "get": {
         "tags": [
@@ -4345,12 +4424,12 @@
           "captures": {
             "type": "integer",
             "format": "int64",
-            "description": "Admitted capture operations."
+            "description": "Successfully completed capture operations."
           },
           "finalizations": {
             "type": "integer",
             "format": "int64",
-            "description": "Admitted finalization operations."
+            "description": "Successfully completed finalization operations."
           }
         }
       },
@@ -4925,6 +5004,10 @@
           },
           "ticket": {
             "type": "string"
+          },
+          "usage_settlement": {
+            "type": "boolean",
+            "description": "The caller durably settles usage by operation ID. Older bridge\nnotaries omit this field, so the API must not create an operation row\nthey cannot acknowledge."
           }
         }
       },
@@ -5020,6 +5103,12 @@
           "max_private_chunk_commitments": {
             "type": "integer",
             "format": "int64"
+          },
+          "operation_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "record_digest": {
             "type": [
@@ -5257,6 +5346,42 @@
           },
           "url": {
             "type": "string"
+          }
+        }
+      },
+      "UsageSettlementOutcome": {
+        "type": "string",
+        "enum": [
+          "completed",
+          "client_failed",
+          "service_failed"
+        ]
+      },
+      "UsageSettlementRequest": {
+        "type": "object",
+        "required": [
+          "operation_id",
+          "notary_instance_id",
+          "mode",
+          "authenticated_bytes",
+          "outcome"
+        ],
+        "properties": {
+          "authenticated_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/AdmissionMode"
+          },
+          "notary_instance_id": {
+            "type": "string"
+          },
+          "operation_id": {
+            "type": "string"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/UsageSettlementOutcome"
           }
         }
       },

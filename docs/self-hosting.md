@@ -197,7 +197,9 @@ Every hosted capture or finalization obtains a short-lived one-time ticket from
 using the `one_operation_v1` contract before beginning protocol work. New
 sessions fail closed if the coordinator is unavailable, but an admitted
 one-operation continues without any renewal call under the notary's
-process-local concurrency, size, and timeout limits.
+process-local concurrency, size, and timeout limits. Usage-capable notaries
+also send `usage_settlement: true`; during a rolling deployment, the API does
+not create an unsettled operation row for an older notary that omits it.
 
 During the rolling-compatibility window, keep
 `LLM_NOTARY_RELEASE_OUTBOX_DIR` on a private persistent directory. If the API is
@@ -207,8 +209,18 @@ writes this outbox. Remove it only with the cleanup tracked in
 [#298](https://github.com/exalto-ai/notary/issues/298).
 
 The shared admission service token authenticates the notary's internal redeem
-call and the temporary legacy renew/release fallback. It is never sent to local clients and is
-unrelated to provider credentials or session-sharing access tokens.
+call, usage-settlement calls, and the temporary legacy renew/release fallback.
+It is never sent to local clients and is unrelated to provider credentials or
+session-sharing access tokens. Settlement reports identify an operation rather
+than repeating its raw ticket.
+
+Set `LLM_NOTARY_USAGE_OUTBOX_DIR` to persistent storage owned by the remote
+notary. The notary durably stages each admitted operation before accepting its
+protocol session, records authoritative authenticated bytes as soon as they are
+known, and retries terminal settlement after coordinator failures and process
+restarts. A failed settlement request does not interrupt the already-admitted
+protocol result. The bundled Compose and Fly configurations place this outbox
+on their existing notary data volumes.
 
 Anonymous hosted allowances use a period-scoped HMAC of the canonical client
 address. The API trusts `X-LLM-Notary-Client-IP` only when the socket peer is in

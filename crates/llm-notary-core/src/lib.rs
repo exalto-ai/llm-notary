@@ -1559,6 +1559,7 @@ pub async fn run_notary_session_after_prelude(
     )
     .await
     .map(|_| ())
+    .map_err(anyhow::Error::new)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1567,10 +1568,65 @@ pub struct HostedNotarySessionResult {
     pub authenticated_transcript_bytes: usize,
 }
 
-/// Persists the authenticated capture size before the notary returns its
-/// receipt. Hosted services use this to make exact allowance settlement
-/// recoverable across coordinator outages and process restarts.
-pub type HostedCaptureSettlementRecorder = Box<dyn FnOnce(usize) -> Result<()> + Send>;
+/// Identifies whether a hosted session failed because of client-controlled
+/// protocol input or because the notary/service could not perform its work.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostedNotarySessionFailureKind {
+    Client,
+    Service,
+}
+
+/// A classified hosted-session failure. Usage is persisted independently
+/// before this error is returned whenever authenticated bytes are available.
+#[derive(Debug)]
+pub struct HostedNotarySessionFailure {
+    kind: HostedNotarySessionFailureKind,
+    error: anyhow::Error,
+}
+
+impl HostedNotarySessionFailure {
+    fn client(error: anyhow::Error) -> Self {
+        Self {
+            kind: HostedNotarySessionFailureKind::Client,
+            error,
+        }
+    }
+
+    fn service(error: anyhow::Error) -> Self {
+        Self {
+            kind: HostedNotarySessionFailureKind::Service,
+            error,
+        }
+    }
+
+    /// Returns the settlement classification for this terminal failure.
+    pub fn kind(&self) -> HostedNotarySessionFailureKind {
+        self.kind
+    }
+}
+
+impl fmt::Display for HostedNotarySessionFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+impl std::error::Error for HostedNotarySessionFailure {}
+
+fn classify_tlsn_hosted_failure(error: tlsn::Error) -> HostedNotarySessionFailure {
+    if error.is_internal() {
+        HostedNotarySessionFailure::service(error.into())
+    } else {
+        HostedNotarySessionFailure::client(error.into())
+    }
+}
+
+type HostedSessionRunResult<T> = std::result::Result<T, HostedNotarySessionFailure>;
+
+/// Persists authoritative authenticated bytes before a hosted operation can
+/// finish. Hosted services use this to make usage settlement recoverable
+/// across coordinator outages and process restarts.
+pub type HostedUsageRecorder = Box<dyn FnOnce(usize) -> Result<()> + Send>;
 
 /// Runs a coordinator-admitted hosted session with effective limits already
 /// intersected with the notary's process-local maxima.
@@ -1580,8 +1636,8 @@ pub async fn run_hosted_notary_session_after_prelude(
     signing_key: Arc<SigningKey>,
     allowed_hosts: Arc<Vec<String>>,
     limits: HostedNotarySessionLimits,
-    capture_settlement_recorder: Option<HostedCaptureSettlementRecorder>,
-) -> Result<HostedNotarySessionResult> {
+    usage_recorder: Option<HostedUsageRecorder>,
+) -> HostedSessionRunResult<HostedNotarySessionResult> {
     let authenticated_transcript_bytes = run_notary_session_with_limits(
         socket,
         mode,
@@ -1593,7 +1649,7 @@ pub async fn run_hosted_notary_session_after_prelude(
         limits.max_frame_bytes,
         limits.expected_record_digest,
         limits.expected_transcript_bytes,
-        capture_settlement_recorder,
+        usage_recorder,
     )
     .await?;
     Ok(HostedNotarySessionResult {
@@ -1613,9 +1669,9 @@ async fn run_notary_session_with_limits(
     max_frame_bytes: usize,
     expected_record_digest: Option<[u8; 32]>,
     expected_transcript_bytes: Option<usize>,
-    capture_settlement_recorder: Option<HostedCaptureSettlementRecorder>,
-) -> Result<usize> {
-    validate_notary_frame_limit(max_frame_bytes)?;
+    usage_recorder: Option<HostedUsageRecorder>,
+) -> HostedSessionRunResult<usize> {
+    validate_notary_frame_limit(max_frame_bytes).map_err(HostedNotarySessionFailure::service)?;
     match mode {
         NotarySessionMode::Capture => {
             run_deferred_capture_session(
@@ -1624,7 +1680,7 @@ async fn run_notary_session_with_limits(
                 allowed_hosts,
                 max_total_private_chunk_bytes,
                 max_frame_bytes,
-                capture_settlement_recorder,
+                usage_recorder,
             )
             .await
         }
@@ -1638,6 +1694,7 @@ async fn run_notary_session_with_limits(
                 max_frame_bytes,
                 expected_record_digest,
                 expected_transcript_bytes,
+                usage_recorder,
             )
             .await
         }
@@ -1650,25 +1707,33 @@ async fn run_deferred_capture_session(
     allowed_hosts: Arc<Vec<String>>,
     max_transcript_bytes: usize,
     max_frame_bytes: usize,
-    capture_settlement_recorder: Option<HostedCaptureSettlementRecorder>,
-) -> Result<usize> {
+    usage_recorder: Option<HostedUsageRecorder>,
+) -> HostedSessionRunResult<usize> {
     let session = Session::new(socket.compat());
     let (driver, mut handle) = session.split();
     let driver_task = tokio::spawn(driver);
-    let (verifier, server_name) = match handle
-        .new_verifier(
-            VerifierConfig::builder()
-                .root_store(configured_protocol_root_store()?)
-                .build()?,
-        )?
+    let root_store =
+        configured_protocol_root_store().map_err(HostedNotarySessionFailure::service)?;
+    let verifier_config = VerifierConfig::builder()
+        .root_store(root_store)
+        .build()
+        .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
+    let verifier = handle
+        .new_verifier(verifier_config)
+        .map_err(classify_tlsn_hosted_failure)?;
+    let (verifier, server_name) = match verifier
         .commit()
-        .await?
+        .await
+        .map_err(classify_tlsn_hosted_failure)?
     {
         VerifierCommitStart::Mpc(verifier) => {
             verifier
                 .reject(Some("LLM Notary accepts Proxy-TLS sessions only"))
-                .await?;
-            bail!("rejected MPC-TLS session")
+                .await
+                .map_err(classify_tlsn_hosted_failure)?;
+            return Err(HostedNotarySessionFailure::client(anyhow!(
+                "rejected MPC-TLS session"
+            )));
         }
         VerifierCommitStart::Proxy(verifier) => {
             let server_name = verifier.config().server_name().as_str().to_owned();
@@ -1678,42 +1743,70 @@ async fn run_deferred_capture_session(
             {
                 verifier
                     .reject(Some("provider hostname is not allowed by this notary"))
-                    .await?;
-                bail!("rejected disallowed provider hostname: {server_name}");
+                    .await
+                    .map_err(classify_tlsn_hosted_failure)?;
+                return Err(HostedNotarySessionFailure::client(anyhow!(
+                    "rejected disallowed provider hostname: {server_name}"
+                )));
             }
-            let upstream = TcpStream::connect((server_name.as_str(), 443)).await?;
-            upstream.set_nodelay(true)?;
-            (
-                verifier.accept().await?.run(upstream.compat()).await?,
-                server_name,
-            )
+            let upstream = TcpStream::connect((server_name.as_str(), 443))
+                .await
+                .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
+            upstream
+                .set_nodelay(true)
+                .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
+            let verifier = verifier
+                .accept()
+                .await
+                .map_err(classify_tlsn_hosted_failure)?
+                .run(upstream.compat())
+                .await
+                .map_err(classify_tlsn_hosted_failure)?;
+            (verifier, server_name)
         }
     };
     let tls_transcript = verifier.tls_transcript().clone();
-    let transcript_bytes = application_data_bytes(tls_transcript.sent())?
-        .checked_add(application_data_bytes(tls_transcript.recv())?)
-        .ok_or_else(|| anyhow!("TLS application-data byte count overflow"))?;
+    let sent_bytes = application_data_bytes(tls_transcript.sent())
+        .map_err(HostedNotarySessionFailure::service)?;
+    let received_bytes = application_data_bytes(tls_transcript.recv())
+        .map_err(HostedNotarySessionFailure::service)?;
+    let transcript_bytes = sent_bytes.checked_add(received_bytes).ok_or_else(|| {
+        HostedNotarySessionFailure::service(anyhow!("TLS application-data byte count overflow"))
+    })?;
+    if let Some(record_usage) = usage_recorder {
+        record_usage(transcript_bytes)
+            .context("persisting hosted capture usage")
+            .map_err(HostedNotarySessionFailure::service)?;
+    }
     if transcript_bytes > max_transcript_bytes {
-        bail!(
+        return Err(HostedNotarySessionFailure::client(anyhow!(
             "TLS application data exceeds the authorized {max_transcript_bytes}-byte session limit"
-        );
+        )));
     }
     let (_, connection_info, server_ephemeral_key) =
-        verified_connection_metadata(&tls_transcript, &server_name)?;
-    let deferred = verifier.into_deferred().await?;
+        verified_connection_metadata(&tls_transcript, &server_name)
+            .map_err(HostedNotarySessionFailure::service)?;
+    let deferred = verifier
+        .into_deferred()
+        .await
+        .map_err(classify_tlsn_hosted_failure)?;
 
     handle.close();
-    let mut socket = driver_task.await??;
-    let request: DeferredCaptureRequest =
-        bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
+    let driver_result = driver_task
+        .await
+        .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
+    let mut socket = driver_result.map_err(classify_tlsn_hosted_failure)?;
+    let request_bytes = read_frame(&mut socket, max_frame_bytes)
+        .await
+        .map_err(HostedNotarySessionFailure::client)?;
+    let request: DeferredCaptureRequest = bincode::deserialize(&request_bytes)
+        .map_err(|error| HostedNotarySessionFailure::client(error.into()))?;
     if request.root_binding != deferred.root_binding()
         || request.record_digest != deferred.record_digest()
     {
-        bail!("client deferred checkpoint does not match notary session state");
-    }
-    if let Some(record_settlement) = capture_settlement_recorder {
-        record_settlement(transcript_bytes)
-            .context("persisting hosted capture allowance settlement")?;
+        return Err(HostedNotarySessionFailure::client(anyhow!(
+            "client deferred checkpoint does not match notary session state"
+        )));
     }
     let receipt = issue_deferred_receipt(
         &signing_key,
@@ -1722,8 +1815,13 @@ async fn run_deferred_capture_session(
         deferred.records(),
         connection_info,
         server_ephemeral_key,
-    )?;
-    write_frame(&mut socket, &bincode::serialize(&receipt)?, max_frame_bytes).await?;
+    )
+    .map_err(HostedNotarySessionFailure::service)?;
+    let receipt = bincode::serialize(&receipt)
+        .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
+    write_frame(&mut socket, &receipt, max_frame_bytes)
+        .await
+        .map_err(HostedNotarySessionFailure::client)?;
     Ok(transcript_bytes)
 }
 
@@ -1748,58 +1846,86 @@ async fn run_deferred_finalize_session(
     max_frame_bytes: usize,
     expected_record_digest: Option<[u8; 32]>,
     expected_transcript_bytes: Option<usize>,
-) -> Result<usize> {
-    let request: DeferredFinalizeRequest =
-        bincode::deserialize(&read_tokio_frame(&mut socket, max_frame_bytes).await?)?;
+    usage_recorder: Option<HostedUsageRecorder>,
+) -> HostedSessionRunResult<usize> {
+    let request_bytes = read_tokio_frame(&mut socket, max_frame_bytes)
+        .await
+        .map_err(HostedNotarySessionFailure::client)?;
+    let request: DeferredFinalizeRequest = bincode::deserialize(&request_bytes)
+        .map_err(|error| HostedNotarySessionFailure::client(error.into()))?;
     let transcript_bytes = validate_finalization_admission_binding(
         &request.receipt,
         expected_record_digest,
         expected_transcript_bytes,
-    )?;
+    )
+    .map_err(HostedNotarySessionFailure::client)?;
     request
         .receipt
-        .verify(signing_key.verifying_key().to_sec1_bytes().as_ref())?;
-    request.receipt.validate_records(&request.records)?;
+        .verify(signing_key.verifying_key().to_sec1_bytes().as_ref())
+        .map_err(HostedNotarySessionFailure::client)?;
+    request
+        .receipt
+        .validate_records(&request.records)
+        .map_err(HostedNotarySessionFailure::client)?;
+    if let Some(record_usage) = usage_recorder {
+        record_usage(transcript_bytes)
+            .context("persisting hosted finalization usage")
+            .map_err(HostedNotarySessionFailure::service)?;
+    }
     validate_deferred_request_limits(
         &request.prove_request,
         max_private_chunk_bytes,
         max_total_private_chunk_bytes,
         max_private_chunk_commitments,
-    )?;
+    )
+    .map_err(HostedNotarySessionFailure::client)?;
 
     let session = Session::new(socket.compat());
-    let mut verifier_context = session.new_context()?;
+    let mut verifier_context = session
+        .new_context()
+        .map_err(classify_tlsn_hosted_failure)?;
     let (driver, handle) = session.split();
     let driver_task = tokio::spawn(driver);
     let verifier =
         tlsn::deferred::DeferredVerifierState::new(request.receipt.root_binding, request.records);
+    let server_name = request
+        .receipt
+        .server_name
+        .as_str()
+        .try_into()
+        .map_err(|error| HostedNotarySessionFailure::client(anyhow::Error::new(error)))?;
     let output = verifier
         .verify(
             &mut verifier_context,
             &request.prove_request,
-            Some(ServerName::Dns(
-                request.receipt.server_name.as_str().try_into()?,
-            )),
+            Some(ServerName::Dns(server_name)),
             max_private_chunk_bytes,
         )
-        .await?;
+        .await
+        .map_err(classify_tlsn_hosted_failure)?;
     handle.close();
-    let mut socket = driver_task.await??;
-    let attestation_request: AttestationRequest =
-        bincode::deserialize(&read_frame(&mut socket, max_frame_bytes).await?)?;
+    let driver_result = driver_task
+        .await
+        .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
+    let mut socket = driver_result.map_err(classify_tlsn_hosted_failure)?;
+    let attestation_request = read_frame(&mut socket, max_frame_bytes)
+        .await
+        .map_err(HostedNotarySessionFailure::client)?;
+    let attestation_request: AttestationRequest = bincode::deserialize(&attestation_request)
+        .map_err(|error| HostedNotarySessionFailure::client(error.into()))?;
     let attestation = sign_attestation(
         &signing_key,
         attestation_request,
         request.receipt.connection_info,
         request.receipt.server_ephemeral_key,
         output.transcript_commitments,
-    )?;
-    write_frame(
-        &mut socket,
-        &bincode::serialize(&attestation)?,
-        max_frame_bytes,
     )
-    .await?;
+    .map_err(HostedNotarySessionFailure::service)?;
+    let attestation = bincode::serialize(&attestation)
+        .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
+    write_frame(&mut socket, &attestation, max_frame_bytes)
+        .await
+        .map_err(HostedNotarySessionFailure::client)?;
     Ok(transcript_bytes)
 }
 

@@ -18,9 +18,9 @@ use clap::Parser;
 use k256::ecdsa::SigningKey;
 use llm_notary_core::{
     DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES,
-    HostedCaptureSettlementRecorder, HostedNotarySessionLimits, NotaryAdmissionRejection,
-    NotarySessionMode, read_hosted_notary_session_prelude, run_hosted_notary_session_after_prelude,
-    write_notary_admission,
+    HostedNotarySessionFailureKind, HostedNotarySessionLimits, HostedUsageRecorder,
+    NotaryAdmissionRejection, NotarySessionMode, read_hosted_notary_session_prelude,
+    run_hosted_notary_session_after_prelude, write_notary_admission,
 };
 use metrics::{counter, gauge, histogram};
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,7 @@ use url::Url;
 
 const DEFAULT_LEASE_RENEW_INTERVAL_SECS: u64 = 10;
 const RELEASE_OUTBOX_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const USAGE_OUTBOX_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
 struct AdmissionCoordinator {
@@ -44,10 +45,18 @@ struct AdmissionCoordinator {
     directory_generation: u64,
     renew_interval: Duration,
     release_outbox: ReleaseOutbox,
+    usage_outbox: UsageOutbox,
 }
 
 #[derive(Clone)]
 struct ReleaseOutbox {
+    directory: Arc<PathBuf>,
+    write_lock: Arc<Mutex<()>>,
+    next_temp_id: Arc<AtomicU64>,
+}
+
+#[derive(Clone)]
+struct UsageOutbox {
     directory: Arc<PathBuf>,
     write_lock: Arc<Mutex<()>>,
     next_temp_id: Arc<AtomicU64>,
@@ -60,6 +69,7 @@ struct RedeemRequest<'a> {
     mode: &'static str,
     directory_generation: u64,
     contract: &'static str,
+    usage_settlement: bool,
 }
 
 #[derive(Deserialize)]
@@ -77,14 +87,56 @@ struct RedeemedLease {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RedeemedOperation {
-    #[serde(default, rename = "operation_id")]
-    _operation_id: Option<String>,
+    #[serde(default)]
+    operation_id: Option<String>,
     max_attestable_http_bytes: i64,
     max_frame_bytes: i64,
     max_private_chunk_bytes: i64,
     max_private_chunk_commitments: i64,
     record_digest: Option<String>,
     authenticated_allowance_bytes: Option<i64>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum UsageMode {
+    Capture,
+    Finalize,
+}
+
+impl UsageMode {
+    fn for_session(mode: NotarySessionMode) -> Self {
+        match mode {
+            NotarySessionMode::Capture => Self::Capture,
+            NotarySessionMode::Finalize => Self::Finalize,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum UsageSettlementOutcome {
+    Completed,
+    ClientFailed,
+    ServiceFailed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct PendingUsageSettlement {
+    operation_id: String,
+    notary_instance_id: String,
+    mode: UsageMode,
+    authenticated_bytes: i64,
+    outcome: Option<UsageSettlementOutcome>,
+}
+
+#[derive(Serialize)]
+struct UsageSettlementRequest<'a> {
+    operation_id: &'a str,
+    notary_instance_id: &'a str,
+    mode: UsageMode,
+    authenticated_bytes: i64,
+    outcome: UsageSettlementOutcome,
 }
 
 #[derive(Deserialize)]
@@ -518,6 +570,10 @@ impl AdmissionCoordinator {
             bail!("LLM_NOTARY_RELEASE_OUTBOX_DIR must not be empty");
         }
         let release_outbox = ReleaseOutbox::open(PathBuf::from(release_outbox))?;
+        let usage_outbox = UsageOutbox::open(
+            env::var("LLM_NOTARY_USAGE_OUTBOX_DIR")
+                .context("LLM_NOTARY_USAGE_OUTBOX_DIR must be set")?,
+        )?;
         Ok(Self {
             http: reqwest::Client::builder()
                 .user_agent("LLM-Notary-Service/0.1")
@@ -530,6 +586,7 @@ impl AdmissionCoordinator {
             directory_generation,
             renew_interval: Duration::from_secs(renew_interval_secs),
             release_outbox,
+            usage_outbox,
         })
     }
 
@@ -557,6 +614,7 @@ impl AdmissionCoordinator {
                 mode: session_mode_label(mode),
                 directory_generation: self.directory_generation,
                 contract: "one_operation_v1",
+                usage_settlement: true,
             })
             .send()
             .await
@@ -638,7 +696,7 @@ impl AdmissionCoordinator {
         Ok(persisted)
     }
 
-    async fn settle(
+    async fn settle_lease(
         &self,
         lease_id: &str,
         outcome: LeaseCompletionOutcome,
@@ -679,6 +737,277 @@ impl AdmissionCoordinator {
             tokio::time::sleep(RELEASE_OUTBOX_RETRY_INTERVAL).await;
         }
     }
+}
+
+impl AdmissionCoordinator {
+    async fn settle_usage(&self, pending: &PendingUsageSettlement) -> Result<()> {
+        let outcome = pending
+            .outcome
+            .context("usage settlement is not terminal")?;
+        let url = self.endpoint("/api/internal/notary/operations/settle")?;
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(self.service_token.as_ref())
+            .json(&UsageSettlementRequest {
+                operation_id: &pending.operation_id,
+                notary_instance_id: &pending.notary_instance_id,
+                mode: pending.mode,
+                authenticated_bytes: pending.authenticated_bytes,
+                outcome,
+            })
+            .send()
+            .await
+            .context("sending usage settlement")?;
+        if !matches!(
+            response.status(),
+            reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::GONE
+        ) {
+            bail!("usage coordinator returned {}", response.status());
+        }
+        Ok(())
+    }
+
+    async fn replay_usage_outbox(&self) {
+        let pending = match self.usage_outbox.ready() {
+            Ok(pending) => pending,
+            Err(_) => {
+                tracing::error!("reading usage settlement outbox failed");
+                return;
+            }
+        };
+        gauge!("llm_notary_usage_outbox_pending").set(pending.len() as f64);
+        for entry in pending {
+            match self.settle_usage(&entry).await {
+                Ok(()) => {
+                    if self.usage_outbox.remove(&entry.operation_id).is_err() {
+                        tracing::error!("removing settled usage outbox entry failed");
+                    } else {
+                        counter!("llm_notary_usage_outbox_deliveries_total", "outcome" => "delivered")
+                            .increment(1);
+                    }
+                }
+                Err(error) => {
+                    counter!("llm_notary_usage_outbox_deliveries_total", "outcome" => "retry")
+                        .increment(1);
+                    tracing::warn!(%error, "usage settlement delivery will be retried");
+                }
+            }
+        }
+    }
+}
+
+impl UsageOutbox {
+    fn open(directory: impl Into<PathBuf>) -> Result<Self> {
+        let directory = directory.into();
+        if directory.as_os_str().is_empty() {
+            bail!("usage settlement outbox directory must not be empty");
+        }
+        fs::create_dir_all(&directory)
+            .with_context(|| format!("creating usage settlement outbox {}", directory.display()))?;
+        let outbox = Self {
+            directory: Arc::new(directory),
+            write_lock: Arc::new(Mutex::new(())),
+            next_temp_id: Arc::new(AtomicU64::new(0)),
+        };
+        outbox.cleanup_temporary_files()?;
+        Ok(outbox)
+    }
+
+    fn recover_after_restart(&self) -> Result<()> {
+        for mut pending in self.entries()? {
+            if pending.outcome.is_none() {
+                pending.outcome = Some(UsageSettlementOutcome::ServiceFailed);
+                self.write(&pending)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn stage(&self, pending: &PendingUsageSettlement) -> Result<()> {
+        validate_usage_entry(pending)?;
+        if pending.authenticated_bytes != 0 || pending.outcome.is_some() {
+            bail!("new usage outbox entry must be staged and unmeasured");
+        }
+        let path = self.path(&pending.operation_id)?;
+        if path.exists() {
+            let existing = self.read(&path)?;
+            if existing == *pending {
+                return Ok(());
+            }
+            bail!("usage outbox operation already exists with different data");
+        }
+        self.write(pending)
+    }
+
+    fn record_authenticated_bytes(&self, operation_id: &str, bytes: usize) -> Result<()> {
+        let path = self.path(operation_id)?;
+        let mut pending = self.read(&path)?;
+        let bytes = i64::try_from(bytes).context("authenticated usage does not fit in i64")?;
+        if pending.outcome.is_some() {
+            if pending.authenticated_bytes == bytes {
+                return Ok(());
+            }
+            bail!("terminal usage outbox entry has different measured bytes");
+        }
+        if pending.authenticated_bytes != 0 && pending.authenticated_bytes != bytes {
+            bail!("usage outbox entry has conflicting measured bytes");
+        }
+        pending.authenticated_bytes = bytes;
+        self.write(&pending)
+    }
+
+    fn finish(
+        &self,
+        operation_id: &str,
+        outcome: UsageSettlementOutcome,
+        fallback_bytes: usize,
+    ) -> Result<()> {
+        let path = self.path(operation_id)?;
+        let mut pending = self.read(&path)?;
+        let fallback_bytes =
+            i64::try_from(fallback_bytes).context("authenticated usage does not fit in i64")?;
+        if pending.authenticated_bytes == 0 {
+            pending.authenticated_bytes = fallback_bytes;
+        } else if fallback_bytes != 0 && pending.authenticated_bytes != fallback_bytes {
+            bail!("terminal usage conflicts with its staged measurement");
+        }
+        if let Some(previous) = pending.outcome {
+            if previous == outcome {
+                return Ok(());
+            }
+            bail!("usage outbox entry already has a different terminal outcome");
+        }
+        pending.outcome = Some(outcome);
+        self.write(&pending)
+    }
+
+    fn ready(&self) -> Result<Vec<PendingUsageSettlement>> {
+        Ok(self
+            .entries()?
+            .into_iter()
+            .filter(|pending| pending.outcome.is_some())
+            .collect())
+    }
+
+    fn entries(&self) -> Result<Vec<PendingUsageSettlement>> {
+        let mut entries = Vec::new();
+        for entry in fs::read_dir(self.directory.as_ref()).with_context(|| {
+            format!(
+                "reading usage settlement outbox {}",
+                self.directory.display()
+            )
+        })? {
+            let path = entry?.path();
+            if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
+                entries.push(self.read(&path)?);
+            }
+        }
+        Ok(entries)
+    }
+
+    fn read(&self, path: &Path) -> Result<PendingUsageSettlement> {
+        let pending: PendingUsageSettlement = serde_json::from_slice(
+            &fs::read(path)
+                .with_context(|| format!("reading usage outbox entry {}", path.display()))?,
+        )
+        .with_context(|| format!("parsing usage outbox entry {}", path.display()))?;
+        validate_usage_entry(&pending)?;
+        if self.path(&pending.operation_id)? != path {
+            bail!("usage outbox filename does not match its operation");
+        }
+        Ok(pending)
+    }
+
+    fn write(&self, pending: &PendingUsageSettlement) -> Result<()> {
+        validate_usage_entry(pending)?;
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("usage outbox write lock was poisoned"))?;
+        let destination = self.path(&pending.operation_id)?;
+        let temporary = self.directory.join(format!(
+            ".tmp-{}-{}",
+            std::process::id(),
+            self.next_temp_id.fetch_add(1, Ordering::Relaxed)
+        ));
+        let bytes = serde_json::to_vec(pending).context("serializing usage outbox entry")?;
+        let result = (|| -> Result<()> {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                options.mode(0o600);
+            }
+            let mut file = options
+                .open(&temporary)
+                .with_context(|| format!("creating usage outbox entry {}", temporary.display()))?;
+            file.write_all(&bytes)?;
+            file.write_all(b"\n")?;
+            file.sync_all()?;
+            fs::rename(&temporary, &destination)?;
+            sync_directory(self.directory.as_ref())?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
+
+    fn remove(&self, operation_id: &str) -> Result<()> {
+        let _guard = self
+            .write_lock
+            .lock()
+            .map_err(|_| anyhow::anyhow!("usage outbox write lock was poisoned"))?;
+        let path = self.path(operation_id)?;
+        match fs::remove_file(&path) {
+            Ok(()) => sync_directory(self.directory.as_ref()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn path(&self, operation_id: &str) -> Result<PathBuf> {
+        validate_usage_identifier(operation_id)?;
+        Ok(self.directory.join(format!("{operation_id}.json")))
+    }
+
+    fn cleanup_temporary_files(&self) -> Result<()> {
+        for entry in fs::read_dir(self.directory.as_ref())? {
+            let path = entry?.path();
+            if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".tmp-"))
+            {
+                fs::remove_file(path)?;
+            }
+        }
+        sync_directory(self.directory.as_ref())
+    }
+}
+
+fn validate_usage_identifier(value: &str) -> Result<()> {
+    if value.is_empty()
+        || value.len() > 128
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        bail!("usage outbox contains an invalid identifier");
+    }
+    Ok(())
+}
+
+fn validate_usage_entry(pending: &PendingUsageSettlement) -> Result<()> {
+    validate_usage_identifier(&pending.operation_id)?;
+    validate_usage_identifier(&pending.notary_instance_id)?;
+    if pending.authenticated_bytes < 0 {
+        bail!("usage outbox contains negative authenticated bytes");
+    }
+    Ok(())
 }
 
 fn coordinator_rejection(
@@ -1174,6 +1503,16 @@ pub async fn run() -> Result<()> {
     }
     let admission = AdmissionCoordinator::from_env()?;
     tokio::spawn(admission.clone().replay_pending_releases());
+    admission.usage_outbox.recover_after_restart()?;
+    let usage_replayer = admission.clone();
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(USAGE_OUTBOX_RETRY_INTERVAL);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            usage_replayer.replay_usage_outbox().await;
+        }
+    });
     let allowed_hosts = Arc::new(
         args.allow_host
             .into_iter()
@@ -1350,7 +1689,7 @@ pub async fn run() -> Result<()> {
                 RedeemedAdmission::Operation(operation) => (operation, None),
                 RedeemedAdmission::Lease(lease) => {
                     let operation = RedeemedOperation {
-                        _operation_id: None,
+                        operation_id: None,
                         max_attestable_http_bytes: lease.max_attestable_http_bytes,
                         max_frame_bytes: lease.max_frame_bytes,
                         max_private_chunk_bytes: lease.max_private_chunk_bytes,
@@ -1361,6 +1700,30 @@ pub async fn run() -> Result<()> {
                     (operation, Some(lease))
                 }
             };
+            if let Some(operation_id) = operation.operation_id.as_ref() {
+                let pending_usage = PendingUsageSettlement {
+                    operation_id: operation_id.clone(),
+                    notary_instance_id: admission.instance_id.to_string(),
+                    mode: UsageMode::for_session(mode),
+                    authenticated_bytes: 0,
+                    outcome: None,
+                };
+                if admission.usage_outbox.stage(&pending_usage).is_err() {
+                    tracing::error!("staging admitted operation usage failed");
+                    let mut failed = pending_usage;
+                    failed.outcome = Some(UsageSettlementOutcome::ServiceFailed);
+                    if let Err(error) = admission.settle_usage(&failed).await {
+                        tracing::error!(%error, "direct settlement after outbox failure failed");
+                    }
+                    let _ = write_notary_admission(
+                        &mut stream,
+                        &prelude,
+                        Err(NotaryAdmissionRejection::CoordinatorUnavailable),
+                    )
+                    .await;
+                    return;
+                }
+            }
             let limits = match effective_hosted_limits(
                 mode,
                 &operation,
@@ -1375,8 +1738,20 @@ pub async fn run() -> Result<()> {
                     tracing::error!(%error, "coordinator returned invalid notary limits");
                     if let Some(lease) = legacy_lease.as_ref() {
                         let _ = admission
-                            .settle(&lease.lease_id, LeaseCompletionOutcome::ServiceFailed, None)
+                            .settle_lease(
+                                &lease.lease_id,
+                                LeaseCompletionOutcome::ServiceFailed,
+                                None,
+                            )
                             .await;
+                    }
+                    if let Some(operation_id) = operation.operation_id.as_ref()
+                        && admission
+                            .usage_outbox
+                            .finish(operation_id, UsageSettlementOutcome::ServiceFailed, 0)
+                            .is_err()
+                    {
+                        tracing::error!("queuing invalid admission settlement failed");
                     }
                     let _ = write_notary_admission(
                         &mut stream,
@@ -1394,7 +1769,11 @@ pub async fn run() -> Result<()> {
                     Err(error) => {
                         tracing::error!(%error, "coordinator returned an expired notary lease");
                         let _ = admission
-                            .settle(&lease.lease_id, LeaseCompletionOutcome::ServiceFailed, None)
+                            .settle_lease(
+                                &lease.lease_id,
+                                LeaseCompletionOutcome::ServiceFailed,
+                                None,
+                            )
                             .await;
                         let _ = write_notary_admission(
                             &mut stream,
@@ -1411,8 +1790,16 @@ pub async fn run() -> Result<()> {
                 tracing::debug!(%error, "could not send notary admission acceptance");
                 if let Some(lease) = legacy_lease.as_ref() {
                     let _ = admission
-                        .settle(&lease.lease_id, LeaseCompletionOutcome::ClientFailed, None)
+                        .settle_lease(&lease.lease_id, LeaseCompletionOutcome::ClientFailed, None)
                         .await;
+                }
+                if let Some(operation_id) = operation.operation_id.as_ref()
+                    && admission
+                        .usage_outbox
+                        .finish(operation_id, UsageSettlementOutcome::ClientFailed, 0)
+                        .is_err()
+                {
+                    tracing::error!("queuing disconnected admission settlement failed");
                 }
                 return;
             }
@@ -1429,25 +1816,32 @@ pub async fn run() -> Result<()> {
                 notary.session.mode = session_mode_label(mode),
             );
             let profile = profile_sessions.then(|| SessionProfile::start(mode));
-            let capture_settlement_recorder: Option<HostedCaptureSettlementRecorder> =
-                match (mode, legacy_lease.as_ref()) {
-                    (NotarySessionMode::Capture, Some(lease)) => {
-                        let admission = admission.clone();
-                        let lease_id = lease.lease_id.clone();
-                        Some(Box::new(move |authenticated_transcript_bytes| {
-                            let used_allowance_bytes =
-                                i64::try_from(authenticated_transcript_bytes)
-                                    .context("hosted transcript byte count exceeds i64")?;
-                            admission.persist_release(
-                                &lease_id,
+            let usage_operation_id = operation.operation_id.clone();
+            let legacy_capture_lease_id = match (mode, legacy_lease.as_ref()) {
+                (NotarySessionMode::Capture, Some(lease)) => Some(lease.lease_id.clone()),
+                _ => None,
+            };
+            let usage_recorder: Option<HostedUsageRecorder> =
+                if usage_operation_id.is_some() || legacy_capture_lease_id.is_some() {
+                    let usage_outbox = admission.usage_outbox.clone();
+                    let recorder_admission = admission.clone();
+                    Some(Box::new(move |bytes| {
+                        if let Some(operation_id) = usage_operation_id.as_deref() {
+                            usage_outbox.record_authenticated_bytes(operation_id, bytes)?;
+                        }
+                        if let Some(lease_id) = legacy_capture_lease_id.as_deref() {
+                            let used_allowance_bytes = i64::try_from(bytes)
+                                .context("hosted transcript byte count exceeds i64")?;
+                            recorder_admission.persist_release(
+                                lease_id,
                                 LeaseCompletionOutcome::Completed,
                                 Some(used_allowance_bytes),
                             )?;
-                            Ok(())
-                        })
-                            as HostedCaptureSettlementRecorder)
-                    }
-                    _ => None,
+                        }
+                        Ok(())
+                    }))
+                } else {
+                    None
                 };
             let session = run_hosted_notary_session_after_prelude(
                 stream,
@@ -1455,7 +1849,7 @@ pub async fn run() -> Result<()> {
                 key,
                 allowed_hosts,
                 limits,
-                capture_settlement_recorder,
+                usage_recorder,
             );
             let session_and_lease = async {
                 tokio::pin!(session);
@@ -1465,52 +1859,88 @@ pub async fn run() -> Result<()> {
                     let lease_guard = maintain_lease(admission.clone(), &lease.lease_id, deadline);
                     tokio::pin!(lease_guard);
                     tokio::select! {
-                        result = &mut session => result,
+                        result = &mut session => result.map_err(|error| {
+                            let outcome = match error.kind() {
+                                HostedNotarySessionFailureKind::Client => {
+                                    UsageSettlementOutcome::ClientFailed
+                                }
+                                HostedNotarySessionFailureKind::Service => {
+                                    UsageSettlementOutcome::ServiceFailed
+                                }
+                            };
+                            (outcome, anyhow::Error::new(error))
+                        }),
                         result = &mut lease_guard => {
-                            result?;
-                            bail!("admission lease guard stopped unexpectedly")
+                            let error = match result {
+                                Ok(()) => anyhow::anyhow!(
+                                    "admission lease guard stopped unexpectedly"
+                                ),
+                                Err(error) => error,
+                            };
+                            Err((UsageSettlementOutcome::ServiceFailed, error))
                         }
                     }
                 } else {
-                    session.await
+                    session.await.map_err(|error| {
+                        let outcome = match error.kind() {
+                            HostedNotarySessionFailureKind::Client => {
+                                UsageSettlementOutcome::ClientFailed
+                            }
+                            HostedNotarySessionFailureKind::Service => {
+                                UsageSettlementOutcome::ServiceFailed
+                            }
+                        };
+                        (outcome, anyhow::Error::new(error))
+                    })
                 }
             };
             let result = timeout(effective_session_timeout, session_and_lease)
                 .instrument(session_span)
                 .await;
-            let (outcome, lease_outcome, used_allowance_bytes) = match result {
-                Ok(Ok(session_result)) => {
-                    let used_allowance_bytes = match mode {
-                        NotarySessionMode::Capture => Some(
-                            i64::try_from(session_result.authenticated_transcript_bytes)
-                                .expect("hosted transcript limit fits in i64"),
-                        ),
-                        NotarySessionMode::Finalize => None,
-                    };
-                    (
-                        "completed",
-                        LeaseCompletionOutcome::Completed,
-                        used_allowance_bytes,
-                    )
-                }
-                Ok(Err(error)) => {
+            let (outcome, settlement_outcome, authenticated_bytes) = match result {
+                Ok(Ok(result)) => (
+                    "completed",
+                    UsageSettlementOutcome::Completed,
+                    result.authenticated_transcript_bytes,
+                ),
+                Ok(Err((settlement_outcome, error))) => {
                     tracing::warn!(%error, "notary session failed");
-                    // Once the client-controlled proof stream begins, protocol,
-                    // validation, and transport errors cannot safely be called a
-                    // service failure. Do not mint a restoration for them.
-                    ("failed", LeaseCompletionOutcome::ClientFailed, None)
+                    ("failed", settlement_outcome, 0)
                 }
                 Err(_) => {
                     tracing::warn!("notary session timed out");
-                    ("timed_out", LeaseCompletionOutcome::ClientFailed, None)
+                    ("timed_out", UsageSettlementOutcome::ClientFailed, 0)
                 }
             };
+            if let Some(operation_id) = operation.operation_id.as_ref()
+                && admission
+                    .usage_outbox
+                    .finish(operation_id, settlement_outcome, authenticated_bytes)
+                    .is_err()
+            {
+                tracing::error!("queuing terminal usage settlement failed");
+            }
             if let Some(profile) = profile {
                 profile.finish(outcome).await;
             }
+            let lease_outcome = match settlement_outcome {
+                UsageSettlementOutcome::Completed => LeaseCompletionOutcome::Completed,
+                UsageSettlementOutcome::ClientFailed => LeaseCompletionOutcome::ClientFailed,
+                UsageSettlementOutcome::ServiceFailed => LeaseCompletionOutcome::ServiceFailed,
+            };
+            let used_allowance_bytes = if settlement_outcome == UsageSettlementOutcome::Completed
+                && mode == NotarySessionMode::Capture
+            {
+                Some(
+                    i64::try_from(authenticated_bytes)
+                        .expect("hosted transcript limit fits in i64"),
+                )
+            } else {
+                None
+            };
             if let Some(lease) = legacy_lease.as_ref()
                 && let Err(error) = admission
-                    .settle(&lease.lease_id, lease_outcome, used_allowance_bytes)
+                    .settle_lease(&lease.lease_id, lease_outcome, used_allowance_bytes)
                     .await
             {
                 counter!("llm_notary_notary_lease_release_failures_total", "mode" => session_mode_label(mode)).increment(1);
@@ -1729,9 +2159,11 @@ mod tests {
             mode: "capture",
             directory_generation: 1,
             contract: "one_operation_v1",
+            usage_settlement: true,
         })
         .unwrap();
         assert_eq!(request["contract"], "one_operation_v1");
+        assert_eq!(request["usage_settlement"], true);
 
         let operation: RedeemedAdmission = serde_json::from_value(serde_json::json!({
             "max_attestable_http_bytes": 1024,
@@ -1762,7 +2194,7 @@ mod tests {
     #[test]
     fn coordinator_policy_can_only_reduce_local_size_limits() {
         let operation = RedeemedOperation {
-            _operation_id: None,
+            operation_id: Some("operation-finalize".to_owned()),
             max_attestable_http_bytes: 8 << 20,
             max_frame_bytes: 64 << 20,
             max_private_chunk_bytes: 256 << 10,
@@ -1792,7 +2224,7 @@ mod tests {
     #[test]
     fn capture_policy_rejects_a_finalization_digest() {
         let operation = RedeemedOperation {
-            _operation_id: None,
+            operation_id: Some("operation-capture".to_owned()),
             max_attestable_http_bytes: 1024,
             max_frame_bytes: 1024,
             max_private_chunk_bytes: 1024,
@@ -1816,6 +2248,7 @@ mod tests {
 
     #[tokio::test]
     async fn coordinator_outage_fails_closed() {
+        let outbox_directory = tempfile::tempdir().unwrap();
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
@@ -1831,6 +2264,7 @@ mod tests {
             directory_generation: 1,
             renew_interval: Duration::from_secs(1),
             release_outbox,
+            usage_outbox: UsageOutbox::open(outbox_directory.path()).unwrap(),
         };
 
         assert!(matches!(
@@ -1840,6 +2274,238 @@ mod tests {
             Err(CoordinatorRejection::Unavailable(_))
         ));
         fs::remove_dir_all(release_outbox_directory).unwrap();
+    }
+
+    #[tokio::test]
+    async fn admitted_operation_needs_no_coordinator_liveness() {
+        let outbox_directory = tempfile::tempdir().unwrap();
+        let (release_outbox, release_outbox_directory) = test_outbox();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/api/internal/notary/admissions/redeem",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "operation_id": "operation-capture",
+                    "max_attestable_http_bytes": 1024,
+                    "max_frame_bytes": 2048,
+                    "max_private_chunk_bytes": 512,
+                    "max_private_chunk_commitments": 4,
+                    "record_digest": null,
+                    "authenticated_allowance_bytes": null
+                }))
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let coordinator = AdmissionCoordinator {
+            http: reqwest::Client::new(),
+            origin: Url::parse(&format!("http://{address}/")).unwrap(),
+            service_token: Arc::from("x".repeat(32)),
+            instance_id: Arc::from("notary-test"),
+            directory_generation: 1,
+            renew_interval: Duration::from_secs(1),
+            release_outbox,
+            usage_outbox: UsageOutbox::open(outbox_directory.path()).unwrap(),
+        };
+        let redeemed = match coordinator
+            .redeem("opaque-ticket", NotarySessionMode::Capture)
+            .await
+        {
+            Ok(redeemed) => redeemed,
+            Err(_) => panic!("one-operation admission should be accepted"),
+        };
+        let RedeemedAdmission::Operation(operation) = redeemed else {
+            panic!("expected one-operation admission response");
+        };
+        server.abort();
+
+        let limits = effective_hosted_limits(
+            NotarySessionMode::Capture,
+            &operation,
+            Duration::from_secs(30),
+            1024,
+            1024,
+            4,
+            2048,
+        )
+        .unwrap();
+        assert_eq!(limits.max_total_private_chunk_bytes, 1024);
+        assert_eq!(limits.session_timeout, Duration::from_secs(30));
+        fs::remove_dir_all(release_outbox_directory).unwrap();
+    }
+
+    #[test]
+    fn usage_outbox_recovers_measured_bytes_after_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let pending = PendingUsageSettlement {
+            operation_id: "operation-restart".to_owned(),
+            notary_instance_id: "notary-test".to_owned(),
+            mode: UsageMode::Capture,
+            authenticated_bytes: 0,
+            outcome: None,
+        };
+        let outbox = UsageOutbox::open(directory.path()).unwrap();
+        outbox.stage(&pending).unwrap();
+        outbox
+            .record_authenticated_bytes(&pending.operation_id, 321)
+            .unwrap();
+        drop(outbox);
+
+        let restarted = UsageOutbox::open(directory.path()).unwrap();
+        restarted.recover_after_restart().unwrap();
+        assert_eq!(
+            restarted.ready().unwrap(),
+            vec![PendingUsageSettlement {
+                authenticated_bytes: 321,
+                outcome: Some(UsageSettlementOutcome::ServiceFailed),
+                ..pending
+            }]
+        );
+    }
+
+    #[test]
+    fn usage_outbox_rejects_conflicting_local_reports() {
+        let directory = tempfile::tempdir().unwrap();
+        let outbox = UsageOutbox::open(directory.path()).unwrap();
+        let pending = PendingUsageSettlement {
+            operation_id: "operation-conflict".to_owned(),
+            notary_instance_id: "notary-test".to_owned(),
+            mode: UsageMode::Finalize,
+            authenticated_bytes: 0,
+            outcome: None,
+        };
+        outbox.stage(&pending).unwrap();
+        outbox
+            .record_authenticated_bytes(&pending.operation_id, 42)
+            .unwrap();
+        outbox
+            .record_authenticated_bytes(&pending.operation_id, 42)
+            .unwrap();
+        assert!(
+            outbox
+                .record_authenticated_bytes(&pending.operation_id, 41)
+                .is_err()
+        );
+        outbox
+            .finish(&pending.operation_id, UsageSettlementOutcome::Completed, 42)
+            .unwrap();
+        outbox
+            .finish(&pending.operation_id, UsageSettlementOutcome::Completed, 42)
+            .unwrap();
+        assert!(
+            outbox
+                .finish(
+                    &pending.operation_id,
+                    UsageSettlementOutcome::ClientFailed,
+                    42,
+                )
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_usage_replay_removes_only_delivered_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let outbox = UsageOutbox::open(directory.path()).unwrap();
+        let pending = PendingUsageSettlement {
+            operation_id: "operation-delivery".to_owned(),
+            notary_instance_id: "notary-test".to_owned(),
+            mode: UsageMode::Capture,
+            authenticated_bytes: 0,
+            outcome: None,
+        };
+        outbox.stage(&pending).unwrap();
+        outbox
+            .finish(
+                &pending.operation_id,
+                UsageSettlementOutcome::ClientFailed,
+                17,
+            )
+            .unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/api/internal/notary/operations/settle",
+            axum::routing::post(|| async { reqwest::StatusCode::NO_CONTENT }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let release_directory = tempfile::tempdir().unwrap();
+        let coordinator = AdmissionCoordinator {
+            http: reqwest::Client::new(),
+            origin: Url::parse(&format!("http://{address}/")).unwrap(),
+            service_token: Arc::from("x".repeat(32)),
+            instance_id: Arc::from("notary-test"),
+            directory_generation: 1,
+            renew_interval: Duration::from_secs(1),
+            release_outbox: ReleaseOutbox::open(release_directory.path().to_owned()).unwrap(),
+            usage_outbox: outbox,
+        };
+
+        coordinator.replay_usage_outbox().await;
+        assert!(coordinator.usage_outbox.ready().unwrap().is_empty());
+        server.abort();
+        let _ = server.await;
+
+        let retry = PendingUsageSettlement {
+            operation_id: "operation-retry".to_owned(),
+            ..pending
+        };
+        coordinator.usage_outbox.stage(&retry).unwrap();
+        coordinator
+            .usage_outbox
+            .finish(
+                &retry.operation_id,
+                UsageSettlementOutcome::ClientFailed,
+                19,
+            )
+            .unwrap();
+        coordinator.replay_usage_outbox().await;
+        assert_eq!(coordinator.usage_outbox.ready().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn gone_operation_acknowledgement_removes_usage_entry() {
+        let usage_directory = tempfile::tempdir().unwrap();
+        let usage_outbox = UsageOutbox::open(usage_directory.path()).unwrap();
+        let pending = PendingUsageSettlement {
+            operation_id: "operation-deleted-account".to_owned(),
+            notary_instance_id: "notary-test".to_owned(),
+            mode: UsageMode::Capture,
+            authenticated_bytes: 0,
+            outcome: None,
+        };
+        usage_outbox.stage(&pending).unwrap();
+        usage_outbox
+            .finish(
+                &pending.operation_id,
+                UsageSettlementOutcome::ServiceFailed,
+                23,
+            )
+            .unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/api/internal/notary/operations/settle",
+            axum::routing::post(|| async { reqwest::StatusCode::GONE }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let release_directory = tempfile::tempdir().unwrap();
+        let coordinator = AdmissionCoordinator {
+            http: reqwest::Client::new(),
+            origin: Url::parse(&format!("http://{address}/")).unwrap(),
+            service_token: Arc::from("x".repeat(32)),
+            instance_id: Arc::from("notary-test"),
+            directory_generation: 1,
+            renew_interval: Duration::from_secs(1),
+            release_outbox: ReleaseOutbox::open(release_directory.path().to_owned()).unwrap(),
+            usage_outbox,
+        };
+
+        coordinator.replay_usage_outbox().await;
+        assert!(coordinator.usage_outbox.ready().unwrap().is_empty());
+        server.abort();
+        let _ = server.await;
     }
 
     #[test]

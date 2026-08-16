@@ -214,20 +214,20 @@ struct ShareStats {
 
 #[derive(Debug, Eq, PartialEq, Serialize, ToSchema)]
 struct NotaryStats {
-    /// Admitted capture operations.
+    /// Successfully completed capture operations.
     captures: i64,
-    /// Admitted finalization operations.
+    /// Successfully completed finalization operations.
     finalizations: i64,
 }
 
 async fn account_notary_stats(database: &DatabasePool, user_id: &str) -> ApiResult<NotaryStats> {
     let (captures, finalizations) = sqlx::query_as::<_, (i64, i64)>(
         "SELECT
-             COUNT(*) FILTER (WHERE tickets.mode = 'capture')::BIGINT,
-             COUNT(*) FILTER (WHERE tickets.mode = 'finalize')::BIGINT
-         FROM notary_admission_tickets AS tickets
-         WHERE tickets.subject_id = $1
-           AND tickets.consumed_at IS NOT NULL",
+             COUNT(*) FILTER (WHERE operations.mode = 'capture')::BIGINT,
+             COUNT(*) FILTER (WHERE operations.mode = 'finalize')::BIGINT
+         FROM notary_admission_operations AS operations
+         WHERE operations.subject_id = $1
+           AND operations.terminal_outcome = 'completed'",
     )
     .bind(user_id)
     .fetch_one(database)
@@ -2463,29 +2463,36 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_notary_stats_count_only_admitted_account_operations() {
+    async fn account_notary_stats_count_only_completed_account_operations() {
         let database = fresh_database().await;
         insert_test_github_user(&database, "user-1", 1, "User One").await;
         insert_test_github_user(&database, "user-2", 2, "User Two").await;
         sqlx::query(
-            "INSERT INTO notary_admission_tickets
-                 (token_hash, subject_id, credit_subject, access_pool, mode,
-                  directory_generation, record_digest, requested_allowance_bytes,
-                  max_attestable_http_bytes, max_frame_bytes, max_private_chunk_bytes,
-                  max_private_chunk_commitments, issued_at, expires_at, consumed_at,
-                  consumed_by_instance)
+            "INSERT INTO notary_admission_operations
+                 (id, ticket_token_hash, notary_instance_id, subject_id, credit_subject,
+                  access_pool, mode, record_digest, authenticated_allowance_bytes,
+                  max_attestable_http_bytes, admitted_at, terminal_outcome,
+                  settled_authenticated_bytes, settled_at)
              VALUES
-                 ('ticket-capture-admitted', 'user-1', 'user:user-1', 'free', 'capture',
-                  1, NULL, 1, 1, 1, 1, 1, 1, 2, 1, 'notary-1'),
-                 ('ticket-finalize-admitted', 'user-1', 'user:user-1', 'free', 'finalize',
-                  1, $1, 1, 1, 1, 1, 1, 1, 2, 1, 'notary-1'),
-                 ('ticket-capture-issued', 'user-1', 'user:user-1', 'free', 'capture',
-                  1, NULL, 1, 1, 1, 1, 1, 1, 2, NULL, NULL),
-                 ('ticket-finalize-issued', 'user-1', 'user:user-1', 'free', 'finalize',
-                  1, $2, 1, 1, 1, 1, 1, 1, 2, NULL, NULL),
-                 ('ticket-other-capture', 'user-2', 'user:user-2', 'free', 'capture',
-                  1, NULL, 1, 1, 1, 1, 1, 1, 2, 1, 'notary-1')",
+                 ('capture-completed', $1, 'notary-1', 'user-1', 'user:user-1',
+                  'free', 'capture', NULL, NULL, 1000, 1, 'completed', 100, 2),
+                 ('finalize-completed', $2, 'notary-1', 'user-1', 'user:user-1',
+                  'free', 'finalize', $7, 200, 1000, 1, 'completed', 200, 2),
+                 ('capture-client-failed', $3, 'notary-1', 'user-1', 'user:user-1',
+                  'free', 'capture', NULL, NULL, 1000, 1, 'client_failed', 50, 2),
+                 ('capture-unsettled', $4, 'notary-1', 'user-1', 'user:user-1',
+                  'free', 'capture', NULL, NULL, 1000, 1, NULL, NULL, NULL),
+                 ('finalize-service-failed', $5, 'notary-1', 'user-1', 'user:user-1',
+                  'free', 'finalize', $8, 300, 1000, 1, 'service_failed', 0, 2),
+                 ('other-capture-completed', $6, 'notary-1', 'user-2', 'user:user-2',
+                  'free', 'capture', NULL, NULL, 1000, 1, 'completed', 100, 2)",
         )
+        .bind("1".repeat(64))
+        .bind("2".repeat(64))
+        .bind("3".repeat(64))
+        .bind("4".repeat(64))
+        .bind("5".repeat(64))
+        .bind("6".repeat(64))
         .bind("a".repeat(64))
         .bind("b".repeat(64))
         .execute(&database.pool)
@@ -2549,6 +2556,7 @@ mod tests {
             "POST /api/internal/notary/admissions/redeem",
             "POST /api/internal/notary/leases/release",
             "POST /api/internal/notary/leases/renew",
+            "POST /api/internal/notary/operations/settle",
             "POST /api/me/credit-offers/{offer_id}/claim",
             "POST /api/notary/admissions",
         ]
