@@ -215,7 +215,10 @@ jobs:
   windows-update:
     name: Windows client update
     needs: changes
-    if: needs.changes.outputs.windows_update == 'true'
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.changes.outputs.windows_update == 'true'
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v6
@@ -266,7 +269,10 @@ jobs:
   desktop:
     name: macOS desktop bundle
     needs: changes
-    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.desktop == 'true' }}
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      needs.changes.outputs.desktop == 'true'
     runs-on: macos-14
     defaults:
       run:
@@ -388,11 +394,11 @@ jobs:
       RUST_CHANGED: ${{ needs.changes.outputs.rust }}
       RUST_RESULT: ${{ needs.rust.result }}
       POSTGRES_RESULT: ${{ needs.postgres-integration.result }}
-      WINDOWS_UPDATE_CHANGED: ${{ needs.changes.outputs.windows_update }}
+      WINDOWS_UPDATE_REQUIRED: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.windows_update == 'true' }}
       WINDOWS_UPDATE_RESULT: ${{ needs.windows-update.result }}
       APP_CHANGED: ${{ needs.changes.outputs.app }}
       APP_RESULT: ${{ needs.app.result }}
-      DESKTOP_REQUIRED: ${{ github.event_name == 'pull_request' && needs.changes.outputs.desktop == 'true' }}
+      DESKTOP_REQUIRED: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.changes.outputs.desktop == 'true' }}
       DESKTOP_RESULT: ${{ needs.desktop.result }}
       DOCS_CHANGED: ${{ needs.changes.outputs.docs }}
       DOCS_RESULT: ${{ needs.docs.result }}
@@ -424,7 +430,7 @@ jobs:
 
           require_selected Rust "$RUST_CHANGED" "$RUST_RESULT"
           require_selected PostgreSQL "$RUST_CHANGED" "$POSTGRES_RESULT"
-          require_selected "Windows client update" "$WINDOWS_UPDATE_CHANGED" "$WINDOWS_UPDATE_RESULT"
+          require_selected "Windows client update" "$WINDOWS_UPDATE_REQUIRED" "$WINDOWS_UPDATE_RESULT"
           require_selected SPA "$APP_CHANGED" "$APP_RESULT"
           require_selected Desktop "$DESKTOP_REQUIRED" "$DESKTOP_RESULT"
           require_selected Documentation "$DOCS_CHANGED" "$DOCS_RESULT"
