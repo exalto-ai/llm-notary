@@ -990,7 +990,7 @@
         "tags": [
           "notary-admission"
         ],
-        "summary": "Consume a ticket and acquire a distributed notary lease",
+        "summary": "Consume a ticket using the requested notary admission contract",
         "operationId": "redeem_admission",
         "requestBody": {
           "content": {
@@ -1009,6 +1009,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/RedeemAdmissionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
                 }
               }
             }
@@ -2224,26 +2234,6 @@
               }
             }
           },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
           "500": {
             "description": "",
             "content": {
@@ -3348,6 +3338,12 @@
           "finalize"
         ]
       },
+      "AdmissionRedemptionContract": {
+        "type": "string",
+        "enum": [
+          "one_operation_v1"
+        ]
+      },
       "AdmissionTicketResponse": {
         "type": "object",
         "required": [
@@ -4349,12 +4345,12 @@
           "captures": {
             "type": "integer",
             "format": "int64",
-            "description": "Successfully completed capture sessions."
+            "description": "Admitted capture operations."
           },
           "finalizations": {
             "type": "integer",
             "format": "int64",
-            "description": "Successfully completed finalization sessions."
+            "description": "Admitted finalization operations."
           }
         }
       },
@@ -4906,6 +4902,16 @@
           "directory_generation"
         ],
         "properties": {
+          "contract": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/AdmissionRedemptionContract"
+              }
+            ]
+          },
           "directory_generation": {
             "type": "integer",
             "format": "int64",
@@ -4923,6 +4929,16 @@
         }
       },
       "RedeemAdmissionResponse": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/RedeemedLeaseResponse"
+          },
+          {
+            "$ref": "#/components/schemas/RedeemedOperationResponse"
+          }
+        ]
+      },
+      "RedeemedLeaseResponse": {
         "type": "object",
         "required": [
           "lease_id",
@@ -4948,6 +4964,46 @@
           },
           "lease_id": {
             "type": "string"
+          },
+          "max_attestable_http_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_frame_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_private_chunk_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "max_private_chunk_commitments": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "record_digest": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "RedeemedOperationResponse": {
+        "type": "object",
+        "required": [
+          "max_attestable_http_bytes",
+          "max_frame_bytes",
+          "max_private_chunk_bytes",
+          "max_private_chunk_commitments"
+        ],
+        "properties": {
+          "authenticated_allowance_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           },
           "max_attestable_http_bytes": {
             "type": "integer",
@@ -5330,7 +5386,7 @@
     },
     {
       "name": "notary-admission",
-      "description": "Hosted notary tickets and distributed leases"
+      "description": "One-operation hosted notary admission tickets"
     },
     {
       "name": "billing",

@@ -286,7 +286,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Consume a ticket and acquire a distributed notary lease */
+        /** Consume a ticket using the requested notary admission contract */
         post: operations["redeem_admission"];
         delete?: never;
         options?: never;
@@ -764,6 +764,8 @@ export interface components {
         };
         /** @enum {string} */
         AdmissionMode: "capture" | "finalize";
+        /** @enum {string} */
+        AdmissionRedemptionContract: "one_operation_v1";
         AdmissionTicketResponse: {
             /** Format: int64 */
             directory_generation: number;
@@ -1038,12 +1040,12 @@ export interface components {
         NotaryStats: {
             /**
              * Format: int64
-             * @description Successfully completed capture sessions.
+             * @description Admitted capture operations.
              */
             captures: number;
             /**
              * Format: int64
-             * @description Successfully completed finalization sessions.
+             * @description Admitted finalization operations.
              */
             finalizations: number;
         };
@@ -1195,19 +1197,34 @@ export interface components {
         /** @enum {string} */
         PurchaseState: "creating" | "checkout_open" | "paid" | "failed" | "refunded" | "disputed";
         RedeemAdmissionRequest: {
+            contract?: null | components["schemas"]["AdmissionRedemptionContract"];
             /** Format: int64 */
             directory_generation: number;
             mode: components["schemas"]["AdmissionMode"];
             notary_instance_id: string;
             ticket: string;
         };
-        RedeemAdmissionResponse: {
+        RedeemAdmissionResponse: components["schemas"]["RedeemedLeaseResponse"] | components["schemas"]["RedeemedOperationResponse"];
+        RedeemedLeaseResponse: {
             access_pool: components["schemas"]["AccessPool"];
             /** Format: int64 */
             authorized_allowance_bytes: number;
             /** Format: int64 */
             lease_expires_at: number;
             lease_id: string;
+            /** Format: int64 */
+            max_attestable_http_bytes: number;
+            /** Format: int64 */
+            max_frame_bytes: number;
+            /** Format: int64 */
+            max_private_chunk_bytes: number;
+            /** Format: int64 */
+            max_private_chunk_commitments: number;
+            record_digest?: string | null;
+        };
+        RedeemedOperationResponse: {
+            /** Format: int64 */
+            authenticated_allowance_bytes?: number | null;
             /** Format: int64 */
             max_attestable_http_bytes: number;
             /** Format: int64 */
@@ -2026,6 +2043,14 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RedeemAdmissionResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
             401: {
@@ -2891,22 +2916,6 @@ export interface operations {
                 };
             };
             403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            429: {
                 headers: {
                     [name: string]: unknown;
                 };

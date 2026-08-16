@@ -256,10 +256,18 @@ pub struct RedeemAdmissionRequest {
     pub notary_instance_id: String,
     pub mode: AdmissionMode,
     pub directory_generation: u64,
+    #[serde(default)]
+    pub contract: Option<AdmissionRedemptionContract>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AdmissionRedemptionContract {
+    OneOperationV1,
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct RedeemAdmissionResponse {
+pub struct RedeemedLeaseResponse {
     pub lease_id: String,
     pub lease_expires_at: i64,
     pub access_pool: AccessPool,
@@ -269,6 +277,35 @@ pub struct RedeemAdmissionResponse {
     pub max_private_chunk_commitments: i64,
     pub record_digest: Option<String>,
     pub authorized_allowance_bytes: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RedeemedOperationResponse {
+    pub max_attestable_http_bytes: i64,
+    pub max_frame_bytes: i64,
+    pub max_private_chunk_bytes: i64,
+    pub max_private_chunk_commitments: i64,
+    pub record_digest: Option<String>,
+    pub authenticated_allowance_bytes: Option<i64>,
+}
+
+#[derive(Serialize, ToSchema)]
+#[serde(untagged)]
+pub enum RedeemAdmissionResponse {
+    Lease(RedeemedLeaseResponse),
+    Operation(RedeemedOperationResponse),
+}
+
+#[cfg(test)]
+impl std::ops::Deref for RedeemAdmissionResponse {
+    type Target = RedeemedLeaseResponse;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Lease(lease) => lease,
+            Self::Operation(_) => panic!("test expected the legacy lease contract"),
+        }
+    }
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -314,6 +351,23 @@ struct TicketRow {
     directory_generation: i64,
     record_digest: Option<String>,
     requested_allowance_bytes: i64,
+    max_attestable_http_bytes: i64,
+    max_frame_bytes: i64,
+    max_private_chunk_bytes: i64,
+    max_private_chunk_commitments: i64,
+    expires_at: i64,
+    consumed_at: Option<i64>,
+}
+
+#[derive(FromRow)]
+struct OperationTicketRow {
+    subject_id: Option<String>,
+    credit_subject: String,
+    access_pool: String,
+    mode: String,
+    directory_generation: i64,
+    record_digest: Option<String>,
+    authenticated_allowance_bytes: Option<i64>,
     max_attestable_http_bytes: i64,
     max_frame_bytes: i64,
     max_private_chunk_bytes: i64,
@@ -664,8 +718,6 @@ async fn claim_credit_offer(
         (status = 401, body = ErrorResponse),
         (status = 403, body = ErrorResponse),
         (status = 402, body = ErrorResponse),
-        (status = 409, body = ErrorResponse),
-        (status = 429, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
     security((), ("bearerAuth" = [])),
@@ -772,6 +824,8 @@ async fn issue_admission(
     .bind(request.mode.as_str())
     .bind(directory_generation)
     .bind(record_digest)
+    // `requested_allowance_bytes` keeps the immediately previous lease
+    // contract rollbackable. The one-operation redemption path ignores it.
     .bind(allowance)
     .bind(policy.max_attestable_http_bytes)
     .bind(policy.max_frame_bytes)
@@ -785,25 +839,22 @@ async fn issue_admission(
     transaction.commit().await.map_err(database_error)?;
 
     metrics::counter!("llm_notary_admission_tickets_total", "pool" => pool.as_str(), "mode" => request.mode.as_str()).increment(1);
-    let mut limits = admission_limits(policy);
-    if request.mode == AdmissionMode::Capture {
-        limits.max_attestable_http_bytes = allowance;
-    }
     Ok(Json(AdmissionTicketResponse {
         ticket: token,
         expires_at,
         directory_generation: state.notary_directory.generation,
-        limits,
+        limits: admission_limits(policy),
     }))
 }
 
 #[utoipa::path(
     post,
     path = "/api/internal/notary/admissions/redeem",
-    summary = "Consume a ticket and acquire a distributed notary lease",
+    summary = "Consume a ticket using the requested notary admission contract",
     request_body = RedeemAdmissionRequest,
     responses(
         (status = 200, body = RedeemAdmissionResponse),
+        (status = 400, body = ErrorResponse),
         (status = 401, body = ErrorResponse),
         (status = 402, body = ErrorResponse),
         (status = 409, body = ErrorResponse),
@@ -833,6 +884,11 @@ async fn redeem_admission(
     let now = unix_timestamp()?;
     let requested_generation = i64::try_from(request.directory_generation)
         .map_err(|_| ApiError::bad_request("directory generation is too large"))?;
+    if request.contract == Some(AdmissionRedemptionContract::OneOperationV1) {
+        return redeem_one_operation(&state, &request, now, requested_generation)
+            .await
+            .map(|response| Json(RedeemAdmissionResponse::Operation(response)));
+    }
     let mut transaction = state.database.begin().await.map_err(database_error)?;
     admission_lock(&mut transaction).await?;
     expire_leases(&mut transaction, now).await?;
@@ -943,17 +999,129 @@ async fn redeem_admission(
     .map_err(database_error)?;
     transaction.commit().await.map_err(database_error)?;
     metrics::counter!("llm_notary_admission_leases_total", "pool" => pool.as_str(), "mode" => request.mode.as_str(), "outcome" => "admitted").increment(1);
-    Ok(Json(RedeemAdmissionResponse {
-        lease_id,
-        lease_expires_at,
-        access_pool: pool,
+    Ok(Json(RedeemAdmissionResponse::Lease(
+        RedeemedLeaseResponse {
+            lease_id,
+            lease_expires_at,
+            access_pool: pool,
+            max_attestable_http_bytes: ticket.max_attestable_http_bytes,
+            max_frame_bytes: ticket.max_frame_bytes,
+            max_private_chunk_bytes: ticket.max_private_chunk_bytes,
+            max_private_chunk_commitments: ticket.max_private_chunk_commitments,
+            record_digest: ticket.record_digest,
+            authorized_allowance_bytes: ticket.requested_allowance_bytes,
+        },
+    )))
+}
+
+async fn redeem_one_operation(
+    state: &AppState,
+    request: &RedeemAdmissionRequest,
+    now: i64,
+    requested_generation: i64,
+) -> ApiResult<RedeemedOperationResponse> {
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    admission_lock(&mut transaction).await?;
+    let ticket = sqlx::query_as::<_, OperationTicketRow>(
+        "SELECT subject_id, credit_subject, access_pool, mode, directory_generation,
+                record_digest, authenticated_allowance_bytes, max_attestable_http_bytes,
+                max_frame_bytes, max_private_chunk_bytes, max_private_chunk_commitments,
+                expires_at, consumed_at
+         FROM notary_admission_tickets WHERE token_hash = $1 FOR UPDATE",
+    )
+    .bind(sha256_hex(request.ticket.as_bytes()))
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| ApiError::gone("admission ticket is invalid or expired"))?;
+    if ticket.consumed_at.is_some() {
+        return Err(ApiError::conflict("admission ticket was already consumed"));
+    }
+    if ticket.expires_at <= now {
+        return Err(ApiError::gone("admission ticket is invalid or expired"));
+    }
+    if ticket.mode != request.mode.as_str() || ticket.directory_generation != requested_generation {
+        return Err(ApiError::conflict(
+            "admission ticket audience does not match",
+        ));
+    }
+    let pool = parse_pool(&ticket.access_pool)?;
+    let policy = policy_for_pool(&state.admission, pool);
+    if let Some(account_id) = ticket.subject_id.as_deref() {
+        let current_billing = sqlx::query_as::<_, (String, String)>(
+            "SELECT service_plan, billing_status
+             FROM account_billing_profiles WHERE account_id = $1
+             FOR SHARE",
+        )
+        .bind(account_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+        let (service_plan, billing_status) = current_billing
+            .as_ref()
+            .map(|(plan, status)| (plan.as_str(), status.as_str()))
+            .unwrap_or(("free", "active"));
+        if billing_status == "review" {
+            return Err(ApiError::coded(
+                StatusCode::PAYMENT_REQUIRED,
+                "billing_review",
+                "Hosted capture and notarization are unavailable while billing is under review",
+            ));
+        }
+        if (pool == AccessPool::OneGb && service_plan != "one_gb")
+            || (pool == AccessPool::TenGb && service_plan != "ten_gb")
+        {
+            return Err(ApiError::coded(
+                StatusCode::PAYMENT_REQUIRED,
+                "billing_plan_changed",
+                "The account plan changed after this admission ticket was issued",
+            ));
+        }
+    }
+    ensure_monthly_grant(
+        &mut transaction,
+        &ticket.credit_subject,
+        ticket.subject_id.as_deref(),
+        pool,
+        policy,
+        CreditKind::for_mode(request.mode),
+        now,
+    )
+    .await?;
+    let required_allowance = ticket.authenticated_allowance_bytes.unwrap_or(1);
+    preflight_credits(
+        &mut transaction,
+        &ticket.credit_subject,
+        CreditKind::for_mode(request.mode),
+        ticket.record_digest.as_deref(),
+        required_allowance,
+        now,
+    )
+    .await?;
+    let updated = sqlx::query(
+        "UPDATE notary_admission_tickets
+         SET consumed_at = $1, consumed_by_instance = $2
+         WHERE token_hash = $3 AND consumed_at IS NULL",
+    )
+    .bind(now)
+    .bind(&request.notary_instance_id)
+    .bind(sha256_hex(request.ticket.as_bytes()))
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if updated.rows_affected() != 1 {
+        return Err(ApiError::conflict("admission ticket was already consumed"));
+    }
+    transaction.commit().await.map_err(database_error)?;
+    metrics::counter!("llm_notary_admission_operations_total", "pool" => pool.as_str(), "mode" => request.mode.as_str(), "outcome" => "admitted").increment(1);
+    Ok(RedeemedOperationResponse {
         max_attestable_http_bytes: ticket.max_attestable_http_bytes,
         max_frame_bytes: ticket.max_frame_bytes,
         max_private_chunk_bytes: ticket.max_private_chunk_bytes,
         max_private_chunk_commitments: ticket.max_private_chunk_commitments,
         record_digest: ticket.record_digest,
-        authorized_allowance_bytes: ticket.requested_allowance_bytes,
-    }))
+        authenticated_allowance_bytes: ticket.authenticated_allowance_bytes,
+    })
 }
 
 #[utoipa::path(
@@ -2791,6 +2959,128 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn one_operation_tickets_are_single_use_without_capacity_or_credit_reservations() {
+        let state = test_state().await;
+        let issue_capture = || {
+            issue_admission(
+                State(state.clone()),
+                test_peer(),
+                HeaderMap::new(),
+                Json(IssueAdmissionRequest {
+                    mode: AdmissionMode::Capture,
+                    record_digest: None,
+                    requested_allowance_bytes: None,
+                }),
+            )
+        };
+        let first = issue_capture().await.unwrap().0;
+        let second = issue_capture().await.unwrap().0;
+        let redeem = |ticket: String, instance: &'static str| {
+            redeem_admission(
+                State(state.clone()),
+                service_headers(&state),
+                Json(RedeemAdmissionRequest {
+                    ticket,
+                    notary_instance_id: instance.to_owned(),
+                    mode: AdmissionMode::Capture,
+                    directory_generation: state.notary_directory.generation,
+                    contract: Some(AdmissionRedemptionContract::OneOperationV1),
+                }),
+            )
+        };
+
+        let Json(RedeemAdmissionResponse::Operation(admitted)) =
+            redeem(first.ticket.clone(), "notary-one").await.unwrap()
+        else {
+            panic!("one-operation redemption returned a lease");
+        };
+        assert_eq!(admitted.record_digest, None);
+        assert_eq!(admitted.authenticated_allowance_bytes, None);
+        assert!(matches!(
+            redeem(second.ticket, "notary-two").await.unwrap().0,
+            RedeemAdmissionResponse::Operation(_)
+        ));
+        let replay = match redeem(first.ticket, "notary-three").await {
+            Ok(_) => panic!("one-operation ticket replay was admitted"),
+            Err(error) => error,
+        };
+        assert_eq!(replay.status, StatusCode::CONFLICT);
+
+        let (leases, debits): (i64, i64) = sqlx::query_as(
+            "SELECT
+                 (SELECT COUNT(*) FROM notary_admission_leases),
+                 (SELECT COUNT(*) FROM notary_credit_debits)",
+        )
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!((leases, debits), (0, 0));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn one_operation_expiry_and_wrong_mode_fail_before_admission() {
+        let state = test_state().await;
+        let capture = issue_admission(
+            State(state.clone()),
+            test_peer(),
+            HeaderMap::new(),
+            Json(IssueAdmissionRequest {
+                mode: AdmissionMode::Capture,
+                record_digest: None,
+                requested_allowance_bytes: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let request = |ticket, mode, instance| RedeemAdmissionRequest {
+            ticket,
+            notary_instance_id: instance,
+            mode,
+            directory_generation: capture.directory_generation,
+            contract: Some(AdmissionRedemptionContract::OneOperationV1),
+        };
+        let wrong_mode = match redeem_admission(
+            State(state.clone()),
+            service_headers(&state),
+            Json(request(
+                capture.ticket.clone(),
+                AdmissionMode::Finalize,
+                "notary-wrong-mode".to_owned(),
+            )),
+        )
+        .await
+        {
+            Ok(_) => panic!("wrong-mode ticket was admitted"),
+            Err(error) => error,
+        };
+        assert_eq!(wrong_mode.status, StatusCode::CONFLICT);
+
+        sqlx::query("UPDATE notary_admission_tickets SET expires_at = 1 WHERE token_hash = $1")
+            .bind(sha256_hex(capture.ticket.as_bytes()))
+            .execute(&state.database)
+            .await
+            .unwrap();
+        let expired = match redeem_admission(
+            State(state.clone()),
+            service_headers(&state),
+            Json(request(
+                capture.ticket,
+                AdmissionMode::Capture,
+                "notary-expired".to_owned(),
+            )),
+        )
+        .await
+        {
+            Ok(_) => panic!("expired ticket was admitted"),
+            Err(error) => error,
+        };
+        assert_eq!(expired.status, StatusCode::GONE);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn public_ip_subjects_receive_independent_allowances_without_subject_limits() {
         let mut state = test_state().await;
         let mut admission = (*state.admission).clone();
@@ -2836,6 +3126,7 @@ mod tests {
                     notary_instance_id: instance.to_owned(),
                     mode: AdmissionMode::Capture,
                     directory_generation: state.notary_directory.generation,
+                    contract: None,
                 }),
             )
         };
@@ -2902,10 +3193,10 @@ mod tests {
         assert_eq!(users, 0);
 
         for (lease_id, instance) in [
-            (first_lease.lease_id, "notary-ip-one"),
-            (independent_lease.lease_id, "notary-ip-two"),
-            (same_subject_lease.lease_id, "notary-ip-three"),
-            (third_same_subject_lease.lease_id, "notary-ip-four"),
+            (first_lease.lease_id.clone(), "notary-ip-one"),
+            (independent_lease.lease_id.clone(), "notary-ip-two"),
+            (same_subject_lease.lease_id.clone(), "notary-ip-three"),
+            (third_same_subject_lease.lease_id.clone(), "notary-ip-four"),
         ] {
             release_lease(
                 State(state.clone()),
@@ -2955,6 +3246,7 @@ mod tests {
                     notary_instance_id: instance.to_owned(),
                     mode: AdmissionMode::Capture,
                     directory_generation: state.notary_directory.generation,
+                    contract: None,
                 }),
             )
         };
@@ -3003,7 +3295,7 @@ mod tests {
         .expect("active lease renews")
         .0;
         assert!(renewed.lease_expires_at > unix_timestamp().unwrap());
-        let recovered_lease_id = recovered.lease_id;
+        let recovered_lease_id = recovered.lease_id.clone();
         release_lease(
             State(state.clone()),
             service_headers(&state),
@@ -3095,6 +3387,7 @@ mod tests {
                     notary_instance_id: instance.into(),
                     mode: AdmissionMode::Capture,
                     directory_generation: global_state.notary_directory.generation,
+                    contract: None,
                 }),
             )
         };
@@ -3115,7 +3408,7 @@ mod tests {
             State(state.clone()),
             service_headers(&state),
             Json(LeaseRequest {
-                lease_id: global_lease.lease_id,
+                lease_id: global_lease.lease_id.clone(),
                 notary_instance_id: "notary-global-one".into(),
                 outcome: None,
                 used_allowance_bytes: None,
@@ -3228,6 +3521,7 @@ mod tests {
                     notary_instance_id: instance.into(),
                     mode: AdmissionMode::Finalize,
                     directory_generation: state.notary_directory.generation,
+                    contract: None,
                 }),
             )
             .await
@@ -3237,7 +3531,7 @@ mod tests {
                 State(state.clone()),
                 service_headers(&state),
                 Json(LeaseRequest {
-                    lease_id: lease.lease_id,
+                    lease_id: lease.lease_id.clone(),
                     notary_instance_id: instance.into(),
                     outcome: None,
                     used_allowance_bytes: None,
@@ -3307,6 +3601,7 @@ mod tests {
                     notary_instance_id: instance.to_owned(),
                     mode: AdmissionMode::Finalize,
                     directory_generation: state.notary_directory.generation,
+                    contract: None,
                 }),
             )
         };
@@ -3816,6 +4111,7 @@ mod tests {
                 notary_instance_id: "notary-stale-plan".to_owned(),
                 mode: AdmissionMode::Capture,
                 directory_generation: paid_ticket.directory_generation,
+                contract: None,
             }),
         )
         .await
