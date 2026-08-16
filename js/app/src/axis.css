@@ -109,7 +109,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .architecture { background: var(--paper); }
 .trust-columns { margin-top: 30px; border-color: var(--line); }.trust-columns article { min-height: 0; padding: 18px; border-color: var(--line); background: transparent; }.trust-columns article > span, .trust-columns article > b { color: var(--muted); }.trust-columns article > b { color: var(--ink); }.trust-columns h3 { margin: 20px 0 8px; font-family: 'Instrument Sans Variable', Arial, sans-serif; font-size: 18px; font-weight: 600; }.trust-columns p { color: var(--body-copy-soft); }
 .capture { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .82fr); gap: 42px; align-items: end; }.capture > div > p { color: var(--body-copy); }.section.install { padding: 76px clamp(16px, 7vw, 112px); border: 0; background: var(--section-muted); }.terminal, .install pre { background: var(--inverse-surface); color: var(--inverse-text); }.terminal pre b, .terminal pre em, .terminal a, .install code em { color: var(--inverse-accent); }.terminal a { border-color: var(--inverse-accent); }
-.library-preview { background: var(--paper); }
+.library-preview { background: var(--section-muted); }
 .pricing { background: var(--paper); }
 .pricing-intro { display: grid; max-width: 790px; gap: 0; }
 .pricing-intro > p { max-width: 620px; margin: 18px 0 0; color: var(--body-copy); font-size: 15px; line-height: 1.55; }
@@ -131,7 +131,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .pricing-addon small { text-align: right; }
 .pricing-fine-print { margin: 12px 0 0; color: var(--muted); font: 10px/1.5 'IBM Plex Mono', monospace; }
 .pricing-details-link { display: block; width: max-content; margin: 18px 0 0 auto; border-bottom: 1px solid currentColor; color: var(--action-ink); font-size: 12px; font-weight: 600; }
-.section.verify { background: var(--section-muted); }
+.section.verify { background: var(--paper); }
 .verify { gap: 32px; }.receipt { border: 1px solid var(--line); background: var(--inverse-surface); color: var(--inverse-text); }.receipt-contents, .receipt-contents span { border-color: #36506d; }.receipt-contents i { color: var(--inverse-accent); }.verify-points { color: var(--muted); }.verify-points span { border-color: var(--line); }
 
 .site-footer { display: flex; align-items: center; justify-content: space-between; gap: 0; min-height: 58px; padding: 0 16px; border-top: 1px solid var(--line); background: var(--section-muted); color: var(--muted); font: 400 11px/1.4 'Instrument Sans Variable', Arial, sans-serif; }.footer-copyright { white-space: nowrap; }.site-footer nav { display: flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 500; }.site-footer nav a, .site-footer nav a:hover { padding: 8px 10px; border: 0; background: transparent; color: var(--muted); }
