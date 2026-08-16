@@ -185,6 +185,7 @@ struct CoordinatorErrorResponse {
 enum CoordinatorRejection {
     Capacity,
     Denied,
+    Expired,
     CaptureCreditsExhausted,
     FinalizationCreditsExhausted,
     Unavailable(anyhow::Error),
@@ -1016,6 +1017,9 @@ fn coordinator_rejection(
 ) -> CoordinatorRejection {
     match status {
         reqwest::StatusCode::TOO_MANY_REQUESTS => CoordinatorRejection::Capacity,
+        reqwest::StatusCode::GONE if error_code == Some("admission_ticket_expired") => {
+            CoordinatorRejection::Expired
+        }
         reqwest::StatusCode::PAYMENT_REQUIRED
             if error_code == Some("capture_credits_exhausted") =>
         {
@@ -1665,6 +1669,7 @@ pub async fn run() -> Result<()> {
                             }
                         },
                         CoordinatorRejection::Denied => NotaryAdmissionRejection::AdmissionDenied,
+                        CoordinatorRejection::Expired => NotaryAdmissionRejection::AdmissionExpired,
                         CoordinatorRejection::CaptureCreditsExhausted => {
                             NotaryAdmissionRejection::CaptureCreditsExhausted
                         }
@@ -2520,6 +2525,14 @@ mod tests {
         ));
         assert!(matches!(
             coordinator_rejection(reqwest::StatusCode::CONFLICT, None),
+            CoordinatorRejection::Denied
+        ));
+        assert!(matches!(
+            coordinator_rejection(reqwest::StatusCode::GONE, Some("admission_ticket_expired"),),
+            CoordinatorRejection::Expired
+        ));
+        assert!(matches!(
+            coordinator_rejection(reqwest::StatusCode::GONE, None),
             CoordinatorRejection::Denied
         ));
         assert!(matches!(

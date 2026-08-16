@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    future::Future,
     path::PathBuf,
     sync::{
         Arc,
@@ -393,7 +394,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
             );
         }
     }
-    let hosted_admission = config.notary.endpoint.is_none();
+    let hosted_admission = hosted_admission_required(&config);
     let capture_enabled = persistence.metadata.capture_enabled().await?;
     let config = Arc::new(config);
     let notary = if capture_enabled {
@@ -607,6 +608,10 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     }
     tracing::info!("LLM Notary daemon shut down cleanly");
     Ok(())
+}
+
+pub(crate) fn hosted_admission_required(config: &AgentConfig) -> bool {
+    config.notary.endpoint.is_none()
 }
 
 fn spawn_capture_recovery_worker(
@@ -888,7 +893,7 @@ async fn proxy(State(state): State<AppState>, request: Request) -> Response {
         Ok(response) => response,
         Err(error) => {
             tracing::warn!(
-                kind = if auth::hosted_admission_error(&error).is_some() {
+                kind = if auth::hosted_admission_failure(&error).is_some() {
                     "hosted_admission"
                 } else if notary_admission_error(&error).is_some() {
                     "notary_capacity"
@@ -903,7 +908,7 @@ async fn proxy(State(state): State<AppState>, request: Request) -> Response {
 }
 
 fn proxy_error_response(error: &anyhow::Error) -> Response {
-    if let Some(admission) = auth::hosted_admission_error(error) {
+    if let Some(admission) = auth::hosted_admission_failure(error) {
         let body = serde_json::json!({
             "error": {
                 "type": "hosted_admission",
@@ -926,36 +931,6 @@ fn proxy_error_response(error: &anyhow::Error) -> Response {
         )
             .into_response();
     };
-    if matches!(
-        admission.rejection(),
-        crate::NotaryAdmissionRejection::CaptureCreditsExhausted
-            | crate::NotaryAdmissionRejection::FinalizationCreditsExhausted
-    ) {
-        let (code, message) = match admission.rejection() {
-            crate::NotaryAdmissionRejection::CaptureCreditsExhausted => (
-                "capture_credits_exhausted",
-                "Hosted capture allowance is exhausted. Wait for the monthly reset.",
-            ),
-            crate::NotaryAdmissionRejection::FinalizationCreditsExhausted => (
-                "finalization_credits_exhausted",
-                "Hosted notarization allowance is exhausted. Wait for the monthly reset or buy additional credits.",
-            ),
-            _ => unreachable!(),
-        };
-        let body = serde_json::json!({
-            "error": {
-                "type": "hosted_admission",
-                "code": code,
-                "message": message,
-            }
-        });
-        return (
-            StatusCode::PAYMENT_REQUIRED,
-            [("content-type", "application/json")],
-            body.to_string(),
-        )
-            .into_response();
-    }
     let retry_after_seconds = admission.retry_after().as_secs().max(1);
     let message = match admission.rejection() {
         crate::NotaryAdmissionRejection::CaptureAtCapacity => {
@@ -967,17 +942,12 @@ fn proxy_error_response(error: &anyhow::Error) -> Response {
         crate::NotaryAdmissionRejection::FinalizeAtCapacity => {
             "LLM Notary returned an unexpected finalization-capacity rejection. Retry shortly."
         }
-        crate::NotaryAdmissionRejection::AdmissionDenied => {
-            "LLM Notary admission was denied. Request a new admission and try again."
-        }
-        crate::NotaryAdmissionRejection::CoordinatorUnavailable => {
-            "LLM Notary admission is temporarily unavailable. Retry shortly."
-        }
-        crate::NotaryAdmissionRejection::CaptureCreditsExhausted => {
-            unreachable!("credit exhaustion is handled before capacity responses")
-        }
-        crate::NotaryAdmissionRejection::FinalizationCreditsExhausted => {
-            unreachable!("credit exhaustion is handled before capacity responses")
+        crate::NotaryAdmissionRejection::AdmissionDenied
+        | crate::NotaryAdmissionRejection::AdmissionExpired
+        | crate::NotaryAdmissionRejection::CoordinatorUnavailable
+        | crate::NotaryAdmissionRejection::CaptureCreditsExhausted
+        | crate::NotaryAdmissionRejection::FinalizationCreditsExhausted => {
+            unreachable!("hosted admission failures are rendered before capacity responses")
         }
     };
     let body = serde_json::json!({
@@ -1137,30 +1107,21 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     );
     let request_header_bytes =
         attestable_request_header_bytes(&parts.method, &upstream_uri, &outbound_headers)?;
-    let admission = if state.hosted_admission {
-        Some(auth::issue_capture_admission().await?)
-    } else {
-        None
-    };
-    let effective_attestable_http_bytes = admission
-        .as_ref()
-        .map(|admission| admission.max_attestable_http_bytes)
-        .unwrap_or(state.max_attestable_http_bytes)
-        .min(state.max_attestable_http_bytes);
-    let effective_frame_bytes = admission
-        .as_ref()
-        .map(|admission| admission.max_frame_bytes)
-        .unwrap_or(state.max_frame_bytes)
-        .min(state.max_frame_bytes);
-    let request_body_limit = effective_attestable_http_bytes
-        .checked_sub(request_header_bytes)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "provider request headers exceed the {}-byte maximum attestable HTTP budget",
-                effective_attestable_http_bytes
-            )
-        })?;
-    let input = collect_request_body(body, request_body_limit).await?;
+    let (input, admission, effective_attestable_http_bytes, effective_frame_bytes) =
+        collect_request_then_admit(
+            body,
+            request_header_bytes,
+            state.max_attestable_http_bytes,
+            state.max_frame_bytes,
+            || async {
+                if state.hosted_admission {
+                    auth::issue_capture_admission().await.map(Some)
+                } else {
+                    Ok(None)
+                }
+            },
+        )
+        .await?;
     let streaming = wants_stream(&parts.headers, &input);
     let request_metadata =
         request_catalog_metadata(provider, &input, state.config.catalog.prompt_preview_chars);
@@ -1614,6 +1575,52 @@ async fn collect_request_body(mut body: Body, maximum: usize) -> Result<Bytes> {
         }
     }
     Ok(collected.freeze())
+}
+
+async fn collect_request_then_admit<F, Fut>(
+    body: Body,
+    request_header_bytes: usize,
+    local_max_attestable_http_bytes: usize,
+    local_max_frame_bytes: usize,
+    issue_admission: F,
+) -> Result<(Bytes, Option<auth::AdmissionTicket>, usize, usize)>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<Option<auth::AdmissionTicket>>>,
+{
+    let local_body_limit = local_max_attestable_http_bytes
+        .checked_sub(request_header_bytes)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "provider request headers exceed the {local_max_attestable_http_bytes}-byte maximum attestable HTTP budget"
+            )
+        })?;
+    let input = collect_request_body(body, local_body_limit).await?;
+    let admission = issue_admission().await?;
+    let effective_attestable_http_bytes = admission
+        .as_ref()
+        .map(|admission| admission.max_attestable_http_bytes)
+        .unwrap_or(local_max_attestable_http_bytes)
+        .min(local_max_attestable_http_bytes);
+    let effective_frame_bytes = admission
+        .as_ref()
+        .map(|admission| admission.max_frame_bytes)
+        .unwrap_or(local_max_frame_bytes)
+        .min(local_max_frame_bytes);
+    let request_bytes = request_header_bytes
+        .checked_add(input.len())
+        .ok_or_else(|| anyhow::anyhow!("provider request byte count overflow"))?;
+    if request_bytes > effective_attestable_http_bytes {
+        bail!(
+            "provider request exceeds the {effective_attestable_http_bytes}-byte maximum attestable HTTP budget"
+        );
+    }
+    Ok((
+        input,
+        admission,
+        effective_attestable_http_bytes,
+        effective_frame_bytes,
+    ))
 }
 
 async fn encrypt_bundle(
@@ -2262,6 +2269,16 @@ mod tests {
     }
 
     #[test]
+    fn explicit_self_hosted_notaries_never_require_admission_tickets() {
+        let mut config = AgentConfig::default();
+        assert!(hosted_admission_required(&config));
+
+        config.notary.endpoint = Some("tcp://127.0.0.1:7047".to_owned());
+        config.notary.public_key = Some("02".to_owned() + &"ab".repeat(32));
+        assert!(!hosted_admission_required(&config));
+    }
+
+    #[test]
     fn detects_streaming_from_accept_or_request_body() {
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -2773,6 +2790,140 @@ mod tests {
                     "retry_after_seconds": 7,
                 }
             })
+        );
+    }
+
+    #[tokio::test]
+    async fn capture_admission_waits_for_the_complete_locally_bounded_body() {
+        let (body_sender, body_receiver) = tokio::sync::mpsc::channel(1);
+        body_sender
+            .send(Ok::<_, std::io::Error>(Bytes::from_static(b"body")))
+            .await
+            .unwrap();
+        let (admitted_sender, mut admitted_receiver) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(collect_request_then_admit(
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(body_receiver)),
+            2,
+            64,
+            128,
+            move || async move {
+                let _ = admitted_sender.send(());
+                Ok(None)
+            },
+        ));
+
+        // Filling the one-slot channel again proves the collector consumed the
+        // first frame and is now waiting for EOF, not acquiring a ticket.
+        body_sender
+            .send(Ok::<_, std::io::Error>(Bytes::new()))
+            .await
+            .unwrap();
+        assert!(matches!(
+            admitted_receiver.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        drop(body_sender);
+
+        let (body, admission, http_limit, frame_limit) = task.await.unwrap().unwrap();
+        assert_eq!(body, Bytes::from_static(b"body"));
+        assert!(admission.is_none());
+        assert_eq!((http_limit, frame_limit), (64, 128));
+        assert!(admitted_receiver.await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn capture_revalidates_the_collected_request_against_ticket_limits() {
+        let result = collect_request_then_admit(
+            Body::from(Bytes::from_static(b"request-body")),
+            8,
+            128,
+            256,
+            || async {
+                Ok(Some(auth::AdmissionTicket {
+                    ticket: "redacted-one-operation-ticket".to_owned(),
+                    max_attestable_http_bytes: 16,
+                    max_frame_bytes: 64,
+                }))
+            },
+        )
+        .await;
+        assert!(
+            result
+                .err()
+                .expect("the ticket limit must reject the collected request")
+                .to_string()
+                .contains("16-byte maximum attestable HTTP budget")
+        );
+
+        let (body, admission, http_limit, frame_limit) = collect_request_then_admit(
+            Body::from(Bytes::from_static(b"body")),
+            8,
+            128,
+            256,
+            || async {
+                Ok(Some(auth::AdmissionTicket {
+                    ticket: "redacted-one-operation-ticket".to_owned(),
+                    max_attestable_http_bytes: 80,
+                    max_frame_bytes: 64,
+                }))
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(body, Bytes::from_static(b"body"));
+        assert!(admission.is_some());
+        assert_eq!((http_limit, frame_limit), (80, 64));
+    }
+
+    #[tokio::test]
+    async fn hosted_redemption_failures_use_stable_bounded_json_errors() {
+        for (rejection, status, code) in [
+            (
+                crate::NotaryAdmissionRejection::AdmissionDenied,
+                StatusCode::BAD_GATEWAY,
+                "hosted_admission_denied",
+            ),
+            (
+                crate::NotaryAdmissionRejection::AdmissionExpired,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "hosted_admission_expired",
+            ),
+            (
+                crate::NotaryAdmissionRejection::CoordinatorUnavailable,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "hosted_admission_unavailable",
+            ),
+            (
+                crate::NotaryAdmissionRejection::CaptureCreditsExhausted,
+                StatusCode::PAYMENT_REQUIRED,
+                "capture_credits_exhausted",
+            ),
+            (
+                crate::NotaryAdmissionRejection::FinalizationCreditsExhausted,
+                StatusCode::PAYMENT_REQUIRED,
+                "finalization_credits_exhausted",
+            ),
+        ] {
+            let response =
+                proxy_error_response(&anyhow::Error::new(crate::NotaryAdmissionError::test_only(
+                    rejection,
+                    std::time::Duration::from_secs(5),
+                )));
+            assert_eq!(response.status(), status);
+            let body = response.into_body().collect().await.unwrap().to_bytes();
+            let body = serde_json::from_slice::<serde_json::Value>(&body).unwrap();
+            assert_eq!(body["error"]["type"], "hosted_admission");
+            assert_eq!(body["error"]["code"], code);
+            assert!(body.to_string().len() < 512);
+        }
+
+        let response = proxy_error_response(&anyhow::anyhow!(
+            "wrong digest for secret-ticket-and-provider-payload"
+        ));
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(
+            body,
+            Bytes::from_static(br#"{"error":{"message":"LLM Notary proxy request failed"}}"#)
         );
     }
 }

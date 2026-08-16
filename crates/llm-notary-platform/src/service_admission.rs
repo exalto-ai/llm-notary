@@ -952,12 +952,12 @@ async fn redeem_admission(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(database_error)?
-    .ok_or_else(|| ApiError::gone("admission ticket is invalid or expired"))?;
+    .ok_or_else(admission_ticket_expired)?;
     if ticket.consumed_at.is_some() {
         return Err(ApiError::conflict("admission ticket was already consumed"));
     }
     if ticket.expires_at <= now {
-        return Err(ApiError::gone("admission ticket is invalid or expired"));
+        return Err(admission_ticket_expired());
     }
     if ticket.mode != request.mode.as_str() || ticket.directory_generation != requested_generation {
         return Err(ApiError::conflict(
@@ -1083,12 +1083,12 @@ async fn redeem_one_operation(
     .fetch_optional(&mut *transaction)
     .await
     .map_err(database_error)?
-    .ok_or_else(|| ApiError::gone("admission ticket is invalid or expired"))?;
+    .ok_or_else(admission_ticket_expired)?;
     if ticket.consumed_at.is_some() {
         return Err(ApiError::conflict("admission ticket was already consumed"));
     }
     if ticket.expires_at <= now {
-        return Err(ApiError::gone("admission ticket is invalid or expired"));
+        return Err(admission_ticket_expired());
     }
     if ticket.mode != request.mode.as_str() || ticket.directory_generation != requested_generation {
         return Err(ApiError::conflict(
@@ -2910,6 +2910,14 @@ fn parse_billing_status(value: &str) -> ApiResult<BillingStatus> {
     }
 }
 
+fn admission_ticket_expired() -> ApiError {
+    ApiError::coded(
+        StatusCode::GONE,
+        "admission_ticket_expired",
+        "admission ticket is invalid or expired",
+    )
+}
+
 fn validate_opaque(value: &str, maximum: usize, message: &'static str) -> ApiResult<()> {
     if value.is_empty()
         || value.len() > maximum
@@ -3799,6 +3807,27 @@ mod tests {
             Err(error) => error,
         };
         assert_eq!(expired.status, StatusCode::GONE);
+        assert_eq!(expired.code, "admission_ticket_expired");
+
+        let missing = match redeem_admission(
+            State(state.clone()),
+            service_headers(&state),
+            Json(request(
+                "missing-ticket".to_owned(),
+                AdmissionMode::Capture,
+                "notary-missing".to_owned(),
+            )),
+        )
+        .await
+        {
+            Ok(_) => panic!("missing ticket was admitted"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            (missing.status, missing.code, missing.message),
+            (expired.status, expired.code, expired.message),
+            "missing and expired tickets must not form a validity oracle"
+        );
     }
 
     #[tokio::test]

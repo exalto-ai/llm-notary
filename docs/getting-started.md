@@ -195,6 +195,13 @@ Notary origin. The directory is authenticated by HTTPS; it is not a separately
 signed document. The client pins accepted generations and key lifecycle state
 locally.
 
+Each hosted capture requests a purpose-specific ticket without requesting a
+copy of the account balance or a byte grant. Each hosted finalization requests
+a separate ticket bound to the bundle's exact record digest and authenticated
+allowance. Tickets are neither cached nor renewed. Admission denial, exhausted
+allowance, expiry, and coordinator outages are returned as bounded errors that
+do not include the raw ticket or account credential.
+
 For local or self-hosted development, start a notary and explicitly pin its
 key:
 
