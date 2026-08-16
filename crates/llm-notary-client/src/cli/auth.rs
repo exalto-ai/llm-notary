@@ -324,15 +324,15 @@ pub(crate) fn hosted_admission_failure(error: &anyhow::Error) -> Option<HostedAd
             status: StatusCode::SERVICE_UNAVAILABLE,
             code: "hosted_admission_expired",
         },
-        crate::NotaryAdmissionRejection::CoordinatorUnavailable => HostedAdmissionFailure {
+        crate::NotaryAdmissionRejection::AdmissionServiceUnavailable => HostedAdmissionFailure {
             status: StatusCode::SERVICE_UNAVAILABLE,
             code: "hosted_admission_unavailable",
         },
-        crate::NotaryAdmissionRejection::CaptureCreditsExhausted => HostedAdmissionFailure {
+        crate::NotaryAdmissionRejection::CaptureAllowanceExhausted => HostedAdmissionFailure {
             status: StatusCode::PAYMENT_REQUIRED,
             code: "capture_credits_exhausted",
         },
-        crate::NotaryAdmissionRejection::FinalizationCreditsExhausted => HostedAdmissionFailure {
+        crate::NotaryAdmissionRejection::FinalizationAllowanceExhausted => HostedAdmissionFailure {
             status: StatusCode::PAYMENT_REQUIRED,
             code: "finalization_credits_exhausted",
         },
@@ -823,7 +823,7 @@ fn parse_admission_response(
     let response = serde_json::from_slice::<AdmissionResponse>(body)
         .map_err(|_| hosted_admission_unavailable())?;
     if response.ticket.is_empty()
-        || response.ticket.len() > crate::MAX_NOTARY_ADMISSION_TICKET_BYTES
+        || response.ticket.len() > crate::MAX_NOTARY_ADMISSION_VALUE_BYTES
         || response.max_values_invalid()
     {
         return Err(hosted_admission_unavailable());
@@ -1554,7 +1554,7 @@ mod tests {
         assert!(!malformed.to_string().contains("upstream-secret"));
 
         let oversized_ticket = serde_json::to_vec(&serde_json::json!({
-            "ticket": "x".repeat(crate::MAX_NOTARY_ADMISSION_TICKET_BYTES + 1),
+            "ticket": "x".repeat(crate::MAX_NOTARY_ADMISSION_VALUE_BYTES + 1),
             "limits": {"max_attestable_http_bytes": 1, "max_frame_bytes": 1},
         }))
         .unwrap();

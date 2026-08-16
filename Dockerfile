@@ -36,7 +36,7 @@ FROM chef AS builder
 COPY --from=planner /app/recipe.json recipe.json
 COPY --from=planner /app/vendor/tlsn ./vendor/tlsn
 COPY --from=planner /app/vendor/tlsn-utils ./vendor/tlsn-utils
-RUN CARGO_TERM_QUIET=true cargo chef cook --release --recipe-path recipe.json --package llm-notary-server --package llm-notary-platform
+RUN CARGO_TERM_QUIET=true cargo chef cook --release --recipe-path recipe.json --package llm-notary-hosted-server --package llm-notary-platform
 
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
@@ -48,7 +48,7 @@ COPY migrations-postgres ./migrations-postgres
 # The API and notary share a dependency graph. Building both here lets BuildKit
 # reuse one compilation for the two final images.
 RUN cargo build --release \
-    -p llm-notary-server --bin llm-notary-server \
+    -p llm-notary-hosted-server --bin llm-notary-hosted-server \
     -p llm-notary-platform --bin llm-notary-api --bin llm-notary-api-migrate
 
 # Opt-in target for the split-process resource benchmark. It deliberately is
@@ -74,7 +74,7 @@ FROM debian:bookworm-slim AS notary
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/llm-notary-server /usr/local/bin/llm-notary-server
+COPY --from=builder /app/target/release/llm-notary-hosted-server /usr/local/bin/llm-notary-server
 RUN llm-notary-server --help >/dev/null
 
 EXPOSE 7047

@@ -142,7 +142,7 @@ const DEFERRED_RECEIPT_FORMAT: &str = "llm-notary/deferred-receipt/v1";
 const NOTARY_CONTROL_MAGIC_V1: &[u8; 8] = b"LLMN\0\0\0\x01";
 const NOTARY_CONTROL_MAGIC_V2: &[u8; 8] = b"LLMN\0\0\0\x02";
 const NOTARY_CONTROL_MAGIC_V3: &[u8; 8] = b"LLMN\0\0\0\x03";
-pub const MAX_NOTARY_ADMISSION_TICKET_BYTES: usize = 512;
+pub const MAX_NOTARY_ADMISSION_VALUE_BYTES: usize = 512;
 const NOTARY_MODE_CAPTURE: u8 = 2;
 const NOTARY_MODE_FINALIZE: u8 = 3;
 const NOTARY_ADMISSION_ACCEPTED: u8 = 1;
@@ -151,7 +151,7 @@ const NOTARY_REJECTION_CAPTURE_AT_CAPACITY: u8 = 1;
 const NOTARY_REJECTION_FINALIZE_AT_CAPACITY: u8 = 2;
 const NOTARY_REJECTION_CAPTURE_DISABLED: u8 = 3;
 const NOTARY_REJECTION_ADMISSION_DENIED: u8 = 4;
-const NOTARY_REJECTION_COORDINATOR_UNAVAILABLE: u8 = 5;
+const NOTARY_REJECTION_ADMISSION_SERVICE_UNAVAILABLE: u8 = 5;
 
 /// Stable milestones emitted while a deferred capture is finalized.
 ///
@@ -194,8 +194,8 @@ pub enum FinalizationProgress {
 
 /// Receives best-effort progress from the finalization pipeline.
 pub type FinalizationProgressObserver<'a> = &'a (dyn Fn(FinalizationProgress) + Send + Sync);
-const NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED: u8 = 6;
-const NOTARY_REJECTION_CAPTURE_CREDITS_EXHAUSTED: u8 = 7;
+const NOTARY_REJECTION_FINALIZATION_ALLOWANCE_EXHAUSTED: u8 = 6;
+const NOTARY_REJECTION_CAPTURE_ALLOWANCE_EXHAUSTED: u8 = 7;
 const NOTARY_REJECTION_ADMISSION_EXPIRED: u8 = 8;
 pub const NOTARY_CAPACITY_RETRY_AFTER_SECS: u64 = 5;
 
@@ -221,9 +221,9 @@ pub enum NotaryAdmissionRejection {
     CaptureDisabled,
     AdmissionDenied,
     AdmissionExpired,
-    CoordinatorUnavailable,
-    CaptureCreditsExhausted,
-    FinalizationCreditsExhausted,
+    AdmissionServiceUnavailable,
+    CaptureAllowanceExhausted,
+    FinalizationAllowanceExhausted,
 }
 
 impl NotaryAdmissionRejection {
@@ -234,9 +234,9 @@ impl NotaryAdmissionRejection {
             Self::CaptureDisabled => "capture_disabled",
             Self::AdmissionDenied => "admission_denied",
             Self::AdmissionExpired => "admission_expired",
-            Self::CoordinatorUnavailable => "coordinator_unavailable",
-            Self::CaptureCreditsExhausted => "capture_credits_exhausted",
-            Self::FinalizationCreditsExhausted => "finalization_credits_exhausted",
+            Self::AdmissionServiceUnavailable => "admission_service_unavailable",
+            Self::CaptureAllowanceExhausted => "capture_allowance_exhausted",
+            Self::FinalizationAllowanceExhausted => "finalization_allowance_exhausted",
         }
     }
 
@@ -247,10 +247,10 @@ impl NotaryAdmissionRejection {
             NOTARY_REJECTION_CAPTURE_DISABLED => Ok(Self::CaptureDisabled),
             NOTARY_REJECTION_ADMISSION_DENIED => Ok(Self::AdmissionDenied),
             NOTARY_REJECTION_ADMISSION_EXPIRED => Ok(Self::AdmissionExpired),
-            NOTARY_REJECTION_COORDINATOR_UNAVAILABLE => Ok(Self::CoordinatorUnavailable),
-            NOTARY_REJECTION_CAPTURE_CREDITS_EXHAUSTED => Ok(Self::CaptureCreditsExhausted),
-            NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED => {
-                Ok(Self::FinalizationCreditsExhausted)
+            NOTARY_REJECTION_ADMISSION_SERVICE_UNAVAILABLE => Ok(Self::AdmissionServiceUnavailable),
+            NOTARY_REJECTION_CAPTURE_ALLOWANCE_EXHAUSTED => Ok(Self::CaptureAllowanceExhausted),
+            NOTARY_REJECTION_FINALIZATION_ALLOWANCE_EXHAUSTED => {
+                Ok(Self::FinalizationAllowanceExhausted)
             }
             _ => bail!("unknown notary admission rejection code"),
         }
@@ -263,9 +263,11 @@ impl NotaryAdmissionRejection {
             Self::CaptureDisabled => NOTARY_REJECTION_CAPTURE_DISABLED,
             Self::AdmissionDenied => NOTARY_REJECTION_ADMISSION_DENIED,
             Self::AdmissionExpired => NOTARY_REJECTION_ADMISSION_EXPIRED,
-            Self::CoordinatorUnavailable => NOTARY_REJECTION_COORDINATOR_UNAVAILABLE,
-            Self::CaptureCreditsExhausted => NOTARY_REJECTION_CAPTURE_CREDITS_EXHAUSTED,
-            Self::FinalizationCreditsExhausted => NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED,
+            Self::AdmissionServiceUnavailable => NOTARY_REJECTION_ADMISSION_SERVICE_UNAVAILABLE,
+            Self::CaptureAllowanceExhausted => NOTARY_REJECTION_CAPTURE_ALLOWANCE_EXHAUSTED,
+            Self::FinalizationAllowanceExhausted => {
+                NOTARY_REJECTION_FINALIZATION_ALLOWANCE_EXHAUSTED
+            }
         }
     }
 }
@@ -325,20 +327,18 @@ impl fmt::Display for NotaryAdmissionError {
             NotaryAdmissionRejection::AdmissionExpired => {
                 write!(formatter, "notary admission expired before use")
             }
-            NotaryAdmissionRejection::CoordinatorUnavailable => {
+            NotaryAdmissionRejection::AdmissionServiceUnavailable => {
                 write!(
                     formatter,
-                    "notary admission service is temporarily unavailable"
+                    "notary admission policy is temporarily unavailable"
                 )
             }
-            NotaryAdmissionRejection::CaptureCreditsExhausted => write!(
-                formatter,
-                "hosted capture allowance is exhausted; wait for the monthly reset"
-            ),
-            NotaryAdmissionRejection::FinalizationCreditsExhausted => write!(
-                formatter,
-                "hosted notarization allowance is exhausted; wait for the monthly reset or buy additional credits"
-            ),
+            NotaryAdmissionRejection::CaptureAllowanceExhausted => {
+                write!(formatter, "notary capture allowance is exhausted")
+            }
+            NotaryAdmissionRejection::FinalizationAllowanceExhausted => {
+                write!(formatter, "notary finalization allowance is exhausted")
+            }
         }
     }
 }
@@ -355,12 +355,12 @@ pub fn notary_admission_error(error: &anyhow::Error) -> Option<&NotaryAdmissionE
 
 /// A parsed notary session prelude. v1 clients do not expect an admission
 /// response, v2 clients accept typed admission responses, and v3 clients also
-/// carry a one-time hosted admission ticket.
+/// carry one bounded opaque admission value.
 #[derive(Clone, PartialEq, Eq)]
 pub struct NotarySessionPrelude {
     mode: NotarySessionMode,
     admission_response: bool,
-    admission_ticket: Option<String>,
+    admission_value: Option<String>,
 }
 
 impl NotarySessionPrelude {
@@ -368,10 +368,10 @@ impl NotarySessionPrelude {
         self.mode
     }
 
-    /// Returns the purpose-specific hosted admission ticket without granting
-    /// the notary access to the caller's reusable account credential.
-    pub fn admission_ticket(&self) -> Option<&str> {
-        self.admission_ticket.as_deref()
+    /// Returns the bounded opaque admission value without assigning product or
+    /// credential semantics to it.
+    pub fn admission_value(&self) -> Option<&str> {
+        self.admission_value.as_deref()
     }
 }
 
@@ -382,17 +382,16 @@ impl fmt::Debug for NotarySessionPrelude {
             .field("mode", &self.mode)
             .field("admission_response", &self.admission_response)
             .field(
-                "admission_ticket",
-                &self.admission_ticket.as_ref().map(|_| "<redacted>"),
+                "admission_value",
+                &self.admission_value.as_ref().map(|_| "<redacted>"),
             )
             .finish()
     }
 }
 
-/// Coordinator-authorized limits for one hosted notary session. The notary
-/// intersects these values with its process-local hard maxima.
+/// Effective limits and optional bindings for one admitted notary session.
 #[derive(Clone, Debug)]
-pub struct HostedNotarySessionLimits {
+pub struct NotarySessionLimits {
     pub expected_record_digest: Option<[u8; 32]>,
     pub expected_transcript_bytes: Option<usize>,
     pub session_timeout: Duration,
@@ -1122,21 +1121,21 @@ pub async fn deferred_streaming_request_to(
     deferred_streaming_request_to_with_admission(notary, server_name, capture, request, None).await
 }
 
-/// Runs a hosted capture after placing a short-lived admission ticket in the
-/// bounded outer notary prelude. The ticket is never included in evidence.
+/// Runs an admitted capture after placing one bounded opaque value in the
+/// outer notary prelude. The value is never included in evidence.
 pub async fn deferred_streaming_request_to_admitted(
     notary: &NotaryEndpoint,
     server_name: &str,
     capture: DeferredCaptureConfig,
     request: Request<HttpRequestBody>,
-    admission_ticket: &str,
+    admission_value: &str,
 ) -> Result<DeferredStreamResponse> {
     deferred_streaming_request_to_with_admission(
         notary,
         server_name,
         capture,
         request,
-        Some(admission_ticket),
+        Some(admission_value),
     )
     .await
 }
@@ -1146,7 +1145,7 @@ async fn deferred_streaming_request_to_with_admission(
     server_name: &str,
     capture: DeferredCaptureConfig,
     request: Request<HttpRequestBody>,
-    admission_ticket: Option<&str>,
+    admission_value: Option<&str>,
 ) -> Result<DeferredStreamResponse> {
     validate_notary_frame_limit(capture.max_frame_bytes)?;
     let mut attestable_budget = AttestableHttpBudget::new(capture.max_attestable_http_bytes)?;
@@ -1155,7 +1154,7 @@ async fn deferred_streaming_request_to_with_admission(
         "provider request headers",
     )?;
     attestable_budget.reserve(capture.request_body_bytes, "provider request body")?;
-    let notary_socket = connect_notary(notary, NOTARY_MODE_CAPTURE, admission_ticket).await?;
+    let notary_socket = connect_notary(notary, NOTARY_MODE_CAPTURE, admission_value).await?;
 
     let session = Session::new(notary_socket);
     let (driver, mut handle) = session.split();
@@ -1324,15 +1323,15 @@ pub async fn finalize_deferred_bundle_to_with_progress(
     .await
 }
 
-/// Finalizes a hosted bundle using a one-time ticket bound to the bundle's
-/// immutable record digest and requested allowance.
+/// Finalizes an admitted bundle using an opaque value whose policy may bind it
+/// to the bundle's immutable record digest and requested allowance.
 pub async fn finalize_deferred_bundle_to_admitted(
     notary: &NotaryEndpoint,
     bundle: &DeferredBundle,
     trusted_notary_key: &[u8],
     max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
-    admission_ticket: &str,
+    admission_value: &str,
 ) -> Result<LocalProof> {
     finalize_deferred_bundle_to_admitted_with_progress(
         notary,
@@ -1340,7 +1339,7 @@ pub async fn finalize_deferred_bundle_to_admitted(
         trusted_notary_key,
         max_attestable_http_bytes,
         max_frame_bytes,
-        admission_ticket,
+        admission_value,
         &|_| {},
     )
     .await
@@ -1353,7 +1352,7 @@ pub async fn finalize_deferred_bundle_to_admitted_with_progress(
     trusted_notary_key: &[u8],
     max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
-    admission_ticket: &str,
+    admission_value: &str,
     progress: FinalizationProgressObserver<'_>,
 ) -> Result<LocalProof> {
     finalize_deferred_bundle_to_with_admission(
@@ -1362,7 +1361,7 @@ pub async fn finalize_deferred_bundle_to_admitted_with_progress(
         trusted_notary_key,
         max_attestable_http_bytes,
         max_frame_bytes,
-        Some(admission_ticket),
+        Some(admission_value),
         progress,
     )
     .await
@@ -1374,7 +1373,7 @@ async fn finalize_deferred_bundle_to_with_admission(
     trusted_notary_key: &[u8],
     max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
-    admission_ticket: Option<&str>,
+    admission_value: Option<&str>,
     progress: FinalizationProgressObserver<'_>,
 ) -> Result<LocalProof> {
     validate_notary_frame_limit(max_frame_bytes)?;
@@ -1391,7 +1390,7 @@ async fn finalize_deferred_bundle_to_with_admission(
     prove_config_builder.chunked_private_commitments(CHUNKED_PROOF_BYTES)?;
     let prove_config = prove_config_builder.build()?;
 
-    let mut socket = connect_notary(notary, NOTARY_MODE_FINALIZE, admission_ticket).await?;
+    let mut socket = connect_notary(notary, NOTARY_MODE_FINALIZE, admission_value).await?;
     let request = DeferredFinalizeRequest {
         receipt: bundle.receipt.clone(),
         records: state.records().clone(),
@@ -1486,10 +1485,10 @@ pub async fn read_notary_session_mode(socket: &mut TcpStream) -> Result<NotarySe
 }
 
 /// Reads and validates a versioned session prelude. The generic helper accepts
-/// v1 and v2 for explicit self-hosted callers; v3 adds a hosted admission
-/// ticket. Hosted servers use `read_hosted_notary_session_prelude` instead.
+/// v1 and v2 for explicit self-hosted callers; v3 adds an opaque admission
+/// value interpreted only by the server's injected policy.
 pub async fn read_notary_session_prelude(socket: &mut TcpStream) -> Result<NotarySessionPrelude> {
-    let (version, mode, admission_ticket) = read_notary_prelude(socket).await?;
+    let (version, mode, admission_value) = read_notary_prelude(socket).await?;
     let mode = match mode {
         NOTARY_MODE_CAPTURE => NotarySessionMode::Capture,
         NOTARY_MODE_FINALIZE => NotarySessionMode::Finalize,
@@ -1498,18 +1497,18 @@ pub async fn read_notary_session_prelude(socket: &mut TcpStream) -> Result<Notar
     Ok(NotarySessionPrelude {
         mode,
         admission_response: version >= 2,
-        admission_ticket,
+        admission_value,
     })
 }
 
-/// Reads the mandatory hosted prelude. Unlike the generic protocol helper,
-/// this rejects legacy clients before any TLSNotary work begins.
-pub async fn read_hosted_notary_session_prelude(
+/// Reads a prelude that requires an opaque admission value. This rejects
+/// legacy clients before any TLSNotary work begins.
+pub async fn read_required_admission_prelude(
     socket: &mut TcpStream,
 ) -> Result<NotarySessionPrelude> {
     let prelude = read_notary_session_prelude(socket).await?;
-    if prelude.admission_ticket.is_none() {
-        bail!("hosted notary admission ticket is required");
+    if prelude.admission_value.is_none() {
+        bail!("a notary admission value is required");
     }
     Ok(prelude)
 }
@@ -1571,81 +1570,80 @@ pub async fn run_notary_session_after_prelude(
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct HostedNotarySessionResult {
+pub struct NotarySessionResult {
     /// Authenticated TLS application-data ciphertext bytes in both directions.
     pub authenticated_transcript_bytes: usize,
 }
 
-/// Identifies whether a hosted session failed because of client-controlled
+/// Identifies whether an admitted session failed because of client-controlled
 /// protocol input or because the notary/service could not perform its work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HostedNotarySessionFailureKind {
+pub enum NotarySessionFailureKind {
     Client,
     Service,
 }
 
-/// A classified hosted-session failure. Usage is persisted independently
+/// A classified admitted-session failure. Observations are persisted independently
 /// before this error is returned whenever authenticated bytes are available.
 #[derive(Debug)]
-pub struct HostedNotarySessionFailure {
-    kind: HostedNotarySessionFailureKind,
+pub struct NotarySessionFailure {
+    kind: NotarySessionFailureKind,
     error: anyhow::Error,
 }
 
-impl HostedNotarySessionFailure {
+impl NotarySessionFailure {
     fn client(error: anyhow::Error) -> Self {
         Self {
-            kind: HostedNotarySessionFailureKind::Client,
+            kind: NotarySessionFailureKind::Client,
             error,
         }
     }
 
     fn service(error: anyhow::Error) -> Self {
         Self {
-            kind: HostedNotarySessionFailureKind::Service,
+            kind: NotarySessionFailureKind::Service,
             error,
         }
     }
 
     /// Returns the settlement classification for this terminal failure.
-    pub fn kind(&self) -> HostedNotarySessionFailureKind {
+    pub fn kind(&self) -> NotarySessionFailureKind {
         self.kind
     }
 }
 
-impl fmt::Display for HostedNotarySessionFailure {
+impl fmt::Display for NotarySessionFailure {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.error.fmt(formatter)
     }
 }
 
-impl std::error::Error for HostedNotarySessionFailure {}
+impl std::error::Error for NotarySessionFailure {}
 
-fn classify_tlsn_hosted_failure(error: tlsn::Error) -> HostedNotarySessionFailure {
+fn classify_tlsn_session_failure(error: tlsn::Error) -> NotarySessionFailure {
     if error.is_internal() {
-        HostedNotarySessionFailure::service(error.into())
+        NotarySessionFailure::service(error.into())
     } else {
-        HostedNotarySessionFailure::client(error.into())
+        NotarySessionFailure::client(error.into())
     }
 }
 
-type HostedSessionRunResult<T> = std::result::Result<T, HostedNotarySessionFailure>;
+type SessionRunResult<T> = std::result::Result<T, NotarySessionFailure>;
 
-/// Persists authoritative authenticated bytes before a hosted operation can
-/// finish. Hosted services use this to make usage settlement recoverable
-/// across coordinator outages and process restarts.
-pub type HostedUsageRecorder = Box<dyn FnOnce(usize) -> Result<()> + Send>;
+/// Persists authoritative authenticated bytes before an admitted operation
+/// can finish. Lifecycle adapters use this for durable local reporting.
+pub type AuthenticatedBytesRecorder = Box<dyn FnOnce(usize) -> Result<()> + Send>;
 
-/// Runs a coordinator-admitted hosted session with effective limits already
-/// intersected with the notary's process-local maxima.
-pub async fn run_hosted_notary_session_after_prelude(
+/// Runs an admitted session with effective limits already intersected with the
+/// notary process's hard local maxima.
+pub async fn run_notary_session_with_limits_after_prelude(
     socket: TcpStream,
     mode: NotarySessionMode,
     signing_key: Arc<SigningKey>,
     allowed_hosts: Arc<Vec<String>>,
-    limits: HostedNotarySessionLimits,
-    usage_recorder: Option<HostedUsageRecorder>,
-) -> HostedSessionRunResult<HostedNotarySessionResult> {
+    limits: NotarySessionLimits,
+    usage_recorder: Option<AuthenticatedBytesRecorder>,
+) -> SessionRunResult<NotarySessionResult> {
     let authenticated_transcript_bytes = run_notary_session_with_limits(
         socket,
         mode,
@@ -1660,7 +1658,7 @@ pub async fn run_hosted_notary_session_after_prelude(
         usage_recorder,
     )
     .await?;
-    Ok(HostedNotarySessionResult {
+    Ok(NotarySessionResult {
         authenticated_transcript_bytes,
     })
 }
@@ -1677,9 +1675,9 @@ async fn run_notary_session_with_limits(
     max_frame_bytes: usize,
     expected_record_digest: Option<[u8; 32]>,
     expected_transcript_bytes: Option<usize>,
-    usage_recorder: Option<HostedUsageRecorder>,
-) -> HostedSessionRunResult<usize> {
-    validate_notary_frame_limit(max_frame_bytes).map_err(HostedNotarySessionFailure::service)?;
+    usage_recorder: Option<AuthenticatedBytesRecorder>,
+) -> SessionRunResult<usize> {
+    validate_notary_frame_limit(max_frame_bytes).map_err(NotarySessionFailure::service)?;
     match mode {
         NotarySessionMode::Capture => {
             run_deferred_capture_session(
@@ -1715,31 +1713,30 @@ async fn run_deferred_capture_session(
     allowed_hosts: Arc<Vec<String>>,
     max_transcript_bytes: usize,
     max_frame_bytes: usize,
-    usage_recorder: Option<HostedUsageRecorder>,
-) -> HostedSessionRunResult<usize> {
+    usage_recorder: Option<AuthenticatedBytesRecorder>,
+) -> SessionRunResult<usize> {
     let session = Session::new(socket.compat());
     let (driver, mut handle) = session.split();
     let driver_task = tokio::spawn(driver);
-    let root_store =
-        configured_protocol_root_store().map_err(HostedNotarySessionFailure::service)?;
+    let root_store = configured_protocol_root_store().map_err(NotarySessionFailure::service)?;
     let verifier_config = VerifierConfig::builder()
         .root_store(root_store)
         .build()
-        .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
+        .map_err(|error| NotarySessionFailure::service(error.into()))?;
     let verifier = handle
         .new_verifier(verifier_config)
-        .map_err(classify_tlsn_hosted_failure)?;
+        .map_err(classify_tlsn_session_failure)?;
     let (verifier, server_name) = match verifier
         .commit()
         .await
-        .map_err(classify_tlsn_hosted_failure)?
+        .map_err(classify_tlsn_session_failure)?
     {
         VerifierCommitStart::Mpc(verifier) => {
             verifier
                 .reject(Some("LLM Notary accepts Proxy-TLS sessions only"))
                 .await
-                .map_err(classify_tlsn_hosted_failure)?;
-            return Err(HostedNotarySessionFailure::client(anyhow!(
+                .map_err(classify_tlsn_session_failure)?;
+            return Err(NotarySessionFailure::client(anyhow!(
                 "rejected MPC-TLS session"
             )));
         }
@@ -1752,67 +1749,67 @@ async fn run_deferred_capture_session(
                 verifier
                     .reject(Some("provider hostname is not allowed by this notary"))
                     .await
-                    .map_err(classify_tlsn_hosted_failure)?;
-                return Err(HostedNotarySessionFailure::client(anyhow!(
+                    .map_err(classify_tlsn_session_failure)?;
+                return Err(NotarySessionFailure::client(anyhow!(
                     "rejected disallowed provider hostname: {server_name}"
                 )));
             }
             let upstream = TcpStream::connect((server_name.as_str(), 443))
                 .await
-                .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
+                .map_err(|error| NotarySessionFailure::service(error.into()))?;
             upstream
                 .set_nodelay(true)
-                .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
+                .map_err(|error| NotarySessionFailure::service(error.into()))?;
             let verifier = verifier
                 .accept()
                 .await
-                .map_err(classify_tlsn_hosted_failure)?
+                .map_err(classify_tlsn_session_failure)?
                 .run(upstream.compat())
                 .await
-                .map_err(classify_tlsn_hosted_failure)?;
+                .map_err(classify_tlsn_session_failure)?;
             (verifier, server_name)
         }
     };
     let tls_transcript = verifier.tls_transcript().clone();
-    let sent_bytes = application_data_bytes(tls_transcript.sent())
-        .map_err(HostedNotarySessionFailure::service)?;
-    let received_bytes = application_data_bytes(tls_transcript.recv())
-        .map_err(HostedNotarySessionFailure::service)?;
+    let sent_bytes =
+        application_data_bytes(tls_transcript.sent()).map_err(NotarySessionFailure::service)?;
+    let received_bytes =
+        application_data_bytes(tls_transcript.recv()).map_err(NotarySessionFailure::service)?;
     let transcript_bytes = sent_bytes.checked_add(received_bytes).ok_or_else(|| {
-        HostedNotarySessionFailure::service(anyhow!("TLS application-data byte count overflow"))
+        NotarySessionFailure::service(anyhow!("TLS application-data byte count overflow"))
     })?;
     if let Some(record_usage) = usage_recorder {
         record_usage(transcript_bytes)
-            .context("persisting hosted capture usage")
-            .map_err(HostedNotarySessionFailure::service)?;
+            .context("persisting authenticated capture bytes")
+            .map_err(NotarySessionFailure::service)?;
     }
     if transcript_bytes > max_transcript_bytes {
-        return Err(HostedNotarySessionFailure::client(anyhow!(
+        return Err(NotarySessionFailure::client(anyhow!(
             "TLS application data exceeds the authorized {max_transcript_bytes}-byte session limit"
         )));
     }
     let (_, connection_info, server_ephemeral_key) =
         verified_connection_metadata(&tls_transcript, &server_name)
-            .map_err(HostedNotarySessionFailure::service)?;
+            .map_err(NotarySessionFailure::service)?;
     let deferred = verifier
         .into_deferred()
         .await
-        .map_err(classify_tlsn_hosted_failure)?;
+        .map_err(classify_tlsn_session_failure)?;
 
     handle.close();
     let driver_result = driver_task
         .await
-        .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
-    let mut socket = driver_result.map_err(classify_tlsn_hosted_failure)?;
+        .map_err(|error| NotarySessionFailure::service(error.into()))?;
+    let mut socket = driver_result.map_err(classify_tlsn_session_failure)?;
     let request_bytes = read_frame(&mut socket, max_frame_bytes)
         .await
-        .map_err(HostedNotarySessionFailure::client)?;
+        .map_err(NotarySessionFailure::client)?;
     let request: DeferredCaptureRequest = bincode::deserialize(&request_bytes)
-        .map_err(|error| HostedNotarySessionFailure::client(error.into()))?;
+        .map_err(|error| NotarySessionFailure::client(error.into()))?;
     if request.root_binding != deferred.root_binding()
         || request.record_digest != deferred.record_digest()
     {
-        return Err(HostedNotarySessionFailure::client(anyhow!(
+        return Err(NotarySessionFailure::client(anyhow!(
             "client deferred checkpoint does not match notary session state"
         )));
     }
@@ -1824,12 +1821,12 @@ async fn run_deferred_capture_session(
         connection_info,
         server_ephemeral_key,
     )
-    .map_err(HostedNotarySessionFailure::service)?;
+    .map_err(NotarySessionFailure::service)?;
     let receipt = bincode::serialize(&receipt)
-        .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
+        .map_err(|error| NotarySessionFailure::service(error.into()))?;
     write_frame(&mut socket, &receipt, max_frame_bytes)
         .await
-        .map_err(HostedNotarySessionFailure::client)?;
+        .map_err(NotarySessionFailure::client)?;
     Ok(transcript_bytes)
 }
 
@@ -1854,31 +1851,31 @@ async fn run_deferred_finalize_session(
     max_frame_bytes: usize,
     expected_record_digest: Option<[u8; 32]>,
     expected_transcript_bytes: Option<usize>,
-    usage_recorder: Option<HostedUsageRecorder>,
-) -> HostedSessionRunResult<usize> {
+    usage_recorder: Option<AuthenticatedBytesRecorder>,
+) -> SessionRunResult<usize> {
     let request_bytes = read_tokio_frame(&mut socket, max_frame_bytes)
         .await
-        .map_err(HostedNotarySessionFailure::client)?;
+        .map_err(NotarySessionFailure::client)?;
     let request: DeferredFinalizeRequest = bincode::deserialize(&request_bytes)
-        .map_err(|error| HostedNotarySessionFailure::client(error.into()))?;
+        .map_err(|error| NotarySessionFailure::client(error.into()))?;
     let transcript_bytes = validate_finalization_admission_binding(
         &request.receipt,
         expected_record_digest,
         expected_transcript_bytes,
     )
-    .map_err(HostedNotarySessionFailure::client)?;
+    .map_err(NotarySessionFailure::client)?;
     request
         .receipt
         .verify(signing_key.verifying_key().to_sec1_bytes().as_ref())
-        .map_err(HostedNotarySessionFailure::client)?;
+        .map_err(NotarySessionFailure::client)?;
     request
         .receipt
         .validate_records(&request.records)
-        .map_err(HostedNotarySessionFailure::client)?;
+        .map_err(NotarySessionFailure::client)?;
     if let Some(record_usage) = usage_recorder {
         record_usage(transcript_bytes)
-            .context("persisting hosted finalization usage")
-            .map_err(HostedNotarySessionFailure::service)?;
+            .context("persisting authenticated finalization bytes")
+            .map_err(NotarySessionFailure::service)?;
     }
     validate_deferred_request_limits(
         &request.prove_request,
@@ -1886,12 +1883,12 @@ async fn run_deferred_finalize_session(
         max_total_private_chunk_bytes,
         max_private_chunk_commitments,
     )
-    .map_err(HostedNotarySessionFailure::client)?;
+    .map_err(NotarySessionFailure::client)?;
 
     let session = Session::new(socket.compat());
     let mut verifier_context = session
         .new_context()
-        .map_err(classify_tlsn_hosted_failure)?;
+        .map_err(classify_tlsn_session_failure)?;
     let (driver, handle) = session.split();
     let driver_task = tokio::spawn(driver);
     let verifier =
@@ -1901,7 +1898,7 @@ async fn run_deferred_finalize_session(
         .server_name
         .as_str()
         .try_into()
-        .map_err(|error| HostedNotarySessionFailure::client(anyhow::Error::new(error)))?;
+        .map_err(|error| NotarySessionFailure::client(anyhow::Error::new(error)))?;
     let output = verifier
         .verify(
             &mut verifier_context,
@@ -1910,17 +1907,17 @@ async fn run_deferred_finalize_session(
             max_private_chunk_bytes,
         )
         .await
-        .map_err(classify_tlsn_hosted_failure)?;
+        .map_err(classify_tlsn_session_failure)?;
     handle.close();
     let driver_result = driver_task
         .await
-        .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
-    let mut socket = driver_result.map_err(classify_tlsn_hosted_failure)?;
+        .map_err(|error| NotarySessionFailure::service(error.into()))?;
+    let mut socket = driver_result.map_err(classify_tlsn_session_failure)?;
     let attestation_request = read_frame(&mut socket, max_frame_bytes)
         .await
-        .map_err(HostedNotarySessionFailure::client)?;
+        .map_err(NotarySessionFailure::client)?;
     let attestation_request: AttestationRequest = bincode::deserialize(&attestation_request)
-        .map_err(|error| HostedNotarySessionFailure::client(error.into()))?;
+        .map_err(|error| NotarySessionFailure::client(error.into()))?;
     let attestation = sign_attestation(
         &signing_key,
         attestation_request,
@@ -1928,12 +1925,12 @@ async fn run_deferred_finalize_session(
         request.receipt.server_ephemeral_key,
         output.transcript_commitments,
     )
-    .map_err(HostedNotarySessionFailure::service)?;
+    .map_err(NotarySessionFailure::service)?;
     let attestation = bincode::serialize(&attestation)
-        .map_err(|error| HostedNotarySessionFailure::service(error.into()))?;
+        .map_err(|error| NotarySessionFailure::service(error.into()))?;
     write_frame(&mut socket, &attestation, max_frame_bytes)
         .await
-        .map_err(HostedNotarySessionFailure::client)?;
+        .map_err(NotarySessionFailure::client)?;
     Ok(transcript_bytes)
 }
 
@@ -2302,13 +2299,13 @@ fn verified_connection_metadata_with_roots(
 async fn connect_notary(
     notary: &NotaryEndpoint,
     mode: u8,
-    admission_ticket: Option<&str>,
+    admission_value: Option<&str>,
 ) -> Result<NotaryIo> {
-    if admission_ticket.is_some()
+    if admission_value.is_some()
         && notary.transport == NotaryTransport::Tcp
         && !matches!(notary.host.as_str(), "127.0.0.1" | "::1" | "localhost")
     {
-        bail!("hosted admission tickets require outer TLS except on loopback");
+        bail!("notary admission values require outer TLS except on loopback");
     }
     let socket = TcpStream::connect((notary.host.as_str(), notary.port))
         .await
@@ -2318,7 +2315,7 @@ async fn connect_notary(
     match notary.transport {
         NotaryTransport::Tcp => {
             let mut socket = socket;
-            write_selected_notary_prelude(&mut socket, mode, admission_ticket).await?;
+            write_selected_notary_prelude(&mut socket, mode, admission_value).await?;
             read_notary_admission(&mut socket).await?;
             Ok(Box::new(socket.compat()))
         }
@@ -2326,7 +2323,7 @@ async fn connect_notary(
             let mut socket = connect_notary_tls(&notary.host, socket, default_notary_tls_config())
                 .await
                 .with_context(|| format!("validating TLS for notary at {notary}"))?;
-            write_selected_notary_prelude(&mut socket, mode, admission_ticket).await?;
+            write_selected_notary_prelude(&mut socket, mode, admission_value).await?;
             read_notary_admission(&mut socket).await?;
             Ok(Box::new(socket.compat()))
         }
@@ -2372,13 +2369,13 @@ async fn write_notary_prelude<S: tokio::io::AsyncWrite + Unpin>(
 async fn write_selected_notary_prelude<S: tokio::io::AsyncWrite + Unpin>(
     socket: &mut S,
     mode: u8,
-    admission_ticket: Option<&str>,
+    admission_value: Option<&str>,
 ) -> Result<()> {
-    let Some(ticket) = admission_ticket else {
+    let Some(ticket) = admission_value else {
         return write_notary_prelude(socket, mode).await;
     };
-    if ticket.is_empty() || ticket.len() > MAX_NOTARY_ADMISSION_TICKET_BYTES {
-        bail!("hosted admission ticket length is invalid");
+    if ticket.is_empty() || ticket.len() > MAX_NOTARY_ADMISSION_VALUE_BYTES {
+        bail!("notary admission value length is invalid");
     }
     socket.write_all(NOTARY_CONTROL_MAGIC_V3).await?;
     socket.write_all(&[mode]).await?;
@@ -2404,21 +2401,21 @@ async fn read_notary_prelude(socket: &mut TcpStream) -> Result<(u8, u8, Option<S
     };
     let mut mode = [0u8; 1];
     socket.read_exact(&mut mode).await?;
-    let admission_ticket = if version == 3 {
+    let admission_value = if version == 3 {
         let mut length = [0u8; 2];
         socket.read_exact(&mut length).await?;
         let length = u16::from_be_bytes(length) as usize;
-        if length == 0 || length > MAX_NOTARY_ADMISSION_TICKET_BYTES {
-            bail!("hosted admission ticket length is invalid");
+        if length == 0 || length > MAX_NOTARY_ADMISSION_VALUE_BYTES {
+            bail!("notary admission value length is invalid");
         }
         let mut ticket = vec![0; length];
         socket.read_exact(&mut ticket).await?;
-        let ticket = String::from_utf8(ticket).context("hosted admission ticket is not UTF-8")?;
+        let ticket = String::from_utf8(ticket).context("notary admission value is not UTF-8")?;
         Some(ticket)
     } else {
         None
     };
-    Ok((version, mode[0], admission_ticket))
+    Ok((version, mode[0], admission_value))
 }
 
 async fn read_notary_admission<S: tokio::io::AsyncRead + Unpin>(socket: &mut S) -> Result<()> {
@@ -2541,7 +2538,7 @@ mod tests {
     }
 
     #[test]
-    fn hosted_policy_rejections_have_stable_wire_codes() {
+    fn admission_policy_rejections_have_stable_wire_codes() {
         for (rejection, code) in [
             (
                 NotaryAdmissionRejection::AdmissionDenied,
@@ -2552,16 +2549,16 @@ mod tests {
                 "admission_expired",
             ),
             (
-                NotaryAdmissionRejection::CoordinatorUnavailable,
-                "coordinator_unavailable",
+                NotaryAdmissionRejection::AdmissionServiceUnavailable,
+                "admission_service_unavailable",
             ),
             (
-                NotaryAdmissionRejection::CaptureCreditsExhausted,
-                "capture_credits_exhausted",
+                NotaryAdmissionRejection::CaptureAllowanceExhausted,
+                "capture_allowance_exhausted",
             ),
             (
-                NotaryAdmissionRejection::FinalizationCreditsExhausted,
-                "finalization_credits_exhausted",
+                NotaryAdmissionRejection::FinalizationAllowanceExhausted,
+                "finalization_allowance_exhausted",
             ),
         ] {
             assert_eq!(rejection.code(), code);
@@ -2574,16 +2571,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn v3_hosted_prelude_carries_a_bounded_redacted_ticket() {
+    async fn v3_prelude_carries_a_bounded_redacted_admission_value() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let prelude = read_hosted_notary_session_prelude(&mut socket)
-                .await
-                .unwrap();
+            let prelude = read_required_admission_prelude(&mut socket).await.unwrap();
             assert_eq!(prelude.mode(), NotarySessionMode::Capture);
-            assert_eq!(prelude.admission_ticket(), Some("one-time-ticket"));
+            assert_eq!(prelude.admission_value(), Some("one-time-ticket"));
             let debug = format!("{prelude:?}");
             assert!(debug.contains("<redacted>"));
             assert!(!debug.contains("one-time-ticket"));
@@ -2601,16 +2596,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn hosted_reader_rejects_legacy_and_ticket_writer_rejects_oversize() {
+    async fn required_admission_reader_rejects_legacy_and_oversize_values() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            assert!(
-                read_hosted_notary_session_prelude(&mut socket)
-                    .await
-                    .is_err()
-            );
+            assert!(read_required_admission_prelude(&mut socket).await.is_err());
         });
         let mut client = TcpStream::connect(address).await.unwrap();
         write_notary_prelude(&mut client, NOTARY_MODE_CAPTURE)
@@ -2623,7 +2614,7 @@ mod tests {
             write_selected_notary_prelude(
                 &mut sink,
                 NOTARY_MODE_CAPTURE,
-                Some(&"x".repeat(MAX_NOTARY_ADMISSION_TICKET_BYTES + 1)),
+                Some(&"x".repeat(MAX_NOTARY_ADMISSION_VALUE_BYTES + 1)),
             )
             .await
             .is_err()
@@ -3265,7 +3256,7 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("does not match its admission authorization"),
-            "the ticket binding must reject a wrong bundle before receipt validation"
+            "the admission binding must reject a wrong bundle before receipt validation"
         );
 
         // This is the durability boundary: no original TLSN session or

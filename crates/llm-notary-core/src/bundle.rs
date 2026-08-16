@@ -119,7 +119,7 @@ pub async fn finalize_bundle_admitted_bytes_with_progress(
     notary: &NotaryEndpoint,
     max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
-    admission_ticket: &str,
+    admission_value: &str,
     progress: FinalizationProgressObserver<'_>,
 ) -> Result<Vec<u8>> {
     let proof = finalize_deferred_bundle_to_admitted_with_progress(
@@ -128,7 +128,7 @@ pub async fn finalize_bundle_admitted_bytes_with_progress(
         trusted_notary_key,
         max_attestable_http_bytes,
         max_frame_bytes,
-        admission_ticket,
+        admission_value,
         progress,
     )
     .await?;

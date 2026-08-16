@@ -2729,11 +2729,11 @@ mod tests {
                 "hosted_admission_expired",
             ),
             (
-                crate::NotaryAdmissionRejection::CoordinatorUnavailable,
+                crate::NotaryAdmissionRejection::AdmissionServiceUnavailable,
                 "hosted_admission_unavailable",
             ),
             (
-                crate::NotaryAdmissionRejection::FinalizationCreditsExhausted,
+                crate::NotaryAdmissionRejection::FinalizationAllowanceExhausted,
                 "finalization_credits_exhausted",
             ),
             (
