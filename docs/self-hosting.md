@@ -196,23 +196,46 @@ Every hosted capture or finalization obtains a short-lived one-time ticket from
 `POST /api/notary/admissions`. The notary redeems it through the internal API
 using the `one_operation_v1` contract before beginning protocol work. New
 sessions fail closed if the coordinator is unavailable, but an admitted
-one-operation continues without any renewal call under the notary's
-process-local concurrency, size, and timeout limits. Usage-capable notaries
-also send `usage_settlement: true`; during a rolling deployment, the API does
-not create an unsettled operation row for an older notary that omits it.
+one-operation continues without renewal under the notary's process-local
+concurrency, size, and timeout limits. The API also requires
+`usage_settlement: true`; a request missing either capability is rejected
+without consuming its ticket.
 
-During the rolling-compatibility window, keep
-`LLM_NOTARY_RELEASE_OUTBOX_DIR` on a private persistent directory. If the API is
-rolled back and returns the previous lease response, the bridge notary preserves
-that lease's renewal and durable release lifecycle. The new contract never
-writes this outbox. Remove it only with the cleanup tracked in
-[#298](https://github.com/exalto-ai/notary/issues/298).
+The stop-legacy release requires `LLM_NOTARY_RELEASE_OUTBOX_DIR` only as a
+drain audit for one rollout window. The notary never writes through that path
+and refuses startup if the configured directory contains an old pending entry.
+After the operation-only notary starts, the API refuses startup while an
+unreleased, unexpired legacy lease remains. Keep the directory mounted until
+the contract migration tracked in
+[#298](https://github.com/exalto-ai/notary/issues/298) removes the retained
+lease schema and configuration.
 
 The shared admission service token authenticates the notary's internal redeem
-call, usage-settlement calls, and the temporary legacy renew/release fallback.
-It is never sent to local clients and is unrelated to provider credentials or
-session-sharing access tokens. Settlement reports identify an operation rather
-than repeating its raw ticket.
+call and usage-settlement calls. The legacy renew/release routes are no longer
+registered. The token is never sent to local clients and is unrelated to
+provider credentials or session-sharing access tokens. Settlement reports
+identify an operation rather than repeating its raw ticket.
+
+For a production drain audit, verify the API and every notary started
+successfully, then confirm this query returns zero:
+
+```sql
+SELECT COUNT(*) AS active_legacy_leases
+FROM notary_admission_leases
+WHERE released_at IS NULL
+  AND expires_at > EXTRACT(EPOCH FROM NOW())::BIGINT;
+```
+
+Also verify each configured release outbox is empty and every usage settlement
+is either acknowledged by the API or still durably present in the usage
+outbox. Do not inspect or print ticket values while auditing.
+
+The next rollout is an expand-compatible detach release, not a code-only
+change: it must let the previous image continue writing the requested-allowance
+bridge while the new image stops depending on it. That release removes the API
+lease gate and notary outbox audit from runtime only after the production drain
+is proven, while retaining their physical schema and deployment configuration
+for rollback. The final contract migration follows in a separate rollout.
 
 Set `LLM_NOTARY_USAGE_OUTBOX_DIR` to persistent storage owned by the remote
 notary. The notary durably stages each admitted operation before accepting its

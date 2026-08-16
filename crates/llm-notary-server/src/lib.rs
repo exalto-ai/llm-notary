@@ -1,7 +1,6 @@
 use std::{
     env, fs,
     fs::OpenOptions,
-    future::Future,
     io::Write,
     net::SocketAddr,
     path::{Path, PathBuf},
@@ -32,8 +31,6 @@ use tokio::{
 use tracing::Instrument as _;
 use url::Url;
 
-const DEFAULT_LEASE_RENEW_INTERVAL_SECS: u64 = 10;
-const RELEASE_OUTBOX_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 const USAGE_OUTBOX_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
@@ -43,16 +40,7 @@ struct AdmissionCoordinator {
     service_token: Arc<str>,
     instance_id: Arc<str>,
     directory_generation: u64,
-    renew_interval: Duration,
-    release_outbox: ReleaseOutbox,
     usage_outbox: UsageOutbox,
-}
-
-#[derive(Clone)]
-struct ReleaseOutbox {
-    directory: Arc<PathBuf>,
-    write_lock: Arc<Mutex<()>>,
-    next_temp_id: Arc<AtomicU64>,
 }
 
 #[derive(Clone)]
@@ -73,22 +61,9 @@ struct RedeemRequest<'a> {
 }
 
 #[derive(Deserialize)]
-struct RedeemedLease {
-    lease_id: String,
-    lease_expires_at: i64,
-    max_attestable_http_bytes: i64,
-    max_frame_bytes: i64,
-    max_private_chunk_bytes: i64,
-    max_private_chunk_commitments: i64,
-    record_digest: Option<String>,
-    authorized_allowance_bytes: i64,
-}
-
-#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RedeemedOperation {
-    #[serde(default)]
-    operation_id: Option<String>,
+    operation_id: String,
     max_attestable_http_bytes: i64,
     max_frame_bytes: i64,
     max_private_chunk_bytes: i64,
@@ -137,44 +112,6 @@ struct UsageSettlementRequest<'a> {
     mode: UsageMode,
     authenticated_bytes: i64,
     outcome: UsageSettlementOutcome,
-}
-
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum RedeemedAdmission {
-    Operation(RedeemedOperation),
-    Lease(RedeemedLease),
-}
-
-#[derive(Serialize)]
-struct LeaseRequest<'a> {
-    lease_id: &'a str,
-    notary_instance_id: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    outcome: Option<LeaseCompletionOutcome>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    used_allowance_bytes: Option<i64>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum LeaseCompletionOutcome {
-    Completed,
-    ClientFailed,
-    ServiceFailed,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct PendingLeaseRelease {
-    lease_id: String,
-    notary_instance_id: String,
-    outcome: LeaseCompletionOutcome,
-    used_allowance_bytes: Option<i64>,
-}
-
-#[derive(Deserialize)]
-struct LeaseRenewed {
-    lease_expires_at: i64,
 }
 
 #[derive(Deserialize)]
@@ -278,228 +215,20 @@ struct Args {
     profile_sessions: bool,
 }
 
-impl ReleaseOutbox {
-    fn open(directory: PathBuf) -> Result<Self> {
-        fs::create_dir_all(&directory)
-            .with_context(|| format!("creating release outbox {}", directory.display()))?;
-        if !fs::metadata(&directory)
-            .with_context(|| format!("reading release outbox {}", directory.display()))?
-            .is_dir()
-        {
-            bail!("release outbox path must be a directory");
-        }
-        let outbox = Self {
-            directory: Arc::new(directory),
-            write_lock: Arc::new(Mutex::new(())),
-            next_temp_id: Arc::new(AtomicU64::new(0)),
-        };
-        outbox.remove_stale_temporary_files()?;
-        // No session from the previous process can still be writing its
-        // receipt. Promote every valid staged record so restart recovery can
-        // replay it, including a process that died immediately after sending
-        // the receipt.
-        for release in outbox.all_releases()? {
-            outbox.mark_ready(&release)?;
-        }
-        Ok(outbox)
+fn ensure_legacy_release_outbox_drained(directory: &Path) -> Result<()> {
+    if directory.as_os_str().is_empty() {
+        bail!("LLM_NOTARY_RELEASE_OUTBOX_DIR must not be empty");
     }
-
-    fn remove_stale_temporary_files(&self) -> Result<()> {
-        for entry in fs::read_dir(self.directory.as_ref())
-            .with_context(|| format!("reading release outbox {}", self.directory.display()))?
-        {
-            let path = entry?.path();
-            let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
-                continue;
-            };
-            if file_name.starts_with(".release-") && file_name.ends_with(".tmp") {
-                fs::remove_file(&path).with_context(|| {
-                    format!("removing stale release outbox file {}", path.display())
-                })?;
-            }
-        }
-        Ok(())
+    if !directory.exists() {
+        return Ok(());
     }
-
-    fn persist_or_existing(&self, release: PendingLeaseRelease) -> Result<PendingLeaseRelease> {
-        validate_pending_release(&release)?;
-        let _guard = self
-            .write_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("release outbox lock was poisoned"))?;
-        let path = self.release_path(&release.lease_id);
-        if path.exists() {
-            return self.read_release(&path);
-        }
-
-        let bytes = serde_json::to_vec(&release).context("serializing pending lease release")?;
-        let temp_id = self.next_temp_id.fetch_add(1, Ordering::Relaxed);
-        let temp_path = self
-            .directory
-            .join(format!(".release-{}-{temp_id}.tmp", std::process::id()));
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&temp_path)
-            .with_context(|| format!("creating release outbox file {}", temp_path.display()))?;
-        let persist = (|| -> Result<()> {
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            fs::rename(&temp_path, &path)?;
-            sync_directory(&self.directory)?;
-            Ok(())
-        })();
-        if persist.is_err() {
-            let _ = fs::remove_file(&temp_path);
-        }
-        persist.with_context(|| format!("persisting release outbox file {}", path.display()))?;
-        Ok(release)
+    if !directory.is_dir() {
+        bail!("legacy release outbox path must be a directory");
     }
-
-    fn prepare_for_release(&self, release: PendingLeaseRelease) -> Result<PendingLeaseRelease> {
-        let persisted = self.persist_or_existing(release)?;
-        self.mark_ready(&persisted)?;
-        Ok(persisted)
-    }
-
-    fn mark_ready(&self, release: &PendingLeaseRelease) -> Result<()> {
-        let _guard = self
-            .write_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("release outbox lock was poisoned"))?;
-        let stored = self.read_release(&self.release_path(&release.lease_id))?;
-        if stored != *release {
-            bail!("pending lease release changed before becoming replayable");
-        }
-        let path = self.ready_path(&release.lease_id);
-        if path.exists() {
-            return Ok(());
-        }
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let file = options
-            .open(&path)
-            .with_context(|| format!("creating release-ready marker {}", path.display()))?;
-        file.sync_all()?;
-        sync_directory(&self.directory)?;
-        Ok(())
-    }
-
-    fn pending(&self) -> Result<Vec<PendingLeaseRelease>> {
-        let _guard = self
-            .write_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("release outbox lock was poisoned"))?;
-        Ok(self
-            .read_all_releases()?
-            .into_iter()
-            .filter(|release| self.ready_path(&release.lease_id).exists())
-            .collect())
-    }
-
-    fn all_releases(&self) -> Result<Vec<PendingLeaseRelease>> {
-        let _guard = self
-            .write_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("release outbox lock was poisoned"))?;
-        self.read_all_releases()
-    }
-
-    fn read_all_releases(&self) -> Result<Vec<PendingLeaseRelease>> {
-        let mut pending = Vec::new();
-        for entry in fs::read_dir(self.directory.as_ref())
-            .with_context(|| format!("reading release outbox {}", self.directory.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            if path.extension().and_then(|value| value.to_str()) != Some("json") {
-                continue;
-            }
-            pending.push(self.read_release(&path)?);
-        }
-        pending.sort_by(|left, right| left.lease_id.cmp(&right.lease_id));
-        Ok(pending)
-    }
-
-    fn complete(&self, release: &PendingLeaseRelease) -> Result<()> {
-        let _guard = self
-            .write_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("release outbox lock was poisoned"))?;
-        let path = self.release_path(&release.lease_id);
-        if !path.exists() {
-            return Ok(());
-        }
-        let stored = self.read_release(&path)?;
-        if stored != *release {
-            bail!("pending lease release changed before completion");
-        }
-        let ready_path = self.ready_path(&release.lease_id);
-        if ready_path.exists() {
-            fs::remove_file(&ready_path).with_context(|| {
-                format!("removing release-ready marker {}", ready_path.display())
-            })?;
-        }
-        fs::remove_file(&path)
-            .with_context(|| format!("removing release outbox file {}", path.display()))?;
-        sync_directory(&self.directory)?;
-        Ok(())
-    }
-
-    fn release_path(&self, lease_id: &str) -> PathBuf {
-        self.directory.join(format!("{lease_id}.json"))
-    }
-
-    fn ready_path(&self, lease_id: &str) -> PathBuf {
-        self.directory.join(format!("{lease_id}.ready"))
-    }
-
-    fn read_release(&self, path: &Path) -> Result<PendingLeaseRelease> {
-        let bytes = fs::read(path)
-            .with_context(|| format!("reading release outbox file {}", path.display()))?;
-        let release: PendingLeaseRelease = serde_json::from_slice(&bytes)
-            .with_context(|| format!("parsing release outbox file {}", path.display()))?;
-        validate_pending_release(&release)?;
-        if path.file_name().and_then(|value| value.to_str())
-            != Some(&format!("{}.json", release.lease_id))
-        {
-            bail!("release outbox filename does not match its lease ID");
-        }
-        Ok(release)
-    }
-}
-
-fn validate_pending_release(release: &PendingLeaseRelease) -> Result<()> {
-    let safe_identifier = |value: &str| {
-        !value.is_empty()
-            && value.len() <= 128
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    };
-    if !safe_identifier(&release.lease_id) {
-        bail!("pending release lease ID is not a safe identifier");
-    }
-    if !safe_identifier(&release.notary_instance_id) {
-        bail!("pending release notary instance ID is not a safe identifier");
-    }
-    if release.used_allowance_bytes.is_some_and(|value| value < 0) {
-        bail!("pending release allowance cannot be negative");
-    }
-    if release.outcome != LeaseCompletionOutcome::Completed
-        && release.used_allowance_bytes.is_some()
-    {
-        bail!("only completed leases may include exact allowance usage");
+    let mut entries = fs::read_dir(directory)
+        .with_context(|| format!("reading legacy release outbox {}", directory.display()))?;
+    if entries.next().transpose()?.is_some() {
+        bail!("legacy release outbox must be drained before starting this notary release");
     }
     Ok(())
 }
@@ -558,19 +287,11 @@ impl AdmissionCoordinator {
             .unwrap_or_else(|_| "1".to_owned())
             .parse()
             .context("LLM_NOTARY_NOTARY_DIRECTORY_GENERATION must be a u64")?;
-        let renew_interval_secs = env::var("LLM_NOTARY_ADMISSION_RENEW_INTERVAL_SECS")
-            .unwrap_or_else(|_| DEFAULT_LEASE_RENEW_INTERVAL_SECS.to_string())
-            .parse::<u64>()
-            .context("LLM_NOTARY_ADMISSION_RENEW_INTERVAL_SECS must be a u64")?;
-        if renew_interval_secs == 0 || renew_interval_secs > 60 {
-            bail!("LLM_NOTARY_ADMISSION_RENEW_INTERVAL_SECS must be between 1 and 60");
-        }
-        let release_outbox = env::var("LLM_NOTARY_RELEASE_OUTBOX_DIR")
-            .context("LLM_NOTARY_RELEASE_OUTBOX_DIR must be set")?;
-        if release_outbox.is_empty() {
-            bail!("LLM_NOTARY_RELEASE_OUTBOX_DIR must not be empty");
-        }
-        let release_outbox = ReleaseOutbox::open(PathBuf::from(release_outbox))?;
+        let legacy_release_outbox = PathBuf::from(
+            env::var("LLM_NOTARY_RELEASE_OUTBOX_DIR")
+                .context("LLM_NOTARY_RELEASE_OUTBOX_DIR must be set for the drain audit")?,
+        );
+        ensure_legacy_release_outbox_drained(&legacy_release_outbox)?;
         let usage_outbox = UsageOutbox::open(
             env::var("LLM_NOTARY_USAGE_OUTBOX_DIR")
                 .context("LLM_NOTARY_USAGE_OUTBOX_DIR must be set")?,
@@ -585,8 +306,6 @@ impl AdmissionCoordinator {
             service_token: Arc::from(service_token),
             instance_id: Arc::from(instance_id),
             directory_generation,
-            renew_interval: Duration::from_secs(renew_interval_secs),
-            release_outbox,
             usage_outbox,
         })
     }
@@ -601,7 +320,7 @@ impl AdmissionCoordinator {
         &self,
         ticket: &str,
         mode: NotarySessionMode,
-    ) -> std::result::Result<RedeemedAdmission, CoordinatorRejection> {
+    ) -> std::result::Result<RedeemedOperation, CoordinatorRejection> {
         let url = self
             .endpoint("/api/internal/notary/admissions/redeem")
             .map_err(CoordinatorRejection::Unavailable)?;
@@ -633,109 +352,6 @@ impl AdmissionCoordinator {
                     .map(|error| error.error);
                 Err(coordinator_rejection(status, error_code.as_deref()))
             }
-        }
-    }
-
-    async fn renew(&self, lease_id: &str) -> Result<i64> {
-        let response = self
-            .http
-            .post(self.endpoint("/api/internal/notary/leases/renew")?)
-            .bearer_auth(self.service_token.as_ref())
-            .json(&LeaseRequest {
-                lease_id,
-                notary_instance_id: self.instance_id.as_ref(),
-                outcome: None,
-                used_allowance_bytes: None,
-            })
-            .send()
-            .await?
-            .error_for_status()?;
-        Ok(response.json::<LeaseRenewed>().await?.lease_expires_at)
-    }
-
-    async fn release(&self, release: &PendingLeaseRelease) -> Result<()> {
-        self.http
-            .post(self.endpoint("/api/internal/notary/leases/release")?)
-            .bearer_auth(self.service_token.as_ref())
-            .json(&LeaseRequest {
-                lease_id: &release.lease_id,
-                notary_instance_id: &release.notary_instance_id,
-                outcome: Some(release.outcome),
-                used_allowance_bytes: release.used_allowance_bytes,
-            })
-            .send()
-            .await?
-            .error_for_status()?;
-        Ok(())
-    }
-
-    fn pending_release(
-        &self,
-        lease_id: &str,
-        outcome: LeaseCompletionOutcome,
-        used_allowance_bytes: Option<i64>,
-    ) -> PendingLeaseRelease {
-        PendingLeaseRelease {
-            lease_id: lease_id.to_owned(),
-            notary_instance_id: self.instance_id.to_string(),
-            outcome,
-            used_allowance_bytes,
-        }
-    }
-
-    fn persist_release(
-        &self,
-        lease_id: &str,
-        outcome: LeaseCompletionOutcome,
-        used_allowance_bytes: Option<i64>,
-    ) -> Result<PendingLeaseRelease> {
-        let requested = self.pending_release(lease_id, outcome, used_allowance_bytes);
-        let persisted = self.release_outbox.persist_or_existing(requested.clone())?;
-        if persisted != requested {
-            bail!("lease already has a different pending release");
-        }
-        Ok(persisted)
-    }
-
-    async fn settle_lease(
-        &self,
-        lease_id: &str,
-        outcome: LeaseCompletionOutcome,
-        used_allowance_bytes: Option<i64>,
-    ) -> Result<()> {
-        // A completed capture is recorded before its receipt is sent. If the
-        // receipt write later fails, preserve that earlier exact settlement
-        // instead of replacing it with a transport-failure outcome.
-        let release = self
-            .release_outbox
-            .prepare_for_release(self.pending_release(lease_id, outcome, used_allowance_bytes))?;
-        self.release(&release).await?;
-        self.release_outbox.complete(&release)
-    }
-
-    async fn replay_pending_releases(self) {
-        loop {
-            match self.release_outbox.pending() {
-                Ok(pending) => {
-                    gauge!("llm_notary_notary_pending_lease_releases").set(pending.len() as f64);
-                    for release in pending {
-                        match self.release(&release).await {
-                            Ok(()) => {
-                                if let Err(error) = self.release_outbox.complete(&release) {
-                                    tracing::error!(%error, "removing replayed lease release from outbox failed");
-                                }
-                            }
-                            Err(error) => {
-                                tracing::warn!(%error, "pending lease release still awaiting coordinator");
-                            }
-                        }
-                    }
-                }
-                Err(error) => {
-                    tracing::error!(%error, "reading release outbox failed");
-                }
-            }
-            tokio::time::sleep(RELEASE_OUTBOX_RETRY_INTERVAL).await;
         }
     }
 }
@@ -1506,7 +1122,6 @@ pub async fn run() -> Result<()> {
         return Ok(());
     }
     let admission = AdmissionCoordinator::from_env()?;
-    tokio::spawn(admission.clone().replay_pending_releases());
     admission.usage_outbox.recover_after_restart()?;
     let usage_replayer = admission.clone();
     tokio::spawn(async move {
@@ -1690,44 +1305,28 @@ pub async fn run() -> Result<()> {
                     return;
                 }
             };
-            let (operation, legacy_lease) = match redeemed {
-                RedeemedAdmission::Operation(operation) => (operation, None),
-                RedeemedAdmission::Lease(lease) => {
-                    let operation = RedeemedOperation {
-                        operation_id: None,
-                        max_attestable_http_bytes: lease.max_attestable_http_bytes,
-                        max_frame_bytes: lease.max_frame_bytes,
-                        max_private_chunk_bytes: lease.max_private_chunk_bytes,
-                        max_private_chunk_commitments: lease.max_private_chunk_commitments,
-                        record_digest: lease.record_digest.clone(),
-                        authenticated_allowance_bytes: Some(lease.authorized_allowance_bytes),
-                    };
-                    (operation, Some(lease))
-                }
+            let operation = redeemed;
+            let pending_usage = PendingUsageSettlement {
+                operation_id: operation.operation_id.clone(),
+                notary_instance_id: admission.instance_id.to_string(),
+                mode: UsageMode::for_session(mode),
+                authenticated_bytes: 0,
+                outcome: None,
             };
-            if let Some(operation_id) = operation.operation_id.as_ref() {
-                let pending_usage = PendingUsageSettlement {
-                    operation_id: operation_id.clone(),
-                    notary_instance_id: admission.instance_id.to_string(),
-                    mode: UsageMode::for_session(mode),
-                    authenticated_bytes: 0,
-                    outcome: None,
-                };
-                if admission.usage_outbox.stage(&pending_usage).is_err() {
-                    tracing::error!("staging admitted operation usage failed");
-                    let mut failed = pending_usage;
-                    failed.outcome = Some(UsageSettlementOutcome::ServiceFailed);
-                    if let Err(error) = admission.settle_usage(&failed).await {
-                        tracing::error!(%error, "direct settlement after outbox failure failed");
-                    }
-                    let _ = write_notary_admission(
-                        &mut stream,
-                        &prelude,
-                        Err(NotaryAdmissionRejection::CoordinatorUnavailable),
-                    )
-                    .await;
-                    return;
+            if admission.usage_outbox.stage(&pending_usage).is_err() {
+                tracing::error!("staging admitted operation usage failed");
+                let mut failed = pending_usage;
+                failed.outcome = Some(UsageSettlementOutcome::ServiceFailed);
+                if let Err(error) = admission.settle_usage(&failed).await {
+                    tracing::error!(%error, "direct settlement after outbox failure failed");
                 }
+                let _ = write_notary_admission(
+                    &mut stream,
+                    &prelude,
+                    Err(NotaryAdmissionRejection::CoordinatorUnavailable),
+                )
+                .await;
+                return;
             }
             let limits = match effective_hosted_limits(
                 mode,
@@ -1741,20 +1340,14 @@ pub async fn run() -> Result<()> {
                 Ok(limits) => limits,
                 Err(error) => {
                     tracing::error!(%error, "coordinator returned invalid notary limits");
-                    if let Some(lease) = legacy_lease.as_ref() {
-                        let _ = admission
-                            .settle_lease(
-                                &lease.lease_id,
-                                LeaseCompletionOutcome::ServiceFailed,
-                                None,
-                            )
-                            .await;
-                    }
-                    if let Some(operation_id) = operation.operation_id.as_ref()
-                        && admission
-                            .usage_outbox
-                            .finish(operation_id, UsageSettlementOutcome::ServiceFailed, 0)
-                            .is_err()
+                    if admission
+                        .usage_outbox
+                        .finish(
+                            &operation.operation_id,
+                            UsageSettlementOutcome::ServiceFailed,
+                            0,
+                        )
+                        .is_err()
                     {
                         tracing::error!("queuing invalid admission settlement failed");
                     }
@@ -1768,41 +1361,16 @@ pub async fn run() -> Result<()> {
                 }
             };
             let effective_session_timeout = limits.session_timeout;
-            let legacy_lease_deadline = match legacy_lease.as_ref() {
-                Some(lease) => match lease_deadline(lease.lease_expires_at) {
-                    Ok(deadline) => Some(deadline),
-                    Err(error) => {
-                        tracing::error!(%error, "coordinator returned an expired notary lease");
-                        let _ = admission
-                            .settle_lease(
-                                &lease.lease_id,
-                                LeaseCompletionOutcome::ServiceFailed,
-                                None,
-                            )
-                            .await;
-                        let _ = write_notary_admission(
-                            &mut stream,
-                            &prelude,
-                            Err(NotaryAdmissionRejection::CoordinatorUnavailable),
-                        )
-                        .await;
-                        return;
-                    }
-                },
-                None => None,
-            };
             if let Err(error) = write_notary_admission(&mut stream, &prelude, Ok(())).await {
                 tracing::debug!(%error, "could not send notary admission acceptance");
-                if let Some(lease) = legacy_lease.as_ref() {
-                    let _ = admission
-                        .settle_lease(&lease.lease_id, LeaseCompletionOutcome::ClientFailed, None)
-                        .await;
-                }
-                if let Some(operation_id) = operation.operation_id.as_ref()
-                    && admission
-                        .usage_outbox
-                        .finish(operation_id, UsageSettlementOutcome::ClientFailed, 0)
-                        .is_err()
+                if admission
+                    .usage_outbox
+                    .finish(
+                        &operation.operation_id,
+                        UsageSettlementOutcome::ClientFailed,
+                        0,
+                    )
+                    .is_err()
                 {
                     tracing::error!("queuing disconnected admission settlement failed");
                 }
@@ -1822,32 +1390,10 @@ pub async fn run() -> Result<()> {
             );
             let profile = profile_sessions.then(|| SessionProfile::start(mode));
             let usage_operation_id = operation.operation_id.clone();
-            let legacy_capture_lease_id = match (mode, legacy_lease.as_ref()) {
-                (NotarySessionMode::Capture, Some(lease)) => Some(lease.lease_id.clone()),
-                _ => None,
-            };
-            let usage_recorder: Option<HostedUsageRecorder> =
-                if usage_operation_id.is_some() || legacy_capture_lease_id.is_some() {
-                    let usage_outbox = admission.usage_outbox.clone();
-                    let recorder_admission = admission.clone();
-                    Some(Box::new(move |bytes| {
-                        if let Some(operation_id) = usage_operation_id.as_deref() {
-                            usage_outbox.record_authenticated_bytes(operation_id, bytes)?;
-                        }
-                        if let Some(lease_id) = legacy_capture_lease_id.as_deref() {
-                            let used_allowance_bytes = i64::try_from(bytes)
-                                .context("hosted transcript byte count exceeds i64")?;
-                            recorder_admission.persist_release(
-                                lease_id,
-                                LeaseCompletionOutcome::Completed,
-                                Some(used_allowance_bytes),
-                            )?;
-                        }
-                        Ok(())
-                    }))
-                } else {
-                    None
-                };
+            let usage_outbox = admission.usage_outbox.clone();
+            let usage_recorder: Option<HostedUsageRecorder> = Some(Box::new(move |bytes| {
+                usage_outbox.record_authenticated_bytes(&usage_operation_id, bytes)
+            }));
             let session = run_hosted_notary_session_after_prelude(
                 stream,
                 mode,
@@ -1856,50 +1402,20 @@ pub async fn run() -> Result<()> {
                 limits,
                 usage_recorder,
             );
-            let session_and_lease = async {
-                tokio::pin!(session);
-                if let (Some(lease), Some(deadline)) =
-                    (legacy_lease.as_ref(), legacy_lease_deadline)
-                {
-                    let lease_guard = maintain_lease(admission.clone(), &lease.lease_id, deadline);
-                    tokio::pin!(lease_guard);
-                    tokio::select! {
-                        result = &mut session => result.map_err(|error| {
-                            let outcome = match error.kind() {
-                                HostedNotarySessionFailureKind::Client => {
-                                    UsageSettlementOutcome::ClientFailed
-                                }
-                                HostedNotarySessionFailureKind::Service => {
-                                    UsageSettlementOutcome::ServiceFailed
-                                }
-                            };
-                            (outcome, anyhow::Error::new(error))
-                        }),
-                        result = &mut lease_guard => {
-                            let error = match result {
-                                Ok(()) => anyhow::anyhow!(
-                                    "admission lease guard stopped unexpectedly"
-                                ),
-                                Err(error) => error,
-                            };
-                            Err((UsageSettlementOutcome::ServiceFailed, error))
+            let session = async {
+                session.await.map_err(|error| {
+                    let outcome = match error.kind() {
+                        HostedNotarySessionFailureKind::Client => {
+                            UsageSettlementOutcome::ClientFailed
                         }
-                    }
-                } else {
-                    session.await.map_err(|error| {
-                        let outcome = match error.kind() {
-                            HostedNotarySessionFailureKind::Client => {
-                                UsageSettlementOutcome::ClientFailed
-                            }
-                            HostedNotarySessionFailureKind::Service => {
-                                UsageSettlementOutcome::ServiceFailed
-                            }
-                        };
-                        (outcome, anyhow::Error::new(error))
-                    })
-                }
+                        HostedNotarySessionFailureKind::Service => {
+                            UsageSettlementOutcome::ServiceFailed
+                        }
+                    };
+                    (outcome, anyhow::Error::new(error))
+                })
             };
-            let result = timeout(effective_session_timeout, session_and_lease)
+            let result = timeout(effective_session_timeout, session)
                 .instrument(session_span)
                 .await;
             let (outcome, settlement_outcome, authenticated_bytes) = match result {
@@ -1917,39 +1433,19 @@ pub async fn run() -> Result<()> {
                     ("timed_out", UsageSettlementOutcome::ClientFailed, 0)
                 }
             };
-            if let Some(operation_id) = operation.operation_id.as_ref()
-                && admission
-                    .usage_outbox
-                    .finish(operation_id, settlement_outcome, authenticated_bytes)
-                    .is_err()
+            if admission
+                .usage_outbox
+                .finish(
+                    &operation.operation_id,
+                    settlement_outcome,
+                    authenticated_bytes,
+                )
+                .is_err()
             {
                 tracing::error!("queuing terminal usage settlement failed");
             }
             if let Some(profile) = profile {
                 profile.finish(outcome).await;
-            }
-            let lease_outcome = match settlement_outcome {
-                UsageSettlementOutcome::Completed => LeaseCompletionOutcome::Completed,
-                UsageSettlementOutcome::ClientFailed => LeaseCompletionOutcome::ClientFailed,
-                UsageSettlementOutcome::ServiceFailed => LeaseCompletionOutcome::ServiceFailed,
-            };
-            let used_allowance_bytes = if settlement_outcome == UsageSettlementOutcome::Completed
-                && mode == NotarySessionMode::Capture
-            {
-                Some(
-                    i64::try_from(authenticated_bytes)
-                        .expect("hosted transcript limit fits in i64"),
-                )
-            } else {
-                None
-            };
-            if let Some(lease) = legacy_lease.as_ref()
-                && let Err(error) = admission
-                    .settle_lease(&lease.lease_id, lease_outcome, used_allowance_bytes)
-                    .await
-            {
-                counter!("llm_notary_notary_lease_release_failures_total", "mode" => session_mode_label(mode)).increment(1);
-                tracing::warn!(%error, "admission lease release queued for durable retry");
             }
             counter!("llm_notary_notary_sessions_total", "mode" => session_mode_label(mode), "outcome" => outcome).increment(1);
             histogram!("llm_notary_notary_session_duration_seconds", "mode" => session_mode_label(mode), "outcome" => outcome).record(started.elapsed().as_secs_f64());
@@ -2000,16 +1496,7 @@ fn effective_hosted_limits(
             operation.record_digest.as_deref(),
             operation.authenticated_allowance_bytes,
         ) {
-            // A legacy API includes its balance-bounded lease allowance here. The
-            // bridge honors it only while that API is active; one-operation capture
-            // responses carry no authenticated byte grant.
-            (NotarySessionMode::Capture, None, legacy_allowance) => (
-                None,
-                legacy_allowance
-                    .map(|allowance| positive("authorized_allowance_bytes", allowance))
-                    .transpose()?
-                    .unwrap_or(policy_attestable),
-            ),
+            (NotarySessionMode::Capture, None, None) => (None, policy_attestable),
             (NotarySessionMode::Finalize, Some(digest), Some(allowance)) => {
                 let bytes = hex::decode(digest).context("coordinator record digest is not hex")?;
                 let allowance = positive("authenticated_allowance_bytes", allowance)?;
@@ -2044,69 +1531,6 @@ fn effective_hosted_limits(
     })
 }
 
-async fn maintain_lease(
-    coordinator: AdmissionCoordinator,
-    lease_id: &str,
-    deadline: tokio::time::Instant,
-) -> Result<()> {
-    let lease_id = lease_id.to_owned();
-    let renew_interval = coordinator.renew_interval;
-    maintain_lease_until(renew_interval, deadline, move || {
-        let coordinator = coordinator.clone();
-        let lease_id = lease_id.clone();
-        async move {
-            let expires_at = coordinator.renew(&lease_id).await?;
-            lease_deadline(expires_at)
-        }
-    })
-    .await
-}
-
-fn lease_deadline(expires_at: i64) -> Result<tokio::time::Instant> {
-    let expires_at = u64::try_from(expires_at).context("admission lease deadline is negative")?;
-    let wall_deadline = std::time::UNIX_EPOCH
-        .checked_add(Duration::from_secs(expires_at))
-        .context("admission lease deadline is too large")?;
-    let remaining = wall_deadline
-        .duration_since(std::time::SystemTime::now())
-        .context("admission lease has already expired")?;
-    Ok(tokio::time::Instant::now() + remaining)
-}
-
-async fn maintain_lease_until<F, Fut>(
-    renew_interval: Duration,
-    mut deadline: tokio::time::Instant,
-    mut renew: F,
-) -> Result<()>
-where
-    F: FnMut() -> Fut,
-    Fut: Future<Output = Result<tokio::time::Instant>>,
-{
-    loop {
-        let now = tokio::time::Instant::now();
-        let remaining = deadline
-            .checked_duration_since(now)
-            .context("admission lease renewal deadline passed")?;
-        let renew_after = renew_interval.min(remaining);
-        tokio::time::sleep_until(now + renew_after).await;
-        if tokio::time::Instant::now() >= deadline {
-            bail!("admission lease renewal deadline passed");
-        }
-        match tokio::time::timeout_at(deadline, renew()).await {
-            Ok(Ok(renewed_deadline)) => {
-                if renewed_deadline <= tokio::time::Instant::now() {
-                    bail!("admission coordinator returned an expired lease");
-                }
-                deadline = renewed_deadline;
-            }
-            Err(_) => bail!("admission lease renewal deadline passed"),
-            Ok(Err(_error)) => {
-                tracing::warn!("admission lease renewal failed; retrying before its deadline");
-            }
-        }
-    }
-}
-
 fn session_mode_label(mode: NotarySessionMode) -> &'static str {
     match mode {
         NotarySessionMode::Capture => "capture",
@@ -2121,18 +1545,6 @@ fn session_mode_allowed(finalize_only: bool, mode: NotarySessionMode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    static TEST_OUTBOX_ID: AtomicU64 = AtomicU64::new(0);
-
-    fn test_outbox() -> (ReleaseOutbox, PathBuf) {
-        let id = TEST_OUTBOX_ID.fetch_add(1, Ordering::Relaxed);
-        let directory = std::env::temp_dir().join(format!(
-            "llm-notary-release-outbox-test-{}-{id}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&directory);
-        (ReleaseOutbox::open(directory.clone()).unwrap(), directory)
-    }
 
     #[test]
     fn finalize_only_rejects_capture_before_protocol_admission() {
@@ -2157,7 +1569,7 @@ mod tests {
     }
 
     #[test]
-    fn redemption_bridge_requests_one_operation_and_accepts_both_contracts() {
+    fn redemption_requires_one_operation_with_durable_settlement() {
         let request = serde_json::to_value(RedeemRequest {
             ticket: "opaque-ticket",
             notary_instance_id: "notary-test",
@@ -2170,7 +1582,8 @@ mod tests {
         assert_eq!(request["contract"], "one_operation_v1");
         assert_eq!(request["usage_settlement"], true);
 
-        let operation: RedeemedAdmission = serde_json::from_value(serde_json::json!({
+        let operation: RedeemedOperation = serde_json::from_value(serde_json::json!({
+            "operation_id": "operation-test",
             "max_attestable_http_bytes": 1024,
             "max_frame_bytes": 2048,
             "max_private_chunk_bytes": 512,
@@ -2179,9 +1592,9 @@ mod tests {
             "authenticated_allowance_bytes": null
         }))
         .unwrap();
-        assert!(matches!(operation, RedeemedAdmission::Operation(_)));
+        assert_eq!(operation.operation_id, "operation-test");
 
-        let lease: RedeemedAdmission = serde_json::from_value(serde_json::json!({
+        let lease = serde_json::from_value::<RedeemedOperation>(serde_json::json!({
             "lease_id": "legacy-lease",
             "lease_expires_at": 1,
             "access_pool": "free",
@@ -2191,15 +1604,14 @@ mod tests {
             "max_private_chunk_commitments": 4,
             "record_digest": null,
             "authorized_allowance_bytes": 512
-        }))
-        .unwrap();
-        assert!(matches!(lease, RedeemedAdmission::Lease(_)));
+        }));
+        assert!(lease.is_err());
     }
 
     #[test]
     fn coordinator_policy_can_only_reduce_local_size_limits() {
         let operation = RedeemedOperation {
-            operation_id: Some("operation-finalize".to_owned()),
+            operation_id: "operation-finalize".to_owned(),
             max_attestable_http_bytes: 8 << 20,
             max_frame_bytes: 64 << 20,
             max_private_chunk_bytes: 256 << 10,
@@ -2229,7 +1641,7 @@ mod tests {
     #[test]
     fn capture_policy_rejects_a_finalization_digest() {
         let operation = RedeemedOperation {
-            operation_id: Some("operation-capture".to_owned()),
+            operation_id: "operation-capture".to_owned(),
             max_attestable_http_bytes: 1024,
             max_frame_bytes: 1024,
             max_private_chunk_bytes: 1024,
@@ -2257,7 +1669,6 @@ mod tests {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
-        let (release_outbox, release_outbox_directory) = test_outbox();
         let coordinator = AdmissionCoordinator {
             http: reqwest::Client::builder()
                 .timeout(Duration::from_millis(250))
@@ -2267,8 +1678,6 @@ mod tests {
             service_token: Arc::from("x".repeat(32)),
             instance_id: Arc::from("notary-test"),
             directory_generation: 1,
-            renew_interval: Duration::from_secs(1),
-            release_outbox,
             usage_outbox: UsageOutbox::open(outbox_directory.path()).unwrap(),
         };
 
@@ -2278,13 +1687,11 @@ mod tests {
                 .await,
             Err(CoordinatorRejection::Unavailable(_))
         ));
-        fs::remove_dir_all(release_outbox_directory).unwrap();
     }
 
     #[tokio::test]
     async fn admitted_operation_needs_no_coordinator_liveness() {
         let outbox_directory = tempfile::tempdir().unwrap();
-        let (release_outbox, release_outbox_directory) = test_outbox();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let app = Router::new().route(
@@ -2308,8 +1715,6 @@ mod tests {
             service_token: Arc::from("x".repeat(32)),
             instance_id: Arc::from("notary-test"),
             directory_generation: 1,
-            renew_interval: Duration::from_secs(1),
-            release_outbox,
             usage_outbox: UsageOutbox::open(outbox_directory.path()).unwrap(),
         };
         let redeemed = match coordinator
@@ -2319,9 +1724,7 @@ mod tests {
             Ok(redeemed) => redeemed,
             Err(_) => panic!("one-operation admission should be accepted"),
         };
-        let RedeemedAdmission::Operation(operation) = redeemed else {
-            panic!("expected one-operation admission response");
-        };
+        let operation = redeemed;
         server.abort();
 
         let limits = effective_hosted_limits(
@@ -2336,7 +1739,6 @@ mod tests {
         .unwrap();
         assert_eq!(limits.max_total_private_chunk_bytes, 1024);
         assert_eq!(limits.session_timeout, Duration::from_secs(30));
-        fs::remove_dir_all(release_outbox_directory).unwrap();
     }
 
     #[test]
@@ -2434,15 +1836,12 @@ mod tests {
             axum::routing::post(|| async { reqwest::StatusCode::NO_CONTENT }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let release_directory = tempfile::tempdir().unwrap();
         let coordinator = AdmissionCoordinator {
             http: reqwest::Client::new(),
             origin: Url::parse(&format!("http://{address}/")).unwrap(),
             service_token: Arc::from("x".repeat(32)),
             instance_id: Arc::from("notary-test"),
             directory_generation: 1,
-            renew_interval: Duration::from_secs(1),
-            release_outbox: ReleaseOutbox::open(release_directory.path().to_owned()).unwrap(),
             usage_outbox: outbox,
         };
 
@@ -2495,15 +1894,12 @@ mod tests {
             axum::routing::post(|| async { reqwest::StatusCode::GONE }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let release_directory = tempfile::tempdir().unwrap();
         let coordinator = AdmissionCoordinator {
             http: reqwest::Client::new(),
             origin: Url::parse(&format!("http://{address}/")).unwrap(),
             service_token: Arc::from("x".repeat(32)),
             instance_id: Arc::from("notary-test"),
             directory_generation: 1,
-            renew_interval: Duration::from_secs(1),
-            release_outbox: ReleaseOutbox::open(release_directory.path().to_owned()).unwrap(),
             usage_outbox,
         };
 
@@ -2562,74 +1958,18 @@ mod tests {
         ));
     }
 
-    #[tokio::test]
-    async fn lease_guard_stops_at_deadline_after_failures_and_a_hung_renewal() {
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(80);
-        let attempts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let result = maintain_lease_until(Duration::from_millis(10), deadline, {
-            let attempts = Arc::clone(&attempts);
-            move || {
-                let attempt = attempts.fetch_add(1, Ordering::Relaxed);
-                async move {
-                    if attempt < 2 {
-                        bail!("immediate renewal failure");
-                    }
-                    std::future::pending::<Result<tokio::time::Instant>>().await
-                }
-            }
-        })
-        .await;
-
-        assert!(result.is_err());
-        assert!(attempts.load(Ordering::Relaxed) >= 3);
-        assert!(tokio::time::Instant::now() <= deadline + Duration::from_millis(50));
-    }
-
     #[test]
-    fn release_outbox_survives_reopen_and_removes_completed_entries() {
-        let (outbox, directory) = test_outbox();
-        let release = PendingLeaseRelease {
-            lease_id: "lease-123".to_owned(),
-            notary_instance_id: "notary-test".to_owned(),
-            outcome: LeaseCompletionOutcome::Completed,
-            used_allowance_bytes: Some(42),
-        };
-        outbox.persist_or_existing(release.clone()).unwrap();
-        assert!(outbox.pending().unwrap().is_empty());
-        drop(outbox);
+    fn legacy_release_outbox_must_be_drained_before_startup() {
+        let parent = tempfile::tempdir().unwrap();
+        let missing = parent.path().join("missing");
+        assert!(ensure_legacy_release_outbox_drained(&missing).is_ok());
 
-        let reopened = ReleaseOutbox::open(directory.clone()).unwrap();
-        assert_eq!(reopened.pending().unwrap(), vec![release.clone()]);
-        reopened.complete(&release).unwrap();
-        assert!(reopened.pending().unwrap().is_empty());
-        fs::remove_dir_all(directory).unwrap();
-    }
+        let empty = parent.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        assert!(ensure_legacy_release_outbox_drained(&empty).is_ok());
 
-    #[test]
-    fn exact_capture_settlement_wins_over_later_transport_failure() {
-        let (outbox, directory) = test_outbox();
-        let completed = PendingLeaseRelease {
-            lease_id: "lease-456".to_owned(),
-            notary_instance_id: "notary-test".to_owned(),
-            outcome: LeaseCompletionOutcome::Completed,
-            used_allowance_bytes: Some(512),
-        };
-        outbox.persist_or_existing(completed.clone()).unwrap();
-        assert!(
-            outbox.pending().unwrap().is_empty(),
-            "pre-receipt records must not be replayable while the session is active"
-        );
-        let existing = outbox
-            .prepare_for_release(PendingLeaseRelease {
-                outcome: LeaseCompletionOutcome::ClientFailed,
-                used_allowance_bytes: None,
-                ..completed.clone()
-            })
-            .unwrap();
-
-        assert_eq!(existing, completed);
-        assert_eq!(outbox.pending().unwrap(), vec![completed]);
-        fs::remove_dir_all(directory).unwrap();
+        fs::write(empty.join("pending.json"), b"legacy release").unwrap();
+        assert!(ensure_legacy_release_outbox_drained(&empty).is_err());
     }
 
     #[test]

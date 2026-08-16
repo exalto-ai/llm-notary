@@ -142,13 +142,33 @@ and matching API/notary images as one coordinated maintenance release. Migration
 
 Migration `0026_one_operation_admission.sql` is expand-only: it adds the exact
 finalization allowance binding while retaining the immediately previous ticket
-columns and lease table for rollback. The new API selects the previous lease
-contract when redemption omits a capability and the one-operation contract when
-the bridge notary sends `one_operation_v1`. The bridge notary retains lease
-renewal and its release outbox only when an old API returns a lease. Remove both
-compatibility paths only in the tracked contract migration after old API/notary
-images are outside the rollback window and legacy leases/outboxes are drained;
-the removal checklist is tracked in [#298](https://github.com/exalto-ai/notary/issues/298).
+columns and lease table for rollback. The stop-legacy API now requires both
+`one_operation_v1` and durable usage settlement, so no supported redemption can
+create a lease. The stop-legacy notary accepts only operation responses and no
+longer writes the release outbox, and the legacy renew/release routes are not
+registered. While the legacy outbox path remains configured for the rollout
+window, notary startup fails unless it is empty; API startup then fails while
+an active legacy lease remains in PostgreSQL. The next release cannot be
+code-only: `authenticated_allowance_bytes` is generated from the legacy
+requested-allowance column. It must use an expand-compatible database bridge
+that remains writable by this rollback image, then remove all runtime legacy
+references while retaining the physical fields and deployment configuration.
+Only the following release may apply the physical contract migration tracked by
+[#298](https://github.com/exalto-ai/notary/issues/298).
+
+The production drain is complete only when every notary starts with an empty
+configured release outbox and this database query returns zero:
+
+```sql
+SELECT COUNT(*) AS active_legacy_leases
+FROM notary_admission_leases
+WHERE released_at IS NULL
+  AND expires_at > EXTRACT(EPOCH FROM NOW())::BIGINT;
+```
+
+Operation usage must also be acknowledged in PostgreSQL or remain durably
+queued under `/data/usage-outbox`; never print raw admission tickets while
+performing the audit.
 
 Migration `0027_operation_usage_settlement.sql` adds durable admitted-operation
 and settlement state and links each new debit to its operation ID while
@@ -163,10 +183,10 @@ obtained from the public API. The notary redeems it through the private
 `llm-notary-prod-api.flycast` origin with the `one_operation_v1` contract before
 protocol work. New sessions fail closed if that control plane is unavailable,
 while an admitted one-operation session continues using only local notary
-limits and timeouts. During the rollback window only, an old API may return a
-lease instead; the bridge notary renews and releases that legacy admission from
-its durable release outbox. Public and signed-in Free sessions share this path;
-their credit subjects determine which grants fund capture and notarization.
+limits and timeouts. The API rejects a redeem request that omits the
+one-operation contract or durable-settlement capability. Public and signed-in
+Free sessions share this path; their credit subjects determine which grants
+fund capture and notarization.
 At the end of the operation, the notary reports the redeemed operation ID,
 mode, terminal outcome, instance, and authoritative authenticated bytes through
 the same service-authenticated private API. The redeem request advertises this
@@ -201,10 +221,11 @@ gives each image a tag unique to the commit and CI run. The rollout then uses
 that tag to resolve an immutable `sha256` digest and deploys only the digest.
 It therefore neither rebuilds nor promotes a different image:
 
-1. Deploy the dual-contract API, run its expand-only migrations, and check it
-   through the still-old web gateway. The previous notary receives leases.
-2. Deploy the bridge notary and check the v3 one-time-ticket admission prelude.
-   It requests one-operation admission but can honor a lease after API rollback.
+1. Deploy the operation-only notary. The current bridge API already accepts its
+   contract, and startup proves the configured legacy release outbox is empty.
+2. Deploy the stop-legacy API and check it through the still-old web gateway.
+   API startup proves the active legacy lease count is zero before removing the
+   old renew/release routes from production.
 3. Deploy the web gateway and check the public readiness route again.
 4. For a client-affecting change, build every CLI platform, upload and verify
    one immutable object set, then move the website's `latest` pointer.
@@ -236,7 +257,8 @@ hide it.
 
 For a break-glass, operator-driven deployment from the repository root, use the
 same build-then-deploy split and retain the previous image references for
-rollback. Deploy the dual-contract API before the bridge notary, as CI does.
+rollback. Deploy the operation-only notary before the stop-legacy API, as CI
+does.
 Normal production changes must go through CI:
 
 ```bash
@@ -251,10 +273,10 @@ api_image="registry.fly.io/llm-notary-prod-api@$(bash deploy/fly/resolve-image-d
 notary_image="registry.fly.io/llm-notary-prod-notary@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-notary:$label")"
 web_image="registry.fly.io/llm-notary-prod-web@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-web:$label")"
 
-fly deploy --image "$api_image" \
-  --ha=true -c deploy/fly/api.fly.toml
 fly deploy --image "$notary_image" \
   --ha=false -c deploy/fly/notary.fly.toml
+fly deploy --image "$api_image" \
+  --ha=true -c deploy/fly/api.fly.toml
 fly deploy js/app --image "$web_image" \
   --ha=false -c "$PWD/deploy/fly/web.fly.toml"
 ```

@@ -294,40 +294,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/internal/notary/leases/release": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Release an active distributed notary lease */
-        post: operations["release_lease"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/internal/notary/leases/renew": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Renew an active distributed notary lease */
-        post: operations["renew_lease"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/internal/notary/operations/settle": {
         parameters: {
             query?: never;
@@ -760,8 +726,6 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
-        /** @enum {string} */
-        AccessPool: "public" | "free" | "one_gb" | "ten_gb";
         AccountBillingResponse: {
             billing_status: components["schemas"]["BillingStatus"];
             entitlements: components["schemas"]["PlanEntitlements"];
@@ -998,19 +962,6 @@ export interface components {
             /** Format: int64 */
             requested_allowance_bytes?: number | null;
         };
-        /** @enum {string} */
-        LeaseCompletionOutcome: "completed" | "client_failed" | "service_failed";
-        LeaseRenewedResponse: {
-            /** Format: int64 */
-            lease_expires_at: number;
-        };
-        LeaseRequest: {
-            lease_id: string;
-            notary_instance_id: string;
-            outcome?: null | components["schemas"]["LeaseCompletionOutcome"];
-            /** Format: int64 */
-            used_allowance_bytes?: number | null;
-        };
         ListedShareSummary: {
             /** Format: int64 */
             authenticated_at_unix_ms?: number | null;
@@ -1214,36 +1165,17 @@ export interface components {
         /** @enum {string} */
         PurchaseState: "creating" | "checkout_open" | "paid" | "failed" | "refunded" | "disputed";
         RedeemAdmissionRequest: {
-            contract?: null | components["schemas"]["AdmissionRedemptionContract"];
+            contract: components["schemas"]["AdmissionRedemptionContract"];
             /** Format: int64 */
             directory_generation: number;
             mode: components["schemas"]["AdmissionMode"];
             notary_instance_id: string;
             ticket: string;
             /**
-             * @description The caller durably settles usage by operation ID. Older bridge
-             *     notaries omit this field, so the API must not create an operation row
-             *     they cannot acknowledge.
+             * @description The caller durably settles usage by operation ID. The stop-legacy
+             *     contract requires this capability for every admitted operation.
              */
-            usage_settlement?: boolean;
-        };
-        RedeemAdmissionResponse: components["schemas"]["RedeemedLeaseResponse"] | components["schemas"]["RedeemedOperationResponse"];
-        RedeemedLeaseResponse: {
-            access_pool: components["schemas"]["AccessPool"];
-            /** Format: int64 */
-            authorized_allowance_bytes: number;
-            /** Format: int64 */
-            lease_expires_at: number;
-            lease_id: string;
-            /** Format: int64 */
-            max_attestable_http_bytes: number;
-            /** Format: int64 */
-            max_frame_bytes: number;
-            /** Format: int64 */
-            max_private_chunk_bytes: number;
-            /** Format: int64 */
-            max_private_chunk_commitments: number;
-            record_digest?: string | null;
+            usage_settlement: boolean;
         };
         RedeemedOperationResponse: {
             /** Format: int64 */
@@ -1256,7 +1188,7 @@ export interface components {
             max_private_chunk_bytes: number;
             /** Format: int64 */
             max_private_chunk_commitments: number;
-            operation_id?: string | null;
+            operation_id: string;
             record_digest?: string | null;
         };
         RefreshRequest: {
@@ -2076,7 +2008,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RedeemAdmissionResponse"];
+                    "application/json": components["schemas"]["RedeemedOperationResponse"];
                 };
             };
             400: {
@@ -2120,107 +2052,6 @@ export interface operations {
                 };
             };
             429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    release_lease: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LeaseRequest"];
-            };
-        };
-        responses: {
-            /** @description Lease released or already terminal */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    renew_lease: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["LeaseRequest"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["LeaseRenewedResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            410: {
                 headers: {
                     [name: string]: unknown;
                 };

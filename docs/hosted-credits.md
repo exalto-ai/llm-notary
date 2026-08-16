@@ -44,15 +44,22 @@ may therefore put an account slightly over its allowance; the exact usage is
 recorded, the balance can become negative, and the API denies the next ticket
 until allowance is available again.
 
-The redeem request explicitly advertises durable settlement support. This
-keeps API-first rolling deploys safe: an older notary can redeem and finish a
-one-operation session without leaving an operation row that it cannot settle,
-while the updated notary receives the operation ID used by its durable outbox.
+The redeem request must explicitly advertise `one_operation_v1` and durable
+settlement support. Requests missing either capability are rejected before the
+ticket is consumed. Every admitted session therefore receives the operation ID
+used by its durable usage outbox.
 
-The expand/contract rollout temporarily retains the previous lease schema and
-bridge-notary fallback for safe rollback. Only a redemption that omits the
-`one_operation_v1` capability uses that legacy path; new operations do not
-create, renew, or release capacity leases.
+The stop-legacy rollout retains the previous lease schema for rollback, but no
+supported redemption can create a lease and the legacy renew/release routes
+are no longer registered. The release-outbox directory remains required for
+one rollout window; the notary refuses startup unless it is empty, and the API
+refuses startup while any active legacy lease remains. A following code-only
+release is not sufficient because the authenticated allowance is generated
+from the legacy requested-allowance column. A following expand-compatible
+detach release must first make both old and new writers safe, then remove all
+runtime legacy references while retaining the bridge schema and configuration
+for rollback. Only a still-later contract migration removes that physical
+compatibility surface.
 
 Trace storage is the total declared size of uploads that are in progress,
 queued for checking, being checked, or admitted to the account. Rejected,
