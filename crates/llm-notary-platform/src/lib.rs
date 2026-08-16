@@ -2493,6 +2493,16 @@ mod tests {
 
              INSERT INTO notary_admission_tickets
                  (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest, requested_allowance_bytes,
+                  max_attestable_http_bytes, max_frame_bytes,
+                  max_private_chunk_bytes, max_private_chunk_commitments,
+                  issued_at, expires_at)
+             VALUES
+                 ('old-capture', NULL, 'public:v1:test', 'public', 'capture',
+                  1, NULL, 99, 1000, 2000, 100, 4, 1, 100);
+
+             INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
                   directory_generation, record_digest, authenticated_allowance_bytes,
                   max_attestable_http_bytes, max_frame_bytes,
                   max_private_chunk_bytes, max_private_chunk_commitments,
@@ -2530,7 +2540,32 @@ mod tests {
                 ("before-bridge".to_owned(), Some(41), Some(41)),
                 ("new-capture".to_owned(), None, None),
                 ("new-writer".to_owned(), Some(43), Some(43)),
+                ("old-capture".to_owned(), Some(99), None),
                 ("old-writer".to_owned(), Some(42), Some(42)),
+            ]
+        );
+
+        let rollback_projection: Vec<(String, String, Option<String>, Option<i64>)> =
+            sqlx::query_as(
+                "SELECT token_hash, mode, record_digest,
+                        authenticated_allowance_bytes
+                 FROM notary_admission_tickets
+                 WHERE token_hash IN ('new-capture', 'new-writer')
+                 ORDER BY token_hash",
+            )
+            .fetch_all(&database.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            rollback_projection,
+            vec![
+                ("new-capture".to_owned(), "capture".to_owned(), None, None,),
+                (
+                    "new-writer".to_owned(),
+                    "finalize".to_owned(),
+                    Some("c".repeat(64)),
+                    Some(43),
+                ),
             ]
         );
 

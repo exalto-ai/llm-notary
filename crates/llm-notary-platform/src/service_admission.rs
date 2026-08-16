@@ -754,16 +754,14 @@ async fn issue_admission(
     } else {
         requested_allowance
     };
-    {
-        preflight_credits(
-            &mut transaction,
-            &credit_subject,
-            CreditKind::for_mode(request.mode),
-            allowance,
-            now,
-        )
-        .await?;
-    }
+    preflight_credits(
+        &mut transaction,
+        &credit_subject,
+        CreditKind::for_mode(request.mode),
+        allowance,
+        now,
+    )
+    .await?;
     let authenticated_allowance = (request.mode == AdmissionMode::Finalize).then_some(allowance);
     let expires_at = now + state.admission.ticket_ttl_secs;
     sqlx::query(
