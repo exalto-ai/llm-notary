@@ -138,8 +138,8 @@ Building the current source instead requires:
 - Node.js 24 and npm only when building or testing the web applications.
 
 ```bash
-git clone https://github.com/exalto-ai/llm-notary.git
-cd llm-notary
+git clone https://github.com/exalto-ai/notary.git
+cd notary
 cargo install --locked --path crates/llm-notary-client
 ```
 
