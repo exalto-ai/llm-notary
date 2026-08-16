@@ -2636,6 +2636,197 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn admission_contract_migration_removes_only_legacy_surface() {
+        let database = super::test_database::database_through(28).await;
+        sqlx::raw_sql(
+            "INSERT INTO notary_admission_operations
+                 (id, ticket_token_hash, notary_instance_id, subject_id,
+                  credit_subject, access_pool, mode, record_digest,
+                  authenticated_allowance_bytes, max_attestable_http_bytes,
+                  admitted_at)
+             VALUES
+                 ('contract-operation', repeat('a', 64), 'notary-contract', NULL,
+                  'public:v1:test', 'public', 'finalize', repeat('b', 64),
+                  42, 1000, 1);
+
+             INSERT INTO notary_credit_debits
+                 (id, credit_subject, account_id, credit_kind, record_digest,
+                  allowance_bytes, created_at, operation_id)
+             VALUES
+                 ('contract-debit', 'public:v1:test', NULL, 'notarization',
+                  repeat('c', 64), 42, 1, 'contract-operation');
+
+             INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest, requested_allowance_bytes,
+                  authenticated_allowance_bytes, max_attestable_http_bytes,
+                  max_frame_bytes, max_private_chunk_bytes,
+                  max_private_chunk_commitments, issued_at, expires_at,
+                  consumed_at, consumed_by_instance, lease_id,
+                  settled_allowance_bytes, credit_debit_id,
+                  credit_debit_refundable)
+             VALUES
+                 ('contract-ticket', NULL, 'public:v1:test', 'public', 'finalize',
+                  1, repeat('b', 64), 42, 42, 1000, 2000, 100, 4, 1, 100,
+                  2, 'notary-contract', 'contract-lease', 42,
+                  'contract-debit', TRUE);
+
+             INSERT INTO notary_admission_leases
+                 (id, notary_instance_id, subject_id, access_pool, mode,
+                  acquired_at, expires_at, released_at, terminal_state,
+                  credit_subject)
+             VALUES
+                 ('contract-lease', 'notary-contract', NULL, 'public', 'finalize',
+                  1, 100, 2, 'released', 'public:v1:test')",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0029_contract_legacy_admission.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+        let ticket: (String, String, Option<String>, Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT token_hash, mode, record_digest,
+                        authenticated_allowance_bytes, consumed_at
+                 FROM notary_admission_tickets
+                 WHERE token_hash = 'contract-ticket'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            ticket,
+            (
+                "contract-ticket".to_owned(),
+                "finalize".to_owned(),
+                Some("b".repeat(64)),
+                Some(42),
+                Some(2),
+            )
+        );
+
+        let settled: (String, String, Option<String>, i64) = sqlx::query_as(
+            "SELECT operations.id, debits.id, debits.operation_id,
+                    debits.allowance_bytes
+             FROM notary_admission_operations AS operations
+             JOIN notary_credit_debits AS debits
+               ON debits.operation_id = operations.id
+             WHERE operations.id = 'contract-operation'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            settled,
+            (
+                "contract-operation".to_owned(),
+                "contract-debit".to_owned(),
+                Some("contract-operation".to_owned()),
+                42,
+            )
+        );
+
+        let legacy_columns: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*)::BIGINT
+             FROM information_schema.columns
+             WHERE table_schema = 'public'
+               AND (
+                   (table_name = 'notary_admission_tickets' AND column_name IN (
+                       'requested_allowance_bytes', 'settled_allowance_bytes',
+                       'consumed_by_instance', 'lease_id', 'credit_debit_id',
+                       'credit_debit_refundable'
+                   ))
+                   OR (table_name = 'notary_credit_debits' AND column_name IN (
+                       'record_digest', 'retry_of_debit_id'
+                   ))
+               )",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(legacy_columns, 0);
+
+        let legacy_objects: i64 = sqlx::query_scalar(
+            "SELECT
+                 (SELECT COUNT(*) FROM information_schema.tables
+                  WHERE table_schema = 'public'
+                    AND table_name = 'notary_admission_leases')
+               + (SELECT COUNT(*) FROM pg_trigger
+                  WHERE tgname = 'notary_admission_tickets_allowance_bridge')
+               + (SELECT COUNT(*) FROM pg_proc
+                  WHERE proname = 'notary_admission_ticket_allowance_bridge')
+               + (SELECT COUNT(*) FROM pg_constraint
+                  WHERE conname = 'notary_credit_debits_subject_kind_digest_key')",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(legacy_objects, 0);
+
+        sqlx::raw_sql(
+            "INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest,
+                  authenticated_allowance_bytes, max_attestable_http_bytes,
+                  max_frame_bytes, max_private_chunk_bytes,
+                  max_private_chunk_commitments, issued_at, expires_at)
+             VALUES
+                 ('current-capture', NULL, 'public:v1:test', 'public', 'capture',
+                  1, NULL, NULL, 1000, 2000, 100, 4, 1, 100);
+
+             UPDATE notary_admission_tickets
+             SET consumed_at = 3
+             WHERE token_hash = 'current-capture';
+
+             INSERT INTO notary_admission_operations
+                 (id, ticket_token_hash, notary_instance_id, subject_id,
+                  credit_subject, access_pool, mode, record_digest,
+                  authenticated_allowance_bytes, max_attestable_http_bytes,
+                  admitted_at)
+             VALUES
+                 ('current-operation', repeat('d', 64), 'notary-current', NULL,
+                  'public:v1:test', 'public', 'capture', NULL, NULL, 1000, 3);
+
+             INSERT INTO notary_credit_debits
+                 (id, credit_subject, account_id, credit_kind, allowance_bytes,
+                  created_at, operation_id)
+             VALUES
+                 ('current-debit', 'public:v1:test', NULL, 'capture', 1, 3,
+                  'current-operation')",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let current_consumed: Option<i64> = sqlx::query_scalar(
+            "SELECT consumed_at FROM notary_admission_tickets
+             WHERE token_hash = 'current-capture'",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(current_consumed, Some(3));
+
+        let duplicate = sqlx::query(
+            "INSERT INTO notary_credit_debits
+                 (id, credit_subject, account_id, credit_kind, allowance_bytes,
+                  created_at, operation_id)
+             VALUES
+                 ('duplicate-operation-debit', 'public:v1:test', NULL, 'capture',
+                  1, 3, 'current-operation')",
+        )
+        .execute(&database.pool)
+        .await
+        .expect_err("operation settlement identity must remain unique");
+        assert!(duplicate.to_string().contains("operation_id"));
+    }
+
+    #[tokio::test]
     async fn account_notary_stats_count_only_completed_account_operations() {
         let database = fresh_database().await;
         insert_test_github_user(&database, "user-1", 1, "User One").await;
