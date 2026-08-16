@@ -48,7 +48,6 @@ use crate::{
         trace_package_created_at_unix_ms_bytes, trace_package_notary_key_bytes,
         verify_trace_package_bytes,
     },
-    cli::{DEFAULT_PUBLIC_ORIGIN, auth, notary, proxy, publish},
     cluster_runtime::{ClusterRuntime, Lifecycle},
     config::AgentConfig,
     metadata::TerminalOperationResult,
@@ -59,6 +58,7 @@ use crate::{
     metadata_store::{FinalizationClaim, MetadataStore, MetadataStoreError},
     notary_directory::{NotaryDirectoryRecord, NotaryKeyStatus, key_id},
     persistence::Persistence,
+    service::{DEFAULT_PUBLIC_ORIGIN, auth, notary, proxy, publish},
     vault::Vault,
 };
 
@@ -91,7 +91,7 @@ pub(crate) struct AdminState {
     cluster_runtime: Option<Arc<ClusterRuntime>>,
     cluster_vault_identity: Option<String>,
     dependency_probe: Arc<Mutex<DependencyProbeCache>>,
-    capture_mode: Arc<crate::cli::proxy::CaptureMode>,
+    capture_mode: Arc<crate::service::proxy::CaptureMode>,
 }
 
 impl AdminState {
@@ -100,7 +100,7 @@ impl AdminState {
         config: Arc<AgentConfig>,
         cluster_runtime: Option<Arc<ClusterRuntime>>,
         cluster_vault_identity: Option<String>,
-        capture_mode: Option<Arc<crate::cli::proxy::CaptureMode>>,
+        capture_mode: Option<Arc<crate::service::proxy::CaptureMode>>,
     ) -> Result<Self> {
         if cluster_runtime.is_none() {
             let interrupted = persistence
@@ -113,7 +113,7 @@ impl AdminState {
         }
         let capture_mode = match capture_mode {
             Some(capture_mode) => capture_mode,
-            None => Arc::new(crate::cli::proxy::CaptureMode::new(
+            None => Arc::new(crate::service::proxy::CaptureMode::new(
                 persistence.metadata.capture_enabled().await?,
                 config.notary_endpoint()?,
                 config.clone(),
@@ -370,7 +370,7 @@ async fn health() -> Json<HealthResponse> {
         service: "llm-notaryd".into(),
         status: "ok".into(),
         api_version: API_VERSION.into(),
-        build_id: crate::cli::BUILD_ID.into(),
+        build_id: crate::service::BUILD_ID.into(),
     })
 }
 
@@ -559,7 +559,7 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
     let update = state.update_status.read().await;
     Ok(Json(StatusResponse {
         version: env!("CARGO_PKG_VERSION").into(),
-        build_id: crate::cli::BUILD_ID.into(),
+        build_id: crate::service::BUILD_ID.into(),
         runtime_profile: if state.cluster_runtime.is_some() {
             "cluster"
         } else {
@@ -1323,7 +1323,7 @@ async fn load_account_status() -> Result<Json<AccountConnectionResponse>, ApiErr
     Ok(Json(AccountConnectionResponse {
         signed_in: status.signed_in,
         connection_state: Some(status.connection_state),
-        github_login: status.github_login,
+        provider_display_name: status.provider_display_name,
         display_name: status.display_name,
         auth_provider: status.auth_provider,
         device_name: status.device_name,
@@ -1411,7 +1411,7 @@ async fn poll_account_connection(
         auth::AuthorizationPoll::Pending => Ok(Json(AccountConnectionResponse {
             signed_in: false,
             connection_state: Some(auth::AccountConnectionState::Disconnected),
-            github_login: None,
+            provider_display_name: None,
             display_name: None,
             auth_provider: None,
             device_name: None,
@@ -2573,7 +2573,7 @@ struct AccountConnectionResponse {
     signed_in: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     connection_state: Option<auth::AccountConnectionState>,
-    github_login: Option<String>,
+    provider_display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

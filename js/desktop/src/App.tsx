@@ -171,7 +171,7 @@ function formatAccountDate(seconds?: number | null) {
 }
 
 function accountName(account: AccountConnection) {
-  return account.display_name || account.github_login || 'LLM Notary account';
+  return account.display_name || account.provider_display_name || 'LLM Notary account';
 }
 
 function accountProvider(account: AccountConnection) {

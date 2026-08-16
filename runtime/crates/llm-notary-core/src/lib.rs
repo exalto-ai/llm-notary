@@ -1323,28 +1323,6 @@ pub async fn finalize_deferred_bundle_to_with_progress(
     .await
 }
 
-/// Finalizes an admitted bundle using an opaque value whose policy may bind it
-/// to the bundle's immutable record digest and requested allowance.
-pub async fn finalize_deferred_bundle_to_admitted(
-    notary: &NotaryEndpoint,
-    bundle: &DeferredBundle,
-    trusted_notary_key: &[u8],
-    max_attestable_http_bytes: usize,
-    max_frame_bytes: usize,
-    admission_value: &str,
-) -> Result<LocalProof> {
-    finalize_deferred_bundle_to_admitted_with_progress(
-        notary,
-        bundle,
-        trusted_notary_key,
-        max_attestable_http_bytes,
-        max_frame_bytes,
-        admission_value,
-        &|_| {},
-    )
-    .await
-}
-
 /// Completes an admitted deferred proof and reports stable milestones.
 pub async fn finalize_deferred_bundle_to_admitted_with_progress(
     notary: &NotaryEndpoint,
@@ -1476,12 +1454,6 @@ pub async fn run_notary_session(
         max_frame_bytes,
     )
     .await
-}
-
-/// Reads and validates the short versioned prelude before expensive protocol
-/// admission. Public servers should apply a short timeout around this call.
-pub async fn read_notary_session_mode(socket: &mut TcpStream) -> Result<NotarySessionMode> {
-    Ok(read_notary_session_prelude(socket).await?.mode())
 }
 
 /// Reads and validates a versioned session prelude. The generic helper accepts

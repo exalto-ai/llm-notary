@@ -1159,8 +1159,8 @@ export interface components {
             auth_provider: components["schemas"]["BrowserAuthProvider"];
             avatar_url?: string | null;
             display_name: string;
-            github_login: string;
             id: string;
+            provider_display_name: string;
         };
         /** @enum {string} */
         PurchaseState: "creating" | "checkout_open" | "paid" | "failed" | "refunded" | "disputed";

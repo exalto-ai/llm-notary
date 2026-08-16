@@ -3078,8 +3078,9 @@ impl ServerMetadataStore for PostgresMetadataStore {
                 .map_err(db)
         })
         .transpose()?;
-        let trust = crate::cli::notary::merge_shared_trust(current, directory, directory_source)
-            .map_err(|error| db(error.context("merging shared notary trust")))?;
+        let trust =
+            crate::service::notary::merge_shared_trust(current, directory, directory_source)
+                .map_err(|error| db(error.context("merging shared notary trust")))?;
         let generation = i64::try_from(trust.generation)
             .map_err(|_| MetadataStoreError::InvalidInput("notary_generation_out_of_range"))?;
         let state_json = serde_json::to_vec(&trust)
@@ -3125,7 +3126,7 @@ impl ServerMetadataStore for PostgresMetadataStore {
             serde_json::from_slice::<SharedNotaryTrust>(&bytes)
                 .context("parsing shared notary trust")
                 .and_then(|trust| {
-                    crate::cli::notary::validate_shared_trust(&trust)?;
+                    crate::service::notary::validate_shared_trust(&trust)?;
                     Ok(trust)
                 })
                 .map_err(db)

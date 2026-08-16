@@ -6,13 +6,13 @@ use crate::{
         trace_package_created_at_unix_ms_bytes, trace_package_notary_key_bytes,
         verify_trace_package_bytes,
     },
-    cli::{
-        api_origin::ApiOrigin, auth, http_client_builder, notary,
-        proxy::refresh_notary_directory_from,
-    },
     metadata::SharedNotaryTrust,
     public_safety::{
         PublicPackageSafetyContext, validate_public_trace_package_with_context_and_force,
+    },
+    service::{
+        api_origin::ApiOrigin, auth, http_client_builder, notary,
+        proxy::refresh_notary_directory_from,
     },
     sha256_hex,
 };

@@ -88,7 +88,7 @@ function errorMessage(reason: unknown, fallback = 'Something went wrong.'): stri
 }
 
 function accountIdentifier(user: CurrentUser): string {
-  return user.github_login;
+  return user.provider_display_name;
 }
 
 function authProviderName(user: CurrentUser): string {

@@ -4740,7 +4740,7 @@
         "type": "object",
         "required": [
           "id",
-          "github_login",
+          "provider_display_name",
           "auth_provider",
           "display_name"
         ],
@@ -4757,10 +4757,10 @@
           "display_name": {
             "type": "string"
           },
-          "github_login": {
+          "id": {
             "type": "string"
           },
-          "id": {
+          "provider_display_name": {
             "type": "string"
           }
         }

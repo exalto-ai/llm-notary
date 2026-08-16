@@ -46,7 +46,7 @@ const installCommand = 'curl -fsSL https://notary.exalto.ai/install.sh | sh';
 type CurrentUser = NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>;
 type AccountIdentity = Pick<
   CurrentUser,
-  'auth_provider' | 'avatar_url' | 'display_name' | 'github_login'
+  'auth_provider' | 'avatar_url' | 'display_name' | 'provider_display_name'
 >;
 type AuthProviders = Awaited<ReturnType<typeof getAuthProviders>>;
 type AuthProvider = 'github' | 'google';
@@ -96,11 +96,11 @@ function PenMark() {
 }
 
 function accountName(user: AccountIdentity) {
-  return user.display_name || user.github_login;
+  return user.display_name || user.provider_display_name;
 }
 
 function accountIdentifier(user: AccountIdentity) {
-  return user.github_login;
+  return user.provider_display_name;
 }
 
 function authProviderName(user: AccountIdentity) {

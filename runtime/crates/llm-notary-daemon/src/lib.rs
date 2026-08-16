@@ -15,7 +15,6 @@ pub mod admin;
 mod artifact_reconciliation;
 pub mod artifact_router;
 pub mod artifact_store;
-pub mod cli;
 mod cluster_runtime;
 pub mod config;
 pub mod metadata;
@@ -23,6 +22,7 @@ pub mod metadata_store;
 pub mod persistence;
 mod postgres_metadata_store;
 mod s3_artifact_store;
+mod service;
 mod sqlite_catalog;
 pub mod sqlite_metadata_store;
 pub use llm_notary_updater as update;
@@ -88,7 +88,7 @@ pub async fn run_daemon() -> Result<()> {
         None => {}
     }
     let _telemetry = telemetry::init("llm-notaryd")?;
-    cli::proxy::run(cli::proxy::ProxyArgs { config: cli.config }).await
+    service::proxy::run(service::proxy::ProxyArgs { config: cli.config }).await
 }
 
 /// Runs a bounded, report-only artifact reconciliation without initializing

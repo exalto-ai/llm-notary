@@ -15,7 +15,7 @@ import {
 import { sessionDate } from './format';
 
 type CurrentUser = NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>;
-type AccountIdentity = Pick<CurrentUser, 'display_name' | 'github_login'>;
+type AccountIdentity = Pick<CurrentUser, 'display_name' | 'provider_display_name'>;
 type CliApprovalDetails = Awaited<ReturnType<typeof getCliApproval>>;
 type HostedDirectory = Awaited<ReturnType<typeof getNotaryDirectory>>;
 type HostedNotary = HostedDirectory['notaries'][number];
@@ -23,7 +23,7 @@ type AuthorizationTone = 'neutral' | 'attention' | 'success' | 'ready';
 type AuthorizationFact = readonly [label: string, value: ReactNode];
 
 function accountName(user: AccountIdentity) {
-  return user.display_name || user.github_login;
+  return user.display_name || user.provider_display_name;
 }
 
 function messageFrom(reason: unknown, fallback: string) {
