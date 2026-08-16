@@ -25,7 +25,7 @@ cargo test -p llm-notary-api -p llm-notary-hosted-server --all-targets --all-fea
 cargo test --manifest-path runtime/Cargo.toml --workspace --all-targets --all-features
 npm --prefix runtime/apps/local-dashboard run build
 npm --prefix js/app run build
-npm --prefix js/app run check:local-docs
+npm --prefix runtime/apps/local-dashboard run check:local-docs
 ```
 
 See [private documentation](docs/README.md) and [runtime documentation](runtime/docs/README.md).

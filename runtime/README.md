@@ -2,7 +2,11 @@
 
 This directory is the independently buildable public runtime for LLM Notary. It contains the local proxy daemon, its thin REST CLI, the generic remote notary, the local dashboard, signed updater logic, protocol/evidence contracts, and the pinned TLSNotary dependencies.
 
-It deliberately does not contain account, credit, billing, hosted admission, upload, or public-website code. Those product concerns live outside this tree and integrate through the notary server's admission-policy seam.
+It deliberately does not contain the server-side account, credit, billing,
+hosted-admission, upload, or public-website implementations. The daemon and
+dashboard retain optional clients for connecting to those hosted services;
+their product policy and service code live outside this tree. Hosted notary
+admission integrates through the notary server's admission-policy seam.
 
 ## Build
 

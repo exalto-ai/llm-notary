@@ -7,8 +7,13 @@
     "dev": "vite --host 127.0.0.1",
     "generate:api": "node scripts/generate-api.mjs",
     "check:api": "node scripts/generate-api.mjs --check",
-    "check": "tsc --noEmit",
-    "build": "npm run check:api && npm run check && vite build",
+    "check": "npm run check:frontend && npm run check:types",
+    "check:frontend": "biome check .",
+    "check:types": "tsc --noEmit",
+    "format": "biome check --write .",
+    "build": "npm run check:frontend && npm run check:api && npm run check:types && vite build",
+    "capture:dashboard-docs": "node scripts/capture-dashboard-docs.mjs",
+    "check:local-docs": "node scripts/check-local-docs.mjs",
     "test": "vitest run --config vitest.config.js",
     "preview": "vite preview --outDir ../../crates/llm-notary-daemon/dashboard --host 127.0.0.1"
   },
@@ -34,6 +39,7 @@
     "vite": "latest"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.8",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",

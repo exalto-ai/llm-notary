@@ -216,7 +216,7 @@ states and a focal action.
 
 ## Documentation fixture and screenshots
 
-All images above come from `js/app/src/local-dashboard/fixtures.ts`. The data
+All images above come from `apps/local-dashboard/src/fixtures.ts`. The data
 is synthetic and fixed: it contains no real user prompts, provider keys, account
 names, local paths, or bundle contents. The dashboard labels this state
 **Sample data** and starts with the synthetic
@@ -248,10 +248,10 @@ fixture clock so the committed images remain reproducible.
 Regenerate every image from the repository root after a dashboard change:
 
 ```bash
-npm --prefix js/app ci
-npx --prefix js/app playwright install chromium
-npm --prefix js/app run capture:dashboard-docs
-npm --prefix js/app run check:local-docs
+npm --prefix apps/local-dashboard ci
+npx --prefix apps/local-dashboard playwright install chromium
+npm --prefix apps/local-dashboard run capture:dashboard-docs
+npm --prefix apps/local-dashboard run check:local-docs
 ```
 
 The capture command starts an isolated Vite server on `127.0.0.1:4175`, opens

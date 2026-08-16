@@ -3,10 +3,8 @@ import { dirname, extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const repoRoot = resolve(appRoot, '../..');
-const openapi = JSON.parse(
-  readFileSync(resolve(appRoot, 'src/local-dashboard/generated/openapi.json'), 'utf8'),
-);
+const runtimeRoot = resolve(appRoot, '../..');
+const openapi = JSON.parse(readFileSync(resolve(appRoot, 'src/generated/openapi.json'), 'utf8'));
 const workflowDocuments = [
   'README.md',
   'docs/local-service.md',
@@ -16,7 +14,7 @@ const workflowDocuments = [
   'skills/llm-notary/references/workflows.md',
 ];
 const workflowContent = workflowDocuments
-  .map((file) => readFileSync(resolve(repoRoot, file), 'utf8'))
+  .map((file) => readFileSync(resolve(runtimeRoot, file), 'utf8'))
   .join('\n');
 
 const basicAuth = openapi.components?.securitySchemes?.basicAuth;
@@ -43,6 +41,7 @@ const expectedOperations = {
   '/v1/captures/{capture_id}/trace:verify': {
     post: ['200', '401', '404', '409', '422', '500', '503'],
   },
+  '/v1/traces:verify': { post: ['200', '401', '422', '500', '503'] },
   '/v1/events': { get: ['200', '400', '401', '503'] },
   '/v1/account': {
     get: ['200', '401', '503'],
@@ -236,9 +235,9 @@ const screenshots = [
   'mobile-share-choice.png',
   'mobile-share-preview.png',
 ];
-const dashboardGuide = readFileSync(resolve(repoRoot, 'docs/local-dashboard.md'), 'utf8');
+const dashboardGuide = readFileSync(resolve(runtimeRoot, 'docs/local-dashboard.md'), 'utf8');
 for (const file of screenshots) {
-  const path = resolve(repoRoot, 'docs/images/local-dashboard', file);
+  const path = resolve(runtimeRoot, 'docs/images/local-dashboard', file);
   if (!existsSync(path)) throw new Error(`Missing documentation screenshot: ${file}`);
   const image = new RegExp(
     `!\\[([^\\]]{24,})\\]\\(images/local-dashboard/${file.replace('.', '\\.')}\\)`,
@@ -253,27 +252,16 @@ function markdownFiles(directory) {
   });
 }
 const markdown = [
-  resolve(repoRoot, 'README.md'),
-  resolve(repoRoot, 'CONTRIBUTING.md'),
-  resolve(repoRoot, 'AGENTS.md'),
-  resolve(repoRoot, 'DESIGN.md'),
-  resolve(repoRoot, 'deploy/fly/README.md'),
-  ...markdownFiles(resolve(repoRoot, 'docs')),
-  ...markdownFiles(resolve(repoRoot, 'skills')),
-];
-const publicSiteSources = [
-  resolve(appRoot, 'src/main.tsx'),
-  ...readdirSync(resolve(appRoot, 'src/site'))
-    .filter((file) => file.endsWith('.ts') || file.endsWith('.tsx'))
-    .map((file) => resolve(appRoot, 'src/site', file)),
+  resolve(runtimeRoot, 'README.md'),
+  resolve(runtimeRoot, 'AGENTS.md'),
+  ...markdownFiles(resolve(runtimeRoot, 'docs')),
+  ...markdownFiles(resolve(runtimeRoot, 'skills')),
 ];
 const consistencySources = [
   ...markdown,
-  resolve(appRoot, 'public/llms.txt'),
-  ...publicSiteSources,
-  resolve(appRoot, 'src/platform-api/generated/openapi.json'),
-  resolve(appRoot, 'src/platform-api/generated/api.generated.d.ts'),
-  resolve(repoRoot, 'crates/llm-notary-platform/src/lib.rs'),
+  resolve(appRoot, 'src/generated/openapi.json'),
+  resolve(appRoot, 'src/generated/api.generated.d.ts'),
+  resolve(runtimeRoot, 'crates/llm-notary-daemon/src/lib.rs'),
 ];
 const obsoleteCommand =
   /llm-notary\s+(proxy|verify-trace|download|config|vault|list|show|verify|decode)\b/;
@@ -282,7 +270,7 @@ for (const file of consistencySources) {
   const source = readFileSync(file, 'utf8');
   if (obsoleteCommand.test(source) || obsoleteDaemonInvocation.test(source)) {
     throw new Error(
-      `Documentation retains an obsolete local operational command: ${file.replace(`${repoRoot}/`, '')}`,
+      `Documentation retains an obsolete local operational command: ${file.replace(`${runtimeRoot}/`, '')}`,
     );
   }
 }
@@ -301,24 +289,10 @@ for (const file of consistencySources) {
   for (const claim of inaccurateClaims) {
     if (claim.test(source)) {
       throw new Error(
-        `Documentation retains an inaccurate release, trust, or rollout claim: ${file.replace(`${repoRoot}/`, '')}`,
+        `Documentation retains an inaccurate release, trust, or rollout claim: ${file.replace(`${runtimeRoot}/`, '')}`,
       );
     }
   }
-}
-
-const publicDocs = publicSiteSources.map((file) => readFileSync(file, 'utf8')).join('\n');
-if (
-  !publicDocs.includes('curl -fsSL https://notary.exalto.ai/install.sh | sh') ||
-  !publicDocs.includes('cargo install --locked --path crates/llm-notary-client') ||
-  !publicDocs.includes('llm-notary skill install --target all') ||
-  !publicDocs.includes('--metadata-only') ||
-  !publicDocs.includes('The JSON directory is not separately signed') ||
-  !publicDocs.includes('"status_url":"/v1/shares/…"')
-) {
-  throw new Error(
-    'Public-site documentation is missing install, agent-metadata, trust-directory, or local share-status guidance',
-  );
 }
 
 for (const required of [
@@ -340,14 +314,14 @@ for (const file of markdown) {
     if (!target || target.startsWith('http://') || target.startsWith('https://')) continue;
     const linked = resolve(dirname(file), target);
     if (!existsSync(linked))
-      throw new Error(`Broken link in ${file.replace(`${repoRoot}/`, '')}: ${match[1]}`);
+      throw new Error(`Broken link in ${file.replace(`${runtimeRoot}/`, '')}: ${match[1]}`);
   }
 }
 
 for (const file of markdown) {
-  const source = readFileSync(resolve(repoRoot, file), 'utf8');
+  const source = readFileSync(file, 'utf8');
   if (!source.endsWith('\n') || source.endsWith('\n\n')) {
-    throw new Error(`${file.replace(`${repoRoot}/`, '')} must end with exactly one newline`);
+    throw new Error(`${file.replace(`${runtimeRoot}/`, '')} must end with exactly one newline`);
   }
 }
 process.stdout.write(

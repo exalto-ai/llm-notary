@@ -85,13 +85,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import {
-  abbreviatedKeyId,
-  formatNotaryBoundary,
-  notaryLifecycle,
-  orderNotaries,
-} from './notaryLifecycle';
-import { ProviderIdentity } from './ProviderIdentity';
 import type {
   AccountConnection,
   AccountConnectionStarted,
@@ -108,6 +101,13 @@ import type {
   Verification,
 } from './api';
 import { LocalApiError } from './api';
+import {
+  abbreviatedKeyId,
+  formatNotaryBoundary,
+  notaryLifecycle,
+  orderNotaries,
+} from './notaryLifecycle';
+import { ProviderIdentity } from './ProviderIdentity';
 
 function requiredValue<T>(value: T | null | undefined, label: string): T {
   if (value === null || value === undefined) throw new Error(`${label} is required`);

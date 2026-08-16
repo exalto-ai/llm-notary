@@ -17,7 +17,3 @@ runtime/apps/local-dashboard/.vitest-attachments/
 !js/desktop/src-tauri/Cargo.toml
 !js/desktop/src-tauri/src/
 !js/desktop/src-tauri/src/lib.rs
-!deploy/
-!deploy/daemon-e2e/
-!deploy/daemon-e2e/config.toml
-!deploy/daemon-e2e/provider.py

@@ -14,7 +14,7 @@ PATH_DEPENDENCY = re.compile(r"\bpath\s*=\s*['\"]([^'\"]+)['\"]")
 SOURCE_INCLUDE = re.compile(
     r"\b(?:include_str|include_bytes)!\s*\(\s*['\"]([^'\"]+)['\"]\s*\)"
 )
-IGNORED_DIRECTORIES = {"target", "node_modules", ".vitest-attachments"}
+IGNORED_DIRECTORIES = {".git", "target", "node_modules", ".vitest-attachments"}
 SENSITIVE_SUFFIXES = {".key", ".llmcapture", ".llmbundle", ".sqlite"}
 
 
@@ -32,6 +32,22 @@ def inside_runtime(path: pathlib.Path) -> bool:
     except (FileNotFoundError, ValueError):
         return False
     return True
+
+
+def git_repository_and_pathspec(root: pathlib.Path) -> tuple[pathlib.Path, str]:
+    """Locate the containing checkout and address root from that checkout."""
+    result = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    repository = pathlib.Path(result.stdout.strip()).resolve()
+    try:
+        relative = root.resolve().relative_to(repository)
+    except ValueError as error:
+        raise RuntimeError(f"runtime root {root} is outside Git checkout {repository}") from error
+    return repository, "." if relative == pathlib.Path(".") else relative.as_posix()
 
 
 def main() -> int:
@@ -62,10 +78,10 @@ def main() -> int:
                     f"source include escapes or is missing: {source.relative_to(ROOT)} -> {relative}"
                 )
 
-    repository = ROOT.parent
     try:
+        repository, pathspec = git_repository_and_pathspec(ROOT)
         staged = subprocess.run(
-            ["git", "-C", str(repository), "ls-files", "--stage", "--", "runtime"],
+            ["git", "-C", str(repository), "ls-files", "--stage", "--", pathspec],
             check=True,
             capture_output=True,
             text=True,
@@ -73,8 +89,8 @@ def main() -> int:
         for line in staged.splitlines():
             if line.startswith("160000 "):
                 failures.append(f"git submodule is not publishable: {line.split(chr(9), 1)[-1]}")
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        pass
+    except (FileNotFoundError, RuntimeError, subprocess.CalledProcessError) as error:
+        failures.append(f"could not inspect the Git index: {error}")
 
     forbidden = ["../platform", "../js/desktop", "../.github"]
     for path in publishable_paths():

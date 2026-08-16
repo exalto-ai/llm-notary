@@ -28,7 +28,7 @@ cargo test -p llm-notary-api -p llm-notary-hosted-server --all-targets --all-fea
 cargo test --manifest-path runtime/Cargo.toml --workspace --all-targets --all-features
 npm --prefix runtime/apps/local-dashboard run build
 npm --prefix js/app run build
-npm --prefix js/app run check:local-docs
+npm --prefix runtime/apps/local-dashboard run check:local-docs
 ```
 
 For Compose or deployment changes, also validate `docker compose config --quiet` with placeholder required variables. Do not put real keys, tunnel tokens, signing keys, captures, or `.env` files in Git.

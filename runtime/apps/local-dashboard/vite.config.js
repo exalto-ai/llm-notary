@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
+import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
 function stripGeneratedTrailingWhitespace() {
@@ -15,26 +15,31 @@ function stripGeneratedTrailingWhitespace() {
           output.source = output.source.replace(/[\t ]+$/gm, '');
         }
       }
-    }
+    },
   };
 }
 
 export default defineConfig({
   resolve: { alias: { '@': resolve(process.cwd(), 'src') } },
-  plugins: [react(), tailwindcss(), stripGeneratedTrailingWhitespace(), {
-    name: 'local-dashboard-openapi',
-    configureServer(server) {
-      server.middlewares.use('/openapi.json', (request, response, next) => {
-        if (!['GET', 'HEAD'].includes(request.method ?? '')) return next();
-        const body = readFileSync(new URL('./src/generated/openapi.json', import.meta.url));
-        response.statusCode = 200;
-        response.setHeader('Content-Type', 'application/json; charset=utf-8');
-        response.setHeader('Cache-Control', 'no-store');
-        response.setHeader('Content-Length', body.byteLength);
-        response.end(request.method === 'HEAD' ? undefined : body);
-      });
-    }
-  }],
+  plugins: [
+    react(),
+    tailwindcss(),
+    stripGeneratedTrailingWhitespace(),
+    {
+      name: 'local-dashboard-openapi',
+      configureServer(server) {
+        server.middlewares.use('/openapi.json', (request, response, next) => {
+          if (!['GET', 'HEAD'].includes(request.method ?? '')) return next();
+          const body = readFileSync(new URL('./src/generated/openapi.json', import.meta.url));
+          response.statusCode = 200;
+          response.setHeader('Content-Type', 'application/json; charset=utf-8');
+          response.setHeader('Cache-Control', 'no-store');
+          response.setHeader('Content-Length', body.byteLength);
+          response.end(request.method === 'HEAD' ? undefined : body);
+        });
+      },
+    },
+  ],
   build: {
     outDir: '../../crates/llm-notary-daemon/dashboard',
     emptyOutDir: true,
@@ -43,11 +48,12 @@ export default defineConfig({
       output: {
         entryFileNames: 'assets/dashboard.js',
         chunkFileNames: 'assets/[name].js',
-        assetFileNames: (asset) => asset.names?.some((name) => name.endsWith('.css'))
-          ? 'assets/dashboard.css'
-          : 'assets/[name][extname]'
-      }
-    }
+        assetFileNames: (asset) =>
+          asset.names?.some((name) => name.endsWith('.css'))
+            ? 'assets/dashboard.css'
+            : 'assets/[name][extname]',
+      },
+    },
   },
-  server: { allowedHosts: true, port: 4173 }
+  server: { allowedHosts: true, port: 4173 },
 });

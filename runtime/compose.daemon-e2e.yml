@@ -496,7 +496,7 @@ services:
       daemon-b:
         condition: service_healthy
     volumes:
-      - ./deploy/daemon-e2e/load-balancer.Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy-daemon-e2e/load-balancer.Caddyfile:/etc/caddy/Caddyfile:ro
     read_only: true
     tmpfs:
       - /config

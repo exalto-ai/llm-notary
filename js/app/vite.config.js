@@ -26,39 +26,39 @@ const publicOrigin = publicOriginUrl.origin;
 const apiProxyOrigin = process.env.VITE_API_ORIGIN ?? 'http://127.0.0.1:8080';
 
 export default defineConfig({
-    resolve: {
-      alias: {
-        '@': resolve(process.cwd(), 'src'),
+  resolve: {
+    alias: {
+      '@': resolve(process.cwd(), 'src'),
+    },
+  },
+  define: {
+    __BRAND_ASSET_VERSION__: JSON.stringify(brandAssetVersion),
+    __PUBLIC_ORIGIN__: JSON.stringify(publicOrigin),
+  },
+  plugins: [
+    react(),
+    tailwindcss(),
+    {
+      name: 'brand-asset-version',
+      transformIndexHtml(html) {
+        return html
+          .replaceAll('%BRAND_ASSET_VERSION%', brandAssetVersion)
+          .replaceAll('%PUBLIC_ORIGIN%', publicOrigin);
+      },
+      closeBundle() {
+        const llmsPath = new URL('./dist/llms.txt', import.meta.url);
+        writeFileSync(
+          llmsPath,
+          readFileSync(llmsPath, 'utf8').replaceAll('%PUBLIC_ORIGIN%', publicOrigin),
+        );
       },
     },
-    define: {
-      __BRAND_ASSET_VERSION__: JSON.stringify(brandAssetVersion),
-      __PUBLIC_ORIGIN__: JSON.stringify(publicOrigin),
+  ],
+  server: {
+    allowedHosts: true,
+    port: 4173,
+    proxy: {
+      '/api': { target: apiProxyOrigin, changeOrigin: true },
     },
-    plugins: [
-      react(),
-      tailwindcss(),
-      {
-        name: 'brand-asset-version',
-        transformIndexHtml(html) {
-          return html
-            .replaceAll('%BRAND_ASSET_VERSION%', brandAssetVersion)
-            .replaceAll('%PUBLIC_ORIGIN%', publicOrigin);
-        },
-        closeBundle() {
-          const llmsPath = new URL('./dist/llms.txt', import.meta.url);
-          writeFileSync(
-            llmsPath,
-            readFileSync(llmsPath, 'utf8').replaceAll('%PUBLIC_ORIGIN%', publicOrigin),
-          );
-        },
-      },
-    ],
-    server: {
-      allowedHosts: true,
-      port: 4173,
-      proxy: {
-        '/api': { target: apiProxyOrigin, changeOrigin: true },
-      },
-    },
+  },
 });

@@ -86,7 +86,7 @@ npm --prefix runtime/apps/local-dashboard run build
 npm --prefix js/app run build
 npm --prefix runtime/apps/local-dashboard run test
 npm --prefix js/app run test:site
-npm --prefix js/app run check:local-docs
+npm --prefix runtime/apps/local-dashboard run check:local-docs
 ```
 
 Ordinary tests must remain deterministic and offline. They do not need a
@@ -233,20 +233,16 @@ fixed, clearly synthetic test credential; never substitute a real key.
 
 ## Frontend source and embedded output
 
-The public SPA is split by domain under `js/app/src/site/`, with
-`js/app/src/main.tsx` as the application shell and router. Keep the public docs
-as structured, task-focused site content rather than treating the deeper
-repository guides as runtime Markdown. The audiences and navigation are
-different; `check-local-docs.mjs` enforces consistency for commands, routes,
-security boundaries, and other high-risk claims across both surfaces.
+The hosted SPA is split by domain under `js/app/src/site/`, with
+`js/app/src/main.tsx` as the application shell and router. The public runtime
+dashboard lives independently under `runtime/apps/local-dashboard/`.
 
-`crates/llm-notary-client/dashboard/` is intentionally committed build output.
-`llm-notaryd` embeds that directory with `RustEmbed`, while source installs,
-release builds, and desktop sidecar builds can invoke Cargo without Node. Do not
-delete or ignore the directory unless every Rust build path is first replaced
-with a deterministic asset-generation step. After changing the local dashboard,
-run `npm --prefix js/app run build` to regenerate the embedded files; do not edit
-them by hand.
+`runtime/crates/llm-notary-daemon/dashboard/` is intentionally committed build
+output. `llm-notaryd` embeds that directory with `RustEmbed`, while source
+installs, release builds, and desktop sidecar builds can invoke Cargo without
+Node. After changing the local dashboard, run
+`npm --prefix runtime/apps/local-dashboard run build` to regenerate the embedded
+files; do not edit them by hand.
 
 ## Documentation sources
 
@@ -274,7 +270,7 @@ When behavior changes, update every affected surface. In particular:
 Run the documentation contract check after prose changes:
 
 ```bash
-node js/app/scripts/check-local-docs.mjs
+node runtime/apps/local-dashboard/scripts/check-local-docs.mjs
 ```
 
 It checks local API coverage, contract terms, screenshot references, obsolete
@@ -286,9 +282,9 @@ Committed dashboard images use synthetic fixtures and a fixed clock. Regenerate
 them only after a dashboard change:
 
 ```bash
-npx --prefix js/app playwright install chromium
-npm --prefix js/app run capture:dashboard-docs
-npm --prefix js/app run check:local-docs
+npx --prefix runtime/apps/local-dashboard playwright install chromium
+npm --prefix runtime/apps/local-dashboard run capture:dashboard-docs
+npm --prefix runtime/apps/local-dashboard run check:local-docs
 ```
 
 Review every generated image for sensitive data and layout regressions before

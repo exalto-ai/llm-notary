@@ -100,3 +100,6 @@ RUN cp /etc/llm-notary/config.toml /etc/llm-notary/config-s3.toml \
         >> /etc/llm-notary/config-cluster-template.toml
 COPY deploy-daemon-e2e/provider.py /usr/local/libexec/llm-notary-e2e-provider.py
 COPY deploy-daemon-e2e/share.py /usr/local/libexec/llm-notary-e2e-share.py
+
+# Keep a plain `docker build .` on the production daemon, not the test image.
+FROM daemon AS runtime

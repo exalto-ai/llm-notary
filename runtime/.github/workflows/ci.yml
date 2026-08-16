@@ -14,6 +14,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: ./tooling/check-boundary.sh
+      - run: python3 -m unittest tooling/test_check_boundary.py
       - name: Keep the localhost client thin
         run: |
           if cargo tree --locked -p llm-notary-cli --edges normal --prefix none \
@@ -36,11 +37,39 @@ jobs:
           cache-dependency-path: apps/local-dashboard/package-lock.json
       - run: npm --prefix apps/local-dashboard ci
       - run: npm --prefix apps/local-dashboard run build
+      - run: npm --prefix apps/local-dashboard run check:local-docs
       - run: git diff --exit-code -- apps/local-dashboard/src/generated crates/llm-notary-daemon/dashboard
+      - name: Install browser test runtime
+        run: npx --prefix apps/local-dashboard playwright install --with-deps chromium
+      - run: npm --prefix apps/local-dashboard run test
 
   containers:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - run: docker build --target daemon .
+      - uses: docker/setup-compose-action@v1
+      - name: Verify the default image is the production daemon
+        run: docker build .
       - run: docker build --target notary .
+      - name: Validate Compose files and cluster initialization
+        run: |
+          set -euo pipefail
+          docker compose -f compose.daemon-e2e.yml config --quiet
+          state="$RUNNER_TEMP/llm-notary-cluster"
+          LLM_NOTARY_CLUSTER_STATE_DIR="$state" \
+            ./llm-notary-cluster.sh init \
+              proxy.example.com admin.example.com \
+              tls://notary.example.com:7047 \
+              0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 \
+              >/dev/null
+          docker compose --env-file "$state/.env" -f compose.cluster.yml config --quiet
+          test "$(wc -c < "$state/secrets/cluster-vault.key")" -eq 32
+          if LLM_NOTARY_CLUSTER_STATE_DIR="$state" \
+            ./llm-notary-cluster.sh init \
+              proxy.example.com admin.example.com \
+              tls://notary.example.com:7047 \
+              0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 \
+              >/dev/null 2>&1; then
+            echo "cluster initializer overwrote existing state" >&2
+            exit 1
+          fi
