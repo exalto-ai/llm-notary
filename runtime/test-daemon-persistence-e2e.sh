@@ -117,6 +117,33 @@ daemon_cli() {
     llm-notary --config "$daemon_config" --json "$@"
 }
 
+wait_for_capture_ready() {
+  local capture_id=$1
+  local capture=""
+  local state=""
+  for _ in $(seq 1 40); do
+    capture=$(daemon_cli captures show "$capture_id")
+    if printf '%s' "$capture" | "${compose[@]}" exec -T "$daemon_service" jq -e '
+      .capture.capture_state == "captured" and
+      any(.artifacts[]; .kind == "deferred_bundle")
+    ' >/dev/null; then
+      printf '%s\n' "$capture"
+      return 0
+    fi
+    state=$(printf '%s' "$capture" | "${compose[@]}" exec -T "$daemon_service" jq -r \
+      '.capture.capture_state')
+    if [[ $state == failed ]]; then
+      echo "capture $capture_id failed before it became ready to finalize" >&2
+      printf '%s\n' "$capture" >&2
+      return 1
+    fi
+    sleep 0.25
+  done
+  echo "capture $capture_id did not become ready to finalize" >&2
+  printf '%s\n' "$capture" >&2
+  return 1
+}
+
 wait_for_daemon_http_status() {
   local path=$1
   local expected=$2
@@ -719,7 +746,7 @@ if [[ $profile == full ]]; then
     exit 1
   fi
 
-  full_capture=$(daemon_cli captures show "$full_capture_id")
+  full_capture=$(wait_for_capture_ready "$full_capture_id")
   assert_json "$full_capture" '
     .capture.capture_id == $capture_id and
     .capture.provider == "openai" and
@@ -850,7 +877,7 @@ if [[ $profile == full ]]; then
     echo "streaming Proxy-TLS response omitted a valid capture ID" >&2
     exit 1
   fi
-  stream_capture=$(daemon_cli captures show "$stream_capture_id")
+  stream_capture=$(wait_for_capture_ready "$stream_capture_id")
   assert_json "$stream_capture" '
     .capture.capture_id == $capture_id and
     .capture.streaming == true and
