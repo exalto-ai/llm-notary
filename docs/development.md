@@ -249,7 +249,10 @@ files; do not edit them by hand.
 Keep each surface focused:
 
 - `README.md` is the short project entry point.
-- `docs/` contains durable user, reference, operator, and contributor guides.
+- `docs/` contains durable hosted-product, operator, and contributor guides,
+  including the component/route map and documentation coverage checklist.
+- `runtime/README.md` and `runtime/docs/` are the independently publishable
+  runtime entry point and full public-runtime references.
 - `js/app/src/site/PublicDocs.tsx` contains the shorter public-site documentation journey.
 - `js/app/public/llms.txt` is the machine-readable public documentation index.
 - generated OpenAPI is the exact route and schema authority.
@@ -266,15 +269,19 @@ When behavior changes, update every affected surface. In particular:
 | Notary trust policy | architecture, key lifecycle, local service, hosted public copy |
 | Deployment or migration order | Fly guide, database guide, workflow comments |
 | Dashboard workflow | dashboard guide, screenshots, fixture, browser tests |
+| Hosted route or flow | generated hosted OpenAPI, hosted-platform map, focused account/billing/share guide, public copy when user-visible |
+| Repository boundary or path | both READMEs, development map, public source-install copy, boundary check, CI/release paths |
 
-Run the documentation contract check after prose changes:
+Run both documentation contract checks after prose changes:
 
 ```bash
-node runtime/apps/local-dashboard/scripts/check-local-docs.mjs
+npm --prefix runtime/apps/local-dashboard run check:local-docs
+npm --prefix js/app run check:docs
 ```
 
-It checks local API coverage, contract terms, screenshot references, obsolete
-commands, relative links, and exact trailing newlines.
+They check local and hosted API coverage, contract terms, source-repository and
+workspace boundaries, screenshot references, obsolete commands or claims,
+relative links, and exact trailing newlines.
 
 ## Dashboard screenshots
 

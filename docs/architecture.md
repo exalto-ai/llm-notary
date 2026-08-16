@@ -14,14 +14,24 @@ convenience features.
 | --- | --- | --- | --- |
 | Provider client | yes | provider credential | Sends an ordinary provider request to the local proxy |
 | `llm-notaryd` | yes | vault, catalog, operations, artifacts, trust cache | Runs the proxy, captures private state, finalizes, and verifies |
-| Remote notary | no application plaintext | signing key only | Resolves the provider, relays encrypted TLS records, witnesses the session, and completes proof work |
+| Generic remote notary | no application plaintext | signing key only | Resolves the provider, relays encrypted TLS records, witnesses the session, and completes proof work |
+| Hosted notary adapter | no application plaintext | durable usage-settlement outbox | Redeems one-operation tickets, tightens generic runtime limits, and reports authoritative usage |
 | Model provider | yes | provider-owned | Serves an ordinary HTTPS request without an LLM Notary integration |
 | Hosted platform | only explicitly uploaded disclosures | accounts, share intake, admitted traces and exact packages | Issues admission tickets, verifies uploads, serves stable links, and indexes Listed shares |
 | Independent verifier | disclosed package contents | chosen trust policy | Verifies a `.llmtrace` against a trusted notary key |
 
-The notary is not a generic forward proxy. The protocol selects one of four
-fixed provider adapters, and the notary enforces the corresponding hostname
-allowlist before it resolves or connects upstream.
+The notary is not a generic forward proxy. The daemon exposes five fixed local
+routes for the OpenAI API, ChatGPT-authenticated Codex, Anthropic, DeepSeek,
+and OpenRouter. Each selects one fixed upstream hostname, and the notary
+enforces the corresponding hostname allowlist before it resolves or connects.
+
+The protocol, daemon, CLI, generic notary, dashboard, and verification
+contracts live in the independently buildable `runtime/` workspace. Hosted
+account, billing, admission, settlement, and sharing policy live in
+`platform/`. The hosted notary binary injects that policy through the generic
+runtime's `AdmissionPolicy` and `SessionLifecycle` seams; the public runtime
+does not import hosted code. See [Hosted platform flows](hosted-platform.md)
+for the server-side route and state ownership map.
 
 ## Runtime capture mode
 

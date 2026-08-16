@@ -120,9 +120,9 @@ printf '%s\n' 'LLM_NOTARY_STRIPE_CREDIT_PRICE_ID=price_...' \
 unset STRIPE_VALUE
 ```
 
-After verifying all three explicit Price settings, remove the obsolete
-`LLM_NOTARY_STRIPE_PRICE_ID` secret from the Fly app before deploying this
-release:
+The legacy `LLM_NOTARY_STRIPE_PRICE_ID` setting is no longer read. Confirm it is
+absent when auditing production secrets; if an older deployment left it behind,
+remove it without restarting the current Machines:
 
 ```bash
 flyctl secrets unset --stage LLM_NOTARY_STRIPE_PRICE_ID \
