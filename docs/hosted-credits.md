@@ -49,17 +49,14 @@ settlement support. Requests missing either capability are rejected before the
 ticket is consumed. Every admitted session therefore receives the operation ID
 used by its durable usage outbox.
 
-The stop-legacy rollout retains the previous lease schema for rollback, but no
-supported redemption can create a lease and the legacy renew/release routes
-are no longer registered. The release-outbox directory remains required for
-one rollout window; the notary refuses startup unless it is empty, and the API
-refuses startup while any active legacy lease remains. A following code-only
-release is not sufficient because the authenticated allowance is generated
-from the legacy requested-allowance column. A following expand-compatible
-detach release must first make both old and new writers safe, then remove all
-runtime legacy references while retaining the bridge schema and configuration
-for rollback. Only a still-later contract migration removes that physical
-compatibility surface.
+The compatibility-detach rollout has removed every live lease and release
+outbox dependency. Migration `0028_detach_legacy_admission.sql` mirrors the old
+requested allowance and the current authenticated allowance so either the
+current API or its immediately previous rollback image can issue finalization
+tickets. Operation debits use operation IDs; the nullable legacy digest remains
+only for the rollback writer. The lease table, bridge columns, debit constraint,
+and release-outbox configuration stay physical for one final rollback window.
+The following contract migration removes that surface.
 
 Trace storage is the total declared size of uploads that are in progress,
 queued for checking, being checked, or admitted to the account. Rejected,

@@ -16,7 +16,6 @@ pub(crate) const DEFAULT_MAX_ARCHIVE_BYTES: i64 =
     llm_notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64;
 pub(crate) const DEFAULT_UPLOAD_TTL_SECS: i64 = 15 * 60;
 pub(crate) const DEFAULT_ADMISSION_TICKET_TTL_SECS: i64 = 45;
-pub(crate) const DEFAULT_ADMISSION_LEASE_TTL_SECS: i64 = 30;
 
 /// Validated runtime configuration for the hosted platform API.
 ///
@@ -57,9 +56,6 @@ pub struct AdmissionConfig {
     pub anonymous_subject_key_version: u32,
     pub trusted_proxy_cidrs: Vec<IpNet>,
     pub ticket_ttl_secs: i64,
-    pub lease_ttl_secs: i64,
-    pub global_capture_concurrency: i64,
-    pub global_finalize_concurrency: i64,
     pub public: AdmissionPolicy,
     pub free: AdmissionPolicy,
     pub one_gb: AdmissionPolicy,
@@ -68,8 +64,6 @@ pub struct AdmissionConfig {
 
 #[derive(Clone, Debug)]
 pub struct AdmissionPolicy {
-    pub capture_concurrency: i64,
-    pub finalize_concurrency: i64,
     pub max_attestable_http_bytes: i64,
     pub max_frame_bytes: i64,
     pub max_private_chunk_bytes: i64,
@@ -287,28 +281,12 @@ impl AdmissionConfig {
         if !(10..=300).contains(&ticket_ttl_secs) {
             bail!("LLM_NOTARY_ADMISSION_TICKET_TTL_SECS must be between 10 and 300");
         }
-        let lease_ttl_secs = positive_integer_or_default(
-            "LLM_NOTARY_ADMISSION_LEASE_TTL_SECS",
-            DEFAULT_ADMISSION_LEASE_TTL_SECS,
-        )?;
-        if !(10..=300).contains(&lease_ttl_secs) {
-            bail!("LLM_NOTARY_ADMISSION_LEASE_TTL_SECS must be between 10 and 300");
-        }
         Ok(Self {
             service_token,
             anonymous_subject_hmac_key,
             anonymous_subject_key_version,
             trusted_proxy_cidrs,
             ticket_ttl_secs,
-            lease_ttl_secs,
-            global_capture_concurrency: positive_integer_or_default(
-                "LLM_NOTARY_ADMISSION_GLOBAL_CAPTURE_CONCURRENCY",
-                16,
-            )?,
-            global_finalize_concurrency: positive_integer_or_default(
-                "LLM_NOTARY_ADMISSION_GLOBAL_FINALIZE_CONCURRENCY",
-                4,
-            )?,
             public: AdmissionPolicy::from_env("PUBLIC", AdmissionPolicy::public())?,
             free: AdmissionPolicy::from_env("FREE", AdmissionPolicy::free())?,
             one_gb: AdmissionPolicy::from_env("ONE_GB", AdmissionPolicy::one_gb())?,
@@ -324,9 +302,6 @@ impl AdmissionConfig {
             anonymous_subject_key_version: 1,
             trusted_proxy_cidrs: vec!["127.0.0.0/8".parse().expect("test CIDR")],
             ticket_ttl_secs: DEFAULT_ADMISSION_TICKET_TTL_SECS,
-            lease_ttl_secs: DEFAULT_ADMISSION_LEASE_TTL_SECS,
-            global_capture_concurrency: 2,
-            global_finalize_concurrency: 2,
             public: AdmissionPolicy::public(),
             free: AdmissionPolicy::free(),
             one_gb: AdmissionPolicy::one_gb(),
@@ -338,8 +313,6 @@ impl AdmissionConfig {
 impl AdmissionPolicy {
     pub(crate) fn public() -> Self {
         Self {
-            capture_concurrency: 1,
-            finalize_concurrency: 1,
             max_attestable_http_bytes: 1 << 20,
             max_frame_bytes: 16 << 20,
             max_private_chunk_bytes: 64 << 10,
@@ -351,8 +324,6 @@ impl AdmissionPolicy {
 
     pub(crate) fn free() -> Self {
         Self {
-            capture_concurrency: 4,
-            finalize_concurrency: 2,
             max_attestable_http_bytes: 8 << 20,
             max_frame_bytes: 64 << 20,
             max_private_chunk_bytes: 128 << 10,
@@ -364,8 +335,6 @@ impl AdmissionPolicy {
 
     pub(crate) fn one_gb() -> Self {
         Self {
-            capture_concurrency: 8,
-            finalize_concurrency: 4,
             max_attestable_http_bytes: 32 << 20,
             max_frame_bytes: 128 << 20,
             max_private_chunk_bytes: 256 << 10,
@@ -377,8 +346,6 @@ impl AdmissionPolicy {
 
     pub(crate) fn ten_gb() -> Self {
         Self {
-            capture_concurrency: 12,
-            finalize_concurrency: 8,
             max_attestable_http_bytes: 64 << 20,
             max_frame_bytes: 256 << 20,
             max_private_chunk_bytes: 256 << 10,
@@ -393,8 +360,6 @@ impl AdmissionPolicy {
             positive_integer_or_default(&format!("LLM_NOTARY_ADMISSION_{prefix}_{suffix}"), default)
         };
         Ok(Self {
-            capture_concurrency: value("CAPTURE_CONCURRENCY", defaults.capture_concurrency)?,
-            finalize_concurrency: value("FINALIZE_CONCURRENCY", defaults.finalize_concurrency)?,
             max_attestable_http_bytes: value(
                 "MAX_ATTESTABLE_HTTP_BYTES",
                 defaults.max_attestable_http_bytes,

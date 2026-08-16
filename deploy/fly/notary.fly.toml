@@ -11,7 +11,8 @@ kill_timeout = "30s"
   LLM_NOTARY_METRICS_LISTEN = "0.0.0.0:9090"
   LLM_NOTARY_ADMISSION_API_ORIGIN = "http://llm-notary-prod-api.flycast"
   LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE = "/run/secrets/admission_service_token"
-  # Temporary drain audit for #298. The stop-legacy notary never writes here.
+  # Retained only for rollback to the previous stop-legacy image under #298.
+  # The current notary neither reads nor writes this path.
   LLM_NOTARY_RELEASE_OUTBOX_DIR = "/data/release-outbox"
   LLM_NOTARY_NOTARY_DIRECTORY_GENERATION = "4"
   LLM_NOTARY_USAGE_OUTBOX_DIR = "/data/usage-outbox"
