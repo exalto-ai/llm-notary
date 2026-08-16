@@ -21,7 +21,8 @@ must never use the pooled URL.
 Budget the total of `LLM_NOTARY_DATABASE_MAX_CONNECTIONS` across API replicas,
 plus one transient migration connection, within the Neon plan's limit. The
 production configuration uses two API Machines with a five-connection pool per
-Machine.
+Machine, so reserve ten pooled connections plus one direct migration
+connection.
 
 For Fly, stage the secret before merging. This records it without restarting
 the current API release:
@@ -161,11 +162,12 @@ Every API replica serves HTTP and runs cleanup and admission work.
 PostgreSQL coordinates claims with row locking and `SKIP LOCKED`, so replicas
 do not process a claimed job concurrently.
 
-Fly does not keep an API Machine running between requests. Each Machine exits
-after the configured idle grace period once durable work is clear, and Fly
-autostarts a stopped Machine for the next Flycast request. The deployment sets
-`min_machines_running = 0`, so every provisioned Machine may be stopped at the
-same time. Add capacity only after confirming the Neon connection budget:
+Fly keeps both production API Machines running continuously. This avoids API
+cold starts and lets cleanup and admission workers process due work without
+waiting for an incoming request. The web Machine is also always running; the
+notary Machine remains suspendable because its durable operation state and
+usage outbox are designed for that lifecycle. Add API capacity only after
+confirming the Neon connection budget:
 
 ```bash
 fly scale count 3 -a llm-notary-prod-api
