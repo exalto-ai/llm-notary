@@ -459,7 +459,7 @@ describe('local evidence dashboard', () => {
           ? { signed_in: false }
           : {
               signed_in: true,
-              github_login: 'approved-user',
+              provider_display_name: 'approved-user',
               device_name: 'Local dashboard',
               credential_kind: 'cli_session',
               credential_name: 'Local dashboard',
@@ -502,7 +502,7 @@ describe('local evidence dashboard', () => {
       ...createFixtureApi(),
       account: async () => ({
         signed_in: true,
-        github_login: 'automation-user',
+        provider_display_name: 'automation-user',
         credential_kind: 'api_key',
         credential_name: 'Nightly CI',
       }),

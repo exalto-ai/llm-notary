@@ -1043,7 +1043,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
         } else {
             Response::new(Body::from(format!(
                 r#"{{"service":"llm-notary-proxy","status":"ok","build_id":"{}"}}"#,
-                crate::cli::BUILD_ID
+                crate::service::BUILD_ID
             )))
         };
         response.headers_mut().insert(

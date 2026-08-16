@@ -52,7 +52,7 @@ export type AccountCreditBalance = {
 export type AccountConnection = {
   signed_in: boolean;
   connection_state?: AccountConnectionState | null;
-  github_login?: string | null;
+  provider_display_name?: string | null;
   display_name?: string | null;
   auth_provider?: string | null;
   device_name?: string | null;

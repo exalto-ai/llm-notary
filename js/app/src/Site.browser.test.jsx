@@ -214,7 +214,7 @@ describe('hosted site', () => {
 
   test('defaults to light and keeps appearance choices out of the signed-in account menu', async () => {
     expect(initialThemePreference()).toBe('light');
-    render(<Header user={{ github_login: 'fixture-user' }} onLogout={() => {}} />);
+    render(<Header user={{ provider_display_name: 'fixture-user' }} onLogout={() => {}} />);
 
     await page.getByRole('button', { name: 'Account menu for fixture-user' }).click();
     await expect.element(page.getByRole('link', { name: 'Dashboard' })).toBeVisible();
@@ -249,7 +249,7 @@ describe('hosted site', () => {
       .not.toBeInTheDocument();
 
     resolveCurrentUser({
-      github_login: 'fixture-user',
+      provider_display_name: 'fixture-user',
       share_stats: { total: 0, admitted: 0, in_progress: 0 },
     });
     await expect
@@ -335,7 +335,7 @@ describe('hosted site', () => {
     render(
       <Dashboard
         user={{
-          github_login: 'fixture-user',
+          provider_display_name: 'fixture-user',
           credits: null,
           share_stats: { total: 3, admitted: 2, in_progress: 1 },
         }}
@@ -368,7 +368,7 @@ describe('hosted site', () => {
     render(
       <Dashboard
         user={{
-          github_login: 'fixture-user',
+          provider_display_name: 'fixture-user',
           credits: null,
           notary_stats: { captures: 12, finalizations: 7 },
           share_stats: { total: 3, admitted: 2, in_progress: 1 },
@@ -426,7 +426,7 @@ describe('hosted site', () => {
     render(
       <Dashboard
         user={{
-          github_login: 'fixture-user',
+          provider_display_name: 'fixture-user',
           billing: billingFixture(),
           credits: creditsFixture(),
           share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
@@ -474,7 +474,7 @@ describe('hosted site', () => {
     render(
       <Dashboard
         user={{
-          github_login: 'fixture-user',
+          provider_display_name: 'fixture-user',
           billing: billingFixture({ purchase_mode: 'live' }),
           credits: creditsFixture(),
           share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
@@ -526,7 +526,7 @@ describe('hosted site', () => {
       <Dashboard
         {...common}
         user={{
-          github_login: 'fixture-user',
+          provider_display_name: 'fixture-user',
           billing: billingFixture({ purchase_mode: 'live', subscriptions_configured: true }),
           credits: creditsFixture(50_000_000),
           share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
@@ -551,7 +551,7 @@ describe('hosted site', () => {
       <Dashboard
         {...common}
         user={{
-          github_login: 'fixture-user',
+          provider_display_name: 'fixture-user',
           billing: billingFixture({ service_plan: 'one_gb', purchase_mode: 'live' }),
           credits: creditsFixture(),
           share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
@@ -582,7 +582,7 @@ describe('hosted site', () => {
       <Dashboard
         {...common}
         user={{
-          github_login: 'fixture-user',
+          provider_display_name: 'fixture-user',
           billing: billingFixture(),
           credits,
           share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
@@ -604,7 +604,7 @@ describe('hosted site', () => {
       <Dashboard
         {...common}
         user={{
-          github_login: 'fixture-user',
+          provider_display_name: 'fixture-user',
           billing: billingFixture({ purchase_mode: 'test' }),
           credits,
           share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
@@ -635,7 +635,7 @@ describe('hosted site', () => {
     render(
       <Dashboard
         user={{
-          github_login: 'fixture-user',
+          provider_display_name: 'fixture-user',
           billing: billingFixture({ purchase_mode: 'test' }),
           credits,
           share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
@@ -683,7 +683,7 @@ describe('hosted site', () => {
     render(
       <Dashboard
         user={{
-          github_login: 'fixture-user',
+          provider_display_name: 'fixture-user',
           billing: billingFixture({ purchase_mode: 'test' }),
           credits,
           share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
@@ -731,7 +731,7 @@ describe('hosted site', () => {
     render(
       <Dashboard
         user={{
-          github_login: 'fixture-user',
+          provider_display_name: 'fixture-user',
           billing: billingFixture({ purchase_mode: 'test' }),
           credits,
           share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
@@ -841,7 +841,7 @@ describe('hosted site', () => {
     render(
       <CliApproval
         route="authorize?request_id=request-123&approval_secret=secret-456"
-        user={{ github_login: 'fixture-user' }}
+        user={{ provider_display_name: 'fixture-user' }}
         loadApproval={loadApproval}
         approveRequest={async (...args) => {
           approved = args;
@@ -1357,7 +1357,7 @@ describe('hosted site', () => {
     render(
       <Dashboard
         user={{
-          github_login: 'fixture-user',
+          provider_display_name: 'fixture-user',
           credits: null,
           share_stats: { total: 1, admitted: 1, in_progress: 0 },
         }}

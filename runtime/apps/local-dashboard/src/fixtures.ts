@@ -677,7 +677,7 @@ export function createFixtureApi({
   let account: AccountConnection = {
     signed_in: true,
     connection_state: 'connected',
-    github_login: 'sample-user',
+    provider_display_name: 'sample-user',
     display_name: 'Sample User',
     auth_provider: 'github',
     device_name: 'Local dashboard',
@@ -1064,7 +1064,7 @@ export function createFixtureApi({
         ...account,
         signed_in: true,
         connection_state: 'connected',
-        github_login: 'sample-user',
+        provider_display_name: 'sample-user',
         display_name: 'Sample User',
         device_name: 'Local dashboard',
         credential_kind: 'cli_session',

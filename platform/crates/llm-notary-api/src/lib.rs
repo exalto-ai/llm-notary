@@ -128,7 +128,7 @@ struct Health {
 #[derive(Serialize, ToSchema)]
 struct PublicUser {
     id: String,
-    github_login: String,
+    provider_display_name: String,
     avatar_url: Option<String>,
     auth_provider: BrowserAuthProvider,
     display_name: String,
@@ -1226,7 +1226,7 @@ async fn me(State(state): State<AppState>, jar: CookieJar) -> ApiResult<Json<MeR
     Ok(Json(MeResponse {
         user: PublicUser {
             id: user.0,
-            github_login: user.2,
+            provider_display_name: user.2,
             avatar_url: user.3,
             auth_provider: BrowserAuthProvider::from_database(&user.4)?,
             display_name: user.1,
@@ -1808,7 +1808,7 @@ async fn cli_me(
     Ok(Json(CliMeResponse {
         user: PublicUser {
             id: user.0,
-            github_login: user.2,
+            provider_display_name: user.2,
             avatar_url: user.3,
             auth_provider: BrowserAuthProvider::from_database(&user.4)?,
             display_name: user.1,
@@ -3264,7 +3264,7 @@ mod tests {
         .0;
         assert_eq!(response.user.auth_provider, BrowserAuthProvider::Google);
         assert_eq!(response.user.display_name, "Example Person");
-        assert_eq!(response.user.github_login, "Example Person");
+        assert_eq!(response.user.provider_display_name, "Example Person");
     }
 
     #[tokio::test]

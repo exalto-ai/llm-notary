@@ -1786,7 +1786,7 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
                 .unwrap_or(false)
             {
                 let display_name = match value_string(value, "/display_name").as_str() {
-                    "-" => value_string(value, "/github_login"),
+                    "-" => value_string(value, "/provider_display_name"),
                     name => name.to_owned(),
                 };
                 let provider = value_string(value, "/auth_provider");
@@ -2348,7 +2348,7 @@ mod tests {
 
         let connected = json!({
             "signed_in": true,
-            "github_login": "octocat",
+            "provider_display_name": "octocat",
             "device_name": "workstation",
             "credential_kind": "cli_session",
             "credential_name": "workstation"

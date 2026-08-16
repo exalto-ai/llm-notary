@@ -31,7 +31,7 @@ async function contractAssertions() {
 
   const { data } = await typedClient.GET('/api/me');
   if (data) {
-    data.user.github_login;
+    data.user.provider_display_name;
     data.user.display_name;
     data.user.auth_provider;
     data.billing.service_plan;

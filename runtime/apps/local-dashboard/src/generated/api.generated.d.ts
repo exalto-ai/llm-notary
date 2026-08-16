@@ -483,8 +483,8 @@ export interface components {
             credits?: null | components["schemas"]["CreditSummary"];
             device_name?: string | null;
             display_name?: string | null;
-            github_login?: string | null;
             links?: null | components["schemas"]["AccountActionLinks"];
+            provider_display_name?: string | null;
             signed_in: boolean;
         };
         AccountConnectionStartedResponse: {

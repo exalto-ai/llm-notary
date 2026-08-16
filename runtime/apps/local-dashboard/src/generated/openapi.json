@@ -1919,12 +1919,6 @@
               "null"
             ]
           },
-          "github_login": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "links": {
             "oneOf": [
               {
@@ -1933,6 +1927,12 @@
               {
                 "$ref": "#/components/schemas/AccountActionLinks"
               }
+            ]
+          },
+          "provider_display_name": {
+            "type": [
+              "string",
+              "null"
             ]
           },
           "signed_in": {

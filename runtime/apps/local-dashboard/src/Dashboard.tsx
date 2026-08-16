@@ -426,7 +426,7 @@ function useAccountConnection(api: LocalApi) {
 }
 
 function accountDisplayName(account: AccountConnection) {
-  return account.display_name || account.github_login || 'LLM Notary account';
+  return account.display_name || account.provider_display_name || 'LLM Notary account';
 }
 
 function authProviderLabel(provider?: string | null) {
@@ -500,7 +500,9 @@ function AccountConnectionCard({
           <div className="account-connection-identity">
             <div>
               <b>{accountDisplayName(api)}</b>
-              {api.github_login && api.display_name && <Text>{api.github_login}</Text>}
+              {api.provider_display_name && api.display_name && (
+                <Text>{api.provider_display_name}</Text>
+              )}
               <Text>
                 {authProviderLabel(api.auth_provider)} ·{' '}
                 {api.credential_name || api.device_name || 'Connected service'}

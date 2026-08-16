@@ -38,7 +38,8 @@ name follows GitHub login changes only while it has not been customized.
 Migration 0017 changes GitHub OAuth lookup and profile reads to use
 `user_identities`. New accounts are written to `users` plus
 `user_identities`; the GitHub-only columns are no longer application authority.
-Existing API and UI contracts continue to expose the GitHub login.
+During the migration boundary, API and UI contracts continued to expose the
+provider display name under the legacy `github_login` field.
 
 Migration 0018 makes that authority permanent. It reconciles every account's
 legacy GitHub metadata against its GitHub identity and aborts if any row is
@@ -48,8 +49,8 @@ directions and drops `users.github_id`, `users.github_login`, and
 
 The durable account ID and account-level `display_name` live in `users`.
 Authentication subjects and provider profile metadata live only in
-`user_identities`. The current `github_login` response field is a compatibility
-API name populated from the GitHub identity; it is not a database authority.
+`user_identities`. APIs expose that profile metadata as
+`provider_display_name`, regardless of the authentication provider.
 
 ## Deployment and rollback boundary
 

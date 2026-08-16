@@ -11,12 +11,11 @@ use std::process::Command;
 use std::{io::Write, process::Stdio};
 
 use anyhow::{Context, Result, anyhow, bail};
-use clap::Args;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin, http_client_builder, storage};
+use super::{api_origin::ApiOrigin, http_client_builder, storage};
 
 const KEYCHAIN_SERVICE: &str = "llm-notary";
 // Keep this pre-account-session identifier so upgrades find credentials that
@@ -29,7 +28,7 @@ const API_KEY_VERSION_PREFIX: &str = "llmn_v1_";
 const ACCOUNT_REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCOUNT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_ADMISSION_RESPONSE_BYTES: usize = 16 * 1024;
-pub(crate) const DEFAULT_DEVICE_NAME: &str = "llm-notary cli";
+pub(crate) const DEFAULT_DEVICE_NAME: &str = "llm-notary local service";
 static CREDENTIAL_REFRESH: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 async fn credential_refresh_guard() -> tokio::sync::MutexGuard<'static, ()> {
@@ -37,16 +36,6 @@ async fn credential_refresh_guard() -> tokio::sync::MutexGuard<'static, ()> {
         .get_or_init(|| tokio::sync::Mutex::new(()))
         .lock()
         .await
-}
-
-#[derive(Args, Debug)]
-pub struct LoginArgs {
-    /// LLM Notary website origin. Intended for local development and self-hosting.
-    #[arg(long, default_value = DEFAULT_PUBLIC_ORIGIN)]
-    api: String,
-    /// A recognizable name for this CLI session.
-    #[arg(long, default_value = DEFAULT_DEVICE_NAME)]
-    device_name: String,
 }
 
 #[derive(Serialize)]
@@ -83,7 +72,7 @@ pub(crate) enum AuthorizationPoll {
 pub(crate) struct AccountConnectionStatus {
     pub(crate) signed_in: bool,
     pub(crate) connection_state: AccountConnectionState,
-    pub(crate) github_login: Option<String>,
+    pub(crate) provider_display_name: Option<String>,
     pub(crate) display_name: Option<String>,
     pub(crate) auth_provider: Option<String>,
     pub(crate) device_name: Option<String>,
@@ -176,7 +165,7 @@ struct WhoamiResponse {
 #[derive(Deserialize)]
 struct CliUser {
     #[serde(default)]
-    github_login: Option<String>,
+    provider_display_name: Option<String>,
     #[serde(default)]
     display_name: Option<String>,
     #[serde(default)]
@@ -409,34 +398,6 @@ pub(crate) enum PublicationAuthenticationError {
     Unavailable,
 }
 
-pub async fn login(args: LoginArgs) -> Result<()> {
-    ensure_browser_auth_available()?;
-    let pending = start_authorization(&args.api, &args.device_name).await?;
-    println!("Open this URL in a browser and approve the request:");
-    println!("{}", pending.verification_uri_complete);
-    println!("\nCode: {}", pending.user_code);
-    println!(
-        "Waiting for approval (expires in {} minutes)…",
-        pending.expires_in / 60
-    );
-
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(pending.expires_in);
-    let interval = Duration::from_secs(pending.interval.clamp(1, 10));
-    loop {
-        if tokio::time::Instant::now() >= deadline {
-            bail!("authorization expired; start it again")
-        }
-        if matches!(
-            poll_authorization(&pending).await?,
-            AuthorizationPoll::Complete
-        ) {
-            println!("Signed in to your LLM Notary account.");
-            return Ok(());
-        }
-        tokio::time::sleep(interval).await;
-    }
-}
-
 pub(crate) async fn start_authorization(
     api: &str,
     device_name: &str,
@@ -503,12 +464,6 @@ pub(crate) async fn poll_authorization(
     Ok(AuthorizationPoll::Complete)
 }
 
-pub async fn logout() -> Result<()> {
-    logout_for_service().await?;
-    println!("Signed out. Hosted sessions will use public access.");
-    Ok(())
-}
-
 pub(crate) async fn logout_for_service() -> Result<()> {
     let _refresh = credential_refresh_guard().await;
     match credential_configuration()? {
@@ -541,17 +496,6 @@ pub(crate) async fn logout_for_service() -> Result<()> {
     Ok(())
 }
 
-pub async fn whoami() -> Result<()> {
-    let status = account_connection_status().await?;
-    println!(
-        "{} ({}: {})",
-        status.github_login.unwrap_or_default(),
-        status.credential_kind.unwrap_or_default(),
-        status.credential_name.unwrap_or_default()
-    );
-    Ok(())
-}
-
 pub(crate) async fn account_connection_status() -> Result<AccountConnectionStatus> {
     match credential_configuration()? {
         CredentialConfiguration::Anonymous { origin } => Ok(disconnected_status(&origin)),
@@ -581,7 +525,7 @@ fn disconnected_status(origin: &ApiOrigin) -> AccountConnectionStatus {
     AccountConnectionStatus {
         signed_in: false,
         connection_state: AccountConnectionState::Disconnected,
-        github_login: None,
+        provider_display_name: None,
         display_name: None,
         auth_provider: None,
         device_name: None,
@@ -600,7 +544,7 @@ fn unavailable_or_reauthorization_status(
     AccountConnectionStatus {
         signed_in: false,
         connection_state: state,
-        github_login: None,
+        provider_display_name: None,
         display_name: None,
         auth_provider: None,
         device_name: None,
@@ -663,7 +607,7 @@ async fn lookup_account_status(authenticated: AuthenticatedApi) -> AccountConnec
     AccountConnectionStatus {
         signed_in: true,
         connection_state: AccountConnectionState::Connected,
-        github_login: response.user.github_login,
+        provider_display_name: response.user.provider_display_name,
         display_name: response.user.display_name,
         auth_provider: response.user.auth_provider,
         device_name,
@@ -1381,7 +1325,7 @@ mod tests {
     #[test]
     fn whoami_accepts_separate_capture_and_notarization_balances() {
         let response: WhoamiResponse = serde_json::from_value(serde_json::json!({
-            "user": { "github_login": "fixture-user" },
+            "user": { "provider_display_name": "fixture-user" },
             "credential": { "kind": "cli_session", "name": "fixture device" },
             "session": { "device_name": "fixture device" },
             "billing": { "service_plan": "one_gb", "billing_status": "active" },
