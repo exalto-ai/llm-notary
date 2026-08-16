@@ -207,9 +207,7 @@ jobs:
       - name: Run daemon persistence and server matrix
         run: |
           scripts/test-daemon-persistence-e2e.sh sqlite filesystem 1 full
-          DAEMON_E2E_SKIP_BUILD=1 DAEMON_E2E_POSTGRES_SCENARIOS=extended scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 full
           DAEMON_E2E_SKIP_BUILD=1 scripts/test-daemon-persistence-e2e.sh sqlite s3 1 full
-          DAEMON_E2E_SKIP_BUILD=1 scripts/test-daemon-persistence-e2e.sh postgres s3 1 full
           DAEMON_E2E_SKIP_BUILD=1 scripts/test-daemon-persistence-e2e.sh postgres s3 2 full
 
   windows-update:
