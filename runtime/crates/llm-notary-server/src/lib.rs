@@ -656,11 +656,19 @@ fn delta(start: Option<u64>, end: Option<u64>) -> Option<u64> {
 
 /// Runs the remote Proxy-TLS notary service.
 pub async fn run() -> Result<()> {
-    run_with_policy(Arc::new(TicketlessAdmissionPolicy)).await
+    run_with_policy_factory(|| Ok(Arc::new(TicketlessAdmissionPolicy))).await
 }
 
 /// Runs the remote Proxy-TLS notary service with an injected admission policy.
 pub async fn run_with_policy(admission: Arc<dyn AdmissionPolicy>) -> Result<()> {
+    run_with_policy_factory(|| Ok(admission)).await
+}
+
+/// Runs the remote Proxy-TLS notary service with a lazily initialized admission policy.
+pub async fn run_with_policy_factory<F>(admission: F) -> Result<()>
+where
+    F: FnOnce() -> Result<Arc<dyn AdmissionPolicy>>,
+{
     let _telemetry = llm_notary_core::telemetry::init("llm-notary-server")?;
     let args = Args::parse();
     if args.max_private_chunk_bytes == 0
@@ -692,6 +700,7 @@ pub async fn run_with_policy(admission: Arc<dyn AdmissionPolicy>) -> Result<()> 
         println!("{public_key}");
         return Ok(());
     }
+    let admission = admission()?;
     let allowed_hosts = Arc::new(
         args.allow_host
             .into_iter()

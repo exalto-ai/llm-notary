@@ -372,18 +372,21 @@ fn coordinator_admission_rejection(
 
 /// Runs Exalto's hosted adapter around the public remote notary runtime.
 pub async fn run() -> Result<()> {
-    let admission = AdmissionCoordinator::from_env()?;
-    admission.usage_outbox.recover_after_restart()?;
-    let usage_replayer = admission.clone();
-    tokio::spawn(async move {
-        let mut ticker = tokio::time::interval(USAGE_OUTBOX_RETRY_INTERVAL);
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-        loop {
-            ticker.tick().await;
-            usage_replayer.replay_usage_outbox().await;
-        }
-    });
-    llm_notary_server::run_with_policy(Arc::new(admission)).await
+    llm_notary_server::run_with_policy_factory(|| {
+        let admission = AdmissionCoordinator::from_env()?;
+        admission.usage_outbox.recover_after_restart()?;
+        let usage_replayer = admission.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(USAGE_OUTBOX_RETRY_INTERVAL);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                usage_replayer.replay_usage_outbox().await;
+            }
+        });
+        Ok(Arc::new(admission) as Arc<dyn AdmissionPolicy>)
+    })
+    .await
 }
 
 fn operation_constraints(
