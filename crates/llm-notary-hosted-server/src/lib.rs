@@ -1,14 +1,4 @@
-use std::{
-    env, fs,
-    fs::OpenOptions,
-    io::Write,
-    path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
-};
+use std::{env, fs, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -20,6 +10,10 @@ use llm_notary_server::{
 use metrics::{counter, gauge};
 use serde::{Deserialize, Serialize};
 use url::Url;
+
+mod outbox;
+
+use outbox::{PendingUsageSettlement, UsageMode, UsageOutbox, UsageSettlementOutcome};
 
 const USAGE_OUTBOX_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -33,13 +27,6 @@ struct AdmissionCoordinator {
     usage_outbox: UsageOutbox,
 }
 
-#[derive(Clone)]
-struct UsageOutbox {
-    directory: Arc<PathBuf>,
-    write_lock: Arc<Mutex<()>>,
-    next_temp_id: Arc<AtomicU64>,
-}
-
 #[derive(Serialize)]
 struct RedeemRequest<'a> {
     ticket: &'a str,
@@ -51,7 +38,6 @@ struct RedeemRequest<'a> {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct RedeemedOperation {
     operation_id: String,
     max_attestable_http_bytes: i64,
@@ -60,39 +46,6 @@ struct RedeemedOperation {
     max_private_chunk_commitments: i64,
     record_digest: Option<String>,
     authenticated_allowance_bytes: Option<i64>,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum UsageMode {
-    Capture,
-    Finalize,
-}
-
-impl UsageMode {
-    fn for_session(mode: NotarySessionMode) -> Self {
-        match mode {
-            NotarySessionMode::Capture => Self::Capture,
-            NotarySessionMode::Finalize => Self::Finalize,
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum UsageSettlementOutcome {
-    Completed,
-    ClientFailed,
-    ServiceFailed,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-struct PendingUsageSettlement {
-    operation_id: String,
-    notary_instance_id: String,
-    mode: UsageMode,
-    authenticated_bytes: i64,
-    outcome: Option<UsageSettlementOutcome>,
 }
 
 #[derive(Serialize)]
@@ -116,17 +69,6 @@ enum CoordinatorRejection {
     CaptureAllowanceExhausted,
     FinalizationAllowanceExhausted,
     Unavailable(anyhow::Error),
-}
-
-#[cfg(unix)]
-fn sync_directory(directory: &Path) -> Result<()> {
-    fs::File::open(directory)?.sync_all()?;
-    Ok(())
-}
-
-#[cfg(not(unix))]
-fn sync_directory(_directory: &Path) -> Result<()> {
-    Ok(())
 }
 
 impl AdmissionCoordinator {
@@ -294,219 +236,6 @@ impl AdmissionCoordinator {
     }
 }
 
-impl UsageOutbox {
-    fn open(directory: impl Into<PathBuf>) -> Result<Self> {
-        let directory = directory.into();
-        if directory.as_os_str().is_empty() {
-            bail!("usage settlement outbox directory must not be empty");
-        }
-        fs::create_dir_all(&directory)
-            .with_context(|| format!("creating usage settlement outbox {}", directory.display()))?;
-        let outbox = Self {
-            directory: Arc::new(directory),
-            write_lock: Arc::new(Mutex::new(())),
-            next_temp_id: Arc::new(AtomicU64::new(0)),
-        };
-        outbox.cleanup_temporary_files()?;
-        Ok(outbox)
-    }
-
-    fn recover_after_restart(&self) -> Result<()> {
-        for mut pending in self.entries()? {
-            if pending.outcome.is_none() {
-                pending.outcome = Some(UsageSettlementOutcome::ServiceFailed);
-                self.write(&pending)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn stage(&self, pending: &PendingUsageSettlement) -> Result<()> {
-        validate_usage_entry(pending)?;
-        if pending.authenticated_bytes != 0 || pending.outcome.is_some() {
-            bail!("new usage outbox entry must be staged and unmeasured");
-        }
-        let path = self.path(&pending.operation_id)?;
-        if path.exists() {
-            let existing = self.read(&path)?;
-            if existing == *pending {
-                return Ok(());
-            }
-            bail!("usage outbox operation already exists with different data");
-        }
-        self.write(pending)
-    }
-
-    fn record_authenticated_bytes(&self, operation_id: &str, bytes: usize) -> Result<()> {
-        let path = self.path(operation_id)?;
-        let mut pending = self.read(&path)?;
-        let bytes = i64::try_from(bytes).context("authenticated usage does not fit in i64")?;
-        if pending.outcome.is_some() {
-            if pending.authenticated_bytes == bytes {
-                return Ok(());
-            }
-            bail!("terminal usage outbox entry has different measured bytes");
-        }
-        if pending.authenticated_bytes != 0 && pending.authenticated_bytes != bytes {
-            bail!("usage outbox entry has conflicting measured bytes");
-        }
-        pending.authenticated_bytes = bytes;
-        self.write(&pending)
-    }
-
-    fn finish(
-        &self,
-        operation_id: &str,
-        outcome: UsageSettlementOutcome,
-        fallback_bytes: usize,
-    ) -> Result<()> {
-        let path = self.path(operation_id)?;
-        let mut pending = self.read(&path)?;
-        let fallback_bytes =
-            i64::try_from(fallback_bytes).context("authenticated usage does not fit in i64")?;
-        if pending.authenticated_bytes == 0 {
-            pending.authenticated_bytes = fallback_bytes;
-        } else if fallback_bytes != 0 && pending.authenticated_bytes != fallback_bytes {
-            bail!("terminal usage conflicts with its staged measurement");
-        }
-        if let Some(previous) = pending.outcome {
-            if previous == outcome {
-                return Ok(());
-            }
-            bail!("usage outbox entry already has a different terminal outcome");
-        }
-        pending.outcome = Some(outcome);
-        self.write(&pending)
-    }
-
-    fn ready(&self) -> Result<Vec<PendingUsageSettlement>> {
-        Ok(self
-            .entries()?
-            .into_iter()
-            .filter(|pending| pending.outcome.is_some())
-            .collect())
-    }
-
-    fn entries(&self) -> Result<Vec<PendingUsageSettlement>> {
-        let mut entries = Vec::new();
-        for entry in fs::read_dir(self.directory.as_ref()).with_context(|| {
-            format!(
-                "reading usage settlement outbox {}",
-                self.directory.display()
-            )
-        })? {
-            let path = entry?.path();
-            if path.extension().and_then(|extension| extension.to_str()) == Some("json") {
-                entries.push(self.read(&path)?);
-            }
-        }
-        Ok(entries)
-    }
-
-    fn read(&self, path: &Path) -> Result<PendingUsageSettlement> {
-        let pending: PendingUsageSettlement = serde_json::from_slice(
-            &fs::read(path)
-                .with_context(|| format!("reading usage outbox entry {}", path.display()))?,
-        )
-        .with_context(|| format!("parsing usage outbox entry {}", path.display()))?;
-        validate_usage_entry(&pending)?;
-        if self.path(&pending.operation_id)? != path {
-            bail!("usage outbox filename does not match its operation");
-        }
-        Ok(pending)
-    }
-
-    fn write(&self, pending: &PendingUsageSettlement) -> Result<()> {
-        validate_usage_entry(pending)?;
-        let _guard = self
-            .write_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("usage outbox write lock was poisoned"))?;
-        let destination = self.path(&pending.operation_id)?;
-        let temporary = self.directory.join(format!(
-            ".tmp-{}-{}",
-            std::process::id(),
-            self.next_temp_id.fetch_add(1, Ordering::Relaxed)
-        ));
-        let bytes = serde_json::to_vec(pending).context("serializing usage outbox entry")?;
-        let result = (|| -> Result<()> {
-            let mut options = OpenOptions::new();
-            options.write(true).create_new(true);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::OpenOptionsExt as _;
-                options.mode(0o600);
-            }
-            let mut file = options
-                .open(&temporary)
-                .with_context(|| format!("creating usage outbox entry {}", temporary.display()))?;
-            file.write_all(&bytes)?;
-            file.write_all(b"\n")?;
-            file.sync_all()?;
-            fs::rename(&temporary, &destination)?;
-            sync_directory(self.directory.as_ref())?;
-            Ok(())
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
-        }
-        result
-    }
-
-    fn remove(&self, operation_id: &str) -> Result<()> {
-        let _guard = self
-            .write_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("usage outbox write lock was poisoned"))?;
-        let path = self.path(operation_id)?;
-        match fs::remove_file(&path) {
-            Ok(()) => sync_directory(self.directory.as_ref()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error.into()),
-        }
-    }
-
-    fn path(&self, operation_id: &str) -> Result<PathBuf> {
-        validate_usage_identifier(operation_id)?;
-        Ok(self.directory.join(format!("{operation_id}.json")))
-    }
-
-    fn cleanup_temporary_files(&self) -> Result<()> {
-        for entry in fs::read_dir(self.directory.as_ref())? {
-            let path = entry?.path();
-            if path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .is_some_and(|name| name.starts_with(".tmp-"))
-            {
-                fs::remove_file(path)?;
-            }
-        }
-        sync_directory(self.directory.as_ref())
-    }
-}
-
-fn validate_usage_identifier(value: &str) -> Result<()> {
-    if value.is_empty()
-        || value.len() > 128
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        bail!("usage outbox contains an invalid identifier");
-    }
-    Ok(())
-}
-
-fn validate_usage_entry(pending: &PendingUsageSettlement) -> Result<()> {
-    validate_usage_identifier(&pending.operation_id)?;
-    validate_usage_identifier(&pending.notary_instance_id)?;
-    if pending.authenticated_bytes < 0 {
-        bail!("usage outbox contains negative authenticated bytes");
-    }
-    Ok(())
-}
-
 fn coordinator_rejection(
     status: reqwest::StatusCode,
     error_code: Option<&str>,
@@ -573,10 +302,6 @@ impl AdmissionPolicy for AdmissionCoordinator {
             .redeem(ticket, request.mode)
             .await
             .map_err(|rejection| coordinator_admission_rejection(request.mode, rejection))?;
-        let constraints = operation_constraints(request.mode, &operation).map_err(|error| {
-            tracing::error!(%error, "admission coordinator returned invalid notary limits");
-            NotaryAdmissionRejection::AdmissionServiceUnavailable
-        })?;
         let pending = PendingUsageSettlement {
             operation_id: operation.operation_id.clone(),
             notary_instance_id: self.instance_id.to_string(),
@@ -593,6 +318,24 @@ impl AdmissionPolicy for AdmissionCoordinator {
             }
             return Err(NotaryAdmissionRejection::AdmissionServiceUnavailable);
         }
+        let constraints = match operation_constraints(request.mode, &operation) {
+            Ok(constraints) => constraints,
+            Err(error) => {
+                tracing::error!(%error, "admission coordinator returned invalid notary limits");
+                if self
+                    .usage_outbox
+                    .finish(
+                        &operation.operation_id,
+                        UsageSettlementOutcome::ServiceFailed,
+                        0,
+                    )
+                    .is_err()
+                {
+                    tracing::error!("recording invalid admitted operation for settlement failed");
+                }
+                return Err(NotaryAdmissionRejection::AdmissionServiceUnavailable);
+            }
+        };
         Ok(AdmissionGrant {
             constraints,
             lifecycle: Some(Arc::new(HostedLifecycle {
@@ -731,7 +474,8 @@ mod tests {
             "max_private_chunk_bytes": 512,
             "max_private_chunk_commitments": 4,
             "record_digest": null,
-            "authenticated_allowance_bytes": null
+            "authenticated_allowance_bytes": null,
+            "future_additive_field": "accepted"
         }))
         .unwrap();
         assert_eq!(operation.operation_id, "operation-test");
@@ -841,6 +585,55 @@ mod tests {
         assert_eq!(grant.constraints.max_total_private_chunk_bytes, Some(1024));
         assert_eq!(grant.constraints.session_timeout, None);
         assert_eq!(coordinator.usage_outbox.ready().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn invalid_redeemed_limits_are_staged_for_service_failed_settlement() {
+        let outbox_directory = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/api/internal/notary/admissions/redeem",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "operation_id": "operation-invalid-limits",
+                    "max_attestable_http_bytes": 0,
+                    "max_frame_bytes": 2048,
+                    "max_private_chunk_bytes": 512,
+                    "max_private_chunk_commitments": 4,
+                    "record_digest": null,
+                    "authenticated_allowance_bytes": null
+                }))
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let coordinator = AdmissionCoordinator {
+            http: reqwest::Client::new(),
+            origin: Url::parse(&format!("http://{address}/")).unwrap(),
+            service_token: Arc::from("x".repeat(32)),
+            instance_id: Arc::from("notary-test"),
+            directory_generation: 1,
+            usage_outbox: UsageOutbox::open(outbox_directory.path()).unwrap(),
+        };
+
+        assert!(matches!(
+            coordinator
+                .admit(AdmissionRequest {
+                    mode: NotarySessionMode::Capture,
+                    admission_value: Some("opaque-ticket"),
+                })
+                .await,
+            Err(NotaryAdmissionRejection::AdmissionServiceUnavailable)
+        ));
+        let pending = coordinator.usage_outbox.ready().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].operation_id, "operation-invalid-limits");
+        assert_eq!(
+            pending[0].outcome,
+            Some(UsageSettlementOutcome::ServiceFailed)
+        );
+        server.abort();
+        let _ = server.await;
     }
 
     #[test]
