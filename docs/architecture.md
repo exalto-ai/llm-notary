@@ -42,6 +42,16 @@ fallback: neither path retries through the other after a failure.
 
 ## Capture flow
 
+In hosted mode, the daemon first collects the provider request under its local
+hard byte limit, then requests a short-lived one-operation capture ticket
+immediately before connecting to the notary. It revalidates the completed
+request against the returned policy limit. The admission request names only
+`capture`; it does not send a cached account balance or request a byte grant.
+The ticket is held only long enough to place it in the protected notary prelude
+and is never written to metadata, logs, metrics, previews, or evidence. An
+explicit self-hosted `notary.endpoint` and `notary.public_key` bypass both ticket
+acquisition and hosted key discovery.
+
 1. A provider client sends an HTTP/1.1 request to a fixed local route.
 2. The local daemon selects the fixed provider hostname from that route.
 3. The remote notary resolves and opens the upstream TCP connection.
@@ -78,6 +88,11 @@ signing key and lets a later finalizer select a compatible notary.
 The original socket and notary process do not need to survive. Any notary
 instance holding the same signing key can complete finalization before that
 key's drain deadline. The notary stores no per-bundle checkpoint.
+
+Hosted finalization obtains a new one-operation ticket bound to the immutable
+record digest and exact authenticated byte allowance in the source bundle. The
+client does not renew or release tickets and makes no admission decision from a
+locally cached credit balance.
 
 Finalization creates selective TLSNotary disclosure, verifies it locally,
 normalizes the authenticated provider exchange, and writes the deterministic

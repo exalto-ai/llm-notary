@@ -28,6 +28,7 @@ const API_ORIGIN_ENV: &str = "LLM_NOTARY_API_ORIGIN";
 const API_KEY_VERSION_PREFIX: &str = "llmn_v1_";
 const ACCOUNT_REQUEST_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const ACCOUNT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_ADMISSION_RESPONSE_BYTES: usize = 16 * 1024;
 pub(crate) const DEFAULT_DEVICE_NAME: &str = "llm-notary cli";
 static CREDENTIAL_REFRESH: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
@@ -211,19 +212,13 @@ enum CredentialConfiguration {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-enum AdmissionMode {
+#[serde(tag = "mode", rename_all = "snake_case")]
+enum AdmissionRequest<'a> {
     Capture,
-    Finalize,
-}
-
-#[derive(Serialize)]
-struct AdmissionRequest<'a> {
-    mode: AdmissionMode,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    record_digest: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    requested_allowance_bytes: Option<usize>,
+    Finalize {
+        record_digest: &'a str,
+        requested_allowance_bytes: usize,
+    },
 }
 
 #[derive(Deserialize)]
@@ -252,10 +247,6 @@ impl HostedAdmissionError {
     pub(crate) fn code(&self) -> &str {
         &self.code
     }
-
-    pub(crate) fn message(&self) -> &str {
-        &self.message
-    }
 }
 
 impl fmt::Display for HostedAdmissionError {
@@ -268,6 +259,88 @@ impl std::error::Error for HostedAdmissionError {}
 
 pub(crate) fn hosted_admission_error(error: &anyhow::Error) -> Option<&HostedAdmissionError> {
     error.downcast_ref()
+}
+
+/// A bounded, user-safe hosted-admission failure shared by ticket acquisition,
+/// ticket redemption, capture responses, and finalization operation state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct HostedAdmissionFailure {
+    status: StatusCode,
+    code: &'static str,
+}
+
+impl HostedAdmissionFailure {
+    pub(crate) fn status(self) -> StatusCode {
+        self.status
+    }
+
+    pub(crate) fn code(self) -> &'static str {
+        self.code
+    }
+
+    pub(crate) fn message(self) -> &'static str {
+        match self.code {
+            "finalization_credits_exhausted" => {
+                "Hosted notarization allowance is exhausted. Wait for the monthly reset or buy additional credits."
+            }
+            "capture_credits_exhausted" => {
+                "The monthly hosted capture allowance is exhausted. Wait for the monthly reset or change plans."
+            }
+            "billing_review" => {
+                "Hosted capture and notarization are unavailable while billing is under review. Open Plan & usage to manage the subscription."
+            }
+            "hosted_admission_expired" => {
+                "Hosted admission expired before use. Retry the request to obtain a new one-operation ticket."
+            }
+            "hosted_admission_unavailable" => {
+                "Hosted admission is temporarily unavailable. Retry shortly."
+            }
+            _ => "Hosted admission was denied. Retry shortly or connect an account.",
+        }
+    }
+}
+
+pub(crate) fn hosted_admission_failure(error: &anyhow::Error) -> Option<HostedAdmissionFailure> {
+    if let Some(error) = hosted_admission_error(error) {
+        return Some(HostedAdmissionFailure {
+            status: error.status(),
+            code: match error.code() {
+                "finalization_credits_exhausted" => "finalization_credits_exhausted",
+                "capture_credits_exhausted" => "capture_credits_exhausted",
+                "billing_review" => "billing_review",
+                "hosted_admission_expired" => "hosted_admission_expired",
+                "hosted_admission_unavailable" => "hosted_admission_unavailable",
+                _ => "hosted_admission_denied",
+            },
+        });
+    }
+    let admission = crate::notary_admission_error(error)?;
+    let failure = match admission.rejection() {
+        crate::NotaryAdmissionRejection::AdmissionDenied => HostedAdmissionFailure {
+            status: StatusCode::BAD_GATEWAY,
+            code: "hosted_admission_denied",
+        },
+        crate::NotaryAdmissionRejection::AdmissionExpired => HostedAdmissionFailure {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "hosted_admission_expired",
+        },
+        crate::NotaryAdmissionRejection::CoordinatorUnavailable => HostedAdmissionFailure {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            code: "hosted_admission_unavailable",
+        },
+        crate::NotaryAdmissionRejection::CaptureCreditsExhausted => HostedAdmissionFailure {
+            status: StatusCode::PAYMENT_REQUIRED,
+            code: "capture_credits_exhausted",
+        },
+        crate::NotaryAdmissionRejection::FinalizationCreditsExhausted => HostedAdmissionFailure {
+            status: StatusCode::PAYMENT_REQUIRED,
+            code: "finalization_credits_exhausted",
+        },
+        crate::NotaryAdmissionRejection::CaptureAtCapacity
+        | crate::NotaryAdmissionRejection::FinalizeAtCapacity
+        | crate::NotaryAdmissionRejection::CaptureDisabled => return None,
+    };
+    Some(failure)
 }
 
 pub(crate) fn hosted_admission_denial(code: &str) -> HostedAdmissionError {
@@ -287,6 +360,14 @@ pub(crate) fn hosted_admission_denial(code: &str) -> HostedAdmissionError {
             "billing_review",
             "Hosted capture and notarization are unavailable while billing is under review. Open Plan & usage to manage the subscription.",
         ),
+        "ticket_expired" | "admission_ticket_expired" => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "hosted_admission_expired",
+            "Hosted admission expired before use. Retry the request to obtain a new one-operation ticket.",
+        ),
+        "coordinator_unavailable" | "hosted_admission_unavailable" => {
+            return hosted_admission_unavailable();
+        }
         _ => (
             StatusCode::BAD_GATEWAY,
             "hosted_admission_denied",
@@ -300,12 +381,22 @@ pub(crate) fn hosted_admission_denial(code: &str) -> HostedAdmissionError {
     }
 }
 
+fn hosted_admission_unavailable() -> HostedAdmissionError {
+    HostedAdmissionError {
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        code: "hosted_admission_unavailable".to_owned(),
+        message: "Hosted admission is temporarily unavailable. Retry shortly.".to_owned(),
+    }
+}
+
 #[derive(Deserialize)]
 struct AdmissionLimits {
     max_attestable_http_bytes: usize,
     max_frame_bytes: usize,
 }
 
+// Deliberately neither Debug nor Serialize: the one-operation bearer value is
+// passed directly to the notary prelude and must never enter logs or metadata.
 pub(crate) struct AdmissionTicket {
     pub(crate) ticket: String,
     pub(crate) max_attestable_http_bytes: usize,
@@ -655,26 +746,21 @@ async fn authenticate_device_session() -> Result<AuthenticatedApi> {
 }
 
 pub(crate) async fn issue_capture_admission() -> Result<AdmissionTicket> {
-    issue_admission(AdmissionMode::Capture, None, None).await
+    issue_admission(AdmissionRequest::Capture).await
 }
 
 pub(crate) async fn issue_finalization_admission(
     record_digest: &str,
     requested_allowance_bytes: usize,
 ) -> Result<AdmissionTicket> {
-    issue_admission(
-        AdmissionMode::Finalize,
-        Some(record_digest),
-        Some(requested_allowance_bytes),
-    )
+    issue_admission(AdmissionRequest::Finalize {
+        record_digest,
+        requested_allowance_bytes,
+    })
     .await
 }
 
-async fn issue_admission(
-    mode: AdmissionMode,
-    record_digest: Option<&str>,
-    requested_allowance_bytes: Option<usize>,
-) -> Result<AdmissionTicket> {
+async fn issue_admission(request_body: AdmissionRequest<'_>) -> Result<AdmissionTicket> {
     let (origin, authenticated) = match credential_configuration()? {
         CredentialConfiguration::Anonymous { origin } => (origin, None),
         CredentialConfiguration::ApiKey(authenticated) => {
@@ -690,34 +776,57 @@ async fn issue_admission(
     let client = http_client_builder()
         .build()
         .context("building admission API client")?;
-    let mut request =
-        client
-            .post(origin.api_url("/api/notary/admissions"))
-            .json(&AdmissionRequest {
-                mode,
-                record_digest,
-                requested_allowance_bytes,
-            });
+    let mut request = client
+        .post(origin.api_url("/api/notary/admissions"))
+        .json(&request_body);
     if let Some(authenticated) = authenticated {
         request = request.bearer_auth(authenticated.access_token);
     }
     let response = request
         .send()
         .await
-        .context("requesting hosted notary admission")?;
-    if !response.status().is_success() {
-        let error = response
-            .json::<AdmissionErrorResponse>()
+        .map_err(|_| hosted_admission_unavailable())?;
+    let status = response.status();
+    let body = read_bounded_admission_response(response).await?;
+    parse_admission_response(status, &body).map_err(Into::into)
+}
+
+async fn read_bounded_admission_response(
+    mut response: reqwest::Response,
+) -> std::result::Result<Vec<u8>, HostedAdmissionError> {
+    let mut body = Vec::new();
+    loop {
+        let chunk = response
+            .chunk()
             .await
-            .context("reading hosted notary admission error")?;
-        return Err(hosted_admission_denial(&error.error).into());
+            .map_err(|_| hosted_admission_unavailable())?;
+        let Some(chunk) = chunk else {
+            break;
+        };
+        if body.len().saturating_add(chunk.len()) > MAX_ADMISSION_RESPONSE_BYTES {
+            return Err(hosted_admission_unavailable());
+        }
+        body.extend_from_slice(&chunk);
     }
-    let response = response
-        .json::<AdmissionResponse>()
-        .await
-        .context("reading hosted notary admission")?;
-    if response.ticket.is_empty() || response.max_values_invalid() {
-        bail!("hosted admission API returned invalid limits");
+    Ok(body)
+}
+
+fn parse_admission_response(
+    status: StatusCode,
+    body: &[u8],
+) -> std::result::Result<AdmissionTicket, HostedAdmissionError> {
+    if !status.is_success() {
+        let error = serde_json::from_slice::<AdmissionErrorResponse>(body)
+            .map_err(|_| hosted_admission_unavailable())?;
+        return Err(hosted_admission_denial(&error.error));
+    }
+    let response = serde_json::from_slice::<AdmissionResponse>(body)
+        .map_err(|_| hosted_admission_unavailable())?;
+    if response.ticket.is_empty()
+        || response.ticket.len() > crate::MAX_NOTARY_ADMISSION_TICKET_BYTES
+        || response.max_values_invalid()
+    {
+        return Err(hosted_admission_unavailable());
     }
     Ok(AdmissionTicket {
         ticket: response.ticket,
@@ -1376,17 +1485,86 @@ mod tests {
         let exhausted = hosted_admission_denial("finalization_credits_exhausted");
         assert_eq!(exhausted.status(), StatusCode::PAYMENT_REQUIRED);
         assert_eq!(exhausted.code(), "finalization_credits_exhausted");
-        assert!(exhausted.message().contains("monthly reset"));
+        assert!(exhausted.to_string().contains("monthly reset"));
 
         let billing_review = hosted_admission_denial("billing_review");
         assert_eq!(billing_review.status(), StatusCode::PAYMENT_REQUIRED);
         assert_eq!(billing_review.code(), "billing_review");
-        assert!(billing_review.message().contains("Plan & usage"));
+        assert!(billing_review.to_string().contains("Plan & usage"));
 
         let unknown = hosted_admission_denial("secret-value-from-an-upstream-error");
         assert_eq!(unknown.status(), StatusCode::BAD_GATEWAY);
         assert_eq!(unknown.code(), "hosted_admission_denied");
         assert!(!unknown.to_string().contains("secret-value"));
+
+        let expired = hosted_admission_denial("ticket_expired");
+        assert_eq!(expired.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(expired.code(), "hosted_admission_expired");
+        assert!(!expired.to_string().contains("ticket_expired"));
+
+        let unavailable = hosted_admission_unavailable();
+        assert_eq!(unavailable.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(unavailable.code(), "hosted_admission_unavailable");
+        assert!(!unavailable.to_string().contains("http"));
+    }
+
+    #[test]
+    fn one_operation_admission_requests_have_exact_mode_bindings() {
+        assert_eq!(
+            serde_json::to_value(AdmissionRequest::Capture).unwrap(),
+            serde_json::json!({"mode": "capture"})
+        );
+        assert_eq!(
+            serde_json::to_value(AdmissionRequest::Finalize {
+                record_digest: "ab12",
+                requested_allowance_bytes: 42,
+            })
+            .unwrap(),
+            serde_json::json!({
+                "mode": "finalize",
+                "record_digest": "ab12",
+                "requested_allowance_bytes": 42,
+            })
+        );
+    }
+
+    #[test]
+    fn admission_response_parsing_is_bounded_and_deterministic() {
+        let ticket = parse_admission_response(
+            StatusCode::OK,
+            br#"{"ticket":"one-operation-ticket","limits":{"max_attestable_http_bytes":1024,"max_frame_bytes":2048}}"#,
+        )
+        .unwrap();
+        assert_eq!(ticket.ticket, "one-operation-ticket");
+        assert_eq!(ticket.max_attestable_http_bytes, 1024);
+        assert_eq!(ticket.max_frame_bytes, 2048);
+
+        let exhausted = parse_admission_response(
+            StatusCode::PAYMENT_REQUIRED,
+            br#"{"error":"capture_credits_exhausted"}"#,
+        )
+        .err()
+        .unwrap();
+        assert_eq!(exhausted.code(), "capture_credits_exhausted");
+
+        let malformed = parse_admission_response(StatusCode::OK, b"upstream-secret")
+            .err()
+            .unwrap();
+        assert_eq!(malformed.code(), "hosted_admission_unavailable");
+        assert!(!malformed.to_string().contains("upstream-secret"));
+
+        let oversized_ticket = serde_json::to_vec(&serde_json::json!({
+            "ticket": "x".repeat(crate::MAX_NOTARY_ADMISSION_TICKET_BYTES + 1),
+            "limits": {"max_attestable_http_bytes": 1, "max_frame_bytes": 1},
+        }))
+        .unwrap();
+        assert_eq!(
+            parse_admission_response(StatusCode::OK, &oversized_ticket)
+                .err()
+                .unwrap()
+                .code(),
+            "hosted_admission_unavailable"
+        );
     }
 
     #[tokio::test]

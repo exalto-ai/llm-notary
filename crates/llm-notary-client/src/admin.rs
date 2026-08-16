@@ -1531,6 +1531,14 @@ fn artifact_failure_code(error: &anyhow::Error) -> Option<&'static str> {
         .map(ArtifactStoreError::failure_code)
 }
 
+fn finalization_failure_code(error: &anyhow::Error) -> &'static str {
+    auth::hosted_admission_failure(error)
+        .map(|failure| failure.code())
+        .or_else(|| crate::notary_admission_error(error).map(|_| "notary_capacity"))
+        .or_else(|| artifact_failure_code(error))
+        .unwrap_or("finalization_error")
+}
+
 pub(crate) fn spawn_finalization_worker(
     persistence: Persistence,
     config: Arc<AgentConfig>,
@@ -1645,23 +1653,7 @@ pub(crate) fn spawn_finalization_worker(
             )
             .await;
             let now = now_ms()?;
-            let failure_code = result.as_ref().err().map(|error| {
-                auth::hosted_admission_error(error)
-                    .map(|error| error.code())
-                    .or_else(|| {
-                        crate::notary_admission_error(error).map(|error| {
-                            if error.rejection()
-                                == crate::NotaryAdmissionRejection::FinalizationCreditsExhausted
-                            {
-                                "finalization_credits_exhausted"
-                            } else {
-                                "notary_capacity"
-                            }
-                        })
-                    })
-                    .or_else(|| artifact_failure_code(error))
-                    .unwrap_or("finalization_error")
-            });
+            let failure_code = result.as_ref().err().map(finalization_failure_code);
             loop {
                 let transition = match (&result, failure_code) {
                     (Ok(artifact), None) if claim.is_some() => {
@@ -1898,7 +1890,7 @@ async fn finalize_operation(
             .context("progress recorder exited")?;
         return Ok(existing);
     }
-    let hosted_admission = config.notary.endpoint.is_none();
+    let hosted_admission = proxy::hosted_admission_required(config);
     let (key, endpoint) = match (config.notary_public_key()?, config.notary_endpoint()?) {
         (Some(key), Some(endpoint)) => {
             bundle.verify_notary_key(&key)?;
@@ -2720,6 +2712,42 @@ mod tests {
         fn make_writer(&'writer self) -> Self::Writer {
             SharedLogWriter(self.0.clone())
         }
+    }
+
+    #[test]
+    fn finalization_failures_preserve_hosted_admission_outcomes() {
+        for (rejection, expected) in [
+            (
+                crate::NotaryAdmissionRejection::AdmissionExpired,
+                "hosted_admission_expired",
+            ),
+            (
+                crate::NotaryAdmissionRejection::CoordinatorUnavailable,
+                "hosted_admission_unavailable",
+            ),
+            (
+                crate::NotaryAdmissionRejection::FinalizationCreditsExhausted,
+                "finalization_credits_exhausted",
+            ),
+            (
+                crate::NotaryAdmissionRejection::FinalizeAtCapacity,
+                "notary_capacity",
+            ),
+        ] {
+            let error = anyhow::Error::new(crate::NotaryAdmissionError::test_only(
+                rejection,
+                Duration::from_secs(5),
+            ));
+            assert_eq!(finalization_failure_code(&error), expected);
+        }
+
+        let acquisition = anyhow::Error::new(auth::hosted_admission_denial(
+            "finalization_credits_exhausted",
+        ));
+        assert_eq!(
+            finalization_failure_code(&acquisition),
+            "finalization_credits_exhausted"
+        );
     }
 
     async fn state(directory: &std::path::Path) -> AdminState {

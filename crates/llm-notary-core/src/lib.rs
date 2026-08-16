@@ -196,6 +196,7 @@ pub enum FinalizationProgress {
 pub type FinalizationProgressObserver<'a> = &'a (dyn Fn(FinalizationProgress) + Send + Sync);
 const NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED: u8 = 6;
 const NOTARY_REJECTION_CAPTURE_CREDITS_EXHAUSTED: u8 = 7;
+const NOTARY_REJECTION_ADMISSION_EXPIRED: u8 = 8;
 pub const NOTARY_CAPACITY_RETRY_AFTER_SECS: u64 = 5;
 
 trait NotaryStream: AsyncRead + AsyncWrite + Send + Unpin {}
@@ -219,6 +220,7 @@ pub enum NotaryAdmissionRejection {
     FinalizeAtCapacity,
     CaptureDisabled,
     AdmissionDenied,
+    AdmissionExpired,
     CoordinatorUnavailable,
     CaptureCreditsExhausted,
     FinalizationCreditsExhausted,
@@ -231,6 +233,7 @@ impl NotaryAdmissionRejection {
             Self::FinalizeAtCapacity => "finalize_at_capacity",
             Self::CaptureDisabled => "capture_disabled",
             Self::AdmissionDenied => "admission_denied",
+            Self::AdmissionExpired => "admission_expired",
             Self::CoordinatorUnavailable => "coordinator_unavailable",
             Self::CaptureCreditsExhausted => "capture_credits_exhausted",
             Self::FinalizationCreditsExhausted => "finalization_credits_exhausted",
@@ -243,6 +246,7 @@ impl NotaryAdmissionRejection {
             NOTARY_REJECTION_FINALIZE_AT_CAPACITY => Ok(Self::FinalizeAtCapacity),
             NOTARY_REJECTION_CAPTURE_DISABLED => Ok(Self::CaptureDisabled),
             NOTARY_REJECTION_ADMISSION_DENIED => Ok(Self::AdmissionDenied),
+            NOTARY_REJECTION_ADMISSION_EXPIRED => Ok(Self::AdmissionExpired),
             NOTARY_REJECTION_COORDINATOR_UNAVAILABLE => Ok(Self::CoordinatorUnavailable),
             NOTARY_REJECTION_CAPTURE_CREDITS_EXHAUSTED => Ok(Self::CaptureCreditsExhausted),
             NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED => {
@@ -258,6 +262,7 @@ impl NotaryAdmissionRejection {
             Self::FinalizeAtCapacity => NOTARY_REJECTION_FINALIZE_AT_CAPACITY,
             Self::CaptureDisabled => NOTARY_REJECTION_CAPTURE_DISABLED,
             Self::AdmissionDenied => NOTARY_REJECTION_ADMISSION_DENIED,
+            Self::AdmissionExpired => NOTARY_REJECTION_ADMISSION_EXPIRED,
             Self::CoordinatorUnavailable => NOTARY_REJECTION_COORDINATOR_UNAVAILABLE,
             Self::CaptureCreditsExhausted => NOTARY_REJECTION_CAPTURE_CREDITS_EXHAUSTED,
             Self::FinalizationCreditsExhausted => NOTARY_REJECTION_FINALIZATION_CREDITS_EXHAUSTED,
@@ -316,6 +321,9 @@ impl fmt::Display for NotaryAdmissionError {
             }
             NotaryAdmissionRejection::AdmissionDenied => {
                 write!(formatter, "notary admission was denied")
+            }
+            NotaryAdmissionRejection::AdmissionExpired => {
+                write!(formatter, "notary admission expired before use")
             }
             NotaryAdmissionRejection::CoordinatorUnavailable => {
                 write!(
@@ -2536,6 +2544,18 @@ mod tests {
     fn hosted_policy_rejections_have_stable_wire_codes() {
         for (rejection, code) in [
             (
+                NotaryAdmissionRejection::AdmissionDenied,
+                "admission_denied",
+            ),
+            (
+                NotaryAdmissionRejection::AdmissionExpired,
+                "admission_expired",
+            ),
+            (
+                NotaryAdmissionRejection::CoordinatorUnavailable,
+                "coordinator_unavailable",
+            ),
+            (
                 NotaryAdmissionRejection::CaptureCreditsExhausted,
                 "capture_credits_exhausted",
             ),
@@ -2550,6 +2570,7 @@ mod tests {
                 rejection
             );
         }
+        assert_eq!(NotaryAdmissionRejection::AdmissionExpired.wire_code(), 8);
     }
 
     #[tokio::test]
