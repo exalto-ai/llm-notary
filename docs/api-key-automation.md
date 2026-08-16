@@ -85,10 +85,15 @@ jobs:
       LLM_NOTARY_API_KEY: ${{ secrets.LLM_NOTARY_API_KEY }}
       LLM_NOTARY_VAULT_PASSPHRASE_FILE: ${{ runner.temp }}/llm-notary-vault-passphrase
     steps:
-      - uses: actions/checkout@v6
+      - name: Check out the public runtime
+        uses: actions/checkout@v6
+        with:
+          repository: exalto-ai/notary-runtime
       - uses: dtolnay/rust-toolchain@1.95.0
       - name: Install LLM Notary
-        run: cargo install --locked --path crates/llm-notary-client
+        run: |
+          cargo install --locked --path crates/llm-notary-daemon --bin llm-notaryd
+          cargo install --locked --path crates/llm-notary-cli --bin llm-notary
       - name: Start the local service
         env:
           VAULT_PASSPHRASE: ${{ secrets.LLM_NOTARY_VAULT_PASSPHRASE }}

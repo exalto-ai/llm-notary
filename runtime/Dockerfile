@@ -1,0 +1,105 @@
+FROM rust:1.95-slim-bookworm AS builder
+
+WORKDIR /app
+COPY . .
+RUN cargo build --locked --release \
+    -p llm-notary-cli --bin llm-notary \
+    -p llm-notary-daemon --bin llm-notaryd \
+    -p llm-notary-server --bin llm-notary-server
+
+FROM debian:bookworm-slim AS daemon
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/llm-notaryd /usr/local/bin/llm-notaryd
+COPY --from=builder /app/target/release/llm-notary /usr/local/bin/llm-notary
+RUN llm-notaryd --help >/dev/null && llm-notary --help >/dev/null
+ENTRYPOINT ["llm-notaryd"]
+
+FROM daemon AS cluster
+
+RUN groupadd --gid 10001 llm-notary \
+    && useradd --uid 10001 --gid 10001 --system --no-create-home llm-notary \
+    && mkdir -p /var/lib/llm-notary/config /var/lib/llm-notary/data \
+    && chown -R 10001:10001 /var/lib/llm-notary
+ENV XDG_CONFIG_HOME=/var/lib/llm-notary/config \
+    XDG_DATA_HOME=/var/lib/llm-notary/data
+USER 10001:10001
+EXPOSE 8787 8788
+
+FROM debian:bookworm-slim AS notary
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /app/target/release/llm-notary-server /usr/local/bin/llm-notary-server
+RUN llm-notary-server --help >/dev/null
+EXPOSE 7047
+ENTRYPOINT ["llm-notary-server"]
+
+FROM builder AS daemon-e2e-builder
+
+RUN cargo build --locked --release \
+    -p llm-notary-daemon --features daemon-e2e --bins \
+    -p llm-notary-cli --bin llm-notary
+
+FROM daemon AS daemon-e2e
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl jq openssl python3 sqlite3 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=daemon-e2e-builder /app/target/release/llm-notaryd /usr/local/bin/llm-notaryd
+COPY --from=daemon-e2e-builder /app/target/release/llm-notary /usr/local/bin/llm-notary
+COPY --from=daemon-e2e-builder /app/target/release/llm-notary-e2e-notary /usr/local/bin/llm-notary-e2e-notary
+COPY deploy-daemon-e2e/config.toml /etc/llm-notary/config.toml
+RUN cp /etc/llm-notary/config.toml /etc/llm-notary/config-s3.toml \
+    && sed -i 's/backend = "filesystem"/backend = "s3"/' /etc/llm-notary/config-s3.toml \
+    && printf '%s\n' \
+        '' \
+        '[storage.s3]' \
+        'bucket = "llm-notary-daemon-e2e"' \
+        'region = "us-east-1"' \
+        'endpoint = "http://minio:9000"' \
+        'prefix = "daemon-e2e/artifacts"' \
+        'force_path_style = true' \
+        'allow_insecure_http = true' \
+        'connect_timeout_seconds = 3' \
+        'operation_timeout_seconds = 10' \
+        >> /etc/llm-notary/config-s3.toml \
+    && cp /etc/llm-notary/config.toml /etc/llm-notary/config-postgres.toml \
+    && sed -i 's/backend = "sqlite"/backend = "postgres"/' /etc/llm-notary/config-postgres.toml \
+    && printf '%s\n' \
+        '' \
+        '[catalog.postgres]' \
+        'ssl_mode = "disable"' \
+        'max_connections = 8' \
+        'connect_timeout_seconds = 3' \
+        'acquire_timeout_seconds = 3' \
+        'migration_lock_timeout_seconds = 5' \
+        >> /etc/llm-notary/config-postgres.toml \
+    && cp /etc/llm-notary/config-postgres.toml /etc/llm-notary/config-postgres-lock-timeout.toml \
+    && sed -i 's/migration_lock_timeout_seconds = 5/migration_lock_timeout_seconds = 1/' /etc/llm-notary/config-postgres-lock-timeout.toml \
+    && cp /etc/llm-notary/config-postgres.toml /etc/llm-notary/config-postgres-s3.toml \
+    && sed -i 's/backend = "filesystem"/backend = "s3"/' /etc/llm-notary/config-postgres-s3.toml \
+    && sed -n '/^\[storage.s3\]/,$p' /etc/llm-notary/config-s3.toml \
+        >> /etc/llm-notary/config-postgres-s3.toml \
+    && cp /etc/llm-notary/config-postgres-s3.toml /etc/llm-notary/config-cluster-template.toml \
+    && sed -i 's/127.0.0.1:8787/0.0.0.0:8787/' /etc/llm-notary/config-cluster-template.toml \
+    && sed -i 's/127.0.0.1:8788/0.0.0.0:8788/' /etc/llm-notary/config-cluster-template.toml \
+    && printf '%s\n' \
+        '' \
+        '[cluster]' \
+        'proxy_origin = "https://proxy.e2e.invalid"' \
+        'admin_origin = "https://admin.e2e.invalid"' \
+        '' \
+        '[admin.auth]' \
+        'username = "cluster-admin"' \
+        'password_hash = "$argon2id$v=19$m=19456,t=2,p=1$Y2x1c3Rlci1lMmUtc2FsdA$e5miUzfGBUsUELcxECEyngoD2trkyo28hZ794hQ9bO8"' \
+        >> /etc/llm-notary/config-cluster-template.toml
+COPY deploy-daemon-e2e/provider.py /usr/local/libexec/llm-notary-e2e-provider.py
+COPY deploy-daemon-e2e/share.py /usr/local/libexec/llm-notary-e2e-share.py
+
+# Keep a plain `docker build .` on the production daemon, not the test image.
+FROM daemon AS runtime

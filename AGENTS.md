@@ -2,10 +2,10 @@
 
 ## Project map
 
-- `crates/llm-notary-core/` contains the Proxy-TLS protocol, bundle/package and public-trace contracts, normalization, trust-directory logic, and verification.
-- `crates/llm-notary-client/` implements the `llm-notaryd` local proxy/API daemon and the REST-backed `llm-notary` client. `crates/llm-notary-server/` and `crates/llm-notary-platform/` own the remote notary and hosted API binaries.
-- `vendor/tlsn/` is a pinned, locally patched TLSNotary dependency. Treat it as third-party code; change it only when the protocol requires it and explain the patch.
-- `js/app/` is the Vite/React SPA. Follow [`DESIGN.md`](DESIGN.md) for any UI work.
+- `runtime/` is the self-contained public workspace. It owns core protocol/evidence contracts, the local daemon, thin REST CLI, generic remote notary, updater, local dashboard, runtime docs, and pinned TLSNotary sources.
+- `platform/crates/llm-notary-api/` owns the hosted account, credit, billing, upload, and sharing API. `platform/crates/llm-notary-hosted-server/` is the private admission and settlement adapter around the generic notary.
+- `runtime/vendor/tlsn/` is a pinned, locally patched TLSNotary dependency. Treat it as third-party code; change it only when the protocol requires it and explain the patch.
+- `js/app/` is the hosted Vite/React website. `runtime/apps/local-dashboard/` is the daemon dashboard. Follow [`DESIGN.md`](DESIGN.md) for UI work.
 - `docs/README.md` indexes user, operator, and contributor documentation. `compose.yml`, `deploy/`, and `.github/workflows/` define the container configuration and Fly.io deployment.
 
 ## Non-negotiable trust boundaries
@@ -21,9 +21,14 @@ Run the checks relevant to edited code before handing work off:
 
 ```bash
 cargo fmt --check
-cargo test -p llm-notary-core -p llm-notary-client -p llm-notary-server -p llm-notary-platform --all-targets --all-features
+cargo fmt --manifest-path runtime/Cargo.toml --check \
+  -p llm-notary-core -p llm-notary-daemon -p llm-notary-cli \
+  -p llm-notary-updater -p llm-notary-server
+cargo test -p llm-notary-api -p llm-notary-hosted-server --all-targets --all-features
+cargo test --manifest-path runtime/Cargo.toml --workspace --all-targets --all-features
+npm --prefix runtime/apps/local-dashboard run build
 npm --prefix js/app run build
-npm --prefix js/app run check:local-docs
+npm --prefix runtime/apps/local-dashboard run check:local-docs
 ```
 
 For Compose or deployment changes, also validate `docker compose config --quiet` with placeholder required variables. Do not put real keys, tunnel tokens, signing keys, captures, or `.env` files in Git.

@@ -81,10 +81,10 @@ jobs:
         with:
           key: cli-${{ matrix.target }}
       - name: Build release binaries
-        run: cargo build --locked --release --target ${{ matrix.target }} -p llm-notary-client --bin llm-notary --bin llm-notaryd
+        run: cargo build --manifest-path runtime/Cargo.toml --target-dir target --locked --release --target ${{ matrix.target }} -p llm-notary-cli --bin llm-notary -p llm-notary-daemon --bin llm-notaryd
       - name: Exercise Windows trust-store replacement
         if: runner.os == 'Windows'
-        run: cargo test --locked --release --target ${{ matrix.target }} -p llm-notary-client cli::notary::tests::write_store_atomically_replaces_an_existing_file
+        run: cargo test --manifest-path runtime/Cargo.toml --target-dir target --locked --release --target ${{ matrix.target }} -p llm-notary-daemon cli::notary::tests::write_store_atomically_replaces_an_existing_file
       - name: Package archive
         shell: bash
         env:
@@ -93,7 +93,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/llm-notary-client/Cargo.toml | head -1)"
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' runtime/crates/llm-notary-cli/Cargo.toml | head -1)"
           test -n "$version"
           folder="llm-notary-${version}-${ASSET}"
           mkdir "$folder"
@@ -103,7 +103,7 @@ jobs:
           cp "target/$TARGET/release/llm-notaryd${suffix}" "$folder/"
           "target/$TARGET/release/llm-notary${suffix}" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
           "target/$TARGET/release/llm-notaryd${suffix}" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
-          cp LICENSE* THIRD-PARTY-NOTICES.md "$folder/"
+          cp runtime/LICENSE-APACHE runtime/LICENSE-MIT runtime/THIRD-PARTY-NOTICES.md "$folder/"
           if [[ "$ARCHIVE" == "zip" ]]; then
             archive="${folder}.zip"
             7z a "$archive" "$folder" >/dev/null
@@ -186,7 +186,7 @@ jobs:
               | base64 --decode > "$RUNNER_TEMP/current-channel.payload.json"
             jq -er .signature "$RUNNER_TEMP/current-channel.json" \
               | base64 --decode > "$RUNNER_TEMP/current-channel.minisig"
-            base64 --decode config/updater-public-key.txt > "$RUNNER_TEMP/updater.pub"
+            base64 --decode runtime/config/updater-public-key.txt > "$RUNNER_TEMP/updater.pub"
             minisign -Vm "$RUNNER_TEMP/current-channel.payload.json" \
               -p "$RUNNER_TEMP/updater.pub" -x "$RUNNER_TEMP/current-channel.minisig"
             test "$(jq -r .schema_version "$RUNNER_TEMP/current-channel.payload.json")" = \
@@ -208,7 +208,7 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/llm-notary-client/Cargo.toml | head -1)"
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' runtime/crates/llm-notary-cli/Cargo.toml | head -1)"
           node scripts/release-manifest.mjs \
             --release-dir release \
             --build-id "$BUILD_ID" \
@@ -284,7 +284,7 @@ jobs:
             echo "the latest pointer may be published only from main" >&2
             exit 1
           fi
-          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' crates/llm-notary-client/Cargo.toml | head -1)"
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' runtime/crates/llm-notary-cli/Cargo.toml | head -1)"
           test -n "$version"
           for asset in \
             "llm-notary-${version}-linux-x86_64.tar.gz" \
@@ -391,7 +391,7 @@ jobs:
           cmp release/channel.json "$RUNNER_TEMP/public-release/channel.json"
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends minisign
-          base64 --decode config/updater-public-key.txt > "$RUNNER_TEMP/updater.pub"
+          base64 --decode runtime/config/updater-public-key.txt > "$RUNNER_TEMP/updater.pub"
           base64 --decode "$RUNNER_TEMP/public-release/release.json.sig" > "$RUNNER_TEMP/release.minisig"
           minisign -Vm "$RUNNER_TEMP/public-release/release.json" \
             -p "$RUNNER_TEMP/updater.pub" -x "$RUNNER_TEMP/release.minisig"

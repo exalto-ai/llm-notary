@@ -82,7 +82,7 @@ This does not intercept traffic from vendor applications automatically. Native
 Claude Desktop cannot currently use the local route. Codex desktop is not yet
 an end-to-end-tested or supported client surface, even though local Codex work
 may read the same configuration. Browser, Slack, remote, and cloud sessions run
-outside this Mac's loopback proxy. See [Provider and agent setup](provider-setup.md)
+outside this Mac's loopback proxy. See [Provider and agent setup](../runtime/docs/provider-setup.md)
 for the exact supported commands and configuration.
 
 ## Automatic updates

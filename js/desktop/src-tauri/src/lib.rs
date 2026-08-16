@@ -10,8 +10,8 @@ use std::{
     time::Duration,
 };
 
-use llm_notary_client::update::{self, ReleaseArtifact};
 use llm_notary_core::vault::{CHILD_KEY_STDIN_ENV, Vault};
+use llm_notary_updater::{self as update, ReleaseArtifact};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -1206,7 +1206,7 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(
             tauri_plugin_updater::Builder::new()
-                .pubkey(include_str!("../../../../config/updater-public-key.txt").trim())
+                .pubkey(include_str!("../../../../runtime/config/updater-public-key.txt").trim())
                 .build(),
         )
         .plugin(tauri_plugin_autostart::init(

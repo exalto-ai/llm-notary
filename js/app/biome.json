@@ -7,11 +7,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "includes": [
-      "**/*.{js,jsx,ts,tsx,mjs,cjs,json}",
-      "!!src/local-dashboard/generated",
-      "!!src/platform-api/generated"
-    ]
+    "includes": ["**/*.{js,jsx,ts,tsx,mjs,cjs,json}", "!!src/platform-api/generated"]
   },
   "formatter": {
     "enabled": true,

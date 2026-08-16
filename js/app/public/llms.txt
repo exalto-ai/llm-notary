@@ -36,9 +36,10 @@ llm-notaryd
 To build from source instead:
 
 ```sh
-git clone https://github.com/exalto-ai/notary.git
-cd notary
-cargo install --locked --path crates/llm-notary-client
+git clone https://github.com/exalto-ai/notary-runtime.git
+cd notary-runtime
+cargo install --locked --path crates/llm-notary-daemon --bin llm-notaryd
+cargo install --locked --path crates/llm-notary-cli --bin llm-notary
 llm-notaryd
 
 curl http://127.0.0.1:8788/healthz

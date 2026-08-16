@@ -108,7 +108,7 @@ test('channel envelope preserves the exact signed payload bytes', async () => {
 
 test('release packaging uses the committed updater trust root', async () => {
   const repository = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
-  const publicKey = (await readFile(path.join(repository, 'config/updater-public-key.txt'), 'utf8')).trim();
+  const publicKey = (await readFile(path.join(repository, 'runtime/config/updater-public-key.txt'), 'utf8')).trim();
   const releaseConfig = JSON.parse(await readFile(
     path.join(repository, 'js/desktop/src-tauri/tauri.release.conf.json'),
     'utf8',

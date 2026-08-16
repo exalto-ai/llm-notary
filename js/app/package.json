@@ -5,26 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
-    "dev:dashboard": "vite --mode local-dashboard --host 127.0.0.1",
-    "generate:local-api": "node scripts/generate-local-api.mjs",
-    "check:local-api": "node scripts/generate-local-api.mjs --check",
     "generate:platform-api": "node scripts/generate-platform-api.mjs",
     "check:platform-api": "node scripts/generate-platform-api.mjs --check",
-    "build": "npm run check:frontend && npm run check:local-api && npm run check:platform-api && npm run build:site && npm run build:dashboard",
+    "build": "npm run check:frontend && npm run check:platform-api && npm run build:site",
     "build:site": "npm run check:platform-types && vite build",
     "check:frontend": "biome check .",
     "format": "biome check --write .",
     "check:platform-types": "tsc -p tsconfig.platform.json",
-    "check:dashboard-types": "tsc -p tsconfig.dashboard.json",
-    "build:dashboard": "npm run check:dashboard-types && vite build --mode local-dashboard",
-    "capture:dashboard-docs": "node scripts/capture-dashboard-docs.mjs",
-    "check:local-docs": "node scripts/check-local-docs.mjs",
-    "test:dashboard": "vitest run --config vitest.dashboard.config.js",
     "test:site": "vitest run --config vitest.site.config.js",
     "test:install": "sh scripts/test-install.sh",
     "test:unit": "vitest run --environment node src/notaryLifecycle.test.ts src/creditUtilization.test.js",
-    "preview": "vite preview --host 127.0.0.1",
-    "preview:dashboard": "vite preview --outDir ../../crates/llm-notary-client/dashboard --host 127.0.0.1"
+    "preview": "vite preview --host 127.0.0.1"
   },
   "dependencies": {
     "@fontsource-variable/instrument-sans": "^5.3.0",

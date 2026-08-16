@@ -43,17 +43,17 @@ jobs:
         run: npm install --global opencode-ai@1.18.11
 
       - name: Build released LLM Notary binaries
-        run: cargo build --release --locked -p llm-notary-client --bins
+        run: cargo build --manifest-path runtime/Cargo.toml --target-dir target --release --locked -p llm-notary-cli --bin llm-notary -p llm-notary-daemon --bin llm-notaryd
 
       - name: Test canary parser and safety gates
-        run: python3 benchmarks/opencode-e2e/test_runner.py -v
+        run: python3 runtime/benchmarks/opencode-e2e/test_runner.py -v
 
       - name: Run production canary
         env:
           OPENROUTER_FREE_TIER_API_KEY: ${{ secrets.OPENROUTER_FREE_TIER_API_KEY }}
           LLM_NOTARY_E2E_API_KEY: ${{ secrets.LLM_NOTARY_E2E_API_KEY }}
         run: |
-          python3 benchmarks/opencode-e2e/run.py \
+          python3 runtime/benchmarks/opencode-e2e/run.py \
             --model "$CANARY_MODEL" \
             --opencode "$(command -v opencode)" \
             --llm-notary "$GITHUB_WORKSPACE/target/release/llm-notary" \
@@ -64,7 +64,7 @@ jobs:
         if: always()
         env:
           LLM_NOTARY_SLACK_WEBHOOK_URL: ${{ secrets.LLM_NOTARY_SLACK_WEBHOOK_URL }}
-        run: python3 benchmarks/opencode-e2e/notify.py "$RUNNER_TEMP/opencode-e2e-result.json"
+        run: python3 runtime/benchmarks/opencode-e2e/notify.py "$RUNNER_TEMP/opencode-e2e-result.json"
 
       - name: Upload sanitized metrics
         if: always()

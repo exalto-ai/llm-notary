@@ -116,7 +116,7 @@ A self-hosted client bypasses the directory and pairs `notary.endpoint` with
 `notary.public_key` in local configuration. That is an explicit operator trust
 decision with no lifecycle policy beyond the configured key.
 
-See [Notary key lifecycle](notary-key-lifecycle.md) for rotation and
+See [Notary key lifecycle](../runtime/docs/notary-key-lifecycle.md) for rotation and
 revocation.
 
 ## What verification establishes

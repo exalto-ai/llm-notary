@@ -8,7 +8,17 @@ const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(scriptDirectory, '../../..');
 const targetTriple = execFileSync('rustc', ['--print', 'host-tuple'], { encoding: 'utf8' }).trim();
 const extension = process.platform === 'win32' ? '.exe' : '';
-const cargoArguments = ['build', '-p', 'llm-notary-client', '--bin', 'llm-notaryd'];
+const cargoArguments = [
+  'build',
+  '--manifest-path',
+  'runtime/Cargo.toml',
+  '--target-dir',
+  'target',
+  '-p',
+  'llm-notary-daemon',
+  '--bin',
+  'llm-notaryd'
+];
 if (profile === 'release') cargoArguments.push('--release');
 
 execFileSync('cargo', cargoArguments, { cwd: repository, stdio: 'inherit' });

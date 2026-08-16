@@ -40,7 +40,8 @@ type DocNavigationGroup = { label: string; pages: Array<readonly [DocPageKey, st
 const installCommand = 'curl -fsSL https://notary.exalto.ai/install.sh | sh';
 const sourceInstallCommand = `git clone https://github.com/exalto-ai/notary.git
 cd notary
-cargo install --locked --path crates/llm-notary-client`;
+cargo install --locked --path crates/llm-notary-daemon --bin llm-notaryd
+cargo install --locked --path crates/llm-notary-cli --bin llm-notary`;
 
 const docPages: Record<DocPageKey, DocPage> = {
   overview: {
