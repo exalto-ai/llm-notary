@@ -959,11 +959,10 @@ async fn redeem_one_operation(
     .map_err(database_error)?;
     let updated = sqlx::query(
         "UPDATE notary_admission_tickets
-         SET consumed_at = $1, consumed_by_instance = $2
-         WHERE token_hash = $3 AND consumed_at IS NULL",
+         SET consumed_at = $1
+         WHERE token_hash = $2 AND consumed_at IS NULL",
     )
     .bind(now)
-    .bind(&request.notary_instance_id)
     .bind(ticket_token_hash)
     .execute(&mut *transaction)
     .await
@@ -2460,6 +2459,17 @@ mod tests {
         assert!(!admitted.operation_id.is_empty());
         assert_eq!(admitted.record_digest, None);
         assert_eq!(admitted.authenticated_allowance_bytes, None);
+        let consumed: (Option<i64>, Option<String>) = sqlx::query_as(
+            "SELECT consumed_at, consumed_by_instance
+             FROM notary_admission_tickets
+             WHERE token_hash = $1",
+        )
+        .bind(sha256_hex(first.ticket.as_bytes()))
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert!(consumed.0.is_some());
+        assert_eq!(consumed.1, None);
         let _ = redeem(second.ticket, "notary-two", true).await.unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
