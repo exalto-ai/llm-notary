@@ -2459,17 +2459,22 @@ mod tests {
         assert!(!admitted.operation_id.is_empty());
         assert_eq!(admitted.record_digest, None);
         assert_eq!(admitted.authenticated_allowance_bytes, None);
-        let consumed: (Option<i64>, Option<String>) = sqlx::query_as(
-            "SELECT consumed_at, consumed_by_instance
-             FROM notary_admission_tickets
-             WHERE token_hash = $1",
+        let consumed: Option<i64> = sqlx::query_scalar(
+            "SELECT consumed_at FROM notary_admission_tickets WHERE token_hash = $1",
         )
         .bind(sha256_hex(first.ticket.as_bytes()))
         .fetch_one(&state.database)
         .await
         .unwrap();
-        assert!(consumed.0.is_some());
-        assert_eq!(consumed.1, None);
+        assert!(consumed.is_some());
+        let admitted_instance: String = sqlx::query_scalar(
+            "SELECT notary_instance_id FROM notary_admission_operations WHERE id = $1",
+        )
+        .bind(&admitted.operation_id)
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(admitted_instance, "notary-one");
         let _ = redeem(second.ticket, "notary-two", true).await.unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -2862,30 +2867,14 @@ mod tests {
         )
         .await
         .unwrap();
-        let (charged, debit_digest): (i64, Option<String>) = sqlx::query_as(
-            "SELECT allowance_bytes, record_digest
-             FROM notary_credit_debits WHERE operation_id = $1",
+        let charged: i64 = sqlx::query_scalar(
+            "SELECT allowance_bytes FROM notary_credit_debits WHERE operation_id = $1",
         )
         .bind(operation_id)
         .fetch_one(&state.database)
         .await
         .unwrap();
         assert_eq!(charged, 42, "measured failed operations are still charged");
-        assert_eq!(
-            debit_digest, None,
-            "operation identity replaces digest identity"
-        );
-        let legacy_digest_unique: bool = sqlx::query_scalar(
-            "SELECT EXISTS(
-                 SELECT 1 FROM pg_constraint
-                 WHERE conrelid = 'notary_credit_debits'::regclass
-                   AND conname = 'notary_credit_debits_subject_kind_digest_key'
-             )",
-        )
-        .fetch_one(&state.database)
-        .await
-        .unwrap();
-        assert!(legacy_digest_unique);
     }
 
     #[tokio::test]

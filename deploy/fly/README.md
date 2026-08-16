@@ -148,30 +148,18 @@ settlement state and linked each debit to its operation ID. Keep the notary's
 private settlement endpoint acknowledges it, including across Machine restarts
 or coordinator outages.
 
-Migration `0028_detach_legacy_admission.sql` is the expand-compatible detach
-layer: the current API writes `authenticated_allowance_bytes` directly and
-operation debits are keyed only by operation ID, while a database trigger and
-nullable legacy debit digest keep the immediately previous stop-legacy API
-writable for rollback. The current API and notary no longer query the lease
-table or release outbox. Their physical schema and deployment configuration
-remain only for the previous image. The following release may apply the
-physical contract migration tracked by
-[#298](https://github.com/exalto-ai/notary/issues/298).
+Migration `0028_detach_legacy_admission.sql` was the expand-compatible detach
+layer: it stopped runtime use of leases, legacy ticket fields, digest-keyed
+debits, and the release outbox while preserving rollback to the stop-legacy
+image. After that detached image was deployed and smoke-tested, migration
+`0029_contract_legacy_admission.sql` removed the retained database and
+configuration surface. The immediately previous image uses only authenticated
+ticket allowances, operation IDs, and `/data/usage-outbox`, so it remains
+rollback-compatible with the contracted schema.
 
-Before detaching those runtime checks, the stop-legacy production drain was
-complete only after every notary started with an empty configured release
-outbox and this database query returned zero:
-
-```sql
-SELECT COUNT(*) AS active_legacy_leases
-FROM notary_admission_leases
-WHERE released_at IS NULL
-  AND expires_at > EXTRACT(EPOCH FROM NOW())::BIGINT;
-```
-
-Operation usage must also be acknowledged in PostgreSQL or remain durably
-queued under `/data/usage-outbox`; never print raw admission tickets while
-performing the audit.
+Operation usage must be acknowledged in PostgreSQL or remain durably queued
+under `/data/usage-outbox`; never print raw admission tickets while performing
+an audit.
 
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private

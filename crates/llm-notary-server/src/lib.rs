@@ -1570,19 +1570,6 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(operation.operation_id, "operation-test");
-
-        let lease = serde_json::from_value::<RedeemedOperation>(serde_json::json!({
-            "lease_id": "legacy-lease",
-            "lease_expires_at": 1,
-            "access_pool": "free",
-            "max_attestable_http_bytes": 1024,
-            "max_frame_bytes": 2048,
-            "max_private_chunk_bytes": 512,
-            "max_private_chunk_commitments": 4,
-            "record_digest": null,
-            "authorized_allowance_bytes": 512
-        }));
-        assert!(lease.is_err());
     }
 
     #[test]

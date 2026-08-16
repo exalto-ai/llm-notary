@@ -49,14 +49,14 @@ settlement support. Requests missing either capability are rejected before the
 ticket is consumed. Every admitted session therefore receives the operation ID
 used by its durable usage outbox.
 
-The compatibility-detach rollout has removed every live lease and release
-outbox dependency. Migration `0028_detach_legacy_admission.sql` mirrors the old
-requested allowance and the current authenticated allowance so either the
-current API or its immediately previous rollback image can issue finalization
-tickets. Operation debits use operation IDs; the nullable legacy digest remains
-only for the rollback writer. The lease table, bridge columns, debit constraint,
-and release-outbox configuration stay physical for one final rollback window.
-The following contract migration removes that surface.
+The operation-only rollout is complete. Migration
+`0028_detach_legacy_admission.sql` first detached runtime reads and writes while
+keeping the prior image rollbackable; migration
+`0029_contract_legacy_admission.sql` then removed the lease table, ticket
+bridge columns, and digest-keyed debit compatibility. The same contract release
+removed the release-outbox configuration. Tickets are consumed once,
+operations carry the authoritative notary instance and usage identity, and
+durable settlement uses only operation IDs.
 
 Trace storage is the total declared size of uploads that are in progress,
 queued for checking, being checked, or admitted to the account. Rejected,

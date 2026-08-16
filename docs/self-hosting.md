@@ -201,15 +201,12 @@ concurrency, size, and timeout limits. The API also requires
 `usage_settlement: true`; a request missing either capability is rejected
 without consuming its ticket.
 
-The compatibility-detach release no longer reads
-`LLM_NOTARY_RELEASE_OUTBOX_DIR` or the legacy lease table. Keep the directory
-configured and mounted for one more rollout because the immediately previous
-stop-legacy image requires it during rollback. Migration
-`0028_detach_legacy_admission.sql` similarly keeps both old and new ticket and
-debit writers valid while the current runtime uses only operation state. The
-contract migration tracked in
-[#298](https://github.com/exalto-ai/notary/issues/298) removes the retained
-schema and configuration in the following release.
+The operation-only migration is complete. The notary has no release-outbox
+setting and the platform schema has no admission lease table, ticket allowance
+bridge, or digest-keyed debit compatibility. Migration
+`0028_detach_legacy_admission.sql` provided the rollback-safe detach layer;
+`0029_contract_legacy_admission.sql` removed that retained surface after the
+detached image became the rollback target.
 
 The shared admission service token authenticates the notary's internal redeem
 call and usage-settlement calls. The legacy renew/release routes are no longer
@@ -217,26 +214,11 @@ registered. The token is never sent to local clients and is unrelated to
 provider credentials or session-sharing access tokens. Settlement reports
 identify an operation rather than repeating its raw ticket.
 
-For the stop-legacy production drain, operators verified the API and every
-notary started successfully, then confirmed this query returned zero:
-
-```sql
-SELECT COUNT(*) AS active_legacy_leases
-FROM notary_admission_leases
-WHERE released_at IS NULL
-  AND expires_at > EXTRACT(EPOCH FROM NOW())::BIGINT;
-```
-
-They also verified each configured release outbox was empty and every usage
-settlement was either acknowledged by the API or still durably present in the
-usage outbox. Do not inspect or print ticket values while auditing.
-
-The expand-compatible detach release mirrors the requested and authenticated
-finalization allowances in the database while the current API writes only the
-authenticated value. It has removed the API lease gate and notary outbox audit
-from runtime after the production drain was proven. The final contract
-migration follows in a separate rollout once this detached release is the
-immediately previous rollback image.
+The staged production rollout proved every legacy lease and release outbox was
+drained before removing them. Current operational audits cover only operation
+settlement: every pending report must be acknowledged by the API or remain
+durably present in the usage outbox. Do not inspect or print ticket values while
+auditing.
 
 Set `LLM_NOTARY_USAGE_OUTBOX_DIR` to persistent storage owned by the remote
 notary. The notary durably stages each admitted operation before accepting its
