@@ -9,7 +9,7 @@ use crate::{
     artifact_router::RoutedArtifactStore,
     artifact_store::{ArtifactKey, ArtifactKind, ArtifactStore, FileSystemArtifactStore},
     config::{AgentConfig, MetadataBackend},
-    metadata_store::MetadataStore,
+    metadata_store::{MetadataStore, ServerMetadataStore},
     postgres_metadata_store::PostgresMetadataStore,
     s3_artifact_store::{S3ArtifactStore, S3ArtifactStoreCredentials},
     server_runtime::ServerRuntime,
@@ -29,6 +29,7 @@ pub struct RecoverySummary {
 #[derive(Clone)]
 pub struct Persistence {
     pub metadata: Arc<dyn MetadataStore>,
+    pub(crate) server_metadata: Option<Arc<dyn ServerMetadataStore>>,
     pub artifacts: Arc<RoutedArtifactStore>,
 }
 
@@ -36,18 +37,24 @@ impl Persistence {
     /// Opens the default SQLite and filesystem adapters from the unchanged
     /// desktop configuration shape.
     pub async fn open(config: &AgentConfig) -> Result<Self> {
-        let metadata: Arc<dyn MetadataStore> = match config.catalog.backend {
-            MetadataBackend::Sqlite => Arc::new(
-                SqliteMetadataStore::open(
-                    config.catalog.path.clone(),
-                    config.catalog.full_text_search,
-                )
-                .await?,
+        let (metadata, server_metadata): (
+            Arc<dyn MetadataStore>,
+            Option<Arc<dyn ServerMetadataStore>>,
+        ) = match config.catalog.backend {
+            MetadataBackend::Sqlite => (
+                Arc::new(
+                    SqliteMetadataStore::open(
+                        config.catalog.path.clone(),
+                        config.catalog.full_text_search,
+                    )
+                    .await?,
+                ),
+                None,
             ),
             MetadataBackend::Postgres => {
                 let postgres = &config.catalog.postgres;
                 let database_url = config.postgres_runtime_url()?;
-                Arc::new(
+                let store = Arc::new(
                     if config.server.is_some() {
                         PostgresMetadataStore::connect_server(
                             database_url.expose(),
@@ -74,7 +81,12 @@ impl Persistence {
                             "PostgreSQL metadata database is unavailable or its daemon schema is not current; run `llm-notaryd migrate --config <path>`"
                         )
                     })?,
-                )
+                );
+                let server_metadata = config.server.is_some().then(|| {
+                    let server_metadata: Arc<dyn ServerMetadataStore> = store.clone();
+                    server_metadata
+                });
+                (store, server_metadata)
             }
         };
         let filesystem = FileSystemArtifactStore::new(
@@ -101,8 +113,15 @@ impl Persistence {
             .map_err(|_| anyhow::anyhow!("selected artifact storage backend is not configured"))?;
         Ok(Self {
             metadata,
+            server_metadata,
             artifacts: Arc::new(artifacts),
         })
+    }
+
+    pub(crate) fn server_metadata(&self) -> &Arc<dyn ServerMetadataStore> {
+        self.server_metadata
+            .as_ref()
+            .expect("server runtime requires a server metadata backend")
     }
 
     /// Reconciles captures left active by an earlier single-daemon process.
@@ -127,7 +146,7 @@ impl Persistence {
         server_runtime: &ServerRuntime,
     ) -> Result<RecoverySummary> {
         let Some(recovery) = self
-            .metadata
+            .server_metadata()
             .claim_next_stale_capture(
                 server_runtime.identity(),
                 &server_runtime.new_fence_token(),
@@ -139,7 +158,7 @@ impl Persistence {
         };
         let mut summary = RecoverySummary::default();
         let Some(completion) = recovery.completion else {
-            self.metadata
+            self.server_metadata()
                 .fail_capture_claimed(&recovery.claim, "claim_expired")
                 .await?;
             summary.interrupted_captures = 1;
@@ -155,19 +174,19 @@ impl Persistence {
                 if artifact.size_bytes == completion.expected_artifact_size_bytes
                     && artifact.sha256 == completion.expected_artifact_sha256 =>
             {
-                self.metadata
+                self.server_metadata()
                     .complete_capture_claimed(completion, artifact, &recovery.claim)
                     .await?;
                 summary.recovered_bundles = 1;
             }
             Ok(Some(_)) => {
-                self.metadata
+                self.server_metadata()
                     .fail_capture_claimed(&recovery.claim, "artifact_integrity")
                     .await?;
                 summary.interrupted_captures = 1;
             }
             Ok(None) => {
-                self.metadata
+                self.server_metadata()
                     .fail_capture_claimed(&recovery.claim, "artifact_missing")
                     .await?;
                 summary.interrupted_captures = 1;
@@ -177,7 +196,7 @@ impl Persistence {
                 | crate::artifact_store::ArtifactStoreError::TooLarge { .. }
                 | crate::artifact_store::ArtifactStoreError::Conflict { .. },
             ) => {
-                self.metadata
+                self.server_metadata()
                     .fail_capture_claimed(&recovery.claim, "artifact_integrity")
                     .await?;
                 summary.interrupted_captures = 1;

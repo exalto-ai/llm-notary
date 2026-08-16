@@ -370,7 +370,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
         let api_origin = auth::configured_api_origin()?;
         let vault_identity = vault.server_identity_sha256()?;
         persistence
-            .metadata
+            .server_metadata()
             .register_replica(
                 server_runtime.identity(),
                 &config.server_compatibility_sha256_for_api_origin(
@@ -602,7 +602,7 @@ pub async fn run(args: ProxyArgs) -> Result<()> {
     if let (Some(server_runtime), false) = (&server_runtime, forced_server_shutdown) {
         state
             .persistence
-            .metadata
+            .server_metadata()
             .release_replica(server_runtime.identity())
             .await?;
     }
@@ -675,7 +675,7 @@ fn spawn_server_heartbeat(
                 () = tokio::time::sleep(std::time::Duration::from_secs(server_runtime.heartbeat_interval_seconds())) => {}
             }
             match persistence
-                .metadata
+                .server_metadata()
                 .heartbeat_replica(server_runtime.identity(), server_runtime.lease_seconds())
                 .await
             {
@@ -817,7 +817,7 @@ async fn initialize_notary(
             let (directory, directory_url) =
                 fetch_notary_directory_from(&super::auth::configured_api_origin()?).await?;
             let trust = persistence
-                .metadata
+                .server_metadata()
                 .pin_notary_directory(directory, directory_url.as_str())
                 .await?;
             let active = trust
@@ -1161,7 +1161,7 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
     if let (Some(server_runtime), Some(claim)) = (&state.server_runtime, &capture_claim) {
         state
             .persistence
-            .metadata
+            .server_metadata()
             .begin_capture_claimed(new_capture, claim, server_runtime.lease_seconds())
             .await?;
     } else {
@@ -1171,13 +1171,14 @@ async fn proxy_inner(state: AppState, request: Request) -> Result<Response> {
             .begin_capture(new_capture)
             .await?;
     }
-    let mut capture_claim_lease = match (&state.server_runtime, &capture_claim) {
-        (Some(server_runtime), Some(claim)) => Some(
-            server_runtime
-                .keep_capture_claim_alive(state.persistence.metadata.clone(), claim.clone()),
-        ),
-        _ => None,
-    };
+    let mut capture_claim_lease =
+        match (&state.server_runtime, &capture_claim) {
+            (Some(server_runtime), Some(claim)) => Some(server_runtime.keep_capture_claim_alive(
+                state.persistence.server_metadata().clone(),
+                claim.clone(),
+            )),
+            _ => None,
+        };
     let started = Instant::now();
     let capture = DeferredCaptureConfig {
         capture_id: capture_id.clone(),
@@ -1681,7 +1682,7 @@ async fn fail_capture(
 ) -> Result<()> {
     if let Some(claim) = claim {
         persistence
-            .metadata
+            .server_metadata()
             .fail_capture_claimed(claim, failure_code)
             .await?;
     } else {
@@ -1701,7 +1702,7 @@ async fn prepare_capture(
 ) -> Result<()> {
     if let (Some(server_runtime), Some(claim)) = (server_runtime, claim) {
         persistence
-            .metadata
+            .server_metadata()
             .prepare_capture_completion_claimed(completion, claim, server_runtime.lease_seconds())
             .await?;
     } else {
@@ -1721,7 +1722,7 @@ async fn complete_capture(
 ) -> Result<()> {
     if let Some(claim) = claim {
         persistence
-            .metadata
+            .server_metadata()
             .complete_capture_claimed(completion, artifact, claim)
             .await?;
     } else {
@@ -2210,6 +2211,7 @@ mod tests {
                 SqliteCatalog::open(std::path::Path::new(":memory:"), true).unwrap(),
                 true,
             )),
+            server_metadata: None,
             artifacts: Arc::new(artifacts),
         };
         let config = Arc::new(config);
@@ -2413,6 +2415,7 @@ mod tests {
                 SqliteCatalog::open(std::path::Path::new(":memory:"), true).unwrap(),
                 true,
             )),
+            server_metadata: None,
             artifacts: Arc::new(artifacts),
         };
         persistence

@@ -25,7 +25,7 @@ use crate::{
     },
     metadata_store::{
         CaptureClaim, CaptureRecoveryClaim, FinalizationClaim, MetadataResult, MetadataStore,
-        MetadataStoreError, ReplicaIdentity,
+        MetadataStoreError, ReplicaIdentity, ServerMetadataStore,
     },
     notary_directory::NotaryDirectory,
 };
@@ -2115,7 +2115,10 @@ impl MetadataStore for PostgresMetadataStore {
             .map_err(|error| db(anyhow!(error).context("committing event snapshot")))?;
         Ok(EventSnapshot { events, high_water })
     }
+}
 
+#[async_trait]
+impl ServerMetadataStore for PostgresMetadataStore {
     async fn register_replica(
         &self,
         identity: &ReplicaIdentity,
@@ -3244,7 +3247,8 @@ mod tests {
         config::PostgresSslMode,
         metadata::{CaptureFilters, NewCapture, TerminalOperationResult},
         metadata_store::{
-            CaptureClaim, MetadataStore, MetadataStoreError, ReplicaIdentity, conformance,
+            CaptureClaim, MetadataStore, MetadataStoreError, ReplicaIdentity, ServerMetadataStore,
+            conformance,
         },
         notary_directory::{
             DIRECTORY_FORMAT_V3, NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus,

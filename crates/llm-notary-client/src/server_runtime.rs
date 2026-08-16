@@ -13,8 +13,8 @@ use tokio::sync::watch;
 use crate::{
     config::{SERVER_INSTANCE_ID_ENV, valid_instance_id},
     metadata_store::{
-        CaptureClaim, FinalizationClaim, MetadataResult, MetadataStore, MetadataStoreError,
-        ReplicaIdentity,
+        CaptureClaim, FinalizationClaim, MetadataResult, MetadataStoreError, ReplicaIdentity,
+        ServerMetadataStore,
     },
 };
 
@@ -91,7 +91,7 @@ impl ServerRuntime {
 
     pub(crate) fn keep_capture_claim_alive(
         &self,
-        metadata: Arc<dyn MetadataStore>,
+        metadata: Arc<dyn ServerMetadataStore>,
         claim: CaptureClaim,
     ) -> ClaimLeaseGuard {
         self.keep_claim_alive(metadata, ClaimToRenew::Capture(claim))
@@ -99,7 +99,7 @@ impl ServerRuntime {
 
     pub(crate) fn keep_finalization_claim_alive(
         &self,
-        metadata: Arc<dyn MetadataStore>,
+        metadata: Arc<dyn ServerMetadataStore>,
         claim: FinalizationClaim,
     ) -> ClaimLeaseGuard {
         self.keep_claim_alive(metadata, ClaimToRenew::Finalization(Box::new(claim)))
@@ -107,7 +107,7 @@ impl ServerRuntime {
 
     fn keep_claim_alive(
         &self,
-        metadata: Arc<dyn MetadataStore>,
+        metadata: Arc<dyn ServerMetadataStore>,
         claim: ClaimToRenew,
     ) -> ClaimLeaseGuard {
         let (shutdown, mut stopped) = watch::channel(false);
