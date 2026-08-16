@@ -7,18 +7,20 @@ documentation update rules that protect LLM Notary's trust boundaries.
 
 | Path | Responsibility |
 | --- | --- |
-| `crates/llm-notary-core/` | Proxy-TLS protocol, bundle and package contracts, normalization, trust directory, verification |
-| `crates/llm-notary-client/` | local daemon, proxy, catalog, vault integration, REST API, embedded dashboard, command client |
-| `crates/llm-notary-server/` | coordinator-free remote notary runtime and generic admission/lifecycle seam |
-| `crates/llm-notary-hosted-server/` | private hosted ticket redemption, durable usage outbox, and settlement adapter |
-| `crates/llm-notary-platform/` | hosted API, identity, admission tickets, session sharing, verification, Library, PostgreSQL |
-| `js/app/` | public Vite/React SPA and local dashboard source |
-| `migrations-postgres/` | forward-only hosted schema migrations |
-| `vendor/tlsn/` | pinned, locally patched TLSNotary dependency |
-| `vendor/tlsn-utils/` | pinned parser-stack patch used by TLSNotary formats |
+| `runtime/` | self-contained public Cargo/frontend workspace, docs, tests, containers, and vendored dependencies |
+| `runtime/crates/llm-notary-daemon/` | local proxy, catalog, vault integration, REST API, clustered operation, and embedded dashboard |
+| `runtime/crates/llm-notary-cli/` | thin localhost REST command client |
+| `runtime/crates/llm-notary-updater/` | signed-update verification shared by CLI and desktop |
+| `runtime/crates/llm-notary-core/` | Proxy-TLS protocol, evidence contracts, normalization, trust directory, and verification |
+| `runtime/crates/llm-notary-server/` | coordinator-free remote notary runtime and generic admission/lifecycle seam |
+| `runtime/apps/local-dashboard/` | independently locked dashboard source, generated local API, tests, and assets |
+| `platform/crates/llm-notary-hosted-server/` | private hosted ticket redemption, durable usage outbox, and settlement adapter |
+| `platform/crates/llm-notary-api/` | hosted API, identity, admission tickets, sharing, verification, Library, and billing |
+| `platform/migrations/` | forward-only hosted schema migrations |
+| `js/app/` | private platform website |
 | `compose.yml`, `deploy/`, `.github/workflows/` | containers, production deployment, and CI |
 
-Treat `vendor/` as third-party code. Change it only when the protocol requires
+Treat `runtime/vendor/` as third-party code. Change it only when the protocol requires
 the patch, keep the diff narrow, and explain the divergence in the corresponding
 vendor README or change description.
 
@@ -34,6 +36,7 @@ generated API clients, or their documentation:
 
 ```bash
 npm --prefix js/app ci
+npm --prefix runtime/apps/local-dashboard ci
 ```
 
 ## Generated API contracts
@@ -42,14 +45,14 @@ Both Rust routers generate OpenAPI 3.1. The TypeScript clients are generated
 from committed contract copies.
 
 ```bash
-npm --prefix js/app run generate:local-api
+npm --prefix runtime/apps/local-dashboard run generate:api
 npm --prefix js/app run generate:platform-api
 ```
 
 Use the check forms in CI or before review:
 
 ```bash
-npm --prefix js/app run check:local-api
+npm --prefix runtime/apps/local-dashboard run check:api
 npm --prefix js/app run check:platform-api
 ```
 
@@ -64,20 +67,24 @@ Run the checks relevant to edited code:
 
 ```bash
 cargo fmt --check
+cargo fmt --manifest-path runtime/Cargo.toml --check \
+  -p llm-notary-core -p llm-notary-daemon -p llm-notary-cli \
+  -p llm-notary-updater -p llm-notary-server
 cargo clippy \
-  -p llm-notary-core \
-  -p llm-notary-client \
-  -p llm-notary-server \
-  -p llm-notary-platform \
+  -p llm-notary-api \
+  -p llm-notary-hosted-server \
   --all-targets --all-features -- -D warnings
+cargo clippy --manifest-path runtime/Cargo.toml \
+  --workspace --all-targets --all-features -- -D warnings
 cargo test \
-  -p llm-notary-core \
-  -p llm-notary-client \
-  -p llm-notary-server \
-  -p llm-notary-platform \
+  -p llm-notary-api \
+  -p llm-notary-hosted-server \
   --all-targets --all-features
+cargo test --manifest-path runtime/Cargo.toml \
+  --workspace --all-targets --all-features
+npm --prefix runtime/apps/local-dashboard run build
 npm --prefix js/app run build
-npm --prefix js/app run test:dashboard
+npm --prefix runtime/apps/local-dashboard run test
 npm --prefix js/app run test:site
 npm --prefix js/app run check:local-docs
 ```
@@ -91,11 +98,11 @@ The PostgreSQL-backed API tests need a running Docker daemon and create their
 own disposable database:
 
 ```bash
-cargo test -p llm-notary-platform \
+cargo test -p llm-notary-api \
   new_cli_session_is_usable_until_its_refresh_expiry -- --ignored
-cargo test -p llm-notary-platform \
+cargo test -p llm-notary-api \
   web_users_can_list_and_revoke_only_their_cli_sessions -- --ignored
-cargo test -p llm-notary-platform \
+cargo test -p llm-notary-api \
   service_admission::tests -- --ignored
 ```
 
@@ -119,22 +126,22 @@ docker compose --env-file /path/to/placeholder.env config --quiet
 Run the complete local-daemon persistence test with no arguments:
 
 ```bash
-scripts/test-daemon-persistence-e2e.sh
+runtime/test-daemon-persistence-e2e.sh
 ```
 
 Pass `smoke` for the shorter recovery check. The explicit matrix form remains
 available to CI and later storage backends:
 
 ```bash
-scripts/test-daemon-persistence-e2e.sh smoke
-scripts/test-daemon-persistence-e2e.sh sqlite filesystem 1 full
-scripts/test-daemon-persistence-e2e.sh sqlite s3 1 smoke
-scripts/test-daemon-persistence-e2e.sh sqlite s3 1 full
-scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 smoke
-scripts/test-daemon-persistence-e2e.sh postgres filesystem 1 full
-scripts/test-daemon-persistence-e2e.sh postgres s3 1 smoke
-scripts/test-daemon-persistence-e2e.sh postgres s3 1 full
-scripts/test-daemon-persistence-e2e.sh postgres s3 2 full
+runtime/test-daemon-persistence-e2e.sh smoke
+runtime/test-daemon-persistence-e2e.sh sqlite filesystem 1 full
+runtime/test-daemon-persistence-e2e.sh sqlite s3 1 smoke
+runtime/test-daemon-persistence-e2e.sh sqlite s3 1 full
+runtime/test-daemon-persistence-e2e.sh postgres filesystem 1 smoke
+runtime/test-daemon-persistence-e2e.sh postgres filesystem 1 full
+runtime/test-daemon-persistence-e2e.sh postgres s3 1 smoke
+runtime/test-daemon-persistence-e2e.sh postgres s3 1 full
+runtime/test-daemon-persistence-e2e.sh postgres s3 2 full
 ```
 
 The smoke test builds and launches the real `llm-notaryd` and `llm-notary`
@@ -341,6 +348,6 @@ are corruption checks, not independent release authentication.
 The updater's long-lived private key and password live only in the protected
 `macos-release` GitHub environment as `TAURI_SIGNING_PRIVATE_KEY` and
 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`. The matching public key is committed at
-`config/updater-public-key.txt`. Back up the private key outside GitHub: losing
+`runtime/config/updater-public-key.txt`. Back up the private key outside GitHub: losing
 it prevents installed clients from accepting future updates. Rotate it only
 through a release signed by the old key that also teaches clients the new key.

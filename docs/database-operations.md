@@ -42,7 +42,7 @@ URL, signing key, capture, or environment file.
 
 ## Deploy schema migrations
 
-`migrations-postgres/0001_initial.sql` is the PostgreSQL baseline. Do not alter
+`platform/migrations/0001_initial.sql` is the PostgreSQL baseline. Do not alter
 an applied migration: schema changes must use new, forward-only migration files.
 Fly runs `llm-notary-api-migrate` as the API release command before replacing
 any API Machines. Compose runs the same one-shot `migrate` service before it
@@ -80,15 +80,15 @@ For source development, run the same migrator before starting the API:
 
 ```bash
 DATABASE_MIGRATIONS_URL='postgresql://…?sslmode=require' \
-cargo run -p llm-notary-platform --bin llm-notary-api-migrate
+cargo run -p llm-notary-api --bin llm-notary-api-migrate
 ```
 
 ## Operate a PostgreSQL-backed local daemon
 
 The local daemon migrations live under
-`crates/llm-notary-client/migrations-postgres-daemon/`, use the
+`runtime/crates/llm-notary-daemon/migrations-postgres-daemon/`, use the
 `llm_notary_daemon` schema and migration journal, and take a daemon-specific
-advisory lock. They do not use the hosted platform's `migrations-postgres/`
+advisory lock. They do not use the hosted platform's `platform/migrations/`
 directory or SQLx migration journal.
 
 Select `catalog.backend = "postgres"` and supply
@@ -154,7 +154,7 @@ Keep the sum of `catalog.postgres.max_connections` across running daemons plus
 one direct migrator connection within the provider's pool budget. PostgreSQL
 with filesystem artifacts remains single-process. Multiple daemon replicas are
 supported only by server mode with PostgreSQL and S3; see
-[Server deployment](server-operations.md).
+[Cluster operations](../runtime/docs/cluster-operations.md).
 
 ## Scale and monitor
 

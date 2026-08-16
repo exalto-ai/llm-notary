@@ -1,0 +1,13 @@
+/target/
+/apps/local-dashboard/node_modules/
+/apps/local-dashboard/.vitest-attachments/
+/bundles/
+/captures/
+/traces/
+/.llm-notary-cluster/
+*.llmcapture
+*.llmbundle
+*.key
+*.pem
+*.sqlite
+.env

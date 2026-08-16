@@ -1,0 +1,46 @@
+name: Runtime CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: ./tooling/check-boundary.sh
+      - name: Keep the localhost client thin
+        run: |
+          if cargo tree --locked -p llm-notary-cli --edges normal --prefix none \
+            | grep -Eq '^(llm-notary-core|llm-notary-daemon|tlsn|sqlx|rusqlite|aws-sdk-s3) '; then
+            echo 'llm-notary-cli depends on a daemon, protocol, or storage package' >&2
+            exit 1
+          fi
+      - run: cargo fmt --check -p llm-notary-core -p llm-notary-daemon -p llm-notary-cli -p llm-notary-updater -p llm-notary-server
+      - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --workspace --all-targets --all-features
+
+  dashboard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: apps/local-dashboard/package-lock.json
+      - run: npm --prefix apps/local-dashboard ci
+      - run: npm --prefix apps/local-dashboard run build
+      - run: git diff --exit-code -- apps/local-dashboard/src/generated crates/llm-notary-daemon/dashboard
+
+  containers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: docker build --target daemon .
+      - run: docker build --target notary .

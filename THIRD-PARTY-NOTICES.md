@@ -11,7 +11,7 @@ The web application dependencies are equivalently pinned in
 `js/app/package-lock.json`.
 
 This repository also vendors a locally patched copy of TLSNotary in
-`vendor/tlsn`. The patch is maintained only for the protocol behavior described
+`runtime/vendor/tlsn`. The patch is maintained only for the protocol behavior described
 in this repository. The vendored crates declare the following licenses in their
 `Cargo.toml` files:
 
@@ -21,8 +21,8 @@ in this repository. The vendored crates declare the following licenses in their
 | `tls-core` | Apache-2.0 OR ISC OR MIT |
 
 The workspace additionally vendors a locally patched copy of the TLSNotary
-`spansy` parser crate (from `tlsnotary/tlsn-utils`) in `vendor/tlsn-utils`,
+`spansy` parser crate (from `tlsnotary/tlsn-utils`) in `runtime/vendor/tlsn-utils`,
 declared as MIT OR Apache-2.0. Its patch bounds JSON parser stack usage and is
-described in `vendor/tlsn-utils/README.md`.
+described in `runtime/vendor/tlsn-utils/README.md`.
 
 No third-party trademark rights are granted by this notice.
