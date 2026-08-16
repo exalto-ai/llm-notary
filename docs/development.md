@@ -9,7 +9,8 @@ documentation update rules that protect LLM Notary's trust boundaries.
 | --- | --- |
 | `crates/llm-notary-core/` | Proxy-TLS protocol, bundle and package contracts, normalization, trust directory, verification |
 | `crates/llm-notary-client/` | local daemon, proxy, catalog, vault integration, REST API, embedded dashboard, command client |
-| `crates/llm-notary-server/` | remote notary protocol and capacity enforcement |
+| `crates/llm-notary-server/` | coordinator-free remote notary runtime and generic admission/lifecycle seam |
+| `crates/llm-notary-hosted-server/` | private hosted ticket redemption, durable usage outbox, and settlement adapter |
 | `crates/llm-notary-platform/` | hosted API, identity, admission tickets, session sharing, verification, Library, PostgreSQL |
 | `js/app/` | public Vite/React SPA and local dashboard source |
 | `migrations-postgres/` | forward-only hosted schema migrations |

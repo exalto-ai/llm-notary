@@ -263,7 +263,9 @@ the router and committed at
   normalization, and verification.
 - `crates/llm-notary-client/`: `llm-notaryd`, the local REST API and dashboard,
   and the `llm-notary` command client.
-- `crates/llm-notary-server/`: remote notary service.
+- `crates/llm-notary-server/`: coordinator-free remote notary runtime.
+- `crates/llm-notary-hosted-server/`: private hosted admission and settlement
+  adapter used for the managed Alice/Bob service.
 - `crates/llm-notary-platform/`: hosted identity, admission, verification,
   session-sharing, and Library APIs.
 - `js/app/`: public SPA and the embedded local dashboard source.

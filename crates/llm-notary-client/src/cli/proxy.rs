@@ -944,9 +944,9 @@ fn proxy_error_response(error: &anyhow::Error) -> Response {
         }
         crate::NotaryAdmissionRejection::AdmissionDenied
         | crate::NotaryAdmissionRejection::AdmissionExpired
-        | crate::NotaryAdmissionRejection::CoordinatorUnavailable
-        | crate::NotaryAdmissionRejection::CaptureCreditsExhausted
-        | crate::NotaryAdmissionRejection::FinalizationCreditsExhausted => {
+        | crate::NotaryAdmissionRejection::AdmissionServiceUnavailable
+        | crate::NotaryAdmissionRejection::CaptureAllowanceExhausted
+        | crate::NotaryAdmissionRejection::FinalizationAllowanceExhausted => {
             unreachable!("hosted admission failures are rendered before capacity responses")
         }
     };
@@ -2892,17 +2892,17 @@ mod tests {
                 "hosted_admission_expired",
             ),
             (
-                crate::NotaryAdmissionRejection::CoordinatorUnavailable,
+                crate::NotaryAdmissionRejection::AdmissionServiceUnavailable,
                 StatusCode::SERVICE_UNAVAILABLE,
                 "hosted_admission_unavailable",
             ),
             (
-                crate::NotaryAdmissionRejection::CaptureCreditsExhausted,
+                crate::NotaryAdmissionRejection::CaptureAllowanceExhausted,
                 StatusCode::PAYMENT_REQUIRED,
                 "capture_credits_exhausted",
             ),
             (
-                crate::NotaryAdmissionRejection::FinalizationCreditsExhausted,
+                crate::NotaryAdmissionRejection::FinalizationAllowanceExhausted,
                 StatusCode::PAYMENT_REQUIRED,
                 "finalization_credits_exhausted",
             ),
