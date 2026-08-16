@@ -140,24 +140,27 @@ and matching API/notary images as one coordinated maintenance release. Migration
 `notarization` defaults; every API image kept for rollback must write
 `credit_kind` explicitly.
 
-Migration `0026_one_operation_admission.sql` is expand-only: it adds the exact
-finalization allowance binding while retaining the immediately previous ticket
-columns and lease table for rollback. The stop-legacy API now requires both
-`one_operation_v1` and durable usage settlement, so no supported redemption can
-create a lease. The stop-legacy notary accepts only operation responses and no
-longer writes the release outbox, and the legacy renew/release routes are not
-registered. While the legacy outbox path remains configured for the rollout
-window, notary startup fails unless it is empty; API startup then fails while
-an active legacy lease remains in PostgreSQL. The next release cannot be
-code-only: `authenticated_allowance_bytes` is generated from the legacy
-requested-allowance column. It must use an expand-compatible database bridge
-that remains writable by this rollback image, then remove all runtime legacy
-references while retaining the physical fields and deployment configuration.
-Only the following release may apply the physical contract migration tracked by
+Migration `0026_one_operation_admission.sql` added the one-operation ticket
+binding without removing the prior lease schema. Migration
+`0027_operation_usage_settlement.sql` added durable admitted-operation and
+settlement state and linked each debit to its operation ID. Keep the notary's
+`notary_data` volume: `/data/usage-outbox` retains measured usage until the
+private settlement endpoint acknowledges it, including across Machine restarts
+or coordinator outages.
+
+Migration `0028_detach_legacy_admission.sql` is the expand-compatible detach
+layer: the current API writes `authenticated_allowance_bytes` directly and
+operation debits are keyed only by operation ID, while a database trigger and
+nullable legacy debit digest keep the immediately previous stop-legacy API
+writable for rollback. The current API and notary no longer query the lease
+table or release outbox. Their physical schema and deployment configuration
+remain only for the previous image. The following release may apply the
+physical contract migration tracked by
 [#298](https://github.com/exalto-ai/notary/issues/298).
 
-The production drain is complete only when every notary starts with an empty
-configured release outbox and this database query returns zero:
+Before detaching those runtime checks, the stop-legacy production drain was
+complete only after every notary started with an empty configured release
+outbox and this database query returned zero:
 
 ```sql
 SELECT COUNT(*) AS active_legacy_leases
@@ -169,14 +172,6 @@ WHERE released_at IS NULL
 Operation usage must also be acknowledged in PostgreSQL or remain durably
 queued under `/data/usage-outbox`; never print raw admission tickets while
 performing the audit.
-
-Migration `0027_operation_usage_settlement.sql` adds durable admitted-operation
-and settlement state and links each new debit to its operation ID while
-preserving the legacy digest-idempotency contract during the rollback window.
-Deploy it with the matching API and notary images. Keep the notary's
-`notary_data` volume: `/data/usage-outbox` retains measured usage until the
-private settlement endpoint acknowledges it, including across Machine restarts
-or coordinator outages.
 
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private
@@ -221,11 +216,11 @@ gives each image a tag unique to the commit and CI run. The rollout then uses
 that tag to resolve an immutable `sha256` digest and deploys only the digest.
 It therefore neither rebuilds nor promotes a different image:
 
-1. Deploy the operation-only notary. The current bridge API already accepts its
-   contract, and startup proves the configured legacy release outbox is empty.
-2. Deploy the stop-legacy API and check it through the still-old web gateway.
-   API startup proves the active legacy lease count is zero before removing the
-   old renew/release routes from production.
+1. Deploy the operation-only notary. The API already accepts its contract, and
+   its durable usage outbox remains valid across the rolling change.
+2. Deploy the API and check it through the still-old web gateway. Any release
+   migration runs before the new API starts and must remain writable by the
+   recorded rollback image.
 3. Deploy the web gateway and check the public readiness route again.
 4. For a client-affecting change, build every CLI platform, upload and verify
    one immutable object set, then move the website's `latest` pointer.
@@ -257,8 +252,7 @@ hide it.
 
 For a break-glass, operator-driven deployment from the repository root, use the
 same build-then-deploy split and retain the previous image references for
-rollback. Deploy the operation-only notary before the stop-legacy API, as CI
-does.
+rollback. Deploy the operation-only notary before the API, as CI does.
 Normal production changes must go through CI:
 
 ```bash

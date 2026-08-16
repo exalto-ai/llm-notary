@@ -754,22 +754,20 @@ async fn issue_admission(
     } else {
         requested_allowance
     };
-    {
-        preflight_credits(
-            &mut transaction,
-            &credit_subject,
-            CreditKind::for_mode(request.mode),
-            record_digest.as_deref(),
-            allowance,
-            now,
-        )
-        .await?;
-    }
+    preflight_credits(
+        &mut transaction,
+        &credit_subject,
+        CreditKind::for_mode(request.mode),
+        allowance,
+        now,
+    )
+    .await?;
+    let authenticated_allowance = (request.mode == AdmissionMode::Finalize).then_some(allowance);
     let expires_at = now + state.admission.ticket_ttl_secs;
     sqlx::query(
         "INSERT INTO notary_admission_tickets
          (token_hash, subject_id, credit_subject, access_pool, mode, directory_generation,
-          record_digest, requested_allowance_bytes, max_attestable_http_bytes, max_frame_bytes,
+          record_digest, authenticated_allowance_bytes, max_attestable_http_bytes, max_frame_bytes,
           max_private_chunk_bytes, max_private_chunk_commitments, issued_at, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
     )
@@ -780,9 +778,7 @@ async fn issue_admission(
     .bind(request.mode.as_str())
     .bind(directory_generation)
     .bind(record_digest)
-    // `requested_allowance_bytes` keeps the immediately previous lease
-    // contract rollbackable. The one-operation redemption path ignores it.
-    .bind(allowance)
+    .bind(authenticated_allowance)
     .bind(policy.max_attestable_http_bytes)
     .bind(policy.max_frame_bytes)
     .bind(policy.max_private_chunk_bytes)
@@ -934,7 +930,6 @@ async fn redeem_one_operation(
         &mut transaction,
         &ticket.credit_subject,
         CreditKind::for_mode(request.mode),
-        ticket.record_digest.as_deref(),
         required_allowance,
         now,
     )
@@ -964,11 +959,10 @@ async fn redeem_one_operation(
     .map_err(database_error)?;
     let updated = sqlx::query(
         "UPDATE notary_admission_tickets
-         SET consumed_at = $1, consumed_by_instance = $2
-         WHERE token_hash = $3 AND consumed_at IS NULL",
+         SET consumed_at = $1
+         WHERE token_hash = $2 AND consumed_at IS NULL",
     )
     .bind(now)
-    .bind(&request.notary_instance_id)
     .bind(ticket_token_hash)
     .execute(&mut *transaction)
     .await
@@ -1145,21 +1139,16 @@ async fn record_operation_debit(
         )));
     }
     let debit_id = Uuid::new_v4().to_string();
-    // Preserve the legacy debit digest uniqueness contract for rollbackable
-    // API images. The real finalization digest remains bound on the operation;
-    // this ledger identity is deliberately unique to the admitted operation.
-    let record_digest = sha256_hex(format!("operation-debit:{}", operation.id).as_bytes());
     sqlx::query(
         "INSERT INTO notary_credit_debits
-             (id, credit_subject, account_id, credit_kind, record_digest,
-              allowance_bytes, created_at, operation_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+             (id, credit_subject, account_id, credit_kind, allowance_bytes,
+              created_at, operation_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(&debit_id)
     .bind(&operation.credit_subject)
     .bind(operation.subject_id.as_deref())
     .bind(credit_kind.as_str())
-    .bind(record_digest)
     .bind(authenticated_bytes)
     .bind(operation.admitted_at)
     .bind(&operation.id)
@@ -1711,31 +1700,9 @@ async fn preflight_credits(
     transaction: &mut Transaction<'_, Postgres>,
     credit_subject: &str,
     credit_kind: CreditKind,
-    digest: Option<&str>,
     allowance: i64,
     now: i64,
 ) -> ApiResult<()> {
-    if let Some(digest) = digest {
-        let previous = sqlx::query_scalar::<_, i64>(
-            "SELECT allowance_bytes FROM notary_credit_debits
-             WHERE credit_subject = $1 AND credit_kind = $2 AND record_digest = $3",
-        )
-        .bind(credit_subject)
-        .bind(credit_kind.as_str())
-        .bind(digest)
-        .fetch_optional(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-        if let Some(previous) = previous {
-            return if previous == allowance {
-                Ok(())
-            } else {
-                Err(ApiError::conflict(
-                    "a retry must use the original notarization allowance",
-                ))
-            };
-        }
-    }
     let available = available_credit_bytes(transaction, credit_subject, credit_kind, now).await?;
     if available < allowance {
         return Err(ApiError::coded(
@@ -2288,7 +2255,6 @@ mod tests {
             config.free.monthly_notarization_bytes
         );
         assert!(config.free.max_attestable_http_bytes < config.one_gb.max_attestable_http_bytes);
-        assert!(config.free.capture_concurrency < config.one_gb.capture_concurrency);
         assert_eq!(
             plan_entitlements(&config, ServicePlan::Free),
             PlanEntitlements {
@@ -2493,6 +2459,17 @@ mod tests {
         assert!(!admitted.operation_id.is_empty());
         assert_eq!(admitted.record_digest, None);
         assert_eq!(admitted.authenticated_allowance_bytes, None);
+        let consumed: (Option<i64>, Option<String>) = sqlx::query_as(
+            "SELECT consumed_at, consumed_by_instance
+             FROM notary_admission_tickets
+             WHERE token_hash = $1",
+        )
+        .bind(sha256_hex(first.ticket.as_bytes()))
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert!(consumed.0.is_some());
+        assert_eq!(consumed.1, None);
         let _ = redeem(second.ticket, "notary-two", true).await.unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -2573,16 +2550,15 @@ mod tests {
         assert_eq!(replay.status, StatusCode::CONFLICT);
         server.abort();
 
-        let (leases, debits, operations): (i64, i64, i64) = sqlx::query_as(
+        let (debits, operations): (i64, i64) = sqlx::query_as(
             "SELECT
-                 (SELECT COUNT(*) FROM notary_admission_leases),
                  (SELECT COUNT(*) FROM notary_credit_debits),
                  (SELECT COUNT(*) FROM notary_admission_operations)",
         )
         .fetch_one(&state.database)
         .await
         .unwrap();
-        assert_eq!((leases, debits, operations), (0, 0, 3));
+        assert_eq!((debits, operations), (0, 3));
     }
 
     #[tokio::test]
@@ -2886,7 +2862,7 @@ mod tests {
         )
         .await
         .unwrap();
-        let (charged, debit_digest): (i64, String) = sqlx::query_as(
+        let (charged, debit_digest): (i64, Option<String>) = sqlx::query_as(
             "SELECT allowance_bytes, record_digest
              FROM notary_credit_debits WHERE operation_id = $1",
         )
@@ -2895,9 +2871,9 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(charged, 42, "measured failed operations are still charged");
-        assert_ne!(
-            debit_digest, digest,
-            "operation debits must preserve the rollback-era digest uniqueness contract"
+        assert_eq!(
+            debit_digest, None,
+            "operation identity replaces digest identity"
         );
         let legacy_digest_unique: bool = sqlx::query_scalar(
             "SELECT EXISTS(
@@ -2999,11 +2975,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn public_ip_subjects_receive_independent_allowances_without_subject_limits() {
-        let mut state = test_state().await;
-        let mut admission = (*state.admission).clone();
-        admission.global_capture_concurrency = 4;
-        admission.public.capture_concurrency = 4;
-        state.admission = std::sync::Arc::new(admission);
+        let state = test_state().await;
 
         let issue = |peer| {
             issue_admission(

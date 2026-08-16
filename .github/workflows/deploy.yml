@@ -99,10 +99,9 @@ jobs:
             echo "web=$(current_image llm-notary-prod-web "$WEB_TOKEN")"
           } >> "$GITHUB_OUTPUT"
 
-      # Deploy the operation-only notary first while the bridge API still
-      # accepts its contract. Startup fails unless the configured legacy
-      # release outbox is empty. Only then deploy the API, whose own startup
-      # fails while any active legacy lease remains in PostgreSQL.
+      # Deploy the operation-only notary first while the current API accepts
+      # its contract. The API release command then installs any forward-only,
+      # rollback-writable database bridge before the new API starts.
       - name: Deploy notary image
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}

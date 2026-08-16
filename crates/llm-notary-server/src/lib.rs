@@ -215,24 +215,6 @@ struct Args {
     profile_sessions: bool,
 }
 
-fn ensure_legacy_release_outbox_drained(directory: &Path) -> Result<()> {
-    if directory.as_os_str().is_empty() {
-        bail!("LLM_NOTARY_RELEASE_OUTBOX_DIR must not be empty");
-    }
-    if !directory.exists() {
-        return Ok(());
-    }
-    if !directory.is_dir() {
-        bail!("legacy release outbox path must be a directory");
-    }
-    let mut entries = fs::read_dir(directory)
-        .with_context(|| format!("reading legacy release outbox {}", directory.display()))?;
-    if entries.next().transpose()?.is_some() {
-        bail!("legacy release outbox must be drained before starting this notary release");
-    }
-    Ok(())
-}
-
 #[cfg(unix)]
 fn sync_directory(directory: &Path) -> Result<()> {
     fs::File::open(directory)?.sync_all()?;
@@ -287,11 +269,6 @@ impl AdmissionCoordinator {
             .unwrap_or_else(|_| "1".to_owned())
             .parse()
             .context("LLM_NOTARY_NOTARY_DIRECTORY_GENERATION must be a u64")?;
-        let legacy_release_outbox = PathBuf::from(
-            env::var("LLM_NOTARY_RELEASE_OUTBOX_DIR")
-                .context("LLM_NOTARY_RELEASE_OUTBOX_DIR must be set for the drain audit")?,
-        );
-        ensure_legacy_release_outbox_drained(&legacy_release_outbox)?;
         let usage_outbox = UsageOutbox::open(
             env::var("LLM_NOTARY_USAGE_OUTBOX_DIR")
                 .context("LLM_NOTARY_USAGE_OUTBOX_DIR must be set")?,
@@ -1956,20 +1933,6 @@ mod tests {
             ),
             CoordinatorRejection::FinalizationCreditsExhausted
         ));
-    }
-
-    #[test]
-    fn legacy_release_outbox_must_be_drained_before_startup() {
-        let parent = tempfile::tempdir().unwrap();
-        let missing = parent.path().join("missing");
-        assert!(ensure_legacy_release_outbox_drained(&missing).is_ok());
-
-        let empty = parent.path().join("empty");
-        fs::create_dir(&empty).unwrap();
-        assert!(ensure_legacy_release_outbox_drained(&empty).is_ok());
-
-        fs::write(empty.join("pending.json"), b"legacy release").unwrap();
-        assert!(ensure_legacy_release_outbox_drained(&empty).is_err());
     }
 
     #[test]

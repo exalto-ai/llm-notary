@@ -620,23 +620,6 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
     hosted_router().into_openapi()
 }
 
-async fn ensure_legacy_admission_drained(database: &PgPool) -> Result<()> {
-    let active_leases: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM notary_admission_leases
-         WHERE released_at IS NULL
-           AND expires_at > EXTRACT(EPOCH FROM NOW())::BIGINT",
-    )
-    .fetch_one(database)
-    .await
-    .context("checking for active legacy admission leases")?;
-    if active_leases != 0 {
-        return Err(anyhow!(
-            "active legacy admission leases must drain before this API release starts"
-        ));
-    }
-    Ok(())
-}
-
 /// Runs the private, stdin/stdout verifier subprocess used to enforce a hard
 /// anonymous-verification timeout without retaining uploaded bytes.
 #[doc(hidden)]
@@ -659,7 +642,6 @@ pub async fn run_api() -> Result<()> {
     let config = PlatformConfig::from_env()?;
     let _telemetry = telemetry::init("llm-notary-api")?;
     let state = AppState::from_config(&config).await?;
-    ensure_legacy_admission_drained(&state.database).await?;
     let listen = config.listen;
     publish::spawn_cleanup(state.clone());
     admission::spawn(state.clone());
@@ -2474,35 +2456,183 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
-    async fn stop_legacy_startup_requires_active_leases_to_be_drained() {
-        let database = fresh_database().await;
-        let now = unix_timestamp().unwrap();
-        sqlx::query(
-            "INSERT INTO notary_admission_leases
-                 (id, notary_instance_id, subject_id, credit_subject, access_pool,
-                  mode, acquired_at, expires_at)
-             VALUES ('legacy-active', 'notary-old', NULL, 'public:v1:test',
-                     'public', 'capture', $1, $2)",
+    async fn admission_detach_migration_preserves_old_and_new_writers() {
+        let database = super::test_database::database_through(27).await;
+        sqlx::raw_sql(
+            "INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest, requested_allowance_bytes,
+                  max_attestable_http_bytes, max_frame_bytes,
+                  max_private_chunk_bytes, max_private_chunk_commitments,
+                  issued_at, expires_at)
+             VALUES
+                 ('before-bridge', NULL, 'public:v1:test', 'public', 'finalize',
+                  1, repeat('a', 64), 41, 1000, 2000, 100, 4, 1, 100)",
         )
-        .bind(now)
-        .bind(now + 300)
         .execute(&database.pool)
         .await
         .unwrap();
 
-        assert!(
-            ensure_legacy_admission_drained(&database.pool)
-                .await
-                .is_err()
+        sqlx::raw_sql(include_str!(
+            "../../../migrations-postgres/0028_detach_legacy_admission.sql"
+        ))
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+        sqlx::raw_sql(
+            "INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest, requested_allowance_bytes,
+                  max_attestable_http_bytes, max_frame_bytes,
+                  max_private_chunk_bytes, max_private_chunk_commitments,
+                  issued_at, expires_at)
+             VALUES
+                 ('old-writer', NULL, 'public:v1:test', 'public', 'finalize',
+                  1, repeat('b', 64), 42, 1000, 2000, 100, 4, 1, 100);
+
+             INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest, requested_allowance_bytes,
+                  max_attestable_http_bytes, max_frame_bytes,
+                  max_private_chunk_bytes, max_private_chunk_commitments,
+                  issued_at, expires_at)
+             VALUES
+                 ('old-capture', NULL, 'public:v1:test', 'public', 'capture',
+                  1, NULL, 99, 1000, 2000, 100, 4, 1, 100);
+
+             INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest, authenticated_allowance_bytes,
+                  max_attestable_http_bytes, max_frame_bytes,
+                  max_private_chunk_bytes, max_private_chunk_commitments,
+                  issued_at, expires_at)
+             VALUES
+                 ('new-writer', NULL, 'public:v1:test', 'public', 'finalize',
+                  1, repeat('c', 64), 43, 1000, 2000, 100, 4, 1, 100);
+
+             INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest, authenticated_allowance_bytes,
+                  max_attestable_http_bytes, max_frame_bytes,
+                  max_private_chunk_bytes, max_private_chunk_commitments,
+                  issued_at, expires_at)
+             VALUES
+                 ('new-capture', NULL, 'public:v1:test', 'public', 'capture',
+                  1, NULL, NULL, 1000, 2000, 100, 4, 1, 100)",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+        let allowances: Vec<(String, Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT token_hash, requested_allowance_bytes,
+                    authenticated_allowance_bytes
+             FROM notary_admission_tickets
+             ORDER BY token_hash",
+        )
+        .fetch_all(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            allowances,
+            vec![
+                ("before-bridge".to_owned(), Some(41), Some(41)),
+                ("new-capture".to_owned(), None, None),
+                ("new-writer".to_owned(), Some(43), Some(43)),
+                ("old-capture".to_owned(), Some(99), None),
+                ("old-writer".to_owned(), Some(42), Some(42)),
+            ]
         );
 
-        sqlx::query("UPDATE notary_admission_leases SET expires_at = 1")
-            .execute(&database.pool)
+        let rollback_projection: Vec<(String, String, Option<String>, Option<i64>)> =
+            sqlx::query_as(
+                "SELECT token_hash, mode, record_digest,
+                        authenticated_allowance_bytes
+                 FROM notary_admission_tickets
+                 WHERE token_hash IN ('new-capture', 'new-writer')
+                 ORDER BY token_hash",
+            )
+            .fetch_all(&database.pool)
             .await
             .unwrap();
-        ensure_legacy_admission_drained(&database.pool)
-            .await
-            .unwrap();
+        assert_eq!(
+            rollback_projection,
+            vec![
+                ("new-capture".to_owned(), "capture".to_owned(), None, None,),
+                (
+                    "new-writer".to_owned(),
+                    "finalize".to_owned(),
+                    Some("c".repeat(64)),
+                    Some(43),
+                ),
+            ]
+        );
+
+        let mismatch = sqlx::query(
+            "INSERT INTO notary_admission_tickets
+                 (token_hash, subject_id, credit_subject, access_pool, mode,
+                  directory_generation, record_digest, requested_allowance_bytes,
+                  authenticated_allowance_bytes, max_attestable_http_bytes,
+                  max_frame_bytes, max_private_chunk_bytes,
+                  max_private_chunk_commitments, issued_at, expires_at)
+             VALUES
+                 ('mismatch', NULL, 'public:v1:test', 'public', 'finalize',
+                  1, repeat('d', 64), 44, 45, 1000, 2000, 100, 4, 1, 100)",
+        )
+        .execute(&database.pool)
+        .await
+        .expect_err("mismatched bridge allowances must be rejected");
+        assert!(mismatch.to_string().contains("must match"));
+
+        sqlx::raw_sql(
+            "INSERT INTO notary_admission_operations
+                 (id, ticket_token_hash, notary_instance_id, subject_id,
+                  credit_subject, access_pool, mode, record_digest,
+                  authenticated_allowance_bytes, max_attestable_http_bytes,
+                  admitted_at)
+             VALUES
+                 ('new-operation', repeat('e', 64), 'notary-new', NULL,
+                  'public:v1:test', 'public', 'capture', NULL, NULL, 1000, 1);
+
+             INSERT INTO notary_admission_operations
+                 (id, ticket_token_hash, notary_instance_id, subject_id,
+                  credit_subject, access_pool, mode, record_digest,
+                  authenticated_allowance_bytes, max_attestable_http_bytes,
+                  admitted_at)
+             VALUES
+                 ('old-operation', repeat('f', 64), 'notary-old', NULL,
+                  'public:v1:test', 'public', 'capture', NULL, NULL, 1000, 1);
+
+             INSERT INTO notary_credit_debits
+                 (id, credit_subject, account_id, credit_kind, allowance_bytes,
+                  created_at, operation_id)
+             VALUES
+                 ('new-operation-debit', 'public:v1:test', NULL, 'capture',
+                  1, 1, 'new-operation');
+
+             INSERT INTO notary_credit_debits
+                 (id, credit_subject, account_id, credit_kind, record_digest,
+                  allowance_bytes, created_at, operation_id)
+             VALUES
+                 ('old-digest-debit', 'public:v1:test', NULL, 'capture',
+                  repeat('f', 64), 1, 1, 'old-operation')",
+        )
+        .execute(&database.pool)
+        .await
+        .unwrap();
+        let debit_digests: Vec<(String, Option<String>)> =
+            sqlx::query_as("SELECT id, record_digest FROM notary_credit_debits ORDER BY id")
+                .fetch_all(&database.pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            debit_digests,
+            vec![
+                ("new-operation-debit".to_owned(), None),
+                ("old-digest-debit".to_owned(), Some("f".repeat(64))),
+            ]
+        );
     }
 
     #[tokio::test]
