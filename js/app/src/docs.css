@@ -154,7 +154,7 @@
 .docs-anchor svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 .docs-anchor:hover { border: 0; background: var(--soft); color: var(--ink); }
 .docs-heading-row:hover .docs-anchor, .docs-anchor:focus-visible { opacity: 1; }
-.docs-anchor:focus-visible { outline: 2px solid var(--green-ink); outline-offset: 2px; }
+.docs-anchor:focus-visible { outline: 2px solid var(--action-ink); outline-offset: 2px; }
 
 .docs-code { position: relative; margin-top: 17px; }
 
@@ -185,7 +185,7 @@
   max-width: 700px;
   margin-top: 18px;
   padding: 17px 19px;
-  border-left: 3px solid var(--green);
+  border-left: 3px solid var(--action);
   background: var(--white);
   color: var(--ink);
   font-size: 14px;
@@ -295,7 +295,7 @@
 .docs-page-nav > * { min-width: 0; }
 .docs-page-nav a:last-child { text-align: right; }
 .docs-page-nav a { color: var(--ink); font-size: 13px; font-weight: 700; }
-.docs-page-nav a:hover { text-decoration: underline; text-decoration-color: var(--green); text-decoration-thickness: 2px; text-underline-offset: 4px; }
+.docs-page-nav a:hover { text-decoration: underline; text-decoration-color: var(--action); text-decoration-thickness: 2px; text-underline-offset: 4px; }
 .docs-page-nav span { display: block; margin-bottom: 6px; color: var(--muted); font: 500 10px 'IBM Plex Mono', monospace; letter-spacing: .05em; text-transform: uppercase; }
 
 .docs-toc { padding-top: 18px; border-top: 1px solid var(--line); }

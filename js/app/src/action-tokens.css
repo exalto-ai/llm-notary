@@ -1,0 +1,20 @@
+:root {
+  --action: #1c55cd;
+  --action-ink: #143d94;
+  --action-soft: #b9d8ff;
+  --action-fill: #1c55cd;
+  --action-fill-hover: #143d94;
+  --action-contrast: #ffffff;
+  --inverse-accent: #b9d8ff;
+}
+
+:root[data-theme='dark'],
+:root[data-mantine-color-scheme='dark'] {
+  --action: #6d92ff;
+  --action-ink: #a9beff;
+  --action-soft: #1a2340;
+  --action-fill: #1c55cd;
+  --action-fill-hover: #285fd1;
+  --action-contrast: #ffffff;
+  --inverse-accent: #b9d8ff;
+}

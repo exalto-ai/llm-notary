@@ -8,13 +8,18 @@ describe('formatNotaryBoundary', () => {
 
   test('keeps absent cutoffs distinct from lower bounds', () => {
     expect(formatNotaryBoundary(null)).toBe('No cutoff configured');
-    expect(formatNotaryBoundary(null, { kind: 'lower', missingLabel: 'Not defined locally' }))
-      .toBe('Not defined locally');
+    expect(formatNotaryBoundary(null, { kind: 'lower', missingLabel: 'Not defined locally' })).toBe(
+      'Not defined locally',
+    );
   });
 
   test('formats real timestamps in the requested timezone', () => {
-    expect(formatNotaryBoundary(Date.UTC(2026, 0, 1, 12), {
-      kind: 'lower', locales: 'en-US', timeZone: 'America/Los_Angeles'
-    })).toBe('Jan 1, 2026, 4:00 AM');
+    expect(
+      formatNotaryBoundary(Date.UTC(2026, 0, 1, 12), {
+        kind: 'lower',
+        locales: 'en-US',
+        timeZone: 'America/Los_Angeles',
+      }),
+    ).toBe('Jan 1, 2026, 4:00 AM');
   });
 });

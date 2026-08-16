@@ -4,7 +4,11 @@ import type { components, paths } from './generated/api.generated';
 const client = createClient<paths>({ credentials: 'same-origin' });
 
 export class PlatformApiError extends Error {
-  constructor(message: string, readonly status: number, readonly code?: string) {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
     super(message);
     this.name = 'PlatformApiError';
   }
@@ -18,7 +22,12 @@ function errorCode(error: unknown): string | undefined {
 }
 
 function errorMessage(error: unknown, fallback: string): string {
-  if (error && typeof error === 'object' && 'message' in error && typeof error.message === 'string') {
+  if (
+    error &&
+    typeof error === 'object' &&
+    'message' in error &&
+    typeof error.message === 'string'
+  ) {
     return error.message;
   }
   if (error && typeof error === 'object' && 'error' in error && typeof error.error === 'string') {
@@ -29,7 +38,9 @@ function errorMessage(error: unknown, fallback: string): string {
 
 type PageOptions = { limit?: number; cursor?: string };
 
-export async function getListedShares(options: PageOptions & { search?: string; provider?: string } = {}) {
+export async function getListedShares(
+  options: PageOptions & { search?: string; provider?: string } = {},
+) {
   const { data, error, response } = await client.GET('/api/public/shares', {
     params: { query: options },
   });
@@ -42,7 +53,10 @@ export async function getListedShares(options: PageOptions & { search?: string; 
 export async function getNotaryDirectory() {
   const { data, error, response } = await client.GET('/api/notary');
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load the notary directory.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not load the notary directory.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -63,45 +77,71 @@ export async function getPublicShare(shareId: string, password?: string) {
     headers: sharePasswordHeaders(password),
   });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load this shared session.'), response.status, errorCode(error));
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not load this shared session.'),
+      response.status,
+      errorCode(error),
+    );
   }
   return data;
 }
 
 export async function getSharedTrace(shareId: string, password?: string) {
-  const { data, error, response } = await client.GET('/api/public/shares/{share_id}/trace.otlp.json', {
-    params: { path: { share_id: shareId } },
-    headers: sharePasswordHeaders(password),
-  });
+  const { data, error, response } = await client.GET(
+    '/api/public/shares/{share_id}/trace.otlp.json',
+    {
+      params: { path: { share_id: shareId } },
+      headers: sharePasswordHeaders(password),
+    },
+  );
   if (!response.ok || data === undefined) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load this shared transcript.'), response.status, errorCode(error));
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not load this shared transcript.'),
+      response.status,
+      errorCode(error),
+    );
   }
   return data;
 }
 
 export async function downloadSharedPackage(shareId: string, password?: string) {
-  const response = await fetch(`/api/public/shares/${encodeURIComponent(shareId)}/package.llmtrace`, {
-    credentials: 'same-origin',
-    headers: sharePasswordHeaders(password),
-  });
+  const response = await fetch(
+    `/api/public/shares/${encodeURIComponent(shareId)}/package.llmtrace`,
+    {
+      credentials: 'same-origin',
+      headers: sharePasswordHeaders(password),
+    },
+  );
   if (!response.ok) {
     const error = await response.json().catch(() => null);
-    throw new PlatformApiError(errorMessage(error, 'Could not download this trace package.'), response.status, errorCode(error));
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not download this trace package.'),
+      response.status,
+      errorCode(error),
+    );
   }
   return response.blob();
 }
 
-export async function reportPublicShare(shareId: string, body: {
-  reason: 'sensitive_information' | 'harassment' | 'illegal_content' | 'spam' | 'other';
-  message?: string;
-}, password?: string) {
+export async function reportPublicShare(
+  shareId: string,
+  body: {
+    reason: 'sensitive_information' | 'harassment' | 'illegal_content' | 'spam' | 'other';
+    message?: string;
+  },
+  password?: string,
+) {
   const { data, error, response } = await client.POST('/api/public/shares/{share_id}/reports', {
     params: { path: { share_id: shareId } },
     headers: sharePasswordHeaders(password),
     body,
   });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not send this report.'), response.status, errorCode(error));
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not send this report.'),
+      response.status,
+      errorCode(error),
+    );
   }
   return data;
 }
@@ -111,7 +151,10 @@ export async function getCliSessions(options: PageOptions = {}) {
     params: { query: options },
   });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load connected local services.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not load connected local services.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -136,7 +179,10 @@ export async function createApiKey(body: {
 }) {
   const { data, error, response } = await client.POST('/api/me/api-keys', { body });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not create the API key.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not create the API key.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -146,7 +192,10 @@ export async function revokeApiKey(apiKeyId: string) {
     params: { path: { api_key_id: apiKeyId } },
   });
   if (!response.ok) {
-    throw new PlatformApiError(errorMessage(error, 'Could not revoke the API key.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not revoke the API key.'),
+      response.status,
+    );
   }
 }
 
@@ -160,18 +209,25 @@ export async function getMyShares(options: PageOptions = {}) {
   return data;
 }
 
-export async function updateMyShare(shareId: string, body: {
-  visibility?: 'unlisted' | 'listed';
-  published?: boolean;
-  password?: string;
-  expires_in_days?: number;
-}) {
+export async function updateMyShare(
+  shareId: string,
+  body: {
+    visibility?: 'unlisted' | 'listed';
+    published?: boolean;
+    password?: string;
+    expires_in_days?: number;
+  },
+) {
   const { data, error, response } = await client.PATCH('/api/shares/{share_id}', {
     params: { path: { share_id: shareId } },
     body,
   });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not update this trace.'), response.status, errorCode(error));
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not update this trace.'),
+      response.status,
+      errorCode(error),
+    );
   }
   return data;
 }
@@ -181,7 +237,10 @@ export async function getCreditHistory(options: PageOptions = {}) {
     params: { query: options },
   });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load credit activity.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not load credit activity.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -189,7 +248,10 @@ export async function getCreditHistory(options: PageOptions = {}) {
 export async function getBillingPurchases() {
   const { data, error, response } = await client.GET('/api/me/billing/purchases');
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load credit purchases.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not load credit purchases.'),
+      response.status,
+    );
   }
   return data.purchases;
 }
@@ -199,7 +261,10 @@ export async function getBillingPurchase(purchaseId: string) {
     params: { path: { purchase_id: purchaseId } },
   });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load this credit purchase.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not load this credit purchase.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -209,7 +274,10 @@ export async function createCheckoutSession(quantityGb: number, idempotencyKey: 
     body: { quantity_gb: quantityGb, idempotency_key: idempotencyKey },
   });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not start Stripe Checkout.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not start Stripe Checkout.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -218,11 +286,17 @@ export async function createSubscriptionCheckoutSession(
   plan: 'one_gb' | 'ten_gb',
   idempotencyKey: string,
 ) {
-  const { data, error, response } = await client.POST('/api/me/billing/subscription-checkout-sessions', {
-    body: { plan, idempotency_key: idempotencyKey },
-  });
+  const { data, error, response } = await client.POST(
+    '/api/me/billing/subscription-checkout-sessions',
+    {
+      body: { plan, idempotency_key: idempotencyKey },
+    },
+  );
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not start subscription Checkout.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not start subscription Checkout.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -230,7 +304,10 @@ export async function createSubscriptionCheckoutSession(
 export async function createBillingPortalSession() {
   const { data, error, response } = await client.POST('/api/me/billing/portal-sessions');
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not open subscription management.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not open subscription management.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -240,16 +317,25 @@ export async function revokeCliSession(sessionId: string) {
     params: { path: { session_id: sessionId } },
   });
   if (!response.ok) {
-    throw new PlatformApiError(errorMessage(error, 'Could not revoke this local service session.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not revoke this local service session.'),
+      response.status,
+    );
   }
 }
 
 export async function getCliApproval(requestId: string, approvalSecret: string) {
-  const { data, error, response } = await client.GET('/api/cli/authorizations/{request_id}/approval', {
-    params: { path: { request_id: requestId }, query: { approval_secret: approvalSecret } },
-  });
+  const { data, error, response } = await client.GET(
+    '/api/cli/authorizations/{request_id}/approval',
+    {
+      params: { path: { request_id: requestId }, query: { approval_secret: approvalSecret } },
+    },
+  );
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'This authorization request is unavailable.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'This authorization request is unavailable.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -259,7 +345,10 @@ export async function approveCli(requestId: string, approvalSecret: string) {
     params: { path: { request_id: requestId }, query: { approval_secret: approvalSecret } },
   });
   if (!response.ok) {
-    throw new PlatformApiError(errorMessage(error, 'Could not approve this local service request.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not approve this local service request.'),
+      response.status,
+    );
   }
 }
 
@@ -267,7 +356,10 @@ export async function getCurrentUser() {
   const { data, error, response } = await client.GET('/api/me');
   if (response.status === 401) return null;
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load the current account.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not load the current account.'),
+      response.status,
+    );
   }
   return {
     ...data.user,
@@ -281,7 +373,10 @@ export async function getCurrentUser() {
 export async function getAuthProviders() {
   const { data, error, response } = await client.GET('/api/auth/providers');
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load sign-in options.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not load sign-in options.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -289,7 +384,10 @@ export async function getAuthProviders() {
 export async function getCreditOffers() {
   const { data, error, response } = await client.GET('/api/me/credit-offers');
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not load available credit offers.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not load available credit offers.'),
+      response.status,
+    );
   }
   return data.offers;
 }
@@ -299,7 +397,10 @@ export async function claimCreditOffer(offerId: string) {
     params: { path: { offer_id: offerId } },
   });
   if (!response.ok || !data) {
-    throw new PlatformApiError(errorMessage(error, 'Could not claim this credit offer.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not claim this credit offer.'),
+      response.status,
+    );
   }
   return data;
 }
@@ -307,14 +408,20 @@ export async function claimCreditOffer(offerId: string) {
 export async function logoutBrowser() {
   const { error, response } = await client.POST('/api/auth/logout');
   if (!response.ok) {
-    throw new PlatformApiError(errorMessage(error, 'Could not end the browser session.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not end the browser session.'),
+      response.status,
+    );
   }
 }
 
 export async function deleteCurrentAccount() {
   const { error, response } = await client.DELETE('/api/me');
   if (!response.ok) {
-    throw new PlatformApiError(errorMessage(error, 'Could not delete the account.'), response.status);
+    throw new PlatformApiError(
+      errorMessage(error, 'Could not delete the account.'),
+      response.status,
+    );
   }
 }
 
@@ -337,7 +444,12 @@ export async function verifyTracePackage(file: File): Promise<HostedVerification
   if (!response.ok) {
     throw new PlatformApiError(errorMessage(payload, 'verification_unavailable'), response.status);
   }
-  if (!payload || typeof payload !== 'object' || !('verified' in payload) || payload.verified !== true) {
+  if (
+    !payload ||
+    typeof payload !== 'object' ||
+    !('verified' in payload) ||
+    payload.verified !== true
+  ) {
     throw new PlatformApiError('verification_unavailable', response.status);
   }
   return payload as HostedVerificationResult;

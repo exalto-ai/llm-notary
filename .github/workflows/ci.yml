@@ -100,7 +100,7 @@ jobs:
               - 'skills/**'
               - 'js/app/public/llms.txt'
               - 'js/app/scripts/check-local-docs.mjs'
-              - 'js/app/src/main.jsx'
+              - 'js/app/src/**'
               - 'js/app/src/local-dashboard/generated/openapi.json'
             containers:
               - '.github/workflows/ci.yml'

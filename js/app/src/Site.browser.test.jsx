@@ -1,12 +1,28 @@
+import { cleanup, fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, test } from 'vitest';
 import { page } from 'vitest/browser';
-import { cleanup, fireEvent, render } from '@testing-library/react';
-import { AccountSettings, ApiKeysPanel, App, CliApproval, Dashboard, DeleteAccountPanel, Footer, Header, HostedNotaryRecord, Landing, Library, ListedSharesPreview, SharePage, SignInPage, VerificationPage } from './main';
 import CreditUtilizationChart from './CreditUtilizationChart';
+import {
+  AccountSettings,
+  ApiKeysPanel,
+  App,
+  CliApproval,
+  Dashboard,
+  DeleteAccountPanel,
+  Footer,
+  Header,
+  HostedNotaryRecord,
+  Landing,
+  Library,
+  ListedSharesPreview,
+  SharePage,
+  SignInPage,
+  VerificationPage,
+} from './main';
 import { ProviderIdentity } from './ProviderIdentity';
+import { encodeSharePassword } from './platform-api/client';
 import { latestMacosDownloadHref } from './releaseDownloads';
 import { initialThemePreference } from './theme';
-import { encodeSharePassword } from './platform-api/client';
 
 afterEach(async () => {
   cleanup();
@@ -29,20 +45,53 @@ const libraryShares = Array.from({ length: 20 }, (_, index) => ({
 const loadLibrary = async ({ limit = 20, cursor, search, provider } = {}) => {
   const query = search?.toLowerCase() || '';
   const matches = libraryShares.filter((share) => {
-    const text = `${share.provider} ${share.model} ${share.publisher} ${share.input_preview} ${share.output_preview}`.toLowerCase();
+    const text =
+      `${share.provider} ${share.model} ${share.publisher} ${share.input_preview} ${share.output_preview}`.toLowerCase();
     return (!query || text.includes(query)) && (!provider || share.provider === provider);
   });
   const offset = cursor ? Number(cursor) : 0;
   const items = matches.slice(offset, offset + limit);
-  return { items: structuredClone(items), next_cursor: offset + limit < matches.length ? String(offset + limit) : null };
+  return {
+    items: structuredClone(items),
+    next_cursor: offset + limit < matches.length ? String(offset + limit) : null,
+  };
 };
 const loadLibraryTrace = async (id) => ({
-  resourceSpans: [{ scopeSpans: [{ spans: [{
-    name: 'gen_ai.inference', spanId: `${id}-span`, attributes: [
-      { key: 'gen_ai.input.messages', value: { stringValue: JSON.stringify([{ role: 'user', parts: [{ type: 'text', content: `Prompt for ${id}` }] }]) } },
-      { key: 'gen_ai.output.messages', value: { stringValue: JSON.stringify([{ role: 'assistant', parts: [{ type: 'text', content: `Response for ${id}` }] }]) } }
-    ]
-  }] }] }]
+  resourceSpans: [
+    {
+      scopeSpans: [
+        {
+          spans: [
+            {
+              name: 'gen_ai.inference',
+              spanId: `${id}-span`,
+              attributes: [
+                {
+                  key: 'gen_ai.input.messages',
+                  value: {
+                    stringValue: JSON.stringify([
+                      { role: 'user', parts: [{ type: 'text', content: `Prompt for ${id}` }] },
+                    ]),
+                  },
+                },
+                {
+                  key: 'gen_ai.output.messages',
+                  value: {
+                    stringValue: JSON.stringify([
+                      {
+                        role: 'assistant',
+                        parts: [{ type: 'text', content: `Response for ${id}` }],
+                      },
+                    ]),
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ],
 });
 
 const balanceFixture = (remaining = 1_024) => ({
@@ -65,7 +114,11 @@ const billingFixture = (overrides = {}) => ({
   billing_status: 'active',
   purchase_mode: 'disabled',
   subscriptions_configured: false,
-  entitlements: { monthly_capture_bytes: 50_000_000, monthly_notarization_bytes: 50_000_000, trace_storage_bytes: 1_000_000_000 },
+  entitlements: {
+    monthly_capture_bytes: 50_000_000,
+    monthly_notarization_bytes: 50_000_000,
+    trace_storage_bytes: 1_000_000_000,
+  },
   ...overrides,
 });
 
@@ -75,30 +128,57 @@ describe('hosted site', () => {
   });
 
   test('makes the current macOS app the primary landing action', async () => {
-    expect(latestMacosDownloadHref('build-123 0.1.0')).toBe('/downloads/cli/builds/build-123/LLM-Notary-macos-arm64.dmg');
-    expect(() => latestMacosDownloadHref('../build 0.1.0')).toThrow('latest download pointer is invalid');
+    expect(latestMacosDownloadHref('build-123 0.1.0')).toBe(
+      '/downloads/cli/builds/build-123/LLM-Notary-macos-arm64.dmg',
+    );
+    expect(() => latestMacosDownloadHref('../build 0.1.0')).toThrow(
+      'latest download pointer is invalid',
+    );
     render(<Landing loadLatestPointer={async () => 'build-123 0.1.0'} />);
 
     const download = page.getByRole('link', { name: /Download for macOS/ });
-    await expect.element(download).toHaveAttribute('href', '/downloads/cli/builds/build-123/LLM-Notary-macos-arm64.dmg');
+    await expect
+      .element(download)
+      .toHaveAttribute('href', '/downloads/cli/builds/build-123/LLM-Notary-macos-arm64.dmg');
     await expect.element(download).toHaveAttribute('download', 'LLM-Notary-macos-arm64.dmg');
     await expect.element(page.getByText('Apple silicon · macOS 12+')).not.toBeInTheDocument();
-    await expect.element(page.getByRole('link', { name: 'build on the LLM Notary stack' })).toHaveAttribute('href', '#/docs/getting-started');
-    expect(document.querySelector('.hero-developer-path')?.textContent).toBe('or, build on the LLM Notary stack');
+    await expect
+      .element(page.getByRole('link', { name: 'build on the LLM Notary stack' }))
+      .toHaveAttribute('href', '#/docs/getting-started');
+    expect(document.querySelector('.hero-developer-path')?.textContent).toBe(
+      'or, build on the LLM Notary stack',
+    );
     await expect.element(page.getByRole('link', { name: 'Get started' })).not.toBeInTheDocument();
-    await expect.element(page.getByRole('link', { name: 'Browse Library' })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole('link', { name: 'Browse Library' }))
+      .not.toBeInTheDocument();
     expect(document.querySelector('.receipt [data-provider-icon="openai"]')).not.toBeNull();
   });
 
   test('puts Pricing in the header and product destinations in the footer', async () => {
-    render(<><Header user={null} onLogout={() => {}} /><Footer /></>);
+    render(
+      <>
+        <Header user={null} onLogout={() => {}} />
+        <Footer />
+      </>,
+    );
 
     const productNav = document.querySelector('.product-nav');
-    expect(Array.from(productNav.querySelectorAll('a'), (link) => link.textContent)).toEqual(['Docs', 'Pricing', 'Sign in']);
-    await expect.element(page.getByRole('link', { name: 'Pricing' })).toHaveAttribute('href', '/#/pricing');
+    expect(Array.from(productNav.querySelectorAll('a'), (link) => link.textContent)).toEqual([
+      'Docs',
+      'Pricing',
+      'Sign in',
+    ]);
+    await expect
+      .element(page.getByRole('link', { name: 'Pricing' }))
+      .toHaveAttribute('href', '/#/pricing');
     const footer = page.getByRole('navigation', { name: 'Footer' });
-    await expect.element(footer.getByRole('link', { name: 'Verify' })).toHaveAttribute('href', '/#/verify');
-    await expect.element(footer.getByRole('link', { name: 'Library' })).toHaveAttribute('href', '/#/library');
+    await expect
+      .element(footer.getByRole('link', { name: 'Verify' }))
+      .toHaveAttribute('href', '/#/verify');
+    await expect
+      .element(footer.getByRole('link', { name: 'Library' }))
+      .toHaveAttribute('href', '/#/library');
   });
 
   test('explains hosted pricing in plain language on the landing page', async () => {
@@ -106,16 +186,26 @@ describe('hosted site', () => {
 
     const pricing = document.getElementById('pricing');
     expect(pricing).not.toBeNull();
-    await expect.element(page.getByRole('heading', { name: 'A plan for every proof workload.' })).toBeVisible();
+    await expect
+      .element(page.getByRole('heading', { name: 'A plan for every proof workload.' }))
+      .toBeVisible();
     await expect.element(page.getByText('50 MB capture each month')).toBeVisible();
     await expect.element(page.getByText('1 GB notarization each month')).toBeVisible();
     await expect.element(page.getByText('$10 per additional GB')).toBeVisible();
     await expect.element(page.getByText('Credit boundary')).not.toBeInTheDocument();
-    await expect.element(page.getByRole('link', { name: 'See plan and usage details' })).toHaveAttribute('href', '/#/docs/hosted-credits');
+    await expect
+      .element(page.getByRole('link', { name: 'See plan and usage details' }))
+      .toHaveAttribute('href', '/#/docs/hosted-credits');
   });
 
   test('sends the macOS action to install options when the latest pointer is unavailable', async () => {
-    render(<Landing loadLatestPointer={async () => { throw new Error('offline'); }} />);
+    render(
+      <Landing
+        loadLatestPointer={async () => {
+          throw new Error('offline');
+        }}
+      />,
+    );
 
     const download = page.getByRole('link', { name: /Download for macOS/ });
     await expect.element(download).toHaveAttribute('href', '#/docs/getting-started');
@@ -127,39 +217,62 @@ describe('hosted site', () => {
     render(<Header user={{ github_login: 'fixture-user' }} onLogout={() => {}} />);
 
     await page.getByRole('button', { name: 'Account menu for fixture-user' }).click();
-    await expect.element(page.getByRole('menuitem', { name: 'Dashboard' })).toBeVisible();
+    await expect.element(page.getByRole('link', { name: 'Dashboard' })).toBeVisible();
     await expect.element(page.getByRole('group', { name: 'Appearance' })).not.toBeInTheDocument();
   });
 
   test('reserves the account slot while browser authentication is loading', async () => {
     render(<Header user={null} authPending onLogout={() => {}} />);
 
-    await expect.element(page.getByRole('status', { name: 'Checking sign-in status' })).toBeVisible();
+    await expect
+      .element(page.getByRole('status', { name: 'Checking sign-in status' }))
+      .toBeVisible();
     await expect.element(page.getByRole('link', { name: 'Sign in' })).not.toBeInTheDocument();
   });
 
   test('keeps a dashboard deep link out of the landing page while authentication loads', async () => {
     window.location.hash = '#/dashboard/settings';
     let resolveCurrentUser;
-    const loadCurrentUser = () => new Promise((resolve) => { resolveCurrentUser = resolve; });
+    const loadCurrentUser = () =>
+      new Promise((resolve) => {
+        resolveCurrentUser = resolve;
+      });
     render(<App loadCurrentUser={loadCurrentUser} />);
 
     await expect.element(page.getByRole('status', { name: 'Loading dashboard' })).toBeVisible();
-    await expect.element(page.getByRole('heading', { name: 'Verifiable intelligence' })).not.toBeInTheDocument();
+    await expect.element(page.getByText('Loading dashboard…')).toBeVisible();
+    await expect
+      .element(page.getByRole('heading', { name: 'Loading your account' }))
+      .not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole('heading', { name: 'Verifiable intelligence' }))
+      .not.toBeInTheDocument();
 
-    resolveCurrentUser({ github_login: 'fixture-user', share_stats: { total: 0, admitted: 0, in_progress: 0 } });
-    await expect.element(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible();
+    resolveCurrentUser({
+      github_login: 'fixture-user',
+      share_stats: { total: 0, admitted: 0, in_progress: 0 },
+    });
+    await expect
+      .element(page.getByRole('heading', { name: 'Settings', exact: true }))
+      .toBeVisible();
   });
 
   test('offers Google first and preserves a local-service return route', async () => {
-    render(<SignInPage
-      route="signin?return_to=%23%2Fauthorize%3Frequest_id%3Drequest-123"
-      loadProviders={async () => ({ google: true, github: true })}
-    />);
+    render(
+      <SignInPage
+        route="signin?return_to=%23%2Fauthorize%3Frequest_id%3Drequest-123"
+        loadProviders={async () => ({ google: true, github: true })}
+      />,
+    );
 
     const google = page.getByRole('link', { name: 'Continue with Google' });
     await expect.element(google).toBeVisible();
-    await expect.element(google).toHaveAttribute('href', '/api/auth/google?return_to=%23%2Fauthorize%3Frequest_id%3Drequest-123');
+    await expect
+      .element(google)
+      .toHaveAttribute(
+        'href',
+        '/api/auth/google?return_to=%23%2Fauthorize%3Frequest_id%3Drequest-123',
+      );
     await expect.element(page.getByRole('link', { name: 'Continue with GitHub' })).toBeVisible();
     expect(document.querySelectorAll('[data-auth-provider-icon]')).toHaveLength(2);
     expect(document.querySelector('[data-auth-provider-icon="google"]')).not.toBeNull();
@@ -173,7 +286,9 @@ describe('hosted site', () => {
     render(<SignInPage loadProviders={async () => ({ google: false, github: true })} />);
 
     await expect.element(page.getByRole('link', { name: 'Continue with GitHub' })).toBeVisible();
-    await expect.element(page.getByRole('link', { name: 'Continue with Google' })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole('link', { name: 'Continue with Google' }))
+      .not.toBeInTheDocument();
     expect(document.querySelectorAll('[data-auth-provider-icon="github"]')).toHaveLength(1);
   });
 
@@ -185,18 +300,31 @@ describe('hosted site', () => {
     google.element().addEventListener('click', (event) => event.preventDefault());
     await google.click();
 
-    await expect.element(page.getByRole('link', { name: 'Connecting to Google…' })).toHaveAttribute('aria-busy', 'true');
-    await expect.element(page.getByRole('link', { name: 'Continue with GitHub' })).toHaveAttribute('aria-disabled', 'true');
+    await expect
+      .element(page.getByRole('link', { name: 'Connecting to Google…' }))
+      .toHaveAttribute('aria-busy', 'true');
+    await expect
+      .element(page.getByRole('link', { name: 'Continue with GitHub' }))
+      .toHaveAttribute('aria-disabled', 'true');
     expect(document.querySelectorAll('.auth-provider-progress i')).toHaveLength(3);
   });
 
   test('offers Auto, Light, and Dark in Dashboard account settings', async () => {
     let selectedTheme;
-    render(<AccountSettings theme="light" onThemeChange={(theme) => { selectedTheme = theme; }} />);
+    render(
+      <AccountSettings
+        theme="light"
+        onThemeChange={(theme) => {
+          selectedTheme = theme;
+        }}
+      />,
+    );
 
     await expect.element(page.getByRole('heading', { name: 'Account settings' })).toBeVisible();
     const appearance = page.getByRole('radiogroup', { name: 'Appearance' });
-    await expect.element(appearance.getByRole('radio', { name: 'light' })).toHaveAttribute('aria-checked', 'true');
+    await expect
+      .element(appearance.getByRole('radio', { name: 'light' }))
+      .toHaveAttribute('aria-checked', 'true');
     await appearance.getByRole('radio', { name: 'auto' }).click();
     expect(selectedTheme).toBe('auto');
     await expect.element(appearance.getByRole('radio', { name: 'dark' })).toBeVisible();
@@ -204,18 +332,24 @@ describe('hosted site', () => {
 
   test('collapses Dashboard navigation into a mobile dropdown', async () => {
     await page.viewport(390, 844);
-    render(<Dashboard
-      user={{ github_login: 'fixture-user', credits: null, share_stats: { total: 3, admitted: 2, in_progress: 1 } }}
-      view="credits"
-      theme="light"
-      onThemeChange={() => {}}
-      onAccountDeleted={() => {}}
-      loadCliSessions={async () => ({ items: [], next_cursor: null })}
-      loadMyShares={async () => ({ items: [], next_cursor: null })}
-      loadCreditOffers={async () => []}
-      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
-      loadBillingPurchases={async () => []}
-    />);
+    render(
+      <Dashboard
+        user={{
+          github_login: 'fixture-user',
+          credits: null,
+          share_stats: { total: 3, admitted: 2, in_progress: 1 },
+        }}
+        view="credits"
+        theme="light"
+        onThemeChange={() => {}}
+        onAccountDeleted={() => {}}
+        loadCliSessions={async () => ({ items: [], next_cursor: null })}
+        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadCreditOffers={async () => []}
+        loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+        loadBillingPurchases={async () => []}
+      />,
+    );
 
     const navigation = page.getByRole('navigation', { name: 'Dashboard navigation' });
     const trigger = navigation.getByRole('button', { name: 'Dashboard menu: Plan & usage' });
@@ -223,24 +357,33 @@ describe('hosted site', () => {
     await trigger.click();
     await expect.element(trigger).toHaveAttribute('aria-expanded', 'true');
     await expect.element(navigation.getByRole('link', { name: /^Traces\s*3$/ })).toBeVisible();
-    await expect.element(navigation.getByRole('link', { name: 'Plan & usage' })).toHaveAttribute('aria-current', 'page');
+    await expect
+      .element(navigation.getByRole('link', { name: 'Plan & usage' }))
+      .toHaveAttribute('aria-current', 'page');
     fireEvent.keyDown(window, { key: 'Escape' });
     await expect.element(trigger).toHaveAttribute('aria-expanded', 'false');
   });
 
   test('shows completed captures and finalizations in the account overview', async () => {
-    render(<Dashboard
-      user={{ github_login: 'fixture-user', credits: null, notary_stats: { captures: 12, finalizations: 7 }, share_stats: { total: 3, admitted: 2, in_progress: 1 } }}
-      view="overview"
-      theme="light"
-      onThemeChange={() => {}}
-      onAccountDeleted={() => {}}
-      loadCliSessions={async () => ({ items: [], next_cursor: null })}
-      loadMyShares={async () => ({ items: [], next_cursor: null })}
-      loadCreditOffers={async () => []}
-      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
-      loadBillingPurchases={async () => []}
-    />);
+    render(
+      <Dashboard
+        user={{
+          github_login: 'fixture-user',
+          credits: null,
+          notary_stats: { captures: 12, finalizations: 7 },
+          share_stats: { total: 3, admitted: 2, in_progress: 1 },
+        }}
+        view="overview"
+        theme="light"
+        onThemeChange={() => {}}
+        onAccountDeleted={() => {}}
+        loadCliSessions={async () => ({ items: [], next_cursor: null })}
+        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadCreditOffers={async () => []}
+        loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+        loadBillingPurchases={async () => []}
+      />,
+    );
 
     const summary = document.querySelector('.dashboard-summary');
     expect(summary?.textContent).toContain('Completed captures12');
@@ -251,7 +394,9 @@ describe('hosted site', () => {
     let rootRequests = 0;
     let resolveOldPage;
     let markOldPageStarted;
-    const oldPageStarted = new Promise((resolve) => { markOldPageStarted = resolve; });
+    const oldPageStarted = new Promise((resolve) => {
+      markOldPageStarted = resolve;
+    });
     const entry = (id, label, createdAt) => ({
       id,
       kind: 'grant',
@@ -263,26 +408,50 @@ describe('hosted site', () => {
     const loadCreditHistory = async (options) => {
       if (options.cursor) {
         markOldPageStarted();
-        return new Promise((resolve) => { resolveOldPage = resolve; });
+        return new Promise((resolve) => {
+          resolveOldPage = resolve;
+        });
       }
       rootRequests += 1;
       return rootRequests === 1
         ? { items: [entry('initial', 'Initial credit', 100)], next_cursor: 'old-cursor' }
-        : { items: [entry('claimed', 'Claimed credit', 200), entry('initial', 'Initial credit', 100)], next_cursor: 'fresh-cursor' };
+        : {
+            items: [
+              entry('claimed', 'Claimed credit', 200),
+              entry('initial', 'Initial credit', 100),
+            ],
+            next_cursor: 'fresh-cursor',
+          };
     };
-    render(<Dashboard
-      user={{ github_login: 'fixture-user', billing: billingFixture(), credits: creditsFixture(), share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
-      view="credits"
-      theme="light"
-      onThemeChange={() => {}}
-      onAccountDeleted={() => {}}
-      loadCliSessions={async () => ({ items: [], next_cursor: null })}
-      loadMyShares={async () => ({ items: [], next_cursor: null })}
-      loadCreditOffers={async () => [{ id: 'offer-1', title: 'Test credit', description: 'One-time test credit.', amount_bytes: 1_024, claim_expires_at: 4_102_444_800, credit_expires_at: 4_102_444_800 }]}
-      loadCreditHistory={loadCreditHistory}
-      loadBillingPurchases={async () => []}
-      claimOfferRequest={async () => ({ credits: creditsFixture(2_048) })}
-    />);
+    render(
+      <Dashboard
+        user={{
+          github_login: 'fixture-user',
+          billing: billingFixture(),
+          credits: creditsFixture(),
+          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+        }}
+        view="credits"
+        theme="light"
+        onThemeChange={() => {}}
+        onAccountDeleted={() => {}}
+        loadCliSessions={async () => ({ items: [], next_cursor: null })}
+        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadCreditOffers={async () => [
+          {
+            id: 'offer-1',
+            title: 'Test credit',
+            description: 'One-time test credit.',
+            amount_bytes: 1_024,
+            claim_expires_at: 4_102_444_800,
+            credit_expires_at: 4_102_444_800,
+          },
+        ]}
+        loadCreditHistory={loadCreditHistory}
+        loadBillingPurchases={async () => []}
+        claimOfferRequest={async () => ({ credits: creditsFixture(2_048) })}
+      />,
+    );
 
     await expect.element(page.getByText('Initial credit')).toBeVisible();
     await page.getByRole('button', { name: 'Load older activity' }).click();
@@ -290,7 +459,10 @@ describe('hosted site', () => {
     await page.getByRole('button', { name: /^Claim / }).click();
     await expect.element(page.getByText('Claimed credit')).toBeVisible();
 
-    resolveOldPage({ items: [entry('stale', 'Stale older credit', 50)], next_cursor: 'stale-cursor' });
+    resolveOldPage({
+      items: [entry('stale', 'Stale older credit', 50)],
+      next_cursor: 'stale-cursor',
+    });
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     await expect.element(page.getByText('Stale older credit')).not.toBeInTheDocument();
     await expect.element(page.getByText('Claimed credit')).toBeVisible();
@@ -299,23 +471,32 @@ describe('hosted site', () => {
   test('starts a fixed-price Stripe Checkout from the credit quantity rail', async () => {
     let checkoutRequest;
     let checkoutUrl;
-    render(<Dashboard
-      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'live' }), credits: creditsFixture(), share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
-      view="credits"
-      theme="light"
-      onThemeChange={() => {}}
-      onAccountDeleted={() => {}}
-      loadCliSessions={async () => ({ items: [], next_cursor: null })}
-      loadMyShares={async () => ({ items: [], next_cursor: null })}
-      loadCreditOffers={async () => []}
-      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
-      loadBillingPurchases={async () => []}
-      startCheckout={async (quantityGb, idempotencyKey) => {
-        checkoutRequest = { quantityGb, idempotencyKey };
-        return { checkout_url: 'https://checkout.stripe.com/c/pay/test' };
-      }}
-      openCheckout={(url) => { checkoutUrl = url; }}
-    />);
+    render(
+      <Dashboard
+        user={{
+          github_login: 'fixture-user',
+          billing: billingFixture({ purchase_mode: 'live' }),
+          credits: creditsFixture(),
+          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+        }}
+        view="credits"
+        theme="light"
+        onThemeChange={() => {}}
+        onAccountDeleted={() => {}}
+        loadCliSessions={async () => ({ items: [], next_cursor: null })}
+        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadCreditOffers={async () => []}
+        loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+        loadBillingPurchases={async () => []}
+        startCheckout={async (quantityGb, idempotencyKey) => {
+          checkoutRequest = { quantityGb, idempotencyKey };
+          return { checkout_url: 'https://checkout.stripe.com/c/pay/test' };
+        }}
+        openCheckout={(url) => {
+          checkoutUrl = url;
+        }}
+      />,
+    );
 
     await page.getByRole('button', { name: '10 GB', exact: true }).click();
     await page.getByRole('button', { name: 'Buy 10 GB for $100' }).click();
@@ -328,22 +509,34 @@ describe('hosted site', () => {
     let checkoutRequest;
     let openedUrl;
     const common = {
-      view: 'credits', theme: 'light', onThemeChange: () => {}, onAccountDeleted: () => {},
+      view: 'credits',
+      theme: 'light',
+      onThemeChange: () => {},
+      onAccountDeleted: () => {},
       loadCliSessions: async () => ({ items: [], next_cursor: null }),
       loadMyShares: async () => ({ items: [], next_cursor: null }),
       loadCreditOffers: async () => [],
       loadCreditHistory: async () => ({ items: [], next_cursor: null }),
       loadBillingPurchases: async () => [],
-      openCheckout: (url) => { openedUrl = url; },
+      openCheckout: (url) => {
+        openedUrl = url;
+      },
     };
-    render(<Dashboard
-      {...common}
-      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'live', subscriptions_configured: true }), credits: creditsFixture(50_000_000), share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
-      startSubscriptionCheckout={async (plan, idempotencyKey) => {
-        checkoutRequest = { plan, idempotencyKey };
-        return { checkout_url: 'https://checkout.stripe.com/c/pay/subscription' };
-      }}
-    />);
+    render(
+      <Dashboard
+        {...common}
+        user={{
+          github_login: 'fixture-user',
+          billing: billingFixture({ purchase_mode: 'live', subscriptions_configured: true }),
+          credits: creditsFixture(50_000_000),
+          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+        }}
+        startSubscriptionCheckout={async (plan, idempotencyKey) => {
+          checkoutRequest = { plan, idempotencyKey };
+          return { checkout_url: 'https://checkout.stripe.com/c/pay/subscription' };
+        }}
+      />,
+    );
 
     expect(document.body.textContent).toContain('50.0 MB');
     expect(document.body.textContent).toContain('of 1.0 GB');
@@ -354,11 +547,20 @@ describe('hosted site', () => {
     expect(openedUrl).toBe('https://checkout.stripe.com/c/pay/subscription');
 
     cleanup();
-    render(<Dashboard
-      {...common}
-      user={{ github_login: 'fixture-user', billing: billingFixture({ service_plan: 'one_gb', purchase_mode: 'live' }), credits: creditsFixture(), share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
-      startBillingPortal={async () => ({ portal_url: 'https://billing.stripe.com/p/session/test' })}
-    />);
+    render(
+      <Dashboard
+        {...common}
+        user={{
+          github_login: 'fixture-user',
+          billing: billingFixture({ service_plan: 'one_gb', purchase_mode: 'live' }),
+          credits: creditsFixture(),
+          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+        }}
+        startBillingPortal={async () => ({
+          portal_url: 'https://billing.stripe.com/p/session/test',
+        })}
+      />,
+    );
     await page.getByRole('button', { name: 'Manage subscription' }).click();
     expect(openedUrl).toBe('https://billing.stripe.com/p/session/test');
   });
@@ -366,23 +568,56 @@ describe('hosted site', () => {
   test('hides Checkout when disabled and labels Stripe test mode unmistakably', async () => {
     const credits = creditsFixture();
     const common = {
-      view: 'credits', theme: 'light', onThemeChange: () => {}, onAccountDeleted: () => {},
+      view: 'credits',
+      theme: 'light',
+      onThemeChange: () => {},
+      onAccountDeleted: () => {},
       loadCliSessions: async () => ({ items: [], next_cursor: null }),
       loadMyShares: async () => ({ items: [], next_cursor: null }),
       loadCreditOffers: async () => [],
       loadCreditHistory: async () => ({ items: [], next_cursor: null }),
       loadBillingPurchases: async () => [],
     };
-    render(<Dashboard {...common} user={{ github_login: 'fixture-user', billing: billingFixture(), credits, share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }} />);
-    await expect.element(page.getByRole('heading', { name: 'Purchases unavailable' })).toBeVisible();
-    await expect.element(page.getByText('You can’t buy more notarization right now.')).toBeVisible();
-    await expect.element(page.getByRole('group', { name: 'Credit quantity' })).not.toBeInTheDocument();
+    render(
+      <Dashboard
+        {...common}
+        user={{
+          github_login: 'fixture-user',
+          billing: billingFixture(),
+          credits,
+          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+        }}
+      />,
+    );
+    await expect
+      .element(page.getByRole('heading', { name: 'Purchases unavailable' }))
+      .toBeVisible();
+    await expect
+      .element(page.getByText('You can’t buy more notarization right now.'))
+      .toBeVisible();
+    await expect
+      .element(page.getByRole('group', { name: 'Credit quantity' }))
+      .not.toBeInTheDocument();
 
     cleanup();
-    render(<Dashboard {...common} user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'test' }), credits, share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }} />);
+    render(
+      <Dashboard
+        {...common}
+        user={{
+          github_login: 'fixture-user',
+          billing: billingFixture({ purchase_mode: 'test' }),
+          credits,
+          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+        }}
+      />,
+    );
     await expect.element(page.getByText('Stripe test mode · no real charges')).toBeVisible();
-    await expect.element(page.getByRole('button', { name: 'Open test Checkout · 1 GB for $10' })).toBeVisible();
-    await expect.element(page.getByText('New subscriptions are temporarily unavailable.')).toBeVisible();
+    await expect
+      .element(page.getByRole('button', { name: 'Open test Checkout · 1 GB for $10' }))
+      .toBeVisible();
+    await expect
+      .element(page.getByText('New subscriptions are temporarily unavailable.'))
+      .toBeVisible();
     await expect.element(page.getByRole('button', { name: '1 GB · $9.99/month' })).toBeDisabled();
   });
 
@@ -390,30 +625,52 @@ describe('hosted site', () => {
     const credits = creditsFixture();
     let resolveInitialList;
     let pollCalls = 0;
-    const purchase = (state) => ({ id: 'purchase-1', state, quantity_gb: 1, amount_cents: 1_000, created_at: 1_786_000_000 });
-    render(<Dashboard
-      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'test' }), credits, share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
-      view="credits"
-      route="credits?checkout=success&purchase_id=purchase-1"
-      theme="light"
-      onThemeChange={() => {}}
-      onAccountDeleted={() => {}}
-      loadCliSessions={async () => ({ items: [], next_cursor: null })}
-      loadMyShares={async () => ({ items: [], next_cursor: null })}
-      loadCreditOffers={async () => []}
-      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
-      loadBillingPurchases={() => new Promise((resolve) => { resolveInitialList = resolve; })}
-      loadBillingPurchase={async () => {
-        pollCalls += 1;
-        if (pollCalls === 1) throw new Error('temporary network failure');
-        return purchase(pollCalls === 2 ? 'checkout_open' : 'paid');
-      }}
-      loadCurrentUser={async () => ({ billing: billingFixture({ service_plan: 'one_gb', purchase_mode: 'test' }), credits })}
-      checkoutPollBaseDelay={0}
-      checkoutPollMaxAttempts={4}
-    />);
+    const purchase = (state) => ({
+      id: 'purchase-1',
+      state,
+      quantity_gb: 1,
+      amount_cents: 1_000,
+      created_at: 1_786_000_000,
+    });
+    render(
+      <Dashboard
+        user={{
+          github_login: 'fixture-user',
+          billing: billingFixture({ purchase_mode: 'test' }),
+          credits,
+          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+        }}
+        view="credits"
+        route="credits?checkout=success&purchase_id=purchase-1"
+        theme="light"
+        onThemeChange={() => {}}
+        onAccountDeleted={() => {}}
+        loadCliSessions={async () => ({ items: [], next_cursor: null })}
+        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadCreditOffers={async () => []}
+        loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+        loadBillingPurchases={() =>
+          new Promise((resolve) => {
+            resolveInitialList = resolve;
+          })
+        }
+        loadBillingPurchase={async () => {
+          pollCalls += 1;
+          if (pollCalls === 1) throw new Error('temporary network failure');
+          return purchase(pollCalls === 2 ? 'checkout_open' : 'paid');
+        }}
+        loadCurrentUser={async () => ({
+          billing: billingFixture({ service_plan: 'one_gb', purchase_mode: 'test' }),
+          credits,
+        })}
+        checkoutPollBaseDelay={0}
+        checkoutPollMaxAttempts={4}
+      />,
+    );
 
-    await expect.element(page.getByText('Payment confirmed. Your credits are ready.')).toBeVisible();
+    await expect
+      .element(page.getByText('Payment confirmed. Your credits are ready.'))
+      .toBeVisible();
     resolveInitialList([purchase('checkout_open')]);
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     await expect.element(page.getByText('paid', { exact: true })).toBeVisible();
@@ -423,57 +680,99 @@ describe('hosted site', () => {
 
   test('shows a bounded timeout when Stripe confirmation stays nonterminal', async () => {
     const credits = creditsFixture();
-    render(<Dashboard
-      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'test' }), credits, share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
-      view="credits"
-      route="credits?checkout=success&purchase_id=purchase-1"
-      theme="light"
-      onThemeChange={() => {}}
-      onAccountDeleted={() => {}}
-      loadCliSessions={async () => ({ items: [], next_cursor: null })}
-      loadMyShares={async () => ({ items: [], next_cursor: null })}
-      loadCreditOffers={async () => []}
-      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
-      loadBillingPurchases={async () => []}
-      loadBillingPurchase={async () => ({ id: 'purchase-1', state: 'checkout_open', quantity_gb: 1, amount_cents: 1_000, created_at: 1_786_000_000 })}
-      checkoutPollBaseDelay={0}
-      checkoutPollMaxAttempts={2}
-    />);
+    render(
+      <Dashboard
+        user={{
+          github_login: 'fixture-user',
+          billing: billingFixture({ purchase_mode: 'test' }),
+          credits,
+          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+        }}
+        view="credits"
+        route="credits?checkout=success&purchase_id=purchase-1"
+        theme="light"
+        onThemeChange={() => {}}
+        onAccountDeleted={() => {}}
+        loadCliSessions={async () => ({ items: [], next_cursor: null })}
+        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadCreditOffers={async () => []}
+        loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+        loadBillingPurchases={async () => []}
+        loadBillingPurchase={async () => ({
+          id: 'purchase-1',
+          state: 'checkout_open',
+          quantity_gb: 1,
+          amount_cents: 1_000,
+          created_at: 1_786_000_000,
+        })}
+        checkoutPollBaseDelay={0}
+        checkoutPollMaxAttempts={2}
+      />,
+    );
 
-    await expect.element(page.getByText('We could not confirm the payment yet. Check purchase history or refresh this page.')).toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          'We could not confirm the payment yet. Check purchase history or refresh this page.',
+        ),
+      )
+      .toBeVisible();
   });
 
   test.each([
     ['failed', 'Payment was not completed. No credits were added.'],
     ['refunded', 'This payment was refunded. Its purchased credits are no longer available.'],
-    ['disputed', 'This payment is under dispute. Its purchased credits are temporarily unavailable.'],
+    [
+      'disputed',
+      'This payment is under dispute. Its purchased credits are temporarily unavailable.',
+    ],
   ])('renders the %s Checkout terminal state explicitly', async (state, message) => {
     const credits = creditsFixture();
-    render(<Dashboard
-      user={{ github_login: 'fixture-user', billing: billingFixture({ purchase_mode: 'test' }), credits, share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 } }}
-      view="credits"
-      route="credits?checkout=success&purchase_id=purchase-1"
-      theme="light"
-      onThemeChange={() => {}}
-      onAccountDeleted={() => {}}
-      loadCliSessions={async () => ({ items: [], next_cursor: null })}
-      loadMyShares={async () => ({ items: [], next_cursor: null })}
-      loadCreditOffers={async () => []}
-      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
-      loadBillingPurchases={async () => []}
-      loadBillingPurchase={async () => ({ id: 'purchase-1', state, quantity_gb: 1, amount_cents: 1_000, created_at: 1_786_000_000 })}
-      loadCurrentUser={async () => ({ billing: billingFixture({ purchase_mode: 'test' }), credits })}
-      checkoutPollBaseDelay={0}
-    />);
+    render(
+      <Dashboard
+        user={{
+          github_login: 'fixture-user',
+          billing: billingFixture({ purchase_mode: 'test' }),
+          credits,
+          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+        }}
+        view="credits"
+        route="credits?checkout=success&purchase_id=purchase-1"
+        theme="light"
+        onThemeChange={() => {}}
+        onAccountDeleted={() => {}}
+        loadCliSessions={async () => ({ items: [], next_cursor: null })}
+        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadCreditOffers={async () => []}
+        loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+        loadBillingPurchases={async () => []}
+        loadBillingPurchase={async () => ({
+          id: 'purchase-1',
+          state,
+          quantity_gb: 1,
+          amount_cents: 1_000,
+          created_at: 1_786_000_000,
+        })}
+        loadCurrentUser={async () => ({
+          billing: billingFixture({ purchase_mode: 'test' }),
+          credits,
+        })}
+        checkoutPollBaseDelay={0}
+      />,
+    );
 
     await expect.element(page.getByText(message)).toBeVisible();
   });
 
   test('renders every known provider icon and neutral fallbacks beside provider text', async () => {
-    render(<div>
-      {['openai', 'anthropic', 'deepseek', 'openrouter', 'future-provider'].map((provider) => <ProviderIdentity provider={provider} key={provider} />)}
-      <ProviderIdentity provider={null} />
-    </div>);
+    render(
+      <div>
+        {['openai', 'anthropic', 'deepseek', 'openrouter', 'future-provider'].map((provider) => (
+          <ProviderIdentity provider={provider} key={provider} />
+        ))}
+        <ProviderIdentity provider={null} />
+      </div>,
+    );
 
     for (const provider of ['openai', 'anthropic', 'deepseek', 'openrouter']) {
       expect(document.querySelector(`[data-provider-icon="${provider}"]`)).not.toBeNull();
@@ -486,12 +785,25 @@ describe('hosted site', () => {
   });
 
   test('keeps an OpenRouter icon when its model slug names an upstream vendor', async () => {
-    render(<Library loadShares={async () => ({ items: [{
-      id: 'routed-share', provider: 'openrouter', model: 'openai/gpt-5-mini',
-      publisher: 'fixture-user', authenticated_at_unix_ms: 1_786_000_000_000,
-      input_preview: 'Compare these records.', output_preview: 'The second record is stronger.',
-      share_url: 'https://example.test/s/routed-share'
-    }], next_cursor: null })} />);
+    render(
+      <Library
+        loadShares={async () => ({
+          items: [
+            {
+              id: 'routed-share',
+              provider: 'openrouter',
+              model: 'openai/gpt-5-mini',
+              publisher: 'fixture-user',
+              authenticated_at_unix_ms: 1_786_000_000_000,
+              input_preview: 'Compare these records.',
+              output_preview: 'The second record is stronger.',
+              share_url: 'https://example.test/s/routed-share',
+            },
+          ],
+          next_cursor: null,
+        })}
+      />,
+    );
 
     const row = page.getByRole('link', { name: /openai\/gpt-5-mini/ });
     await expect.element(row).toBeVisible();
@@ -501,10 +813,15 @@ describe('hosted site', () => {
 
   test('makes local service authorization a clear two-step decision', async () => {
     window.location.hash = '#/authorize?request_id=request-123&approval_secret=secret-456';
-    render(<>
-      <Header user={null} hideSignIn />
-      <CliApproval route="authorize?request_id=request-123&approval_secret=secret-456" user={null} />
-    </>);
+    render(
+      <>
+        <Header user={null} hideSignIn />
+        <CliApproval
+          route="authorize?request_id=request-123&approval_secret=secret-456"
+          user={null}
+        />
+      </>,
+    );
 
     await expect.element(page.getByRole('heading', { name: 'Sign in to continue' })).toBeVisible();
     await expect.element(page.getByRole('link', { name: 'Choose sign-in method' })).toBeVisible();
@@ -521,42 +838,59 @@ describe('hosted site', () => {
       expires_at: 1_786_000_000,
     });
     let approved;
-    render(<CliApproval
-      route="authorize?request_id=request-123&approval_secret=secret-456"
-      user={{ github_login: 'fixture-user' }}
-      loadApproval={loadApproval}
-      approveRequest={async (...args) => { approved = args; }}
-    />);
+    render(
+      <CliApproval
+        route="authorize?request_id=request-123&approval_secret=secret-456"
+        user={{ github_login: 'fixture-user' }}
+        loadApproval={loadApproval}
+        approveRequest={async (...args) => {
+          approved = args;
+        }}
+      />,
+    );
 
-    await expect.element(page.getByRole('heading', { name: 'Approve this local service?' })).toBeVisible();
+    await expect
+      .element(page.getByRole('heading', { name: 'Approve this local service?' }))
+      .toBeVisible();
     await expect.element(page.getByText('Research MacBook')).toBeVisible();
     await expect.element(page.getByText('fixture-user')).toBeVisible();
     await expect.element(page.getByText('NOTARY-7K3')).toBeVisible();
     await page.getByRole('button', { name: 'Approve service' }).click();
 
     expect(approved).toEqual(['request-123', 'secret-456']);
-    await expect.element(page.getByRole('heading', { name: 'Local service approved' })).toBeVisible();
+    await expect
+      .element(page.getByRole('heading', { name: 'Local service approved' }))
+      .toBeVisible();
   });
 
   test('shows a new API key once and revokes it from the account list', async () => {
     const secret = `llmn_v1_${'a'.repeat(32)}_${'b'.repeat(64)}`;
     let createRequest;
     let revokedId;
-    render(<ApiKeysPanel
-      loadKeys={async () => ({ items: [], next_cursor: null })}
-      createKey={async (request) => {
-        createRequest = request;
-        return {
-          secret,
-          api_key: {
-            id: 'a'.repeat(32), prefix: `llmn_v1_${'a'.repeat(12)}`, name: request.name,
-            scopes: request.scopes, created_at: 1_786_000_000, last_used_at: null,
-            expires_at: request.expires_at, revoked_at: null
-          }
-        };
-      }}
-      revokeKey={async (id) => { revokedId = id; }}
-    />);
+    render(
+      <ApiKeysPanel
+        loadKeys={async () => ({ items: [], next_cursor: null })}
+        createKey={async (request) => {
+          createRequest = request;
+          return {
+            secret,
+            api_key: {
+              id: 'a'.repeat(32),
+              prefix: `llmn_v1_${'a'.repeat(12)}`,
+              name: request.name,
+              scopes: request.scopes,
+              created_at: 1_786_000_000,
+              last_used_at: null,
+              expires_at: request.expires_at,
+              revoked_at: null,
+            },
+          };
+        }}
+        revokeKey={async (id) => {
+          revokedId = id;
+        }}
+      />,
+    );
 
     await expect.element(page.getByText('No API keys')).toBeVisible();
     await page.getByRole('button', { name: 'Create API key' }).click();
@@ -565,7 +899,12 @@ describe('hosted site', () => {
 
     await expect.element(page.getByText(secret)).toBeVisible();
     expect(createRequest.name).toBe('Nightly CI');
-    expect(createRequest.scopes).toEqual(['account:read', 'notary:admit', 'publish:read', 'publish:write']);
+    expect(createRequest.scopes).toEqual([
+      'account:read',
+      'notary:admit',
+      'publish:read',
+      'publish:write',
+    ]);
     await page.getByRole('button', { name: 'I stored the key' }).click();
     await expect.element(page.getByText(secret)).not.toBeInTheDocument();
     await expect.element(page.getByText('Nightly CI')).toBeVisible();
@@ -577,16 +916,23 @@ describe('hosted site', () => {
   });
 
   test('renders a zero notary lower bound as an unbounded interval', async () => {
-    render(<HostedNotaryRecord
-      record={{
-        host: 'notary.example', port: 7047, transport: 'tls', status: 'active',
-        key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-        valid_from_unix_ms: 0, valid_until_unix_ms: null, finalize_until_unix_ms: null
-      }}
-      activeKeyId="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-      copiedKeyId={null}
-      onCopy={() => {}}
-    />);
+    render(
+      <HostedNotaryRecord
+        record={{
+          host: 'notary.example',
+          port: 7047,
+          transport: 'tls',
+          status: 'active',
+          key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          valid_from_unix_ms: 0,
+          valid_until_unix_ms: null,
+          finalize_until_unix_ms: null,
+        }}
+        activeKeyId="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        copiedKeyId={null}
+        onCopy={() => {}}
+      />,
+    );
 
     await expect.element(page.getByText('No lower bound configured')).toBeVisible();
     await expect.element(page.getByText(/1969|1970/)).not.toBeInTheDocument();
@@ -608,7 +954,14 @@ describe('hosted site', () => {
 
   test('shows provider marks in the landing Library preview', async () => {
     let request;
-    render(<ListedSharesPreview loadShares={async (options) => { request = options; return { items: [libraryShares[0], libraryShares[11]], next_cursor: null }; }} />);
+    render(
+      <ListedSharesPreview
+        loadShares={async (options) => {
+          request = options;
+          return { items: [libraryShares[0], libraryShares[11]], next_cursor: null };
+        }}
+      />,
+    );
 
     const preview = page.getByLabelText('Featured public traces');
     await expect.element(preview).toBeVisible();
@@ -643,12 +996,21 @@ describe('hosted site', () => {
 
   test('waits for an indexable Library search term', async () => {
     let requests = 0;
-    render(<Library loadShares={async (options) => { requests += 1; return loadLibrary(options); }} />);
+    render(
+      <Library
+        loadShares={async (options) => {
+          requests += 1;
+          return loadLibrary(options);
+        }}
+      />,
+    );
     await expect.element(page.getByText('20 traces shown')).toBeVisible();
     const beforeSearch = requests;
 
     await page.getByPlaceholder('Search conversations or models').fill('ai');
-    await expect.element(page.getByText('Search needs three letters or numbers together.')).toBeVisible();
+    await expect
+      .element(page.getByText('Search needs three letters or numbers together.'))
+      .toBeVisible();
     await new Promise((resolve) => window.setTimeout(resolve, 250));
     expect(requests).toBe(beforeSearch);
   });
@@ -670,20 +1032,28 @@ describe('hosted site', () => {
     await expect.element(page.getByRole('link', { name: /claude-sonnet-4-6/ })).toBeVisible();
     await page.getByRole('button', { name: 'Load more traces' }).click();
     await expect.element(page.getByRole('link', { name: /claude-haiku-4-5/ })).toBeVisible();
-    expect(requests.at(-1)).toMatchObject({ cursor: 'next-library-page', search: 'claude', limit: 20 });
+    expect(requests.at(-1)).toMatchObject({
+      cursor: 'next-library-page',
+      search: 'claude',
+      limit: 20,
+    });
   });
 
   test('discards an old Library continuation after filters change', async () => {
     let resolveOldPage;
     let markLoadStarted;
-    const loadStarted = new Promise((resolve) => { markLoadStarted = resolve; });
+    const loadStarted = new Promise((resolve) => {
+      markLoadStarted = resolve;
+    });
     const initial = libraryShares[0];
     const filtered = libraryShares[11];
     const stale = { ...libraryShares[0], id: 'stale-share', output_preview: 'Stale continuation' };
     const loadShares = async (options) => {
       if (options.cursor) {
         markLoadStarted();
-        return new Promise((resolve) => { resolveOldPage = resolve; });
+        return new Promise((resolve) => {
+          resolveOldPage = resolve;
+        });
       }
       if (options.search === 'claude') return { items: [filtered], next_cursor: null };
       return { items: [initial], next_cursor: 'old-cursor' };
@@ -694,32 +1064,45 @@ describe('hosted site', () => {
     await page.getByRole('button', { name: 'Load more traces' }).click();
     await loadStarted;
     await page.getByPlaceholder('Search conversations or models').fill('claude');
-    await expect.element(page.getByRole('button', { name: 'Load more traces' })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole('button', { name: 'Load more traces' }))
+      .not.toBeInTheDocument();
     await expect.element(page.getByRole('link', { name: /claude-sonnet-4-6/ })).toBeVisible();
 
     resolveOldPage({ items: [stale], next_cursor: 'stale-cursor' });
     await new Promise((resolve) => window.requestAnimationFrame(resolve));
     await expect.element(page.getByText('Stale continuation')).not.toBeInTheDocument();
-    await expect.element(page.getByRole('button', { name: 'Load more traces' })).not.toBeInTheDocument();
+    await expect
+      .element(page.getByRole('button', { name: 'Load more traces' }))
+      .not.toBeInTheDocument();
   });
 
   test('loads older API keys without replacing the current page', async () => {
     const key = (id, name) => ({
-      id, prefix: `llmn_v1_${id.slice(0, 12)}`, name,
-      scopes: ['account:read'], created_at: 1_786_000_000,
-      last_used_at: null, expires_at: null, revoked_at: null
+      id,
+      prefix: `llmn_v1_${id.slice(0, 12)}`,
+      name,
+      scopes: ['account:read'],
+      created_at: 1_786_000_000,
+      last_used_at: null,
+      expires_at: null,
+      revoked_at: null,
     });
     const requests = [];
-    render(<ApiKeysPanel
-      loadKeys={async (options) => {
-        requests.push(options);
-        return options.cursor
-          ? { items: [key('b'.repeat(32), 'Older key')], next_cursor: null }
-          : { items: [key('a'.repeat(32), 'Current key')], next_cursor: 'next-key-page' };
-      }}
-      createKey={async () => { throw new Error('not used'); }}
-      revokeKey={async () => {}}
-    />);
+    render(
+      <ApiKeysPanel
+        loadKeys={async (options) => {
+          requests.push(options);
+          return options.cursor
+            ? { items: [key('b'.repeat(32), 'Older key')], next_cursor: null }
+            : { items: [key('a'.repeat(32), 'Current key')], next_cursor: 'next-key-page' };
+        }}
+        createKey={async () => {
+          throw new Error('not used');
+        }}
+        revokeKey={async () => {}}
+      />,
+    );
 
     await expect.element(page.getByText('Current key')).toBeVisible();
     await page.getByRole('button', { name: 'Load more API keys' }).click();
@@ -730,13 +1113,27 @@ describe('hosted site', () => {
 
   test('does not treat a bare legacy trace as a package-backed preview', async () => {
     let traceLoads = 0;
-    render(<Library
-      loadShares={async () => ({ items: [{
-        id: 'legacy-share', provider: 'openai', model: 'gpt-4.1', publisher: 'fixture-user',
-        authenticated_at_unix_ms: 1_786_000_000_000, share_url: 'https://example.test/s/legacy-share'
-      }], next_cursor: null })}
-      loadTrace={async (id) => { traceLoads += 1; return loadLibraryTrace(id); }}
-    />);
+    render(
+      <Library
+        loadShares={async () => ({
+          items: [
+            {
+              id: 'legacy-share',
+              provider: 'openai',
+              model: 'gpt-4.1',
+              publisher: 'fixture-user',
+              authenticated_at_unix_ms: 1_786_000_000_000,
+              share_url: 'https://example.test/s/legacy-share',
+            },
+          ],
+          next_cursor: null,
+        })}
+        loadTrace={async (id) => {
+          traceLoads += 1;
+          return loadLibraryTrace(id);
+        }}
+      />,
+    );
 
     await expect.element(page.getByText('No prompt or response preview.')).toBeVisible();
     expect(traceLoads).toBe(0);
@@ -745,7 +1142,17 @@ describe('hosted site', () => {
   test('requires the account identifier before deleting an account', async () => {
     let deleted = false;
     let completed = false;
-    render(<DeleteAccountPanel identifier="fixture-user" deleteAccount={async () => { deleted = true; }} onDeleted={() => { completed = true; }} />);
+    render(
+      <DeleteAccountPanel
+        identifier="fixture-user"
+        deleteAccount={async () => {
+          deleted = true;
+        }}
+        onDeleted={() => {
+          completed = true;
+        }}
+      />,
+    );
 
     await page.getByRole('button', { name: 'Delete account' }).click();
     const dialog = page.getByRole('alertdialog');
@@ -761,22 +1168,82 @@ describe('hosted site', () => {
 
   test('puts the disclosed conversation before collapsible evidence and tools', async () => {
     const loadShare = async () => ({
-      id: 'share-12', visibility: 'unlisted', publisher: 'fixture-user', admitted_at: 1_786_000_000,
-      authenticated_at_unix_ms: 1_786_000_000_000, verified_at: 1_786_000_001,
-      provider: 'anthropic', host: 'api.anthropic.com', model: 'claude-sonnet-4-6',
-      verification_state: 'verified', notary_key_id: 'sha256:abc', directory_generation: 42,
-      trust_source: 'hosted_notary_directory', trace_sha256: 'b'.repeat(64),
-      package_size_bytes: 4096, package_sha256: 'c'.repeat(64),
+      id: 'share-12',
+      visibility: 'unlisted',
+      publisher: 'fixture-user',
+      admitted_at: 1_786_000_000,
+      authenticated_at_unix_ms: 1_786_000_000_000,
+      verified_at: 1_786_000_001,
+      provider: 'anthropic',
+      host: 'api.anthropic.com',
+      model: 'claude-sonnet-4-6',
+      verification_state: 'verified',
+      notary_key_id: 'sha256:abc',
+      directory_generation: 42,
+      trust_source: 'hosted_notary_directory',
+      trace_sha256: 'b'.repeat(64),
+      package_size_bytes: 4096,
+      package_sha256: 'c'.repeat(64),
       public_package_safety_version: 'llm-notary/public-package-safety/v1',
       trace_url: '/api/public/shares/share-12/trace.otlp.json',
-      package_url: '/api/public/shares/share-12/package.llmtrace', share_url: 'https://example.test/s/share-12',
+      package_url: '/api/public/shares/share-12/package.llmtrace',
+      share_url: 'https://example.test/s/share-12',
     });
-    const loadTrace = async () => ({ resourceSpans: [{ scopeSpans: [{ spans: [{
-      name: 'gen_ai.inference', spanId: 'span-12', attributes: [
-        { key: 'gen_ai.input.messages', value: { stringValue: JSON.stringify([{ role: 'user', parts: [{ type: 'text', content: 'Compare these two evidence trails.' }] }]) } },
-        { key: 'gen_ai.output.messages', value: { stringValue: JSON.stringify([{ role: 'assistant', parts: [{ type: 'text', content: 'The second trail is stronger.' }, { type: 'tool_call', id: 'call-1', name: 'lookup_record', arguments: { id: 42 } }, { type: 'tool_call_response', id: 'call-1', result: { source: 'fixture record 42' } }] }]) } },
+    const loadTrace = async () => ({
+      resourceSpans: [
+        {
+          scopeSpans: [
+            {
+              spans: [
+                {
+                  name: 'gen_ai.inference',
+                  spanId: 'span-12',
+                  attributes: [
+                    {
+                      key: 'gen_ai.input.messages',
+                      value: {
+                        stringValue: JSON.stringify([
+                          {
+                            role: 'user',
+                            parts: [
+                              { type: 'text', content: 'Compare these two evidence trails.' },
+                            ],
+                          },
+                        ]),
+                      },
+                    },
+                    {
+                      key: 'gen_ai.output.messages',
+                      value: {
+                        stringValue: JSON.stringify([
+                          {
+                            role: 'assistant',
+                            parts: [
+                              { type: 'text', content: 'The second trail is stronger.' },
+                              {
+                                type: 'tool_call',
+                                id: 'call-1',
+                                name: 'lookup_record',
+                                arguments: { id: 42 },
+                              },
+                              {
+                                type: 'tool_call_response',
+                                id: 'call-1',
+                                result: { source: 'fixture record 42' },
+                              },
+                            ],
+                          },
+                        ]),
+                      },
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
       ],
-    }] }] }] });
+    });
     render(<SharePage shareId="share-12" loadShare={loadShare} loadTrace={loadTrace} />);
     await expect.element(page.getByRole('heading', { name: 'Conversation' })).toBeVisible();
     await expect.element(page.getByText('Compare these two evidence trails.')).toBeVisible();
@@ -791,7 +1258,9 @@ describe('hosted site', () => {
     await toolResult.click();
     await expect.element(page.getByText('fixture record 42')).toBeVisible();
     await expect.element(page.getByRole('link', { name: /Download .llmtrace/ })).toBeVisible();
-    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain('noindex');
+    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain(
+      'noindex',
+    );
   });
 
   test('opens a protected trace in memory and submits a bounded report', async () => {
@@ -803,13 +1272,27 @@ describe('hosted site', () => {
     const loadShare = async (_id, password) => {
       if (password !== 'evidence-pass') required();
       return {
-        id: 'protected-share', visibility: 'listed', password_protected: true, expires_at: 4_102_444_800,
-        publisher: 'fixture-user', admitted_at: 1_786_000_000, authenticated_at_unix_ms: 1_786_000_000_000,
-        verified_at: 1_786_000_001, provider: 'openai', host: 'api.openai.com', model: 'gpt-5.2',
-        verification_state: 'verified', notary_key_id: 'sha256:abc', directory_generation: 42,
-        trust_source: 'hosted_notary_directory', trace_sha256: 'b'.repeat(64),
-        package_size_bytes: 2048, package_sha256: 'c'.repeat(64), public_package_safety_version: 'llm-notary/public-package-safety/v1',
-        trace_url: '/api/public/shares/protected-share/trace.otlp.json', package_url: '/api/public/shares/protected-share/package.llmtrace',
+        id: 'protected-share',
+        visibility: 'listed',
+        password_protected: true,
+        expires_at: 4_102_444_800,
+        publisher: 'fixture-user',
+        admitted_at: 1_786_000_000,
+        authenticated_at_unix_ms: 1_786_000_000_000,
+        verified_at: 1_786_000_001,
+        provider: 'openai',
+        host: 'api.openai.com',
+        model: 'gpt-5.2',
+        verification_state: 'verified',
+        notary_key_id: 'sha256:abc',
+        directory_generation: 42,
+        trust_source: 'hosted_notary_directory',
+        trace_sha256: 'b'.repeat(64),
+        package_size_bytes: 2048,
+        package_sha256: 'c'.repeat(64),
+        public_package_safety_version: 'llm-notary/public-package-safety/v1',
+        trace_url: '/api/public/shares/protected-share/trace.otlp.json',
+        package_url: '/api/public/shares/protected-share/package.llmtrace',
         share_url: 'https://example.test/s/protected-share',
       };
     };
@@ -818,57 +1301,112 @@ describe('hosted site', () => {
       return loadLibraryTrace(id);
     };
     let report;
-    render(<SharePage
-      shareId="protected-share"
-      loadShare={loadShare}
-      loadTrace={loadTrace}
-      sendReport={async (...args) => { report = args; return { received: true }; }}
-    />);
+    render(
+      <SharePage
+        shareId="protected-share"
+        loadShare={loadShare}
+        loadTrace={loadTrace}
+        sendReport={async (...args) => {
+          report = args;
+          return { received: true };
+        }}
+      />,
+    );
 
     await expect.element(page.getByRole('heading', { name: 'Password required' })).toBeVisible();
-    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain('noindex');
+    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain(
+      'noindex',
+    );
     await page.getByLabelText('Password').fill('evidence-pass');
     await page.getByRole('button', { name: 'Open trace' }).click();
     await expect.element(page.getByText('Prompt for protected-share')).toBeVisible();
-    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain('noindex');
+    expect(document.querySelector('meta[name="robots"]')?.getAttribute('content')).toContain(
+      'noindex',
+    );
 
     await page.getByRole('button', { name: 'Report this trace' }).click();
     await page.getByRole('combobox', { name: 'Report reason' }).click();
     await page.getByRole('option', { name: 'Spam or misleading content' }).click();
-    await page.getByPlaceholder('Briefly explain the issue').fill('The listing misrepresents the disclosed response.');
+    await page
+      .getByPlaceholder('Briefly explain the issue')
+      .fill('The listing misrepresents the disclosed response.');
     await page.getByRole('button', { name: 'Send report' }).click();
-    expect(report).toEqual(['protected-share', { reason: 'spam', message: 'The listing misrepresents the disclosed response.' }, 'evidence-pass']);
+    expect(report).toEqual([
+      'protected-share',
+      { reason: 'spam', message: 'The listing misrepresents the disclosed response.' },
+      'evidence-pass',
+    ]);
     await expect.element(page.getByRole('heading', { name: 'Report received' })).toBeVisible();
   });
 
   test('manages access and unpublishes an admitted trace from the account', async () => {
     let current = {
-      id: 'share-managed', state: 'admitted', visibility: 'listed', published: true,
-      password_protected: false, expires_at: null, admitted_at: 1_786_000_000,
-      updated_at: 1_786_000_000, failure_code: null,
-      share_url: 'https://example.test/s/share-managed', package_url: '/package.llmtrace',
+      id: 'share-managed',
+      state: 'admitted',
+      visibility: 'listed',
+      published: true,
+      password_protected: false,
+      expires_at: null,
+      admitted_at: 1_786_000_000,
+      updated_at: 1_786_000_000,
+      failure_code: null,
+      share_url: 'https://example.test/s/share-managed',
+      package_url: '/package.llmtrace',
     };
     const updates = [];
-    render(<Dashboard
-      user={{ github_login: 'fixture-user', credits: null, share_stats: { total: 1, admitted: 1, in_progress: 0 } }}
-      view="traces"
-      theme="light"
-      onThemeChange={() => {}}
-      onAccountDeleted={() => {}}
-      loadCliSessions={async () => ({ items: [], next_cursor: null })}
-      loadMyShares={async () => ({ items: [current], next_cursor: null })}
-      loadCreditOffers={async () => []}
-      loadCreditHistory={async () => ({ items: [], next_cursor: null })}
-      loadBillingPurchases={async () => []}
-      updateShareRequest={async (_id, settings) => {
-        updates.push(settings);
-        current = { ...current, ...settings, password_protected: settings.password ? true : current.password_protected };
-        if (settings.published === false) current = { ...current, share_url: null, package_url: null };
-        return current;
-      }}
-    />);
+    render(
+      <Dashboard
+        user={{
+          github_login: 'fixture-user',
+          credits: null,
+          share_stats: { total: 1, admitted: 1, in_progress: 0 },
+        }}
+        view="traces"
+        theme="light"
+        onThemeChange={() => {}}
+        onAccountDeleted={() => {}}
+        loadCliSessions={async () => ({ items: [], next_cursor: null })}
+        loadMyShares={async () => ({ items: [current], next_cursor: null })}
+        loadCreditOffers={async () => []}
+        loadCreditHistory={async () => ({ items: [], next_cursor: null })}
+        loadBillingPurchases={async () => []}
+        updateShareRequest={async (_id, settings) => {
+          updates.push(settings);
+          current = {
+            ...current,
+            ...settings,
+            password_protected: settings.password ? true : current.password_protected,
+          };
+          if (settings.published === false)
+            current = { ...current, share_url: null, package_url: null };
+          return current;
+        }}
+      />,
+    );
 
     await page.getByRole('button', { name: 'Manage' }).click();
+    const dialogBounds = page.getByRole('dialog').element().getBoundingClientRect();
+    const visibilityWidth = page
+      .getByRole('combobox', { name: 'Library visibility' })
+      .element()
+      .getBoundingClientRect().width;
+    expect(visibilityWidth).toBeGreaterThan(dialogBounds.width * 0.8);
+    expect(
+      Math.abs(dialogBounds.left + dialogBounds.width / 2 - window.innerWidth / 2),
+    ).toBeLessThan(1);
+    expect(
+      Math.abs(dialogBounds.top + dialogBounds.height / 2 - window.innerHeight / 2),
+    ).toBeLessThan(1);
+    await page.viewport(390, 844);
+    const mobileDialogBounds = page.getByRole('dialog').element().getBoundingClientRect();
+    expect(
+      Math.abs(mobileDialogBounds.left + mobileDialogBounds.width / 2 - window.innerWidth / 2),
+    ).toBeLessThan(1);
+    expect(
+      Math.abs(mobileDialogBounds.top + mobileDialogBounds.height / 2 - window.innerHeight / 2),
+    ).toBeLessThan(1);
+    expect(mobileDialogBounds.left).toBeGreaterThanOrEqual(16);
+    expect(mobileDialogBounds.right).toBeLessThanOrEqual(window.innerWidth - 16);
     await page.getByRole('checkbox', { name: /Require a password/ }).click();
     await page.getByRole('textbox', { name: 'Password' }).fill('eight-characters');
     await page.getByRole('button', { name: 'Save changes' }).click();
@@ -892,18 +1430,37 @@ describe('hosted site', () => {
       directory_generation: 42,
       trace_sha256: 'b'.repeat(64),
       package_sha256: 'c'.repeat(64),
-      trace: await loadLibraryTrace('verified')
+      trace: await loadLibraryTrace('verified'),
     };
     let calls = 0;
-    render(<VerificationPage verifyFile={async () => { calls += 1; return verified; }} />);
+    render(
+      <VerificationPage
+        verifyFile={async () => {
+          calls += 1;
+          return verified;
+        }}
+      />,
+    );
     const input = document.querySelector('input[type="file"]');
     expect(input.getAttribute('accept')).toBeNull();
-    const file = new File(['sanitized fixture'], 'sanitized.llmtrace', { type: 'application/vnd.llmnotary.trace-package+zip' });
+    const file = new File(['sanitized fixture'], 'sanitized.llmtrace', {
+      type: 'application/vnd.llmnotary.trace-package+zip',
+    });
     fireEvent.change(input, { target: { files: [file] } });
 
-    await expect.element(page.getByText('Your package may contain sensitive content.')).toBeVisible();
-    await expect.element(page.getByText('Headers are hidden by default, but prompts, responses, tool definitions, and tool results may be included. We check the package without saving it.')).toBeVisible();
-    await expect.element(page.getByText('I understand that this package may contain sensitive content.')).toBeVisible();
+    await expect
+      .element(page.getByText('Your package may contain sensitive content.'))
+      .toBeVisible();
+    await expect
+      .element(
+        page.getByText(
+          'Headers are hidden by default, but prompts, responses, tool definitions, and tool results may be included. We check the package without saving it.',
+        ),
+      )
+      .toBeVisible();
+    await expect
+      .element(page.getByText('I understand that this package may contain sensitive content.'))
+      .toBeVisible();
     expect(calls).toBe(0);
     const submit = page.getByRole('button', { name: 'Verify package' });
     await expect.element(submit).toBeDisabled();
@@ -920,17 +1477,27 @@ describe('hosted site', () => {
 
   test('rejects an oversized or mislabeled upload before sending it', async () => {
     let calls = 0;
-    render(<VerificationPage verifyFile={async () => { calls += 1; }} />);
+    render(
+      <VerificationPage
+        verifyFile={async () => {
+          calls += 1;
+        }}
+      />,
+    );
     const input = document.querySelector('input[type="file"]');
     fireEvent.change(input, { target: { files: [new File(['not a package'], 'notes.zip')] } });
 
-    await expect.element(page.getByRole('heading', { name: 'File type is unsupported' })).toBeVisible();
+    await expect
+      .element(page.getByRole('heading', { name: 'File type is unsupported' }))
+      .toBeVisible();
     expect(calls).toBe(0);
   });
 
   test('ignores an in-flight verification result after the selected file changes', async () => {
     let resolveVerification;
-    const pendingVerification = new Promise((resolve) => { resolveVerification = resolve; });
+    const pendingVerification = new Promise((resolve) => {
+      resolveVerification = resolve;
+    });
     render(<VerificationPage verifyFile={() => pendingVerification} />);
     const input = document.querySelector('input[type="file"]');
     fireEvent.change(input, { target: { files: [new File(['first'], 'first.llmtrace')] } });
@@ -941,9 +1508,11 @@ describe('hosted site', () => {
     await expect.element(page.getByText('second.llmtrace')).toBeVisible();
     resolveVerification({
       verified: true,
-      trace: { resourceSpans: [] }
+      trace: { resourceSpans: [] },
     });
-    await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+    await new Promise((resolve) =>
+      window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)),
+    );
 
     expect(document.body.textContent).not.toContain('Verification passed.');
     await expect.element(page.getByText('second.llmtrace')).toBeVisible();
@@ -951,27 +1520,62 @@ describe('hosted site', () => {
 
   test('renders 30 days of utilization in decimal MB with an accessible summary and overall budget', async () => {
     const today = Date.now() / 1000;
-    render(<CreditUtilizationChart credits={{ notarization: { total_remaining_bytes: 500_000_000, total_granted_bytes: 750_000_000 } }} formatBytes={(bytes) => `${bytes / 1_000_000} MB`} historyDebits={[
-      { id: 'd1', kind: 'debit', amount_bytes: 1_000_000, display_label: 'Capture A', created_at: today },
-      { id: 'd2', kind: 'debit', amount_bytes: 250_000, display_label: 'Capture B', created_at: today - 86400 },
-    ]} />);
+    render(
+      <CreditUtilizationChart
+        credits={{
+          notarization: { total_remaining_bytes: 500_000_000, total_granted_bytes: 750_000_000 },
+        }}
+        formatBytes={(bytes) => `${bytes / 1_000_000} MB`}
+        historyDebits={[
+          {
+            id: 'd1',
+            kind: 'debit',
+            amount_bytes: 1_000_000,
+            display_label: 'Capture A',
+            created_at: today,
+          },
+          {
+            id: 'd2',
+            kind: 'debit',
+            amount_bytes: 250_000,
+            display_label: 'Capture B',
+            created_at: today - 86400,
+          },
+        ]}
+      />,
+    );
 
     await expect.element(page.getByRole('heading', { name: 'Last 30 days' })).toBeVisible();
-    await expect.element(page.getByRole('img', { name: /Daily utilization in MB.*Total 1.25 MB/i })).toBeVisible();
+    await expect
+      .element(page.getByRole('img', { name: /Daily utilization in MB.*Total 1.25 MB/i }))
+      .toBeVisible();
     await expect.element(page.getByText('750 MB')).toBeVisible();
-    expect(document.querySelector('.recharts-bar-rectangle path')?.getAttribute('fill')).toBe('var(--action)');
+    expect(document.querySelector('.recharts-bar-rectangle path')?.getAttribute('fill')).toBe(
+      'var(--action)',
+    );
     expect(document.querySelectorAll('.recharts-bar-rectangle')).toHaveLength(2);
   });
 
   test('distinguishes loading, zero-usage, and unavailable utilization states', async () => {
-    const props = { credits: { notarization: { total_remaining_bytes: 500_000_000, total_granted_bytes: 750_000_000 } }, formatBytes: (bytes) => `${bytes / 1_000_000} MB` };
+    const props = {
+      credits: {
+        notarization: { total_remaining_bytes: 500_000_000, total_granted_bytes: 750_000_000 },
+      },
+      formatBytes: (bytes) => `${bytes / 1_000_000} MB`,
+    };
     const rendered = render(<CreditUtilizationChart {...props} historyDebits={null} />);
-    await expect.element(page.getByRole('status', { name: 'Loading daily utilization' })).toBeVisible();
+    await expect
+      .element(page.getByRole('status', { name: 'Loading daily utilization' }))
+      .toBeVisible();
 
     rendered.rerender(<CreditUtilizationChart {...props} historyDebits={[]} />);
-    await expect.element(page.getByRole('status').getByText('No utilization in the last 30 days')).toBeVisible();
+    await expect
+      .element(page.getByRole('status').getByText('No utilization in the last 30 days'))
+      .toBeVisible();
 
     rendered.rerender(<CreditUtilizationChart {...props} historyDebits={[]} historyError />);
-    await expect.element(page.getByRole('alert').getByText('Daily utilization unavailable')).toBeVisible();
+    await expect
+      .element(page.getByRole('alert').getByText('Daily utilization unavailable'))
+      .toBeVisible();
   });
 });

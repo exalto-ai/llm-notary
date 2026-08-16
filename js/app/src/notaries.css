@@ -16,7 +16,7 @@
 .notary-record > p { max-width: 760px; margin: 0 0 19px; color: var(--muted); font-size: 13px; line-height: 1.55; }
 .notary-state, .notary-selected { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font: 500 10px/1.2 'IBM Plex Mono', monospace; text-transform: uppercase; letter-spacing: .045em; }
 .notary-state i { width: 8px; height: 8px; border: 1px solid currentColor; }
-.notary-state--active { color: var(--action-dark); }
+.notary-state--active { color: var(--action-ink); }
 .notary-state--active i { border-color: var(--action); background: var(--action); }
 .notary-state--revoked { color: var(--attention); }
 .notary-state--revoked i { background: var(--attention); }

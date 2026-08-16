@@ -1,19 +1,23 @@
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const appRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(appRoot, '../..');
-const openapi = JSON.parse(readFileSync(resolve(appRoot, 'src/local-dashboard/generated/openapi.json'), 'utf8'));
+const openapi = JSON.parse(
+  readFileSync(resolve(appRoot, 'src/local-dashboard/generated/openapi.json'), 'utf8'),
+);
 const workflowDocuments = [
   'README.md',
   'docs/local-service.md',
   'docs/local-dashboard.md',
   'docs/agent-playbook.md',
   'skills/llm-notary/SKILL.md',
-  'skills/llm-notary/references/workflows.md'
+  'skills/llm-notary/references/workflows.md',
 ];
-const workflowContent = workflowDocuments.map((file) => readFileSync(resolve(repoRoot, file), 'utf8')).join('\n');
+const workflowContent = workflowDocuments
+  .map((file) => readFileSync(resolve(repoRoot, file), 'utf8'))
+  .join('\n');
 
 const basicAuth = openapi.components?.securitySchemes?.basicAuth;
 if (basicAuth?.type !== 'http' || basicAuth?.scheme !== 'basic') {
@@ -36,18 +40,26 @@ const expectedOperations = {
   '/v1/operations/{operation_id}/retry': { post: ['202', '401', '409', '503'] },
   '/v1/captures/{capture_id}/package': { get: ['200', '401', '404', '409', '500', '503'] },
   '/v1/captures/{capture_id}/trace': { get: ['200', '401', '404', '409', '500', '503'] },
-  '/v1/captures/{capture_id}/trace:verify': { post: ['200', '401', '404', '409', '422', '500', '503'] },
+  '/v1/captures/{capture_id}/trace:verify': {
+    post: ['200', '401', '404', '409', '422', '500', '503'],
+  },
   '/v1/events': { get: ['200', '400', '401', '503'] },
-  '/v1/account': { get: ['200', '401', '503'], post: ['202', '401', '409', '503'], delete: ['204', '401', '409', '503'] },
+  '/v1/account': {
+    get: ['200', '401', '503'],
+    post: ['202', '401', '409', '503'],
+    delete: ['204', '401', '409', '503'],
+  },
   '/v1/account/{request_id}': { get: ['200', '401', '404', '503'] },
   '/v1/captures/{capture_id}/shares': { post: ['202', '401', '404', '409', '500', '503'] },
-  '/v1/shares/{share_id}': { get: ['200', '401', '404', '409', '503'] }
+  '/v1/shares/{share_id}': { get: ['200', '401', '404', '409', '503'] },
 };
 
 const actualPaths = Object.keys(openapi.paths).sort();
 const expectedPaths = Object.keys(expectedOperations).sort();
 if (JSON.stringify(actualPaths) !== JSON.stringify(expectedPaths)) {
-  throw new Error(`OpenAPI path set changed. Expected ${expectedPaths.join(', ')}; received ${actualPaths.join(', ')}`);
+  throw new Error(
+    `OpenAPI path set changed. Expected ${expectedPaths.join(', ')}; received ${actualPaths.join(', ')}`,
+  );
 }
 for (const [path, methods] of Object.entries(expectedOperations)) {
   for (const [method, statuses] of Object.entries(methods)) {
@@ -56,13 +68,20 @@ for (const [path, methods] of Object.entries(expectedOperations)) {
     if (!operation.summary?.trim() || !operation.description?.trim()) {
       throw new Error(`${method.toUpperCase()} ${path} needs a summary and description`);
     }
-    if (path.startsWith('/v1/') && JSON.stringify(operation.security) !== JSON.stringify([{}, { basicAuth: [] }])) {
-      throw new Error(`${method.toUpperCase()} ${path} must describe anonymous or configured Basic authentication`);
+    if (
+      path.startsWith('/v1/') &&
+      JSON.stringify(operation.security) !== JSON.stringify([{}, { basicAuth: [] }])
+    ) {
+      throw new Error(
+        `${method.toUpperCase()} ${path} must describe anonymous or configured Basic authentication`,
+      );
     }
     const actualStatuses = Object.keys(operation.responses).sort();
     const expectedStatuses = [...statuses].sort();
     if (JSON.stringify(actualStatuses) !== JSON.stringify(expectedStatuses)) {
-      throw new Error(`${method.toUpperCase()} ${path} response statuses changed: ${actualStatuses.join(', ')}`);
+      throw new Error(
+        `${method.toUpperCase()} ${path} response statuses changed: ${actualStatuses.join(', ')}`,
+      );
     }
     if (!workflowContent.includes(`${method.toUpperCase()} ${path}`)) {
       throw new Error(`Workflow documentation does not name ${method.toUpperCase()} ${path}`);
@@ -74,10 +93,30 @@ function parameterNames(path, method) {
   return (openapi.paths[path][method].parameters ?? []).map((parameter) => parameter.name).sort();
 }
 const expectedParameters = {
-  'GET /v1/captures': ['capture_state', 'created_after_unix_ms', 'cursor', 'finalization_state', 'limit', 'model', 'offset', 'provider', 'query', 'streaming'],
+  'GET /v1/captures': [
+    'capture_state',
+    'created_after_unix_ms',
+    'cursor',
+    'finalization_state',
+    'limit',
+    'model',
+    'offset',
+    'provider',
+    'query',
+    'streaming',
+  ],
   'GET /v1/operations': ['capture_id', 'cursor', 'kind', 'limit', 'state'],
-  'GET /v1/events': ['after', 'capture_id', 'created_after_unix_ms', 'cursor', 'event_type', 'limit', 'operation_id', 'severity'],
-  'GET /v1/shares/{share_id}': ['share_id']
+  'GET /v1/events': [
+    'after',
+    'capture_id',
+    'created_after_unix_ms',
+    'cursor',
+    'event_type',
+    'limit',
+    'operation_id',
+    'severity',
+  ],
+  'GET /v1/shares/{share_id}': ['share_id'],
 };
 for (const [operation, expected] of Object.entries(expectedParameters)) {
   const [method, path] = operation.split(' ');
@@ -91,7 +130,21 @@ const expectedRequiredFields = {
   Page_CaptureResponse: ['items'],
   Page_OperationSummaryResponse: ['items'],
   CaptureDetailResponse: ['artifacts', 'capture', 'finalizations'],
-  CaptureResponse: ['capture_id', 'created_at_unix_ms', 'provider', 'operation', 'streaming', 'request_bytes', 'capture_state', 'finalization_state', 'finalization_eligible', 'prompt_preview', 'prompt_preview_truncated', 'output_preview', 'output_preview_truncated'],
+  CaptureResponse: [
+    'capture_id',
+    'created_at_unix_ms',
+    'provider',
+    'operation',
+    'streaming',
+    'request_bytes',
+    'capture_state',
+    'finalization_state',
+    'finalization_eligible',
+    'prompt_preview',
+    'prompt_preview_truncated',
+    'output_preview',
+    'output_preview_truncated',
+  ],
   ErrorBody: ['code', 'message'],
   ErrorEnvelope: ['error'],
   EventResponse: ['event_id', 'created_at_unix_ms', 'event_type', 'severity', 'message'],
@@ -100,15 +153,49 @@ const expectedRequiredFields = {
   NotariesResponse: ['source', 'notaries'],
   NotaryResponse: ['endpoint', 'transport', 'key_id', 'status'],
   OperationAttemptResponse: ['attempt', 'state', 'started_at_unix_ms'],
-  OperationResponse: ['operation_id', 'kind', 'state', 'attempt', 'attempt_history', 'created_at_unix_ms', 'progress', 'retryable'],
-  OperationSummaryResponse: ['operation_id', 'kind', 'state', 'attempt', 'created_at_unix_ms', 'progress'],
+  OperationResponse: [
+    'operation_id',
+    'kind',
+    'state',
+    'attempt',
+    'attempt_history',
+    'created_at_unix_ms',
+    'progress',
+    'retryable',
+  ],
+  OperationSummaryResponse: [
+    'operation_id',
+    'kind',
+    'state',
+    'attempt',
+    'created_at_unix_ms',
+    'progress',
+  ],
   OperationProgressResponse: ['phase', 'updated_at_unix_ms'],
-  OperationProofProgressResponse: ['bytes_completed', 'bytes_total', 'commitments_completed', 'commitments_total'],
-  AccountConnectionStartedResponse: ['request_id', 'user_code', 'verification_uri_complete', 'expires_in_seconds', 'poll_interval_seconds', 'state'],
+  OperationProofProgressResponse: [
+    'bytes_completed',
+    'bytes_total',
+    'commitments_completed',
+    'commitments_total',
+  ],
+  AccountConnectionStartedResponse: [
+    'request_id',
+    'user_code',
+    'verification_uri_complete',
+    'expires_in_seconds',
+    'poll_interval_seconds',
+    'state',
+  ],
   ShareResponse: ['capture_id', 'share_id', 'state', 'visibility', 'status_url'],
   ShareStatusResponse: ['share_id', 'state', 'visibility'],
   TraceResponse: ['capture_id', 'manifest', 'trace'],
-  VerificationResponse: ['capture_id', 'verified', 'verified_at_unix_ms', 'notary_key_id', 'trust_source']
+  VerificationResponse: [
+    'capture_id',
+    'verified',
+    'verified_at_unix_ms',
+    'notary_key_id',
+    'trust_source',
+  ],
 };
 for (const [schema, expected] of Object.entries(expectedRequiredFields)) {
   const actual = [...(openapi.components.schemas[schema]?.required ?? [])].sort();
@@ -117,21 +204,45 @@ for (const [schema, expected] of Object.entries(expectedRequiredFields)) {
   }
 }
 
-for (const term of ['202 Accepted', 'deduplicated', 'attempt_history', 'finalization_eligible', 'retryable', 'progress.proof', 'bytes_completed', 'commitments_completed', 'next_cursor', 'high_water_cursor', 'poll_interval_seconds', 'notary_key_id', 'trust_source']) {
-  if (!workflowContent.includes(term)) throw new Error(`Workflow documentation is missing contract term: ${term}`);
+for (const term of [
+  '202 Accepted',
+  'deduplicated',
+  'attempt_history',
+  'finalization_eligible',
+  'retryable',
+  'progress.proof',
+  'bytes_completed',
+  'commitments_completed',
+  'next_cursor',
+  'high_water_cursor',
+  'poll_interval_seconds',
+  'notary_key_id',
+  'trust_source',
+]) {
+  if (!workflowContent.includes(term))
+    throw new Error(`Workflow documentation is missing contract term: ${term}`);
 }
 
 const screenshots = [
-  'overview-light.png', 'captures-dark.png', 'finalization-retry.png',
-  'trace-verification.png', 'share-preview.png', 'share-confirmation.png',
-  'share-admitted.png', 'mobile-navigation.png', 'mobile-capture-detail.png',
-  'mobile-share-choice.png', 'mobile-share-preview.png'
+  'overview-light.png',
+  'captures-dark.png',
+  'finalization-retry.png',
+  'trace-verification.png',
+  'share-preview.png',
+  'share-confirmation.png',
+  'share-admitted.png',
+  'mobile-navigation.png',
+  'mobile-capture-detail.png',
+  'mobile-share-choice.png',
+  'mobile-share-preview.png',
 ];
 const dashboardGuide = readFileSync(resolve(repoRoot, 'docs/local-dashboard.md'), 'utf8');
 for (const file of screenshots) {
   const path = resolve(repoRoot, 'docs/images/local-dashboard', file);
   if (!existsSync(path)) throw new Error(`Missing documentation screenshot: ${file}`);
-  const image = new RegExp(`!\\[([^\\]]{24,})\\]\\(images/local-dashboard/${file.replace('.', '\\.')}\\)`);
+  const image = new RegExp(
+    `!\\[([^\\]]{24,})\\]\\(images/local-dashboard/${file.replace('.', '\\.')}\\)`,
+  );
   if (!image.test(dashboardGuide)) throw new Error(`Missing useful alt text for ${file}`);
 }
 
@@ -148,22 +259,31 @@ const markdown = [
   resolve(repoRoot, 'DESIGN.md'),
   resolve(repoRoot, 'deploy/fly/README.md'),
   ...markdownFiles(resolve(repoRoot, 'docs')),
-  ...markdownFiles(resolve(repoRoot, 'skills'))
+  ...markdownFiles(resolve(repoRoot, 'skills')),
+];
+const publicSiteSources = [
+  resolve(appRoot, 'src/main.tsx'),
+  ...readdirSync(resolve(appRoot, 'src/site'))
+    .filter((file) => file.endsWith('.ts') || file.endsWith('.tsx'))
+    .map((file) => resolve(appRoot, 'src/site', file)),
 ];
 const consistencySources = [
   ...markdown,
   resolve(appRoot, 'public/llms.txt'),
-  resolve(appRoot, 'src/main.jsx'),
+  ...publicSiteSources,
   resolve(appRoot, 'src/platform-api/generated/openapi.json'),
   resolve(appRoot, 'src/platform-api/generated/api.generated.d.ts'),
-  resolve(repoRoot, 'crates/llm-notary-platform/src/lib.rs')
+  resolve(repoRoot, 'crates/llm-notary-platform/src/lib.rs'),
 ];
-const obsoleteCommand = /llm-notary\s+(proxy|verify-trace|download|config|vault|list|show|verify|decode)\b/;
+const obsoleteCommand =
+  /llm-notary\s+(proxy|verify-trace|download|config|vault|list|show|verify|decode)\b/;
 const obsoleteDaemonInvocation = /^llm-notary(?:\s+--config\s+\S+)?\s*$/m;
 for (const file of consistencySources) {
   const source = readFileSync(file, 'utf8');
   if (obsoleteCommand.test(source) || obsoleteDaemonInvocation.test(source)) {
-    throw new Error(`Documentation retains an obsolete local operational command: ${file.replace(`${repoRoot}/`, '')}`);
+    throw new Error(
+      `Documentation retains an obsolete local operational command: ${file.replace(`${repoRoot}/`, '')}`,
+    );
   }
 }
 
@@ -174,29 +294,43 @@ const inaccurateClaims = [
   /deploy the notary and check the v2 admission prelude/i,
   /download the public evidence attached/i,
   /durable human-readable result/i,
-  /processes the package in memory/i
+  /processes the package in memory/i,
 ];
 for (const file of consistencySources) {
   const source = readFileSync(file, 'utf8');
   for (const claim of inaccurateClaims) {
     if (claim.test(source)) {
-      throw new Error(`Documentation retains an inaccurate release, trust, or rollout claim: ${file.replace(`${repoRoot}/`, '')}`);
+      throw new Error(
+        `Documentation retains an inaccurate release, trust, or rollout claim: ${file.replace(`${repoRoot}/`, '')}`,
+      );
     }
   }
 }
 
-const publicDocs = readFileSync(resolve(appRoot, 'src/main.jsx'), 'utf8');
-if (!publicDocs.includes('curl -fsSL https://notary.exalto.ai/install.sh | sh')
-  || !publicDocs.includes('cargo install --locked --path crates/llm-notary-client')
-  || !publicDocs.includes('llm-notary skill install --target all')
-  || !publicDocs.includes('--metadata-only')
-  || !publicDocs.includes('The JSON directory is not separately signed')
-  || !publicDocs.includes('"status_url":"/v1/shares/…"')) {
-  throw new Error('Public-site documentation is missing install, agent-metadata, trust-directory, or local share-status guidance');
+const publicDocs = publicSiteSources.map((file) => readFileSync(file, 'utf8')).join('\n');
+if (
+  !publicDocs.includes('curl -fsSL https://notary.exalto.ai/install.sh | sh') ||
+  !publicDocs.includes('cargo install --locked --path crates/llm-notary-client') ||
+  !publicDocs.includes('llm-notary skill install --target all') ||
+  !publicDocs.includes('--metadata-only') ||
+  !publicDocs.includes('The JSON directory is not separately signed') ||
+  !publicDocs.includes('"status_url":"/v1/shares/…"')
+) {
+  throw new Error(
+    'Public-site documentation is missing install, agent-metadata, trust-directory, or local share-status guidance',
+  );
 }
 
-for (const required of ['llm-notaryd', 'llm-notary status', 'llm-notary captures list', 'llm-notary skill install', '--metadata-only', '--json']) {
-  if (!workflowContent.includes(required)) throw new Error(`Workflow documentation is missing daemon/CLI guidance: ${required}`);
+for (const required of [
+  'llm-notaryd',
+  'llm-notary status',
+  'llm-notary captures list',
+  'llm-notary skill install',
+  '--metadata-only',
+  '--json',
+]) {
+  if (!workflowContent.includes(required))
+    throw new Error(`Workflow documentation is missing daemon/CLI guidance: ${required}`);
 }
 
 for (const file of markdown) {
@@ -205,7 +339,8 @@ for (const file of markdown) {
     const target = match[1].split('#', 1)[0];
     if (!target || target.startsWith('http://') || target.startsWith('https://')) continue;
     const linked = resolve(dirname(file), target);
-    if (!existsSync(linked)) throw new Error(`Broken link in ${file.replace(`${repoRoot}/`, '')}: ${match[1]}`);
+    if (!existsSync(linked))
+      throw new Error(`Broken link in ${file.replace(`${repoRoot}/`, '')}: ${match[1]}`);
   }
 }
 
@@ -215,4 +350,6 @@ for (const file of markdown) {
     throw new Error(`${file.replace(`${repoRoot}/`, '')} must end with exactly one newline`);
   }
 }
-process.stdout.write('Local REST documentation, screenshots, methods, statuses, filters, and schemas match the generated contract.\n');
+process.stdout.write(
+  'Local REST documentation, screenshots, methods, statuses, filters, and schemas match the generated contract.\n',
+);
