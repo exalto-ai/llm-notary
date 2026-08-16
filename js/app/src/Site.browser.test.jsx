@@ -1385,12 +1385,28 @@ describe('hosted site', () => {
     );
 
     await page.getByRole('button', { name: 'Manage' }).click();
-    const dialogWidth = page.getByRole('dialog').element().getBoundingClientRect().width;
+    const dialogBounds = page.getByRole('dialog').element().getBoundingClientRect();
     const visibilityWidth = page
       .getByRole('combobox', { name: 'Library visibility' })
       .element()
       .getBoundingClientRect().width;
-    expect(visibilityWidth).toBeGreaterThan(dialogWidth * 0.8);
+    expect(visibilityWidth).toBeGreaterThan(dialogBounds.width * 0.8);
+    expect(
+      Math.abs(dialogBounds.left + dialogBounds.width / 2 - window.innerWidth / 2),
+    ).toBeLessThan(1);
+    expect(
+      Math.abs(dialogBounds.top + dialogBounds.height / 2 - window.innerHeight / 2),
+    ).toBeLessThan(1);
+    await page.viewport(390, 844);
+    const mobileDialogBounds = page.getByRole('dialog').element().getBoundingClientRect();
+    expect(
+      Math.abs(mobileDialogBounds.left + mobileDialogBounds.width / 2 - window.innerWidth / 2),
+    ).toBeLessThan(1);
+    expect(
+      Math.abs(mobileDialogBounds.top + mobileDialogBounds.height / 2 - window.innerHeight / 2),
+    ).toBeLessThan(1);
+    expect(mobileDialogBounds.left).toBeGreaterThanOrEqual(16);
+    expect(mobileDialogBounds.right).toBeLessThanOrEqual(window.innerWidth - 16);
     await page.getByRole('checkbox', { name: /Require a password/ }).click();
     await page.getByRole('textbox', { name: 'Password' }).fill('eight-characters');
     await page.getByRole('button', { name: 'Save changes' }).click();
