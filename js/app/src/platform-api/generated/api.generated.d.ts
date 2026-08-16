@@ -1167,15 +1167,14 @@ export interface components {
             id: string;
             model: string;
             notary_key_id?: string | null;
-            package_available: boolean;
-            package_sha256?: string | null;
+            package_sha256: string;
             /** Format: int64 */
-            package_size_bytes?: number | null;
-            package_url?: string | null;
+            package_size_bytes: number;
+            package_url: string;
             password_protected: boolean;
             provider: string;
             public_package_safety_override: boolean;
-            public_package_safety_version?: string | null;
+            public_package_safety_version: string;
             publisher: string;
             share_url: string;
             trace_sha256: string;
@@ -3053,14 +3052,6 @@ export interface operations {
                 };
             };
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            410: {
                 headers: {
                     [name: string]: unknown;
                 };

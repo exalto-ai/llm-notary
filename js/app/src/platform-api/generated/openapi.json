@@ -2490,16 +2490,6 @@
               }
             }
           },
-          "410": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
           "429": {
             "description": "",
             "content": {
@@ -4763,9 +4753,12 @@
           "model",
           "verification_state",
           "trace_sha256",
-          "package_available",
+          "package_size_bytes",
+          "package_sha256",
+          "public_package_safety_version",
           "public_package_safety_override",
           "trace_url",
+          "package_url",
           "share_url"
         ],
         "properties": {
@@ -4809,27 +4802,15 @@
               "null"
             ]
           },
-          "package_available": {
-            "type": "boolean"
-          },
           "package_sha256": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "package_size_bytes": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": "integer",
             "format": "int64"
           },
           "package_url": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "password_protected": {
             "type": "boolean"
@@ -4841,10 +4822,7 @@
             "type": "boolean"
           },
           "public_package_safety_version": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "publisher": {
             "type": "string"

@@ -129,8 +129,8 @@ uploading -> queued -> verifying -> admitted
      \-> expired -> uploading
 ```
 
-Only `admitted` shares receive `share_url`. New shares also receive
-`package_url`; legacy admitted records may not have a retained package.
+Only `admitted` shares receive `share_url` and `package_url`. Admission retains
+the exact verified package beside its canonical public trace.
 Failure codes are bounded machine codes and never include matched secret
 values.
 

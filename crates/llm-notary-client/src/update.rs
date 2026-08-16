@@ -291,10 +291,6 @@ pub async fn check_latest() -> Result<UpdateCheck> {
     check_from_url_with_state(channel_url()?, channel_state).await
 }
 
-pub async fn check_from_url(channel_url: Url) -> Result<UpdateCheck> {
-    check_from_url_with_state(channel_url, None).await
-}
-
 async fn check_from_url_with_state(
     channel_url: Url,
     channel_state: Option<PathBuf>,

@@ -132,11 +132,10 @@ the Library and unavailable on every public route.
 
 The direct page leads with a readable conversation. Tool calls and results are
 inline and collapsible; hashes, notary identity, and other proof details are
-secondary. The downloaded package remains independently verifiable.
-
-Legacy rows that existed before exact-package retention remain Listed so the
-forward migration does not hide them. Their direct page and canonical trace
-remain available, while the package endpoint returns `410 Gone`.
+secondary. The downloaded package remains independently verifiable. An
+admitted row without complete retained-package metadata violates the database
+invariant and is handled as internal corruption, not as a supported legacy
+share.
 
 ## Anonymous verification
 

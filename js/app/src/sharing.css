@@ -160,7 +160,6 @@
 .share-package-download span,
 .share-package-download small { font: 9px 'IBM Plex Mono', monospace; text-transform: uppercase; }
 .share-package-download b { font: 600 14px 'Instrument Sans Variable', sans-serif; }
-.share-legacy-package { padding: 14px; border: 1px solid var(--line); color: var(--muted); font-size: 12px; line-height: 1.5; }
 .share-technical { margin-top: 14px; border: 1px solid var(--line); }
 .share-technical > summary { padding: 13px 14px; cursor: pointer; font: 500 10px 'IBM Plex Mono', monospace; text-transform: uppercase; }
 .share-technical[open] > summary { border-bottom: 1px solid var(--line); }

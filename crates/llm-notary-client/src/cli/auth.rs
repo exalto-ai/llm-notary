@@ -19,6 +19,8 @@ use utoipa::ToSchema;
 use super::{DEFAULT_PUBLIC_ORIGIN, api_origin::ApiOrigin, http_client_builder, storage};
 
 const KEYCHAIN_SERVICE: &str = "llm-notary";
+// Keep this pre-account-session identifier so upgrades find credentials that
+// were stored by older clients without prompting the user to reconnect.
 const KEYCHAIN_ACCOUNT: &str = "publish-refresh-token";
 const API_KEY_ENV: &str = "LLM_NOTARY_API_KEY";
 const API_KEY_FILE_ENV: &str = "LLM_NOTARY_API_KEY_FILE";
@@ -1116,7 +1118,7 @@ fn keychain_store(token: &str) -> Result<()> {
     let mut child = Command::new("secret-tool")
         .args([
             "store",
-            "--label=LLM Notary publish refresh token",
+            "--label=LLM Notary account credential",
             "service",
             KEYCHAIN_SERVICE,
             "account",
