@@ -1,6 +1,8 @@
 # Fly.io deployment
 
-The production deployment runs three Fly apps in `sjc`:
+The production deployment runs three Fly apps in `sjc`. Two 256 MB shared-CPU
+API Machines and one 256 MB shared-CPU web Machine remain running continuously;
+the notary Machine keeps its suspend-on-idle behavior:
 
 ```text
 internet ── HTTPS ──> notary.exalto.ai
@@ -269,18 +271,14 @@ and only then records the digest-pinned references used for rollout. If a
 digest never becomes visible within the bounded retry window, the deployment
 stops before changing any Machine.
 
-The web and notary apps suspend when idle. The API's configured
-`LLM_NOTARY_IDLE_SHUTDOWN_SECS=45` makes API Machines exit after 45 seconds
-with no application request or currently-due durable work; Flycast autostarts
-a stopped Machine on the next API request. This idling behavior is opt-in, so
-local and self-hosted API processes remain running unless their operator sets
-the variable. Its readiness check is `/api/readyz`, which verifies the shared
-database connection. Every running Machine runs the background workers;
-PostgreSQL claims prevent duplicate admission and metadata generation. Expired
-upload cleanup and Library metadata retries that become due while every API
-Machine is stopped resume on the next API request. Add capacity with `fly scale
-count <n> -a llm-notary-prod-api`, keeping the total configured database pool
-size within the Neon connection budget.
+The web Machine and both API Machines stay running to avoid request cold starts
+and keep background work prompt. The notary remains suspendable and Fly starts
+it when a protocol connection arrives. API readiness is `/api/readyz`, which
+verifies the shared database connection. Every API Machine runs the cleanup and
+admission workers; PostgreSQL claims prevent duplicate admission and metadata
+generation. Add capacity with `fly scale count <n> -a llm-notary-prod-api`,
+keeping the total configured database pool size within the Neon connection
+budget.
 
 ## Metrics
 

@@ -23,7 +23,6 @@ pub(crate) const DEFAULT_ADMISSION_TICKET_TTL_SECS: i64 = 45;
 /// opens network connections or starts background workers.
 pub struct PlatformConfig {
     pub listen: SocketAddr,
-    pub idle_shutdown_secs: Option<u64>,
     pub auth: AuthConfig,
     pub database: DatabaseConfig,
     pub notary_directory: NotaryDirectoryConfig,
@@ -116,7 +115,6 @@ impl PlatformConfig {
     pub fn from_env() -> Result<Self> {
         Ok(Self {
             listen: socket_addr_or_default("LLM_NOTARY_API_LISTEN", "127.0.0.1:8080")?,
-            idle_shutdown_secs: optional_idle_shutdown_secs()?,
             auth: AuthConfig::from_env()?,
             database: DatabaseConfig::from_env()?,
             notary_directory: NotaryDirectoryConfig::from_env()?,
@@ -596,12 +594,6 @@ fn socket_addr_or_default(name: &str, default: &str) -> Result<SocketAddr> {
         .with_context(|| format!("{name} must be a socket address"))
 }
 
-fn optional_idle_shutdown_secs() -> Result<Option<u64>> {
-    optional_env("LLM_NOTARY_IDLE_SHUTDOWN_SECS")?
-        .map(|value| parse_idle_shutdown_secs(&value))
-        .transpose()
-}
-
 fn parse_trusted_proxy_cidrs(value: Option<&str>) -> Result<Vec<IpNet>> {
     value
         .unwrap_or_default()
@@ -614,16 +606,6 @@ fn parse_trusted_proxy_cidrs(value: Option<&str>) -> Result<Vec<IpNet>> {
                 .with_context(|| format!("invalid trusted proxy CIDR {value}"))
         })
         .collect()
-}
-
-fn parse_idle_shutdown_secs(value: &str) -> Result<u64> {
-    let seconds = value
-        .parse::<u64>()
-        .context("LLM_NOTARY_IDLE_SHUTDOWN_SECS must be a positive integer")?;
-    if seconds == 0 {
-        bail!("LLM_NOTARY_IDLE_SHUTDOWN_SECS must be a positive integer");
-    }
-    Ok(seconds)
 }
 
 fn database_max_connections() -> Result<u32> {
@@ -719,14 +701,6 @@ fn validate_prefix(prefix: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn idle_shutdown_seconds_must_be_a_positive_integer() {
-        assert_eq!(parse_idle_shutdown_secs("45").expect("valid duration"), 45);
-        assert!(parse_idle_shutdown_secs("0").is_err());
-        assert!(parse_idle_shutdown_secs("-1").is_err());
-        assert!(parse_idle_shutdown_secs("soon").is_err());
-    }
 
     #[test]
     fn archive_limit_can_be_lower_but_never_exceed_the_wire_ceiling() {

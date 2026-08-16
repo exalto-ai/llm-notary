@@ -319,8 +319,6 @@ jobs:
         run: docker build --target planner .
       - name: Test Fly image digest resolution
         run: bash deploy/fly/test-resolve-image-digest.sh
-      - name: Test Fly active Machine restart
-        run: bash deploy/fly/test-restart-active-machines.sh
       - name: Validate Compose configuration
         run: |
           openssl rand -hex 32 > "$RUNNER_TEMP/notary-signing-key"

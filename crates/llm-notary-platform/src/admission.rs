@@ -646,20 +646,6 @@ pub fn spawn(state: AppState) {
     });
 }
 
-pub async fn has_pending_work(state: &AppState) -> Result<bool> {
-    let pending: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-             SELECT 1 FROM publish_jobs
-             WHERE state IN ('queued', 'verifying')
-                OR (state IN ('admitted', 'rejected') AND private_purged_at IS NULL)
-             LIMIT 1
-         )",
-    )
-    .fetch_one(&state.database)
-    .await?;
-    Ok(pending)
-}
-
 async fn update_queue_metrics(state: &AppState) -> Result<()> {
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
     let (depth, oldest): (i64, Option<i64>) =
