@@ -82,8 +82,8 @@ command reports the helper's last durable result.
 To build from source instead, install Rust 1.95.0 and a C toolchain, then run:
 
 ```bash
-git clone https://github.com/exalto-ai/llm-notary.git
-cd llm-notary
+git clone https://github.com/exalto-ai/notary.git
+cd notary
 cargo install --locked --path crates/llm-notary-client
 ```
 
