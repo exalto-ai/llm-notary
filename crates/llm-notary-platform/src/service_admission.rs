@@ -258,6 +258,11 @@ pub struct RedeemAdmissionRequest {
     pub directory_generation: u64,
     #[serde(default)]
     pub contract: Option<AdmissionRedemptionContract>,
+    /// The caller durably settles usage by operation ID. Older bridge
+    /// notaries omit this field, so the API must not create an operation row
+    /// they cannot acknowledge.
+    #[serde(default)]
+    pub usage_settlement: bool,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema, PartialEq, Eq)]
@@ -281,6 +286,8 @@ pub struct RedeemedLeaseResponse {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RedeemedOperationResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
     pub max_attestable_http_bytes: i64,
     pub max_frame_bytes: i64,
     pub max_private_chunk_bytes: i64,
@@ -336,9 +343,36 @@ impl LeaseCompletionOutcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageSettlementOutcome {
+    Completed,
+    ClientFailed,
+    ServiceFailed,
+}
+
+impl UsageSettlementOutcome {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::ClientFailed => "client_failed",
+            Self::ServiceFailed => "service_failed",
+        }
+    }
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct LeaseRenewedResponse {
     pub lease_expires_at: i64,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct UsageSettlementRequest {
+    pub operation_id: String,
+    pub notary_instance_id: String,
+    pub mode: AdmissionMode,
+    pub authenticated_bytes: i64,
+    pub outcome: UsageSettlementOutcome,
 }
 
 #[derive(FromRow)]
@@ -381,6 +415,20 @@ struct DebitReservation {
     restore_on_service_failure: bool,
 }
 
+#[derive(FromRow)]
+struct OperationRow {
+    id: String,
+    notary_instance_id: String,
+    subject_id: Option<String>,
+    credit_subject: String,
+    mode: String,
+    authenticated_allowance_bytes: Option<i64>,
+    max_attestable_http_bytes: i64,
+    admitted_at: i64,
+    terminal_outcome: Option<String>,
+    settled_authenticated_bytes: Option<i64>,
+}
+
 pub fn router() -> OpenApiRouter<AppState> {
     OpenApiRouter::new()
         .routes(routes!(issue_admission))
@@ -390,6 +438,7 @@ pub fn router() -> OpenApiRouter<AppState> {
         .routes(routes!(redeem_admission))
         .routes(routes!(renew_lease))
         .routes(routes!(release_lease))
+        .routes(routes!(settle_usage))
 }
 
 #[utoipa::path(
@@ -452,7 +501,8 @@ async fn credit_history(
                     source_kind::TEXT AS source_kind,
                     COALESCE(display_label, 'Credits') AS display_label,
                     created_at, expires_at
-             FROM notary_credit_grants WHERE credit_subject = $1
+             FROM notary_credit_grants
+             WHERE credit_subject = $1 AND source_kind <> 'operation_overage'
              UNION ALL
              SELECT id, 'debit'::TEXT AS kind, credit_kind, allowance_bytes AS amount_bytes,
                     NULL::TEXT AS source_kind,
@@ -1098,6 +1148,31 @@ async fn redeem_one_operation(
         now,
     )
     .await?;
+    let ticket_token_hash = sha256_hex(request.ticket.as_bytes());
+    let operation_id = request.usage_settlement.then(|| Uuid::new_v4().to_string());
+    if let Some(operation_id) = operation_id.as_deref() {
+        sqlx::query(
+            "INSERT INTO notary_admission_operations
+                 (id, ticket_token_hash, notary_instance_id, subject_id, credit_subject,
+                  access_pool, mode, record_digest, authenticated_allowance_bytes,
+                  max_attestable_http_bytes, admitted_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+        )
+        .bind(operation_id)
+        .bind(&ticket_token_hash)
+        .bind(&request.notary_instance_id)
+        .bind(ticket.subject_id.as_deref())
+        .bind(&ticket.credit_subject)
+        .bind(pool.as_str())
+        .bind(request.mode.as_str())
+        .bind(ticket.record_digest.as_deref())
+        .bind(ticket.authenticated_allowance_bytes)
+        .bind(ticket.max_attestable_http_bytes)
+        .bind(now)
+        .execute(&mut *transaction)
+        .await
+        .map_err(database_error)?;
+    }
     let updated = sqlx::query(
         "UPDATE notary_admission_tickets
          SET consumed_at = $1, consumed_by_instance = $2
@@ -1105,7 +1180,7 @@ async fn redeem_one_operation(
     )
     .bind(now)
     .bind(&request.notary_instance_id)
-    .bind(sha256_hex(request.ticket.as_bytes()))
+    .bind(ticket_token_hash)
     .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
@@ -1115,6 +1190,7 @@ async fn redeem_one_operation(
     transaction.commit().await.map_err(database_error)?;
     metrics::counter!("llm_notary_admission_operations_total", "pool" => pool.as_str(), "mode" => request.mode.as_str(), "outcome" => "admitted").increment(1);
     Ok(RedeemedOperationResponse {
+        operation_id,
         max_attestable_http_bytes: ticket.max_attestable_http_bytes,
         max_frame_bytes: ticket.max_frame_bytes,
         max_private_chunk_bytes: ticket.max_private_chunk_bytes,
@@ -1428,6 +1504,305 @@ async fn restore_purchased_credits_for_service_failure(
         },
     )
     .await?;
+    Ok(())
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/internal/notary/operations/settle",
+    summary = "Settle authoritative byte usage for one admitted operation",
+    request_body = UsageSettlementRequest,
+    responses(
+        (status = 204, description = "Usage settled or identical report already applied"),
+        (status = 400, body = ErrorResponse),
+        (status = 401, body = ErrorResponse),
+        (status = 409, body = ErrorResponse),
+        (status = 410, body = ErrorResponse),
+        (status = 500, body = ErrorResponse)
+    ),
+    security(("serviceBearer" = [])),
+    tag = "notary-admission"
+)]
+async fn settle_usage(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<UsageSettlementRequest>,
+) -> ApiResult<StatusCode> {
+    authenticate_service(&state, &headers)?;
+    validate_opaque(&request.operation_id, 128, "invalid operation identifier")?;
+    validate_opaque(
+        &request.notary_instance_id,
+        MAX_INSTANCE_ID_BYTES,
+        "invalid notary instance identifier",
+    )?;
+    if request.authenticated_bytes < 0 {
+        return Err(ApiError::bad_request(
+            "authenticated usage must not be negative",
+        ));
+    }
+    let now = unix_timestamp()?;
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    admission_lock(&mut transaction).await?;
+    let operation = sqlx::query_as::<_, OperationRow>(
+        "SELECT id, notary_instance_id, subject_id, credit_subject, mode,
+                authenticated_allowance_bytes, max_attestable_http_bytes, admitted_at,
+                terminal_outcome, settled_authenticated_bytes
+         FROM notary_admission_operations WHERE id = $1 FOR UPDATE",
+    )
+    .bind(&request.operation_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(database_error)?
+    .ok_or_else(|| ApiError::gone("admitted operation is unknown"))?;
+    if operation.notary_instance_id != request.notary_instance_id
+        || operation.mode != request.mode.as_str()
+    {
+        return Err(ApiError::conflict(
+            "usage report does not match the admitted operation",
+        ));
+    }
+    validate_settlement_bytes(&operation, &request)?;
+    if let Some(previous_outcome) = operation.terminal_outcome.as_deref() {
+        return if previous_outcome == request.outcome.as_str()
+            && operation.settled_authenticated_bytes == Some(request.authenticated_bytes)
+        {
+            transaction.commit().await.map_err(database_error)?;
+            Ok(StatusCode::NO_CONTENT)
+        } else {
+            Err(ApiError::conflict(
+                "operation usage was already settled with different data",
+            ))
+        };
+    }
+    if request.authenticated_bytes > 0 {
+        record_operation_debit(&mut transaction, &operation, request.authenticated_bytes).await?;
+    }
+    sqlx::query(
+        "UPDATE notary_admission_operations
+         SET terminal_outcome = $1, settled_authenticated_bytes = $2, settled_at = $3
+         WHERE id = $4 AND terminal_outcome IS NULL",
+    )
+    .bind(request.outcome.as_str())
+    .bind(request.authenticated_bytes)
+    .bind(now)
+    .bind(&operation.id)
+    .execute(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
+    metrics::counter!(
+        "llm_notary_usage_settlements_total",
+        "mode" => request.mode.as_str(),
+        "outcome" => request.outcome.as_str()
+    )
+    .increment(1);
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn validate_settlement_bytes(
+    operation: &OperationRow,
+    request: &UsageSettlementRequest,
+) -> ApiResult<()> {
+    match request.mode {
+        AdmissionMode::Capture => {
+            if request.outcome == UsageSettlementOutcome::Completed
+                && request.authenticated_bytes > operation.max_attestable_http_bytes
+            {
+                return Err(ApiError::bad_request(
+                    "completed capture usage exceeds the admitted protocol limit",
+                ));
+            }
+        }
+        AdmissionMode::Finalize => {
+            let allowance = operation.authenticated_allowance_bytes.ok_or_else(|| {
+                ApiError::internal(anyhow::anyhow!(
+                    "finalization operation is missing its authenticated allowance"
+                ))
+            })?;
+            if request.authenticated_bytes != 0 && request.authenticated_bytes != allowance {
+                return Err(ApiError::bad_request(
+                    "finalization usage does not match its authenticated allowance",
+                ));
+            }
+            if request.outcome == UsageSettlementOutcome::Completed
+                && request.authenticated_bytes != allowance
+            {
+                return Err(ApiError::bad_request(
+                    "completed finalization usage must match its authenticated allowance",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn record_operation_debit(
+    transaction: &mut Transaction<'_, Postgres>,
+    operation: &OperationRow,
+    authenticated_bytes: i64,
+) -> ApiResult<()> {
+    let credit_kind = match operation.mode.as_str() {
+        "capture" => CreditKind::Capture,
+        "finalize" => CreditKind::Notarization,
+        _ => {
+            return Err(ApiError::internal(anyhow::anyhow!(
+                "invalid operation mode"
+            )));
+        }
+    };
+    let grants = settlement_grants(
+        transaction,
+        &operation.credit_subject,
+        credit_kind,
+        operation.admitted_at,
+    )
+    .await?;
+    if grants.is_empty() {
+        return Err(ApiError::internal(anyhow::anyhow!(
+            "admitted operation has no credit grant"
+        )));
+    }
+    let debit_id = Uuid::new_v4().to_string();
+    // Preserve the legacy debit digest uniqueness contract for rollbackable
+    // API images. The real finalization digest remains bound on the operation;
+    // this ledger identity is deliberately unique to the admitted operation.
+    let record_digest = sha256_hex(format!("operation-debit:{}", operation.id).as_bytes());
+    sqlx::query(
+        "INSERT INTO notary_credit_debits
+             (id, credit_subject, account_id, credit_kind, record_digest,
+              allowance_bytes, created_at, operation_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+    )
+    .bind(&debit_id)
+    .bind(&operation.credit_subject)
+    .bind(operation.subject_id.as_deref())
+    .bind(credit_kind.as_str())
+    .bind(record_digest)
+    .bind(authenticated_bytes)
+    .bind(operation.admitted_at)
+    .bind(&operation.id)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    allocate_settled_usage(
+        transaction,
+        &debit_id,
+        authenticated_bytes,
+        &grants,
+        operation,
+        credit_kind,
+    )
+    .await
+}
+
+async fn settlement_grants(
+    transaction: &mut Transaction<'_, Postgres>,
+    credit_subject: &str,
+    credit_kind: CreditKind,
+    admitted_at: i64,
+) -> ApiResult<Vec<(String, i64, Option<i64>)>> {
+    sqlx::query_as::<_, (String, i64, Option<i64>)>(
+        "SELECT grants.id,
+                grants.amount_bytes - COALESCE((
+                    SELECT SUM(allocations.amount_bytes)
+                    FROM notary_credit_debit_allocations AS allocations
+                    WHERE allocations.grant_id = grants.id
+                ), 0)::BIGINT AS remaining_bytes,
+                grants.expires_at
+         FROM notary_credit_grants AS grants
+         WHERE grants.credit_subject = $1 AND grants.credit_kind = $2
+           AND grants.source_kind <> 'operation_overage'
+           AND grants.available_at <= $3
+           AND (grants.expires_at IS NULL OR grants.expires_at > $3)
+         ORDER BY grants.expires_at ASC NULLS LAST, grants.available_at,
+                  grants.created_at, grants.id
+         FOR UPDATE OF grants",
+    )
+    .bind(credit_subject)
+    .bind(credit_kind.as_str())
+    .bind(admitted_at)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(database_error)
+}
+
+async fn allocate_settled_usage(
+    transaction: &mut Transaction<'_, Postgres>,
+    debit_id: &str,
+    authenticated_bytes: i64,
+    grants: &[(String, i64, Option<i64>)],
+    operation: &OperationRow,
+    credit_kind: CreditKind,
+) -> ApiResult<()> {
+    let mut remaining = authenticated_bytes;
+    let mut allocated_grants = Vec::new();
+    for (grant_id, available, _) in grants {
+        if remaining == 0 {
+            break;
+        }
+        let allocated = remaining.min((*available).max(0));
+        if allocated == 0 {
+            continue;
+        }
+        let order = i32::try_from(allocated_grants.len()).map_err(|_| {
+            ApiError::internal(anyhow::anyhow!("too many credit grant allocations"))
+        })?;
+        sqlx::query(
+            "INSERT INTO notary_credit_debit_allocations
+                 (debit_id, grant_id, amount_bytes, allocation_order)
+             VALUES ($1, $2, $3, $4)",
+        )
+        .bind(debit_id)
+        .bind(grant_id)
+        .bind(allocated)
+        .bind(order)
+        .execute(&mut **transaction)
+        .await
+        .map_err(database_error)?;
+        allocated_grants.push(grant_id.clone());
+        remaining -= allocated;
+    }
+    if remaining == 0 {
+        return Ok(());
+    }
+    let overage_expires_at = grants
+        .last()
+        .map(|(_, _, expires_at)| *expires_at)
+        .ok_or_else(|| ApiError::internal(anyhow::anyhow!("usage allocation has no grant")))?;
+    let overage_grant_id = Uuid::new_v4().to_string();
+    let overage_reference = format!("operation-overage:{}", operation.id);
+    sqlx::query(
+        "INSERT INTO notary_credit_grants
+             (id, credit_subject, account_id, credit_kind, amount_bytes, source_kind,
+              source_reference, idempotency_key, created_at, available_at, expires_at,
+              display_label)
+         VALUES ($1, $2, $3, $4, 0, 'operation_overage', $5, $5, $6, $6, $7,
+                 'Hosted usage overage')",
+    )
+    .bind(&overage_grant_id)
+    .bind(&operation.credit_subject)
+    .bind(operation.subject_id.as_deref())
+    .bind(credit_kind.as_str())
+    .bind(&overage_reference)
+    .bind(operation.admitted_at)
+    .bind(overage_expires_at)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
+    let order = i32::try_from(allocated_grants.len())
+        .map_err(|_| ApiError::internal(anyhow::anyhow!("too many credit grant allocations")))?;
+    sqlx::query(
+        "INSERT INTO notary_credit_debit_allocations
+             (debit_id, grant_id, amount_bytes, allocation_order)
+         VALUES ($1, $2, $3, $4)",
+    )
+    .bind(debit_id)
+    .bind(overage_grant_id)
+    .bind(remaining)
+    .bind(order)
+    .execute(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     Ok(())
 }
 
@@ -1868,18 +2243,12 @@ async fn ensure_monthly_grant(
     .await
     .map_err(database_error)?;
     if let Some((grant_id, current_amount)) = existing {
-        let used: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(amount_bytes), 0)::BIGINT
-             FROM notary_credit_debit_allocations WHERE grant_id = $1",
-        )
-        .bind(&grant_id)
-        .fetch_one(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-        let reconciled_amount = monthly_bytes.max(used);
-        if reconciled_amount != current_amount {
+        // Settled allocations may exceed a grant because admission does not
+        // reserve bytes. Keep the configured allowance authoritative so the
+        // resulting negative balance remains visible and blocks new tickets.
+        if monthly_bytes != current_amount {
             sqlx::query("UPDATE notary_credit_grants SET amount_bytes = $1 WHERE id = $2")
-                .bind(reconciled_amount)
+                .bind(monthly_bytes)
                 .bind(grant_id)
                 .execute(&mut **transaction)
                 .await
@@ -2051,16 +2420,7 @@ async fn debit_credits(
         });
     }
     let grants = available_grants(transaction, &credit_subject, credit_kind, now).await?;
-    let available = grants
-        .iter()
-        .fold(0_i64, |total, (_, remaining)| {
-            total.saturating_add(*remaining)
-        })
-        .saturating_add(if credit_kind == CreditKind::Notarization {
-            credit_adjustment_total(&mut **transaction, &credit_subject).await?
-        } else {
-            0
-        });
+    let available = available_credit_bytes(transaction, &credit_subject, credit_kind, now).await?;
     if available < ticket.requested_allowance_bytes {
         return Err(ApiError::coded(
             StatusCode::PAYMENT_REQUIRED,
@@ -2143,17 +2503,31 @@ async fn available_credit_bytes(
     credit_kind: CreditKind,
     now: i64,
 ) -> ApiResult<i64> {
+    let grant_balance: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(
+                    grants.amount_bytes - COALESCE((
+                        SELECT SUM(allocations.amount_bytes)
+                        FROM notary_credit_debit_allocations AS allocations
+                        WHERE allocations.grant_id = grants.id
+                    ), 0)
+                ), 0)::BIGINT
+         FROM notary_credit_grants AS grants
+         WHERE grants.credit_subject = $1 AND grants.credit_kind = $2
+           AND grants.available_at <= $3
+           AND (grants.expires_at IS NULL OR grants.expires_at > $3)",
+    )
+    .bind(credit_subject)
+    .bind(credit_kind.as_str())
+    .bind(now)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(database_error)?;
     Ok(
-        available_grants(transaction, credit_subject, credit_kind, now)
-            .await?
-            .iter()
-            .map(|(_, remaining)| *remaining)
-            .sum::<i64>()
-            .saturating_add(if credit_kind == CreditKind::Notarization {
-                credit_adjustment_total(&mut **transaction, credit_subject).await?
-            } else {
-                0
-            }),
+        grant_balance.saturating_add(if credit_kind == CreditKind::Notarization {
+            credit_adjustment_total(&mut **transaction, credit_subject).await?
+        } else {
+            0
+        }),
     )
 }
 
@@ -2320,9 +2694,7 @@ async fn credit_balance_summary(
             (gross_included_remaining_bytes, adjusted_supplemental_bytes)
         } else {
             (
-                gross_included_remaining_bytes
-                    .saturating_add(adjusted_supplemental_bytes)
-                    .max(0),
+                gross_included_remaining_bytes.saturating_add(adjusted_supplemental_bytes),
                 0,
             )
         };
@@ -2975,7 +3347,8 @@ mod tests {
         };
         let first = issue_capture().await.unwrap().0;
         let second = issue_capture().await.unwrap().0;
-        let redeem = |ticket: String, instance: &'static str| {
+        let compatibility = issue_capture().await.unwrap().0;
+        let redeem = |ticket: String, instance: &'static str, usage_settlement| {
             redeem_admission(
                 State(state.clone()),
                 service_headers(&state),
@@ -2985,36 +3358,384 @@ mod tests {
                     mode: AdmissionMode::Capture,
                     directory_generation: state.notary_directory.generation,
                     contract: Some(AdmissionRedemptionContract::OneOperationV1),
+                    usage_settlement,
                 }),
             )
         };
 
         let Json(RedeemAdmissionResponse::Operation(admitted)) =
-            redeem(first.ticket.clone(), "notary-one").await.unwrap()
+            redeem(first.ticket.clone(), "notary-one", true)
+                .await
+                .unwrap()
         else {
             panic!("one-operation redemption returned a lease");
         };
+        assert!(admitted.operation_id.is_some());
         assert_eq!(admitted.record_digest, None);
         assert_eq!(admitted.authenticated_allowance_bytes, None);
         assert!(matches!(
-            redeem(second.ticket, "notary-two").await.unwrap().0,
+            redeem(second.ticket, "notary-two", true).await.unwrap().0,
             RedeemAdmissionResponse::Operation(_)
         ));
-        let replay = match redeem(first.ticket, "notary-three").await {
+        let Json(RedeemAdmissionResponse::Operation(compatibility)) =
+            redeem(compatibility.ticket, "notary-compatibility", false)
+                .await
+                .unwrap()
+        else {
+            panic!("one-operation redemption returned a lease");
+        };
+        assert_eq!(compatibility.operation_id, None);
+        let replay = match redeem(first.ticket, "notary-three", true).await {
             Ok(_) => panic!("one-operation ticket replay was admitted"),
             Err(error) => error,
         };
         assert_eq!(replay.status, StatusCode::CONFLICT);
 
-        let (leases, debits): (i64, i64) = sqlx::query_as(
+        let (leases, debits, operations): (i64, i64, i64) = sqlx::query_as(
             "SELECT
                  (SELECT COUNT(*) FROM notary_admission_leases),
-                 (SELECT COUNT(*) FROM notary_credit_debits)",
+                 (SELECT COUNT(*) FROM notary_credit_debits),
+                 (SELECT COUNT(*) FROM notary_admission_operations)",
         )
         .fetch_one(&state.database)
         .await
         .unwrap();
-        assert_eq!((leases, debits), (0, 0));
+        assert_eq!((leases, debits, operations), (0, 0, 2));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn settlement_is_idempotent_and_charges_admitted_capture_overage() {
+        let mut state = test_state().await;
+        let mut admission = AdmissionConfig::for_test();
+        admission.public.monthly_capture_bytes = 10;
+        admission.public.max_attestable_http_bytes = 10;
+        state.admission = std::sync::Arc::new(admission);
+        let ticket = issue_admission(
+            State(state.clone()),
+            test_peer(),
+            HeaderMap::new(),
+            Json(IssueAdmissionRequest {
+                mode: AdmissionMode::Capture,
+                record_digest: None,
+                requested_allowance_bytes: None,
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let Json(RedeemAdmissionResponse::Operation(operation)) = redeem_admission(
+            State(state.clone()),
+            service_headers(&state),
+            Json(RedeemAdmissionRequest {
+                ticket: ticket.ticket,
+                notary_instance_id: "notary-overage".to_owned(),
+                mode: AdmissionMode::Capture,
+                directory_generation: ticket.directory_generation,
+                contract: Some(AdmissionRedemptionContract::OneOperationV1),
+                usage_settlement: true,
+            }),
+        )
+        .await
+        .unwrap() else {
+            panic!("one-operation redemption returned a lease");
+        };
+        let operation_id = operation
+            .operation_id
+            .expect("usage-capable redemption returns an operation ID");
+        let report = || UsageSettlementRequest {
+            operation_id: operation_id.clone(),
+            notary_instance_id: "notary-overage".to_owned(),
+            mode: AdmissionMode::Capture,
+            authenticated_bytes: 11,
+            outcome: UsageSettlementOutcome::ClientFailed,
+        };
+
+        assert_eq!(
+            settle_usage(
+                State(state.clone()),
+                service_headers(&state),
+                Json(report()),
+            )
+            .await
+            .unwrap(),
+            StatusCode::NO_CONTENT
+        );
+        assert_eq!(
+            settle_usage(
+                State(state.clone()),
+                service_headers(&state),
+                Json(report()),
+            )
+            .await
+            .unwrap(),
+            StatusCode::NO_CONTENT
+        );
+        let (debits, charged): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*)::BIGINT, COALESCE(SUM(allowance_bytes), 0)::BIGINT
+             FROM notary_credit_debits WHERE operation_id = $1",
+        )
+        .bind(&operation_id)
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!((debits, charged), (1, 11));
+        let credit_subject: String = sqlx::query_scalar(
+            "SELECT credit_subject FROM notary_admission_operations WHERE id = $1",
+        )
+        .bind(&operation_id)
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        let balances: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT grants.source_kind,
+                    grants.amount_bytes - COALESCE(SUM(allocations.amount_bytes), 0)::BIGINT
+             FROM notary_credit_grants AS grants
+             LEFT JOIN notary_credit_debit_allocations AS allocations
+               ON allocations.grant_id = grants.id
+             WHERE grants.credit_subject = $1 AND grants.credit_kind = 'capture'
+             GROUP BY grants.id
+             ORDER BY grants.source_kind",
+        )
+        .bind(&credit_subject)
+        .fetch_all(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(
+            balances,
+            vec![
+                ("included_monthly".to_owned(), 0),
+                ("operation_overage".to_owned(), -1),
+            ]
+        );
+        let credits = credit_summary(&state.database, &credit_subject, unix_timestamp().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(credits.capture.total_remaining_bytes, -1);
+
+        let mut conflicting = report();
+        conflicting.authenticated_bytes = 10;
+        assert_eq!(
+            settle_usage(
+                State(state.clone()),
+                service_headers(&state),
+                Json(conflicting),
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::CONFLICT
+        );
+        let mut conflicting = report();
+        conflicting.mode = AdmissionMode::Finalize;
+        assert_eq!(
+            settle_usage(
+                State(state.clone()),
+                service_headers(&state),
+                Json(conflicting),
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::CONFLICT
+        );
+        let mut conflicting = report();
+        conflicting.outcome = UsageSettlementOutcome::ServiceFailed;
+        assert_eq!(
+            settle_usage(
+                State(state.clone()),
+                service_headers(&state),
+                Json(conflicting),
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::CONFLICT
+        );
+        let mut conflicting = report();
+        conflicting.notary_instance_id = "different-notary".to_owned();
+        assert_eq!(
+            settle_usage(
+                State(state.clone()),
+                service_headers(&state),
+                Json(conflicting),
+            )
+            .await
+            .unwrap_err()
+            .status,
+            StatusCode::CONFLICT
+        );
+        let unchanged: (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*)::BIGINT, COALESCE(SUM(allowance_bytes), 0)::BIGINT
+             FROM notary_credit_debits WHERE operation_id = $1",
+        )
+        .bind(&operation_id)
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(unchanged, (1, 11));
+        let denied = match issue_admission(
+            State(state.clone()),
+            test_peer(),
+            HeaderMap::new(),
+            Json(IssueAdmissionRequest {
+                mode: AdmissionMode::Capture,
+                record_digest: None,
+                requested_allowance_bytes: None,
+            }),
+        )
+        .await
+        {
+            Ok(_) => panic!("overdrawn subject must be denied"),
+            Err(error) => error,
+        };
+        assert_eq!(denied.status, StatusCode::PAYMENT_REQUIRED);
+
+        let now = unix_timestamp().unwrap();
+        sqlx::query(
+            "INSERT INTO notary_credit_grants
+                 (id, credit_subject, credit_kind, amount_bytes, source_kind,
+                  source_reference, idempotency_key, created_at, available_at, display_label)
+             VALUES ('later-insufficient', $1, 'capture', 1, 'manual_adjustment',
+                     'later-insufficient', 'later-insufficient', $2, $2, 'Later credit')",
+        )
+        .bind(&credit_subject)
+        .bind(now)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        let still_denied = match issue_admission(
+            State(state.clone()),
+            test_peer(),
+            HeaderMap::new(),
+            Json(IssueAdmissionRequest {
+                mode: AdmissionMode::Capture,
+                record_digest: None,
+                requested_allowance_bytes: None,
+            }),
+        )
+        .await
+        {
+            Ok(_) => panic!("credit that only repays overage debt must not admit a ticket"),
+            Err(error) => error,
+        };
+        assert_eq!(still_denied.status, StatusCode::PAYMENT_REQUIRED);
+
+        sqlx::query(
+            "INSERT INTO notary_credit_grants
+                 (id, credit_subject, credit_kind, amount_bytes, source_kind,
+                  source_reference, idempotency_key, created_at, available_at, display_label)
+             VALUES ('later-sufficient', $1, 'capture', 2, 'manual_adjustment',
+                     'later-sufficient', 'later-sufficient', $2, $2, 'More later credit')",
+        )
+        .bind(&credit_subject)
+        .bind(now)
+        .execute(&state.database)
+        .await
+        .unwrap();
+        let _ = issue_admission(
+            State(state.clone()),
+            test_peer(),
+            HeaderMap::new(),
+            Json(IssueAdmissionRequest {
+                mode: AdmissionMode::Capture,
+                record_digest: None,
+                requested_allowance_bytes: None,
+            }),
+        )
+        .await
+        .expect("credit beyond the outstanding debt admits a new operation");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn finalization_settlement_requires_the_bound_authenticated_allowance() {
+        let state = test_state().await;
+        let digest = "ab".repeat(32);
+        let ticket = issue_admission(
+            State(state.clone()),
+            test_peer(),
+            HeaderMap::new(),
+            Json(IssueAdmissionRequest {
+                mode: AdmissionMode::Finalize,
+                record_digest: Some(digest.clone()),
+                requested_allowance_bytes: Some(42),
+            }),
+        )
+        .await
+        .unwrap()
+        .0;
+        let Json(RedeemAdmissionResponse::Operation(operation)) = redeem_admission(
+            State(state.clone()),
+            service_headers(&state),
+            Json(RedeemAdmissionRequest {
+                ticket: ticket.ticket,
+                notary_instance_id: "notary-finalize".to_owned(),
+                mode: AdmissionMode::Finalize,
+                directory_generation: ticket.directory_generation,
+                contract: Some(AdmissionRedemptionContract::OneOperationV1),
+                usage_settlement: true,
+            }),
+        )
+        .await
+        .unwrap() else {
+            panic!("one-operation redemption returned a lease");
+        };
+        let operation_id = operation
+            .operation_id
+            .expect("usage-capable redemption returns an operation ID");
+        let invalid = settle_usage(
+            State(state.clone()),
+            service_headers(&state),
+            Json(UsageSettlementRequest {
+                operation_id: operation_id.clone(),
+                notary_instance_id: "notary-finalize".to_owned(),
+                mode: AdmissionMode::Finalize,
+                authenticated_bytes: 41,
+                outcome: UsageSettlementOutcome::Completed,
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(invalid.status, StatusCode::BAD_REQUEST);
+
+        settle_usage(
+            State(state.clone()),
+            service_headers(&state),
+            Json(UsageSettlementRequest {
+                operation_id: operation_id.clone(),
+                notary_instance_id: "notary-finalize".to_owned(),
+                mode: AdmissionMode::Finalize,
+                authenticated_bytes: 42,
+                outcome: UsageSettlementOutcome::ClientFailed,
+            }),
+        )
+        .await
+        .unwrap();
+        let (charged, debit_digest): (i64, String) = sqlx::query_as(
+            "SELECT allowance_bytes, record_digest
+             FROM notary_credit_debits WHERE operation_id = $1",
+        )
+        .bind(operation_id)
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(charged, 42, "measured failed operations are still charged");
+        assert_ne!(
+            debit_digest, digest,
+            "operation debits must preserve the rollback-era digest uniqueness contract"
+        );
+        let legacy_digest_unique: bool = sqlx::query_scalar(
+            "SELECT EXISTS(
+                 SELECT 1 FROM pg_constraint
+                 WHERE conrelid = 'notary_credit_debits'::regclass
+                   AND conname = 'notary_credit_debits_subject_kind_digest_key'
+             )",
+        )
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert!(legacy_digest_unique);
     }
 
     #[tokio::test]
@@ -3040,6 +3761,7 @@ mod tests {
             mode,
             directory_generation: capture.directory_generation,
             contract: Some(AdmissionRedemptionContract::OneOperationV1),
+            usage_settlement: true,
         };
         let wrong_mode = match redeem_admission(
             State(state.clone()),
@@ -3127,6 +3849,7 @@ mod tests {
                     mode: AdmissionMode::Capture,
                     directory_generation: state.notary_directory.generation,
                     contract: None,
+                    usage_settlement: false,
                 }),
             )
         };
@@ -3247,6 +3970,7 @@ mod tests {
                     mode: AdmissionMode::Capture,
                     directory_generation: state.notary_directory.generation,
                     contract: None,
+                    usage_settlement: false,
                 }),
             )
         };
@@ -3388,6 +4112,7 @@ mod tests {
                     mode: AdmissionMode::Capture,
                     directory_generation: global_state.notary_directory.generation,
                     contract: None,
+                    usage_settlement: false,
                 }),
             )
         };
@@ -3522,6 +4247,7 @@ mod tests {
                     mode: AdmissionMode::Finalize,
                     directory_generation: state.notary_directory.generation,
                     contract: None,
+                    usage_settlement: false,
                 }),
             )
             .await
@@ -3602,6 +4328,7 @@ mod tests {
                     mode: AdmissionMode::Finalize,
                     directory_generation: state.notary_directory.generation,
                     contract: None,
+                    usage_settlement: false,
                 }),
             )
         };
@@ -4112,6 +4839,7 @@ mod tests {
                 mode: AdmissionMode::Capture,
                 directory_generation: paid_ticket.directory_generation,
                 contract: None,
+                usage_settlement: false,
             }),
         )
         .await

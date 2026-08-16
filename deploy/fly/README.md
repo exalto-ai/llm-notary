@@ -150,6 +150,14 @@ compatibility paths only in the tracked contract migration after old API/notary
 images are outside the rollback window and legacy leases/outboxes are drained;
 the removal checklist is tracked in [#298](https://github.com/exalto-ai/notary/issues/298).
 
+Migration `0027_operation_usage_settlement.sql` adds durable admitted-operation
+and settlement state and links each new debit to its operation ID while
+preserving the legacy digest-idempotency contract during the rollback window.
+Deploy it with the matching API and notary images. Keep the notary's
+`notary_data` volume: `/data/usage-outbox` retains measured usage until the
+private settlement endpoint acknowledges it, including across Machine restarts
+or coordinator outages.
+
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private
 `llm-notary-prod-api.flycast` origin with the `one_operation_v1` contract before
@@ -159,7 +167,12 @@ limits and timeouts. During the rollback window only, an old API may return a
 lease instead; the bridge notary renews and releases that legacy admission from
 its durable release outbox. Public and signed-in Free sessions share this path;
 their credit subjects determine which grants fund capture and notarization.
-The reusable browser/CLI credential stays between the local daemon and API.
+At the end of the operation, the notary reports the redeemed operation ID,
+mode, terminal outcome, instance, and authoritative authenticated bytes through
+the same service-authenticated private API. The redeem request advertises this
+durable-settlement capability so an older notary cannot leave an operation row
+that it does not know how to settle during an API-first rollout. The reusable
+browser/CLI credential and raw admission ticket stay out of that report.
 
 Preserve the existing notary directory so finalized packages continue to use
 the same timestamp-scoped trust history. Ongoing PostgreSQL and Neon operations

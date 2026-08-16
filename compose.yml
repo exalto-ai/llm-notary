@@ -114,6 +114,7 @@ services:
       LLM_NOTARY_RELEASE_OUTBOX_DIR: /var/lib/llm-notary/release-outbox
       LLM_NOTARY_NOTARY_DIRECTORY_GENERATION: ${LLM_NOTARY_NOTARY_DIRECTORY_GENERATION:-1}
       LLM_NOTARY_INSTANCE_ID: ${LLM_NOTARY_INSTANCE_ID:-notary-compose-1}
+      LLM_NOTARY_USAGE_OUTBOX_DIR: /var/lib/llm-notary/usage-outbox
       # Internal-only scrape endpoint. Do not publish it through the gateway.
       LLM_NOTARY_METRICS_LISTEN: 0.0.0.0:9090
     ports:

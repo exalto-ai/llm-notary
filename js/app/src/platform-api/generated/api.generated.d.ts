@@ -328,6 +328,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/internal/notary/operations/settle": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Settle authoritative byte usage for one admitted operation */
+        post: operations["settle_usage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/me": {
         parameters: {
             query?: never;
@@ -1040,12 +1057,12 @@ export interface components {
         NotaryStats: {
             /**
              * Format: int64
-             * @description Admitted capture operations.
+             * @description Successfully completed capture operations.
              */
             captures: number;
             /**
              * Format: int64
-             * @description Admitted finalization operations.
+             * @description Successfully completed finalization operations.
              */
             finalizations: number;
         };
@@ -1203,6 +1220,12 @@ export interface components {
             mode: components["schemas"]["AdmissionMode"];
             notary_instance_id: string;
             ticket: string;
+            /**
+             * @description The caller durably settles usage by operation ID. Older bridge
+             *     notaries omit this field, so the API must not create an operation row
+             *     they cannot acknowledge.
+             */
+            usage_settlement?: boolean;
         };
         RedeemAdmissionResponse: components["schemas"]["RedeemedLeaseResponse"] | components["schemas"]["RedeemedOperationResponse"];
         RedeemedLeaseResponse: {
@@ -1233,6 +1256,7 @@ export interface components {
             max_private_chunk_bytes: number;
             /** Format: int64 */
             max_private_chunk_commitments: number;
+            operation_id?: string | null;
             record_digest?: string | null;
         };
         RefreshRequest: {
@@ -1300,6 +1324,16 @@ export interface components {
             };
             method: string;
             url: string;
+        };
+        /** @enum {string} */
+        UsageSettlementOutcome: "completed" | "client_failed" | "service_failed";
+        UsageSettlementRequest: {
+            /** Format: int64 */
+            authenticated_bytes: number;
+            mode: components["schemas"]["AdmissionMode"];
+            notary_instance_id: string;
+            operation_id: string;
+            outcome: components["schemas"]["UsageSettlementOutcome"];
         };
         VerificationResponse: {
             /** Format: int64 */
@@ -2179,6 +2213,68 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    settle_usage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UsageSettlementRequest"];
+            };
+        };
+        responses: {
+            /** @description Usage settled or identical report already applied */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
