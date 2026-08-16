@@ -99,9 +99,10 @@ jobs:
             echo "web=$(current_image llm-notary-prod-web "$WEB_TOKEN")"
           } >> "$GITHUB_OUTPUT"
 
-      # Deploy the admission API before the notary that calls it. The new API
-      # remains compatible with the existing gateway and notary; the new
-      # notary intentionally requires v3 admission tickets.
+      # Deploy the dual-contract admission API before the notary that calls it.
+      # A missing redemption capability follows the previous lease contract;
+      # the bridge notary explicitly requests one-operation admission and can
+      # still honor a lease response if this API is rolled back.
       - name: Deploy API image
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_DEPLOY_TOKEN }}
@@ -127,7 +128,7 @@ jobs:
             --config deploy/fly/notary.fly.toml
       # Deliberately present a capture ticket as a finalization. The notary
       # must reach the authenticated coordinator and return admission_denied,
-      # but it must not acquire a lease or consume production capacity.
+      # but it must not admit the operation or consume the ticket.
       - name: Verify v3 TLS notary admission control
         run: |
           python3 - <<'PY'

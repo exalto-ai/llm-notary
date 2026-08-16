@@ -59,6 +59,7 @@ struct RedeemRequest<'a> {
     notary_instance_id: &'a str,
     mode: &'static str,
     directory_generation: u64,
+    contract: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -71,6 +72,26 @@ struct RedeemedLease {
     max_private_chunk_commitments: i64,
     record_digest: Option<String>,
     authorized_allowance_bytes: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RedeemedOperation {
+    #[serde(default, rename = "operation_id")]
+    _operation_id: Option<String>,
+    max_attestable_http_bytes: i64,
+    max_frame_bytes: i64,
+    max_private_chunk_bytes: i64,
+    max_private_chunk_commitments: i64,
+    record_digest: Option<String>,
+    authenticated_allowance_bytes: Option<i64>,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum RedeemedAdmission {
+    Operation(RedeemedOperation),
+    Lease(RedeemedLease),
 }
 
 #[derive(Serialize)]
@@ -522,7 +543,7 @@ impl AdmissionCoordinator {
         &self,
         ticket: &str,
         mode: NotarySessionMode,
-    ) -> std::result::Result<RedeemedLease, CoordinatorRejection> {
+    ) -> std::result::Result<RedeemedAdmission, CoordinatorRejection> {
         let url = self
             .endpoint("/api/internal/notary/admissions/redeem")
             .map_err(CoordinatorRejection::Unavailable)?;
@@ -535,6 +556,7 @@ impl AdmissionCoordinator {
                 notary_instance_id: self.instance_id.as_ref(),
                 mode: session_mode_label(mode),
                 directory_generation: self.directory_generation,
+                contract: "one_operation_v1",
             })
             .send()
             .await
@@ -1291,8 +1313,8 @@ pub async fn run() -> Result<()> {
             let ticket = prelude
                 .admission_ticket()
                 .expect("hosted prelude always has a ticket");
-            let lease = match admission.redeem(ticket, mode).await {
-                Ok(lease) => lease,
+            let redeemed = match admission.redeem(ticket, mode).await {
+                Ok(redeemed) => redeemed,
                 Err(rejection) => {
                     let rejection = match rejection {
                         CoordinatorRejection::Capacity => match mode {
@@ -1324,9 +1346,24 @@ pub async fn run() -> Result<()> {
                     return;
                 }
             };
+            let (operation, legacy_lease) = match redeemed {
+                RedeemedAdmission::Operation(operation) => (operation, None),
+                RedeemedAdmission::Lease(lease) => {
+                    let operation = RedeemedOperation {
+                        _operation_id: None,
+                        max_attestable_http_bytes: lease.max_attestable_http_bytes,
+                        max_frame_bytes: lease.max_frame_bytes,
+                        max_private_chunk_bytes: lease.max_private_chunk_bytes,
+                        max_private_chunk_commitments: lease.max_private_chunk_commitments,
+                        record_digest: lease.record_digest.clone(),
+                        authenticated_allowance_bytes: Some(lease.authorized_allowance_bytes),
+                    };
+                    (operation, Some(lease))
+                }
+            };
             let limits = match effective_hosted_limits(
                 mode,
-                &lease,
+                &operation,
                 session_timeout,
                 max_private_chunk_bytes,
                 max_total_private_chunk_bytes,
@@ -1336,9 +1373,11 @@ pub async fn run() -> Result<()> {
                 Ok(limits) => limits,
                 Err(error) => {
                     tracing::error!(%error, "coordinator returned invalid notary limits");
-                    let _ = admission
-                        .settle(&lease.lease_id, LeaseCompletionOutcome::ServiceFailed, None)
-                        .await;
+                    if let Some(lease) = legacy_lease.as_ref() {
+                        let _ = admission
+                            .settle(&lease.lease_id, LeaseCompletionOutcome::ServiceFailed, None)
+                            .await;
+                    }
                     let _ = write_notary_admission(
                         &mut stream,
                         &prelude,
@@ -1349,27 +1388,32 @@ pub async fn run() -> Result<()> {
                 }
             };
             let effective_session_timeout = limits.session_timeout;
-            let lease_deadline = match lease_deadline(lease.lease_expires_at) {
-                Ok(deadline) => deadline,
-                Err(error) => {
-                    tracing::error!(%error, "coordinator returned an expired notary lease");
-                    let _ = admission
-                        .settle(&lease.lease_id, LeaseCompletionOutcome::ServiceFailed, None)
+            let legacy_lease_deadline = match legacy_lease.as_ref() {
+                Some(lease) => match lease_deadline(lease.lease_expires_at) {
+                    Ok(deadline) => Some(deadline),
+                    Err(error) => {
+                        tracing::error!(%error, "coordinator returned an expired notary lease");
+                        let _ = admission
+                            .settle(&lease.lease_id, LeaseCompletionOutcome::ServiceFailed, None)
+                            .await;
+                        let _ = write_notary_admission(
+                            &mut stream,
+                            &prelude,
+                            Err(NotaryAdmissionRejection::CoordinatorUnavailable),
+                        )
                         .await;
-                    let _ = write_notary_admission(
-                        &mut stream,
-                        &prelude,
-                        Err(NotaryAdmissionRejection::CoordinatorUnavailable),
-                    )
-                    .await;
-                    return;
-                }
+                        return;
+                    }
+                },
+                None => None,
             };
             if let Err(error) = write_notary_admission(&mut stream, &prelude, Ok(())).await {
                 tracing::debug!(%error, "could not send notary admission acceptance");
-                let _ = admission
-                    .settle(&lease.lease_id, LeaseCompletionOutcome::ClientFailed, None)
-                    .await;
+                if let Some(lease) = legacy_lease.as_ref() {
+                    let _ = admission
+                        .settle(&lease.lease_id, LeaseCompletionOutcome::ClientFailed, None)
+                        .await;
+                }
                 return;
             }
             let max_concurrent_sessions = match mode {
@@ -1386,20 +1430,25 @@ pub async fn run() -> Result<()> {
             );
             let profile = profile_sessions.then(|| SessionProfile::start(mode));
             let capture_settlement_recorder: Option<HostedCaptureSettlementRecorder> =
-                (mode == NotarySessionMode::Capture).then(|| {
-                    let admission = admission.clone();
-                    let lease_id = lease.lease_id.clone();
-                    Box::new(move |authenticated_transcript_bytes| {
-                        let used_allowance_bytes = i64::try_from(authenticated_transcript_bytes)
-                            .context("hosted transcript byte count exceeds i64")?;
-                        admission.persist_release(
-                            &lease_id,
-                            LeaseCompletionOutcome::Completed,
-                            Some(used_allowance_bytes),
-                        )?;
-                        Ok(())
-                    }) as HostedCaptureSettlementRecorder
-                });
+                match (mode, legacy_lease.as_ref()) {
+                    (NotarySessionMode::Capture, Some(lease)) => {
+                        let admission = admission.clone();
+                        let lease_id = lease.lease_id.clone();
+                        Some(Box::new(move |authenticated_transcript_bytes| {
+                            let used_allowance_bytes =
+                                i64::try_from(authenticated_transcript_bytes)
+                                    .context("hosted transcript byte count exceeds i64")?;
+                            admission.persist_release(
+                                &lease_id,
+                                LeaseCompletionOutcome::Completed,
+                                Some(used_allowance_bytes),
+                            )?;
+                            Ok(())
+                        })
+                            as HostedCaptureSettlementRecorder)
+                    }
+                    _ => None,
+                };
             let session = run_hosted_notary_session_after_prelude(
                 stream,
                 mode,
@@ -1408,16 +1457,22 @@ pub async fn run() -> Result<()> {
                 limits,
                 capture_settlement_recorder,
             );
-            let lease_guard = maintain_lease(admission.clone(), &lease.lease_id, lease_deadline);
             let session_and_lease = async {
                 tokio::pin!(session);
-                tokio::pin!(lease_guard);
-                tokio::select! {
-                    result = &mut session => result,
-                    result = &mut lease_guard => {
-                        result?;
-                        bail!("admission lease guard stopped unexpectedly")
+                if let (Some(lease), Some(deadline)) =
+                    (legacy_lease.as_ref(), legacy_lease_deadline)
+                {
+                    let lease_guard = maintain_lease(admission.clone(), &lease.lease_id, deadline);
+                    tokio::pin!(lease_guard);
+                    tokio::select! {
+                        result = &mut session => result,
+                        result = &mut lease_guard => {
+                            result?;
+                            bail!("admission lease guard stopped unexpectedly")
+                        }
                     }
+                } else {
+                    session.await
                 }
             };
             let result = timeout(effective_session_timeout, session_and_lease)
@@ -1453,9 +1508,10 @@ pub async fn run() -> Result<()> {
             if let Some(profile) = profile {
                 profile.finish(outcome).await;
             }
-            if let Err(error) = admission
-                .settle(&lease.lease_id, lease_outcome, used_allowance_bytes)
-                .await
+            if let Some(lease) = legacy_lease.as_ref()
+                && let Err(error) = admission
+                    .settle(&lease.lease_id, lease_outcome, used_allowance_bytes)
+                    .await
             {
                 counter!("llm_notary_notary_lease_release_failures_total", "mode" => session_mode_label(mode)).increment(1);
                 tracing::warn!(%error, "admission lease release queued for durable retry");
@@ -1481,7 +1537,7 @@ async fn metrics() -> impl IntoResponse {
 
 fn effective_hosted_limits(
     mode: NotarySessionMode,
-    lease: &RedeemedLease,
+    operation: &RedeemedOperation,
     local_session_timeout: Duration,
     local_max_private_chunk_bytes: usize,
     local_max_total_private_chunk_bytes: usize,
@@ -1497,43 +1553,58 @@ fn effective_hosted_limits(
             .with_context(|| format!("coordinator {name} does not fit in usize"))
     };
     let max_private_chunk_bytes =
-        positive("max_private_chunk_bytes", lease.max_private_chunk_bytes)?
+        positive("max_private_chunk_bytes", operation.max_private_chunk_bytes)?
             .min(local_max_private_chunk_bytes);
-    let authorized_allowance = positive(
-        "authorized_allowance_bytes",
-        lease.authorized_allowance_bytes,
+    let policy_attestable = positive(
+        "max_attestable_http_bytes",
+        operation.max_attestable_http_bytes,
     )?;
-    let policy_attestable = positive("max_attestable_http_bytes", lease.max_attestable_http_bytes)?;
-    if authorized_allowance > policy_attestable {
+    let (expected_record_digest, authenticated_allowance) =
+        match (
+            mode,
+            operation.record_digest.as_deref(),
+            operation.authenticated_allowance_bytes,
+        ) {
+            // A legacy API includes its balance-bounded lease allowance here. The
+            // bridge honors it only while that API is active; one-operation capture
+            // responses carry no authenticated byte grant.
+            (NotarySessionMode::Capture, None, legacy_allowance) => (
+                None,
+                legacy_allowance
+                    .map(|allowance| positive("authorized_allowance_bytes", allowance))
+                    .transpose()?
+                    .unwrap_or(policy_attestable),
+            ),
+            (NotarySessionMode::Finalize, Some(digest), Some(allowance)) => {
+                let bytes = hex::decode(digest).context("coordinator record digest is not hex")?;
+                let allowance = positive("authenticated_allowance_bytes", allowance)?;
+                (
+                    Some(bytes.try_into().map_err(|_| {
+                        anyhow::anyhow!("coordinator record digest is not 32 bytes")
+                    })?),
+                    allowance,
+                )
+            }
+            _ => bail!("coordinator record digest does not match the session mode"),
+        };
+    if authenticated_allowance > policy_attestable {
         bail!("coordinator allowance exceeds its per-session ceiling");
     }
-    let expected_record_digest = match (mode, lease.record_digest.as_deref()) {
-        (NotarySessionMode::Capture, None) => None,
-        (NotarySessionMode::Finalize, Some(digest)) => {
-            let bytes = hex::decode(digest).context("coordinator record digest is not hex")?;
-            Some(
-                bytes
-                    .try_into()
-                    .map_err(|_| anyhow::anyhow!("coordinator record digest is not 32 bytes"))?,
-            )
-        }
-        _ => bail!("coordinator record digest does not match the session mode"),
-    };
     Ok(HostedNotarySessionLimits {
         expected_record_digest,
         expected_transcript_bytes: (mode == NotarySessionMode::Finalize)
-            .then_some(authorized_allowance),
+            .then_some(authenticated_allowance),
         session_timeout: local_session_timeout,
         max_private_chunk_bytes,
-        max_total_private_chunk_bytes: authorized_allowance
+        max_total_private_chunk_bytes: authenticated_allowance
             .min(policy_attestable)
             .min(local_max_total_private_chunk_bytes),
         max_private_chunk_commitments: positive(
             "max_private_chunk_commitments",
-            lease.max_private_chunk_commitments,
+            operation.max_private_chunk_commitments,
         )?
         .min(local_max_private_chunk_commitments),
-        max_frame_bytes: positive("max_frame_bytes", lease.max_frame_bytes)?
+        max_frame_bytes: positive("max_frame_bytes", operation.max_frame_bytes)?
             .min(local_max_frame_bytes),
     })
 }
@@ -1651,20 +1722,57 @@ mod tests {
     }
 
     #[test]
+    fn redemption_bridge_requests_one_operation_and_accepts_both_contracts() {
+        let request = serde_json::to_value(RedeemRequest {
+            ticket: "opaque-ticket",
+            notary_instance_id: "notary-test",
+            mode: "capture",
+            directory_generation: 1,
+            contract: "one_operation_v1",
+        })
+        .unwrap();
+        assert_eq!(request["contract"], "one_operation_v1");
+
+        let operation: RedeemedAdmission = serde_json::from_value(serde_json::json!({
+            "max_attestable_http_bytes": 1024,
+            "max_frame_bytes": 2048,
+            "max_private_chunk_bytes": 512,
+            "max_private_chunk_commitments": 4,
+            "record_digest": null,
+            "authenticated_allowance_bytes": null
+        }))
+        .unwrap();
+        assert!(matches!(operation, RedeemedAdmission::Operation(_)));
+
+        let lease: RedeemedAdmission = serde_json::from_value(serde_json::json!({
+            "lease_id": "legacy-lease",
+            "lease_expires_at": 1,
+            "access_pool": "free",
+            "max_attestable_http_bytes": 1024,
+            "max_frame_bytes": 2048,
+            "max_private_chunk_bytes": 512,
+            "max_private_chunk_commitments": 4,
+            "record_digest": null,
+            "authorized_allowance_bytes": 512
+        }))
+        .unwrap();
+        assert!(matches!(lease, RedeemedAdmission::Lease(_)));
+    }
+
+    #[test]
     fn coordinator_policy_can_only_reduce_local_size_limits() {
-        let lease = RedeemedLease {
-            lease_id: "lease".into(),
-            lease_expires_at: 1,
+        let operation = RedeemedOperation {
+            _operation_id: None,
             max_attestable_http_bytes: 8 << 20,
             max_frame_bytes: 64 << 20,
             max_private_chunk_bytes: 256 << 10,
             max_private_chunk_commitments: 256,
             record_digest: Some("ab".repeat(32)),
-            authorized_allowance_bytes: 8 << 20,
+            authenticated_allowance_bytes: Some(8 << 20),
         };
         let limits = effective_hosted_limits(
             NotarySessionMode::Finalize,
-            &lease,
+            &operation,
             Duration::from_secs(30),
             128 << 10,
             4 << 20,
@@ -1683,20 +1791,19 @@ mod tests {
 
     #[test]
     fn capture_policy_rejects_a_finalization_digest() {
-        let lease = RedeemedLease {
-            lease_id: "lease".into(),
-            lease_expires_at: 1,
+        let operation = RedeemedOperation {
+            _operation_id: None,
             max_attestable_http_bytes: 1024,
             max_frame_bytes: 1024,
             max_private_chunk_bytes: 1024,
             max_private_chunk_commitments: 1,
             record_digest: Some("ab".repeat(32)),
-            authorized_allowance_bytes: 1024,
+            authenticated_allowance_bytes: Some(1024),
         };
         assert!(
             effective_hosted_limits(
                 NotarySessionMode::Capture,
-                &lease,
+                &operation,
                 Duration::from_secs(30),
                 1024,
                 1024,

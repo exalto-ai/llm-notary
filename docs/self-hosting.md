@@ -194,17 +194,20 @@ scope selection, manual rotation, and a CI example.
 
 Every hosted capture or finalization obtains a short-lived one-time ticket from
 `POST /api/notary/admissions`. The notary redeems it through the internal API
-and renews a PostgreSQL-backed lease while work continues. New sessions fail
-closed if the coordinator is unavailable.
+using the `one_operation_v1` contract before beginning protocol work. New
+sessions fail closed if the coordinator is unavailable, but an admitted
+one-operation continues without any renewal call under the notary's
+process-local concurrency, size, and timeout limits.
 
-Set `LLM_NOTARY_RELEASE_OUTBOX_DIR` to a private persistent directory writable
-by the notary. It stores only lease IDs, notary instance IDs, outcomes, and byte
-counts. The notary writes a successful capture's exact count before returning
-its receipt and keeps retrying coordinator settlement across process restarts.
-The supplied Compose configuration mounts a dedicated named volume there.
+During the rolling-compatibility window, keep
+`LLM_NOTARY_RELEASE_OUTBOX_DIR` on a private persistent directory. If the API is
+rolled back and returns the previous lease response, the bridge notary preserves
+that lease's renewal and durable release lifecycle. The new contract never
+writes this outbox. Remove it only with the cleanup tracked in
+[#298](https://github.com/exalto-ai/notary/issues/298).
 
-The shared admission service token authenticates only the notary's internal
-redeem, renew, and release calls. It is never sent to local clients and is
+The shared admission service token authenticates the notary's internal redeem
+call and the temporary legacy renew/release fallback. It is never sent to local clients and is
 unrelated to provider credentials or session-sharing access tokens.
 
 Anonymous hosted allowances use a period-scoped HMAC of the canonical client

@@ -20,9 +20,8 @@ record lets Fly issue and renew the public certificate.
 
 The checked-in configuration targets the `llm-notary-prod` organization. Create
 the three apps and provision a private Flycast address for the API before the
-first deployment. Create the notary's private settlement-outbox volume once;
-it contains only lease settlement metadata and lets exact capture accounting
-survive restarts and Machine replacement:
+first deployment. Keep a private notary volume available for durable hosted
+operation state that must survive restarts and Machine replacement:
 
 ```bash
 fly volumes create notary_data --region sjc --size 1 \
@@ -51,7 +50,7 @@ Three base64-encoded file secrets are required:
 
 - `NOTARY_SIGNING_KEY_B64` on the notary.
 - `ADMISSION_SERVICE_TOKEN_B64` on both the API and notary. Use the same
-  random value in both apps; it authenticates only the notary's narrow lease
+  random value in both apps; it authenticates only the notary's narrow admission
   coordinator calls and is never sent to local clients.
 - `ANONYMOUS_SUBJECT_HMAC_KEY_B64` on the API only. It derives period-scoped
   opaque Public credit subjects and must be independent of the admission and
@@ -141,11 +140,24 @@ and matching API/notary images as one coordinated maintenance release. Migration
 `notarization` defaults; every API image kept for rollback must write
 `credit_kind` explicitly.
 
+Migration `0026_one_operation_admission.sql` is expand-only: it adds the exact
+finalization allowance binding while retaining the immediately previous ticket
+columns and lease table for rollback. The new API selects the previous lease
+contract when redemption omits a capability and the one-operation contract when
+the bridge notary sends `one_operation_v1`. The bridge notary retains lease
+renewal and its release outbox only when an old API returns a lease. Remove both
+compatibility paths only in the tracked contract migration after old API/notary
+images are outside the rollback window and legacy leases/outboxes are drained;
+the removal checklist is tracked in [#298](https://github.com/exalto-ai/notary/issues/298).
+
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private
-`llm-notary-prod-api.flycast` origin and renews the returned PostgreSQL-backed
-lease while the session is active. New sessions fail closed if that control
-plane is unavailable. Public and signed-in Free sessions share this path;
+`llm-notary-prod-api.flycast` origin with the `one_operation_v1` contract before
+protocol work. New sessions fail closed if that control plane is unavailable,
+while an admitted one-operation session continues using only local notary
+limits and timeouts. During the rollback window only, an old API may return a
+lease instead; the bridge notary renews and releases that legacy admission from
+its durable release outbox. Public and signed-in Free sessions share this path;
 their credit subjects determine which grants fund capture and notarization.
 The reusable browser/CLI credential stays between the local daemon and API.
 
@@ -176,10 +188,10 @@ gives each image a tag unique to the commit and CI run. The rollout then uses
 that tag to resolve an immutable `sha256` digest and deploys only the digest.
 It therefore neither rebuilds nor promotes a different image:
 
-1. Deploy the API, run migrations, and check it through the still-old web
-   gateway.
-2. Deploy the notary and check the v3 one-time-ticket admission prelude against
-   the new API.
+1. Deploy the dual-contract API, run its expand-only migrations, and check it
+   through the still-old web gateway. The previous notary receives leases.
+2. Deploy the bridge notary and check the v3 one-time-ticket admission prelude.
+   It requests one-operation admission but can honor a lease after API rollback.
 3. Deploy the web gateway and check the public readiness route again.
 4. For a client-affecting change, build every CLI platform, upload and verify
    one immutable object set, then move the website's `latest` pointer.
@@ -211,9 +223,8 @@ hide it.
 
 For a break-glass, operator-driven deployment from the repository root, use the
 same build-then-deploy split and retain the previous image references for
-rollback. The API must still deploy before the notary because the current
-notary requires the v3 admission coordinator. Normal production changes must
-go through CI:
+rollback. Deploy the dual-contract API before the bridge notary, as CI does.
+Normal production changes must go through CI:
 
 ```bash
 label="manual-$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)"

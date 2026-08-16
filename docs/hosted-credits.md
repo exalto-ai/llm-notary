@@ -20,19 +20,23 @@ also keeps the platform's per-file package safety limit.
 
 ## What counts
 
-Capture and notarization use independent ledgers. Redeeming a hosted capture
-ticket temporarily reserves its per-session ceiling, then a successful session
-settles that reservation to the authenticated TLS application-data byte count.
-The notary persists that exact count before returning the capture receipt and
-replays settlement from its private outbox until the coordinator accepts it.
-When less than the normal per-session ceiling remains, the final ticket is
-capped to that remaining balance instead of stranding it.
-Service failures release the reservation; client and transport failures retain
-it to prevent repeated incomplete sessions from bypassing the allowance.
-Redeeming a finalization ticket debits the immutable authenticated allowance
-recorded by the source capture from notarization. A one-time ticket cannot debit
-twice, and retrying finalization for the same capture is idempotent unless the
-requested allowance changes.
+Capture and notarization use independent ledgers. The API issues a short-lived
+ticket only when the relevant allowance is positive. Redeeming the ticket
+authorizes one operation; it does not reserve the account's remaining bytes or
+create a renewable capacity lease. A capture ticket carries effective protocol
+limits. A finalization ticket is additionally bound to the exact record digest
+and authenticated byte allowance of its source capture.
+
+Once admitted, an operation continues under the notary instance's local size,
+concurrency, and timeout limits even if the API becomes unavailable. Usage
+accounting is independent of the active session lifetime, and already-admitted
+operations may put an account slightly over its allowance. The API denies the
+next ticket until allowance is available again.
+
+The expand/contract rollout temporarily retains the previous lease schema and
+bridge-notary fallback for safe rollback. Only a redemption that omits the
+`one_operation_v1` capability uses that legacy path; new operations do not
+create, renew, or release capacity leases.
 
 Trace storage is the total declared size of uploads that are in progress,
 queued for checking, being checked, or admitted to the account. Rejected,
@@ -84,13 +88,14 @@ uploads. A canceled or expired subscription returns the account to Free.
 Anonymous Public access uses the Free monthly capture and notarization
 allowances without creating an account. The platform groups IPv4 by individual
 address and IPv6 by `/64`, then derives a period-scoped opaque subject with a
-versioned keyed HMAC. Credit, ticket, lease, error, and metric records contain
+versioned keyed HMAC. Credit, ticket, error, and metric records contain
 only that opaque subject. The raw address is not sent to the notary and does not
 enter evidence.
 
 Address scoping is abuse control, not identity. Unrelated users behind one NAT
 may share an allowance. A VPN, proxy, or address change may receive a different
-allowance. Shared service-capacity limits still apply.
+allowance. Every notary instance independently enforces its configured local
+resource and concurrency limits.
 
 Forwarding headers are not trusted by default. The API accepts its dedicated
 edge address header only when the immediate socket peer matches an explicitly

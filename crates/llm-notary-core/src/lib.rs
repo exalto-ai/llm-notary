@@ -1751,18 +1751,15 @@ async fn run_deferred_finalize_session(
 ) -> Result<usize> {
     let request: DeferredFinalizeRequest =
         bincode::deserialize(&read_tokio_frame(&mut socket, max_frame_bytes).await?)?;
+    let transcript_bytes = validate_finalization_admission_binding(
+        &request.receipt,
+        expected_record_digest,
+        expected_transcript_bytes,
+    )?;
     request
         .receipt
         .verify(signing_key.verifying_key().to_sec1_bytes().as_ref())?;
     request.receipt.validate_records(&request.records)?;
-    if expected_record_digest.is_some_and(|expected| expected != request.receipt.record_digest) {
-        bail!("finalization bundle does not match its admission authorization");
-    }
-    let transcript_bytes =
-        checked_transcript_allowance(&request.receipt.connection_info.transcript_length)?;
-    if expected_transcript_bytes.is_some_and(|expected| expected != transcript_bytes) {
-        bail!("finalization bundle length does not match its admission authorization");
-    }
     validate_deferred_request_limits(
         &request.prove_request,
         max_private_chunk_bytes,
@@ -1803,6 +1800,22 @@ async fn run_deferred_finalize_session(
         max_frame_bytes,
     )
     .await?;
+    Ok(transcript_bytes)
+}
+
+fn validate_finalization_admission_binding(
+    receipt: &DeferredReceipt,
+    expected_record_digest: Option<[u8; 32]>,
+    expected_transcript_bytes: Option<usize>,
+) -> Result<usize> {
+    if expected_record_digest.is_some_and(|expected| expected != receipt.record_digest) {
+        bail!("finalization bundle does not match its admission authorization");
+    }
+    let transcript_bytes =
+        checked_transcript_allowance(&receipt.connection_info.transcript_length)?;
+    if expected_transcript_bytes.is_some_and(|expected| expected != transcript_bytes) {
+        bail!("finalization bundle length does not match its admission authorization");
+    }
     Ok(transcript_bytes)
 }
 
@@ -3091,6 +3104,22 @@ mod tests {
         let mut forged = receipt.clone();
         forged.server_name = "attacker.example".to_owned();
         assert!(forged.verify(&trusted_public_key).is_err());
+        let mut invalid_signature = receipt.clone();
+        invalid_signature.signature.clear();
+        assert!(invalid_signature.verify(&trusted_public_key).is_err());
+        let mut wrong_authorized_digest = receipt.record_digest;
+        wrong_authorized_digest[0] ^= 1;
+        assert!(
+            validate_finalization_admission_binding(
+                &invalid_signature,
+                Some(wrong_authorized_digest),
+                None,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("does not match its admission authorization"),
+            "the ticket binding must reject a wrong bundle before receipt validation"
+        );
 
         // This is the durability boundary: no original TLSN session or
         // verifier state remains after this point. Only the client-held bundle

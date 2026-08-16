@@ -214,9 +214,9 @@ struct ShareStats {
 
 #[derive(Debug, Eq, PartialEq, Serialize, ToSchema)]
 struct NotaryStats {
-    /// Successfully completed capture sessions.
+    /// Admitted capture operations.
     captures: i64,
-    /// Successfully completed finalization sessions.
+    /// Admitted finalization operations.
     finalizations: i64,
 }
 
@@ -226,12 +226,8 @@ async fn account_notary_stats(database: &DatabasePool, user_id: &str) -> ApiResu
              COUNT(*) FILTER (WHERE tickets.mode = 'capture')::BIGINT,
              COUNT(*) FILTER (WHERE tickets.mode = 'finalize')::BIGINT
          FROM notary_admission_tickets AS tickets
-         JOIN notary_admission_leases AS leases
-           ON leases.id = tickets.lease_id
-          AND leases.subject_id = tickets.subject_id
-          AND leases.mode = tickets.mode
          WHERE tickets.subject_id = $1
-           AND leases.completion_outcome = 'completed'",
+           AND tickets.consumed_at IS NOT NULL",
     )
     .bind(user_id)
     .fetch_one(database)
@@ -541,7 +537,7 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
         (name = "health", description = "Hosted API health and discovery"),
         (name = "browser-auth", description = "Google- or GitHub-backed browser sessions"),
         (name = "cli-auth", description = "Local service authorization and CLI sessions"),
-        (name = "notary-admission", description = "Hosted notary tickets and distributed leases"),
+        (name = "notary-admission", description = "One-operation hosted notary admission tickets"),
         (name = "billing", description = "Stripe-hosted subscriptions and additional notarization purchases"),
         (name = "verification", description = "Anonymous, retention-free portable package verification"),
         (name = "sharing", description = "Authenticated share intake and stable direct links"),
@@ -2467,46 +2463,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn account_notary_stats_count_only_completed_account_sessions() {
+    async fn account_notary_stats_count_only_admitted_account_operations() {
         let database = fresh_database().await;
         insert_test_github_user(&database, "user-1", 1, "User One").await;
         insert_test_github_user(&database, "user-2", 2, "User Two").await;
-        sqlx::query(
-            "INSERT INTO notary_admission_leases
-                 (id, notary_instance_id, subject_id, credit_subject, access_pool, mode,
-                  acquired_at, expires_at, released_at, terminal_state, completion_outcome)
-             VALUES
-                 ('capture-completed', 'notary-1', 'user-1', 'user:user-1', 'free',
-                  'capture', 1, 2, 2, 'released', 'completed'),
-                 ('finalize-completed', 'notary-1', 'user-1', 'user:user-1', 'free',
-                  'finalize', 1, 2, 2, 'released', 'completed'),
-                 ('capture-failed', 'notary-1', 'user-1', 'user:user-1', 'free',
-                  'capture', 1, 2, 2, 'released', 'client_failed'),
-                 ('finalize-active', 'notary-1', 'user-1', 'user:user-1', 'free',
-                  'finalize', 1, 2, NULL, NULL, NULL),
-                 ('other-capture', 'notary-1', 'user-2', 'user:user-2', 'free',
-                  'capture', 1, 2, 2, 'released', 'completed')",
-        )
-        .execute(&database.pool)
-        .await
-        .unwrap();
         sqlx::query(
             "INSERT INTO notary_admission_tickets
                  (token_hash, subject_id, credit_subject, access_pool, mode,
                   directory_generation, record_digest, requested_allowance_bytes,
                   max_attestable_http_bytes, max_frame_bytes, max_private_chunk_bytes,
-                  max_private_chunk_commitments, issued_at, expires_at, consumed_at, lease_id)
+                  max_private_chunk_commitments, issued_at, expires_at, consumed_at,
+                  consumed_by_instance)
              VALUES
-                 ('ticket-capture-completed', 'user-1', 'user:user-1', 'free', 'capture',
-                  1, NULL, 1, 1, 1, 1, 1, 1, 2, 1, 'capture-completed'),
-                 ('ticket-finalize-completed', 'user-1', 'user:user-1', 'free', 'finalize',
-                  1, $1, 1, 1, 1, 1, 1, 1, 2, 1, 'finalize-completed'),
-                 ('ticket-capture-failed', 'user-1', 'user:user-1', 'free', 'capture',
-                  1, NULL, 1, 1, 1, 1, 1, 1, 2, 1, 'capture-failed'),
-                 ('ticket-finalize-active', 'user-1', 'user:user-1', 'free', 'finalize',
-                  1, $2, 1, 1, 1, 1, 1, 1, 2, 1, 'finalize-active'),
+                 ('ticket-capture-admitted', 'user-1', 'user:user-1', 'free', 'capture',
+                  1, NULL, 1, 1, 1, 1, 1, 1, 2, 1, 'notary-1'),
+                 ('ticket-finalize-admitted', 'user-1', 'user:user-1', 'free', 'finalize',
+                  1, $1, 1, 1, 1, 1, 1, 1, 2, 1, 'notary-1'),
+                 ('ticket-capture-issued', 'user-1', 'user:user-1', 'free', 'capture',
+                  1, NULL, 1, 1, 1, 1, 1, 1, 2, NULL, NULL),
+                 ('ticket-finalize-issued', 'user-1', 'user:user-1', 'free', 'finalize',
+                  1, $2, 1, 1, 1, 1, 1, 1, 2, NULL, NULL),
                  ('ticket-other-capture', 'user-2', 'user:user-2', 'free', 'capture',
-                  1, NULL, 1, 1, 1, 1, 1, 1, 2, 1, 'other-capture')",
+                  1, NULL, 1, 1, 1, 1, 1, 1, 2, 1, 'notary-1')",
         )
         .bind("a".repeat(64))
         .bind("b".repeat(64))
