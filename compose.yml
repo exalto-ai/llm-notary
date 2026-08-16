@@ -111,6 +111,8 @@ services:
       LLM_NOTARY_NOTARY_PUBLIC_KEY: ${LLM_NOTARY_NOTARY_PUBLIC_KEY:?Set LLM_NOTARY_NOTARY_PUBLIC_KEY to the notary SEC1 public key}
       LLM_NOTARY_ADMISSION_API_ORIGIN: http://api:8080
       LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE: /run/secrets/admission_service_token
+      # Stop-legacy releases only audit this directory and refuse startup if
+      # an older notary left a release pending. They never write it.
       LLM_NOTARY_RELEASE_OUTBOX_DIR: /var/lib/llm-notary/release-outbox
       LLM_NOTARY_NOTARY_DIRECTORY_GENERATION: ${LLM_NOTARY_NOTARY_DIRECTORY_GENERATION:-1}
       LLM_NOTARY_INSTANCE_ID: ${LLM_NOTARY_INSTANCE_ID:-notary-compose-1}

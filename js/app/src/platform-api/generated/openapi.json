@@ -1008,7 +1008,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/RedeemAdmissionResponse"
+                  "$ref": "#/components/schemas/RedeemedOperationResponse"
                 }
               }
             }
@@ -1064,141 +1064,6 @@
             }
           },
           "429": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "serviceBearer": []
-          }
-        ]
-      }
-    },
-    "/api/internal/notary/leases/release": {
-      "post": {
-        "tags": [
-          "notary-admission"
-        ],
-        "summary": "Release an active distributed notary lease",
-        "operationId": "release_lease",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LeaseRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "204": {
-            "description": "Lease released or already terminal"
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "serviceBearer": []
-          }
-        ]
-      }
-    },
-    "/api/internal/notary/leases/renew": {
-      "post": {
-        "tags": [
-          "notary-admission"
-        ],
-        "summary": "Renew an active distributed notary lease",
-        "operationId": "renew_lease",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/LeaseRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/LeaseRenewedResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "410": {
             "description": "",
             "content": {
               "application/json": {
@@ -3347,15 +3212,6 @@
   },
   "components": {
     "schemas": {
-      "AccessPool": {
-        "type": "string",
-        "enum": [
-          "public",
-          "free",
-          "one_gb",
-          "ten_gb"
-        ]
-      },
       "AccountBillingResponse": {
         "type": "object",
         "required": [
@@ -4193,58 +4049,6 @@
           }
         }
       },
-      "LeaseCompletionOutcome": {
-        "type": "string",
-        "enum": [
-          "completed",
-          "client_failed",
-          "service_failed"
-        ]
-      },
-      "LeaseRenewedResponse": {
-        "type": "object",
-        "required": [
-          "lease_expires_at"
-        ],
-        "properties": {
-          "lease_expires_at": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
-      },
-      "LeaseRequest": {
-        "type": "object",
-        "required": [
-          "lease_id",
-          "notary_instance_id"
-        ],
-        "properties": {
-          "lease_id": {
-            "type": "string"
-          },
-          "notary_instance_id": {
-            "type": "string"
-          },
-          "outcome": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/LeaseCompletionOutcome"
-              }
-            ]
-          },
-          "used_allowance_bytes": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          }
-        }
-      },
       "ListedShareSummary": {
         "type": "object",
         "required": [
@@ -4978,18 +4782,13 @@
           "ticket",
           "notary_instance_id",
           "mode",
-          "directory_generation"
+          "directory_generation",
+          "contract",
+          "usage_settlement"
         ],
         "properties": {
           "contract": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/AdmissionRedemptionContract"
-              }
-            ]
+            "$ref": "#/components/schemas/AdmissionRedemptionContract"
           },
           "directory_generation": {
             "type": "integer",
@@ -5007,74 +4806,14 @@
           },
           "usage_settlement": {
             "type": "boolean",
-            "description": "The caller durably settles usage by operation ID. Older bridge\nnotaries omit this field, so the API must not create an operation row\nthey cannot acknowledge."
-          }
-        }
-      },
-      "RedeemAdmissionResponse": {
-        "oneOf": [
-          {
-            "$ref": "#/components/schemas/RedeemedLeaseResponse"
-          },
-          {
-            "$ref": "#/components/schemas/RedeemedOperationResponse"
-          }
-        ]
-      },
-      "RedeemedLeaseResponse": {
-        "type": "object",
-        "required": [
-          "lease_id",
-          "lease_expires_at",
-          "access_pool",
-          "max_attestable_http_bytes",
-          "max_frame_bytes",
-          "max_private_chunk_bytes",
-          "max_private_chunk_commitments",
-          "authorized_allowance_bytes"
-        ],
-        "properties": {
-          "access_pool": {
-            "$ref": "#/components/schemas/AccessPool"
-          },
-          "authorized_allowance_bytes": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "lease_expires_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "lease_id": {
-            "type": "string"
-          },
-          "max_attestable_http_bytes": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "max_frame_bytes": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "max_private_chunk_bytes": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "max_private_chunk_commitments": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "record_digest": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "description": "The caller durably settles usage by operation ID. The stop-legacy\ncontract requires this capability for every admitted operation."
           }
         }
       },
       "RedeemedOperationResponse": {
         "type": "object",
         "required": [
+          "operation_id",
           "max_attestable_http_bytes",
           "max_frame_bytes",
           "max_private_chunk_bytes",
@@ -5105,10 +4844,7 @@
             "format": "int64"
           },
           "operation_id": {
-            "type": [
-              "string",
-              "null"
-            ]
+            "type": "string"
           },
           "record_digest": {
             "type": [

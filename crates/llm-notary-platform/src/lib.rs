@@ -456,14 +456,6 @@ impl ApiError {
         }
     }
 
-    fn too_many_requests(message: &'static str) -> Self {
-        Self {
-            status: StatusCode::TOO_MANY_REQUESTS,
-            code: message,
-            message,
-        }
-    }
-
     fn service_unavailable(message: &'static str) -> Self {
         Self {
             status: StatusCode::SERVICE_UNAVAILABLE,
@@ -628,6 +620,23 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
     hosted_router().into_openapi()
 }
 
+async fn ensure_legacy_admission_drained(database: &PgPool) -> Result<()> {
+    let active_leases: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM notary_admission_leases
+         WHERE released_at IS NULL
+           AND expires_at > EXTRACT(EPOCH FROM NOW())::BIGINT",
+    )
+    .fetch_one(database)
+    .await
+    .context("checking for active legacy admission leases")?;
+    if active_leases != 0 {
+        return Err(anyhow!(
+            "active legacy admission leases must drain before this API release starts"
+        ));
+    }
+    Ok(())
+}
+
 /// Runs the private, stdin/stdout verifier subprocess used to enforce a hard
 /// anonymous-verification timeout without retaining uploaded bytes.
 #[doc(hidden)]
@@ -650,6 +659,7 @@ pub async fn run_api() -> Result<()> {
     let config = PlatformConfig::from_env()?;
     let _telemetry = telemetry::init("llm-notary-api")?;
     let state = AppState::from_config(&config).await?;
+    ensure_legacy_admission_drained(&state.database).await?;
     let listen = config.listen;
     publish::spawn_cleanup(state.clone());
     admission::spawn(state.clone());
@@ -2463,6 +2473,39 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn stop_legacy_startup_requires_active_leases_to_be_drained() {
+        let database = fresh_database().await;
+        let now = unix_timestamp().unwrap();
+        sqlx::query(
+            "INSERT INTO notary_admission_leases
+                 (id, notary_instance_id, subject_id, credit_subject, access_pool,
+                  mode, acquired_at, expires_at)
+             VALUES ('legacy-active', 'notary-old', NULL, 'public:v1:test',
+                     'public', 'capture', $1, $2)",
+        )
+        .bind(now)
+        .bind(now + 300)
+        .execute(&database.pool)
+        .await
+        .unwrap();
+
+        assert!(
+            ensure_legacy_admission_drained(&database.pool)
+                .await
+                .is_err()
+        );
+
+        sqlx::query("UPDATE notary_admission_leases SET expires_at = 1")
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        ensure_legacy_admission_drained(&database.pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn account_notary_stats_count_only_completed_account_operations() {
         let database = fresh_database().await;
         insert_test_github_user(&database, "user-1", 1, "User One").await;
@@ -2554,8 +2597,6 @@ mod tests {
             "POST /api/shares/{share_id}/complete",
             "POST /api/public/shares/{share_id}/reports",
             "POST /api/internal/notary/admissions/redeem",
-            "POST /api/internal/notary/leases/release",
-            "POST /api/internal/notary/leases/renew",
             "POST /api/internal/notary/operations/settle",
             "POST /api/me/credit-offers/{offer_id}/claim",
             "POST /api/notary/admissions",
@@ -2575,6 +2616,8 @@ mod tests {
         }
         assert_eq!(actual, expected);
         assert!(!paths.contains_key("/metrics"));
+        assert!(!paths.contains_key("/api/internal/notary/leases/renew"));
+        assert!(!paths.contains_key("/api/internal/notary/leases/release"));
         let upload_schema = &document["paths"]["/api/verify"]["post"]["requestBody"]["content"]
             [crate::intake::ARCHIVE_CONTENT_TYPE]["schema"];
         assert_eq!(

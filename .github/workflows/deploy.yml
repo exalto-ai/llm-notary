@@ -99,10 +99,18 @@ jobs:
             echo "web=$(current_image llm-notary-prod-web "$WEB_TOKEN")"
           } >> "$GITHUB_OUTPUT"
 
-      # Deploy the dual-contract admission API before the notary that calls it.
-      # A missing redemption capability follows the previous lease contract;
-      # the bridge notary explicitly requests one-operation admission and can
-      # still honor a lease response if this API is rolled back.
+      # Deploy the operation-only notary first while the bridge API still
+      # accepts its contract. Startup fails unless the configured legacy
+      # release outbox is empty. Only then deploy the API, whose own startup
+      # fails while any active legacy lease remains in PostgreSQL.
+      - name: Deploy notary image
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
+          NOTARY_IMAGE: ${{ steps.notary-image.outputs.ref }}
+        run: |
+          touch "$RUNNER_TEMP/notary-rollout-attempted"
+          flyctl deploy --image "$NOTARY_IMAGE" --ha=false --strategy rolling \
+            --config deploy/fly/notary.fly.toml
       - name: Deploy API image
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_DEPLOY_TOKEN }}
@@ -118,14 +126,6 @@ jobs:
         run: >-
           curl --fail --retry 5 --retry-all-errors --retry-delay 2
           --max-time 20 https://notary.exalto.ai/api/readyz
-      - name: Deploy notary image
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
-          NOTARY_IMAGE: ${{ steps.notary-image.outputs.ref }}
-        run: |
-          touch "$RUNNER_TEMP/notary-rollout-attempted"
-          flyctl deploy --image "$NOTARY_IMAGE" --ha=false --strategy rolling \
-            --config deploy/fly/notary.fly.toml
       # Deliberately present a capture ticket as a finalization. The notary
       # must reach the authenticated coordinator and return admission_denied,
       # but it must not admit the operation or consume the ticket.
