@@ -258,11 +258,19 @@ It therefore neither rebuilds nor promotes a different image:
 4. For a client-affecting change, build every CLI platform, upload and verify
    one immutable object set, then move the website's `latest` pointer.
 
+The deployment preflight sends an unauthenticated request to the V2 activation
+route and requires its exact `401` response before the server rollout begins.
+This proves that the preceding dual-contract API release is live; a rapid stack
+merge, skipped deployment, or failed prior rollout cannot jump directly from a
+V1-only API to the V2-only server/API pair.
+
 Before the first change, the workflow records every app's current Fly image.
 If a deploy or compatibility check fails, it restores each attempted app in
 reverse order. API rollback skips the old image's release command: PostgreSQL
 migrations are forward-only and the previous API must remain usable against
-the newly migrated schema.
+the newly migrated schema. If API restoration fails, rollback deliberately
+keeps the V2 server running because it is compatible with both API contracts;
+it never restores the V1 server against a possibly V2-only API.
 
 ### Rolling compatibility contract
 
@@ -302,6 +310,7 @@ notary_api_image="registry.fly.io/llm-notary-prod-api@$(bash deploy/fly/resolve-
 notary_server_image="registry.fly.io/llm-notary-prod-server@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-server:$label")"
 web_image="registry.fly.io/llm-notary-prod-web@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-web:$label")"
 
+bash deploy/fly/preflight-notary-api.sh
 fly deploy --image "$notary_server_image" \
   --ha=false -c deploy/fly/notary-server.fly.toml
 fly deploy --image "$notary_api_image" \

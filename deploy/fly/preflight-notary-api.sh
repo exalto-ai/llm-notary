@@ -2,6 +2,7 @@
 set -euo pipefail
 
 app="${1:-llm-notary-prod-api}"
+public_origin="${NOTARY_API_PUBLIC_ORIGIN:-https://notary.exalto.ai}"
 
 status="$(flyctl status --app "$app" --json)"
 jq -e --arg app "$app" '
@@ -46,5 +47,18 @@ jq -e '
   length >= 2
   and all(.[]; (.status // .Status) == "passing")
 ' >/dev/null <<<"$checks"
+
+# PR5 moves the Notary to the V2 redemption contract before removing V1 from
+# the API. A healthy canonical-v1 Machine is not sufficient: the immediately
+# preceding dual-contract API must be live first. Authentication runs before
+# body parsing, so 401 proves that the V2 activation route exists without
+# issuing, redeeming, or mutating an operation.
+activation_status="$(curl --silent --show-error --output /dev/null \
+  --write-out '%{http_code}' --request POST --connect-timeout 10 --max-time 20 \
+  "$public_origin/api/internal/notary/operations/activate")"
+if [ "$activation_status" != 401 ]; then
+  echo "live notary-api does not attest the V2 activation contract (HTTP $activation_status)" >&2
+  exit 1
+fi
 
 echo "Fly notary-api preflight passed for $app."
