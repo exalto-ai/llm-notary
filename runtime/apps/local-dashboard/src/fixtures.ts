@@ -340,7 +340,7 @@ export const fixtureStatus: Status = {
   artifact_backend: 'filesystem',
   artifact_status: 'ready',
   vault: 'OS vault',
-  notary: 'directory',
+  notary: 'registry',
   preview_chars: 1000,
   counts: {
     captured: 3,
@@ -361,7 +361,7 @@ export const fixtureStatus: Status = {
 };
 
 export const fixtureNotaries: Notaries = {
-  source: 'directory',
+  source: 'registry',
   registry_source: 'https://notary.exalto.ai/api/notary',
   generation: 12,
   active_key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -505,7 +505,7 @@ const fixtureVerification: Verification = {
   outcome: 'passed',
   verified_at_unix_ms: fixtureNow,
   notary_key_id: 'sha256:3828b21f26c49a0ff546f6f4bcee6a64bdc685faf4a961b3c00d05814cda9801',
-  trust_source: 'directory',
+  trust_source: 'registry',
 };
 
 function detail(captureId: string, captures: TraceSummary[], operations: Operation[]): TraceDetail {

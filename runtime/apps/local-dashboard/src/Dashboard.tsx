@@ -1796,7 +1796,7 @@ function NotarizationsView({
         <QueryError error={operations.error} title="Notarizations are unavailable" />
       ) : selectedOperation.error ? (
         <QueryError error={selectedOperation.error} title="Notarization detail is unavailable" />
-      ) : !items.length && !active ? (
+      ) : !items.length && !active && !operations.hasNextPage ? (
         <EmptyState
           icon={ListChecks}
           title="No notarizations yet"
@@ -2881,7 +2881,7 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
           <Title order={2}>Configured trust</Title>
         </div>
         {notaries.data?.generation != null && (
-          <Text>Directory generation {notaries.data.generation}</Text>
+          <Text>Registry generation {notaries.data.generation}</Text>
         )}
       </div>
       <Text className="settings-notaries-note">
@@ -2903,7 +2903,7 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
           </b>
           <span>
             {errorCode === 'notary_trust_state_invalid'
-              ? 'The cached directory could not be validated. No notary is presented as usable.'
+              ? 'The cached Registry could not be validated. No notary is presented as usable.'
               : 'The local service could not return its configured trust metadata. No endpoint status can be inferred.'}
           </span>
           <Button variant="outline" onClick={() => notaries.refetch()}>
@@ -2914,7 +2914,7 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
         <div className="local-notary-state-panel">
           <b>No pinned notary records</b>
           <span>
-            The local service has not retained a directory generation. No notary is presented as
+            The local service has not retained a Registry generation. No notary is presented as
             available.
           </span>
         </div>
@@ -2926,7 +2926,7 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
               value={
                 notaries.data?.source === 'explicit_configuration'
                   ? 'Explicit self-hosted configuration'
-                  : 'Pinned directory'
+                  : 'Pinned Registry'
               }
             />
             {notaries.data?.registry_source && (
@@ -2936,7 +2936,7 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
           {notaries.data?.source === 'explicit_configuration' && (
             <Text className="explicit-notary-note">
               This endpoint and key come from local configuration and are not members of the hosted
-              directory.
+              Registry.
             </Text>
           )}
           <div className="local-notary-list">

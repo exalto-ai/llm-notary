@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 
-export type CaptureCounts = {
+export type TraceCounts = {
   captured: number;
   notarizing: number;
   notarized: number;
@@ -24,7 +24,7 @@ export type DesktopState = {
   admin_listener: string;
   notary: string | null;
   capture_enabled: boolean;
-  counts: CaptureCounts;
+  counts: TraceCounts;
   message: string | null;
 };
 
@@ -72,7 +72,7 @@ export type AccountConnectionStarted = {
   state: string;
 };
 
-const emptyCounts: CaptureCounts = {
+const emptyCounts: TraceCounts = {
   captured: 0,
   notarizing: 0,
   notarized: 0,
@@ -137,7 +137,7 @@ function forcedState(): DesktopState | null {
       capture_enabled: screen === 'capture-on',
       version: '0.1.0',
       daemon_build_id: 'dev',
-      notary: 'directory',
+      notary: 'registry',
       counts: { ...emptyCounts, captured: 3, notarizing: 1, notarized: 8, needs_attention: 2 },
     });
   }

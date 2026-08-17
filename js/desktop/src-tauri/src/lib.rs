@@ -90,7 +90,7 @@ struct DesktopUpdateView {
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
-struct CaptureCounts {
+struct TraceCounts {
     captured: u64,
     notarizing: u64,
     notarized: u64,
@@ -108,7 +108,7 @@ struct AdminStatus {
     vault: String,
     notary: String,
     capture_enabled: bool,
-    counts: CaptureCounts,
+    counts: TraceCounts,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -132,7 +132,7 @@ struct DesktopState {
     admin_listener: String,
     notary: Option<String>,
     capture_enabled: bool,
-    counts: CaptureCounts,
+    counts: TraceCounts,
     message: Option<String>,
 }
 
@@ -477,7 +477,7 @@ fn pending_build_is_latest(pending: Option<&str>, latest: &str) -> bool {
 }
 
 fn restart_block_reason(
-    counts: &CaptureCounts,
+    counts: &TraceCounts,
     running: bool,
     managed_by_desktop: bool,
 ) -> Option<&'static str> {
@@ -750,7 +750,7 @@ async fn install_update_and_restart_inner(app: &tauri::AppHandle) -> Result<(), 
             }
         }
         Err(_) if daemon_is_healthy().await && !managed => {
-            return Err(restart_block_reason(&CaptureCounts::default(), true, false)
+            return Err(restart_block_reason(&TraceCounts::default(), true, false)
                 .expect("an external running service has a block reason")
                 .into());
         }
@@ -902,7 +902,7 @@ async fn get_desktop_state(
                 admin_listener: "127.0.0.1:8788".into(),
                 notary: None,
                 capture_enabled: false,
-                counts: CaptureCounts::default(),
+                counts: TraceCounts::default(),
                 message: if running { Some(error) } else { None },
             })
         }
@@ -1323,9 +1323,9 @@ mod tests {
 
     #[test]
     fn active_local_work_and_external_services_block_restart() {
-        let mut counts = CaptureCounts {
+        let mut counts = TraceCounts {
             capturing: 1,
-            ..CaptureCounts::default()
+            ..TraceCounts::default()
         };
         assert!(restart_block_reason(&counts, true, true).is_some());
         counts.capturing = 0;

@@ -646,7 +646,7 @@ function HomeView({ state, busy, notice, onNavigate, onStart, onStop, onRestart 
         <p>{vault.detail}</p>
         <dl>
           <div><dt>Provider proxy</dt><dd>{state.proxy_listener}</dd></div>
-          <div><dt>Notary trust</dt><dd>{state.notary === 'directory' ? 'Signed directory' : state.notary ?? 'Unavailable'}</dd></div>
+          <div><dt>Registry</dt><dd>{state.notary === 'registry' ? 'Signed Registry' : state.notary ?? 'Unavailable'}</dd></div>
           <div><dt>Service version</dt><dd>{state.version ?? 'Not running'}</dd></div>
         </dl>
       </div>

@@ -2,9 +2,9 @@ import { createTheme, MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
-import { type LocalApi, LocalApiError, type Notaries } from './api';
+import { type LocalApi, LocalApiError, localApi, type Notaries } from './api';
 import { Dashboard } from './Dashboard';
 import { createFixtureApi, fixtureNotaries } from './fixtures';
 import '@mantine/core/styles.css';
@@ -26,7 +26,10 @@ function renderDashboard(hash = '/overview', api: LocalApi = createFixtureApi())
 }
 
 beforeEach(() => localStorage.clear());
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe('local evidence dashboard', () => {
   test('navigates, filters captures, and selects a capture', async () => {
@@ -62,6 +65,51 @@ describe('local evidence dashboard', () => {
     const requestedModel = samples[1].requested_model;
     if (!requestedModel) throw new Error('Expected the second fixture capture to name a model');
     await expect.element(page.getByText(requestedModel, { exact: true })).toBeVisible();
+  });
+
+  test('retains the live Trace cursor when a projected notarization page is empty', async () => {
+    const fixture = createFixtureApi();
+    const trace = (await fixture.traces({ limit: 1 })).items[0];
+    const traceDetail = { ...(await fixture.trace(trace.trace_id)), notarization: null };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const path = String(input);
+      if (path === '/v1/traces?limit=1') {
+        return Response.json({ items: [trace], next_cursor: 'trace:next' });
+      }
+      if (path === `/v1/traces/${trace.trace_id}`) return Response.json(traceDetail);
+      throw new Error(`Unexpected dashboard request: ${path}`);
+    });
+
+    await expect(localApi.operations({ limit: 1 })).resolves.toEqual({
+      items: [],
+      next_cursor: 'trace:next',
+    });
+  });
+
+  test('can load older notarizations after an empty projected Trace page', async () => {
+    const fixture = createFixtureApi();
+    const operation = (await fixture.operations()).items[0];
+    const cursors: Array<string | undefined> = [];
+    const api: LocalApi = {
+      ...fixture,
+      operations: async (filters = {}) => {
+        const cursor = typeof filters.cursor === 'string' ? filters.cursor : undefined;
+        cursors.push(cursor);
+        return cursor === 'trace:next'
+          ? { items: [operation], next_cursor: null }
+          : { items: [], next_cursor: 'trace:next' };
+      },
+    };
+
+    renderDashboard('/notarizations', api);
+    await expect
+      .element(page.getByRole('button', { name: 'Load more notarizations' }))
+      .toBeVisible();
+    await page.getByRole('button', { name: 'Load more notarizations' }).click();
+    await expect.poll(() => cursors).toContain('trace:next');
+    await expect
+      .element(page.getByRole('button', { name: `Inspect ${operation.operation_id}` }))
+      .toBeVisible();
   });
 
   test('uses the authenticated provider for icons instead of a namespaced model slug', async () => {
@@ -180,7 +228,7 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('Online', { exact: true })).not.toBeInTheDocument();
   });
 
-  test('distinguishes explicit self-hosted configuration from the directory', async () => {
+  test('distinguishes explicit self-hosted configuration from the Registry', async () => {
     const explicit: Notaries = {
       source: 'explicit_configuration',
       registry_source: null,
@@ -206,10 +254,10 @@ describe('local evidence dashboard', () => {
       .element(page.getByRole('heading', { name: 'Explicit self-hosted configuration' }))
       .toBeVisible();
     await expect
-      .element(page.getByText('are not members of the hosted directory', { exact: false }))
+      .element(page.getByText('are not members of the hosted Registry', { exact: false }))
       .toBeVisible();
     await expect
-      .element(page.getByText('Directory generation', { exact: false }))
+      .element(page.getByText('Registry generation', { exact: false }))
       .not.toBeInTheDocument();
   });
 
@@ -223,7 +271,7 @@ describe('local evidence dashboard', () => {
 
   test('handles empty, malformed, and unavailable local notary trust without a false status', async () => {
     const empty: Notaries = {
-      source: 'directory',
+      source: 'registry',
       registry_source: null,
       generation: null,
       active_key_id: null,

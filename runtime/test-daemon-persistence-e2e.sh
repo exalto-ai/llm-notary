@@ -887,7 +887,7 @@ if [[ $profile == full ]]; then
     done <<<"$object_paths"
   fi
 
-  echo "running and finalizing a streaming Proxy-TLS capture"
+  echo "running and notarizing a streaming Proxy-TLS capture"
   stream_response=$("${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error \
       --dump-header /tmp/daemon-e2e-stream.headers \
