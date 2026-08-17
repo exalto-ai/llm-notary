@@ -80,7 +80,7 @@ impl From<RegistryRecord> for RegistryRecordResponse {
 }
 
 pub(super) fn router() -> OpenApiRouter<NotaryApiState> {
-    OpenApiRouter::new().routes(routes!(notary))
+    OpenApiRouter::new().routes(routes!(get_registry))
 }
 
 #[utoipa::path(
@@ -90,6 +90,6 @@ pub(super) fn router() -> OpenApiRouter<NotaryApiState> {
     responses((status = 200, body = RegistryResponse)),
     tag = "registry"
 )]
-pub(super) async fn notary(State(state): State<NotaryApiState>) -> Json<RegistryResponse> {
+pub(super) async fn get_registry(State(state): State<NotaryApiState>) -> Json<RegistryResponse> {
     Json(state.registry.into())
 }

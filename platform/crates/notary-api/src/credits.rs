@@ -200,7 +200,7 @@ pub fn router() -> OpenApiRouter<NotaryApiState> {
         (status = 500, body = ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "browser-auth"
+    tag = "credits"
 )]
 async fn credit_history(
     State(state): State<NotaryApiState>,
@@ -396,7 +396,7 @@ async fn ensure_account_monthly_grant(state: &NotaryApiState, account_id: &str) 
         (status = 500, body = ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "browser-auth"
+    tag = "credits"
 )]
 async fn eligible_credit_offers(
     State(state): State<NotaryApiState>,
@@ -437,7 +437,7 @@ async fn eligible_credit_offers(
         (status = 500, body = ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "browser-auth"
+    tag = "credits"
 )]
 async fn claim_credit_offer(
     State(state): State<NotaryApiState>,

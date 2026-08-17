@@ -372,7 +372,7 @@ export interface paths {
             cookie?: never;
         };
         /** Get the Device access-token identity */
-        get: operations["device_me"];
+        get: operations["get_device_session"];
         put?: never;
         post?: never;
         /** Revoke a Device session by refresh token */
@@ -510,7 +510,10 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Issue a short-lived one-time hosted notary admission ticket */
+        /**
+         * Issue a short-lived one-time hosted notary admission ticket
+         * @description Anonymous requests are allowed. Authenticated capture requests require capture:request; authenticated notarization requests require notarization:request.
+         */
         post: operations["issue_admission"];
         delete?: never;
         options?: never;
@@ -662,7 +665,7 @@ export interface paths {
             cookie?: never;
         };
         /** Get the versioned Registry of Official Notaries */
-        get: operations["notary"];
+        get: operations["get_registry"];
         put?: never;
         post?: never;
         delete?: never;
@@ -2499,7 +2502,7 @@ export interface operations {
             };
         };
     };
-    device_me: {
+    get_device_session: {
         parameters: {
             query?: never;
             header?: never;
@@ -3332,7 +3335,7 @@ export interface operations {
             };
         };
     };
-    notary: {
+    get_registry: {
         parameters: {
             query?: never;
             header?: never;

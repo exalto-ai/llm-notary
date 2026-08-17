@@ -256,6 +256,7 @@ async fn recover_expired_activations(state: &NotaryApiState) -> ApiResult<u64> {
     post,
     path = "/api/notary/admissions",
     summary = "Issue a short-lived one-time hosted notary admission ticket",
+    description = "Anonymous requests are allowed. Authenticated capture requests require capture:request; authenticated notarization requests require notarization:request.",
     request_body = IssueAdmissionRequest,
     responses(
         (status = 200, body = AdmissionTicketResponse),
@@ -265,7 +266,7 @@ async fn recover_expired_activations(state: &NotaryApiState) -> ApiResult<u64> {
         (status = 402, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
-    security((), ("bearerAuth" = [])),
+    security((), ("bearerAuth" = ["capture:request"]), ("bearerAuth" = ["notarization:request"])),
     tag = "notary-admission"
 )]
 async fn issue_admission(

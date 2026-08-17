@@ -1754,7 +1754,7 @@ fn trace_share_record_from_status(
     Ok(TraceShareRecord {
         trace_id,
         hosted_trace_id: status.hosted_trace_id,
-        progress: ShareProgress::from_hosted(&status.state).as_str().into(),
+        progress: ShareProgress::from_hosted(status.state).as_str().into(),
         visibility: status.visibility.as_str().into(),
         access_enabled: status.access_enabled,
         password_protected: status.password_protected,
@@ -2930,14 +2930,15 @@ enum ShareProgress {
 }
 
 impl ShareProgress {
-    fn from_hosted(value: &str) -> Self {
+    fn from_hosted(value: sharing::HostedTraceStatus) -> Self {
+        use sharing::HostedTraceStatus;
+
         match value {
-            "preparing" | "queued" => Self::Preparing,
-            "uploading" => Self::Uploading,
-            "verifying" => Self::Verifying,
-            "admitted" | "shared" => Self::Shared,
-            "rejected" => Self::Rejected,
-            _ => Self::Failed,
+            HostedTraceStatus::Uploading | HostedTraceStatus::Queued => Self::Preparing,
+            HostedTraceStatus::Verifying => Self::Verifying,
+            HostedTraceStatus::Shared | HostedTraceStatus::Stopped => Self::Shared,
+            HostedTraceStatus::Rejected => Self::Rejected,
+            HostedTraceStatus::Failed => Self::Failed,
         }
     }
 
@@ -2971,7 +2972,14 @@ impl TraceShare {
     fn from_record(record: TraceShareRecord) -> Self {
         Self {
             trace_id: record.trace_id,
-            progress: ShareProgress::from_hosted(&record.progress),
+            progress: match record.progress.as_str() {
+                "preparing" => ShareProgress::Preparing,
+                "uploading" => ShareProgress::Uploading,
+                "verifying" => ShareProgress::Verifying,
+                "shared" => ShareProgress::Shared,
+                "rejected" => ShareProgress::Rejected,
+                _ => ShareProgress::Failed,
+            },
             visibility: if record.visibility == "listed" {
                 ShareVisibility::Listed
             } else {
@@ -3250,16 +3258,16 @@ mod tests {
 
     #[test]
     fn hosted_share_states_map_to_the_bounded_product_progress() {
+        use sharing::HostedTraceStatus;
+
         for (hosted, expected) in [
-            ("preparing", "preparing"),
-            ("queued", "preparing"),
-            ("uploading", "uploading"),
-            ("verifying", "verifying"),
-            ("admitted", "shared"),
-            ("shared", "shared"),
-            ("rejected", "rejected"),
-            ("failed", "failed"),
-            ("future_state", "failed"),
+            (HostedTraceStatus::Uploading, "preparing"),
+            (HostedTraceStatus::Queued, "preparing"),
+            (HostedTraceStatus::Verifying, "verifying"),
+            (HostedTraceStatus::Shared, "shared"),
+            (HostedTraceStatus::Stopped, "shared"),
+            (HostedTraceStatus::Rejected, "rejected"),
+            (HostedTraceStatus::Failed, "failed"),
         ] {
             assert_eq!(ShareProgress::from_hosted(hosted).as_str(), expected);
         }

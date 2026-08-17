@@ -74,7 +74,7 @@ class Handler(BaseHTTPRequestHandler):
             if request.get("package_format") != "notary/trace-package/v1":
                 self.send_error(400)
                 return
-            trace_id = f"share-e2e-{request['package_sha256'][:16]}"
+            trace_id = f"trc-e2e-{request['package_sha256'][:16]}"
             type(self).traces[trace_id] = {
                 "expected_size": int(request["package_size_bytes"]),
                 "expected_sha256": request["package_sha256"],

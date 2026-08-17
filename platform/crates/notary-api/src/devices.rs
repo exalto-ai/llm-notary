@@ -107,7 +107,7 @@ pub(super) fn router() -> OpenApiRouter<NotaryApiState> {
         .routes(routes!(complete_device_authorization))
         .routes(routes!(refresh_device_tokens))
         .routes(routes!(logout_device_session))
-        .routes(routes!(device_me))
+        .routes(routes!(get_device_session))
 }
 
 #[utoipa::path(
@@ -562,10 +562,10 @@ pub(super) async fn logout_device_session(
         (status = 403, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
-    security(("bearerAuth" = [])),
+    security(("bearerAuth" = ["account:read"])),
     tag = "devices"
 )]
-pub(super) async fn device_me(
+pub(super) async fn get_device_session(
     State(state): State<NotaryApiState>,
     headers: HeaderMap,
 ) -> ApiResult<Json<DeviceSessionIdentity>> {

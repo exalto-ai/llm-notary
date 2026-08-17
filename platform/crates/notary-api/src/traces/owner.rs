@@ -295,7 +295,7 @@ pub(crate) async fn run_cleanup_worker(state: NotaryApiState, mut shutdown: watc
         (status = 500, body = crate::ErrorResponse),
         (status = 503, body = crate::ErrorResponse)
     ),
-    security(("bearerAuth" = [])),
+    security(("bearerAuth" = ["traces:share"])),
     tag = "traces"
 )]
 async fn create_hosted_trace(
@@ -625,7 +625,7 @@ async fn get_hosted_trace(
         (status = 500, body = crate::ErrorResponse),
         (status = 503, body = crate::ErrorResponse)
     ),
-    security(("bearerAuth" = []), ("browserSession" = [])),
+    security(("bearerAuth" = ["traces:share"]), ("browserSession" = [])),
     tag = "traces"
 )]
 async fn update_trace_access(
@@ -773,7 +773,7 @@ async fn list_web_traces(
         (status = 500, body = crate::ErrorResponse),
         (status = 503, body = crate::ErrorResponse)
     ),
-    security(("bearerAuth" = [])),
+    security(("bearerAuth" = ["traces:share"])),
     tag = "traces"
 )]
 async fn complete_hosted_trace_upload(
