@@ -1168,6 +1168,44 @@ pub(super) async fn cleanup_object(
     object_key: &str,
 ) -> Result<bool, sqlx::Error> {
     let now = unix_timestamp().map_err(|error| sqlx::Error::Protocol(error.message.into()))?;
+    let mut transaction = state.database.begin().await?;
+    let queued: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT trace_id FROM storage_cleanup_queue
+         WHERE object_key = $1 FOR UPDATE",
+    )
+    .bind(object_key)
+    .fetch_optional(&mut *transaction)
+    .await?;
+    let Some((trace_id,)) = queued else {
+        transaction.commit().await?;
+        return Ok(true);
+    };
+    if let Some(trace_id) = trace_id {
+        let trace: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT status, content_object_key, package_object_key
+             FROM traces WHERE trace_id = $1 FOR UPDATE",
+        )
+        .bind(trace_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some((status, content_object_key, package_object_key)) = trace {
+            if content_object_key.as_deref() == Some(object_key)
+                || package_object_key.as_deref() == Some(object_key)
+            {
+                sqlx::query("DELETE FROM storage_cleanup_queue WHERE object_key = $1")
+                    .bind(object_key)
+                    .execute(&mut *transaction)
+                    .await?;
+                transaction.commit().await?;
+                return Ok(true);
+            }
+            if status == "verifying" {
+                transaction.commit().await?;
+                return Ok(false);
+            }
+        }
+    }
+    transaction.commit().await?;
     match state.traces.storage.delete_object(object_key).await {
         Ok(()) => {
             sqlx::query("DELETE FROM storage_cleanup_queue WHERE object_key = $1")
