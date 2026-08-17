@@ -3925,7 +3925,7 @@ mod tests {
         sqlx::query(&format!(
             "INSERT INTO {JOURNAL} (version, description, checksum) VALUES (1, $1, $2)"
         ))
-        .bind("initial daemon metadata schema")
+        .bind("initial notaryd metadata schema")
         .bind(hex::encode(Sha256::digest(INITIAL_MIGRATION.as_bytes())))
         .execute(&mut legacy)
         .await
@@ -4044,13 +4044,13 @@ mod tests {
         let search_disabled = PostgresMetadataStore::from_pool(pool.clone(), false)
             .await
             .unwrap();
-        let capture = conformance::new_capture("search-toggle", 1);
+        let capture = conformance::new_capture("trc-search-toggle", 1);
         search_disabled.begin_capture(capture).await.unwrap();
         search_disabled
             .complete_capture(
-                conformance::completion("search-toggle", 2, 200),
+                conformance::completion("trc-search-toggle", 2, 200),
                 conformance::artifact(
-                    "search-toggle",
+                    "trc-search-toggle",
                     crate::artifact_store::ArtifactKind::CaptureCheckpoint,
                     1,
                 ),
