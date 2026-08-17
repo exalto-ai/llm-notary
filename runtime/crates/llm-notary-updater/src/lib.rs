@@ -115,7 +115,7 @@ pub struct ReleaseArtifact {
 pub struct ReleasePlatform {
     pub archive: ReleaseArtifact,
     pub llm_notary: ReleaseArtifact,
-    pub llm_notaryd: ReleaseArtifact,
+    pub notaryd: ReleaseArtifact,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -581,7 +581,7 @@ fn validate_manifest(manifest: &ReleaseManifest) -> Result<()> {
             Some(&format!("llm-notary-{platform}{suffix}")),
         )?;
         validate_artifact(
-            &artifacts.llm_notaryd,
+            &artifacts.notaryd,
             &manifest.build_id,
             Some(&format!("notaryd-{platform}{suffix}")),
         )?;
@@ -744,7 +744,7 @@ async fn install_verified_release(
     let daemon_candidate = staging.path().join(daemon_file_name());
     let client = update_http_client()?;
     download_artifact(&client, &artifacts.llm_notary, &cli_candidate).await?;
-    download_artifact(&client, &artifacts.llm_notaryd, &daemon_candidate).await?;
+    download_artifact(&client, &artifacts.notaryd, &daemon_candidate).await?;
     make_executable(&cli_candidate)?;
     make_executable(&daemon_candidate)?;
     ensure_candidate_build(&cli_candidate, &release.manifest.build_id, "llm-notary")?;
