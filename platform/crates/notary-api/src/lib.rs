@@ -1068,8 +1068,8 @@ mod tests {
             "GET /api/device-session",
             "GET /api/devices",
             "GET /api/healthz",
-            "GET /api/me/credit-offers",
-            "GET /api/me/credits/history",
+            "GET /api/credit-offers",
+            "GET /api/credits/history",
             "GET /api/public/traces",
             "GET /api/public/traces/{trace_id}",
             "GET /api/public/traces/{trace_id}/content",
@@ -1094,7 +1094,7 @@ mod tests {
             "POST /api/internal/notary/admissions/redeem",
             "POST /api/internal/notary/operations/activate",
             "POST /api/internal/notary/operations/settle",
-            "POST /api/me/credit-offers/{offer_id}/claim",
+            "POST /api/credit-offers/{offer_id}/claim",
             "POST /api/notary/admissions",
             "POST /api/public/traces/{trace_id}/access",
             "POST /api/public/traces/{trace_id}/reports",
@@ -1152,6 +1152,7 @@ mod tests {
         ] {
             assert!(!paths.contains_key(removed));
         }
+        assert!(paths.keys().all(|path| !path.starts_with("/api/me/")));
         let schemas = document["components"]["schemas"]
             .as_object()
             .expect("OpenAPI schemas");
@@ -1167,6 +1168,7 @@ mod tests {
         let app = router(lazy_test_state());
         for (method, path) in [
             (Method::GET, "/api/me"),
+            (Method::GET, "/api/me/credit-offers"),
             (Method::GET, "/api/notary"),
             (Method::POST, "/api/cli/authorizations"),
             (Method::POST, "/api/cli/token"),

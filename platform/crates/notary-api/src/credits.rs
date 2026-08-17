@@ -190,7 +190,7 @@ pub fn router() -> OpenApiRouter<NotaryApiState> {
 
 #[utoipa::path(
     get,
-    path = "/api/me/credits/history",
+    path = "/api/credits/history",
     summary = "List the signed-in account's credit activity",
     params(("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 100), ("cursor" = Option<String>, Query)),
     responses(
@@ -217,7 +217,7 @@ async fn credit_history(
         )
         .map_err(crate::pagination::api_error)?;
     let scope = CursorScope::new(
-        "/api/me/credits/history",
+        "/api/credits/history",
         &user.0,
         "created_at desc, id desc, kind desc",
     )
@@ -388,7 +388,7 @@ async fn ensure_account_monthly_grant(state: &NotaryApiState, account_id: &str) 
 
 #[utoipa::path(
     get,
-    path = "/api/me/credit-offers",
+    path = "/api/credit-offers",
     summary = "List promotional credit offers eligible for the signed-in account",
     responses(
         (status = 200, body = CreditOffersResponse),
@@ -426,7 +426,7 @@ async fn eligible_credit_offers(
 
 #[utoipa::path(
     post,
-    path = "/api/me/credit-offers/{offer_id}/claim",
+    path = "/api/credit-offers/{offer_id}/claim",
     summary = "Claim one server-defined promotional credit offer",
     params(("offer_id" = String, Path)),
     responses(
