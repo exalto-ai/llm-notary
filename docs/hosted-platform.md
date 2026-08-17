@@ -10,7 +10,7 @@ generated hosted OpenAPI document remains the exact HTTP contract.
 | --- | --- | --- | --- |
 | Stable web gateway | `deploy/gateway.Caddyfile` | none | Routes public site and API traffic; it is the only component allowed to supply the trusted client-address header |
 | Hosted website | `js/app/` | browser UI state | Renders public docs, verification, Library, sign-in, account, billing, device approval, and share management |
-| Hosted API | `platform/crates/llm-notary-api/` | PostgreSQL accounts, sessions, keys, credits, operations, shares, reports, and cleanup work | Authenticates public and account requests, issues admission tickets, verifies uploads, and owns hosted policy |
+| Hosted API | `platform/crates/notary-api/` | PostgreSQL accounts, sessions, keys, credits, operations, shares, reports, and cleanup work | Authenticates public and account requests, issues admission tickets, verifies uploads, and owns hosted policy |
 | Generic notary | `runtime/crates/llm-notary-server/` | signing key and process-local capacity | Runs the public Proxy-TLS protocol and provider allowlist without account or billing semantics |
 | Hosted notary adapter | `platform/crates/llm-notary-hosted-server/` | private durable usage-settlement outbox | Injects ticket redemption and settlement through the generic `AdmissionPolicy` and `SessionLifecycle` seams |
 | Local runtime client | `runtime/crates/notaryd/` | local vault, capture catalog, artifacts, account credential, and trust cache | Sees provider plaintext; requests hosted admission and sharing without exposing the provider credential to the platform or notary |

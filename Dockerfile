@@ -8,18 +8,17 @@ COPY js/desktop/src-tauri/Cargo.toml ./js/desktop/src-tauri/Cargo.toml
 COPY js/desktop/src-tauri/src/lib.rs ./js/desktop/src-tauri/src/lib.rs
 RUN cargo build --locked --release \
     -p llm-notary-hosted-server --bin llm-notary-hosted-server \
-    -p llm-notary-api --bin llm-notary-api --bin llm-notary-api-migrate
+    -p notary-api --bin notary-api
 
 FROM debian:bookworm-slim AS api
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/llm-notary-api /usr/local/bin/llm-notary-api
-COPY --from=builder /app/target/release/llm-notary-api-migrate /usr/local/bin/llm-notary-api-migrate
-RUN ldd /usr/local/bin/llm-notary-api >/dev/null
+COPY --from=builder /app/target/release/notary-api /usr/local/bin/notary-api
+RUN ldd /usr/local/bin/notary-api >/dev/null
 EXPOSE 8080
-CMD ["llm-notary-api"]
+CMD ["notary-api", "serve"]
 
 FROM debian:bookworm-slim AS notary
 

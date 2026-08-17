@@ -103,11 +103,11 @@ terminates public-CA TLS. Clients require that transport to be explicit and
 validate TLS before sending the NTRY v1 prelude.
 
 The fallback single-key configuration starts at generation 1; set
-`LLM_NOTARY_NOTARY_DIRECTORY_GENERATION` explicitly if its directory metadata
+`LLM_NOTARY_REGISTRY_GENERATION` explicitly if its directory metadata
 changes.
 
 Configure the optional `LLM_NOTARY_NOTARY_DIRECTORY_JSON`,
-`LLM_NOTARY_NOTARY_DIRECTORY_GENERATION`, and
+`LLM_NOTARY_REGISTRY_GENERATION`, and
 `LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS` values in the deployment environment.
 Store directory JSON as one compact line. The active record must still match
 the signing key mounted in the colocated active notary; retiring notarize-only

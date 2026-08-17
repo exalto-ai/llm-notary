@@ -148,15 +148,13 @@ test mode prominently.
 Stripe support is disabled when all billing settings are absent. Enabling it
 requires the complete set:
 
-- `LLM_NOTARY_STRIPE_SECRET_KEY` or `LLM_NOTARY_STRIPE_SECRET_KEY_FILE`: an
-  `sk_test_...` or `sk_live_...` key, supplied directly or through a private
-  file, but never both.
-- `LLM_NOTARY_STRIPE_WEBHOOK_SECRET` or
-  `LLM_NOTARY_STRIPE_WEBHOOK_SECRET_FILE`: the matching endpoint's `whsec_...`
-  signing secret, supplied directly or through a private file, but never both.
-- `LLM_NOTARY_STRIPE_CREDIT_PRICE_ID`: the one-time $10/GB Price.
-- `LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID`: the recurring $9.99/month Price.
-- `LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID`: the recurring $49.99/month Price.
+- `NOTARY_API_STRIPE_SECRET_KEY_FILE`: a private file containing the
+  `sk_test_...` or `sk_live_...` key.
+- `NOTARY_API_STRIPE_WEBHOOK_SECRET_FILE`: a private file containing the
+  matching endpoint's `whsec_...` signing secret.
+- `NOTARY_API_STRIPE_CREDIT_PRICE_ID`: the one-time $10/GB Price.
+- `NOTARY_API_STRIPE_ONE_GB_PRICE_ID`: the recurring $9.99/month Price.
+- `NOTARY_API_STRIPE_TEN_GB_PRICE_ID`: the recurring $49.99/month Price.
 
 The webhook URL is `/api/billing/stripe/webhook` and its API version is pinned
 to `2026-02-25.clover`. Configure these events:

@@ -17,7 +17,7 @@ const outputTypes = temporaryDir ? join(temporaryDir, 'api.generated.d.ts') : ty
 mkdirSync(generatedDir, { recursive: true });
 const exported = spawnSync(
   'cargo',
-  ['run', '--quiet', '-p', 'llm-notary-api', '--example', 'export-hosted-openapi'],
+  ['run', '--quiet', '-p', 'notary-api', '--example', 'export-hosted-openapi'],
   { cwd: repoRoot, encoding: 'utf8' },
 );
 if (exported.status !== 0) {

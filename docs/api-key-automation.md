@@ -43,7 +43,7 @@ regular file. On Unix it must not be readable by group or other users. A final
 CRLF or LF line ending is accepted:
 
 ```bash
-export LLM_NOTARY_API_KEY_FILE=/run/secrets/llm-notary-api-key
+export LLM_NOTARY_API_KEY_FILE=/run/secrets/notary-api-key
 notaryd
 ```
 
@@ -51,7 +51,7 @@ For a self-hosted platform, set the HTTPS API origin separately:
 
 ```bash
 export LLM_NOTARY_API_ORIGIN=https://notary.example.com
-export LLM_NOTARY_API_KEY_FILE=/run/secrets/llm-notary-api-key
+export LLM_NOTARY_API_KEY_FILE=/run/secrets/notary-api-key
 notaryd
 ```
 
