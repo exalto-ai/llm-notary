@@ -9,7 +9,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use llm_notary_core::NotarySessionMode;
+use notary_core::NotarySessionMode;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
@@ -30,7 +30,7 @@ impl UsageMode {
     pub(super) fn for_session(mode: NotarySessionMode) -> Self {
         match mode {
             NotarySessionMode::Capture => Self::Capture,
-            NotarySessionMode::Finalize => Self::Finalize,
+            NotarySessionMode::Notarization => Self::Finalize,
         }
     }
 }

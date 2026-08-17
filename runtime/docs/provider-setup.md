@@ -1,6 +1,6 @@
 # Provider and agent setup
 
-`llm-notaryd` exposes provider-compatible HTTP/1.1 routes on one loopback
+`notaryd` exposes provider-compatible HTTP/1.1 routes on one loopback
 listener. Keep credentials in the original SDK, agent, or secret manager and
 replace only the base URL.
 
@@ -22,7 +22,7 @@ These base URLs do not change when **Capture requests** is off. Traffic still
 crosses the local daemon and remains restricted to the fixed origin in this
 table, but the daemon connects directly over WebPKI HTTPS. It does not use a
 remote notary or create evidence, a capture ID, previews, or a `.llmcapture`.
-That request cannot later be finalized or verified. Turning capture back on
+That request cannot later be notarized or verified. Turning capture back on
 affects later requests only.
 
 Examples below use `YOUR_MODEL` deliberately. Choose a model available to the
@@ -68,7 +68,7 @@ curl http://127.0.0.1:8787/anthropic/v1/messages \
 ```
 
 The `x-api-key` value, `anthropic-version` value, and content type are hidden in
-the finalized disclosure. Their header names remain visible.
+the notarized disclosure. Their header names remain visible.
 
 ## Claude Code with a claude.ai plan
 
@@ -103,7 +103,7 @@ LLM Notary forwards `Authorization`, `anthropic-beta`, `anthropic-version`, the
 calls, and other current Messages fields unchanged. It treats Anthropic header
 and body fields as open protocol lists rather than filtering them to a frozen
 schema. Authorization and every other HTTP header value are hidden from the
-finalized package; the disclosed request and response bodies still require
+notarized package; the disclosed request and response bodies still require
 review before sharing.
 
 If the saved login expires, unset `ANTHROPIC_BASE_URL`, let Claude Code sign in
@@ -146,7 +146,7 @@ curl http://127.0.0.1:8787/openrouter/api/v1/chat/completions \
 The verified provider is OpenRouter at `openrouter.ai`. A slug such as
 `vendor/model` is authenticated request metadata; it does not prove a direct
 TLS connection to that vendor. The values of `Authorization`, `HTTP-Referer`,
-and `X-Title` are hidden in a finalized package.
+and `X-Title` are hidden in a notarized package.
 
 ## Streaming behavior
 
@@ -225,9 +225,9 @@ Do not add `env_key` to this provider. `requires_openai_auth = true` tells
 Codex to attach its saved ChatGPT authorization and account-routing headers.
 LLM Notary forwards those values for the provider request, but does not read
 Codex's auth cache, collect browser cookies, refresh the login, or write the
-header values to logs or finalized packages.
+header values to logs or notarized packages.
 
-Run Codex normally after starting `llm-notaryd`:
+Run Codex normally after starting `notaryd`:
 
 ```bash
 codex exec --ephemeral --skip-git-repo-check \
@@ -266,11 +266,11 @@ client surface. Remote and cloud Codex work cannot reach the loopback proxy.
 The default shared request-plus-response envelope is 15 MiB. The proxy counts
 the request before opening the provider connection and the response while it
 arrives, so it cannot knowingly write a bundle above the configured
-finalization limit.
+notarization limit.
 
 Non-`2xx` provider responses—including subscription authentication and provider
 errors—are returned to the calling client and captured as encrypted local
-evidence, but current normalizers reject them for finalization with
+evidence, but current normalizers reject them for notarization with
 `unsupported_provider_http_status` before proof generation.
 
 Real provider requests can incur cost. The ordinary test suite uses offline

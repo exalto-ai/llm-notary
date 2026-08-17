@@ -45,7 +45,7 @@ class Handler(BaseHTTPRequestHandler):
                             "status": "active",
                             "valid_from_unix_ms": 0,
                             "valid_until_unix_ms": None,
-                            "finalize_until_unix_ms": None,
+                            "notarize_until_unix_ms": None,
                         }
                     ],
                 }
@@ -76,7 +76,7 @@ class Handler(BaseHTTPRequestHandler):
                         "url": "http://127.0.0.1:9797/upload",
                         "headers": {
                             "content-length": str(type(self).expected_size),
-                            "content-type": "application/vnd.llmnotary.trace-package+zip",
+                            "content-type": "application/vnd.exalto.notary.trace-package+zip",
                         },
                     },
                 },

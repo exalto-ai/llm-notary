@@ -18,27 +18,27 @@ export function notaryLifecycle(status: string) {
   switch (status) {
     case 'active':
       return {
-        label: 'Accepts new captures and finalizations',
+        label: 'Accepts new captures and notarizations',
         description:
-          'May accept new captures and finalizations only while its configured windows permit.',
+          'May accept new captures and notarizations only while its configured windows permit.',
       };
     case 'retiring':
       return {
-        label: 'Finalization-only',
+        label: 'Notarization-only',
         description:
-          'May finalize compatible existing bundles until its configured cutoff. It does not accept new captures.',
+          'May notarize compatible existing capture checkpoints until its configured cutoff. It does not accept new captures.',
       };
     case 'retired':
       return {
         label: 'Historical verification only',
         description:
-          'Retained only to verify evidence from its configured trust window. It cannot accept captures or finalizations.',
+          'Retained only to verify evidence from its configured trust window. It cannot accept captures or notarizations.',
       };
     case 'revoked':
       return {
         label: 'Untrusted',
         description:
-          'Revoked and not trusted for capture, finalization, or historical verification.',
+          'Revoked and not trusted for capture, notarization, or historical verification.',
       };
     case 'configured':
       return {

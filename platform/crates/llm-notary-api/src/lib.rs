@@ -21,12 +21,13 @@ use tracing::Instrument as _;
 use url::Url;
 use uuid::Uuid;
 
-use llm_notary_core::notary_directory::{
-    NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, NotaryTransport,
+use notary_core::pagination::{CursorScope, Page, PageQuery, decode_cursor};
+use notary_core::registry::{
+    NotaryKeyStatus, NotaryTransport, Registry as NotaryDirectory,
+    RegistryRecord as NotaryDirectoryRecord,
 };
-use llm_notary_core::pagination::{CursorScope, Page, PageQuery, decode_cursor};
-use llm_notary_core::sha256_hex;
-use llm_notary_core::telemetry;
+use notary_core::sha256_hex;
+use notary_core::telemetry;
 use opentelemetry::global;
 use opentelemetry_http::HeaderExtractor;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
@@ -377,7 +378,7 @@ impl From<NotaryDirectoryRecord> for NotaryDirectoryRecordResponse {
             },
             valid_from_unix_ms: record.valid_from_unix_ms,
             valid_until_unix_ms: record.valid_until_unix_ms,
-            finalize_until_unix_ms: record.finalize_until_unix_ms,
+            finalize_until_unix_ms: record.notarize_until_unix_ms,
         }
     }
 }
@@ -2376,8 +2377,9 @@ pub(crate) async fn insert_test_github_user(
 
 #[cfg(test)]
 mod tests {
-    use llm_notary_core::notary_directory::{
-        DIRECTORY_FORMAT_V3, NotaryDirectoryRecord, NotaryKeyStatus, NotaryTransport, key_id,
+    use notary_core::registry::{
+        NotaryKeyStatus, NotaryTransport, REGISTRY_FORMAT as DIRECTORY_FORMAT_V3,
+        RegistryRecord as NotaryDirectoryRecord, key_id,
     };
 
     use super::*;
@@ -3100,6 +3102,8 @@ mod tests {
             generation: 1,
             active_key_id: key_id.clone(),
             notaries: vec![NotaryDirectoryRecord {
+                name: "Test notary".to_owned(),
+                operator: "Exalto".to_owned(),
                 host: "notary.example.com".to_owned(),
                 port: 7047,
                 transport: NotaryTransport::Tcp,
@@ -3108,7 +3112,7 @@ mod tests {
                 status: NotaryKeyStatus::Active,
                 valid_from_unix_ms: 0,
                 valid_until_unix_ms: None,
-                finalize_until_unix_ms: None,
+                notarize_until_unix_ms: None,
             }],
         }
     }

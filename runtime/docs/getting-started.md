@@ -20,7 +20,7 @@ curl -fsSL https://notary.exalto.ai/install.sh | sh
 ```
 
 The installer selects the current complete `latest` build, verifies the selected
-archive against its published SHA-256 value, and places `llm-notaryd` and
+archive against its published SHA-256 value, and places `notaryd` and
 `llm-notary` in `~/.local/bin`. Set `LLM_NOTARY_INSTALL_DIR` to choose another
 destination. The checksum detects corruption in transit or storage; it is not
 an independent signature because the archive and checksum share a publisher.
@@ -41,7 +41,7 @@ decides whether an update is available. Any different build ID is accepted,
 including an intentional rollback selected by the trusted `latest` channel.
 The updater stages and verifies both programs before changing either one and
 keeps rollback copies until both replacements are confirmed. It never stops a
-running daemon. Restart `llm-notaryd` yourself after active capture and proof
+running daemon. Restart `notaryd` yourself after active capture and proof
 work finishes. On Windows the daemon must already be stopped. The update is
 applied by a short-lived helper after the running CLI exits; the version
 command reports the helper's last durable result.
@@ -51,7 +51,7 @@ To build from source instead, install Rust 1.95.0 and a C toolchain, then run:
 ```bash
 git clone https://github.com/exalto-ai/notary-runtime.git
 cd notary-runtime
-cargo install --locked --path crates/llm-notary-daemon --bin llm-notaryd
+cargo install --locked --path crates/notaryd --bin notaryd
 cargo install --locked --path crates/llm-notary-cli --bin llm-notary
 ```
 
@@ -59,7 +59,7 @@ Node.js 24 and npm are needed only for dashboard development.
 
 The two installed programs have separate jobs:
 
-- `llm-notaryd` is the long-running local proxy and administration daemon.
+- `notaryd` is the long-running local proxy and administration daemon.
 - `llm-notary` is a short-lived REST client for that daemon.
 
 `llm-notary` does not start the service and does not open the catalog, vault,
@@ -68,7 +68,7 @@ or artifacts directly.
 ## Install the portable agent skill
 
 The CLI bundles an [Agent Skills](https://agentskills.io) compatible skill that
-teaches local coding agents how to find captures, finalize selected calls,
+teaches local coding agents how to find captures, notarize selected calls,
 verify traces, diagnose operations, and ask before state-changing or public
 actions. Installing the skill does not contact or start the daemon.
 
@@ -113,7 +113,7 @@ boundaries.
 ## Start the daemon
 
 ```bash
-llm-notaryd
+notaryd
 ```
 
 The first start writes `config.toml` once and initializes the bundle vault. The
@@ -135,7 +135,7 @@ Configuration locations are:
 Use an explicit file when developing isolated configurations:
 
 ```bash
-llm-notaryd --config /path/to/config.toml
+notaryd --config /path/to/config.toml
 ```
 
 Pass the same `--config` option to `llm-notary` commands.
@@ -164,7 +164,7 @@ signed document. The client pins accepted generations and key lifecycle state
 locally.
 
 Each hosted capture requests a purpose-specific ticket without requesting a
-copy of the account balance or a byte grant. Each hosted finalization requests
+copy of the account balance or a byte grant. Each hosted notarization requests
 a separate ticket bound to the bundle's exact record digest and authenticated
 allowance. Tickets are neither cached nor renewed. Admission denial, exhausted
 allowance, expiry, and coordinator outages are returned as bounded errors that
@@ -220,32 +220,32 @@ Find the capture without decrypting every bundle:
 
 ```bash
 llm-notary captures list --provider openai --limit 20
-llm-notary captures show cap-example
+llm-notary captures show trc-example
 ```
 
 Human capture output omits stored prompt and output previews. For structured
 capture discovery that enters an agent transcript, use `llm-notary --json
 captures list --metadata-only`; raw capture-list JSON includes those previews.
 
-## Finalize and verify
+## Notarize and verify
 
-Only captured `2xx` responses are currently eligible for finalization.
-Finalization is asynchronous and can take much longer than capture:
+Only captured `2xx` responses are currently eligible for notarization.
+Notarization is asynchronous and can take much longer than capture:
 
 ```bash
-llm-notary finalize cap-example --wait
+llm-notary notarize trc-example --wait
 ```
 
 Without `--wait`, save the returned operation identifier and poll it while the
 operation is `queued` or `running`. With `--wait`, the CLI follows the operation
 and reports authenticated transcript bytes and completed commitments. Its
-terminal state is `finalized`, `failed`, or `interrupted`. A successful
+terminal state is `notarized`, `failed`, or `interrupted`. A successful
 operation writes one deterministic `<capture-id>.llmtrace` package and retains
 the encrypted bundle. `--json --wait` suppresses intermediate lines so standard
 output remains one JSON value.
 
 ```bash
-llm-notary traces verify cap-example
+llm-notary traces verify trc-example
 ```
 
 Verification checks the notary evidence, authenticated provider, disclosed

@@ -46,7 +46,7 @@ const MAX_ARTIFACT_BYTES: u64 = 1024 * 1024 * 1024;
 const PUBLIC_KEY: &str = include_str!("../../../config/updater-public-key.txt");
 const JOURNAL_NAME: &str = ".llm-notary-update.json";
 const CLI_BACKUP_NAME: &str = ".llm-notary.update-backup";
-const DAEMON_BACKUP_NAME: &str = ".llm-notaryd.update-backup";
+const DAEMON_BACKUP_NAME: &str = ".notaryd.update-backup";
 const CHANNEL_STATE_NAME: &str = "update-channel.json";
 const CHANNEL_LOCK_NAME: &str = ".update-channel.lock";
 #[cfg(windows)]
@@ -583,7 +583,7 @@ fn validate_manifest(manifest: &ReleaseManifest) -> Result<()> {
         validate_artifact(
             &artifacts.llm_notaryd,
             &manifest.build_id,
-            Some(&format!("llm-notaryd-{platform}{suffix}")),
+            Some(&format!("notaryd-{platform}{suffix}")),
         )?;
     }
     ensure!(
@@ -748,7 +748,7 @@ async fn install_verified_release(
     make_executable(&cli_candidate)?;
     make_executable(&daemon_candidate)?;
     ensure_candidate_build(&cli_candidate, &release.manifest.build_id, "llm-notary")?;
-    ensure_candidate_build(&daemon_candidate, &release.manifest.build_id, "llm-notaryd")?;
+    ensure_candidate_build(&daemon_candidate, &release.manifest.build_id, "notaryd")?;
 
     #[cfg(unix)]
     {
@@ -960,9 +960,9 @@ fn cli_file_name() -> &'static str {
 
 fn daemon_file_name() -> &'static str {
     if cfg!(windows) {
-        "llm-notaryd.exe"
+        "notaryd.exe"
     } else {
-        "llm-notaryd"
+        "notaryd"
     }
 }
 
@@ -996,7 +996,7 @@ fn ensure_windows_daemon_stopped(install: &InstallPaths) -> Result<()> {
     };
     ensure!(
         handle != INVALID_HANDLE_VALUE,
-        "llm-notaryd.exe is running, locked, or cannot be replaced; stop the local service before updating"
+        "notaryd.exe is running, locked, or cannot be replaced; stop the local service before updating"
     );
     unsafe { CloseHandle(handle) };
     Ok(())
@@ -1004,7 +1004,7 @@ fn ensure_windows_daemon_stopped(install: &InstallPaths) -> Result<()> {
 
 fn ensure_current_pair(install: &InstallPaths) -> Result<()> {
     ensure_candidate_build(&install.cli, BUILD_ID, "llm-notary")?;
-    ensure_candidate_build(&install.daemon, BUILD_ID, "llm-notaryd")
+    ensure_candidate_build(&install.daemon, BUILD_ID, "notaryd")
 }
 
 fn ensure_candidate_build(path: &Path, build_id: &str, program: &str) -> Result<()> {
@@ -1055,7 +1055,7 @@ fn apply_update_transaction(
     write_journal(install, build_id, JournalPhase::ReplacingDaemon)?;
     if let Err(error) = replace_file(daemon_candidate, &install.daemon) {
         let _ = recover_interrupted_update(install);
-        return Err(error).context("installing the new llm-notaryd");
+        return Err(error).context("installing the new notaryd");
     }
     sync_directory(&install.directory)?;
     write_journal(install, build_id, JournalPhase::DaemonReplaced)?;
@@ -1068,7 +1068,7 @@ fn apply_update_transaction(
     sync_directory(&install.directory)?;
     write_journal(install, build_id, JournalPhase::CliReplaced)?;
     if let Err(error) = ensure_candidate_build(&install.cli, build_id, "llm-notary")
-        .and_then(|_| ensure_candidate_build(&install.daemon, build_id, "llm-notaryd"))
+        .and_then(|_| ensure_candidate_build(&install.daemon, build_id, "notaryd"))
     {
         let rollback = rollback_to_backups(install);
         return match rollback {
@@ -1170,7 +1170,7 @@ fn recover_interrupted_update(install: &InstallPaths) -> Result<()> {
         }
         JournalPhase::CliReplaced => {
             if ensure_candidate_build(&install.cli, &journal.build_id, "llm-notary").is_ok()
-                && ensure_candidate_build(&install.daemon, &journal.build_id, "llm-notaryd").is_ok()
+                && ensure_candidate_build(&install.daemon, &journal.build_id, "notaryd").is_ok()
             {
                 return finish_transaction(install);
             }
@@ -1299,7 +1299,7 @@ pub fn run_windows_apply_helper(
         message: if result.is_ok() {
             "The staged Windows update completed.".into()
         } else {
-            "The staged Windows update failed safely. Run llm-notary update again after stopping llm-notaryd.".into()
+            "The staged Windows update failed safely. Run llm-notary update again after stopping notaryd.".into()
         },
     };
     let report_path = install_directory.join(WINDOWS_RESULT_NAME);
@@ -1481,16 +1481,16 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let install = InstallPaths::from_directory(directory.path());
         executable(&install.cli, "llm-notary", "old-build");
-        executable(&install.daemon, "llm-notaryd", "old-build");
+        executable(&install.daemon, "notaryd", "old-build");
         let cli_candidate = directory.path().join("new-cli");
         let daemon_candidate = directory.path().join("new-daemon");
         executable(&cli_candidate, "llm-notary", "new-build");
-        executable(&daemon_candidate, "llm-notaryd", "new-build");
+        executable(&daemon_candidate, "notaryd", "new-build");
 
         apply_update_transaction(&install, &cli_candidate, &daemon_candidate, "new-build").unwrap();
 
         ensure_candidate_build(&install.cli, "new-build", "llm-notary").unwrap();
-        ensure_candidate_build(&install.daemon, "new-build", "llm-notaryd").unwrap();
+        ensure_candidate_build(&install.daemon, "new-build", "notaryd").unwrap();
         assert!(!install.journal.exists());
         assert!(!install.cli_backup.exists());
         assert!(!install.daemon_backup.exists());
@@ -1502,10 +1502,10 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let install = InstallPaths::from_directory(directory.path());
         executable(&install.cli, "llm-notary", "old-build");
-        executable(&install.daemon, "llm-notaryd", "old-build");
+        executable(&install.daemon, "notaryd", "old-build");
         let missing_cli_candidate = directory.path().join("missing-cli");
         let daemon_candidate = directory.path().join("new-daemon");
-        executable(&daemon_candidate, "llm-notaryd", "new-build");
+        executable(&daemon_candidate, "notaryd", "new-build");
 
         assert!(
             apply_update_transaction(
@@ -1518,7 +1518,7 @@ mod tests {
         );
 
         ensure_candidate_build(&install.cli, "old-build", "llm-notary").unwrap();
-        ensure_candidate_build(&install.daemon, "old-build", "llm-notaryd").unwrap();
+        ensure_candidate_build(&install.daemon, "old-build", "notaryd").unwrap();
         assert!(!install.journal.exists());
         assert!(!install.cli_backup.exists());
         assert!(!install.daemon_backup.exists());
@@ -1530,13 +1530,13 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let install = InstallPaths::from_directory(directory.path());
         executable(&install.cli, "llm-notary", "old-build");
-        executable(&install.daemon, "llm-notaryd", "old-build");
+        executable(&install.daemon, "notaryd", "old-build");
         hard_link_backup(&install.cli, &install.cli_backup).unwrap();
         hard_link_backup(&install.daemon, &install.daemon_backup).unwrap();
         let new_cli = directory.path().join("new-cli");
         let new_daemon = directory.path().join("new-daemon");
         executable(&new_cli, "llm-notary", "new-build");
-        executable(&new_daemon, "llm-notaryd", "new-build");
+        executable(&new_daemon, "notaryd", "new-build");
         replace_file(&new_cli, &install.cli).unwrap();
         replace_file(&new_daemon, &install.daemon).unwrap();
         write_journal(&install, "new-build", JournalPhase::ReplacingCli).unwrap();
@@ -1544,7 +1544,7 @@ mod tests {
         recover_interrupted_update(&install).unwrap();
 
         ensure_candidate_build(&install.cli, "old-build", "llm-notary").unwrap();
-        ensure_candidate_build(&install.daemon, "old-build", "llm-notaryd").unwrap();
+        ensure_candidate_build(&install.daemon, "old-build", "notaryd").unwrap();
     }
 
     #[cfg(unix)]
@@ -1553,13 +1553,13 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let install = InstallPaths::from_directory(directory.path());
         executable(&install.cli, "llm-notary", "old-build");
-        executable(&install.daemon, "llm-notaryd", "old-build");
+        executable(&install.daemon, "notaryd", "old-build");
         hard_link_backup(&install.cli, &install.cli_backup).unwrap();
         hard_link_backup(&install.daemon, &install.daemon_backup).unwrap();
         let new_cli = directory.path().join("new-cli");
         let new_daemon = directory.path().join("new-daemon");
         executable(&new_cli, "llm-notary", "new-build");
-        executable(&new_daemon, "llm-notaryd", "new-build");
+        executable(&new_daemon, "notaryd", "new-build");
         replace_file(&new_cli, &install.cli).unwrap();
         replace_file(&new_daemon, &install.daemon).unwrap();
         write_journal(&install, "new-build", JournalPhase::CliReplaced).unwrap();
@@ -1567,7 +1567,7 @@ mod tests {
         recover_interrupted_update(&install).unwrap();
 
         ensure_candidate_build(&install.cli, "new-build", "llm-notary").unwrap();
-        ensure_candidate_build(&install.daemon, "new-build", "llm-notaryd").unwrap();
+        ensure_candidate_build(&install.daemon, "new-build", "notaryd").unwrap();
         assert!(path_is_absent(&install.journal).unwrap());
         assert!(path_is_absent(&install.cli_backup).unwrap());
         assert!(path_is_absent(&install.daemon_backup).unwrap());

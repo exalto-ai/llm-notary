@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use axum::extract::rejection::QueryRejection;
 use axum::http::StatusCode;
-use llm_notary_core::pagination::PaginationError;
+use notary_core::pagination::PaginationError;
 
 use super::ApiError;
 
@@ -36,7 +36,7 @@ pub(super) fn api_error(error: PaginationError) -> ApiError {
 #[cfg(test)]
 mod tests {
     use axum::{body::to_bytes, extract::Query, http::Uri, response::IntoResponse};
-    use llm_notary_core::pagination::PageQuery;
+    use notary_core::pagination::PageQuery;
 
     use super::query_error;
 

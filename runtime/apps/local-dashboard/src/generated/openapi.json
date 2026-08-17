@@ -310,677 +310,6 @@
         ]
       }
     },
-    "/v1/captures": {
-      "get": {
-        "tags": [
-          "local-admin"
-        ],
-        "summary": "Search local captures",
-        "description": "Lists the local capture catalog with opaque cursor pagination, punctuation-safe preview search, and exact metadata filters. The legacy offset parameter is rejected; restart traversal without a cursor instead.",
-        "operationId": "captures",
-        "parameters": [
-          {
-            "name": "query",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "model",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "provider",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "capture_state",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "finalization_state",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "streaming",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "boolean"
-            }
-          },
-          {
-            "name": "created_after_unix_ms",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64",
-              "minimum": 0
-            }
-          },
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Page size; defaults to 50",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int32",
-              "maximum": 200,
-              "minimum": 1
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "offset",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int64",
-              "minimum": 0
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Page_CaptureResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {},
-          {
-            "basicAuth": []
-          }
-        ]
-      }
-    },
-    "/v1/captures/{capture_id}": {
-      "get": {
-        "tags": [
-          "local-admin"
-        ],
-        "summary": "Get a capture",
-        "description": "Returns safe capture metadata, retained artifact digests, and finalization history for one capture.",
-        "operationId": "capture",
-        "parameters": [
-          {
-            "name": "capture_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CaptureDetailResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {},
-          {
-            "basicAuth": []
-          }
-        ]
-      }
-    },
-    "/v1/captures/{capture_id}/finalizations": {
-      "post": {
-        "tags": [
-          "local-admin"
-        ],
-        "summary": "Queue capture finalization",
-        "description": "Queues durable proof generation for an eligible captured provider response or returns its existing finalization operation. Captures with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.",
-        "operationId": "start_finalization",
-        "parameters": [
-          {
-            "name": "capture_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "202": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/FinalizationResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {},
-          {
-            "basicAuth": []
-          }
-        ]
-      }
-    },
-    "/v1/captures/{capture_id}/package": {
-      "get": {
-        "tags": [
-          "local-admin"
-        ],
-        "summary": "Download a finalized verified package",
-        "description": "Returns the exact stored canonical .llmtrace bytes as the primary portable verification artifact.",
-        "operationId": "download_package",
-        "parameters": [
-          {
-            "name": "capture_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/vnd.llmnotary.trace-package+zip": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "integer",
-                    "format": "int32",
-                    "minimum": 0
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {},
-          {
-            "basicAuth": []
-          }
-        ]
-      }
-    },
-    "/v1/captures/{capture_id}/shares": {
-      "post": {
-        "tags": [
-          "local-admin"
-        ],
-        "summary": "Share a finalized verified session",
-        "description": "Verifies one finalized capture locally, applies the public disclosure safety policy, and uploads the exact package. Force overrides only unexplained high-entropy values.",
-        "operationId": "share_capture",
-        "parameters": [
-          {
-            "name": "capture_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateShareRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "202": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ShareResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {},
-          {
-            "basicAuth": []
-          }
-        ]
-      }
-    },
-    "/v1/captures/{capture_id}/trace": {
-      "get": {
-        "tags": [
-          "local-admin"
-        ],
-        "summary": "Decode a finalized trace",
-        "description": "Returns the finalized package manifest and canonical OpenTelemetry trace for inspection.",
-        "operationId": "trace",
-        "parameters": [
-          {
-            "name": "capture_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TraceResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {},
-          {
-            "basicAuth": []
-          }
-        ]
-      }
-    },
-    "/v1/captures/{capture_id}/trace:verify": {
-      "post": {
-        "tags": [
-          "local-admin"
-        ],
-        "summary": "Verify a finalized trace",
-        "description": "Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.",
-        "operationId": "verify_trace",
-        "parameters": [
-          {
-            "name": "capture_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/VerificationResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {},
-          {
-            "basicAuth": []
-          }
-        ]
-      }
-    },
     "/v1/events": {
       "get": {
         "tags": [
@@ -1023,7 +352,7 @@
             }
           },
           {
-            "name": "capture_id",
+            "name": "trace_id",
             "in": "query",
             "required": false,
             "schema": {
@@ -1117,7 +446,7 @@
           "local-admin"
         ],
         "summary": "Get configured notary trust",
-        "description": "Returns a safe read-only projection of the local or server-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.",
+        "description": "Returns a safe read-only projection of the local or server-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Registry membership describes allowed protocol use and does not report endpoint health.",
         "operationId": "notaries",
         "responses": {
           "200": {
@@ -1195,7 +524,7 @@
             }
           },
           {
-            "name": "capture_id",
+            "name": "trace_id",
             "in": "query",
             "required": false,
             "schema": {
@@ -1719,17 +1048,688 @@
         ]
       }
     },
+    "/v1/traces": {
+      "get": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Search local traces",
+        "description": "Lists the local capture metadata with opaque cursor pagination, punctuation-safe preview search, and exact metadata filters. The legacy offset parameter is rejected; restart traversal without a cursor instead.",
+        "operationId": "traces",
+        "parameters": [
+          {
+            "name": "query",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "model",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "provider",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "capture_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "notarization_status",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "streaming",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "name": "created_after_unix_ms",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size; defaults to 50",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 200,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_CaptureResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/traces/{trace_id}": {
+      "get": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Get a capture",
+        "description": "Returns safe capture metadata, retained artifact digests, and notarization history for one capture.",
+        "operationId": "trace",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CaptureDetailResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/traces/{trace_id}/notarizations": {
+      "post": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Queue capture notarization",
+        "description": "Queues durable proof generation for an eligible captured provider response or returns its existing notarization operation. Traces with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.",
+        "operationId": "start_notarization",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotarizationResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/traces/{trace_id}/package": {
+      "get": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Download a notarized verified package",
+        "description": "Returns the exact stored canonical .llmtrace bytes as the primary portable verification artifact.",
+        "operationId": "download_package",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/vnd.exalto.notary.trace-package+zip": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/traces/{trace_id}/shares": {
+      "post": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Share a notarized verified session",
+        "description": "Verifies one notarized capture locally, applies the public disclosure safety policy, and uploads the exact package. Force overrides only unexplained high-entropy values.",
+        "operationId": "share_capture",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateShareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ShareResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/traces/{trace_id}/trace": {
+      "get": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Decode a trace package",
+        "description": "Returns the trace package manifest and canonical OpenTelemetry trace for inspection.",
+        "operationId": "trace_content",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TraceResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
+    "/v1/traces/{trace_id}/trace:verify": {
+      "post": {
+        "tags": [
+          "local-admin"
+        ],
+        "summary": "Verify a trace package",
+        "description": "Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.",
+        "operationId": "verify_trace",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerificationResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "basicAuth": []
+          }
+        ]
+      }
+    },
     "/v1/traces:verify": {
       "post": {
         "tags": [
           "local-admin"
         ],
-        "summary": "Verify a portable finalized trace",
+        "summary": "Verify a portable trace package",
         "description": "Verifies uploaded .llmtrace bytes against an optional explicit notary key or the daemon's configured trust source. The package is processed in memory and is not retained.",
         "operationId": "verify_uploaded_trace",
         "parameters": [
           {
-            "name": "x-llm-notary-trusted-notary-key",
+            "name": "x-notary-trusted-notary-key",
             "in": "header",
             "description": "Optional compressed SEC1 notary public key in hexadecimal",
             "required": false,
@@ -1743,7 +1743,7 @@
         ],
         "requestBody": {
           "content": {
-            "application/vnd.llmnotary.trace-package+zip": {
+            "application/vnd.exalto.notary.trace-package+zip": {
               "schema": {
                 "type": "array",
                 "items": {
@@ -2031,7 +2031,7 @@
         "required": [
           "capture",
           "artifacts",
-          "finalizations"
+          "notarizations"
         ],
         "properties": {
           "artifacts": {
@@ -2043,7 +2043,7 @@
           "capture": {
             "$ref": "#/components/schemas/CaptureResponse"
           },
-          "finalizations": {
+          "notarizations": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/OperationResponse"
@@ -2054,25 +2054,22 @@
       "CaptureResponse": {
         "type": "object",
         "required": [
-          "capture_id",
+          "trace_id",
           "created_at_unix_ms",
           "provider",
           "operation",
           "streaming",
           "request_bytes",
-          "capture_state",
-          "finalization_state",
-          "finalization_eligible",
+          "capture_status",
+          "notarization_status",
+          "notarization_eligible",
           "prompt_preview",
           "prompt_preview_truncated",
           "output_preview",
           "output_preview_truncated"
         ],
         "properties": {
-          "capture_id": {
-            "type": "string"
-          },
-          "capture_state": {
+          "capture_status": {
             "type": "string"
           },
           "completed_at_unix_ms": {
@@ -2102,18 +2099,6 @@
               "null"
             ]
           },
-          "finalization_eligible": {
-            "type": "boolean"
-          },
-          "finalization_ineligibility_code": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "finalization_state": {
-            "type": "string"
-          },
           "http_status": {
             "type": [
               "integer",
@@ -2121,6 +2106,18 @@
             ],
             "format": "int32",
             "minimum": 0
+          },
+          "notarization_eligible": {
+            "type": "boolean"
+          },
+          "notarization_ineligibility_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "notarization_status": {
+            "type": "string"
           },
           "operation": {
             "type": "string"
@@ -2167,6 +2164,9 @@
           },
           "streaming": {
             "type": "boolean"
+          },
+          "trace_id": {
+            "type": "string"
           }
         }
       },
@@ -2184,10 +2184,10 @@
       "CountsResponse": {
         "type": "object",
         "required": [
-          "total_captures",
+          "total_traces",
           "capturing",
-          "ready_to_finalize",
-          "finalized",
+          "ready_to_notarize",
+          "notarized",
           "failed",
           "active_operations"
         ],
@@ -2207,17 +2207,17 @@
             "format": "int64",
             "minimum": 0
           },
-          "finalized": {
+          "notarized": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
           },
-          "ready_to_finalize": {
+          "ready_to_notarize": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
           },
-          "total_captures": {
+          "total_traces": {
             "type": "integer",
             "format": "int64",
             "minimum": 0
@@ -2354,12 +2354,6 @@
           "message"
         ],
         "properties": {
-          "capture_id": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "created_at_unix_ms": {
             "type": "integer",
             "format": "int64",
@@ -2384,21 +2378,12 @@
           },
           "severity": {
             "type": "string"
-          }
-        }
-      },
-      "FinalizationResponse": {
-        "type": "object",
-        "required": [
-          "operation",
-          "deduplicated"
-        ],
-        "properties": {
-          "deduplicated": {
-            "type": "boolean"
           },
-          "operation": {
-            "$ref": "#/components/schemas/OperationResponse"
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -2437,14 +2422,7 @@
               "string",
               "null"
             ],
-            "description": "Selected active directory key. Explicit configuration has no directory\nlifecycle selection and therefore leaves this field unset."
-          },
-          "directory_source": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Public URL from which the current pinned directory generation came."
+            "description": "Selected active Registry key. Explicit configuration has no Registry\nlifecycle selection and therefore leaves this field unset."
           },
           "generation": {
             "type": [
@@ -2460,9 +2438,31 @@
               "$ref": "#/components/schemas/NotaryResponse"
             }
           },
+          "registry_source": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Public URL from which the current pinned Registry generation came."
+          },
           "source": {
             "type": "string",
-            "description": "`directory` for the locally pinned trust store or\n`explicit_configuration` for a self-hosted endpoint and key."
+            "description": "`registry` for the locally pinned trust store or\n`explicit_configuration` for a self-hosted endpoint and key."
+          }
+        }
+      },
+      "NotarizationResponse": {
+        "type": "object",
+        "required": [
+          "operation",
+          "deduplicated"
+        ],
+        "properties": {
+          "deduplicated": {
+            "type": "boolean"
+          },
+          "operation": {
+            "$ref": "#/components/schemas/OperationResponse"
           }
         }
       },
@@ -2478,16 +2478,16 @@
           "endpoint": {
             "type": "string"
           },
-          "finalize_until_unix_ms": {
+          "key_id": {
+            "type": "string"
+          },
+          "notarize_until_unix_ms": {
             "type": [
               "integer",
               "null"
             ],
             "format": "int64",
             "minimum": 0
-          },
-          "key_id": {
-            "type": "string"
           },
           "status": {
             "type": "string",
@@ -2560,7 +2560,7 @@
         "properties": {
           "phase": {
             "type": "string",
-            "description": "Current milestone: queued, preparing, proving, signing, packaging,\ncomplete, or unknown for an operation migrated from an older catalog."
+            "description": "Current milestone: queued, preparing, proving, signing, packaging,\ncomplete, or unknown for an operation migrated from an older metadata."
           },
           "proof": {
             "oneOf": [
@@ -2616,6 +2616,7 @@
         "required": [
           "operation_id",
           "kind",
+          "trace_id",
           "state",
           "attempt",
           "created_at_unix_ms",
@@ -2634,12 +2635,6 @@
             "items": {
               "$ref": "#/components/schemas/OperationAttemptResponse"
             }
-          },
-          "capture_id": {
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "completed_at_unix_ms": {
             "type": [
@@ -2682,6 +2677,9 @@
           },
           "state": {
             "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
           }
         }
       },
@@ -2690,6 +2688,7 @@
         "required": [
           "operation_id",
           "kind",
+          "trace_id",
           "state",
           "attempt",
           "created_at_unix_ms",
@@ -2700,12 +2699,6 @@
             "type": "integer",
             "format": "int32",
             "minimum": 0
-          },
-          "capture_id": {
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "completed_at_unix_ms": {
             "type": [
@@ -2745,6 +2738,9 @@
           },
           "state": {
             "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
           }
         }
       },
@@ -2782,25 +2778,22 @@
             "items": {
               "type": "object",
               "required": [
-                "capture_id",
+                "trace_id",
                 "created_at_unix_ms",
                 "provider",
                 "operation",
                 "streaming",
                 "request_bytes",
-                "capture_state",
-                "finalization_state",
-                "finalization_eligible",
+                "capture_status",
+                "notarization_status",
+                "notarization_eligible",
                 "prompt_preview",
                 "prompt_preview_truncated",
                 "output_preview",
                 "output_preview_truncated"
               ],
               "properties": {
-                "capture_id": {
-                  "type": "string"
-                },
-                "capture_state": {
+                "capture_status": {
                   "type": "string"
                 },
                 "completed_at_unix_ms": {
@@ -2830,18 +2823,6 @@
                     "null"
                   ]
                 },
-                "finalization_eligible": {
-                  "type": "boolean"
-                },
-                "finalization_ineligibility_code": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "finalization_state": {
-                  "type": "string"
-                },
                 "http_status": {
                   "type": [
                     "integer",
@@ -2849,6 +2830,18 @@
                   ],
                   "format": "int32",
                   "minimum": 0
+                },
+                "notarization_eligible": {
+                  "type": "boolean"
+                },
+                "notarization_ineligibility_code": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "notarization_status": {
+                  "type": "string"
                 },
                 "operation": {
                   "type": "string"
@@ -2895,6 +2888,9 @@
                 },
                 "streaming": {
                   "type": "boolean"
+                },
+                "trace_id": {
+                  "type": "string"
                 }
               }
             }
@@ -2922,6 +2918,7 @@
               "required": [
                 "operation_id",
                 "kind",
+                "trace_id",
                 "state",
                 "attempt",
                 "created_at_unix_ms",
@@ -2932,12 +2929,6 @@
                   "type": "integer",
                   "format": "int32",
                   "minimum": 0
-                },
-                "capture_id": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
                 },
                 "completed_at_unix_ms": {
                   "type": [
@@ -2976,6 +2967,9 @@
                   "minimum": 0
                 },
                 "state": {
+                  "type": "string"
+                },
+                "trace_id": {
                   "type": "string"
                 }
               }
@@ -3016,16 +3010,13 @@
       "ShareResponse": {
         "type": "object",
         "required": [
-          "capture_id",
+          "trace_id",
           "share_id",
           "state",
           "visibility",
           "status_url"
         ],
         "properties": {
-          "capture_id": {
-            "type": "string"
-          },
           "package_url": {
             "type": [
               "string",
@@ -3045,6 +3036,9 @@
             "type": "string"
           },
           "status_url": {
+            "type": "string"
+          },
+          "trace_id": {
             "type": "string"
           },
           "visibility": {
@@ -3191,16 +3185,16 @@
       "TraceResponse": {
         "type": "object",
         "required": [
-          "capture_id",
+          "trace_id",
           "manifest",
           "trace"
         ],
         "properties": {
-          "capture_id": {
-            "type": "string"
-          },
           "manifest": {},
-          "trace": {}
+          "trace": {},
+          "trace_id": {
+            "type": "string"
+          }
         }
       },
       "UpdateCaptureSetting": {
@@ -3256,17 +3250,17 @@
       "VerificationResponse": {
         "type": "object",
         "required": [
-          "capture_id",
+          "trace_id",
           "verified",
           "verified_at_unix_ms",
           "notary_key_id",
           "trust_source"
         ],
         "properties": {
-          "capture_id": {
+          "notary_key_id": {
             "type": "string"
           },
-          "notary_key_id": {
+          "trace_id": {
             "type": "string"
           },
           "trust_source": {

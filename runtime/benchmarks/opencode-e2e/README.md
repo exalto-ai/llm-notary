@@ -7,25 +7,25 @@ benchmark.
 The runner:
 
 1. preflights the exact `:free` OpenRouter model and tool support;
-2. starts `llm-notaryd` with isolated config, catalog, vault, and artifact paths;
+2. starts `notaryd` with isolated config, catalog, vault, and artifact paths;
 3. copies the failing Python fixture into a private `/tmp` directory;
 4. lets a six-step OpenCode agent modify only `retry_after.py`;
 5. checks the test result and exact diff allowlist;
-6. finalizes and locally verifies eligible captures;
+6. notarizes and locally verifies eligible traces;
 7. scans the public disclosure, explicitly accepts only entropy-heuristic false
    positives, publishes it as Listed, and polls admission;
 8. downloads each public package and verifies it again; and
 9. deletes all private state and retains only sanitized metrics and public URLs.
 
 OpenCode raw events, prompts, model output, daemon logs, provider responses,
-encrypted bundles, and private finalized packages are never written to the
+encrypted checkpoints, and private trace packages are never written to the
 result artifact or workflow log.
 
 The runner allows at most one retry from a fresh fixture for a typed transient
 provider failure, a response that makes no tool call, or a nonzero OpenCode
 exit after the tests and exact diff gate have already passed with only eligible
 HTTP 200 captures. Captures from the failed attempt are recorded as sanitized
-metadata but are never finalized or published.
+metadata but are never notarized or shared.
 
 ## Local run
 
@@ -44,7 +44,7 @@ isolated child process.
 Build and run from the repository root:
 
 ```bash
-cargo build --release --locked -p llm-notary-daemon --bins -p llm-notary-cli --bin llm-notary
+cargo build --release --locked -p notaryd --bins -p llm-notary-cli --bin llm-notary
 npm install --global opencode-ai@1.18.11
 
 set -a
@@ -55,14 +55,14 @@ result=/tmp/llm-notary-opencode-e2e-result.json
 set +e
 python3 benchmarks/opencode-e2e/run.py \
   --llm-notary target/release/llm-notary \
-  --llm-notaryd target/release/llm-notaryd \
+  --notaryd target/release/notaryd \
   --result "$result"
 status=$?
 python3 benchmarks/opencode-e2e/notify.py "$result" || true
 exit "$status"
 ```
 
-This deliberately consumes hosted finalization capacity and publishes Listed
+This deliberately consumes hosted notarization capacity and creates Listed
 public traces in the Library. The runner's `--force` publication decision cannot
 override a known secret, credential field, disclosed header, malformed package,
 or failed verification. Unit tests do neither:

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 runtime_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-state_dir=${LLM_NOTARY_CLUSTER_STATE_DIR:-"$runtime_dir/.llm-notary-cluster"}
+state_dir=${NOTARYD_CLUSTER_STATE_DIR:-"$runtime_dir/.notaryd-cluster"}
 compose_file="$runtime_dir/compose.cluster.yml"
 env_file="$state_dir/.env"
 
@@ -15,7 +15,7 @@ Usage:
   ./llm-notary-cluster.sh logs
   ./llm-notary-cluster.sh down
 
-Set LLM_NOTARY_CLUSTER_STATE_DIR to keep generated configuration elsewhere.
+Set NOTARYD_CLUSTER_STATE_DIR to keep generated configuration elsewhere.
 EOF
 }
 

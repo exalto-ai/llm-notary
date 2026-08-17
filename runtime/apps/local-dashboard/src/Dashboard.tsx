@@ -88,8 +88,6 @@ import {
 import type {
   AccountConnection,
   AccountConnectionStarted,
-  Capture,
-  CaptureDetail,
   Event,
   LocalApi,
   Notary,
@@ -98,6 +96,8 @@ import type {
   Share,
   ShareVisibility,
   Status,
+  TraceDetail,
+  TraceSummary,
   Verification,
 } from './api';
 import { LocalApiError } from './api';
@@ -119,7 +119,7 @@ const logoUrl = new URL('./assets/notary-mark.svg', import.meta.url).href;
 export type DashboardView =
   | 'overview'
   | 'captures'
-  | 'finalizations'
+  | 'notarizations'
   | 'traces'
   | 'sharing'
   | 'activity'
@@ -176,8 +176,8 @@ function AxisSelect({
 const navigation: Array<{ view: DashboardView; label: string; icon: typeof Gauge }> = [
   { view: 'overview', label: 'Overview', icon: Gauge },
   { view: 'captures', label: 'Captures', icon: Archive },
-  { view: 'finalizations', label: 'Finalizations', icon: ListChecks },
-  { view: 'traces', label: 'Finalized traces', icon: FileCheck2 },
+  { view: 'notarizations', label: 'Notarizations', icon: ListChecks },
+  { view: 'traces', label: 'Notarized traces', icon: FileCheck2 },
   { view: 'sharing', label: 'Share', icon: Send },
   { view: 'activity', label: 'Activity', icon: Activity },
   { view: 'settings', label: 'Settings', icon: Settings },
@@ -222,7 +222,7 @@ function formatBytes(value?: number | null) {
 }
 
 function stateTone(state: string) {
-  if (['finalized', 'verified', 'ready', 'success', 'admitted'].includes(state)) return 'ready';
+  if (['succeeded', 'verified', 'ready', 'success', 'admitted'].includes(state)) return 'ready';
   if (['failed', 'interrupted', 'error', 'unavailable', 'rejected', 'expired'].includes(state))
     return 'danger';
   if (['running', 'capturing', 'queued', 'uploading', 'verifying'].includes(state)) return 'active';
@@ -238,7 +238,7 @@ function StatusLabel({ state }: { state: string }) {
   );
 }
 
-function finalizationPhaseLabel(phase: string) {
+function notarizationPhaseLabel(phase: string) {
   switch (phase) {
     case 'queued':
       return 'Waiting for proof worker';
@@ -1016,8 +1016,8 @@ function Sidebar({
 }) {
   const count = (view: DashboardView) =>
     view === 'captures'
-      ? status.counts.ready_to_finalize
-      : view === 'finalizations'
+      ? status.counts.ready_to_notarize
+      : view === 'notarizations'
         ? status.counts.active_operations
         : undefined;
   return (
@@ -1060,8 +1060,8 @@ function TopNav({
 }) {
   const count = (view: DashboardView) =>
     view === 'captures'
-      ? status.counts.ready_to_finalize
-      : view === 'finalizations'
+      ? status.counts.ready_to_notarize
+      : view === 'notarizations'
         ? status.counts.active_operations
         : undefined;
   return (
@@ -1177,9 +1177,9 @@ function View({
   switch (route.view) {
     case 'captures':
       return <CapturesView api={api} selectedId={route.id} navigate={navigate} />;
-    case 'finalizations':
+    case 'notarizations':
       return (
-        <FinalizationsView api={api} selectedId={route.id} navigate={navigate} fixture={fixture} />
+        <NotarizationsView api={api} selectedId={route.id} navigate={navigate} fixture={fixture} />
       );
     case 'traces':
       return <TracesView api={api} selectedId={route.id} navigate={navigate} />;
@@ -1207,9 +1207,9 @@ function OverviewView({
   const events = useQuery({ queryKey: ['events'], queryFn: () => api.events() });
   const stats = [
     ['Capturing', status.counts.capturing, 'active'],
-    ['Ready to finalize', status.counts.ready_to_finalize, 'muted'],
-    ['Finalizing', status.counts.active_operations, 'active'],
-    ['Finalized', status.counts.finalized, 'ready'],
+    ['Ready to notarize', status.counts.ready_to_notarize, 'muted'],
+    ['Notarizing', status.counts.active_operations, 'active'],
+    ['Notarized', status.counts.notarized, 'ready'],
     ['Failed', status.counts.failed, 'danger'],
   ] as const;
   return (
@@ -1251,13 +1251,13 @@ function OverviewView({
       </SimpleGrid>
       <section className="overview-work">
         <div>
-          <Text className="eyebrow">Capture states</Text>
+          <Text className="eyebrow">Trace states</Text>
           <div className="count-strip">
             {stats.map(([label, value, tone]) => (
               <UnstyledButton
                 key={label}
                 onClick={() =>
-                  navigate({ view: label === 'Finalizing' ? 'finalizations' : 'captures' })
+                  navigate({ view: label === 'Notarizing' ? 'notarizations' : 'captures' })
                 }
               >
                 <span className={`count-marker count-marker--${tone}`} />
@@ -1270,25 +1270,25 @@ function OverviewView({
         <Paper className="next-action">
           <Text className="eyebrow">Next action</Text>
           <Title order={2}>
-            {status.counts.ready_to_finalize
-              ? 'Finalize captured evidence'
+            {status.counts.ready_to_notarize
+              ? 'Notarize captured evidence'
               : status.capture_enabled
                 ? 'Send a provider request'
                 : 'Capture requests are off'}
           </Title>
           <Text>
-            {status.counts.ready_to_finalize
-              ? `${status.counts.ready_to_finalize} capture${status.counts.ready_to_finalize === 1 ? ' is' : 's are'} ready to finalize.`
+            {status.counts.ready_to_notarize
+              ? `${status.counts.ready_to_notarize} trace${status.counts.ready_to_notarize === 1 ? ' is' : 's are'} ready to notarize.`
               : status.capture_enabled
                 ? `Point an SDK at the ${isCluster ? 'cluster' : 'local'} provider proxy to create a private capture.`
                 : 'Requests still use the provider proxy, but go directly to the provider and create no evidence.'}
           </Text>
           <Button
             onClick={() =>
-              navigate({ view: status.counts.ready_to_finalize ? 'captures' : 'settings' })
+              navigate({ view: status.counts.ready_to_notarize ? 'captures' : 'settings' })
             }
           >
-            {status.counts.ready_to_finalize
+            {status.counts.ready_to_notarize
               ? 'Review captures'
               : status.capture_enabled
                 ? 'View proxy routes'
@@ -1357,7 +1357,7 @@ function CapturesView({
   const [model, setModel] = useState('');
   const [provider, setProvider] = useState<string | null>(null);
   const [captureState, setCaptureState] = useState<string | null>(null);
-  const [finalization, setFinalization] = useState<string | null>(null);
+  const [notarization, setNotarization] = useState<string | null>(null);
   const [streaming, setStreaming] = useState<string | null>(null);
   const [time, setTime] = useState<string | null>(null);
   const mobile = useMediaQuery('(max-width: 820px)');
@@ -1369,17 +1369,17 @@ function CapturesView({
       model,
       provider,
       captureState,
-      finalization,
+      notarization,
       streaming,
       createdAfter,
     ],
     queryFn: ({ pageParam }) =>
-      api.captures({
+      api.traces({
         query,
         model,
         provider: provider ?? undefined,
-        capture_state: captureState ?? undefined,
-        finalization_state: finalization ?? undefined,
+        capture_status: captureState ?? undefined,
+        notarization_status: notarization ?? undefined,
         streaming: streaming ? streaming === 'streaming' : undefined,
         created_after_unix_ms: createdAfter,
         limit: 50,
@@ -1390,16 +1390,16 @@ function CapturesView({
   });
   const selectedDetail = useQuery({
     queryKey: ['capture', selectedId],
-    queryFn: () => api.capture(requiredValue(selectedId, 'selected capture')),
+    queryFn: () => api.trace(requiredValue(selectedId, 'selected capture')),
     enabled: Boolean(selectedId),
   });
   const visible = useMemo(
     () => captures.data?.pages.flatMap((page) => page.items) ?? [],
     [captures.data],
   );
-  const activeId = selectedId ?? visible[0]?.capture_id;
+  const activeId = selectedId ?? visible[0]?.trace_id;
   const active =
-    visible.find((capture) => capture.capture_id === activeId) ?? selectedDetail.data?.capture;
+    visible.find((capture) => capture.trace_id === activeId) ?? selectedDetail.data?.capture;
   const showDetail = Boolean(mobile && selectedId);
   return (
     <div className="view-page capture-page">
@@ -1436,11 +1436,11 @@ function CapturesView({
             onChange={setCaptureState}
           />
           <AxisSelect
-            ariaLabel="Finalization filter"
-            placeholder="All finalization states"
-            data={['not_requested', 'queued', 'running', 'finalized', 'failed', 'interrupted']}
-            value={finalization}
-            onChange={setFinalization}
+            ariaLabel="Notarization filter"
+            placeholder="All notarization states"
+            data={['not_requested', 'queued', 'running', 'succeeded', 'failed', 'interrupted']}
+            value={notarization}
+            onChange={setNotarization}
           />
           <AxisSelect
             ariaLabel="Streaming filter"
@@ -1453,7 +1453,7 @@ function CapturesView({
             onChange={setStreaming}
           />
           <AxisSelect
-            ariaLabel="Capture time filter"
+            ariaLabel="Trace time filter"
             placeholder="Any time"
             data={[
               { value: 'hour', label: 'Last hour' },
@@ -1470,7 +1470,7 @@ function CapturesView({
       ) : captures.error ? (
         <QueryError error={captures.error} title="Captures are unavailable" />
       ) : selectedDetail.error ? (
-        <QueryError error={selectedDetail.error} title="Capture detail is unavailable" />
+        <QueryError error={selectedDetail.error} title="Trace detail is unavailable" />
       ) : !visible.length && !active ? (
         <EmptyState
           title="No captures match"
@@ -1481,11 +1481,11 @@ function CapturesView({
           <ScrollArea className="master-list" type="auto">
             <ul className="capture-list" aria-label="Captures">
               {visible.map((capture) => (
-                <li key={capture.capture_id}>
+                <li key={capture.trace_id}>
                   <CaptureRow
                     capture={capture}
-                    active={capture.capture_id === activeId}
-                    onClick={() => navigate({ view: 'captures', id: capture.capture_id })}
+                    active={capture.trace_id === activeId}
+                    onClick={() => navigate({ view: 'captures', id: capture.trace_id })}
                   />
                 </li>
               ))}
@@ -1523,7 +1523,7 @@ function CaptureRow({
   active,
   onClick,
 }: {
-  capture: Capture;
+  capture: TraceSummary;
   active: boolean;
   onClick: () => void;
 }) {
@@ -1532,9 +1532,9 @@ function CaptureRow({
       <span className="capture-row-state">
         <StatusLabel
           state={
-            capture.finalization_state === 'not_requested'
-              ? capture.capture_state
-              : capture.finalization_state
+            capture.notarization_status === 'not_requested'
+              ? capture.capture_status
+              : capture.notarization_status
           }
         />
       </span>
@@ -1557,26 +1557,26 @@ function CaptureInspector({
   navigate,
 }: {
   api: LocalApi;
-  capture: Capture;
+  capture: TraceSummary;
   mobile: boolean;
   onBack: () => void;
   navigate: (route: Route) => void;
 }) {
   const queryClient = useQueryClient();
   const detail = useQuery({
-    queryKey: ['capture', capture.capture_id],
-    queryFn: () => api.capture(capture.capture_id),
+    queryKey: ['capture', capture.trace_id],
+    queryFn: () => api.trace(capture.trace_id),
   });
-  const failedOperation = detail.data?.finalizations.find(
+  const failedOperation = detail.data?.notarizations.find(
     (operation) =>
-      operation.capture_id === capture.capture_id &&
+      operation.trace_id === capture.trace_id &&
       ['failed', 'interrupted'].includes(operation.state),
   );
-  const finalize = useMutation({
-    mutationFn: () => api.startFinalization(capture.capture_id),
+  const notarize = useMutation({
+    mutationFn: () => api.startNotarization(capture.trace_id),
     onSuccess: (result) => {
       notifications.show({
-        title: result.deduplicated ? 'Already in the queue' : 'Finalization queued',
+        title: result.deduplicated ? 'Already in the queue' : 'Notarization queued',
         message: result.deduplicated
           ? 'The existing operation remains active.'
           : 'Proof generation will run in the background.',
@@ -1585,9 +1585,9 @@ function CaptureInspector({
       queryClient.invalidateQueries({ queryKey: ['operations'] });
       queryClient.invalidateQueries({ queryKey: ['status'] });
       queryClient.invalidateQueries({ queryKey: ['events'] });
-      navigate({ view: 'finalizations', id: result.operation.operation_id });
+      navigate({ view: 'notarizations', id: result.operation.operation_id });
     },
-    onError: (error) => mutationError('Could not finalize', error),
+    onError: (error) => mutationError('Could not notarize', error),
   });
   const retry = useMutation({
     mutationFn: () => api.retry(requiredValue(failedOperation, 'failed operation').operation_id),
@@ -1600,26 +1600,25 @@ function CaptureInspector({
       queryClient.invalidateQueries({ queryKey: ['operations'] });
       queryClient.invalidateQueries({ queryKey: ['status'] });
       queryClient.invalidateQueries({ queryKey: ['events'] });
-      navigate({ view: 'finalizations', id: operation.operation_id });
+      navigate({ view: 'notarizations', id: operation.operation_id });
     },
-    onError: (error) => mutationError('Could not retry finalization', error),
+    onError: (error) => mutationError('Could not retry notarization', error),
   });
   if (detail.isLoading) return <LoadingState />;
-  if (detail.error)
-    return <QueryError error={detail.error} title="Capture detail is unavailable" />;
+  if (detail.error) return <QueryError error={detail.error} title="Trace detail is unavailable" />;
   const value = detail.data;
   if (!value)
-    return <ErrorState title="Capture detail is unavailable" onRetry={() => detail.refetch()} />;
+    return <ErrorState title="Trace detail is unavailable" onRetry={() => detail.refetch()} />;
   const incompatibleProviderResponse =
-    capture.capture_state === 'captured' &&
-    capture.finalization_ineligibility_code === 'unsupported_provider_http_status';
-  const canFinalize =
-    capture.capture_state === 'captured' &&
-    capture.finalization_state === 'not_requested' &&
-    capture.finalization_eligible;
+    capture.capture_status === 'captured' &&
+    capture.notarization_ineligibility_code === 'unsupported_provider_http_status';
+  const canNotarize =
+    capture.capture_status === 'captured' &&
+    capture.notarization_status === 'not_requested' &&
+    capture.notarization_eligible;
   const canRetry =
-    capture.capture_state === 'captured' &&
-    capture.finalization_eligible &&
+    capture.capture_status === 'captured' &&
+    capture.notarization_eligible &&
     Boolean(failedOperation?.retryable);
   return (
     <article className="inspector capture-inspector">
@@ -1630,18 +1629,18 @@ function CaptureInspector({
       )}
       <div className="inspector-head">
         <div>
-          <Text className="eyebrow">Capture detail</Text>
+          <Text className="eyebrow">Trace detail</Text>
           <Title order={2}>{capture.requested_model ?? 'Unreported model'}</Title>
-          <Text className="mono-id">{capture.capture_id}</Text>
+          <Text className="mono-id">{capture.trace_id}</Text>
         </div>
         <Group>
-          {canFinalize && (
+          {canNotarize && (
             <Button
-              loading={finalize.isPending}
+              loading={notarize.isPending}
               leftSection={<Play size={15} />}
-              onClick={() => finalize.mutate()}
+              onClick={() => notarize.mutate()}
             >
-              Finalize
+              Notarize
             </Button>
           )}
           {canRetry && (
@@ -1650,22 +1649,22 @@ function CaptureInspector({
               leftSection={<RefreshCw size={15} />}
               onClick={() => retry.mutate()}
             >
-              Retry finalization
+              Retry notarization
             </Button>
           )}
         </Group>
       </div>
       <Lifecycle capture={capture} />
       {incompatibleProviderResponse && (
-        <div className="finalization-ineligible-note" role="status">
+        <div className="notarization-ineligible-note" role="status">
           <XCircle size={18} aria-hidden="true" />
           <div>
-            <b>Provider response cannot be finalized</b>
+            <b>Provider response cannot be notarized</b>
             <Text>
-              The provider returned HTTP {capture.http_status}. Finalization currently supports
+              The provider returned HTTP {capture.http_status}. Notarization currently supports
               successful provider responses only.
             </Text>
-            <code>{capture.finalization_ineligibility_code}</code>
+            <code>{capture.notarization_ineligibility_code}</code>
           </div>
         </div>
       )}
@@ -1696,14 +1695,14 @@ function CaptureInspector({
       <InspectorSection title="Retained artifacts">
         <ArtifactList detail={value} />
       </InspectorSection>
-      <InspectorSection title="Finalization history">
-        <FinalizationHistory operations={value.finalizations} navigate={navigate} />
+      <InspectorSection title="Notarization history">
+        <NotarizationHistory operations={value.notarizations} navigate={navigate} />
       </InspectorSection>
     </article>
   );
 }
 
-function FinalizationHistory({
+function NotarizationHistory({
   operations,
   navigate,
 }: {
@@ -1711,14 +1710,14 @@ function FinalizationHistory({
   navigate: (route: Route) => void;
 }) {
   if (!operations.length)
-    return <Text className="empty-copy">No finalization has been requested for this capture.</Text>;
+    return <Text className="empty-copy">No notarization has been requested for this capture.</Text>;
   return (
     <ol className="history-list">
       {operations.map((operation) => (
         <li key={operation.operation_id}>
           <div>
             <Group gap="xs">
-              <b>Attempted finalization</b>
+              <b>Attempted notarization</b>
               <StatusLabel state={operation.state} />
             </Group>
             <Text>
@@ -1729,7 +1728,7 @@ function FinalizationHistory({
           <Button
             size="xs"
             variant="subtle"
-            onClick={() => navigate({ view: 'finalizations', id: operation.operation_id })}
+            onClick={() => navigate({ view: 'notarizations', id: operation.operation_id })}
           >
             Inspect
           </Button>
@@ -1739,32 +1738,32 @@ function FinalizationHistory({
   );
 }
 
-function Lifecycle({ capture }: { capture: Capture }) {
+function Lifecycle({ capture }: { capture: TraceSummary }) {
   const steps = [
-    { label: 'Captured', state: capture.capture_state === 'capturing' ? 'active' : 'ready' },
+    { label: 'Captured', state: capture.capture_status === 'capturing' ? 'active' : 'ready' },
     {
-      label: 'Bundle encrypted',
+      label: 'Capture checkpoint encrypted',
       state:
-        capture.capture_state === 'captured'
+        capture.capture_status === 'captured'
           ? 'ready'
-          : capture.capture_state === 'failed'
+          : capture.capture_status === 'failed'
             ? 'danger'
             : 'muted',
     },
     {
-      label: 'Finalized',
+      label: 'Notarized',
       state:
-        capture.finalization_state === 'finalized'
+        capture.notarization_status === 'succeeded'
           ? 'ready'
-          : ['running', 'queued'].includes(capture.finalization_state)
+          : ['running', 'queued'].includes(capture.notarization_status)
             ? 'active'
-            : capture.finalization_state === 'failed'
+            : capture.notarization_status === 'failed'
               ? 'danger'
               : 'muted',
     },
   ];
   return (
-    <ol className="lifecycle" aria-label="Capture lifecycle">
+    <ol className="lifecycle" aria-label="Trace lifecycle">
       {steps.map((step) => (
         <li key={step.label} className={`lifecycle--${step.state}`}>
           <span aria-hidden="true" />
@@ -1793,7 +1792,7 @@ function Fact({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
-function ArtifactList({ detail }: { detail: CaptureDetail }) {
+function ArtifactList({ detail }: { detail: TraceDetail }) {
   return (
     <div className="artifact-list">
       {detail.artifacts.map((artifact) => (
@@ -1810,7 +1809,7 @@ function ArtifactList({ detail }: { detail: CaptureDetail }) {
   );
 }
 
-function FinalizationsView({
+function NotarizationsView({
   api,
   selectedId,
   navigate,
@@ -1843,25 +1842,25 @@ function FinalizationsView({
       {operations.isLoading || (activeId && selectedOperation.isLoading) ? (
         <LoadingState />
       ) : operations.error ? (
-        <QueryError error={operations.error} title="Finalizations are unavailable" />
+        <QueryError error={operations.error} title="Notarizations are unavailable" />
       ) : selectedOperation.error ? (
-        <QueryError error={selectedOperation.error} title="Finalization detail is unavailable" />
+        <QueryError error={selectedOperation.error} title="Notarization detail is unavailable" />
       ) : !items.length && !active ? (
         <EmptyState
           icon={ListChecks}
-          title="No finalizations yet"
+          title="No notarizations yet"
           copy="Queue one from a captured provider response."
         />
       ) : (
         <ResizableSplit className="operations-layout">
           <ScrollArea className="operations-list-scroll" type="auto">
-            <ul className="operations-list" aria-label="Finalizations">
+            <ul className="operations-list" aria-label="Notarizations">
               {items.map((operation) => (
                 <li key={operation.operation_id}>
                   <OperationRow
                     operation={operation}
                     active={active?.operation_id === operation.operation_id}
-                    onClick={() => navigate({ view: 'finalizations', id: operation.operation_id })}
+                    onClick={() => navigate({ view: 'notarizations', id: operation.operation_id })}
                   />
                 </li>
               ))}
@@ -1873,7 +1872,7 @@ function FinalizationsView({
                 loading={operations.isFetchingNextPage}
                 onClick={() => operations.fetchNextPage()}
               >
-                Load more finalizations
+                Load more notarizations
               </Button>
             )}
           </ScrollArea>
@@ -1904,10 +1903,10 @@ function OperationRow({
         <StatusLabel state={operation.state} />
         <time>{formatDate(operation.created_at_unix_ms)}</time>
       </span>
-      <code>{operation.capture_id ?? 'Capture not reported'}</code>
+      <code>{operation.trace_id ?? 'Trace not reported'}</code>
       <small>
         {percent === null
-          ? finalizationPhaseLabel(operation.progress.phase)
+          ? notarizationPhaseLabel(operation.progress.phase)
           : `${percent}% transcript authenticated`}{' '}
         · Attempt {operation.attempt}
       </small>
@@ -1923,7 +1922,7 @@ function ProofProgress({ operation }: { operation: Operation }) {
       <div className="proof-phase-status" role="status">
         <i className="proof-phase-marker" aria-hidden="true" />
         <div>
-          <b>{finalizationPhaseLabel(operation.progress.phase)}</b>
+          <b>{notarizationPhaseLabel(operation.progress.phase)}</b>
           <span>Proof-work totals will appear when transcript authentication starts.</span>
         </div>
       </div>
@@ -1956,7 +1955,7 @@ function ProofProgress({ operation }: { operation: Operation }) {
         <span>
           {proof.commitments_completed} / {proof.commitments_total} commitments sealed
         </span>
-        <span>{finalizationPhaseLabel(operation.progress.phase)}</span>
+        <span>{notarizationPhaseLabel(operation.progress.phase)}</span>
       </footer>
     </section>
   );
@@ -1985,7 +1984,7 @@ function OperationInspector({
       queryClient.invalidateQueries({ queryKey: ['status'] });
       queryClient.invalidateQueries({ queryKey: ['events'] });
     },
-    onError: (error) => mutationError('Could not retry finalization', error),
+    onError: (error) => mutationError('Could not retry notarization', error),
   });
   const retryable = operation.retryable;
   return (
@@ -1997,7 +1996,7 @@ function OperationInspector({
             {operation.state === 'running'
               ? fixture
                 ? 'Simulated proof generation'
-                : finalizationPhaseLabel(operation.progress.phase)
+                : notarizationPhaseLabel(operation.progress.phase)
               : operation.state.replaceAll('_', ' ')}
           </Title>
           <Text className="mono-id">{operation.operation_id}</Text>
@@ -2015,7 +2014,7 @@ function OperationInspector({
       )}
       <ProofProgress operation={operation} />
       <dl className="receipt-list">
-        <Fact label="Capture" value={operation.capture_id ?? '—'} />
+        <Fact label="Trace" value={operation.trace_id ?? '—'} />
         <Fact label="Attempt" value={String(operation.attempt)} />
         <Fact label="Started" value={formatDate(operation.started_at_unix_ms)} />
         <Fact label="Finished" value={formatDate(operation.completed_at_unix_ms)} />
@@ -2053,7 +2052,7 @@ function OperationInspector({
           loading={retry.isPending}
           onClick={() => retry.mutate()}
         >
-          Retry finalization
+          Retry notarization
         </Button>
       )}
     </Paper>
@@ -2072,22 +2071,22 @@ function TracesView({
   const [query, setQuery] = useState('');
   const mobile = useMediaQuery('(max-width: 820px)');
   const captures = useInfiniteQuery({
-    queryKey: ['captures', 'finalized', query],
+    queryKey: ['captures', 'succeeded', query],
     queryFn: ({ pageParam }) =>
-      api.captures({ finalization_state: 'finalized', query, limit: 50, cursor: pageParam }),
+      api.traces({ notarization_status: 'succeeded', query, limit: 50, cursor: pageParam }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor ?? undefined,
   });
   const visible = captures.data?.pages.flatMap((page) => page.items) ?? [];
-  const activeId = selectedId ?? visible[0]?.capture_id;
+  const activeId = selectedId ?? visible[0]?.trace_id;
   const showDetail = Boolean(mobile && selectedId);
   return (
     <div className="view-page">
       {!showDetail && (
         <div className="filter-bar filter-bar--short">
           <TextInput
-            aria-label="Search finalized traces"
-            placeholder="Search finalized traces"
+            aria-label="Search notarized traces"
+            placeholder="Search notarized traces"
             leftSection={<Search size={15} />}
             value={query}
             onChange={(event) => setQuery(event.currentTarget.value)}
@@ -2097,24 +2096,24 @@ function TracesView({
       {captures.isLoading ? (
         <LoadingState />
       ) : captures.error ? (
-        <QueryError error={captures.error} title="Finalized traces are unavailable" />
+        <QueryError error={captures.error} title="Notarized traces are unavailable" />
       ) : !visible.length && !selectedId ? (
         <EmptyState
           icon={FileCheck2}
-          title="No finalized traces"
-          copy="Finalize a captured provider response or clear the search."
+          title="No notarized traces"
+          copy="Notarize a captured provider response or clear the search."
         />
       ) : (
         <ResizableSplit className={`trace-layout ${showDetail ? 'show-detail' : ''}`}>
           {!showDetail ? (
             <div>
-              <ul className="trace-list" aria-label="Finalized traces">
+              <ul className="trace-list" aria-label="Notarized traces">
                 {visible.map((capture) => (
-                  <li key={capture.capture_id}>
+                  <li key={capture.trace_id}>
                     <CaptureRow
                       capture={capture}
-                      active={capture.capture_id === activeId}
-                      onClick={() => navigate({ view: 'traces', id: capture.capture_id })}
+                      active={capture.trace_id === activeId}
+                      onClick={() => navigate({ view: 'traces', id: capture.trace_id })}
                     />
                   </li>
                 ))}
@@ -2160,7 +2159,10 @@ function TraceInspector({
   mobile: boolean;
   onBack: () => void;
 }) {
-  const trace = useQuery({ queryKey: ['trace', captureId], queryFn: () => api.trace(captureId) });
+  const trace = useQuery({
+    queryKey: ['trace', captureId],
+    queryFn: () => api.traceContent(captureId),
+  });
   const [verification, setVerification] = useState<Verification | null>(null);
   const [activeTab, setActiveTab] = useState<string | null>('summary');
   const currentCapture = useRef(captureId);
@@ -2172,7 +2174,7 @@ function TraceInspector({
   const verify = useMutation({
     mutationFn: () => api.verify(captureId),
     onSuccess: (result) => {
-      if (currentCapture.current !== result.capture_id) return;
+      if (currentCapture.current !== result.trace_id) return;
       setVerification(result);
       setActiveTab('verification');
       notifications.show({
@@ -2215,7 +2217,7 @@ function TraceInspector({
     <article className="trace-inspector">
       {mobile && (
         <Button variant="subtle" leftSection={<ArrowLeft size={15} />} onClick={onBack}>
-          All finalized traces
+          All notarized traces
         </Button>
       )}
       <Group justify="space-between" align="flex-start">
@@ -2256,7 +2258,7 @@ function TraceInspector({
               trace, and the supporting TLSNotary evidence.
             </Text>
             <dl className="metadata-grid">
-              <Fact label="Capture" value={captureId} />
+              <Fact label="Trace" value={captureId} />
               <Fact
                 label="Format"
                 value={typeof manifest.format === 'string' ? manifest.format : 'Not reported'}
@@ -2311,7 +2313,7 @@ function TraceInspector({
               title="Verification passed"
               verified
               fields={[
-                ['Capture', verification.capture_id],
+                ['Trace', verification.trace_id],
                 ['Verified at', formatDate(verification.verified_at_unix_ms)],
                 ['Notary key', verification.notary_key_id],
                 ['Trust source', verification.trust_source],
@@ -2440,7 +2442,7 @@ function SharingView({
   const captures = useInfiniteQuery({
     queryKey: ['captures', 'sharing'],
     queryFn: ({ pageParam }) =>
-      api.captures({ finalization_state: 'finalized', limit: 50, cursor: pageParam }),
+      api.traces({ notarization_status: 'succeeded', limit: 50, cursor: pageParam }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor ?? undefined,
   });
@@ -2449,10 +2451,10 @@ function SharingView({
   const [confirm, setConfirm] = useState(false);
   const [submitted, setSubmitted] = useState<Share | null>(null);
   const eligible = captures.data?.pages.flatMap((page) => page.items) ?? [];
-  const selectedId = selected ?? eligible[0]?.capture_id ?? null;
+  const selectedId = selected ?? eligible[0]?.trace_id ?? null;
   const preview = useQuery({
     queryKey: ['share-preview', selectedId],
-    queryFn: () => api.trace(requiredValue(selectedId, 'selected capture')),
+    queryFn: () => api.traceContent(requiredValue(selectedId, 'selected capture')),
     enabled: Boolean(selectedId),
   });
   useEffect(() => {
@@ -2519,7 +2521,7 @@ function SharingView({
     <div className="view-page share-flow">
       <section className="sharing-toolbar" aria-label="Share settings">
         {captures.error ? (
-          <QueryError error={captures.error} title="Finalized traces are unavailable" />
+          <QueryError error={captures.error} title="Notarized traces are unavailable" />
         ) : captures.isLoading ? (
           <Loader size="sm" />
         ) : eligible.length ? (
@@ -2527,10 +2529,10 @@ function SharingView({
             <div className="sharing-trace-picker">
               <AxisSelect
                 label="Trace"
-                placeholder="Choose a finalized trace"
+                placeholder="Choose a notarized trace"
                 clearable={false}
                 data={eligible.map((capture) => ({
-                  value: capture.capture_id,
+                  value: capture.trace_id,
                   label: (
                     <ProviderIdentity
                       provider={capture.provider}
@@ -2590,7 +2592,7 @@ function SharingView({
             </Button>
           </>
         ) : (
-          <EmptyState title="Nothing ready to share" copy="Finalize a capture first." />
+          <EmptyState title="Nothing ready to share" copy="Notarize a capture first." />
         )}
       </section>
       {submitted && (
@@ -2640,7 +2642,7 @@ function SharingView({
             {fixture && shareState === 'admitted' && (
               <Button
                 variant="subtle"
-                onClick={() => navigate({ view: 'traces', id: submitted.capture_id })}
+                onClick={() => navigate({ view: 'traces', id: submitted.trace_id })}
               >
                 Open local trace
               </Button>
@@ -2659,7 +2661,7 @@ function SharingView({
           ) : (
             <EmptyState
               title="Choose a trace"
-              copy="Select a finalized trace to preview its disclosed content."
+              copy="Select a notarized trace to preview its disclosed content."
             />
           )}
         </Paper>
@@ -2733,7 +2735,7 @@ function ActivityView({ api }: { api: LocalApi }) {
   const createdAfter = useMemo(() => timeRangeStart(time), [time]);
   const filters = {
     severity: severity ?? undefined,
-    capture_id: captureId,
+    trace_id: captureId,
     operation_id: operationId,
     event_type: eventType,
     created_after_unix_ms: createdAfter,
@@ -2757,8 +2759,8 @@ function ActivityView({ api }: { api: LocalApi }) {
           onChange={setSeverity}
         />
         <TextInput
-          aria-label="Activity capture ID"
-          placeholder="Capture ID"
+          aria-label="Activity trace ID"
+          placeholder="Trace ID"
           value={captureId}
           onChange={(event) => setCaptureId(event.currentTarget.value)}
         />
@@ -2815,7 +2817,7 @@ function ActivityView({ api }: { api: LocalApi }) {
         <EmptyState
           icon={Activity}
           title="No activity"
-          copy="New capture and finalization events will appear here."
+          copy="New capture and notarization events will appear here."
         />
       )}
     </div>
@@ -2852,7 +2854,7 @@ function EventList({ events }: { events: Event[] }) {
               <b>{event.message}</b>
               <StatusLabel state={event.severity} />
             </Group>
-            <Text>{event.capture_id ?? event.operation_id ?? event.event_type}</Text>
+            <Text>{event.trace_id ?? event.operation_id ?? event.event_type}</Text>
           </div>
           <time>{formatDate(event.created_at_unix_ms)}</time>
         </div>
@@ -2901,8 +2903,8 @@ function LocalNotaryRecord({
         />
         <Fact label="Capture cutoff" value={formatNotaryBoundary(record.valid_until_unix_ms)} />
         <Fact
-          label="Finalization cutoff"
-          value={formatNotaryBoundary(record.finalize_until_unix_ms)}
+          label="Notarization cutoff"
+          value={formatNotaryBoundary(record.notarize_until_unix_ms)}
         />
       </dl>
       <div className="local-notary-key">
@@ -2980,8 +2982,8 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
                   : 'Pinned directory'
               }
             />
-            {notaries.data?.directory_source && (
-              <Fact label="Directory source" value={notaries.data.directory_source} />
+            {notaries.data?.registry_source && (
+              <Fact label="Registry source" value={notaries.data.registry_source} />
             )}
           </dl>
           {notaries.data?.source === 'explicit_configuration' && (

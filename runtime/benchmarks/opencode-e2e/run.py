@@ -22,12 +22,12 @@ from pathlib import Path
 from typing import Any
 
 
-RESULT_FORMAT = "llm-notary/opencode-e2e-result/v1"
+RESULT_FORMAT = "notary/opencode-e2e-result/v1"
 FIXTURE_VERSION = "retry-after/v1"
 DEFAULT_MODEL = "openrouter/cohere/north-mini-code:free"
-PUBLICATION_VISIBILITY = "listed"
+SHARE_VISIBILITY = "listed"
 ALLOWED_FILES = {"retry_after.py"}
-TERMINAL_OPERATION_STATES = {"finalized", "failed", "interrupted"}
+TERMINAL_OPERATION_STATES = {"succeeded", "failed", "interrupted"}
 TERMINAL_SHARE_STATES = {"admitted", "rejected"}
 SENSITIVE_ENV_NAME = re.compile(
     r"(?:KEY|TOKEN|SECRET|PASSWORD|COOKIE|WEBHOOK|CREDENTIAL|AUTH)", re.IGNORECASE
@@ -52,7 +52,7 @@ DISCLOSURE_RULES = {
         r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b", re.IGNORECASE
     ),
     "environment_dump": re.compile(
-        r"(?m)^(?:OPENROUTER|LLM_NOTARY|GITHUB|ACTIONS|AWS|AZURE)_[A-Z0-9_]+="
+        r"(?m)^(?:OPENROUTER|NOTARYD|NOTARY_API|NOTARY_SERVER|GITHUB|ACTIONS|AWS|AZURE)_[A-Z0-9_]+="
     ),
 }
 
@@ -328,8 +328,8 @@ def validate_changed_files(files: list[str]) -> bool:
     return bool(files) and set(files) == ALLOWED_FILES and len(files) == len(set(files))
 
 
-def classify_provider_failure(captures: list[dict[str, Any]]) -> str | None:
-    statuses = {item.get("http_status") for item in captures}
+def classify_provider_failure(traces: list[dict[str, Any]]) -> str | None:
+    statuses = {item.get("http_status") for item in traces}
     if 429 in statuses:
         return "provider_rate_limited"
     if 503 in statuses:
@@ -340,12 +340,12 @@ def classify_provider_failure(captures: list[dict[str, Any]]) -> str | None:
 
 
 def classify_attempt_failure(
-    captures: list[dict[str, Any]],
+    traces: list[dict[str, Any]],
     exit_code: int,
     tool_calls: int,
     task_completed: bool,
 ) -> tuple[str, bool]:
-    provider_failure = classify_provider_failure(captures)
+    provider_failure = classify_provider_failure(traces)
     if provider_failure is not None:
         return provider_failure, provider_failure in {
             "provider_rate_limited",
@@ -354,14 +354,14 @@ def classify_attempt_failure(
     if (
         exit_code != 0
         and task_completed
-        and captures
+        and traces
         and all(
-            item.get("http_status") == 200 and item.get("finalization_eligible")
-            for item in captures
+            item.get("http_status") == 200 and item.get("notarization_eligible")
+            for item in traces
         )
     ):
         return "agent_post_task_error", True
-    if exit_code == 0 and tool_calls == 0 and captures:
+    if exit_code == 0 and tool_calls == 0 and traces:
         return "agent_no_tool_call", True
     return "agent_task_failed", False
 
@@ -378,7 +378,7 @@ def toml_string(value: Path | str) -> str:
 
 def write_daemon_config(root: Path, proxy_port: int, admin_port: int) -> Path:
     config = root / "daemon" / "config.toml"
-    source = f"""format = "llm-notary/agent-config/v1"
+    source = f"""format = "notary/notaryd-config/v1"
 
 [proxy]
 listen = "127.0.0.1:{proxy_port}"
@@ -388,11 +388,11 @@ max_attestable_http_bytes = 16777216
 listen = "127.0.0.1:{admin_port}"
 
 [storage]
-bundle_dir = {toml_string(root / "private" / "bundles")}
-finalized_dir = {toml_string(root / "private" / "finalized")}
+checkpoint_dir = {toml_string(root / "private" / "capture-checkpoints")}
+package_dir = {toml_string(root / "private" / "trace-packages")}
 
-[catalog]
-path = {toml_string(root / "private" / "catalog.sqlite3")}
+[metadata]
+path = {toml_string(root / "private" / "metadata.db")}
 prompt_preview_chars = 0
 output_preview_chars = 0
 full_text_search = false
@@ -408,7 +408,7 @@ def wait_for_daemon(origin: str, process: subprocess.Popen[bytes]) -> None:
             raise CanaryFailure("daemon_start", "daemon_start_failed")
         try:
             health = http_json(f"{origin}/healthz", timeout=2)
-            if health.get("service") == "llm-notaryd":
+            if health.get("service") == "notaryd":
                 return
         except (OSError, ValueError):
             pass
@@ -471,14 +471,14 @@ def changed_files(repository: Path) -> tuple[list[str], dict[str, int]]:
     return files, stats
 
 
-def capture_record(item: dict[str, Any], attempt: int) -> dict[str, Any]:
+def trace_record(item: dict[str, Any], attempt: int) -> dict[str, Any]:
     return {
         "attempt": attempt,
-        "capture_id": item.get("capture_id"),
+        "trace_id": item.get("trace_id"),
         "created_at_unix_ms": item.get("created_at_unix_ms"),
-        "capture_state": item.get("capture_state"),
-        "finalization_eligible": bool(item.get("finalization_eligible")),
-        "finalization_ineligibility_code": item.get("finalization_ineligibility_code"),
+        "capture_status": item.get("capture_status"),
+        "notarization_eligible": bool(item.get("notarization_eligible")),
+        "notarization_ineligibility_code": item.get("notarization_ineligibility_code"),
         "failure_code": item.get("failure_code"),
         "http_status": item.get("http_status"),
         "streaming": bool(item.get("streaming")),
@@ -495,7 +495,7 @@ class Canary:
         self.arguments = arguments
         self.root = root
         self.provider_key = os.environ.get("OPENROUTER_FREE_TIER_API_KEY", "")
-        self.platform_key = os.environ.get("LLM_NOTARY_E2E_API_KEY", "")
+        self.platform_key = os.environ.get("NOTARYD_E2E_API_KEY", "")
         self.proxy_port = free_port()
         self.admin_port = free_port()
         self.admin_origin = f"http://127.0.0.1:{self.admin_port}"
@@ -513,9 +513,9 @@ class Canary:
                 # ProjectDirs does not honor XDG_CONFIG_HOME on macOS. This
                 # explicit override also prevents a personal OS-keychain vault
                 # from being opened during a local canary.
-                "LLM_NOTARY_CONFIG_DIR": str(root / "xdg" / "vault"),
-                "LLM_NOTARY_VAULT_PASSPHRASE_FILE": str(root / "private" / "vault-passphrase"),
-                "LLM_NOTARY_API_KEY_FILE": str(root / "private" / "platform-api-key"),
+                "NOTARYD_CONFIG_DIR": str(root / "xdg" / "vault"),
+                "NOTARYD_VAULT_PASSPHRASE_FILE": str(root / "private" / "vault-passphrase"),
+                "NOTARYD_PLATFORM_API_KEY_FILE": str(root / "private" / "platform-api-key"),
             }
         )
         self.cli = [
@@ -561,29 +561,29 @@ class Canary:
             self.daemon.kill()
             self.daemon.wait(timeout=5)
 
-    def captures(self) -> list[dict[str, Any]]:
+    def traces(self) -> list[dict[str, Any]]:
         response = run_json(
             [*self.cli, "captures", "list", "--provider", "openrouter", "--limit", "100"],
             env=self.environment,
-            stage="capture",
-            code="capture_list_failed",
+            stage="trace",
+            code="trace_list_failed",
         )
         items = response.get("items")
         if not isinstance(items, list):
-            raise CanaryFailure("capture", "capture_list_failed")
+            raise CanaryFailure("trace", "trace_list_failed")
         return [item for item in items if isinstance(item, dict)]
 
-    def wait_for_new_captures(self, previous_ids: set[str]) -> list[dict[str, Any]]:
+    def wait_for_new_traces(self, previous_ids: set[str]) -> list[dict[str, Any]]:
         deadline = time.monotonic() + 30
         current: list[dict[str, Any]] = []
         while time.monotonic() < deadline:
             current = [
                 item
-                for item in self.captures()
-                if item.get("capture_id") not in previous_ids
+                for item in self.traces()
+                if item.get("trace_id") not in previous_ids
             ]
             if current and all(
-                item.get("capture_state") not in {"capturing", "running"}
+                item.get("capture_status") not in {"capturing", "running"}
                 for item in current
             ):
                 return current
@@ -597,9 +597,9 @@ class Canary:
         if tests.returncode == 0:
             raise CanaryFailure("fixture", "fixture_did_not_fail_initially")
         before_ids = {
-            str(item.get("capture_id"))
-            for item in self.captures()
-            if item.get("capture_id")
+            str(item.get("trace_id"))
+            for item in self.traces()
+            if item.get("trace_id")
         }
         task = (repository / "TASK.md").read_text(encoding="utf-8")
         agent_environment = scrub_agent_environment(self.environment, self.provider_key)
@@ -612,7 +612,7 @@ class Canary:
                 "OPENCODE_DISABLE_LSP_DOWNLOAD": "true",
                 "OPENCODE_DISABLE_MODELS_FETCH": "true",
                 "OPENCODE_DISABLE_CLAUDE_CODE": "true",
-                "LLM_NOTARY_OPENROUTER_BASE_URL": f"http://127.0.0.1:{self.proxy_port}/openrouter/api/v1",
+                "NOTARYD_E2E_OPENROUTER_BASE_URL": f"http://127.0.0.1:{self.proxy_port}/openrouter/api/v1",
             }
         )
         started = time.monotonic()
@@ -651,13 +651,13 @@ class Canary:
             ["python3", "-m", "unittest", "-v"], cwd=repository, timeout=30
         )
         files, stats = changed_files(repository)
-        new_captures = self.wait_for_new_captures(before_ids)
-        new_captures.sort(key=lambda item: int(item.get("created_at_unix_ms") or 0))
-        records = [capture_record(item, number) for item in new_captures]
-        result["captures"].extend(records)
+        new_traces = self.wait_for_new_traces(before_ids)
+        new_traces.sort(key=lambda item: int(item.get("created_at_unix_ms") or 0))
+        records = [trace_record(item, number) for item in new_traces]
+        result["traces"].extend(records)
         task_completed = final_tests.returncode == 0 and validate_changed_files(files)
         functional_pass = exit_code == 0 and task_completed
-        eligible = [item for item in new_captures if item.get("finalization_eligible")]
+        eligible = [item for item in new_traces if item.get("notarization_eligible")]
         summary = {
             "attempt": number,
             "initial_tests_failed": True,
@@ -667,14 +667,14 @@ class Canary:
             "changed_files": files,
             "diff_allowlist_passed": validate_changed_files(files),
             "diff_stats": stats,
-            "capture_count": len(new_captures),
-            "eligible_capture_count": len(eligible),
+            "trace_count": len(new_traces),
+            "eligible_trace_count": len(eligible),
             **event_summary,
         }
         result["attempts"].append(summary)
         if not functional_pass:
             code, retryable = classify_attempt_failure(
-                new_captures,
+                new_traces,
                 exit_code,
                 event_summary["tool_calls"],
                 task_completed,
@@ -684,78 +684,78 @@ class Canary:
                 "transient": retryable,
                 "failure_code": code,
                 "retry_after": 0 if code == "agent_post_task_error" else retry_after,
-                "captures": new_captures,
+                "traces": new_traces,
             }
-        if not new_captures:
+        if not new_traces:
             return {
                 "passed": False,
                 "transient": False,
-                "failure_code": "no_capture",
+                "failure_code": "no_trace",
                 "retry_after": retry_after,
-                "captures": [],
+                "traces": [],
             }
         if not eligible:
-            transient = classify_provider_failure(new_captures)
+            transient = classify_provider_failure(new_traces)
             return {
                 "passed": False,
                 "transient": transient is not None,
-                "failure_code": transient or "no_eligible_capture",
+                "failure_code": transient or "no_eligible_trace",
                 "retry_after": retry_after,
-                "captures": new_captures,
+                "traces": new_traces,
             }
-        return {"passed": True, "captures": new_captures, "eligible": eligible}
+        return {"passed": True, "traces": new_traces, "eligible": eligible}
 
     def validate_provenance(
-        self, captures: list[dict[str, Any]], preflight: dict[str, Any]
+        self, traces: list[dict[str, Any]], preflight: dict[str, Any]
     ) -> None:
         expected = self.arguments.model.removeprefix("openrouter/")
         returned = {expected}
         canonical = preflight.get("canonical_slug")
         if isinstance(canonical, str):
             returned.add(canonical)
-        for capture in captures:
-            if capture.get("provider") != "openrouter":
+        for trace in traces:
+            if trace.get("provider") != "openrouter":
                 raise CanaryFailure("provenance", "unexpected_provider")
-            if capture.get("requested_model") != expected:
+            if trace.get("requested_model") != expected:
                 raise CanaryFailure("provenance", "unexpected_model")
-            response_model = capture.get("response_model")
+            response_model = trace.get("response_model")
             if response_model is not None and response_model not in returned:
                 raise CanaryFailure("provenance", "unexpected_model")
 
-    def finalize_verify_publish(
+    def notarize_verify_share(
         self, eligible: list[dict[str, Any]], result: dict[str, Any]
     ) -> None:
-        for capture in eligible:
-            capture_id = capture.get("capture_id")
-            if not isinstance(capture_id, str):
-                raise CanaryFailure("finalization", "finalization_failed")
+        for trace in eligible:
+            trace_id = trace.get("trace_id")
+            if not isinstance(trace_id, str):
+                raise CanaryFailure("notarization", "notarization_failed")
             queued = run_json(
-                [*self.cli, "finalize", capture_id],
+                [*self.cli, "notarization", trace_id],
                 env=self.environment,
                 timeout=60,
-                stage="finalization",
-                code="finalization_failed",
+                stage="notarization",
+                code="notarization_failed",
             )
             operation = queued.get("operation")
             if not isinstance(operation, dict) or not isinstance(
                 operation.get("operation_id"), str
             ):
-                raise CanaryFailure("finalization", "finalization_failed")
+                raise CanaryFailure("notarization", "notarization_failed")
             operation_id = operation["operation_id"]
-            deadline = time.monotonic() + self.arguments.finalization_timeout
+            deadline = time.monotonic() + self.arguments.notarization_timeout
             while operation.get("state") not in TERMINAL_OPERATION_STATES:
                 if time.monotonic() >= deadline:
-                    raise CanaryFailure("finalization", "finalization_timeout")
+                    raise CanaryFailure("notarization", "notarization_timeout")
                 time.sleep(2)
                 operation = run_json(
                     [*self.cli, "operations", "show", operation_id],
                     env=self.environment,
-                    stage="finalization",
-                    code="finalization_failed",
+                    stage="notarization",
+                    code="notarization_failed",
                 )
-            if operation.get("state") != "finalized":
+            if operation.get("state") != "succeeded":
                 raise CanaryFailure(
-                    "finalization", operation.get("failure_code") or "finalization_failed"
+                    "notarization", operation.get("failure_code") or "notarization_failed"
                 )
             created = operation.get("created_at_unix_ms")
             started = operation.get("started_at_unix_ms")
@@ -771,7 +771,7 @@ class Canary:
                 else None
             )
             verified = run_json(
-                [*self.cli, "traces", "verify", capture_id],
+                [*self.cli, "traces", "verify", trace_id],
                 env=self.environment,
                 timeout=120,
                 stage="private_verification",
@@ -780,7 +780,7 @@ class Canary:
             if verified.get("verified") is not True:
                 raise CanaryFailure("private_verification", "private_verify_failed")
             trace = run_json(
-                [*self.cli, "traces", "show", capture_id],
+                [*self.cli, "traces", "show", trace_id],
                 env=self.environment,
                 timeout=120,
                 stage="disclosure_gate",
@@ -790,9 +790,9 @@ class Canary:
             if violations:
                 result["disclosure_violations"] = violations
                 raise CanaryFailure("disclosure_gate", "disclosure_gate_failed")
-            result["finalizations"].append(
+            result["notarizations"].append(
                 {
-                    "capture_id": capture_id,
+                    "trace_id": trace_id,
                     "operation_id": operation_id,
                     "queue_wait_ms": queue_wait,
                     "proof_wall_ms": proof_wall,
@@ -805,9 +805,9 @@ class Canary:
                 [
                     *self.cli,
                     "share",
-                    capture_id,
+                    trace_id,
                     "--visibility",
-                    PUBLICATION_VISIBILITY,
+                    SHARE_VISIBILITY,
                     "--force",
                 ],
                 env=self.environment,
@@ -843,7 +843,7 @@ class Canary:
             share_url = status.get("share_url")
             if not isinstance(package_url, str) or not isinstance(share_url, str):
                 raise CanaryFailure("publication", "publication_failed")
-            package_path = self.root / "public-downloads" / f"{capture_id}.llmtrace"
+            package_path = self.root / "public-downloads" / f"{trace_id}.llmtrace"
             package_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             try:
                 with urllib.request.urlopen(package_url, timeout=60) as response:
@@ -864,9 +864,9 @@ class Canary:
                 raise CanaryFailure("public_verification", "public_verify_failed")
             result["publications"].append(
                 {
-                    "capture_id": capture_id,
+                    "trace_id": trace_id,
                     "share_id": share_id,
-                    "visibility": PUBLICATION_VISIBILITY,
+                    "visibility": SHARE_VISIBILITY,
                     "high_entropy_force_requested": True,
                     "admission_wall_ms": elapsed_ms(submitted_at),
                     "share_url": share_url,
@@ -910,8 +910,8 @@ def base_result(arguments: argparse.Namespace) -> dict[str, Any]:
         },
         "fixture": {"version": FIXTURE_VERSION},
         "attempts": [],
-        "captures": [],
-        "finalizations": [],
+        "traces": [],
+        "notarizations": [],
         "publications": [],
         "disclosure_violations": {},
         "total_wall_ms": None,
@@ -928,14 +928,14 @@ def aggregate_result(result: dict[str, Any]) -> None:
     result["summary"] = {
         "attempt_count": len(attempts),
         "agent_steps": sum(int(item.get("agent_steps", 0)) for item in attempts),
-        "model_turns": len(result["captures"]),
-        "eligible_captures": sum(
-            1 for item in result["captures"] if item.get("finalization_eligible")
+        "model_turns": len(result["traces"]),
+        "eligible_traces": sum(
+            1 for item in result["traces"] if item.get("notarization_eligible")
         ),
         "tokens": tokens,
         "opencode_wall_ms": sum(int(item.get("opencode_wall_ms", 0)) for item in attempts),
         "proof_wall_ms": sum(
-            int(item.get("proof_wall_ms") or 0) for item in result["finalizations"]
+            int(item.get("proof_wall_ms") or 0) for item in result["notarizations"]
         ),
         "admission_wall_ms": sum(
             int(item.get("admission_wall_ms") or 0) for item in result["publications"]
@@ -962,7 +962,7 @@ def write_step_summary(result: dict[str, Any]) -> None:
         "",
         f"- Status: `{result['status']}`",
         f"- Model: `{result['model']['requested_openrouter_model']}`",
-        f"- Attempts / captures / eligible: {summary.get('attempt_count', 0)} / {summary.get('model_turns', 0)} / {summary.get('eligible_captures', 0)}",
+        f"- Attempts / traces / eligible: {summary.get('attempt_count', 0)} / {summary.get('model_turns', 0)} / {summary.get('eligible_traces', 0)}",
         f"- Agent / proof / total: {summary.get('opencode_wall_ms', 0)} ms / {summary.get('proof_wall_ms', 0)} ms / {result.get('total_wall_ms', 0)} ms",
     ]
     if result.get("failure_code"):
@@ -982,15 +982,15 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--model", default=DEFAULT_MODEL)
     parser.add_argument("--opencode", default="opencode")
     parser.add_argument("--llm-notary", default="llm-notary")
-    parser.add_argument("--llm-notaryd", default="llm-notaryd")
+    parser.add_argument("--notaryd", default="notaryd")
     parser.add_argument(
         "--result",
         default=os.environ.get(
-            "LLM_NOTARY_E2E_RESULT", "/tmp/llm-notary-opencode-e2e-result.json"
+            "NOTARYD_E2E_RESULT", "/tmp/llm-notary-opencode-e2e-result.json"
         ),
     )
     parser.add_argument("--agent-timeout", type=int, default=600)
-    parser.add_argument("--finalization-timeout", type=int, default=600)
+    parser.add_argument("--notarization-timeout", type=int, default=600)
     parser.add_argument("--publication-timeout", type=int, default=300)
     return parser.parse_args()
 
@@ -1000,7 +1000,7 @@ def main() -> int:
     result_path = Path(arguments.result).resolve()
     result = base_result(arguments)
     started = time.monotonic()
-    temporary_base = Path(os.environ.get("LLM_NOTARY_E2E_TMPDIR", "/tmp"))
+    temporary_base = Path(os.environ.get("NOTARYD_E2E_TMPDIR", "/tmp"))
     root = Path(tempfile.mkdtemp(prefix="llm-notary-opencode-e2e-", dir=temporary_base))
     os.chmod(root, 0o700)
     canary = Canary(arguments, root)
@@ -1021,8 +1021,8 @@ def main() -> int:
             time.sleep(attempt["retry_after"])
         if successful is None:
             raise CanaryFailure("agent", "agent_task_failed")
-        canary.validate_provenance(successful["captures"], preflight)
-        canary.finalize_verify_publish(successful["eligible"], result)
+        canary.validate_provenance(successful["traces"], preflight)
+        canary.notarize_verify_share(successful["eligible"], result)
         result["status"] = "passed"
     except CanaryFailure as error:
         result["status"] = "failed"

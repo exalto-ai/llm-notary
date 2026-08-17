@@ -1,6 +1,6 @@
 # API keys for automation
 
-Use a stable, scoped LLM Notary API key when `llm-notaryd` runs without a
+Use a stable, scoped LLM Notary API key when `notaryd` runs without a
 person available to approve and preserve a rotating device session. API keys
 are intended for CI systems, cron jobs, and unattended hosts. They authenticate
 the daemon to the hosted platform; they are not model-provider credentials.
@@ -35,7 +35,7 @@ environment:
 
 ```bash
 export LLM_NOTARY_API_KEY='llmn_v1_…'
-llm-notaryd
+notaryd
 ```
 
 When a runner or service manager can mount secrets, prefer a private UTF-8
@@ -44,7 +44,7 @@ CRLF or LF line ending is accepted:
 
 ```bash
 export LLM_NOTARY_API_KEY_FILE=/run/secrets/llm-notary-api-key
-llm-notaryd
+notaryd
 ```
 
 For a self-hosted platform, set the HTTPS API origin separately:
@@ -52,12 +52,12 @@ For a self-hosted platform, set the HTTPS API origin separately:
 ```bash
 export LLM_NOTARY_API_ORIGIN=https://notary.example.com
 export LLM_NOTARY_API_KEY_FILE=/run/secrets/llm-notary-api-key
-llm-notaryd
+notaryd
 ```
 
 `LLM_NOTARY_API_KEY` and `LLM_NOTARY_API_KEY_FILE` are mutually exclusive. An
 injected API key and a stored browser-approved device session are also mutually
-exclusive; `llm-notaryd` fails at startup if both exist. Disconnect the stored
+exclusive; `notaryd` fails at startup if both exist. Disconnect the stored
 device session before switching an existing installation to API-key mode.
 
 The key is never copied into `config.toml`, `credentials.json`, the capture
@@ -92,7 +92,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.95.0
       - name: Install LLM Notary
         run: |
-          cargo install --locked --path crates/llm-notary-daemon --bin llm-notaryd
+          cargo install --locked --path crates/notaryd --bin notaryd
           cargo install --locked --path crates/llm-notary-cli --bin llm-notary
       - name: Start the local service
         env:
@@ -100,7 +100,7 @@ jobs:
         run: |
           umask 077
           printf '%s' "$VAULT_PASSPHRASE" > "$LLM_NOTARY_VAULT_PASSPHRASE_FILE"
-          llm-notaryd > "$RUNNER_TEMP/llm-notaryd.log" 2>&1 &
+          notaryd > "$RUNNER_TEMP/notaryd.log" 2>&1 &
           for attempt in $(seq 1 30); do
             curl --fail --silent http://127.0.0.1:8788/healthz && exit 0
             sleep 1

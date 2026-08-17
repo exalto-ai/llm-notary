@@ -8,7 +8,7 @@ fi
 profile=$1
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repository_dir=$script_dir
-project_name="llm-notary-daemon-cluster-e2e-$$"
+project_name="notaryd-cluster-e2e-$$"
 compose=(docker compose --project-name "$project_name" --file "$repository_dir/compose.daemon-e2e.yml")
 
 cleanup() {
@@ -92,7 +92,7 @@ wait_replica_slot_released() {
   local instance_id=$1
   local live=""
   for _ in $(seq 1 60); do
-    live=$(psql_value "select count(*) from llm_notary_daemon.replicas where instance_id='$instance_id' and lease_expires_at > clock_timestamp()")
+    live=$(psql_value "select count(*) from notaryd.replicas where instance_id='$instance_id' and lease_expires_at > clock_timestamp()")
     [[ $live == 0 ]] && return 0
     sleep 1
   done
@@ -112,9 +112,9 @@ if [[ ${DAEMON_E2E_SKIP_BUILD:-0} != 1 ]]; then
   "${compose[@]}" build daemon-a
 fi
 if [[ $profile == full ]]; then
-  # Hold publication briefly so the event-page high-water is captured before
+  # Hold the artifact commit briefly so the event-page high-water is captured before
   # the terminal event, regardless of which replica claims the operation.
-  export DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS=3000
+  export DAEMON_E2E_SERVER_NOTARIZATION_PAUSE_MS=3000
 fi
 "${compose[@]}" up --detach test-load-balancer
 
@@ -140,14 +140,14 @@ session_request() {
   local path=$2
   shift 2
   "${compose[@]}" exec -T "$service" curl --fail --silent --show-error \
-    --header 'x-llm-notary-request: dashboard' --header "cookie: $cookie" \
+    --header 'x-notary-request: dashboard' --header "cookie: $cookie" \
     "$@" "http://127.0.0.1:8788$path"
 }
 load_balancer_session_request() {
   local path=$1
   shift
   "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error \
-    --header 'x-llm-notary-request: dashboard' --header "cookie: $cookie" \
+    --header 'x-notary-request: dashboard' --header "cookie: $cookie" \
     "$@" "http://test-load-balancer:8788$path"
 }
 
@@ -155,14 +155,14 @@ status_a=$(admin_json daemon-a /v1/status)
 status_b=$(admin_json daemon-b /v1/status)
 printf '%s' "$status_a" | "${compose[@]}" exec -T daemon-a jq -e '.runtime_profile == "cluster" and .instance_id == "daemon-a" and .lifecycle == "ready" and .metadata_backend == "postgres" and .artifact_backend == "s3"' >/dev/null
 printf '%s' "$status_b" | "${compose[@]}" exec -T daemon-b jq -e '.runtime_profile == "cluster" and .instance_id == "daemon-b" and .lifecycle == "ready"' >/dev/null
-replicas=$(psql_value 'select count(*) from llm_notary_daemon.replicas where lease_expires_at > clock_timestamp()')
+replicas=$(psql_value 'select count(*) from notaryd.replicas where lease_expires_at > clock_timestamp()')
 [[ $replicas == 2 ]] || { echo "expected two live replicas, got $replicas" >&2; exit 1; }
 
 # A raw dashboard token is returned only to this client. PostgreSQL stores the
 # domain-separated 32-byte digest and replica B validates/revokes it.
 headers=$("${compose[@]}" exec -T daemon-a curl --silent --show-error --dump-header - --output /dev/null --user "$basic" --request POST http://test-load-balancer:8788/v1/session)
 cookie=$(printf '%s\n' "$headers" | awk -F': ' 'tolower($1)=="set-cookie" {sub(/;.*/,"",$2); gsub("\r","",$2); print $2}')
-[[ $cookie == llm_notary_admin_session=* ]] || { echo "cluster session cookie missing" >&2; exit 1; }
+[[ $cookie == notary_admin_session=* ]] || { echo "cluster session cookie missing" >&2; exit 1; }
 session_instances=""
 for _ in $(seq 1 10); do
   session_status=$(load_balancer_session_request /v1/status)
@@ -172,7 +172,7 @@ for _ in $(seq 1 10); do
 done
 [[ $session_instances == daemon-a,daemon-b ]] || { echo "test load balancer did not validate one shared session on both replicas: $session_instances" >&2; exit 1; }
 raw_token=${cookie#*=}
-raw_in_database=$(psql_value "select count(*) from llm_notary_daemon.dashboard_sessions where encode(token_hash,'hex')='$raw_token'")
+raw_in_database=$(psql_value "select count(*) from notaryd.sessions where encode(token_hash,'hex')='$raw_token'")
 [[ $raw_in_database == 0 ]] || { echo "raw dashboard bearer token reached PostgreSQL" >&2; exit 1; }
 load_balancer_session_request /v1/session --request DELETE >/dev/null
 if session_request daemon-a /v1/status >/dev/null 2>&1; then
@@ -182,19 +182,19 @@ fi
 
 if [[ $profile == full ]]; then
   echo "checking fail-closed server startup profiles"
-  if "${compose[@]}" run --rm --no-deps -e LLM_NOTARY_API_KEY= daemon-a \
+  if "${compose[@]}" run --rm --no-deps -e NOTARYD_PLATFORM_API_KEY= daemon-a \
       --config /state/config-cluster-a.toml >/dev/null 2>&1; then
     echo "server daemon started without an injected API key" >&2
     exit 1
   fi
   if "${compose[@]}" run --rm --no-deps \
-      -e LLM_NOTARY_DESKTOP_CONTROL_STDIN=1 daemon-a \
+      -e NOTARYD_DESKTOP_CONTROL_STDIN=1 daemon-a \
       --config /state/config-cluster-a.toml </dev/null >/dev/null 2>&1; then
     echo "server daemon accepted desktop process control" >&2
     exit 1
   fi
   if "${compose[@]}" run --rm --no-deps --entrypoint /bin/sh daemon-a -ec \
-      'dd if=/dev/zero of=/tmp/wrong-vault.key bs=32 count=1 status=none; chmod 600 /tmp/wrong-vault.key; export LLM_NOTARY_CLUSTER_VAULT_KEY_FILE=/tmp/wrong-vault.key; exec llm-notaryd --config /state/config-cluster-a.toml' \
+      'dd if=/dev/zero of=/tmp/wrong-vault.key bs=32 count=1 status=none; chmod 600 /tmp/wrong-vault.key; export NOTARYD_CLUSTER_VAULT_KEY_FILE=/tmp/wrong-vault.key; exec notaryd --config /state/config-cluster-a.toml' \
       >/dev/null 2>&1; then
     echo "server daemon accepted incompatible vault material" >&2
     exit 1
@@ -228,36 +228,36 @@ if [[ $profile == full ]]; then
     http://test-load-balancer:8787/openai/v1/chat/completions >/tmp/server-provider-response.json
   provider_requests_after=$("${compose[@]}" logs --no-color provider | grep -c 'POST /v1/chat/completions' || true)
   [[ $((provider_requests_after - provider_requests_before)) == 1 ]] || { echo "test load balancer replayed one provider request" >&2; exit 1; }
-  capture_id=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-llm-notary-capture-id:" {gsub("\r","",$2); print $2}' /tmp/server-capture.headers)
-  [[ $capture_id == cap-* ]] || { echo "server capture ID missing" >&2; exit 1; }
-  capture_b=$(admin_json daemon-b "/v1/captures/$capture_id")
-  printf '%s' "$capture_b" | "${compose[@]}" exec -T daemon-b jq -e --arg id "$capture_id" '.capture.capture_id==$id and .capture.capture_state=="captured" and any(.artifacts[]; .kind=="deferred_bundle")' >/dev/null
+  trace_id=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-notary-trace-id:" {gsub("\r","",$2); print $2}' /tmp/server-capture.headers)
+  [[ $trace_id == trc-* ]] || { echo "server trace ID missing" >&2; exit 1; }
+  capture_b=$(admin_json daemon-b "/v1/traces/$trace_id")
+  printf '%s' "$capture_b" | "${compose[@]}" exec -T daemon-b jq -e --arg id "$trace_id" '.capture.trace_id==$id and .capture.capture_status=="captured" and any(.artifacts[]; .kind=="capture_checkpoint")' >/dev/null
 
-  echo "queueing finalization through the test load balancer"
-  queued=$(load_balancer_admin_json "/v1/captures/$capture_id/finalizations" --request POST)
+  echo "queueing notarization through the test load balancer"
+  queued=$(load_balancer_admin_json "/v1/traces/$trace_id/notarizations" --request POST)
   operation_id=$(printf '%s' "$queued" | "${compose[@]}" exec -T daemon-b jq -er '.operation.operation_id')
   echo "checking the cross-replica event snapshot"
   event_page_before=$(admin_json daemon-a "/v1/events?limit=1")
   event_high_water=$(printf '%s' "$event_page_before" | "${compose[@]}" exec -T daemon-a jq -er '.high_water_cursor')
-  echo "waiting for cross-replica finalization"
+  echo "waiting for cross-replica notarization"
   for _ in $(seq 1 120); do
     operation=$(admin_json daemon-a "/v1/operations/$operation_id")
     state=$(printf '%s' "$operation" | "${compose[@]}" exec -T daemon-a jq -r '.state')
-    [[ $state == finalized ]] && break
+    [[ $state == succeeded ]] && break
     [[ $state == failed || $state == interrupted ]] && { printf '%s\n' "$operation" >&2; exit 1; }
     sleep 1
   done
-  [[ $state == finalized ]] || { echo "server finalization timed out" >&2; exit 1; }
-  load_balancer_admin_json "/v1/captures/$capture_id/package" --output /tmp/server.llmtrace
+  [[ $state == succeeded ]] || { echo "server notarization timed out" >&2; exit 1; }
+  load_balancer_admin_json "/v1/traces/$trace_id/package" --output /tmp/server.llmtrace
   package_verification=$(admin_json daemon-a /v1/traces:verify \
     --request POST \
-    --header 'content-type: application/vnd.llmnotary.trace-package+zip' \
-    --header 'x-llm-notary-trusted-notary-key: 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798' \
+    --header 'content-type: application/vnd.exalto.notary.trace-package+zip' \
+    --header 'x-notary-trusted-notary-key: 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798' \
     --data-binary @/tmp/server.llmtrace)
-  printf '%s' "$package_verification" | "${compose[@]}" exec -T daemon-a jq -e --arg id "$capture_id" \
-    '.capture_id==$id and .verified==true and .trust_source=="explicit_key"' >/dev/null
-  owner_rows=$("${compose[@]}" exec -T postgres psql -U daemon_e2e -d daemon_e2e -Atc "select count(*) from llm_notary_daemon.operations where operation_id='$operation_id' and owner_instance_id in ('daemon-a','daemon-b') and claim_fence is not null")
-  [[ $owner_rows == 1 ]] || { echo "finalization did not retain one fenced owner" >&2; exit 1; }
+  printf '%s' "$package_verification" | "${compose[@]}" exec -T daemon-a jq -e --arg id "$trace_id" \
+    '.trace_id==$id and .verified==true and .trust_source=="explicit_key"' >/dev/null
+  owner_rows=$("${compose[@]}" exec -T postgres psql -U daemon_e2e -d daemon_e2e -Atc "select count(*) from notaryd.operations where operation_id='$operation_id' and owner_instance_id in ('daemon-a','daemon-b') and claim_fence is not null")
+  [[ $owner_rows == 1 ]] || { echo "notarization did not retain one fenced owner" >&2; exit 1; }
 
   cross_replica_events=$(admin_json daemon-b "/v1/events?limit=200&after=$event_high_water")
   printf '%s' "$cross_replica_events" | "${compose[@]}" exec -T daemon-b jq -e --arg operation "$operation_id" '
@@ -268,11 +268,11 @@ if [[ $profile == full ]]; then
   "${compose[@]}" stop daemon-b >/dev/null
   sleep 3
   "${compose[@]}" exec -T daemon-a curl --fail --silent http://127.0.0.1:8788/readyz >/dev/null
-  healthy_capture=$(psql_value "select capture_state from llm_notary_daemon.captures where capture_id='$capture_id'")
+  healthy_capture=$(psql_value "select capture_status from notaryd.traces where trace_id='$trace_id'")
   [[ $healthy_capture == captured ]] || { echo "peer stop corrupted completed capture" >&2; exit 1; }
 
   echo "forcing claim expiry and proving stale artifact/terminal fencing"
-  export DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS=30000
+  export DAEMON_E2E_SERVER_NOTARIZATION_PAUSE_MS=30000
   "${compose[@]}" rm --stop --force daemon-a >/dev/null
   wait_replica_slot_released daemon-a
   "${compose[@]}" up --detach --no-deps daemon-a >/dev/null
@@ -283,10 +283,10 @@ if [[ $profile == full ]]; then
     --header 'content-type: application/json' \
     --data '{"model":"fixture-model","messages":[{"role":"user","content":"server stale owner prompt"}]}' \
     http://127.0.0.1:8787/openai/v1/chat/completions >/dev/null
-  stale_capture_id=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-llm-notary-capture-id:" {gsub("\r","",$2); print $2}' /tmp/stale-capture.headers)
-  stale_queued=$(admin_json daemon-a "/v1/captures/$stale_capture_id/finalizations" --request POST)
+  stale_trace_id=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-notary-trace-id:" {gsub("\r","",$2); print $2}' /tmp/stale-capture.headers)
+  stale_queued=$(admin_json daemon-a "/v1/traces/$stale_trace_id/notarizations" --request POST)
   stale_operation_id=$(printf '%s' "$stale_queued" | "${compose[@]}" exec -T daemon-a jq -er '.operation.operation_id')
-  stale_object_path="e2e/llm-notary-daemon-e2e/daemon-e2e/artifacts/daemon-private/finalized_package/$stale_capture_id/"
+  stale_object_path="e2e/notaryd-e2e/notaryd/trace-packages/$stale_trace_id/"
   stale_object_ready=0
   for _ in $(seq 1 120); do
     stale_objects=$("${compose[@]}" run --rm --no-deps -T minio-client ls --recursive "$stale_object_path" 2>/dev/null || true)
@@ -296,10 +296,10 @@ if [[ $profile == full ]]; then
     fi
     sleep 1
   done
-  [[ $stale_object_ready == 1 ]] || { echo "stale-owner finalization never published its claim-scoped object" >&2; exit 1; }
+  [[ $stale_object_ready == 1 ]] || { echo "stale-owner notarization never committed its claim-scoped object" >&2; exit 1; }
   daemon_a_container=$("${compose[@]}" ps --quiet daemon-a)
   docker pause "$daemon_a_container" >/dev/null
-  unset DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS
+  unset DAEMON_E2E_SERVER_NOTARIZATION_PAUSE_MS
   wait_replica_slot_released daemon-b
   start_existing_service daemon-b
   wait_healthy daemon-b
@@ -310,58 +310,58 @@ if [[ $profile == full ]]; then
     [[ $stale_state == interrupted ]] && break
     sleep 1
   done
-  [[ $stale_state == interrupted ]] || { echo "expired finalization was not interrupted" >&2; exit 1; }
-  interrupted_events=$(psql_value "select count(*) from llm_notary_daemon.events where operation_id='$stale_operation_id' and event_type='finalization_interrupted'")
-  [[ $interrupted_events == 1 ]] || { echo "expired finalization emitted $interrupted_events interruption events" >&2; exit 1; }
+  [[ $stale_state == interrupted ]] || { echo "expired notarization was not interrupted" >&2; exit 1; }
+  interrupted_events=$(psql_value "select count(*) from notaryd.events where operation_id='$stale_operation_id' and event_type='notarization_interrupted'")
+  [[ $interrupted_events == 1 ]] || { echo "expired notarization emitted $interrupted_events interruption events" >&2; exit 1; }
   admin_json daemon-b "/v1/operations/$stale_operation_id/retry" --request POST >/dev/null
   for _ in $(seq 1 120); do
     stale_operation=$(admin_json daemon-b "/v1/operations/$stale_operation_id")
     stale_state=$(printf '%s' "$stale_operation" | "${compose[@]}" exec -T daemon-b jq -r '.state')
-    [[ $stale_state == finalized ]] && break
+    [[ $stale_state == succeeded ]] && break
     [[ $stale_state == failed ]] && { printf '%s\n' "$stale_operation" >&2; exit 1; }
     sleep 1
   done
-  [[ $stale_state == finalized ]] || { echo "retried finalization did not complete on peer" >&2; exit 1; }
-  winner_locator=$(psql_value "select locator from llm_notary_daemon.artifacts where capture_id='$stale_capture_id' and kind='finalized_package'")
+  [[ $stale_state == succeeded ]] || { echo "retried notarization did not complete on peer" >&2; exit 1; }
+  winner_locator=$(psql_value "select locator from notaryd.artifacts where trace_id='$stale_trace_id' and kind='trace_package'")
   docker unpause "$daemon_a_container" >/dev/null
   sleep 5
-  winner_locator_after_stale=$(psql_value "select locator from llm_notary_daemon.artifacts where capture_id='$stale_capture_id' and kind='finalized_package'")
+  winner_locator_after_stale=$(psql_value "select locator from notaryd.artifacts where trace_id='$stale_trace_id' and kind='trace_package'")
   [[ $winner_locator_after_stale == "$winner_locator" ]] || { echo "stale worker replaced the winning artifact pointer" >&2; exit 1; }
   stale_operation=$(admin_json daemon-b "/v1/operations/$stale_operation_id")
   printf '%s' "$stale_operation" | "${compose[@]}" exec -T daemon-b jq -e '
-    .state=="finalized" and .attempt==2 and
+    .state=="succeeded" and .attempt==2 and
     ([.attempt_history[] | select(.state=="interrupted")] | length)==1 and
-    ([.attempt_history[] | select(.state=="finalized")] | length)==1
+    ([.attempt_history[] | select(.state=="succeeded")] | length)==1
   ' >/dev/null
-  completed_events=$(psql_value "select count(*) from llm_notary_daemon.events where operation_id='$stale_operation_id' and event_type='finalization_completed'")
+  completed_events=$(psql_value "select count(*) from notaryd.events where operation_id='$stale_operation_id' and event_type='notarization_completed'")
   [[ $completed_events == 1 ]] || { echo "stale retry emitted $completed_events completion events" >&2; exit 1; }
   stale_objects=$("${compose[@]}" run --rm --no-deps -T minio-client ls --recursive "$stale_object_path" 2>/dev/null || true)
   stale_object_count=$(printf '%s\n' "$stale_objects" | sed '/^$/d' | wc -l | tr -d ' ')
   [[ $stale_object_count == 2 ]] || { echo "expected isolated loser and winner objects, got $stale_object_count" >&2; exit 1; }
 
-  echo "checking graceful drain of a running finalization"
+  echo "checking graceful drain of a running notarization"
   "${compose[@]}" rm --stop --force daemon-a >/dev/null 2>&1 || true
   wait_replica_slot_released daemon-a
   "${compose[@]}" stop daemon-b >/dev/null
-  export DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS=5000
+  export DAEMON_E2E_SERVER_NOTARIZATION_PAUSE_MS=5000
   "${compose[@]}" up --detach --no-deps daemon-a >/dev/null
   wait_healthy daemon-a
   "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error \
-    --dump-header /tmp/drain-finalization.headers \
+    --dump-header /tmp/drain-notarization.headers \
     --header 'authorization: Bearer offline-server-secret' \
     --header 'content-type: application/json' \
     --data '{"model":"fixture-model","messages":[{"role":"user","content":"server running drain prompt"}]}' \
     http://127.0.0.1:8787/openai/v1/chat/completions >/dev/null
-  drain_finalization_capture=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-llm-notary-capture-id:" {gsub("\r","",$2); print $2}' /tmp/drain-finalization.headers)
-  drain_queued=$(admin_json daemon-a "/v1/captures/$drain_finalization_capture/finalizations" --request POST)
+  drain_notarization_trace=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-notary-trace-id:" {gsub("\r","",$2); print $2}' /tmp/drain-notarization.headers)
+  drain_queued=$(admin_json daemon-a "/v1/traces/$drain_notarization_trace/notarizations" --request POST)
   drain_operation_id=$(printf '%s' "$drain_queued" | "${compose[@]}" exec -T daemon-a jq -er '.operation.operation_id')
-  drain_object_path="e2e/llm-notary-daemon-e2e/daemon-e2e/artifacts/daemon-private/finalized_package/$drain_finalization_capture/"
+  drain_object_path="e2e/notaryd-e2e/notaryd/trace-packages/$drain_notarization_trace/"
   for _ in $(seq 1 120); do
     drain_objects=$("${compose[@]}" run --rm --no-deps -T minio-client ls --recursive "$drain_object_path" 2>/dev/null || true)
     [[ -n $drain_objects ]] && break
     sleep 1
   done
-  [[ -n ${drain_objects:-} ]] || { echo "running drain finalization did not publish" >&2; exit 1; }
+  [[ -n ${drain_objects:-} ]] || { echo "running drain notarization did not commit an artifact" >&2; exit 1; }
   daemon_a_container=$("${compose[@]}" ps --quiet daemon-a)
   docker kill --signal TERM "$daemon_a_container" >/dev/null
   drain_with_liveness=0
@@ -378,11 +378,11 @@ if [[ $profile == full ]]; then
     [[ $running != true ]] && break
     sleep 1
   done
-  drain_terminal=$(psql_value "select state from llm_notary_daemon.operations where operation_id='$drain_operation_id'")
-  [[ $drain_terminal == finalized ]] || { echo "running finalization did not finish during drain: $drain_terminal" >&2; exit 1; }
+  drain_terminal=$(psql_value "select state from notaryd.operations where operation_id='$drain_operation_id'")
+  [[ $drain_terminal == succeeded ]] || { echo "running notarization did not finish during drain: $drain_terminal" >&2; exit 1; }
 
   echo "checking rolling drain with an admitted stream and queued peer work"
-  unset DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS
+  unset DAEMON_E2E_SERVER_NOTARIZATION_PAUSE_MS
   "${compose[@]}" rm --force daemon-a >/dev/null 2>&1 || true
   wait_replica_slot_released daemon-a
   "${compose[@]}" up --detach --no-deps daemon-a >/dev/null
@@ -393,7 +393,7 @@ if [[ $profile == full ]]; then
     --header 'content-type: application/json' \
     --data '{"model":"fixture-model","messages":[{"role":"user","content":"server queued drain prompt"}]}' \
     http://127.0.0.1:8787/openai/v1/chat/completions >/dev/null
-  queued_drain_capture=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-llm-notary-capture-id:" {gsub("\r","",$2); print $2}' /tmp/queued-drain.headers)
+  queued_drain_trace=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-notary-trace-id:" {gsub("\r","",$2); print $2}' /tmp/queued-drain.headers)
   slow_output=$(mktemp)
   "${compose[@]}" exec -T daemon-a curl --fail --silent --show-error \
     --dump-header /tmp/rolling-stream.headers \
@@ -402,13 +402,13 @@ if [[ $profile == full ]]; then
     --data '{"model":"fixture-model","stream":true,"messages":[{"role":"user","content":"server rolling drain stream"}]}' \
     http://127.0.0.1:8787/openai/v1/chat/completions >"$slow_output" 2>&1 &
   slow_pid=$!
-  rolling_capture_id=""
+  rolling_trace_id=""
   for _ in $(seq 1 40); do
-    rolling_capture_id=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-llm-notary-capture-id:" {gsub("\r","",$2); print $2}' /tmp/rolling-stream.headers 2>/dev/null || true)
-    [[ $rolling_capture_id == cap-* ]] && break
+    rolling_trace_id=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-notary-trace-id:" {gsub("\r","",$2); print $2}' /tmp/rolling-stream.headers 2>/dev/null || true)
+    [[ $rolling_trace_id == trc-* ]] && break
     sleep 0.25
   done
-  [[ $rolling_capture_id == cap-* ]] || { echo "rolling stream never became admitted" >&2; exit 1; }
+  [[ $rolling_trace_id == trc-* ]] || { echo "rolling stream never became admitted" >&2; exit 1; }
   daemon_a_container=$("${compose[@]}" ps --quiet daemon-a)
   docker kill --signal TERM "$daemon_a_container" >/dev/null
   rolling_with_liveness=0
@@ -420,7 +420,7 @@ if [[ $profile == full ]]; then
     sleep 0.25
   done
   [[ $rolling_with_liveness == 1 ]] || { echo "rolling stream drain did not withdraw readiness first" >&2; exit 1; }
-  queued_during_drain=$(admin_json daemon-a "/v1/captures/$queued_drain_capture/finalizations" --request POST)
+  queued_during_drain=$(admin_json daemon-a "/v1/traces/$queued_drain_trace/notarizations" --request POST)
   queued_during_drain_operation=$(printf '%s' "$queued_during_drain" | "${compose[@]}" exec -T daemon-a jq -er '.operation.operation_id')
   wait "$slow_pid" || { echo "admitted streaming capture did not finish during drain" >&2; cat "$slow_output" >&2; exit 1; }
   rm -f "$slow_output"
@@ -432,17 +432,17 @@ if [[ $profile == full ]]; then
   wait_replica_slot_released daemon-b
   start_existing_service daemon-b
   wait_healthy daemon-b
-  rolling_capture=$(admin_json daemon-b "/v1/captures/$rolling_capture_id")
-  printf '%s' "$rolling_capture" | "${compose[@]}" exec -T daemon-b jq -e '.capture.streaming==true and .capture.capture_state=="captured"' >/dev/null
+  rolling_capture=$(admin_json daemon-b "/v1/traces/$rolling_trace_id")
+  printf '%s' "$rolling_capture" | "${compose[@]}" exec -T daemon-b jq -e '.capture.streaming==true and .capture.capture_status=="captured"' >/dev/null
   queued_peer_state=""
   for _ in $(seq 1 120); do
     queued_peer_operation=$(admin_json daemon-b "/v1/operations/$queued_during_drain_operation")
     queued_peer_state=$(printf '%s' "$queued_peer_operation" | "${compose[@]}" exec -T daemon-b jq -r '.state')
-    [[ $queued_peer_state == finalized ]] && break
+    [[ $queued_peer_state == succeeded ]] && break
     [[ $queued_peer_state == failed ]] && { printf '%s\n' "$queued_peer_operation" >&2; exit 1; }
     sleep 1
   done
-  [[ $queued_peer_state == finalized ]] || { echo "peer did not claim queued work after rolling drain" >&2; exit 1; }
+  [[ $queued_peer_state == succeeded ]] || { echo "peer did not claim queued work after rolling drain" >&2; exit 1; }
   "${compose[@]}" rm --force daemon-a >/dev/null 2>&1 || true
   wait_replica_slot_released daemon-a
   "${compose[@]}" up --detach --no-deps daemon-a >/dev/null

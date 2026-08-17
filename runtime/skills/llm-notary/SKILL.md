@@ -1,6 +1,6 @@
 ---
 name: llm-notary
-description: Inspect and operate the local LLM Notary service, captures, finalization jobs, verified traces, packages, events, notary trust, accounts, and shares. Use when a user asks to find or inspect recorded LLM calls, list or verify traces, finalize a capture, diagnose local proof work, or share a verified session through llm-notaryd.
+description: Inspect and operate the local LLM Notary service, captures, notarization jobs, verified traces, packages, events, notary trust, accounts, and shares. Use when a user asks to find or inspect recorded LLM calls, list or verify traces, notarize a capture, diagnose local proof work, or share a verified session through notaryd.
 ---
 
 # LLM Notary
@@ -32,7 +32,7 @@ handles configured local authentication without exposing a password in a URL.
   its request and response bodies remain visible even though header values are
   hidden by policy.
 - Run `llm-notary traces show` only when the user explicitly asks to disclose
-  the finalized request and response bodies in the current agent transcript.
+  the notarized request and response bodies in the current agent transcript.
 - Never describe a successfully opened capture or package as cryptographically
   verified. Use `llm-notary traces verify` and report its exact result.
 - Never share a trace without the user's separate approval. Default to an
@@ -47,9 +47,9 @@ persist the password itself.
 
 ## Report precisely
 
-- Distinguish capture, finalization, verification, and sharing as separate
+- Distinguish capture, notarization, verification, and sharing as separate
   states.
-- Treat finalization and sharing as asynchronous. Preserve returned operation
+- Treat notarization and sharing as asynchronous. Preserve returned operation
   or share identifiers and poll only the documented status operation.
 - Branch on stable JSON fields and `error.code`; do not parse human-readable
   prose when `--json` is available.

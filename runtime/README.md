@@ -27,14 +27,14 @@ npm --prefix apps/local-dashboard run build
 Install the two local programs independently:
 
 ```bash
-cargo install --locked --path crates/llm-notary-daemon --bin llm-notaryd
+cargo install --locked --path crates/notaryd --bin notaryd
 cargo install --locked --path crates/llm-notary-cli --bin llm-notary
 ```
 
-Run `llm-notaryd`, route a supported provider client through `127.0.0.1:8787`, and inspect private captures through the dashboard at `127.0.0.1:8788` or the `llm-notary` command.
+Run `notaryd`, route a supported provider client through `127.0.0.1:8787`, and inspect private captures through the dashboard at `127.0.0.1:8788` or the `llm-notary` command.
 
 ## Trust boundary
 
-The local daemon sees plaintext model traffic and provider credentials. The remote notary resolves and connects to allowlisted provider hosts but must not receive either. A `.llmcapture` is private encrypted retry state capable of reconstructing the original request; a finalized `.llmtrace` is selectively disclosed public evidence. Never treat the two as interchangeable.
+The local daemon sees plaintext model traffic and provider credentials. The remote notary resolves and connects to allowlisted provider hosts but must not receive either. A `.llmcapture` is private encrypted retry state capable of reconstructing the original request; a notarized `.llmtrace` is selectively disclosed public evidence. Never treat the two as interchangeable.
 
 See [Getting started](docs/getting-started.md), [architecture](docs/architecture.md), [artifact formats](docs/artifact-formats.md), and [self-hosting](docs/self-hosting.md). Run `./tooling/check-boundary.sh` before publishing this tree.

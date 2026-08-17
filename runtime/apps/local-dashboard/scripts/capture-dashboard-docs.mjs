@@ -93,10 +93,10 @@ try {
       route: 'view=captures&id=cap-20260728-safety-review',
     });
     await capture(browser, {
-      file: 'finalization-retry.png',
+      file: 'notarization-retry.png',
       scheme: 'light',
       viewport: desktop,
-      route: 'view=finalizations&id=op-finalize-benchmark',
+      route: 'view=notarizations&id=op-notarize-benchmark',
     });
     await capture(browser, {
       file: 'trace-verification.png',

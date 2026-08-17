@@ -2,12 +2,12 @@ use std::{env, fs, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use llm_notary_core::{NotaryAdmissionRejection, NotarySessionMode};
 use llm_notary_server::{
     AdmissionConstraints, AdmissionGrant, AdmissionPolicy, AdmissionRequest, SessionLifecycle,
     SessionOutcome,
 };
 use metrics::{counter, gauge};
+use notary_core::{NotaryAdmissionRejection, NotarySessionMode};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -353,7 +353,7 @@ fn coordinator_admission_rejection(
     match rejection {
         CoordinatorRejection::Capacity => match mode {
             NotarySessionMode::Capture => NotaryAdmissionRejection::CaptureAtCapacity,
-            NotarySessionMode::Finalize => NotaryAdmissionRejection::FinalizeAtCapacity,
+            NotarySessionMode::Notarization => NotaryAdmissionRejection::NotarizationAtCapacity,
         },
         CoordinatorRejection::Denied => NotaryAdmissionRejection::AdmissionDenied,
         CoordinatorRejection::Expired => NotaryAdmissionRejection::AdmissionExpired,
@@ -361,7 +361,7 @@ fn coordinator_admission_rejection(
             NotaryAdmissionRejection::CaptureAllowanceExhausted
         }
         CoordinatorRejection::FinalizationAllowanceExhausted => {
-            NotaryAdmissionRejection::FinalizationAllowanceExhausted
+            NotaryAdmissionRejection::NotarizationAllowanceExhausted
         }
         CoordinatorRejection::Unavailable(error) => {
             tracing::error!(%error, "admission coordinator request failed");
@@ -414,7 +414,7 @@ fn operation_constraints(
             operation.authenticated_allowance_bytes,
         ) {
             (NotarySessionMode::Capture, None, None) => (None, policy_attestable),
-            (NotarySessionMode::Finalize, Some(digest), Some(allowance)) => {
+            (NotarySessionMode::Notarization, Some(digest), Some(allowance)) => {
                 let bytes = hex::decode(digest).context("coordinator record digest is not hex")?;
                 let allowance = positive("authenticated_allowance_bytes", allowance)?;
                 (
@@ -431,7 +431,7 @@ fn operation_constraints(
     }
     Ok(AdmissionConstraints {
         expected_record_digest,
-        expected_transcript_bytes: (mode == NotarySessionMode::Finalize)
+        expected_transcript_bytes: (mode == NotarySessionMode::Notarization)
             .then_some(authenticated_allowance),
         session_timeout: None,
         max_private_chunk_bytes: Some(max_private_chunk_bytes),
@@ -447,7 +447,7 @@ fn operation_constraints(
 fn session_mode_label(mode: NotarySessionMode) -> &'static str {
     match mode {
         NotarySessionMode::Capture => "capture",
-        NotarySessionMode::Finalize => "finalize",
+        NotarySessionMode::Notarization => "finalize",
     }
 }
 
@@ -495,8 +495,8 @@ mod tests {
             record_digest: Some("ab".repeat(32)),
             authenticated_allowance_bytes: Some(8 << 20),
         };
-        let limits =
-            operation_constraints(NotarySessionMode::Finalize, &operation).expect("valid limits");
+        let limits = operation_constraints(NotarySessionMode::Notarization, &operation)
+            .expect("valid limits");
         assert_eq!(limits.max_private_chunk_bytes, Some(256 << 10));
         assert_eq!(limits.max_total_private_chunk_bytes, Some(8 << 20));
         assert_eq!(limits.max_private_chunk_commitments, Some(256));

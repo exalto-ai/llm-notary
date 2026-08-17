@@ -130,7 +130,7 @@ struct Cli {
     #[arg(long, global = true)]
     json: bool,
 
-    /// Configuration used by llm-notaryd. The CLI reads only the admin listener and username.
+    /// Configuration used by notaryd. The CLI reads only the admin listener and username.
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
@@ -163,13 +163,13 @@ enum CliCommand {
         command: CapturesCommand,
     },
     /// Queue proof generation for a capture.
-    Finalize(FinalizeArgs),
+    Notarization(NotarizeArgs),
     /// List, inspect, or retry daemon-owned operations.
     Operations {
         #[command(subcommand)]
         command: OperationsCommand,
     },
-    /// Inspect or verify a finalized trace.
+    /// Inspect or verify a notarized trace.
     Traces {
         #[command(subcommand)]
         command: TracesCommand,
@@ -180,7 +180,7 @@ enum CliCommand {
     Logout,
     /// Show the LLM Notary account connected to this daemon.
     Whoami,
-    /// Create a public link for a finalized verified session.
+    /// Create a public link for a notarized verified session.
     #[command(alias = "publish")]
     Share(ShareArgs),
     /// List redacted daemon events.
@@ -266,9 +266,9 @@ enum OperationsCommand {
 
 #[derive(Subcommand, Debug)]
 enum TracesCommand {
-    /// Show the canonical trace and manifest for a finalized capture.
+    /// Show the canonical trace and manifest for a notarized capture.
     Show(IdArgs),
-    /// Verify a finalized capture against the daemon's trust source.
+    /// Verify a notarized capture against the daemon's trust source.
     Verify(TraceVerifyArgs),
 }
 
@@ -295,7 +295,7 @@ struct IdArgs {
 }
 
 #[derive(Args, Debug)]
-struct FinalizeArgs {
+struct NotarizeArgs {
     /// Opaque capture identifier.
     id: String,
 
@@ -306,7 +306,7 @@ struct FinalizeArgs {
 
 #[derive(Args, Debug)]
 struct ShareArgs {
-    /// Opaque finalized capture identifier.
+    /// Opaque notarized capture identifier.
     id: String,
 
     /// Whether the share appears in the public Library index.
@@ -343,9 +343,9 @@ struct CaptureListArgs {
     #[arg(long)]
     provider: Option<String>,
     #[arg(long)]
-    capture_state: Option<String>,
+    capture_status: Option<String>,
     #[arg(long)]
-    finalization_state: Option<String>,
+    notarization_status: Option<String>,
     #[arg(long)]
     limit: Option<usize>,
     /// Continue from an opaque cursor returned by the daemon.
@@ -366,7 +366,7 @@ struct OperationListArgs {
     #[arg(long)]
     kind: Option<String>,
     #[arg(long)]
-    capture_id: Option<String>,
+    trace_id: Option<String>,
     #[arg(long)]
     limit: Option<usize>,
     /// Continue from an opaque cursor returned by the daemon.
@@ -389,7 +389,7 @@ struct EventListArgs {
     #[arg(long)]
     event_type: Option<String>,
     #[arg(long)]
-    capture_id: Option<String>,
+    trace_id: Option<String>,
     #[arg(long)]
     operation_id: Option<String>,
     #[arg(long)]
@@ -651,10 +651,10 @@ fn update_human_output(value: &Value, check: bool) -> Result<String, CliError> {
     Ok(match state {
         "current" => format!("LLM Notary is already up to date ({build})."),
         "staged" => format!(
-            "Update {build} is staged and will finish after this command exits. Restart llm-notaryd when no capture or finalization is active."
+            "Update {build} is staged and will finish after this command exits. Restart notaryd when no capture or notarization is active."
         ),
         _ => format!(
-            "Updated llm-notary and llm-notaryd to {build}. Restart llm-notaryd when no capture or finalization is active."
+            "Updated llm-notary and notaryd to {build}. Restart notaryd when no capture or notarization is active."
         ),
     })
 }
@@ -1070,10 +1070,10 @@ impl AdminClient {
             .get("service")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        if service != "llm-notaryd" {
+        if service != "notaryd" {
             return Err(CliError::new(
                 EXIT_VERSION_MISMATCH,
-                format!("unexpected local service {service}; this CLI requires llm-notaryd"),
+                format!("unexpected local service {service}; this CLI requires notaryd"),
             ));
         }
         let actual = health
@@ -1130,18 +1130,18 @@ impl AdminClient {
             .post(url)
             .header(
                 reqwest::header::CONTENT_TYPE,
-                "application/vnd.llmnotary.trace-package+zip",
+                "application/vnd.exalto.notary.trace-package+zip",
             )
             .body(bytes);
         if let Some(credentials) = &self.credentials {
             request = request.basic_auth(&credentials.username, Some(&credentials.password));
         }
         if let Some(key) = trusted_notary_key {
-            request = request.header("x-llm-notary-trusted-notary-key", key);
+            request = request.header("x-notary-trusted-notary-key", key);
         }
         let response = request.send().await.map_err(|_| {
             CliError::unavailable(format!(
-                "llm-notaryd is unavailable at {}; start the daemon and try again",
+                "notaryd is unavailable at {}; start the daemon and try again",
                 self.origin
             ))
         })?;
@@ -1181,7 +1181,7 @@ impl AdminClient {
         }
         let response = request.send().await.map_err(|_| {
             CliError::unavailable(format!(
-                "llm-notaryd is unavailable at {}; start the daemon and try again",
+                "notaryd is unavailable at {}; start the daemon and try again",
                 self.origin
             ))
         })?;
@@ -1290,32 +1290,32 @@ async fn execute(
         CliCommand::Captures { command } => match command {
             CapturesCommand::List(args) => {
                 let mut response =
-                    list_request(client, "/v1/captures", capture_query(args), args.all).await?;
+                    list_request(client, "/v1/traces", capture_query(args), args.all).await?;
                 if args.metadata_only {
                     remove_capture_previews(&mut response)?;
                 }
                 Ok(response)
             }
             CapturesCommand::Show(args) => {
-                validate_identifier(&args.id, "cap-")?;
+                validate_identifier(&args.id, "trc-")?;
                 client
-                    .request(Method::GET, &format!("/v1/captures/{}", args.id), &[])
+                    .request(Method::GET, &format!("/v1/traces/{}", args.id), &[])
                     .await
             }
         },
-        CliCommand::Finalize(args) => {
-            validate_identifier(&args.id, "cap-")?;
+        CliCommand::Notarization(args) => {
+            validate_identifier(&args.id, "trc-")?;
             let mut response = client
                 .request(
                     Method::POST,
-                    &format!("/v1/captures/{}/finalizations", args.id),
+                    &format!("/v1/traces/{}/notarizations", args.id),
                     &[],
                 )
                 .await?;
             if args.wait {
                 let operation_id =
                     required_string(&response, "/operation/operation_id")?.to_owned();
-                let operation = wait_for_finalization(
+                let operation = wait_for_notarization(
                     client,
                     &operation_id,
                     stderr,
@@ -1353,9 +1353,9 @@ async fn execute(
         },
         CliCommand::Traces { command } => match command {
             TracesCommand::Show(args) => {
-                validate_identifier(&args.id, "cap-")?;
+                validate_identifier(&args.id, "trc-")?;
                 client
-                    .request(Method::GET, &format!("/v1/captures/{}/trace", args.id), &[])
+                    .request(Method::GET, &format!("/v1/traces/{}/trace", args.id), &[])
                     .await
             }
             TracesCommand::Verify(args) => {
@@ -1364,7 +1364,7 @@ async fn execute(
                         .verify_package(Path::new(&args.target), args.trusted_notary_key.as_deref())
                         .await;
                 }
-                validate_identifier(&args.target, "cap-")?;
+                validate_identifier(&args.target, "trc-")?;
                 if args.trusted_notary_key.is_some() {
                     return Err(CliError::invalid(
                         "--trusted-notary-key is only valid with a .llmtrace path",
@@ -1373,7 +1373,7 @@ async fn execute(
                 client
                     .request(
                         Method::POST,
-                        &format!("/v1/captures/{}/trace:verify", args.target),
+                        &format!("/v1/traces/{}/trace:verify", args.target),
                         &[],
                     )
                     .await
@@ -1386,11 +1386,11 @@ async fn execute(
         }
         CliCommand::Whoami => client.request(Method::GET, "/v1/account", &[]).await,
         CliCommand::Share(args) => {
-            validate_identifier(&args.id, "cap-")?;
+            validate_identifier(&args.id, "trc-")?;
             client
                 .request_json(
                     Method::POST,
-                    &format!("/v1/captures/{}/shares", args.id),
+                    &format!("/v1/traces/{}/shares", args.id),
                     &[],
                     &json!({ "visibility": args.visibility.as_str(), "force": args.force }),
                 )
@@ -1408,10 +1408,10 @@ async fn execute(
 }
 
 fn verify_target_is_file(target: &str) -> bool {
-    Path::new(target).is_file() || validate_identifier(target, "cap-").is_err()
+    Path::new(target).is_file() || validate_identifier(target, "trc-").is_err()
 }
 
-async fn wait_for_finalization(
+async fn wait_for_notarization(
     client: &AdminClient,
     operation_id: &str,
     stderr: &mut dyn io::Write,
@@ -1434,7 +1434,7 @@ async fn wait_for_finalization(
             writeln!(stderr, "{progress}").ok();
             last_progress = progress;
         }
-        if ["finalized", "failed", "interrupted"].contains(&state) {
+        if ["notarized", "failed", "interrupted"].contains(&state) {
             return Ok(current);
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
@@ -1457,12 +1457,12 @@ fn operation_progress(value: &Value) -> String {
         }
     }
     match phase.as_str() {
-        "queued" => "Finalization queued".to_owned(),
+        "queued" => "Notarization queued".to_owned(),
         "preparing" => "Preparing proof inputs".to_owned(),
         "signing" => "Requesting notary signature".to_owned(),
         "packaging" => "Building verified package".to_owned(),
         "complete" => "Verified package complete".to_owned(),
-        _ => format!("Finalization {phase}"),
+        _ => format!("Notarization {phase}"),
     }
 }
 
@@ -1538,11 +1538,11 @@ fn capture_query(args: &CaptureListArgs) -> Vec<(String, String)> {
     push_string(&mut query, "query", args.query.as_deref());
     push_string(&mut query, "model", args.model.as_deref());
     push_string(&mut query, "provider", args.provider.as_deref());
-    push_string(&mut query, "capture_state", args.capture_state.as_deref());
+    push_string(&mut query, "capture_status", args.capture_status.as_deref());
     push_string(
         &mut query,
-        "finalization_state",
-        args.finalization_state.as_deref(),
+        "notarization_status",
+        args.notarization_status.as_deref(),
     );
     push_number(&mut query, "limit", args.limit);
     push_string(&mut query, "cursor", args.cursor.as_deref());
@@ -1572,7 +1572,7 @@ fn operation_query(args: &OperationListArgs) -> Vec<(String, String)> {
     let mut query = Vec::new();
     push_string(&mut query, "state", args.state.as_deref());
     push_string(&mut query, "kind", args.kind.as_deref());
-    push_string(&mut query, "capture_id", args.capture_id.as_deref());
+    push_string(&mut query, "trace_id", args.trace_id.as_deref());
     push_number(&mut query, "limit", args.limit);
     push_string(&mut query, "cursor", args.cursor.as_deref());
     query
@@ -1584,7 +1584,7 @@ fn event_query(args: &EventListArgs) -> Vec<(String, String)> {
     push_string(&mut query, "after", args.after.as_deref());
     push_string(&mut query, "severity", args.severity.as_deref());
     push_string(&mut query, "event_type", args.event_type.as_deref());
-    push_string(&mut query, "capture_id", args.capture_id.as_deref());
+    push_string(&mut query, "trace_id", args.trace_id.as_deref());
     push_string(&mut query, "operation_id", args.operation_id.as_deref());
     push_number(
         &mut query,
@@ -1666,7 +1666,7 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             unreachable!("direct commands provide their own human output")
         }
         CliCommand::Status => Ok(format!(
-            "llm-notaryd {} ({})\nproxy {}\nadmin {}\nmetadata {} ({})\nartifacts {} ({})\ncaptures {} total, {} ready to finalize, {} finalized, {} failed\noperations {} active\nupdates {}",
+            "notaryd {} ({})\nproxy {}\nadmin {}\nmetadata {} ({})\nartifacts {} ({})\ncaptures {} total, {} ready to notarize, {} notarized, {} failed\noperations {} active\nupdates {}",
             value_string(value, "/version"),
             value_string(value, "/build_id"),
             value_string(value, "/proxy_listener"),
@@ -1675,9 +1675,9 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             value_string(value, "/metadata_status"),
             value_string(value, "/artifact_backend"),
             value_string(value, "/artifact_status"),
-            value_string(value, "/counts/total_captures"),
-            value_string(value, "/counts/ready_to_finalize"),
-            value_string(value, "/counts/finalized"),
+            value_string(value, "/counts/total_traces"),
+            value_string(value, "/counts/ready_to_notarize"),
+            value_string(value, "/counts/notarized"),
             value_string(value, "/counts/failed"),
             value_string(value, "/counts/active_operations"),
             if value.pointer("/updates/enabled").and_then(Value::as_bool) == Some(false) {
@@ -1710,29 +1710,29 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
         } => list_lines(value, "/items", |item| {
             format!(
                 "{}\t{}\t{}\t{} / {}",
-                value_string(item, "/capture_id"),
+                value_string(item, "/trace_id"),
                 value_string(item, "/provider"),
                 value_string(item, "/requested_model"),
-                value_string(item, "/capture_state"),
-                value_string(item, "/finalization_state"),
+                value_string(item, "/capture_status"),
+                value_string(item, "/notarization_status"),
             )
         }),
         CliCommand::Captures {
             command: CapturesCommand::Show(_),
         } => Ok(format!(
             "capture {}\nprovider {}\nmodel {}\nstate {} / {}\nrequest {} bytes; response {} bytes",
-            value_string(value, "/capture/capture_id"),
+            value_string(value, "/capture/trace_id"),
             value_string(value, "/capture/provider"),
             value_string(value, "/capture/requested_model"),
-            value_string(value, "/capture/capture_state"),
-            value_string(value, "/capture/finalization_state"),
+            value_string(value, "/capture/capture_status"),
+            value_string(value, "/capture/notarization_status"),
             value_string(value, "/capture/request_bytes"),
             value_string(value, "/capture/response_bytes"),
         )),
-        CliCommand::Finalize(args) => Ok(format!(
+        CliCommand::Notarization(args) => Ok(format!(
             "{} operation {} ({})",
             if args.wait {
-                "Finalization"
+                "Notarization"
             } else if value
                 .get("deduplicated")
                 .and_then(Value::as_bool)
@@ -1754,7 +1754,7 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
                 value_string(item, "/kind"),
                 value_string(item, "/state"),
                 value_string(item, "/progress/phase"),
-                value_string(item, "/capture_id"),
+                value_string(item, "/trace_id"),
             )
         }),
         CliCommand::Operations {
@@ -1763,7 +1763,7 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             "operation {}\nkind {}\ncapture {}\nstate {}\nprogress {}\nattempt {}",
             value_string(value, "/operation_id"),
             value_string(value, "/kind"),
-            value_string(value, "/capture_id"),
+            value_string(value, "/trace_id"),
             value_string(value, "/state"),
             operation_progress(value),
             value_string(value, "/attempt"),
@@ -1776,7 +1776,7 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             command: TracesCommand::Verify(_),
         } => Ok(format!(
             "Verified capture {} with {} ({})",
-            value_string(value, "/capture_id"),
+            value_string(value, "/trace_id"),
             value_string(value, "/notary_key_id"),
             value_string(value, "/trust_source"),
         )),
@@ -1869,7 +1869,7 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             "Queued {} share {} for capture {} ({})",
             value_string(value, "/visibility"),
             value_string(value, "/share_id"),
-            value_string(value, "/capture_id"),
+            value_string(value, "/trace_id"),
             value_string(value, "/state"),
         )),
         CliCommand::Events(_) => list_lines(value, "/items", |item| {
@@ -1995,27 +1995,27 @@ mod tests {
                 "--cursor",
                 "opaque-cursor",
             ],
-            vec!["llm-notary", "captures", "show", "cap-example"],
-            vec!["llm-notary", "finalize", "cap-example"],
-            vec!["llm-notary", "finalize", "cap-example", "--wait"],
+            vec!["llm-notary", "captures", "show", "trc-example"],
+            vec!["llm-notary", "notarization", "trc-example"],
+            vec!["llm-notary", "notarization", "trc-example", "--wait"],
             vec!["llm-notary", "operations", "list"],
             vec!["llm-notary", "operations", "list", "--all"],
             vec!["llm-notary", "operations", "show", "op-example"],
             vec!["llm-notary", "operations", "retry", "op-example"],
-            vec!["llm-notary", "traces", "show", "cap-example"],
-            vec!["llm-notary", "traces", "verify", "cap-example"],
+            vec!["llm-notary", "traces", "show", "trc-example"],
+            vec!["llm-notary", "traces", "verify", "trc-example"],
             vec!["llm-notary", "login"],
             vec!["llm-notary", "logout"],
             vec!["llm-notary", "whoami"],
-            vec!["llm-notary", "share", "cap-example"],
+            vec!["llm-notary", "share", "trc-example"],
             vec![
                 "llm-notary",
                 "share",
-                "cap-example",
+                "trc-example",
                 "--visibility",
                 "listed",
             ],
-            vec!["llm-notary", "publish", "cap-example"],
+            vec!["llm-notary", "publish", "trc-example"],
             vec!["llm-notary", "events"],
             vec!["llm-notary", "events", "--all"],
             vec!["llm-notary", "events", "--after", "high-water"],
@@ -2258,7 +2258,7 @@ mod tests {
     fn capture_metadata_only_omits_preview_fields() {
         let mut value = json!({
             "items": [{
-                "capture_id": "cap-example",
+                "trace_id": "trc-example",
                 "created_at_unix_ms": 123,
                 "prompt_preview": "private prompt",
                 "prompt_preview_truncated": false,
@@ -2270,7 +2270,7 @@ mod tests {
 
         remove_capture_previews(&mut value).unwrap();
 
-        assert_eq!(value["items"][0]["capture_id"], "cap-example");
+        assert_eq!(value["items"][0]["trace_id"], "trc-example");
         assert_eq!(value["items"][0]["created_at_unix_ms"], 123);
         assert!(value["items"][0].get("prompt_preview").is_none());
         assert!(value["items"][0].get("output_preview").is_none());
@@ -2279,11 +2279,11 @@ mod tests {
     #[tokio::test]
     async fn capture_metadata_only_is_applied_to_daemon_output() {
         let router = Router::new().route(
-            "/v1/captures",
+            "/v1/traces",
             get(|| async {
                 Json(json!({
                     "items": [{
-                        "capture_id": "cap-example",
+                        "trace_id": "trc-example",
                         "prompt_preview": "private prompt",
                         "prompt_preview_truncated": false,
                         "output_preview": "private output",
@@ -2338,8 +2338,8 @@ mod tests {
 
     #[test]
     fn human_and_json_output_are_deterministic() {
-        let command = CliCommand::Finalize(FinalizeArgs {
-            id: "cap-example".to_owned(),
+        let command = CliCommand::Notarization(NotarizeArgs {
+            id: "trc-example".to_owned(),
             wait: false,
         });
         let value = json!({
@@ -2485,7 +2485,7 @@ mod tests {
         let router = Router::new()
             .route(
                 "/healthz",
-                get(|| async { Json(json!({ "service": "llm-notaryd", "api_version": "v1" })) }),
+                get(|| async { Json(json!({ "service": "notaryd", "api_version": "v1" })) }),
             )
             .route(
                 "/v1/status",
@@ -2518,7 +2518,7 @@ mod tests {
                 "/healthz",
                 get(|headers: axum::http::HeaderMap| async move {
                     assert!(!headers.contains_key(axum::http::header::AUTHORIZATION));
-                    Json(json!({ "service": "llm-notaryd", "api_version": "v1" }))
+                    Json(json!({ "service": "notaryd", "api_version": "v1" }))
                 }),
             )
             .route(
@@ -2575,20 +2575,20 @@ mod tests {
     #[tokio::test]
     async fn all_mode_combines_pages_and_preserves_final_page_metadata() {
         let router = Router::new().route(
-            "/v1/captures",
+            "/v1/traces",
             get(
                 |axum::extract::Query(query): axum::extract::Query<
                     std::collections::HashMap<String, String>,
                 >| async move {
                     if query.get("cursor").map(String::as_str) == Some("page-two") {
                         Json(json!({
-                            "items": [{"capture_id": "cap-b"}],
+                            "items": [{"trace_id": "trc-b"}],
                             "next_cursor": null,
                             "high_water_cursor": "watermark-two"
                         }))
                     } else {
                         Json(json!({
-                            "items": [{"capture_id": "cap-a"}],
+                            "items": [{"trace_id": "trc-a"}],
                             "next_cursor": "page-two",
                             "high_water_cursor": "watermark-one"
                         }))
@@ -2601,15 +2601,15 @@ mod tests {
 
         let response = list_request(
             &client,
-            "/v1/captures",
+            "/v1/traces",
             vec![("limit".into(), "1".into())],
             true,
         )
         .await
         .unwrap();
 
-        assert_eq!(response["items"][0]["capture_id"], "cap-a");
-        assert_eq!(response["items"][1]["capture_id"], "cap-b");
+        assert_eq!(response["items"][0]["trace_id"], "trc-a");
+        assert_eq!(response["items"][1]["trace_id"], "trc-b");
         assert!(response["next_cursor"].is_null());
         assert_eq!(response["high_water_cursor"], "watermark-two");
         server.abort();
@@ -2619,7 +2619,7 @@ mod tests {
     async fn rejects_api_version_mismatch_before_commands() {
         let router = Router::new().route(
             "/healthz",
-            get(|| async { Json(json!({ "service": "llm-notaryd", "api_version": "v2" })) }),
+            get(|| async { Json(json!({ "service": "notaryd", "api_version": "v2" })) }),
         );
         let (address, server) = serve(router).await;
         let client = AdminClient::new(address, None).unwrap();

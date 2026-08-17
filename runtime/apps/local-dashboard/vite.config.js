@@ -41,7 +41,7 @@ export default defineConfig({
     },
   ],
   build: {
-    outDir: '../../crates/llm-notary-daemon/dashboard',
+    outDir: '../../crates/notaryd/dashboard',
     emptyOutDir: true,
     rollupOptions: {
       input: resolve(process.cwd(), 'local.html'),

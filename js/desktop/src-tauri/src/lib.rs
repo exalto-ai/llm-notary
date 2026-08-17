@@ -10,8 +10,8 @@ use std::{
     time::Duration,
 };
 
-use llm_notary_core::vault::{CHILD_KEY_STDIN_ENV, Vault};
 use llm_notary_updater::{self as update, ReleaseArtifact};
+use notary_core::vault::{CHILD_KEY_STDIN_ENV, Vault};
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -91,10 +91,10 @@ struct DesktopUpdateView {
 
 #[derive(Debug, Default, Deserialize, Serialize)]
 struct CaptureCounts {
-    total_captures: u64,
+    total_traces: u64,
     capturing: u64,
-    ready_to_finalize: u64,
-    finalized: u64,
+    ready_to_notarize: u64,
+    notarized: u64,
     failed: u64,
     active_operations: u64,
 }
@@ -484,7 +484,7 @@ fn restart_block_reason(
     if counts.capturing > 0 {
         Some("Wait for the active capture to finish before restarting to update.")
     } else if counts.active_operations > 0 {
-        Some("Wait for the active finalization to finish before restarting to update.")
+        Some("Wait for the active notarization to finish before restarting to update.")
     } else if running && !managed_by_desktop {
         Some(
             "The running local service was started outside this app. Stop or update it from the process that launched it before restarting the app.",
@@ -983,12 +983,12 @@ fn spawn_daemon(app: &tauri::AppHandle, process: &DaemonProcess) -> Result<(), S
     let unlock_key = vault_unlock_key_for_child(&vault_session)?;
     let (mut events, mut child) = app
         .shell()
-        .sidecar("llm-notaryd")
-        .map_err(|error| format!("Could not locate the bundled llm-notaryd service: {error}"))?
+        .sidecar("notaryd")
+        .map_err(|error| format!("Could not locate the bundled notaryd service: {error}"))?
         .env(CHILD_KEY_STDIN_ENV, "1")
         .env(DESKTOP_CONTROL_STDIN_ENV, "1")
         .spawn()
-        .map_err(|error| format!("Could not start the bundled llm-notaryd service: {error}"))?;
+        .map_err(|error| format!("Could not start the bundled notaryd service: {error}"))?;
 
     if let Err(error) = child.write(&unlock_key) {
         return Err(format!(

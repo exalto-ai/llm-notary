@@ -74,10 +74,10 @@ fi
 tar -xzf "$temporary_dir/$archive" -C "$temporary_dir"
 mkdir -p "$install_dir"
 install -m 0755 "$temporary_dir/llm-notary-${version}-${platform}-${architecture}/llm-notary" "$install_dir/llm-notary"
-install -m 0755 "$temporary_dir/llm-notary-${version}-${platform}-${architecture}/llm-notaryd" "$install_dir/llm-notaryd"
+install -m 0755 "$temporary_dir/llm-notary-${version}-${platform}-${architecture}/notaryd" "$install_dir/notaryd"
 
-echo "Installed LLM Notary $version from $channel (llm-notary and llm-notaryd) to $install_dir"
+echo "Installed LLM Notary $version from $channel (llm-notary and notaryd) to $install_dir"
 case ":$PATH:" in
   *":$install_dir:"*) ;;
-  *) echo "Add $install_dir to your PATH, then run: llm-notaryd" ;;
+  *) echo "Add $install_dir to your PATH, then run: notaryd" ;;
 esac

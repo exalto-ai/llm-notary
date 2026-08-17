@@ -1,7 +1,0 @@
-fn main() -> anyhow::Result<()> {
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&llm_notary_daemon::admin::openapi_document())?
-    );
-    Ok(())
-}

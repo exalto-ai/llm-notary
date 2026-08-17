@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 
-RESULT_FORMAT = "llm-notary/opencode-e2e-result/v1"
+RESULT_FORMAT = "notary/opencode-e2e-result/v1"
 
 
 def duration(value: Any) -> str:
@@ -69,7 +69,7 @@ def slack_payload(result: dict[str, Any]) -> dict[str, Any]:
             "text": (
                 "*Attempts / calls / eligible*\n"
                 f"{summary.get('attempt_count', 0)} / {summary.get('model_turns', 0)} / "
-                f"{summary.get('eligible_captures', 0)}"
+                f"{summary.get('eligible_traces', 0)}"
             ),
         },
         {
@@ -143,9 +143,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("result", type=Path)
     arguments = parser.parse_args()
-    webhook = os.environ.get("LLM_NOTARY_SLACK_WEBHOOK_URL")
+    webhook = os.environ.get("NOTARYD_E2E_SLACK_WEBHOOK_URL")
     if not webhook:
-        print("Slack notification skipped: LLM_NOTARY_SLACK_WEBHOOK_URL is unset")
+        print("Slack notification skipped: NOTARYD_E2E_SLACK_WEBHOOK_URL is unset")
         return 0
     try:
         post(webhook, slack_payload(load_result(arguments.result)))

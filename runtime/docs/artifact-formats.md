@@ -6,7 +6,7 @@ Do not describe them interchangeably.
 | Artifact | Location | Contains proof? | Shareable? |
 | --- | --- | --- | --- |
 | `.llmcapture` | local vault-backed storage | no, deferred private state | no |
-| `.llmtrace` | local finalized storage | yes, with an external trusted key | only after reviewing disclosed bodies |
+| `.llmtrace` | local notarized storage | yes, with an external trusted key | only after reviewing disclosed bodies |
 | Public `trace.otlp.json` | hosted Library | no portable evidence | yes, for inspection |
 
 ## Encrypted deferred capture
@@ -16,7 +16,7 @@ Format: `llm-notary/deferred-bundle/v1` inside vault encryption.
 The capture contains the client checkpoint and signed receipt required to
 complete private proof generation later. That checkpoint can reconstruct the
 original request, including credentials and cookie values. The file is
-therefore more sensitive than the finalized package.
+therefore more sensitive than the notarized package.
 
 A successful vault decrypt or capture parse proves only local structural
 usability. It does not authenticate the provider response to another party.
@@ -26,7 +26,7 @@ Existing `.llmbundle` files remain readable as legacy private captures. New
 captures use `.llmcapture`; renaming does not change the encrypted bytes or
 make either extension safe to share.
 
-## Finalized trace package
+## Notarized trace package
 
 The `.llmtrace` extension names one deterministic ZIP archive. Its archive
 format is `llmnotary.trace-package-archive/v2`, its verified-package manifest
@@ -131,20 +131,20 @@ does not claim that a local runtime executed the tool.
 Verify a cataloged capture through the daemon:
 
 ```bash
-llm-notary traces verify cap-example
+llm-notary traces verify trc-example
 ```
 
 Verify a portable file through the daemon without importing or retaining it:
 
 ```bash
-llm-notary traces verify ./cap-example.llmtrace
+llm-notary traces verify ./trc-example.llmtrace
 ```
 
 Path-based verification selects a key from the daemon's configured or cached
 trust by default. For an explicit self-hosted trust anchor:
 
 ```bash
-llm-notary traces verify ./cap-example.llmtrace --trusted-notary-key 02...
+llm-notary traces verify ./trc-example.llmtrace --trusted-notary-key 02...
 ```
 
 Full verification checks canonical archive bytes, entry hashes, trust-key

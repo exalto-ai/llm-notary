@@ -6,10 +6,10 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use llm_notary_core::{
+use notary_core::{
     archive::{MAX_ARCHIVE_WIRE_BYTES, ValidatedTracePackageArchive, read_trace_package_archive},
-    bundle::{trace_manifest_from_archive, verify_trace_package_archive},
-    notary_directory::NotaryDirectory,
+    notarization::{trace_manifest_from_archive, verify_trace_package_archive},
+    registry::Registry as NotaryDirectory,
 };
 use serde::Serialize;
 #[cfg(feature = "test-utils")]
@@ -114,13 +114,13 @@ pub(super) fn verify_package(
     archive: &[u8],
     directory: &NotaryDirectory,
 ) -> Result<HostedVerifiedPackage, HostedVerificationError> {
-    let package_sha256 = llm_notary_core::sha256_hex(archive);
+    let package_sha256 = notary_core::sha256_hex(archive);
     let prepared = prepare_package(archive, directory)?;
     let verified =
         verify_trace_package_archive(prepared.validated, package_sha256, &prepared.trusted_key)
             .map_err(classify_package_error)?;
     Ok(HostedVerifiedPackage {
-        capture_id: verified.manifest.capture_id().to_owned(),
+        capture_id: verified.manifest.trace_id().to_owned(),
         authenticated_at_unix_ms: verified.manifest.created_at_unix_ms(),
         provider_name: verified.manifest.provider_name().to_owned(),
         provider_host: verified.manifest.provider_host().to_owned(),
@@ -139,9 +139,9 @@ fn verify_fixture_package(
     directory: &NotaryDirectory,
     crypto_provider: &CryptoProvider,
 ) -> Result<HostedVerifiedPackage, HostedVerificationError> {
-    let package_sha256 = llm_notary_core::sha256_hex(archive);
+    let package_sha256 = notary_core::sha256_hex(archive);
     let prepared = prepare_package(archive, directory)?;
-    let verified = llm_notary_core::bundle::verify_trace_package_archive_with_provider_for_test(
+    let verified = notary_core::notarization::verify_trace_package_archive_with_provider_for_test(
         prepared.validated,
         package_sha256,
         &prepared.trusted_key,
@@ -149,7 +149,7 @@ fn verify_fixture_package(
     )
     .map_err(classify_package_error)?;
     Ok(HostedVerifiedPackage {
-        capture_id: verified.manifest.capture_id().to_owned(),
+        capture_id: verified.manifest.trace_id().to_owned(),
         authenticated_at_unix_ms: verified.manifest.created_at_unix_ms(),
         provider_name: verified.manifest.provider_name().to_owned(),
         provider_host: verified.manifest.provider_host().to_owned(),
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn worker_success_body_embeds_trace_without_reencoding_it() {
         let package = HostedVerifiedPackage {
-            capture_id: "cap-test".to_owned(),
+            capture_id: "trc-test".to_owned(),
             authenticated_at_unix_ms: 1_700_000_000_000,
             provider_name: "OpenAI".to_owned(),
             provider_host: "api.openai.com".to_owned(),

@@ -13,7 +13,7 @@ archive="$package.tar.gz"
 mkdir -p "$build_root" "$test_root/package/$package" "$test_root/fake-bin"
 printf '%s %s\n' "$build_id" "$version" > "$fixture_root/latest"
 
-for program in llm-notary llm-notaryd; do
+for program in llm-notary notaryd; do
   printf '#!/bin/sh\nprintf "%%s fixture\\n" "%s"\n' "$program" > "$test_root/package/$package/$program"
   chmod 0755 "$test_root/package/$package/$program"
 done
@@ -41,7 +41,7 @@ PATH="$test_root/fake-bin:$PATH" \
   sh "$(dirname "$0")/../public/install.sh"
 
 test "$("$test_root/bin/llm-notary")" = "llm-notary fixture"
-test "$("$test_root/bin/llm-notaryd")" = "llm-notaryd fixture"
+test "$("$test_root/bin/notaryd")" = "notaryd fixture"
 
 printf 'tampered\n' >> "$build_root/$archive"
 if PATH="$test_root/fake-bin:$PATH" \

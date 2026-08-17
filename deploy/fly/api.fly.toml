@@ -21,7 +21,7 @@ kill_timeout = "30s"
   LLM_NOTARY_NOTARY_TRANSPORT = "tls"
   # This revision moves the advertised endpoint to its custom hostname. Clients
   # cache directories by generation, so endpoint changes must increase it.
-  LLM_NOTARY_NOTARY_DIRECTORY_GENERATION = "4"
+  LLM_NOTARY_REGISTRY_GENERATION = "4"
   # Keep the existing namespace when moving published state from Spaces.
   LLM_NOTARY_S3_PREFIX = "llm-notary"
   LLM_NOTARY_S3_FORCE_PATH_STYLE = "true"

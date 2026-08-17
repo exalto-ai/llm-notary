@@ -5,15 +5,16 @@ use ipnet::IpNet;
 use sqlx::postgres::PgConnectOptions;
 use url::Url;
 
-use llm_notary_core::notary_directory::{
-    DIRECTORY_FORMAT_V3, NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, NotaryTransport,
-    key_id, parse_directory,
+use notary_core::registry::{
+    NotaryKeyStatus, NotaryTransport, REGISTRY_FORMAT as DIRECTORY_FORMAT_V3,
+    Registry as NotaryDirectory, RegistryRecord as NotaryDirectoryRecord, key_id,
+    parse_registry as parse_directory,
 };
 
 pub(crate) const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 5;
 const MAX_DATABASE_CONNECTIONS: u32 = 64;
 pub(crate) const DEFAULT_MAX_ARCHIVE_BYTES: i64 =
-    llm_notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64;
+    notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64;
 pub(crate) const DEFAULT_UPLOAD_TTL_SECS: i64 = 15 * 60;
 pub(crate) const DEFAULT_ADMISSION_TICKET_TTL_SECS: i64 = 45;
 
@@ -468,6 +469,8 @@ impl NotaryDirectoryConfig {
                 .context("LLM_NOTARY_NOTARY_DIRECTORY_GENERATION must be a u64")?,
             active_key_id: key_id.clone(),
             notaries: vec![NotaryDirectoryRecord {
+                name: "Default notary".to_owned(),
+                operator: "Exalto".to_owned(),
                 host: env_or_default("LLM_NOTARY_NOTARY_HOST", "127.0.0.1")?,
                 port: env_or_default("LLM_NOTARY_NOTARY_PORT", "7047")?
                     .parse::<u16>()
@@ -482,7 +485,7 @@ impl NotaryDirectoryConfig {
                     .parse()
                     .context("LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS must be a u64")?,
                 valid_until_unix_ms: None,
-                finalize_until_unix_ms: None,
+                notarize_until_unix_ms: None,
             }],
         };
         directory.validate()?;
@@ -537,10 +540,10 @@ impl StorageConfig {
 }
 
 fn validate_max_archive_bytes(value: i64) -> Result<()> {
-    if value <= 0 || value > llm_notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64 {
+    if value <= 0 || value > notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64 {
         bail!(
             "LLM_NOTARY_INTAKE_MAX_BYTES must be positive and no greater than {}",
-            llm_notary_core::archive::MAX_ARCHIVE_WIRE_BYTES
+            notary_core::archive::MAX_ARCHIVE_WIRE_BYTES
         );
     }
     Ok(())

@@ -45,24 +45,24 @@ the endpoint and schema authority.
    configured `admin.auth`, obtain its username and password through the
    approved secret mechanism and use the OpenAPI `basicAuth` scheme. Never
    print, log, embed, persist, or put the password in a URL.
-4. Find captures through `/v1/captures` and act on returned `cap-…`
+4. Find captures through `/v1/traces` and act on returned `cap-…`
    identifiers. Never ask for or submit an arbitrary local filesystem path.
    Search input may contain punctuation; the service treats it as text
    boundaries rather than raw full-text-search syntax. Capture responses
    include stored prompt and output previews, so project each item to safe
    metadata before command output enters the agent transcript.
-5. Treat finalization as asynchronous. Save the returned `op-…` identifier and
-   poll its documented operation URL until `finalized`, `failed`, or
+5. Treat notarization as asynchronous. Save the returned `op-…` identifier and
+   poll its documented operation URL until `notarized`, `failed`, or
    `interrupted`. Use `attempt_history` when explaining retries.
-6. Use `GET /v1/captures/{capture_id}/package` to download the exact canonical
-   `.llmtrace` bytes, and `POST /v1/captures/{capture_id}/trace:verify` for
+6. Use `GET /v1/traces/{trace_id}/package` to download the exact canonical
+   `.llmtrace` bytes, and `POST /v1/traces/{trace_id}/trace:verify` for
    cryptographic package verification. Decrypting or structurally validating
    an encrypted capture is not independent verification.
 7. Never request, decode, upload, or expose decrypted `.llmcapture` contents,
    credentials, cookies, raw authenticated headers, authentication secrets,
    or vault material.
-8. Ask the user before sharing a finalized trace or changing service
-   configuration. Finalization alone is not sharing consent. Confirm whether
+8. Ask the user before sharing a notarized trace or changing service
+   configuration. Notarization alone is not sharing consent. Confirm whether
    the public link should be Unlisted or Listed.
 9. After approval, save `share_id` and poll `GET /v1/shares/{share_id}` through
    the local admin API. Do not extract or reproduce the vault-held account
@@ -73,8 +73,8 @@ document does not describe an operation, stop and explain that the installed
 service does not support it.
 
 Prefer server-side filters from the discovered contract. In particular,
-filter operations by `state`, `kind`, or `capture_id`, and filter events by
-`severity`, `event_type`, `capture_id`, `operation_id`, or
+filter operations by `state`, `kind`, or `trace_id`, and filter events by
+`severity`, `event_type`, `trace_id`, `operation_id`, or
 `created_after_unix_ms`. Do not download a broad history merely to discard most
 of it in the client.
 
@@ -86,9 +86,9 @@ First check /healthz and fetch /openapi.json. Use the local API without
 credentials unless it returns 401. If authentication is configured, use only
 the approved Basic credentials and never print or persist the password.
 Find the newest captured OpenAI response whose preview matches "sanitized",
-show me its safe metadata, and ask before starting finalization. If I approve,
+show me its safe metadata, and ask before starting notarization. If I approve,
 record the returned operation identifier and poll it to a terminal state. When
-finalized, run the documented trace verification operation and report exactly
+notarized, run the documented trace verification operation and report exactly
 what it verifies. Do not access bundle paths or contents, and do not publish.
 ```
 
@@ -109,23 +109,23 @@ returned by the service:
 
 ```bash
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&capture_state=captured&limit=10" \
-  | jq '.items |= map({capture_id, created_at_unix_ms, provider, requested_model, capture_state, finalization_state, finalization_eligible, failure_code})'
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces?query=sanitized&provider=openai&capture_state=captured&limit=10" \
+  | jq '.items |= map({trace_id, created_at_unix_ms, provider, requested_model, capture_state, notarization_status, notarization_eligible, failure_code})'
 
-capture_id=cap-example
+trace_id=trc-example
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id" \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id" \
   | jq 'del(.capture.prompt_preview, .capture.prompt_preview_truncated, .capture.output_preview, .capture.output_preview_truncated)'
 ```
 
-After explicit user approval, queue finalization. A `202 Accepted` response has
+After explicit user approval, queue notarization. A `202 Accepted` response has
 the shape `{"operation":{…},"deduplicated":false}`. `deduplicated: true`
 means an existing operation was returned and should be polled instead of
 starting another:
 
 ```bash
 response=$(curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/finalizations")
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/notarizations")
 operation_id=$(printf '%s' "$response" | jq -r '.operation.operation_id')
 
 while :; do
@@ -134,9 +134,9 @@ while :; do
   state=$(printf '%s' "$operation" | jq -r '.state')
   progress=$(printf '%s' "$operation" | jq -r \
     'if .progress.proof then "\(.progress.proof.bytes_completed)/\(.progress.proof.bytes_total) bytes, \(.progress.proof.commitments_completed)/\(.progress.proof.commitments_total) commitments" else .progress.phase end')
-  printf 'Finalization progress: %s\n' "$progress"
+  printf 'Notarization progress: %s\n' "$progress"
   case "$state" in
-    finalized|failed|interrupted) break ;;
+    notarized|failed|interrupted) break ;;
     queued|running) sleep 3 ;;
     *) printf 'Unexpected operation state: %s\n' "$state" >&2; exit 1 ;;
   esac
@@ -144,12 +144,12 @@ done
 printf 'Operation %s ended in %s\n' "$operation_id" "$state"
 ```
 
-If finalization succeeds, independently verify the finalized trace:
+If notarization succeeds, independently verify the notarized trace:
 
 ```bash
-test "$state" = finalized || exit 1
+test "$state" = notarized || exit 1
 curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/trace:verify"
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/trace:verify"
 ```
 
 For a portable file that is not cataloged by this daemon, use
@@ -168,7 +168,7 @@ follow admission through the local service:
 share=$(curl --fail-with-body -X POST \
   -H 'Content-Type: application/json' \
   --data '{"visibility":"unlisted"}' \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/shares")
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/shares")
 share_id=$(printf '%s' "$share" | jq -r '.share_id')
 
 curl --fail-with-body \
@@ -190,13 +190,13 @@ const health = await fetch(`${origin}/healthz`);
 if (!health.ok) throw new Error(`Local service unavailable: ${health.status}`);
 
 const specification = await fetch(`${origin}/openapi.json`).then((response) => response.json());
-if (!specification.paths['/v1/captures']) throw new Error('Installed API is incompatible');
+if (!specification.paths['/v1/traces']) throw new Error('Installed API is incompatible');
 
-const response = await fetch(`${origin}/v1/captures?capture_state=captured&limit=10`);
+const response = await fetch(`${origin}/v1/traces?capture_state=captured&limit=10`);
 if (!response.ok) throw new Error(`Capture search failed: ${response.status}`);
 const captures = await response.json();
-console.log(captures.items.map(({ capture_id, provider, requested_model, finalization_state }) => ({
-  capture_id, provider, requested_model, finalization_state
+console.log(captures.items.map(({ trace_id, provider, requested_model, notarization_status }) => ({
+  trace_id, provider, requested_model, notarization_status
 })));
 ```
 

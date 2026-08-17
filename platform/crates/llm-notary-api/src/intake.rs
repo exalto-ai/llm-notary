@@ -8,7 +8,7 @@ use aws_sdk_s3::{
     primitives::ByteStream,
 };
 
-pub use llm_notary_core::archive::{ARCHIVE_CONTENT_TYPE, ARCHIVE_FORMAT};
+pub use notary_core::archive::{ARCHIVE_CONTENT_TYPE, TRACE_PACKAGE_FORMAT as ARCHIVE_FORMAT};
 
 use super::config::StorageConfig;
 
@@ -514,7 +514,7 @@ impl MockIntakeStorage {
 
     pub fn object_bytes(&self, key: impl Into<String>, bytes: Vec<u8>) {
         let key = key.into();
-        let sha256 = llm_notary_core::sha256_hex(&bytes);
+        let sha256 = notary_core::sha256_hex(&bytes);
         self.object(&key, bytes.len() as i64, &sha256);
         self.bodies.lock().expect("mock lock").insert(key, bytes);
     }

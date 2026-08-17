@@ -1,8 +1,8 @@
 [workspace]
 members = [
     "crates/llm-notary-cli",
-    "crates/llm-notary-core",
-    "crates/llm-notary-daemon",
+    "crates/notary-core",
+    "crates/notaryd",
     "crates/llm-notary-server",
     "crates/llm-notary-updater",
 ]

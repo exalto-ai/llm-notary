@@ -4,7 +4,7 @@ WORKDIR /app
 COPY . .
 RUN cargo build --locked --release \
     -p llm-notary-cli --bin llm-notary \
-    -p llm-notary-daemon --bin llm-notaryd \
+    -p notaryd --bin notaryd \
     -p llm-notary-server --bin llm-notary-server
 
 FROM debian:bookworm-slim AS daemon
@@ -12,10 +12,10 @@ FROM debian:bookworm-slim AS daemon
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/llm-notaryd /usr/local/bin/llm-notaryd
+COPY --from=builder /app/target/release/notaryd /usr/local/bin/notaryd
 COPY --from=builder /app/target/release/llm-notary /usr/local/bin/llm-notary
-RUN llm-notaryd --help >/dev/null && llm-notary --help >/dev/null
-ENTRYPOINT ["llm-notaryd"]
+RUN notaryd --help >/dev/null && llm-notary --help >/dev/null
+ENTRYPOINT ["notaryd"]
 
 FROM daemon AS cluster
 
@@ -41,7 +41,7 @@ ENTRYPOINT ["llm-notary-server"]
 FROM builder AS daemon-e2e-builder
 
 RUN cargo build --locked --release \
-    -p llm-notary-daemon --features daemon-e2e --bins \
+    -p notaryd --features daemon-e2e --bins \
     -p llm-notary-cli --bin llm-notary
 
 FROM daemon AS daemon-e2e
@@ -50,19 +50,19 @@ USER root
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl jq openssl python3 sqlite3 \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=daemon-e2e-builder /app/target/release/llm-notaryd /usr/local/bin/llm-notaryd
+COPY --from=daemon-e2e-builder /app/target/release/notaryd /usr/local/bin/notaryd
 COPY --from=daemon-e2e-builder /app/target/release/llm-notary /usr/local/bin/llm-notary
-COPY --from=daemon-e2e-builder /app/target/release/llm-notary-e2e-notary /usr/local/bin/llm-notary-e2e-notary
+COPY --from=daemon-e2e-builder /app/target/release/notary-e2e-notary /usr/local/bin/notary-e2e-notary
 COPY deploy-daemon-e2e/config.toml /etc/llm-notary/config.toml
 RUN cp /etc/llm-notary/config.toml /etc/llm-notary/config-s3.toml \
     && sed -i 's/backend = "filesystem"/backend = "s3"/' /etc/llm-notary/config-s3.toml \
     && printf '%s\n' \
         '' \
         '[storage.s3]' \
-        'bucket = "llm-notary-daemon-e2e"' \
+        'bucket = "notaryd-e2e"' \
         'region = "us-east-1"' \
         'endpoint = "http://minio:9000"' \
-        'prefix = "daemon-e2e/artifacts"' \
+        'prefix = "notaryd"' \
         'force_path_style = true' \
         'allow_insecure_http = true' \
         'connect_timeout_seconds = 3' \
@@ -72,7 +72,7 @@ RUN cp /etc/llm-notary/config.toml /etc/llm-notary/config-s3.toml \
     && sed -i 's/backend = "sqlite"/backend = "postgres"/' /etc/llm-notary/config-postgres.toml \
     && printf '%s\n' \
         '' \
-        '[catalog.postgres]' \
+        '[metadata.postgres]' \
         'ssl_mode = "disable"' \
         'max_connections = 8' \
         'connect_timeout_seconds = 3' \

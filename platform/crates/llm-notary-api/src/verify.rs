@@ -32,9 +32,9 @@ use super::{
     },
     unix_timestamp,
 };
-use llm_notary_core::{
+use notary_core::{
     archive::{ARCHIVE_CONTENT_TYPE, MAX_ARCHIVE_WIRE_BYTES},
-    notary_directory::NotaryDirectory,
+    registry::Registry as NotaryDirectory,
     sha256_hex,
 };
 
@@ -184,7 +184,7 @@ pub fn router() -> OpenApiRouter<AppState> {
     post,
     path = "/api/verify",
     summary = "Verify a portable .llmtrace package",
-    request_body(content = TracePackageBody, content_type = "application/vnd.llmnotary.trace-package+zip"),
+    request_body(content = TracePackageBody, content_type = "application/vnd.exalto.notary.trace-package+zip"),
     responses(
         (status = 200, body = VerificationResponse),
         (status = 408, body = ErrorResponse),
@@ -650,7 +650,7 @@ mod tests {
         let expected_package = package.clone();
         let encoded = serde_json::to_vec(&serde_json::json!({
             "verified": true,
-            "capture_id": "cap-sanitized",
+            "capture_id": "trc-sanitized",
             "authenticated_at_unix_ms": 1_785_000_000_000_u64,
             "provider": "fixture",
             "host": "fixture.example",
@@ -684,7 +684,7 @@ mod tests {
         );
         let body = to_bytes(response.into_body(), 64 * 1024).await.unwrap();
         let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(body["capture_id"], "cap-sanitized");
+        assert_eq!(body["capture_id"], "trc-sanitized");
 
         let retained: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM publish_jobs")
             .fetch_one(&database)

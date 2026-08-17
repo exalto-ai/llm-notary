@@ -1,9 +1,9 @@
 # Local service and REST API
 
-In the default local profile, one `llm-notaryd` process owns the catalog,
+In the default local profile, one `notaryd` process owns the catalog,
 vault, artifacts, and durable operation state. The short-lived
 `llm-notary` command talks to it through the versioned loopback API.
-`llm-notaryd` owns two different loopback listeners:
+`notaryd` owns two different loopback listeners:
 
 | Listener | Default | Purpose |
 | --- | --- | --- |
@@ -38,11 +38,11 @@ authentication is configured, these routes require it like the other `/v1`
 routes.
 
 Off does not stop or bypass the local daemon. Existing configured provider
-URLs continue to work, but new requests stream from `llm-notaryd` directly to
+URLs continue to work, but new requests stream from `notaryd` directly to
 the adapter's fixed provider origin over HTTPS. There is no remote notary,
 hosted admission, capture row, capture ID, preview, or `.llmcapture`, so nothing
-from that request can later be finalized or verified. Existing captures and
-finalizations remain usable. Enabling capture first initializes trusted notary
+from that request can later be notarized or verified. Existing captures and
+notarizations remain usable. Enabling capture first initializes trusted notary
 state; if that fails, the API returns
 `capture_enable_initialization_failed` and capture stays off.
 
@@ -52,7 +52,7 @@ Run the service in the foreground. It writes the default configuration on
 first start, or accepts an explicit file:
 
 ```bash
-llm-notaryd --config /path/to/config.toml
+notaryd --config /path/to/config.toml
 ```
 
 The process logs lifecycle metadata to standard error and exits when it cannot
@@ -63,7 +63,7 @@ normal interrupt; do not run a second process against the same catalog.
 
 On interrupt or termination, the daemon first closes both listeners to new
 requests. Existing provider response streams are allowed to finish and seal
-their private capture, and the finalization worker stops claiming queued work
+their private capture, and the notarization worker stops claiming queued work
 after it finishes the operation it already owns. Queued operations remain in
 the catalog for the next start. The desktop app requests the same drain over
 its private child-process pipe. It does not send a kill signal as an update or
@@ -71,7 +71,7 @@ normal stop mechanism.
 
 There is no compatibility alias: `llm-notary` does not start the service.
 Service-manager `ExecStart`, launchd `ProgramArguments`, and Windows service
-definitions must invoke `llm-notaryd`, optionally followed by `--config` and
+definitions must invoke `notaryd`, optionally followed by `--config` and
 the configuration path.
 
 The executable name is the same in each supervisor. Adapt the executable and
@@ -79,13 +79,13 @@ configuration paths to the installation:
 
 ```ini
 # systemd service
-ExecStart=/usr/local/bin/llm-notaryd --config /etc/llm-notary/config.toml
+ExecStart=/usr/local/bin/notaryd --config /etc/llm-notary/config.toml
 ```
 
 ```xml
 <!-- launchd ProgramArguments -->
 <array>
-  <string>/usr/local/bin/llm-notaryd</string>
+  <string>/usr/local/bin/notaryd</string>
   <string>--config</string>
   <string>/Users/example/Library/Application Support/llm-notary/config.toml</string>
 </array>
@@ -93,7 +93,7 @@ ExecStart=/usr/local/bin/llm-notaryd --config /etc/llm-notary/config.toml
 
 ```powershell
 # Windows Service Control Manager
-sc.exe create LLMNotary binPath= '"C:\Program Files\LLM Notary\llm-notaryd.exe" --config "C:\ProgramData\LLM Notary\config.toml"'
+sc.exe create LLMNotary binPath= '"C:\Program Files\LLM Notary\notaryd.exe" --config "C:\ProgramData\LLM Notary\config.toml"'
 ```
 
 The smallest useful explicit configuration is:
@@ -130,8 +130,8 @@ backend = "postgres"
 
 ```bash
 export LLM_NOTARY_METADATA_DATABASE_URL='postgresql://…'
-llm-notaryd migrate --config /path/to/config.toml
-llm-notaryd --config /path/to/config.toml
+notaryd migrate --config /path/to/config.toml
+notaryd --config /path/to/config.toml
 ```
 
 Use `LLM_NOTARY_METADATA_DATABASE_URL_FILE` for a mounted secret. The defaults
@@ -182,7 +182,7 @@ managed `daemon-private/` namespace. Readiness uses one bounded, non-mutating
 list request against that namespace; reconciliation uses the same permission.
 Runtime credentials do not need `DeleteObject`. Objects are always addressed
 under `daemon-private/deferred_bundle` or
-`daemon-private/finalized_package`. Neither bucket nor object keys contain
+`notaryd/trace-packages`. Neither bucket nor object keys contain
 prompts, outputs, or provider credentials.
 
 The daemon privately spools, hashes, conditionally creates, reads back, and
@@ -198,11 +198,11 @@ Missing objects return `artifact_missing`; wrong size or hash returns
 and missing historical backend configuration have separate safe codes. The
 runtime does not automatically delete unreferenced objects. An object left by
 a stop after PUT but before metadata commit remains adoptable by capture
-recovery or finalization retry. Stop the daemon and run the bounded,
+recovery or notarization retry. Stop the daemon and run the bounded,
 report-only check before cleanup:
 
 ```bash
-llm-notaryd reconcile-artifacts --config /etc/llm-notary/config.toml
+notaryd reconcile-artifacts --config /etc/llm-notary/config.toml
 ```
 
 The JSON report verifies every referenced artifact and counts old,
@@ -317,12 +317,12 @@ previews; use `--metadata-only` before sending it to an agent transcript:
 llm-notary captures list --query sanitized --provider openai --limit 20
 llm-notary captures list --cursor "$next_cursor"
 llm-notary captures list --provider openai --all --metadata-only --json
-llm-notary captures show cap-example
-llm-notary finalize cap-example --wait
-llm-notary operations list --state failed --kind finalization
+llm-notary captures show trc-example
+llm-notary notarize trc-example --wait
+llm-notary operations list --state failed --kind notarization
 llm-notary operations retry op-example
-llm-notary traces show cap-example --json
-llm-notary traces verify cap-example
+llm-notary traces show trc-example --json
+llm-notary traces verify trc-example
 llm-notary events --severity error --limit 20
 llm-notary events --after "$high_water_cursor"
 llm-notary notaries list
@@ -337,16 +337,16 @@ It does not contact the daemon. See the [coding-agent
 playbook](agent-playbook.md) for paths and consent boundaries.
 
 Sharing identity remains daemon-owned. Login, logout, account inspection,
-and sharing all use the local REST API, so only `llm-notaryd` accesses the
-credential vault or finalized artifact:
+and sharing all use the local REST API, so only `notaryd` accesses the
+credential vault or notarized artifact:
 
 ```bash
 llm-notary login
 llm-notary whoami
 llm-notary whoami --json
-llm-notary share cap-example                         # Unlisted by default
-llm-notary share cap-example --visibility listed
-llm-notary share cap-example --force                 # Only after disclosure review
+llm-notary share trc-example                         # Unlisted by default
+llm-notary share trc-example --visibility listed
+llm-notary share trc-example --force                 # Only after disclosure review
 llm-notary logout
 ```
 
@@ -358,8 +358,8 @@ links, and credit balances. Human output is intended for quick inspection;
 inspection includes the same total, monthly, additional, reset, and expiration
 values returned by the hosted account API.
 The account dashboard retrieves credit activity separately from the paginated
-`GET /api/me/credits/history` route. These fields affect hosted finalization
-only; they do not enter local captures or finalized evidence.
+`GET /api/me/credits/history` route. These fields affect hosted notarization
+only; they do not enter local captures or notarized evidence.
 
 Exit code `2` is invalid input, `3` means the daemon is unavailable, `4` is an
 authentication failure, `5` is not found, `6` is a state conflict, `7` is a
@@ -377,7 +377,7 @@ use `1`. Error text is safe and never echoes credentials or plaintext headers.
   Invalid query values use the same JSON envelope; for example, a negative
   `limit` returns `invalid_query_parameter` instead of a framework error page.
 - Capture lists use `limit` and an opaque `cursor`. Supported filters are
-  `query`, `provider`, `model`, `capture_state`, `finalization_state`,
+  `query`, `provider`, `model`, `capture_state`, `notarization_status`,
   `streaming`, and `created_after_unix_ms`. A cursor is valid only with the
   route and filters that produced it. The removed `offset` parameter returns
   `offset_pagination_removed`; callers must restart at page one and follow
@@ -385,9 +385,9 @@ use `1`. Error text is safe and never echoes credentials or plaintext headers.
 - Capture search treats punctuation as token boundaries, so `safety-review`
   and `**safety**` are safe inputs. Space-separated words must all match;
   double quotes preserve a phrase such as `"safety review"`.
-- Operation lists support exact `state`, `kind`, and `capture_id` filters plus
+- Operation lists support exact `state`, `kind`, and `trace_id` filters plus
   `limit` and an opaque `cursor`.
-- Activity supports exact `severity`, `event_type`, `capture_id`, and
+- Activity supports exact `severity`, `event_type`, `trace_id`, and
   `operation_id` filters, a `created_after_unix_ms` lower bound, and `limit`.
   Use `next_cursor` to continue backward through history. Save the separate
   `high_water_cursor` and pass it as `after` to follow newer events without
@@ -404,12 +404,12 @@ which workflow owns each operation:
 | --- | --- |
 | Session and status | `POST /v1/session`, `DELETE /v1/session`, `GET /v1/status` |
 | Notary trust | `GET /v1/notaries` |
-| Captures | `GET /v1/captures`, `GET /v1/captures/{capture_id}` |
-| Finalization | `POST /v1/captures/{capture_id}/finalizations`, `GET /v1/operations`, `GET /v1/operations/{operation_id}`, `POST /v1/operations/{operation_id}/retry` |
-| Finalized trace | `GET /v1/captures/{capture_id}/package`, `GET /v1/captures/{capture_id}/trace`, `POST /v1/captures/{capture_id}/trace:verify` |
+| Captures | `GET /v1/traces`, `GET /v1/traces/{trace_id}` |
+| Notarization | `POST /v1/traces/{trace_id}/notarizations`, `GET /v1/operations`, `GET /v1/operations/{operation_id}`, `POST /v1/operations/{operation_id}/retry` |
+| Notarized trace | `GET /v1/traces/{trace_id}/package`, `GET /v1/traces/{trace_id}/trace`, `POST /v1/traces/{trace_id}/trace:verify` |
 | Activity | `GET /v1/events` |
 | Account connection | `GET /v1/account`, `POST /v1/account`, `GET /v1/account/{request_id}`, `DELETE /v1/account` |
-| Sharing | `POST /v1/captures/{capture_id}/shares`, `GET /v1/shares/{share_id}` |
+| Sharing | `POST /v1/traces/{trace_id}/shares`, `GET /v1/shares/{share_id}` |
 
 `GET /v1/notaries` returns a safe read-only view of the locally pinned or
 server-shared notary
@@ -422,53 +422,53 @@ identifier:
 
 ```bash
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures?query=sanitized&provider=openai&limit=20"
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces?query=sanitized&provider=openai&limit=20"
 
-capture_id=cap-example
+trace_id=trc-example
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id"
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id"
 ```
 
-Inspect only failed finalizations or error events without downloading and
+Inspect only failed notarizations or error events without downloading and
 filtering the entire bounded history in the client:
 
 ```bash
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations?state=failed&kind=finalization&limit=20"
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations?state=failed&kind=notarization&limit=20"
 
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/events?severity=error&event_type=finalization_failed&limit=20"
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/events?severity=error&event_type=notarization_failed&limit=20"
 ```
 
 The catalog preview is local plaintext. Set `prompt_preview_chars` and
 `output_preview_chars` to `0` when even a short searchable preview is not
 appropriate for the machine.
 
-## Capture and finalization lifecycle
+## Capture and notarization lifecycle
 
 A provider request begins as `capturing`. A successfully sealed encrypted
-bundle becomes `captured`; a capture failure becomes `failed`. Its finalization
+bundle becomes `captured`; a capture failure becomes `failed`. Its notarization
 state moves independently through `not_requested`, `queued`, `running`, and
-`finalized`, or ends in `failed` or `interrupted`. The status field
-`ready_to_finalize` counts eligible captured responses whose finalization state
+`notarized`, or ends in `failed` or `interrupted`. The status field
+`ready_to_notarize` counts eligible captured responses whose notarization state
 is still `not_requested`.
 
 The current provider normalizers support successful response schemas only.
 When capture completes with a non-`2xx` provider status, capture detail sets
-`finalization_eligible` to `false` and reports
-`finalization_ineligibility_code: unsupported_provider_http_status`. Starting
-finalization returns `409` with the same code before any proof work is queued.
+`notarization_eligible` to `false` and reports
+`notarization_ineligibility_code: unsupported_provider_http_status`. Starting
+notarization returns `409` with the same code before any proof work is queued.
 The encrypted bundle remains local and unchanged; retry is not offered because
 the recorded provider response cannot become successful on a later attempt.
 
-Queue finalization with `POST /v1/captures/{capture_id}/finalizations` and save
+Queue notarization with `POST /v1/traces/{trace_id}/notarizations` and save
 the durable operation identifier from the 202 response. Poll it with
 `GET /v1/operations/{operation_id}`:
 
 ```bash
-capture_id=cap-example
+trace_id=trc-example
 response=$(curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/finalizations")
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/notarizations")
 operation_id=$(printf '%s' "$response" | jq -r '.operation.operation_id')
 printf 'Queued operation %s\n' "$operation_id"
 
@@ -479,7 +479,7 @@ curl --fail-with-body \
 If the same capture is submitted while an operation already exists, the
 service returns that operation and sets `deduplicated` to `true`. It does not
 start a competing proof. Poll while `state` is `queued` or `running`; terminal
-states are `finalized`, `failed`, and `interrupted`.
+states are `notarized`, `failed`, and `interrupted`.
 
 Every operation response includes `progress.phase`. The values are `queued`,
 `preparing`, `proving`, `signing`, `packaging`, and `complete`; these are named
@@ -501,7 +501,7 @@ curl --fail-with-body -X POST \
   "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations/$operation_id/retry"
 ```
 
-Capture detail includes its `finalizations` history. Operation list rows are
+Capture detail includes its `notarizations` history. Operation list rows are
 bounded summaries; `GET /v1/operations/{operation_id}` includes `retryable`
 and complete `attempt_history`, so an agent can avoid deterministic rejections
 and distinguish earlier interrupted or failed attempts from the current
@@ -515,7 +515,7 @@ usable; it is not independent proof of the provider response. The capture can
 reconstruct the original authenticated request, including credentials, so it
 must remain vault-encrypted and local.
 
-A finalized trace is one deterministic `.llmtrace` ZIP containing the
+A notarized trace is one deterministic `.llmtrace` ZIP containing the
 TLSNotary evidence, disclosed HTTP artifacts, manifest, archive manifest, and
 canonical OpenTelemetry JSON. Every HTTP header value is hidden except the
 exact structural value `Transfer-Encoding: chunked`; the authenticated request
@@ -523,12 +523,12 @@ and response bodies remain disclosed. Download its exact bytes or verify it
 through the capture identifier:
 
 ```bash
-capture_id=cap-example
-curl --fail-with-body --output "$capture_id.llmtrace" \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/package"
+trace_id=trc-example
+curl --fail-with-body --output "$trace_id.llmtrace" \
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/package"
 
 curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/captures/$capture_id/trace:verify"
+  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/trace:verify"
 ```
 
 `POST /v1/traces:verify` accepts portable `.llmtrace` bytes for in-memory
@@ -538,13 +538,13 @@ CLI uses this loopback route for path-based verification.
 A successful response contains `verified: true`, a verification time, notary
 key identifier, and trust source. This operation rechecks the evidence,
 disclosure, hashes, provider adapter, and canonical trace bytes.
-`GET /v1/captures/{capture_id}/trace` decodes the same finalized package into
+`GET /v1/traces/{trace_id}/trace` decodes the same notarized package into
 its manifest and canonical trace document for inspection; it does not replace
 the verification operation.
 
 Sharing is a later, explicit consent decision. It is never part of local
-finalization. The `/v1/account` device flow authorizes the local service, and
-`POST /v1/captures/{capture_id}/shares` accepts only an eligible finalized
+notarization. The `/v1/account` device flow authorizes the local service, and
+`POST /v1/traces/{trace_id}/shares` accepts only an eligible notarized
 capture plus an explicit `unlisted` or `listed` visibility. Ask the user before
 sharing or changing service configuration. Device authorization starts with `202 Accepted`; obey
 its `poll_interval_seconds` and keep polling the returned
@@ -553,7 +553,7 @@ When the daemon uses an injected API key, `POST /v1/account` and
 `DELETE /v1/account` return `409`; create and revoke API keys in the hosted
 dashboard instead.
 Before it authenticates or uploads, the local service cryptographically verifies
-the exact finalized package and applies the same versioned public-disclosure
+the exact notarized package and applies the same versioned public-disclosure
 safety policy used by hosted admission. The hosted worker repeats both checks;
 local acceptance never guarantees admission by a newer server policy.
 An explicit `force: true` request, exposed by `llm-notary share --force`, accepts

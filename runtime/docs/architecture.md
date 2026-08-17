@@ -16,9 +16,9 @@ seams, but those implementations are not part of this workspace.
 | Component | Sees application plaintext? | Durable state | Responsibility |
 | --- | --- | --- | --- |
 | Provider client | yes | provider credential | Sends an ordinary provider request to a fixed local route |
-| `llm-notaryd` | yes | vault, metadata, operations, artifacts, trust cache | Proxies requests, captures private state, finalizes, and verifies |
+| `notaryd` | yes | vault, metadata, operations, artifacts, trust cache | Proxies requests, captures private state, notarizes, and verifies |
 | `llm-notary` | only API responses requested by the user | none | Calls the daemon's versioned administration API |
-| Local dashboard | only safe catalog fields and deliberately opened finalized disclosures | browser session preference | Uses the same administration API as the CLI |
+| Local dashboard | only safe catalog fields and deliberately opened notarized disclosures | browser session preference | Uses the same administration API as the CLI |
 | `llm-notary-server` | no | signing key | Resolves the provider, relays encrypted TLS records, witnesses sessions, and completes proof work |
 | Model provider | yes | provider-owned | Serves an ordinary HTTPS request without an LLM Notary integration |
 | Artifact backend | encrypted capture or disclosed package bytes | filesystem or private S3-compatible objects | Retains immutable artifacts after size and SHA-256 validation |
@@ -73,14 +73,14 @@ immutable artifact-store contract and records only safe metadata plus the
 locally configured prompt/output previews.
 
 The public generic notary uses `TicketlessAdmissionPolicy`, bounded process
-limits, and separate capture and finalization concurrency budgets. A deployment
+limits, and separate capture and notarization concurrency budgets. A deployment
 can inject a stricter `AdmissionPolicy` and a `SessionLifecycle` implementation.
 Any opaque admission value is redacted by the generic runtime and does not
 become evidence or application plaintext.
 
 ## Capture-off request flow
 
-`llm-notaryd` owns one durable capture setting. Each request snapshots it once
+`notaryd` owns one durable capture setting. Each request snapshots it once
 after its fixed route is accepted, so changing the setting affects only later
 requests.
 
@@ -88,28 +88,28 @@ With capture off, the daemon connects directly to the selected allowlisted
 provider using WebPKI-verified HTTPS. It streams both directions and returns
 redirects to the caller without following them. No remote notary or admission
 service participates, and the daemon creates no capture row, identifier,
-preview, or artifact. The result cannot later be finalized or verified.
+preview, or artifact. The result cannot later be notarized or verified.
 
 Capture mode is not a fallback policy. A failed captured request never retries
 through direct passthrough, and a failed direct request never retries through a
 notary.
 
-## Deferred finalization
+## Deferred notarization
 
 A `.llmcapture` contains the client state and notary-signed receipt required to
 prove the original session later. The original socket and notary process do not
 need to survive. Any compatible notary instance holding the same signing key
-can complete finalization before that key's lifecycle cutoff; the notary stores
+can complete notarization before that key's lifecycle cutoff; the notary stores
 no per-capture checkpoint.
 
-Finalization reconstructs the authenticated session, creates the selective
+Notarization reconstructs the authenticated session, creates the selective
 TLSNotary disclosure, verifies it locally, normalizes the disclosed provider
 exchange, and writes one deterministic `.llmtrace` archive atomically. The
 source capture remains unchanged so an interrupted or retryable operation can
 start again.
 
-Capture and finalization have separate notary capacity budgets. Capture is
-latency-sensitive; finalization is CPU- and memory-intensive. A capacity
+Capture and notarization have separate notary capacity budgets. Capture is
+latency-sensitive; notarization is CPU- and memory-intensive. A capacity
 rejection happens before expensive protocol work and does not damage an
 existing capture.
 

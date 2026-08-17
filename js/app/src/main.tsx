@@ -778,7 +778,7 @@ export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) 
             <code>
               <b>$</b> {installCommand}
               {'\n\n'}
-              <b>$</b> llm-notaryd{'\n\n'}proxy <em>127.0.0.1:8787</em>
+              <b>$</b> notaryd{'\n\n'}proxy <em>127.0.0.1:8787</em>
               {'\n'}admin <em>127.0.0.1:8788</em>
             </code>
           </pre>

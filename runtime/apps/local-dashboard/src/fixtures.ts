@@ -1,14 +1,14 @@
 import type {
   AccountConnection,
-  Capture,
-  CaptureDetail,
   Event,
   LocalApi,
   Notaries,
   Operation,
   ShareVisibility,
   Status,
-  Trace,
+  TraceContent,
+  TraceDetail,
+  TraceSummary,
   Verification,
 } from './api';
 import { LocalApiError } from './api';
@@ -33,9 +33,9 @@ const proofProgress = (
   },
 });
 
-export const fixtureCaptures: Capture[] = [
+export const fixtureCaptures: TraceSummary[] = [
   {
-    capture_id: 'cap-20260728-knowledge-eval',
+    trace_id: 'trc-20260728-knowledge-eval',
     created_at_unix_ms: fixtureNow - hour * 2,
     completed_at_unix_ms: fixtureNow - hour * 2 + 1842,
     provider: 'openai',
@@ -47,9 +47,9 @@ export const fixtureCaptures: Capture[] = [
     request_bytes: 1842,
     response_bytes: 9421,
     duration_ms: 1842,
-    capture_state: 'captured',
-    finalization_state: 'not_requested',
-    finalization_eligible: true,
+    capture_status: 'captured',
+    notarization_status: 'not_requested',
+    notarization_eligible: true,
     prompt_preview:
       'Compare two sanitized evaluation strategies and identify the stronger evidence trail.',
     prompt_preview_truncated: false,
@@ -58,7 +58,7 @@ export const fixtureCaptures: Capture[] = [
     output_preview_truncated: true,
   },
   {
-    capture_id: 'cap-20260728-safety-review',
+    trace_id: 'trc-20260728-safety-review',
     created_at_unix_ms: fixtureNow - hour * 4,
     completed_at_unix_ms: fixtureNow - hour * 4 + 967,
     provider: 'anthropic',
@@ -70,16 +70,16 @@ export const fixtureCaptures: Capture[] = [
     request_bytes: 1210,
     response_bytes: 5110,
     duration_ms: 967,
-    capture_state: 'captured',
-    finalization_state: 'running',
-    finalization_eligible: true,
+    capture_status: 'captured',
+    notarization_status: 'running',
+    notarization_eligible: true,
     prompt_preview: 'Review a synthetic policy response for unsupported claims.',
     prompt_preview_truncated: false,
     output_preview: 'Three claims require either a citation or more qualified language.',
     output_preview_truncated: false,
   },
   {
-    capture_id: 'cap-20260727-research-brief',
+    trace_id: 'trc-20260727-research-brief',
     created_at_unix_ms: fixtureNow - hour * 18,
     completed_at_unix_ms: fixtureNow - hour * 18 + 2312,
     provider: 'openrouter',
@@ -91,9 +91,9 @@ export const fixtureCaptures: Capture[] = [
     request_bytes: 2208,
     response_bytes: 14392,
     duration_ms: 2312,
-    capture_state: 'captured',
-    finalization_state: 'finalized',
-    finalization_eligible: true,
+    capture_status: 'captured',
+    notarization_status: 'succeeded',
+    notarization_eligible: true,
     prompt_preview:
       'Choose a reproducibility baseline from two sanitized evaluation runs and explain the limits of the evidence.',
     prompt_preview_truncated: false,
@@ -102,7 +102,7 @@ export const fixtureCaptures: Capture[] = [
     output_preview_truncated: false,
   },
   {
-    capture_id: 'cap-20260726-direct-link',
+    trace_id: 'trc-20260726-direct-link',
     created_at_unix_ms: fixtureNow - hour * 31,
     completed_at_unix_ms: fixtureNow - hour * 31 + 1288,
     provider: 'anthropic',
@@ -114,16 +114,16 @@ export const fixtureCaptures: Capture[] = [
     request_bytes: 1540,
     response_bytes: 7290,
     duration_ms: 1288,
-    capture_state: 'captured',
-    finalization_state: 'finalized',
-    finalization_eligible: true,
+    capture_status: 'captured',
+    notarization_status: 'succeeded',
+    notarization_eligible: true,
     prompt_preview: 'Check whether the direct-link fixture keeps its provider and model identity.',
     prompt_preview_truncated: false,
     output_preview: 'The fixture identity remains Anthropic / claude-sonnet-4-6 in every view.',
     output_preview_truncated: false,
   },
   {
-    capture_id: 'cap-20260727-benchmark',
+    trace_id: 'trc-20260727-benchmark',
     created_at_unix_ms: fixtureNow - hour * 25,
     completed_at_unix_ms: fixtureNow - hour * 25 + 1400,
     provider: 'deepseek',
@@ -135,9 +135,9 @@ export const fixtureCaptures: Capture[] = [
     request_bytes: 3101,
     response_bytes: 8802,
     duration_ms: 1400,
-    capture_state: 'captured',
-    finalization_state: 'failed',
-    finalization_eligible: true,
+    capture_status: 'captured',
+    notarization_status: 'failed',
+    notarization_eligible: true,
     prompt_preview: 'Run the deterministic benchmark fixture.',
     prompt_preview_truncated: false,
     output_preview: 'Benchmark fixture complete.',
@@ -145,7 +145,7 @@ export const fixtureCaptures: Capture[] = [
     failure_code: 'notary_capacity',
   },
   {
-    capture_id: 'cap-20260728-auth-error',
+    trace_id: 'trc-20260728-auth-error',
     created_at_unix_ms: fixtureNow - hour * 6,
     completed_at_unix_ms: fixtureNow - hour * 6 + 412,
     provider: 'openai',
@@ -157,26 +157,26 @@ export const fixtureCaptures: Capture[] = [
     request_bytes: 988,
     response_bytes: 214,
     duration_ms: 412,
-    capture_state: 'captured',
-    finalization_state: 'not_requested',
-    finalization_eligible: false,
-    finalization_ineligibility_code: 'unsupported_provider_http_status',
+    capture_status: 'captured',
+    notarization_status: 'not_requested',
+    notarization_eligible: false,
+    notarization_ineligibility_code: 'unsupported_provider_http_status',
     prompt_preview: 'Summarize the sanitized authentication-error fixture.',
     prompt_preview_truncated: false,
     output_preview: '',
     output_preview_truncated: false,
   },
   {
-    capture_id: 'cap-20260728-active',
+    trace_id: 'trc-20260728-active',
     created_at_unix_ms: fixtureNow - 42_000,
     provider: 'openai',
     operation: '/v1/responses',
     requested_model: 'gpt-5.2-mini',
     streaming: true,
     request_bytes: 720,
-    capture_state: 'capturing',
-    finalization_state: 'not_requested',
-    finalization_eligible: false,
+    capture_status: 'capturing',
+    notarization_status: 'not_requested',
+    notarization_eligible: false,
     prompt_preview: 'Create a sanitized fixture summary.',
     prompt_preview_truncated: false,
     output_preview: '',
@@ -186,9 +186,9 @@ export const fixtureCaptures: Capture[] = [
 
 export const fixtureOperations: Operation[] = [
   {
-    operation_id: 'op-finalize-safety-review',
-    kind: 'finalization',
-    capture_id: 'cap-20260728-safety-review',
+    operation_id: 'op-notarize-safety-review',
+    kind: 'notarization',
+    trace_id: 'trc-20260728-safety-review',
     state: 'running',
     attempt: 1,
     created_at_unix_ms: fixtureNow - 112_000,
@@ -198,9 +198,9 @@ export const fixtureOperations: Operation[] = [
     attempt_history: [{ attempt: 1, state: 'running', started_at_unix_ms: fixtureNow - 108_000 }],
   },
   {
-    operation_id: 'op-finalize-benchmark',
-    kind: 'finalization',
-    capture_id: 'cap-20260727-benchmark',
+    operation_id: 'op-notarize-benchmark',
+    kind: 'notarization',
+    trace_id: 'trc-20260727-benchmark',
     state: 'failed',
     attempt: 2,
     created_at_unix_ms: fixtureNow - hour,
@@ -227,10 +227,10 @@ export const fixtureOperations: Operation[] = [
     ],
   },
   {
-    operation_id: 'op-finalize-research-brief',
-    kind: 'finalization',
-    capture_id: 'cap-20260727-research-brief',
-    state: 'finalized',
+    operation_id: 'op-notarize-research-brief',
+    kind: 'notarization',
+    trace_id: 'trc-20260727-research-brief',
+    state: 'succeeded',
     attempt: 1,
     created_at_unix_ms: fixtureNow - hour * 17,
     started_at_unix_ms: fixtureNow - hour * 17 + 1_000,
@@ -249,17 +249,17 @@ export const fixtureOperations: Operation[] = [
     attempt_history: [
       {
         attempt: 1,
-        state: 'finalized',
+        state: 'succeeded',
         started_at_unix_ms: fixtureNow - hour * 17 + 1_000,
         completed_at_unix_ms: fixtureNow - hour * 17 + 184_000,
       },
     ],
   },
   {
-    operation_id: 'op-finalize-direct-link',
-    kind: 'finalization',
-    capture_id: 'cap-20260726-direct-link',
-    state: 'finalized',
+    operation_id: 'op-notarize-direct-link',
+    kind: 'notarization',
+    trace_id: 'trc-20260726-direct-link',
+    state: 'succeeded',
     attempt: 1,
     created_at_unix_ms: fixtureNow - hour * 30,
     started_at_unix_ms: fixtureNow - hour * 30 + 1_000,
@@ -278,7 +278,7 @@ export const fixtureOperations: Operation[] = [
     attempt_history: [
       {
         attempt: 1,
-        state: 'finalized',
+        state: 'succeeded',
         started_at_unix_ms: fixtureNow - hour * 30 + 1_000,
         completed_at_unix_ms: fixtureNow - hour * 30 + 161_000,
       },
@@ -290,38 +290,38 @@ export const fixtureEvents: Event[] = [
   {
     event_id: 14,
     created_at_unix_ms: fixtureNow - 28_000,
-    event_type: 'finalization_started',
-    capture_id: 'cap-20260728-safety-review',
-    operation_id: 'op-finalize-safety-review',
+    event_type: 'notarization_started',
+    trace_id: 'trc-20260728-safety-review',
+    operation_id: 'op-notarize-safety-review',
     severity: 'info',
-    message: 'Finalization started',
+    message: 'Notarization started',
   },
   {
     event_id: 13,
     created_at_unix_ms: fixtureNow - hour,
-    event_type: 'finalization_failed',
-    capture_id: 'cap-20260727-benchmark',
-    operation_id: 'op-finalize-benchmark',
+    event_type: 'notarization_failed',
+    trace_id: 'trc-20260727-benchmark',
+    operation_id: 'op-notarize-benchmark',
     severity: 'error',
-    message: 'Finalization failed',
+    message: 'Notarization failed',
   },
   {
     event_id: 12,
     created_at_unix_ms: fixtureNow - hour * 17,
-    event_type: 'finalization_completed',
-    capture_id: 'cap-20260727-research-brief',
-    operation_id: 'op-finalize-research-brief',
+    event_type: 'notarization_completed',
+    trace_id: 'trc-20260727-research-brief',
+    operation_id: 'op-notarize-research-brief',
     severity: 'success',
-    message: 'Finalization completed',
+    message: 'Notarization completed',
   },
   {
     event_id: 11,
     created_at_unix_ms: fixtureNow - hour * 30,
-    event_type: 'finalization_completed',
-    capture_id: 'cap-20260726-direct-link',
-    operation_id: 'op-finalize-direct-link',
+    event_type: 'notarization_completed',
+    trace_id: 'trc-20260726-direct-link',
+    operation_id: 'op-notarize-direct-link',
     severity: 'success',
-    message: 'Finalization completed',
+    message: 'Notarization completed',
   },
 ];
 
@@ -343,10 +343,10 @@ export const fixtureStatus: Status = {
   notary: 'directory',
   preview_chars: 1000,
   counts: {
-    total_captures: 7,
+    total_traces: 7,
     capturing: 1,
-    ready_to_finalize: 1,
-    finalized: 2,
+    ready_to_notarize: 1,
+    notarized: 2,
     failed: 1,
     active_operations: 1,
   },
@@ -362,7 +362,7 @@ export const fixtureStatus: Status = {
 
 export const fixtureNotaries: Notaries = {
   source: 'directory',
-  directory_source: 'https://notary.exalto.ai/api/notary',
+  registry_source: 'https://notary.exalto.ai/api/notary',
   generation: 12,
   active_key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   notaries: [
@@ -373,7 +373,7 @@ export const fixtureNotaries: Notaries = {
       status: 'active',
       valid_from_unix_ms: fixtureNow - hour * 24 * 30,
       valid_until_unix_ms: null,
-      finalize_until_unix_ms: null,
+      notarize_until_unix_ms: null,
     },
     {
       endpoint: 'tls://notary-old.exalto.ai:7047',
@@ -382,7 +382,7 @@ export const fixtureNotaries: Notaries = {
       status: 'retiring',
       valid_from_unix_ms: fixtureNow - hour * 24 * 120,
       valid_until_unix_ms: fixtureNow - hour * 24 * 7,
-      finalize_until_unix_ms: fixtureNow + hour * 24 * 14,
+      notarize_until_unix_ms: fixtureNow + hour * 24 * 14,
     },
     {
       endpoint: 'tls://notary-history.exalto.ai:7047',
@@ -391,7 +391,7 @@ export const fixtureNotaries: Notaries = {
       status: 'retired',
       valid_from_unix_ms: fixtureNow - hour * 24 * 240,
       valid_until_unix_ms: fixtureNow - hour * 24 * 121,
-      finalize_until_unix_ms: fixtureNow - hour * 24 * 90,
+      notarize_until_unix_ms: fixtureNow - hour * 24 * 90,
     },
     {
       endpoint: 'tls://notary-revoked.exalto.ai:7047',
@@ -400,16 +400,16 @@ export const fixtureNotaries: Notaries = {
       status: 'revoked',
       valid_from_unix_ms: fixtureNow - hour * 24 * 360,
       valid_until_unix_ms: fixtureNow - hour * 24 * 241,
-      finalize_until_unix_ms: fixtureNow - hour * 24 * 220,
+      notarize_until_unix_ms: fixtureNow - hour * 24 * 220,
     },
   ],
 };
 
-const fixtureTrace: Trace = {
-  capture_id: 'cap-20260727-research-brief',
+const fixtureTrace: TraceContent = {
+  trace_id: 'trc-20260727-research-brief',
   manifest: {
-    format: 'llm-notary/verified-trace-package/v2',
-    normalizer_version: 'llm-notary/normalizer/v1',
+    format: 'notary/trace-package/v1',
+    normalizer_version: 'notary/normalizer/v1',
     trace_sha256: '9a32d7c66a7e4fdd525ea6c803355273ade0f46e7c8dc4973343399731585b26',
     source: {
       provider: { name: 'openrouter', host: 'openrouter.ai' },
@@ -489,39 +489,39 @@ const fixtureTrace: Trace = {
 };
 
 const fixtureVerification: Verification = {
-  capture_id: fixtureTrace.capture_id,
+  trace_id: fixtureTrace.trace_id,
   verified: true,
   verified_at_unix_ms: fixtureNow,
   notary_key_id: 'sha256:3828b21f26c49a0ff546f6f4bcee6a64bdc685faf4a961b3c00d05814cda9801',
   trust_source: 'directory',
 };
 
-function detail(captureId: string, captures: Capture[], operations: Operation[]): CaptureDetail {
-  const capture = captures.find((item) => item.capture_id === captureId);
-  if (!capture) throw new LocalApiError(404, 'capture_not_found', 'Capture not found');
+function detail(captureId: string, captures: TraceSummary[], operations: Operation[]): TraceDetail {
+  const capture = captures.find((item) => item.trace_id === captureId);
+  if (!capture) throw new LocalApiError(404, 'capture_not_found', 'Trace not found');
   return {
     capture,
     artifacts: [
       {
-        kind: 'deferred_bundle',
+        kind: 'capture_checkpoint',
         size_bytes: 189_442,
-        sha256: deterministicHex(`${capture.capture_id}:bundle`, 64),
+        sha256: deterministicHex(`${capture.trace_id}:bundle`, 64),
       },
-      ...(capture.finalization_state === 'finalized'
+      ...(capture.notarization_status === 'succeeded'
         ? [
             {
-              kind: 'finalized_package',
+              kind: 'trace_package',
               size_bytes: 482_013,
-              sha256: deterministicHex(`${capture.capture_id}:package`, 64),
+              sha256: deterministicHex(`${capture.trace_id}:package`, 64),
             },
           ]
         : []),
     ],
-    finalizations: operations.filter((operation) => operation.capture_id === capture.capture_id),
+    notarizations: operations.filter((operation) => operation.trace_id === capture.trace_id),
   };
 }
 
-function shiftCapture(capture: Capture, offset: number): Capture {
+function shiftCapture(capture: TraceSummary, offset: number): TraceSummary {
   return {
     ...capture,
     created_at_unix_ms: capture.created_at_unix_ms + offset,
@@ -579,13 +579,13 @@ function deterministicHex(value: string, length: number) {
   return output.slice(0, length);
 }
 
-function traceForCapture(capture: Capture): Trace {
+function traceForCapture(capture: TraceSummary): TraceContent {
   const trace = structuredClone(fixtureTrace);
   const manifest = trace.manifest as {
     trace_sha256?: string;
     source?: { provider?: { name?: string; host?: string }; created_at_unix_ms?: number };
   };
-  manifest.trace_sha256 = deterministicHex(`${capture.capture_id}:trace-bytes`, 64);
+  manifest.trace_sha256 = deterministicHex(`${capture.trace_id}:trace-bytes`, 64);
   if (manifest.source) {
     manifest.source.provider = {
       name: capture.provider,
@@ -607,8 +607,8 @@ function traceForCapture(capture: Capture): Trace {
     }
   ).resourceSpans?.[0]?.scopeSpans?.[0]?.spans?.[0];
   if (span) {
-    span.traceId = deterministicHex(`${capture.capture_id}:trace`, 32);
-    span.spanId = deterministicHex(`${capture.capture_id}:span`, 16);
+    span.traceId = deterministicHex(`${capture.trace_id}:trace`, 32);
+    span.spanId = deterministicHex(`${capture.trace_id}:span`, 16);
     const values: Record<string, string> = {
       'gen_ai.provider.name': capture.provider,
       'gen_ai.operation.name': capture.operation,
@@ -640,7 +640,7 @@ function traceForCapture(capture: Capture): Trace {
         },
       ]),
     };
-    const preserveDetailedTranscript = capture.capture_id === fixtureTrace.capture_id;
+    const preserveDetailedTranscript = capture.trace_id === fixtureTrace.trace_id;
     for (const attribute of span.attributes ?? []) {
       if (
         attribute.key in values &&
@@ -651,7 +651,7 @@ function traceForCapture(capture: Capture): Trace {
       }
     }
   }
-  return { ...trace, capture_id: capture.capture_id };
+  return { ...trace, trace_id: capture.trace_id };
 }
 
 export function createFixtureApi({
@@ -671,8 +671,8 @@ export function createFixtureApi({
   }));
   const traces = new Map(
     captures
-      .filter((capture) => capture.finalization_state === 'finalized')
-      .map((capture) => [capture.capture_id, traceForCapture(capture)]),
+      .filter((capture) => capture.notarization_status === 'succeeded')
+      .map((capture) => [capture.trace_id, traceForCapture(capture)]),
   );
   let account: AccountConnection = {
     signed_in: true,
@@ -735,7 +735,7 @@ export function createFixtureApi({
         event_id: nextEventId,
         created_at_unix_ms: actionTimestamp(),
         event_type: eventType,
-        capture_id: captureId,
+        trace_id: captureId,
         operation_id: operationId,
         severity,
         message,
@@ -744,10 +744,10 @@ export function createFixtureApi({
     ];
     nextEventId += 1;
   };
-  const setCaptureFinalization = (captureId: string, finalizationState: string) => {
+  const setCaptureNotarization = (captureId: string, notarizationState: string) => {
     captures = captures.map((capture) =>
-      capture.capture_id === captureId
-        ? { ...capture, finalization_state: finalizationState }
+      capture.trace_id === captureId
+        ? { ...capture, notarization_status: notarizationState }
         : capture,
     );
   };
@@ -757,7 +757,7 @@ export function createFixtureApi({
     operationPolls.set(operationId, polls + 1);
     if (polls === 0) return;
     const operation = operations.find((item) => item.operation_id === operationId);
-    if (!operation?.capture_id) {
+    if (!operation?.trace_id) {
       progressingOperations.delete(operationId);
       return;
     }
@@ -781,12 +781,12 @@ export function createFixtureApi({
             }
           : item,
       );
-      setCaptureFinalization(operation.capture_id, 'running');
+      setCaptureNotarization(operation.trace_id, 'running');
       recordEvent(
-        'finalization_started',
-        'Finalization started',
+        'notarization_started',
+        'Notarization started',
         'info',
-        operation.capture_id,
+        operation.trace_id,
         operationId,
       );
     } else if (operation.state === 'running') {
@@ -795,7 +795,7 @@ export function createFixtureApi({
         item.operation_id === operationId
           ? {
               ...item,
-              state: 'finalized',
+              state: 'succeeded',
               completed_at_unix_ms: completedAt,
               progress: {
                 ...item.progress,
@@ -812,20 +812,20 @@ export function createFixtureApi({
               retryable: false,
               attempt_history: item.attempt_history.map((attempt, index) =>
                 index === 0
-                  ? { ...attempt, state: 'finalized', completed_at_unix_ms: completedAt }
+                  ? { ...attempt, state: 'succeeded', completed_at_unix_ms: completedAt }
                   : attempt,
               ),
             }
           : item,
       );
-      setCaptureFinalization(operation.capture_id, 'finalized');
-      const capture = captures.find((item) => item.capture_id === operation.capture_id);
-      if (capture) traces.set(capture.capture_id, traceForCapture(capture));
+      setCaptureNotarization(operation.trace_id, 'succeeded');
+      const capture = captures.find((item) => item.trace_id === operation.trace_id);
+      if (capture) traces.set(capture.trace_id, traceForCapture(capture));
       recordEvent(
-        'finalization_completed',
-        'Finalization completed',
+        'notarization_completed',
+        'Notarization completed',
         'success',
-        operation.capture_id,
+        operation.trace_id,
         operationId,
       );
       progressingOperations.delete(operationId);
@@ -836,17 +836,17 @@ export function createFixtureApi({
     ...fixtureStatus,
     capture_enabled: captureEnabled,
     counts: {
-      total_captures: captures.length,
-      capturing: captures.filter((capture) => capture.capture_state === 'capturing').length,
-      ready_to_finalize: captures.filter(
+      total_traces: captures.length,
+      capturing: captures.filter((capture) => capture.capture_status === 'capturing').length,
+      ready_to_notarize: captures.filter(
         (capture) =>
-          capture.capture_state === 'captured' &&
-          capture.finalization_state === 'not_requested' &&
-          capture.finalization_eligible,
+          capture.capture_status === 'captured' &&
+          capture.notarization_status === 'not_requested' &&
+          capture.notarization_eligible,
       ).length,
-      finalized: captures.filter((capture) => capture.finalization_state === 'finalized').length,
+      notarized: captures.filter((capture) => capture.notarization_status === 'succeeded').length,
       failed: captures.filter((capture) =>
-        ['failed', 'interrupted'].includes(capture.finalization_state),
+        ['failed', 'interrupted'].includes(capture.notarization_status),
       ).length,
       active_operations: operations.filter((operation) =>
         ['queued', 'running'].includes(operation.state),
@@ -860,8 +860,8 @@ export function createFixtureApi({
       .toLowerCase()
       .split(/[^\p{L}\p{N}_]+/u)
       .filter(Boolean);
-    const state = String(filters.finalization_state ?? '');
-    const captureState = String(filters.capture_state ?? '');
+    const state = String(filters.notarization_status ?? '');
+    const captureState = String(filters.capture_status ?? '');
     const provider = String(filters.provider ?? '');
     const model = String(filters.model ?? '');
     const streaming =
@@ -877,8 +877,8 @@ export function createFixtureApi({
               .toLowerCase()
               .includes(term),
           )) &&
-        (!state || capture.finalization_state === state) &&
-        (!captureState || capture.capture_state === captureState) &&
+        (!state || capture.notarization_status === state) &&
+        (!captureState || capture.capture_status === captureState) &&
         (!provider || capture.provider === provider) &&
         (!model || capture.requested_model === model) &&
         (streaming == null || capture.streaming === streaming) &&
@@ -908,7 +908,7 @@ export function createFixtureApi({
       return { enabled: captureEnabled };
     },
     notaries: async () => structuredClone(fixtureNotaries),
-    captures: async (filters = {}) => {
+    traces: async (filters = {}) => {
       const limit = Number(filters.limit ?? 50);
       const all = filteredCaptures(filters);
       const start = cursorPosition(filters.cursor) ?? 0;
@@ -916,23 +916,23 @@ export function createFixtureApi({
       const next = start + items.length;
       return { items, next_cursor: next < all.length ? cursor('captures', next) : null };
     },
-    capture: async (captureId) => detail(captureId, captures, operations),
-    startFinalization: async (captureId) => {
-      const capture = captures.find((item) => item.capture_id === captureId);
-      if (!capture) throw new LocalApiError(404, 'pending_capture_not_found', 'Capture not found');
-      if (!capture.finalization_eligible) {
+    trace: async (captureId) => detail(captureId, captures, operations),
+    startNotarization: async (captureId) => {
+      const capture = captures.find((item) => item.trace_id === captureId);
+      if (!capture) throw new LocalApiError(404, 'pending_capture_not_found', 'Trace not found');
+      if (!capture.notarization_eligible) {
         throw new LocalApiError(
           409,
-          capture.finalization_ineligibility_code ?? 'capture_not_eligible',
-          'Capture is not eligible for finalization',
+          capture.notarization_ineligibility_code ?? 'capture_not_eligible',
+          'Trace is not eligible for notarization',
         );
       }
-      const existing = operations.find((operation) => operation.capture_id === captureId);
+      const existing = operations.find((operation) => operation.trace_id === captureId);
       if (existing) return { operation: existing, deduplicated: true };
       const operation: Operation = {
-        operation_id: 'op-finalize-queued-fixture',
-        kind: 'finalization',
-        capture_id: captureId,
+        operation_id: 'op-notarize-queued-fixture',
+        kind: 'notarization',
+        trace_id: captureId,
         state: 'queued',
         attempt: 0,
         created_at_unix_ms: actionTimestamp(),
@@ -941,11 +941,11 @@ export function createFixtureApi({
         attempt_history: [],
       };
       operations = [operation, ...operations];
-      setCaptureFinalization(captureId, 'queued');
+      setCaptureNotarization(captureId, 'queued');
       progressingOperations.add(operation.operation_id);
       recordEvent(
-        'finalization_queued',
-        'Finalization queued',
+        'notarization_queued',
+        'Notarization queued',
         'info',
         captureId,
         operation.operation_id,
@@ -958,7 +958,7 @@ export function createFixtureApi({
         (operation) =>
           (!filters.state || operation.state === filters.state) &&
           (!filters.kind || operation.kind === filters.kind) &&
-          (!filters.capture_id || operation.capture_id === filters.capture_id),
+          (!filters.trace_id || operation.trace_id === filters.trace_id),
       );
       const start = cursorPosition(filters.cursor) ?? 0;
       const items = structuredClone(all.slice(start, start + limit));
@@ -991,15 +991,15 @@ export function createFixtureApi({
       );
       const operation = operations.find((item) => item.operation_id === operationId);
       if (!operation) throw new LocalApiError(404, 'operation_not_found', 'Operation not found');
-      if (operation.capture_id) {
-        setCaptureFinalization(operation.capture_id, 'queued');
+      if (operation.trace_id) {
+        setCaptureNotarization(operation.trace_id, 'queued');
         operationPolls.delete(operationId);
         progressingOperations.add(operationId);
         recordEvent(
-          'finalization_queued',
-          'Finalization retry queued',
+          'notarization_queued',
+          'Notarization retry queued',
           'info',
-          operation.capture_id,
+          operation.trace_id,
           operationId,
         );
       }
@@ -1017,7 +1017,7 @@ export function createFixtureApi({
             : event.event_id > (pagePosition ?? after)) &&
           (!filters.severity || event.severity === filters.severity) &&
           (!filters.event_type || event.event_type === filters.event_type) &&
-          (!filters.capture_id || event.capture_id === filters.capture_id) &&
+          (!filters.trace_id || event.trace_id === filters.trace_id) &&
           (!filters.operation_id || event.operation_id === filters.operation_id) &&
           (!createdAfter || event.created_at_unix_ms >= createdAfter),
       );
@@ -1031,22 +1031,22 @@ export function createFixtureApi({
         high_water_cursor: events.length ? cursor('events', events[0].event_id) : null,
       };
     },
-    trace: async (captureId) => {
+    traceContent: async (captureId) => {
       const trace = traces.get(captureId);
       if (!trace)
-        throw new LocalApiError(404, 'finalized_trace_not_found', 'Finalized trace not found');
+        throw new LocalApiError(404, 'notarized_trace_not_found', 'Notarized trace not found');
       return structuredClone(trace);
     },
     downloadPackage: async (captureId) =>
       new Blob([`fixture .llmtrace for ${captureId}`], {
-        type: 'application/vnd.llmnotary.trace-package+zip',
+        type: 'application/vnd.exalto.notary.trace-package+zip',
       }),
     verify: async (captureId) => {
       if (!traces.has(captureId))
         throw new LocalApiError(422, 'trace_verification_failed', 'Trace verification failed');
       return {
         ...fixtureVerification,
-        capture_id: captureId,
+        trace_id: captureId,
         verified_at_unix_ms: fixtureVerification.verified_at_unix_ms + offset,
       };
     },
@@ -1077,11 +1077,11 @@ export function createFixtureApi({
     },
     share: async (captureId, visibility) => {
       if (!traces.has(captureId))
-        throw new LocalApiError(404, 'finalized_trace_not_found', 'Finalized trace not found');
+        throw new LocalApiError(404, 'notarized_trace_not_found', 'Notarized trace not found');
       const shareId = 'share-fixture';
       shares.set(shareId, { captureId, state: 'queued', visibility });
       return {
-        capture_id: captureId,
+        trace_id: captureId,
         share_id: shareId,
         state: 'queued',
         visibility,

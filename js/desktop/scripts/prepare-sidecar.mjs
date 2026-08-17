@@ -15,17 +15,17 @@ const cargoArguments = [
   '--target-dir',
   'target',
   '-p',
-  'llm-notary-daemon',
+  'notaryd',
   '--bin',
-  'llm-notaryd'
+  'notaryd'
 ];
 if (profile === 'release') cargoArguments.push('--release');
 
 execFileSync('cargo', cargoArguments, { cwd: repository, stdio: 'inherit' });
 
-const source = resolve(repository, 'target', profile, `llm-notaryd${extension}`);
+const source = resolve(repository, 'target', profile, `notaryd${extension}`);
 const destinationDirectory = resolve(scriptDirectory, '../src-tauri/binaries');
-const destination = resolve(destinationDirectory, `llm-notaryd-${targetTriple}${extension}`);
+const destination = resolve(destinationDirectory, `notaryd-${targetTriple}${extension}`);
 mkdirSync(destinationDirectory, { recursive: true });
 copyFileSync(source, destination);
 if (process.platform !== 'win32') chmodSync(destination, 0o755);
