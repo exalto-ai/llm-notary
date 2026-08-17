@@ -2213,7 +2213,7 @@ mod tests {
         let config = Arc::new(config);
         let capture_mode = Arc::new(CaptureMode::new(
             true,
-            Some("127.0.0.1:7047".parse().unwrap()),
+            Some("tcp://127.0.0.1:7047".parse().unwrap()),
             config.clone(),
             persistence.clone(),
             None,
