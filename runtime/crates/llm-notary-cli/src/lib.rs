@@ -1433,11 +1433,15 @@ async fn wait_for_notarization(
             writeln!(stderr, "{progress}").ok();
             last_progress = progress;
         }
-        if ["notarized", "failed", "interrupted"].contains(&state) {
+        if notarization_is_terminal_state(state) {
             return Ok(current);
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
+}
+
+fn notarization_is_terminal_state(state: &str) -> bool {
+    ["succeeded", "failed", "interrupted"].contains(&state)
 }
 
 fn operation_progress(value: &Value) -> String {
@@ -2433,6 +2437,16 @@ mod tests {
             operation_progress(&value),
             "Private proof: 600.0 KiB / 1.2 MiB authenticated; 4 / 10 commitments sealed"
         );
+    }
+
+    #[test]
+    fn notarization_wait_uses_the_operation_terminal_states() {
+        for state in ["succeeded", "failed", "interrupted"] {
+            assert!(notarization_is_terminal_state(state));
+        }
+        for state in ["queued", "running", "notarized"] {
+            assert!(!notarization_is_terminal_state(state));
+        }
     }
 
     #[test]
