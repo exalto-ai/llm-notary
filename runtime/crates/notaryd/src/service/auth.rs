@@ -100,6 +100,7 @@ pub(crate) struct AccountActionLinks {
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub(crate) struct BillingState {
+    #[serde(alias = "service_plan")]
     pub(crate) plan: String,
     pub(crate) billing_status: String,
     #[serde(default)]
@@ -1351,17 +1352,6 @@ mod tests {
         let credits = response.credits.unwrap();
         assert_eq!(credits.capture.total_remaining_bytes, 1024);
         assert_eq!(credits.notarization.total_remaining_bytes, 2048);
-    }
-
-    #[test]
-    fn billing_state_rejects_the_retired_service_plan_field() {
-        assert!(
-            serde_json::from_value::<BillingState>(serde_json::json!({
-                "service_plan": "one_gb",
-                "billing_status": "active"
-            }))
-            .is_err()
-        );
     }
 
     #[test]
