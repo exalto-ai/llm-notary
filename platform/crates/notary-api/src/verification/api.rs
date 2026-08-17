@@ -300,7 +300,7 @@ async fn run_worker_process(archive: Vec<u8>, directory: Registry) -> Result<Vec
     let directory = serde_json::to_vec(&directory).map_err(|_| WorkerError::Unavailable)?;
     let executable = std::env::current_exe().map_err(|_| WorkerError::Unavailable)?;
     let mut command = Command::new(executable);
-    command.arg("--verification-worker");
+    command.arg("verification-worker");
     run_worker_command(
         command,
         archive,

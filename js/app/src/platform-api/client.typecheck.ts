@@ -23,7 +23,7 @@ async function contractAssertions() {
     body: { quantity_gb: 5, idempotency_key: 'checkout-attempt' },
   });
   await typedClient.POST('/api/me/api-keys', {
-    body: { name: 'CI', scopes: ['notary:admit'], expires_at: null },
+    body: { name: 'CI', scopes: ['capture:request'], expires_at: null },
   });
   await typedClient.DELETE('/api/me/api-keys/{api_key_id}', {
     params: { path: { api_key_id: 'key-id' } },
@@ -31,15 +31,15 @@ async function contractAssertions() {
 
   const { data } = await typedClient.GET('/api/me');
   if (data) {
-    data.user.provider_display_name;
-    data.user.display_name;
-    data.user.auth_provider;
-    data.billing.service_plan;
+    data.account.provider_display_name;
+    data.account.display_name;
+    data.account.auth_provider;
+    data.billing.plan;
     data.billing.billing_status;
     // @ts-expect-error Verified Google email addresses are not retained.
-    data.user.email;
+    data.account.email;
     // @ts-expect-error Provider access tokens are never part of the account response.
-    data.user.access_token;
+    data.account.access_token;
   }
 }
 

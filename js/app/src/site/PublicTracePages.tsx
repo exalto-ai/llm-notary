@@ -457,13 +457,13 @@ export function VerificationPage({
                   <dt>Trust source</dt>
                   <dd>
                     {formatTrustSource(result.trust_source)} · generation{' '}
-                    {result.directory_generation}
+                    {result.registry_generation}
                   </dd>
                 </div>
                 <div>
                   <dt>Trace SHA-256</dt>
                   <dd>
-                    <code>{result.trace_sha256}</code>
+                    <code>{result.content_sha256}</code>
                   </dd>
                 </div>
                 <div>
@@ -1468,7 +1468,7 @@ export function SharePage({
               <div>
                 <dt>Trace SHA-256</dt>
                 <dd>
-                  <code>{share.trace_sha256}</code>
+                  <code>{share.content_sha256}</code>
                 </dd>
               </div>
               <div>
@@ -1484,13 +1484,13 @@ export function SharePage({
                 </dd>
               </div>
               <div>
-                <dt>Directory generation</dt>
-                <dd>{share.directory_generation ?? 'Not recorded'}</dd>
+                <dt>Registry generation</dt>
+                <dd>{share.registry_generation ?? 'Not recorded'}</dd>
               </div>
               <div>
                 <dt>Safety contract</dt>
                 <dd>
-                  <code>{share.public_package_safety_version}</code>
+                  <code>{share.disclosure_safety_version}</code>
                 </dd>
               </div>
             </dl>

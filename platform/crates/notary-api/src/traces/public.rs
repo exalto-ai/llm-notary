@@ -1,7 +1,4 @@
-use std::{
-    net::SocketAddr,
-    time::{Duration, Instant},
-};
+use std::{net::SocketAddr, time::Instant};
 
 #[cfg(test)]
 use std::sync::Arc;
@@ -22,7 +19,6 @@ use sha2::Sha256;
 use sqlx::FromRow;
 #[cfg(test)]
 use tokio::sync::Semaphore;
-use tokio::sync::watch;
 use tracing::Span;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -50,14 +46,11 @@ use crate::{
     },
 };
 
-const ADMISSION_INTERVAL_SECS: u64 = 2;
 const CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
-const MAX_JOBS_PER_TICK: usize = 4;
 const LIBRARY_PREVIEW_CHARS: usize = 180;
 const SHARE_PASSWORD_HEADER: &str = "x-share-password";
 const MAX_REPORT_MESSAGE_CHARS: usize = 500;
 const SHARE_RATE_LIMIT_KEY_PURPOSE: &[u8] = b"llm-notary/share-rate-limit/v1";
-const RATE_LIMIT_CLEANUP_INTERVAL_SECS: u64 = 10 * 60;
 const RATE_LIMIT_RETENTION_SECS: i64 = 24 * 60 * 60;
 
 #[derive(Clone, Copy)]
@@ -606,63 +599,9 @@ async fn create_share_report(
     Ok(Json(ShareReportReceipt { received: true }))
 }
 
-pub(crate) async fn run_worker(state: NotaryApiState, mut shutdown: watch::Receiver<bool>) {
-    if !state.traces.enabled() {
-        return;
-    }
-    let mut interval = tokio::time::interval(Duration::from_secs(ADMISSION_INTERVAL_SECS));
-    let mut next_rate_limit_cleanup = Instant::now();
-    loop {
-        tokio::select! {
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    return;
-                }
-            }
-            _ = interval.tick() => {}
-        }
-        if let Err(error) = recover_stale_claims(&state).await {
-            tracing::error!(%error, "recovering stale Trace verification claims failed");
-        }
-        for _ in 0..MAX_JOBS_PER_TICK {
-            match claim_next_job(&state).await {
-                Ok(Some((job, claim))) => process_claim(&state, job, claim).await,
-                Ok(None) => break,
-                Err(error) => {
-                    tracing::error!(%error, "claiming a Trace verification failed");
-                    break;
-                }
-            }
-        }
-        if let Err(error) = purge_verified_private_objects(&state).await {
-            tracing::error!(%error, "purging shared Trace intake objects failed");
-        }
-        if let Err(error) = update_queue_metrics(&state).await {
-            tracing::error!(%error, "updating Trace verification metrics failed");
-        }
-        if Instant::now() >= next_rate_limit_cleanup {
-            if let Err(error) = purge_expired_share_rate_limits(&state).await {
-                tracing::error!(%error, "purging expired share rate limits failed");
-            }
-            next_rate_limit_cleanup =
-                Instant::now() + Duration::from_secs(RATE_LIMIT_CLEANUP_INTERVAL_SECS);
-        }
-    }
-}
-
-async fn update_queue_metrics(state: &NotaryApiState) -> Result<()> {
-    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    let (depth, oldest): (i64, Option<i64>) =
-        sqlx::query_as("SELECT COUNT(*), MIN(queued_at) FROM traces WHERE status = 'queued'")
-            .fetch_one(&state.database)
-            .await?;
-    metrics::gauge!("notary_api_trace_verification_queue_depth").set(depth as f64);
-    metrics::gauge!("notary_api_trace_verification_oldest_queued_seconds")
-        .set(oldest.map_or(0, |queued| now.saturating_sub(queued)) as f64);
-    Ok(())
-}
-
-async fn claim_next_job(state: &NotaryApiState) -> Result<Option<(HostedTraceRow, String)>> {
+pub(super) async fn claim_next_job(
+    state: &NotaryApiState,
+) -> Result<Option<(HostedTraceRow, String)>> {
     let claim = Uuid::new_v4().to_string();
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
     let job = sqlx::query_as::<_, HostedTraceRow>(
@@ -693,7 +632,7 @@ async fn claim_next_job(state: &NotaryApiState) -> Result<Option<(HostedTraceRow
     skip_all,
     fields(share.id = %job.trace_id, archive.size_bytes = tracing::field::Empty)
 )]
-async fn process_claim(state: &NotaryApiState, job: HostedTraceRow, claim: String) {
+pub(super) async fn process_claim(state: &NotaryApiState, job: HostedTraceRow, claim: String) {
     let started = Instant::now();
     let _capacity = acquire_verification_capacity().await;
     let archive = match state
@@ -1304,7 +1243,7 @@ async fn purge_private_object(state: &NotaryApiState, job: &HostedTraceRow) {
     }
 }
 
-async fn purge_verified_private_objects(state: &NotaryApiState) -> Result<()> {
+pub(super) async fn purge_verified_private_objects(state: &NotaryApiState) -> Result<()> {
     let jobs = sqlx::query_as::<_, HostedTraceRow>(
         "SELECT * FROM traces
          WHERE status IN ('shared', 'rejected') AND staging_purged_at IS NULL
@@ -1318,7 +1257,7 @@ async fn purge_verified_private_objects(state: &NotaryApiState) -> Result<()> {
     Ok(())
 }
 
-async fn recover_stale_claims(state: &NotaryApiState) -> Result<()> {
+pub(super) async fn recover_stale_claims(state: &NotaryApiState) -> Result<()> {
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
     sqlx::query(
         "UPDATE traces
@@ -1506,7 +1445,7 @@ async fn enforce_share_request_limit(
     Ok(())
 }
 
-async fn purge_expired_share_rate_limits(state: &NotaryApiState) -> Result<()> {
+pub(super) async fn purge_expired_share_rate_limits(state: &NotaryApiState) -> Result<()> {
     let cutoff = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?
         - RATE_LIMIT_RETENTION_SECS;
     sqlx::query("DELETE FROM public_trace_rate_limits WHERE updated_at < $1")

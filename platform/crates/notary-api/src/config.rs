@@ -3,7 +3,7 @@ use std::{env, net::SocketAddr, path::PathBuf};
 use anyhow::{Context, Result, anyhow, bail};
 use ipnet::IpNet;
 use sqlx::postgres::PgConnectOptions;
-use url::Url;
+use url::{Host, Url};
 
 use notary_core::registry::{Registry, parse_registry};
 
@@ -367,13 +367,30 @@ impl AdmissionTierLimits {
 }
 
 fn public_origin() -> Result<Url> {
-    let origin = Url::parse(&env_or_default(
+    parse_public_origin(&env_or_default(
         "NOTARY_PUBLIC_ORIGIN",
         "http://localhost:4173",
     )?)
-    .context("NOTARY_PUBLIC_ORIGIN must be an absolute URL")?;
-    if origin.path() != "/" || origin.query().is_some() || origin.fragment().is_some() {
+}
+
+fn parse_public_origin(value: &str) -> Result<Url> {
+    let origin = Url::parse(value).context("NOTARY_PUBLIC_ORIGIN must be an absolute URL")?;
+    if origin.username() != ""
+        || origin.password().is_some()
+        || origin.path() != "/"
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+    {
         bail!("NOTARY_PUBLIC_ORIGIN must be an origin without a path, query, or fragment");
+    }
+    let loopback = match origin.host() {
+        Some(Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(Host::Ipv4(address)) => address.is_loopback(),
+        Some(Host::Ipv6(address)) => address.is_loopback(),
+        None => return Err(anyhow!("NOTARY_PUBLIC_ORIGIN must include a host")),
+    };
+    if origin.scheme() != "https" && !(origin.scheme() == "http" && loopback) {
+        bail!("NOTARY_PUBLIC_ORIGIN must use HTTPS except on loopback");
     }
     Ok(origin)
 }
@@ -680,6 +697,29 @@ mod tests {
         assert!(validate_max_package_bytes(DEFAULT_MAX_PACKAGE_BYTES).is_ok());
         assert!(validate_max_package_bytes(0).is_err());
         assert!(validate_max_package_bytes(DEFAULT_MAX_PACKAGE_BYTES + 1).is_err());
+    }
+
+    #[test]
+    fn public_origin_requires_https_except_for_loopback_development() {
+        for accepted in [
+            "https://notary.exalto.ai",
+            "https://notary.exalto.ai:8443",
+            "http://localhost:4173",
+            "http://127.0.0.1:4173",
+            "http://[::1]:4173",
+        ] {
+            assert!(parse_public_origin(accepted).is_ok(), "{accepted}");
+        }
+        for rejected in [
+            "http://notary.exalto.ai",
+            "ftp://notary.exalto.ai",
+            "https://user:not-secret@notary.exalto.ai",
+            "https://notary.exalto.ai/path",
+            "https://notary.exalto.ai?query=yes",
+            "https://notary.exalto.ai/#fragment",
+        ] {
+            assert!(parse_public_origin(rejected).is_err(), "{rejected}");
+        }
     }
 
     #[test]

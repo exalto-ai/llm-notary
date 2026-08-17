@@ -16,7 +16,7 @@ fn worker_rejects_malformed_packages_with_a_stable_code() {
     }))
     .unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_notary-api"))
-        .arg("--verification-worker")
+        .arg("verification-worker")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -111,7 +111,7 @@ fn sanitized_valid_package_traverses_the_isolated_worker() {
     assert_eq!(body_length, output.stdout.len() - 9);
     let body: serde_json::Value = serde_json::from_slice(&output.stdout[9..]).unwrap();
     assert_eq!(body["verified"], true);
-    assert_eq!(body["capture_id"], "trc-test");
+    assert_eq!(body["source_trace_id"], "trc-test");
     assert_eq!(body["provider"], "test-server.io");
     assert_eq!(body["host"], "test-server.io");
     assert_eq!(body["notary_key_id"], key_id);

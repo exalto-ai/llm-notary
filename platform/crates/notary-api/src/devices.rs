@@ -1,7 +1,85 @@
 //! Device authorization, token rotation, replay detection, and revocation.
 
 use super::*;
+use crate::account::{AccountBillingResponse, PublicUser};
 use crate::auth::authenticated_web_user;
+use crate::browser_auth::BrowserAuthProvider;
+use serde::Deserialize;
+
+#[derive(Serialize, ToSchema)]
+pub(super) struct WebDeviceSession {
+    pub(super) id: String,
+    pub(super) device_name: String,
+    created_at: i64,
+    last_used_at: i64,
+    expires_at: i64,
+}
+
+#[derive(Deserialize, Serialize)]
+struct DeviceSessionPagePosition {
+    created_at: i64,
+    id: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub(super) struct CreateDeviceAuthorization {
+    device_name: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub(super) struct DeviceAuthorizationStarted {
+    request_id: String,
+    user_code: String,
+    verification_uri_complete: String,
+    expires_in: i64,
+    interval: i64,
+    poll_secret: String,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub(super) struct ApprovalQuery {
+    approval_secret: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub(super) struct ApprovalDetails {
+    user_code: String,
+    device_name: String,
+    expires_at: i64,
+}
+
+#[derive(Serialize, ToSchema)]
+pub(super) struct DeviceTokens {
+    pub(super) access_token: String,
+    pub(super) refresh_token: String,
+    expires_in: i64,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub(super) struct RefreshRequest {
+    pub(super) refresh_token: String,
+}
+
+#[derive(Serialize, ToSchema)]
+struct DeviceSessionResponse {
+    device_name: String,
+}
+
+#[derive(Serialize, ToSchema)]
+struct DeviceCredentialResponse {
+    kind: auth::CredentialKind,
+    id: String,
+    name: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub(super) struct DeviceMeResponse {
+    account: PublicUser,
+    credential: DeviceCredentialResponse,
+    session: Option<DeviceSessionResponse>,
+    billing: AccountBillingResponse,
+    credits: credits::CreditSummary,
+}
 
 pub(super) fn router() -> OpenApiRouter<NotaryApiState> {
     OpenApiRouter::new()
@@ -296,14 +374,16 @@ pub(super) async fn complete_device_authorization(
         .and_then(|value| value.to_str().ok())
         .ok_or_else(ApiError::unauthorized)?;
     let now = unix_timestamp()?;
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
     let request = sqlx::query_as::<_, (Option<String>, String, i64, Option<i64>)>(
         "SELECT approved_account_id, device_name, expires_at, completed_at
          FROM device_authorizations
-         WHERE authorization_id = $1 AND poll_secret_hash = $2",
+         WHERE authorization_id = $1 AND poll_secret_hash = $2
+         FOR UPDATE",
     )
     .bind(&request_id)
     .bind(sha256_hex(poll_secret.as_bytes()))
-    .fetch_optional(&state.database)
+    .fetch_optional(&mut *transaction)
     .await
     .map_err(database_error)?
     .ok_or_else(ApiError::unauthorized)?;
@@ -312,8 +392,11 @@ pub(super) async fn complete_device_authorization(
     }
     let account_id = request.0.ok_or_else(ApiError::pending)?;
 
-    // Mark consumption first with a compare-and-set. This makes a second poll
-    // fail even if it races the successful poll.
+    // Session issuance and authorization consumption commit together. The row
+    // lock serializes racing polls without losing a usable authorization when
+    // either token insert fails.
+    let tokens =
+        issue_device_session_in_transaction(&mut transaction, &account_id, &request.1, now).await?;
     let consumed = sqlx::query(
         "UPDATE device_authorizations SET completed_at = $1
          WHERE authorization_id = $2 AND completed_at IS NULL AND expires_at > $3 AND approved_account_id IS NOT NULL",
@@ -321,13 +404,13 @@ pub(super) async fn complete_device_authorization(
     .bind(now)
     .bind(&request_id)
     .bind(now)
-    .execute(&state.database)
+    .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
     if consumed.rows_affected() != 1 {
         return Err(ApiError::gone("authorization was already used"));
     }
-    let tokens = issue_device_session(&state.database, &account_id, &request.1, now).await?;
+    transaction.commit().await.map_err(database_error)?;
     Ok(Json(tokens))
 }
 
@@ -349,23 +432,25 @@ pub(super) async fn refresh_device_tokens(
 ) -> ApiResult<Json<DeviceTokens>> {
     let now = unix_timestamp()?;
     let old_hash = sha256_hex(request.refresh_token.as_bytes());
-    let device = sqlx::query_as::<_, (String, String)>(
-        "SELECT device_id, account_id FROM devices
-         WHERE refresh_token_hash = $1 AND revoked_at IS NULL AND expires_at > $2",
+    let mut transaction = state.database.begin().await.map_err(database_error)?;
+    let device = sqlx::query_scalar::<_, String>(
+        "SELECT device_id FROM devices
+         WHERE refresh_token_hash = $1 AND revoked_at IS NULL AND expires_at > $2
+         FOR UPDATE",
     )
     .bind(&old_hash)
     .bind(now)
-    .fetch_optional(&state.database)
+    .fetch_optional(&mut *transaction)
     .await
     .map_err(database_error)?;
-    let Some((device_id, account_id)) = device else {
+    let Some(device_id) = device else {
         // Reusing a rotated token is a credential-theft signal: revoke the
         // Device that originally held it before rejecting the request.
         if let Some(device_id) = sqlx::query_scalar::<_, String>(
             "SELECT device_id FROM device_refresh_replays WHERE token_hash = $1",
         )
         .bind(&old_hash)
-        .fetch_optional(&state.database)
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(database_error)?
         {
@@ -374,9 +459,10 @@ pub(super) async fn refresh_device_tokens(
             )
             .bind(now)
             .bind(device_id)
-            .execute(&state.database)
+            .execute(&mut *transaction)
             .await
             .map_err(database_error)?;
+            transaction.commit().await.map_err(database_error)?;
         }
         return Err(ApiError::unauthorized());
     };
@@ -390,7 +476,7 @@ pub(super) async fn refresh_device_tokens(
     .bind(&device_id)
     .bind(&old_hash)
     .bind(now)
-    .execute(&state.database)
+    .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
     if refreshed.rows_affected() != 1 {
@@ -403,11 +489,11 @@ pub(super) async fn refresh_device_tokens(
     .bind(old_hash)
     .bind(&device_id)
     .bind(now)
-    .execute(&state.database)
+    .execute(&mut *transaction)
     .await
     .map_err(database_error)?;
-    let access_token = issue_access_token(&state.database, &device_id, now).await?;
-    let _ = account_id;
+    let access_token = issue_access_token_in_transaction(&mut transaction, &device_id, now).await?;
+    transaction.commit().await.map_err(database_error)?;
     Ok(Json(DeviceTokens {
         access_token,
         refresh_token,
@@ -533,8 +619,22 @@ async fn approval_request(
     Ok((request.0, request.1, request.2))
 }
 
+#[cfg(test)]
 pub(super) async fn issue_device_session(
     database: &DatabasePool,
+    account_id: &str,
+    device_name: &str,
+    now: i64,
+) -> ApiResult<DeviceTokens> {
+    let mut transaction = database.begin().await.map_err(database_error)?;
+    let tokens =
+        issue_device_session_in_transaction(&mut transaction, account_id, device_name, now).await?;
+    transaction.commit().await.map_err(database_error)?;
+    Ok(tokens)
+}
+
+async fn issue_device_session_in_transaction(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     account_id: &str,
     device_name: &str,
     now: i64,
@@ -553,10 +653,10 @@ pub(super) async fn issue_device_session(
     .bind(now)
     .bind(now)
     .bind(now + DEVICE_REFRESH_TOKEN_TTL_SECS)
-    .execute(database)
+    .execute(&mut **transaction)
     .await
     .map_err(database_error)?;
-    let access_token = issue_access_token(database, &device_id, now).await?;
+    let access_token = issue_access_token_in_transaction(transaction, &device_id, now).await?;
     Ok(DeviceTokens {
         access_token,
         refresh_token,
@@ -564,8 +664,8 @@ pub(super) async fn issue_device_session(
     })
 }
 
-async fn issue_access_token(
-    database: &DatabasePool,
+async fn issue_access_token_in_transaction(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     device_id: &str,
     now: i64,
 ) -> ApiResult<String> {
@@ -575,7 +675,7 @@ async fn issue_access_token(
         .bind(device_id)
         .bind(now + DEVICE_ACCESS_TOKEN_TTL_SECS)
         .bind(now)
-        .execute(database)
+        .execute(&mut **transaction)
         .await
         .map_err(database_error)?;
     Ok(access_token)

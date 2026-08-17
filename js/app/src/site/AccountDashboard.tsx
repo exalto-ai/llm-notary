@@ -68,7 +68,7 @@ type CreditHistoryPage = Awaited<ReturnType<typeof getCreditHistory>>;
 type AccountCreditHistoryEntry = CreditHistoryPage['items'][number];
 type CreditOffer = Awaited<ReturnType<typeof getCreditOffers>>[number];
 type BillingPurchase = Awaited<ReturnType<typeof getBillingPurchase>>;
-type ServicePlan = CurrentUser['billing']['service_plan'];
+type ServicePlan = CurrentUser['billing']['plan'];
 type DashboardView = 'overview' | 'traces' | 'credits' | 'settings';
 type DashboardBilling = Omit<CurrentUser['billing'], 'entitlements'> & {
   entitlements?: CurrentUser['billing']['entitlements'];
@@ -121,9 +121,10 @@ function shareAccessLabel(share: AccountShare): string {
 
 const apiKeyScopeOptions = [
   ['account:read', 'Read account identity'],
-  ['notary:admit', 'Request hosted notary admission'],
-  ['publish:read', 'Read owned publication status'],
-  ['publish:write', 'Create and complete publications'],
+  ['traces:read', 'Read owned Traces'],
+  ['traces:share', 'Create and manage shared Traces'],
+  ['capture:request', 'Request hosted Capture admission'],
+  ['notarization:request', 'Request hosted Notarization admission'],
 ] as const;
 
 type ApiKeyScope = (typeof apiKeyScopeOptions)[number][0];
@@ -915,7 +916,7 @@ export function Dashboard({
   const [loadingMoreCreditHistory, setLoadingMoreCreditHistory] = useState(false);
   const [billing, setBilling] = useState<DashboardBilling>(
     user.billing || {
-      service_plan: 'free',
+      plan: 'free',
       billing_status: 'active',
       purchase_mode: 'disabled',
       subscriptions_configured: false,
@@ -1103,10 +1104,7 @@ export function Dashboard({
         if (cancelled || !account) return;
         setCredits(account.credits);
         setBilling(account.billing);
-        if (
-          account.billing.service_plan !== 'free' ||
-          account.billing.billing_status === 'review'
-        ) {
+        if (account.billing.plan !== 'free' || account.billing.billing_status === 'review') {
           setSubscriptionStatus(account.billing.billing_status === 'active' ? 'active' : 'review');
           return;
         }
@@ -1385,8 +1383,8 @@ export function Dashboard({
                   <b>{user.notary_stats?.captures ?? '—'}</b>
                 </div>
                 <div>
-                  <span>Completed finalizations</span>
-                  <b>{user.notary_stats?.finalizations ?? '—'}</b>
+                  <span>Completed notarizations</span>
+                  <b>{user.notary_stats?.notarizations ?? '—'}</b>
                 </div>
                 <div>
                   <span>Admitted traces</span>
@@ -1424,17 +1422,17 @@ export function Dashboard({
                   <header>
                     <div>
                       <span className="eyebrow">Current plan</span>
-                      <h2 id="credit-balance-title">{planLabel(billing.service_plan)}</h2>
+                      <h2 id="credit-balance-title">{planLabel(billing.plan)}</h2>
                     </div>
                     <div className="dashboard-credit-meta">
                       <span>
-                        {billing.billing_status} · {planDetails[billing.service_plan]?.price}
+                        {billing.billing_status} · {planDetails[billing.plan]?.price}
                       </span>
                       <span>Usage resets {sessionDate(credits.reset_at)}</span>
                     </div>
                   </header>
                   <div className="dashboard-plan-actions">
-                    {billing.service_plan === 'free' ? (
+                    {billing.plan === 'free' ? (
                       <>
                         <div>
                           <b>Increase monthly allowances</b>
@@ -1462,7 +1460,7 @@ export function Dashboard({
                     ) : (
                       <>
                         <div>
-                          <b>{planLabel(billing.service_plan)} subscription</b>
+                          <b>{planLabel(billing.plan)} subscription</b>
                           <span>Change plans, update payment details, or cancel in Stripe.</span>
                         </div>
                         <button
@@ -1812,7 +1810,7 @@ export function Dashboard({
                                 <i aria-hidden="true" />
                                 {status.label}
                               </span>
-                              <time>{sessionDate(share.admitted_at || share.updated_at)}</time>
+                              <time>{sessionDate(share.verified_at || share.updated_at)}</time>
                             </div>
                             <h3>Trace {share.id.slice(0, 8)}</h3>
                             <p>

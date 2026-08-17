@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "LLM Notary hosted platform API",
-    "description": "Public website, account, CLI authorization, verified-session sharing, and Listed-share catalog API for the hosted LLM Notary platform. This contract is separate from the loopback local administration API.",
+    "description": "Public website, account, Device authorization, verified-session sharing, and Listed-share catalog API for the hosted LLM Notary platform. This contract is separate from the loopback local administration API.",
     "license": {
       "name": "MIT OR Apache-2.0",
       "identifier": "MIT OR Apache-2.0"
@@ -415,13 +415,13 @@
         "tags": [
           "cli-auth"
         ],
-        "summary": "Start CLI device authorization",
-        "operationId": "start_cli_authorization",
+        "summary": "Start Device device authorization",
+        "operationId": "start_device_authorization",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateCliAuthorization"
+                "$ref": "#/components/schemas/CreateDeviceAuthorization"
               }
             }
           },
@@ -433,7 +433,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CliAuthorizationStarted"
+                  "$ref": "#/components/schemas/DeviceAuthorizationStarted"
                 }
               }
             }
@@ -467,7 +467,7 @@
           "cli-auth"
         ],
         "summary": "Get browser approval details",
-        "operationId": "cli_approval_details",
+        "operationId": "device_approval_details",
         "parameters": [
           {
             "name": "request_id",
@@ -548,8 +548,8 @@
         "tags": [
           "cli-auth"
         ],
-        "summary": "Approve a CLI device authorization",
-        "operationId": "approve_cli_authorization",
+        "summary": "Approve a Device device authorization",
+        "operationId": "approve_device_authorization",
         "parameters": [
           {
             "name": "request_id",
@@ -570,7 +570,7 @@
         ],
         "responses": {
           "204": {
-            "description": "CLI device authorized"
+            "description": "Device device authorized"
           },
           "401": {
             "description": "",
@@ -615,8 +615,8 @@
         "tags": [
           "cli-auth"
         ],
-        "summary": "Complete CLI device authorization",
-        "operationId": "complete_cli_authorization",
+        "summary": "Complete Device device authorization",
+        "operationId": "complete_device_authorization",
         "parameters": [
           {
             "name": "request_id",
@@ -633,7 +633,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CliTokens"
+                  "$ref": "#/components/schemas/DeviceTokens"
                 }
               }
             }
@@ -691,8 +691,8 @@
         "tags": [
           "cli-auth"
         ],
-        "summary": "Revoke a CLI session by refresh token",
-        "operationId": "logout_cli_session",
+        "summary": "Revoke a Device session by refresh token",
+        "operationId": "logout_device_session",
         "requestBody": {
           "content": {
             "application/json": {
@@ -705,7 +705,7 @@
         },
         "responses": {
           "204": {
-            "description": "CLI session revoked"
+            "description": "Device session revoked"
           },
           "500": {
             "description": "",
@@ -725,15 +725,15 @@
         "tags": [
           "cli-auth"
         ],
-        "summary": "Get the CLI access-token identity",
-        "operationId": "cli_me",
+        "summary": "Get the Device access-token identity",
+        "operationId": "device_me",
         "responses": {
           "200": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CliMeResponse"
+                  "$ref": "#/components/schemas/DeviceMeResponse"
                 }
               }
             }
@@ -781,8 +781,8 @@
         "tags": [
           "cli-auth"
         ],
-        "summary": "List the browser user's active CLI sessions",
-        "operationId": "list_cli_sessions",
+        "summary": "List the browser user's active Device sessions",
+        "operationId": "list_devices",
         "parameters": [
           {
             "name": "limit",
@@ -811,7 +811,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_WebCliSession"
+                  "$ref": "#/components/schemas/Page_WebDeviceSession"
                 }
               }
             }
@@ -859,8 +859,8 @@
         "tags": [
           "cli-auth"
         ],
-        "summary": "Revoke one of the browser user's CLI sessions",
-        "operationId": "revoke_web_cli_session",
+        "summary": "Revoke one of the browser user's Device sessions",
+        "operationId": "revoke_web_device_session",
         "parameters": [
           {
             "name": "session_id",
@@ -873,7 +873,7 @@
         ],
         "responses": {
           "204": {
-            "description": "CLI session revoked"
+            "description": "Device session revoked"
           },
           "401": {
             "description": "",
@@ -918,8 +918,8 @@
         "tags": [
           "cli-auth"
         ],
-        "summary": "Rotate CLI access and refresh tokens",
-        "operationId": "refresh_cli_tokens",
+        "summary": "Rotate Device access and refresh tokens",
+        "operationId": "refresh_device_tokens",
         "requestBody": {
           "content": {
             "application/json": {
@@ -936,7 +936,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CliTokens"
+                  "$ref": "#/components/schemas/DeviceTokens"
                 }
               }
             }
@@ -2017,7 +2017,7 @@
           "sharing"
         ],
         "summary": "List the browser user's shares",
-        "operationId": "list_web_publish_jobs",
+        "operationId": "list_web_traces",
         "parameters": [
           {
             "name": "limit",
@@ -2102,7 +2102,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/NotaryDirectoryResponse"
+                  "$ref": "#/components/schemas/RegistryResponse"
                 }
               }
             }
@@ -2364,7 +2364,7 @@
         "tags": [
           "sharing"
         ],
-        "summary": "Download the exact admitted portable proof package",
+        "summary": "Download the exact verified portable proof package",
         "operationId": "public_share_package",
         "parameters": [
           {
@@ -2565,7 +2565,7 @@
         "tags": [
           "sharing"
         ],
-        "summary": "Download the admitted canonical OpenTelemetry trace",
+        "summary": "Download the verified canonical OpenTelemetry trace",
         "operationId": "public_share_trace",
         "parameters": [
           {
@@ -2688,7 +2688,7 @@
           "sharing"
         ],
         "summary": "Create or resume a share",
-        "operationId": "create_publish_job",
+        "operationId": "create_hosted_trace",
         "parameters": [
           {
             "name": "Idempotency-Key",
@@ -2704,7 +2704,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreatePublishJob"
+                "$ref": "#/components/schemas/CreateHostedTraceRequest"
               }
             }
           },
@@ -2815,7 +2815,7 @@
           "sharing"
         ],
         "summary": "Get a share's admission state",
-        "operationId": "get_publish_job",
+        "operationId": "get_hosted_trace",
         "parameters": [
           {
             "name": "share_id",
@@ -3018,7 +3018,7 @@
           "sharing"
         ],
         "summary": "Complete the upload for a share",
-        "operationId": "complete_publish_job",
+        "operationId": "complete_hosted_trace_upload",
         "parameters": [
           {
             "name": "share_id",
@@ -3215,7 +3215,7 @@
       "AccountBillingResponse": {
         "type": "object",
         "required": [
-          "service_plan",
+          "plan",
           "billing_status",
           "purchase_mode",
           "subscriptions_configured",
@@ -3228,11 +3228,11 @@
           "entitlements": {
             "$ref": "#/components/schemas/PlanEntitlements"
           },
+          "plan": {
+            "$ref": "#/components/schemas/Plan"
+          },
           "purchase_mode": {
             "$ref": "#/components/schemas/BillingPurchaseMode"
-          },
-          "service_plan": {
-            "$ref": "#/components/schemas/ServicePlan"
           },
           "subscriptions_configured": {
             "type": "boolean"
@@ -3270,7 +3270,7 @@
         "type": "string",
         "enum": [
           "capture",
-          "finalize"
+          "notarization"
         ]
       },
       "AdmissionRedemptionContract": {
@@ -3284,21 +3284,21 @@
         "required": [
           "ticket",
           "expires_at",
-          "directory_generation",
+          "registry_generation",
           "limits"
         ],
         "properties": {
-          "directory_generation": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
           "expires_at": {
             "type": "integer",
             "format": "int64"
           },
           "limits": {
             "$ref": "#/components/schemas/AdmissionLimits"
+          },
+          "registry_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           },
           "ticket": {
             "type": "string"
@@ -3361,9 +3361,10 @@
         "type": "string",
         "enum": [
           "account:read",
-          "notary:admit",
-          "publish:read",
-          "publish:write"
+          "traces:read",
+          "traces:share",
+          "capture:request",
+          "notarization:request"
         ]
       },
       "ApprovalDetails": {
@@ -3519,122 +3520,6 @@
           }
         }
       },
-      "CliAuthorizationStarted": {
-        "type": "object",
-        "required": [
-          "request_id",
-          "user_code",
-          "verification_uri_complete",
-          "expires_in",
-          "interval",
-          "poll_secret"
-        ],
-        "properties": {
-          "expires_in": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "interval": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "poll_secret": {
-            "type": "string"
-          },
-          "request_id": {
-            "type": "string"
-          },
-          "user_code": {
-            "type": "string"
-          },
-          "verification_uri_complete": {
-            "type": "string"
-          }
-        }
-      },
-      "CliCredentialResponse": {
-        "type": "object",
-        "required": [
-          "kind",
-          "id",
-          "name"
-        ],
-        "properties": {
-          "id": {
-            "type": "string"
-          },
-          "kind": {
-            "$ref": "#/components/schemas/CredentialKind"
-          },
-          "name": {
-            "type": "string"
-          }
-        }
-      },
-      "CliMeResponse": {
-        "type": "object",
-        "required": [
-          "user",
-          "credential",
-          "billing",
-          "credits"
-        ],
-        "properties": {
-          "billing": {
-            "$ref": "#/components/schemas/AccountBillingResponse"
-          },
-          "credential": {
-            "$ref": "#/components/schemas/CliCredentialResponse"
-          },
-          "credits": {
-            "$ref": "#/components/schemas/CreditSummary"
-          },
-          "session": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/CliSessionResponse"
-              }
-            ]
-          },
-          "user": {
-            "$ref": "#/components/schemas/PublicUser"
-          }
-        }
-      },
-      "CliSessionResponse": {
-        "type": "object",
-        "required": [
-          "device_name"
-        ],
-        "properties": {
-          "device_name": {
-            "type": "string"
-          }
-        }
-      },
-      "CliTokens": {
-        "type": "object",
-        "required": [
-          "access_token",
-          "refresh_token",
-          "expires_in"
-        ],
-        "properties": {
-          "access_token": {
-            "type": "string"
-          },
-          "expires_in": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "refresh_token": {
-            "type": "string"
-          }
-        }
-      },
       "CreateApiKeyRequest": {
         "type": "object",
         "required": [
@@ -3707,7 +3592,7 @@
           }
         }
       },
-      "CreateCliAuthorization": {
+      "CreateDeviceAuthorization": {
         "type": "object",
         "required": [
           "device_name"
@@ -3717,6 +3602,39 @@
             "type": "string"
           }
         }
+      },
+      "CreateHostedTraceRequest": {
+        "type": "object",
+        "required": [
+          "source_trace_id",
+          "package_format",
+          "size_bytes",
+          "sha256",
+          "visibility"
+        ],
+        "properties": {
+          "allow_high_entropy": {
+            "type": "boolean",
+            "description": "Accept unexplained high-entropy values after reviewing the disclosure."
+          },
+          "package_format": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "source_trace_id": {
+            "type": "string"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/ShareVisibility"
+          }
+        },
+        "additionalProperties": false
       },
       "CreatePortalSessionResponse": {
         "type": "object",
@@ -3728,35 +3646,6 @@
             "type": "string"
           }
         }
-      },
-      "CreatePublishJob": {
-        "type": "object",
-        "required": [
-          "archive_format",
-          "size_bytes",
-          "sha256",
-          "visibility"
-        ],
-        "properties": {
-          "archive_format": {
-            "type": "string"
-          },
-          "force": {
-            "type": "boolean",
-            "description": "Accept unexplained high-entropy values after reviewing the disclosure."
-          },
-          "sha256": {
-            "type": "string"
-          },
-          "size_bytes": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "visibility": {
-            "$ref": "#/components/schemas/ShareVisibility"
-          }
-        },
-        "additionalProperties": false
       },
       "CreateShareReport": {
         "type": "object",
@@ -3827,7 +3716,7 @@
       "CredentialKind": {
         "type": "string",
         "enum": [
-          "cli_session",
+          "device_session",
           "api_key"
         ]
       },
@@ -3999,6 +3888,122 @@
           }
         }
       },
+      "DeviceAuthorizationStarted": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "user_code",
+          "verification_uri_complete",
+          "expires_in",
+          "interval",
+          "poll_secret"
+        ],
+        "properties": {
+          "expires_in": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "interval": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "poll_secret": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "user_code": {
+            "type": "string"
+          },
+          "verification_uri_complete": {
+            "type": "string"
+          }
+        }
+      },
+      "DeviceCredentialResponse": {
+        "type": "object",
+        "required": [
+          "kind",
+          "id",
+          "name"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CredentialKind"
+          },
+          "name": {
+            "type": "string"
+          }
+        }
+      },
+      "DeviceMeResponse": {
+        "type": "object",
+        "required": [
+          "account",
+          "credential",
+          "billing",
+          "credits"
+        ],
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/PublicUser"
+          },
+          "billing": {
+            "$ref": "#/components/schemas/AccountBillingResponse"
+          },
+          "credential": {
+            "$ref": "#/components/schemas/DeviceCredentialResponse"
+          },
+          "credits": {
+            "$ref": "#/components/schemas/CreditSummary"
+          },
+          "session": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DeviceSessionResponse"
+              }
+            ]
+          }
+        }
+      },
+      "DeviceSessionResponse": {
+        "type": "object",
+        "required": [
+          "device_name"
+        ],
+        "properties": {
+          "device_name": {
+            "type": "string"
+          }
+        }
+      },
+      "DeviceTokens": {
+        "type": "object",
+        "required": [
+          "access_token",
+          "refresh_token",
+          "expires_in"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "refresh_token": {
+            "type": "string"
+          }
+        }
+      },
       "ErrorResponse": {
         "type": "object",
         "required": [
@@ -4102,13 +4107,16 @@
       "MeResponse": {
         "type": "object",
         "required": [
-          "user",
+          "account",
           "billing",
           "credits",
           "notary_stats",
           "share_stats"
         ],
         "properties": {
+          "account": {
+            "$ref": "#/components/schemas/PublicUser"
+          },
           "billing": {
             "$ref": "#/components/schemas/AccountBillingResponse"
           },
@@ -4120,100 +4128,6 @@
           },
           "share_stats": {
             "$ref": "#/components/schemas/ShareStats"
-          },
-          "user": {
-            "$ref": "#/components/schemas/PublicUser"
-          }
-        }
-      },
-      "NotaryDirectoryRecordResponse": {
-        "type": "object",
-        "required": [
-          "name",
-          "operator",
-          "host",
-          "port",
-          "transport",
-          "key_id",
-          "public_key",
-          "status",
-          "valid_from_unix_ms"
-        ],
-        "properties": {
-          "host": {
-            "type": "string"
-          },
-          "key_id": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "notarize_until_unix_ms": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "minimum": 0
-          },
-          "operator": {
-            "type": "string"
-          },
-          "port": {
-            "type": "integer",
-            "format": "int32",
-            "minimum": 0
-          },
-          "public_key": {
-            "type": "string"
-          },
-          "status": {
-            "$ref": "#/components/schemas/NotaryKeyStatusResponse"
-          },
-          "transport": {
-            "$ref": "#/components/schemas/NotaryTransportResponse"
-          },
-          "valid_from_unix_ms": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "valid_until_unix_ms": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64",
-            "minimum": 0
-          }
-        }
-      },
-      "NotaryDirectoryResponse": {
-        "type": "object",
-        "required": [
-          "format",
-          "generation",
-          "active_key_id",
-          "notaries"
-        ],
-        "properties": {
-          "active_key_id": {
-            "type": "string"
-          },
-          "format": {
-            "type": "string"
-          },
-          "generation": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
-          "notaries": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/NotaryDirectoryRecordResponse"
-            }
           }
         }
       },
@@ -4230,7 +4144,7 @@
         "type": "object",
         "required": [
           "captures",
-          "finalizations"
+          "notarizations"
         ],
         "properties": {
           "captures": {
@@ -4238,10 +4152,10 @@
             "format": "int64",
             "description": "Successfully completed capture operations."
           },
-          "finalizations": {
+          "notarizations": {
             "type": "integer",
             "format": "int64",
-            "description": "Successfully completed finalization operations."
+            "description": "Successfully completed notarization operations."
           }
         }
       },
@@ -4474,18 +4388,14 @@
                 "visibility",
                 "published",
                 "password_protected",
-                "force",
+                "allow_high_entropy",
                 "created_at",
                 "updated_at",
                 "status_url"
               ],
               "properties": {
-                "admitted_at": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "format": "int64"
+                "allow_high_entropy": {
+                  "type": "boolean"
                 },
                 "created_at": {
                   "type": "integer",
@@ -4503,9 +4413,6 @@
                     "string",
                     "null"
                   ]
-                },
-                "force": {
-                  "type": "boolean"
                 },
                 "id": {
                   "type": "string"
@@ -4538,6 +4445,13 @@
                   "type": "integer",
                   "format": "int64"
                 },
+                "verified_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                },
                 "visibility": {
                   "$ref": "#/components/schemas/ShareVisibility"
                 }
@@ -4553,7 +4467,7 @@
           }
         }
       },
-      "Page_WebCliSession": {
+      "Page_WebDeviceSession": {
         "type": "object",
         "description": "Uniform response shape for every paginated list route.",
         "required": [
@@ -4602,6 +4516,14 @@
           }
         }
       },
+      "Plan": {
+        "type": "string",
+        "enum": [
+          "free",
+          "one_gb",
+          "ten_gb"
+        ]
+      },
       "PlanEntitlements": {
         "type": "object",
         "required": [
@@ -4634,25 +4556,21 @@
           "visibility",
           "password_protected",
           "publisher",
-          "admitted_at",
+          "verified_at",
           "provider",
           "host",
           "model",
           "verification_state",
-          "trace_sha256",
+          "content_sha256",
           "package_size_bytes",
           "package_sha256",
-          "public_package_safety_version",
-          "public_package_safety_override",
+          "disclosure_safety_version",
+          "disclosure_safety_override",
           "trace_url",
           "package_url",
           "share_url"
         ],
         "properties": {
-          "admitted_at": {
-            "type": "integer",
-            "format": "int64"
-          },
           "authenticated_at_unix_ms": {
             "type": [
               "integer",
@@ -4660,12 +4578,14 @@
             ],
             "format": "int64"
           },
-          "directory_generation": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
+          "content_sha256": {
+            "type": "string"
+          },
+          "disclosure_safety_override": {
+            "type": "boolean"
+          },
+          "disclosure_safety_version": {
+            "type": "string"
           },
           "expires_at": {
             "type": [
@@ -4705,19 +4625,17 @@
           "provider": {
             "type": "string"
           },
-          "public_package_safety_override": {
-            "type": "boolean"
-          },
-          "public_package_safety_version": {
-            "type": "string"
-          },
           "publisher": {
             "type": "string"
           },
-          "share_url": {
-            "type": "string"
+          "registry_generation": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
           },
-          "trace_sha256": {
+          "share_url": {
             "type": "string"
           },
           "trace_url": {
@@ -4733,10 +4651,7 @@
             "type": "string"
           },
           "verified_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
+            "type": "integer",
             "format": "int64"
           },
           "visibility": {
@@ -4790,7 +4705,7 @@
           "ticket",
           "notary_instance_id",
           "mode",
-          "directory_generation",
+          "registry_generation",
           "contract",
           "usage_settlement"
         ],
@@ -4798,16 +4713,16 @@
           "contract": {
             "$ref": "#/components/schemas/AdmissionRedemptionContract"
           },
-          "directory_generation": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
-          },
           "mode": {
             "$ref": "#/components/schemas/AdmissionMode"
           },
           "notary_instance_id": {
             "type": "string"
+          },
+          "registry_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
           },
           "ticket": {
             "type": "string"
@@ -4828,13 +4743,6 @@
           "max_private_chunk_commitments"
         ],
         "properties": {
-          "authenticated_allowance_bytes": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
           "max_attestable_http_bytes": {
             "type": "integer",
             "format": "int64"
@@ -4849,6 +4757,13 @@
           },
           "max_private_chunk_commitments": {
             "type": "integer",
+            "format": "int64"
+          },
+          "notarization_allowance_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           },
           "operation_id": {
@@ -4873,13 +4788,88 @@
           }
         }
       },
-      "ServicePlan": {
-        "type": "string",
-        "enum": [
-          "free",
-          "one_gb",
-          "ten_gb"
-        ]
+      "RegistryRecordResponse": {
+        "type": "object",
+        "required": [
+          "host",
+          "port",
+          "transport",
+          "key_id",
+          "public_key",
+          "status",
+          "valid_from_unix_ms"
+        ],
+        "properties": {
+          "host": {
+            "type": "string"
+          },
+          "key_id": {
+            "type": "string"
+          },
+          "notarize_until_unix_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "port": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "public_key": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/NotaryKeyStatusResponse"
+          },
+          "transport": {
+            "$ref": "#/components/schemas/NotaryTransportResponse"
+          },
+          "valid_from_unix_ms": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "valid_until_unix_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "RegistryResponse": {
+        "type": "object",
+        "required": [
+          "format",
+          "generation",
+          "active_key_id",
+          "notaries"
+        ],
+        "properties": {
+          "active_key_id": {
+            "type": "string"
+          },
+          "format": {
+            "type": "string"
+          },
+          "generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "notaries": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RegistryRecordResponse"
+            }
+          }
+        }
       },
       "ShareReportReason": {
         "type": "string",
@@ -4910,18 +4900,14 @@
           "visibility",
           "published",
           "password_protected",
-          "force",
+          "allow_high_entropy",
           "created_at",
           "updated_at",
           "status_url"
         ],
         "properties": {
-          "admitted_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
+          "allow_high_entropy": {
+            "type": "boolean"
           },
           "created_at": {
             "type": "integer",
@@ -4939,9 +4925,6 @@
               "string",
               "null"
             ]
-          },
-          "force": {
-            "type": "boolean"
           },
           "id": {
             "type": "string"
@@ -4972,6 +4955,13 @@
           },
           "updated_at": {
             "type": "integer",
+            "format": "int64"
+          },
+          "verified_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           },
           "visibility": {
@@ -5133,15 +5123,15 @@
         "type": "object",
         "required": [
           "verified",
-          "capture_id",
+          "trace_id",
           "authenticated_at_unix_ms",
           "provider",
           "host",
           "notary_key_id",
-          "directory_generation",
+          "registry_generation",
           "trust_source",
           "package_sha256",
-          "trace_sha256",
+          "content_sha256",
           "trace"
         ],
         "properties": {
@@ -5150,13 +5140,8 @@
             "format": "int64",
             "minimum": 0
           },
-          "capture_id": {
+          "content_sha256": {
             "type": "string"
-          },
-          "directory_generation": {
-            "type": "integer",
-            "format": "int64",
-            "minimum": 0
           },
           "host": {
             "type": "string"
@@ -5170,8 +5155,13 @@
           "provider": {
             "type": "string"
           },
+          "registry_generation": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
           "trace": {},
-          "trace_sha256": {
+          "trace_id": {
             "type": "string"
           },
           "trust_source": {
@@ -5182,7 +5172,7 @@
           }
         }
       },
-      "WebCliSession": {
+      "WebDeviceSession": {
         "type": "object",
         "required": [
           "id",
@@ -5218,19 +5208,19 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "opaque",
-        "description": "Short-lived CLI access token or stable scoped API key"
+        "description": "Short-lived Device access token or stable scoped API key"
       },
       "browserSession": {
         "type": "apiKey",
         "in": "cookie",
-        "name": "llm_notary_session",
+        "name": "notary_session",
         "description": "HttpOnly hosted browser session cookie"
       },
       "pollSecret": {
         "type": "apiKey",
         "in": "header",
-        "name": "X-LLM-Notary-Poll-Secret",
-        "description": "One-time secret returned when CLI authorization starts"
+        "name": "X-Notary-Poll-Secret",
+        "description": "One-time secret returned when Device authorization starts"
       },
       "serviceBearer": {
         "type": "http",
@@ -5251,7 +5241,7 @@
     },
     {
       "name": "cli-auth",
-      "description": "Local service authorization and CLI sessions"
+      "description": "Local service authorization and Device sessions"
     },
     {
       "name": "notary-admission",

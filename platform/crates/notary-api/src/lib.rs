@@ -13,7 +13,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use rand::RngCore;
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use time::Duration as CookieDuration;
@@ -22,7 +22,7 @@ use url::Url;
 use uuid::Uuid;
 
 use notary_core::pagination::{CursorScope, Page, PageQuery, decode_cursor};
-use notary_core::registry::{NotaryKeyStatus, NotaryTransport, Registry, RegistryRecord};
+use notary_core::registry::Registry;
 use notary_core::sha256_hex;
 use notary_core::telemetry;
 use opentelemetry::global;
@@ -47,12 +47,13 @@ mod traces;
 mod verification;
 
 #[cfg(test)]
-use account::{delete_account, me};
+use account::{NotaryStats, account_notary_stats, delete_account, me};
 #[cfg(test)]
-use browser_auth::{issue_web_session, upsert_google_user};
+use browser_auth::{BrowserAuthProvider, GoogleUser, issue_web_session, upsert_google_user};
 #[cfg(test)]
 use devices::{
-    issue_device_session, list_devices, refresh_device_tokens, revoke_web_device_session,
+    RefreshRequest, issue_device_session, list_devices, refresh_device_tokens,
+    revoke_web_device_session,
 };
 
 pub use config::{
@@ -91,308 +92,15 @@ pub struct NotaryApiState {
     billing: billing::BillingService,
 }
 
-#[derive(Deserialize, ToSchema)]
-struct OAuthCallback {
-    code: Option<String>,
-    state: Option<String>,
-    error: Option<String>,
-}
-
-#[derive(Deserialize, ToSchema)]
-struct OAuthLoginQuery {
-    return_to: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct GitHubToken {
-    access_token: String,
-}
-
-#[derive(Deserialize)]
-struct GitHubUser {
-    id: i64,
-    login: String,
-    avatar_url: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct GoogleToken {
-    access_token: String,
-}
-
-#[derive(Deserialize)]
-struct GoogleUser {
-    sub: String,
-    email: Option<String>,
-    email_verified: Option<bool>,
-    name: Option<String>,
-    picture: Option<String>,
-}
-
 #[derive(Serialize, ToSchema)]
 struct Health {
     status: &'static str,
 }
 
 #[derive(Serialize, ToSchema)]
-struct PublicUser {
-    id: String,
-    provider_display_name: String,
-    avatar_url: Option<String>,
-    auth_provider: BrowserAuthProvider,
-    display_name: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema)]
-#[serde(rename_all = "lowercase")]
-enum BrowserAuthProvider {
-    Github,
-    Google,
-}
-
-impl BrowserAuthProvider {
-    fn from_database(value: &str) -> ApiResult<Self> {
-        match value {
-            "github" => Ok(Self::Github),
-            "google" => Ok(Self::Google),
-            _ => Err(ApiError::internal(anyhow!(
-                "database contains an invalid browser authentication provider"
-            ))),
-        }
-    }
-}
-
-#[derive(Serialize, ToSchema)]
-struct AuthProvidersResponse {
-    github: bool,
-    google: bool,
-}
-
-#[derive(Serialize, ToSchema)]
-struct MeResponse {
-    account: PublicUser,
-    billing: AccountBillingResponse,
-    credits: credits::CreditSummary,
-    notary_stats: NotaryStats,
-    share_stats: ShareStats,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema)]
-struct AccountBillingResponse {
-    plan: credits::Plan,
-    billing_status: credits::BillingStatus,
-    purchase_mode: billing::BillingPurchaseMode,
-    subscriptions_configured: bool,
-    entitlements: credits::PlanEntitlements,
-}
-
-impl AccountBillingResponse {
-    fn new(
-        state: credits::AccountBillingState,
-        purchase_mode: billing::BillingPurchaseMode,
-        subscriptions_configured: bool,
-        admission: &NotaryAdmissionConfig,
-    ) -> Self {
-        Self {
-            plan: state.plan,
-            billing_status: state.billing_status,
-            purchase_mode,
-            subscriptions_configured,
-            entitlements: credits::plan_entitlements(admission, state.plan),
-        }
-    }
-}
-
-#[derive(Serialize, ToSchema)]
-struct ShareStats {
-    total: i64,
-    admitted: i64,
-    in_progress: i64,
-    stored_bytes: i64,
-}
-
-#[derive(Debug, Eq, PartialEq, Serialize, ToSchema)]
-struct NotaryStats {
-    /// Successfully completed capture operations.
-    captures: i64,
-    /// Successfully completed notarization operations.
-    notarizations: i64,
-}
-
-async fn account_notary_stats(database: &DatabasePool, account_id: &str) -> ApiResult<NotaryStats> {
-    let (captures, notarizations) = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT
-             COUNT(*) FILTER (WHERE operations.mode = 'capture')::BIGINT,
-             COUNT(*) FILTER (WHERE operations.mode = 'notarization')::BIGINT
-         FROM admitted_operations AS operations
-         WHERE operations.account_id = $1
-           AND operations.terminal_outcome = 'completed'",
-    )
-    .bind(account_id)
-    .fetch_one(database)
-    .await
-    .map_err(database_error)?;
-    Ok(NotaryStats {
-        captures,
-        notarizations,
-    })
-}
-
-#[derive(Serialize, ToSchema)]
-struct WebDeviceSession {
-    id: String,
-    device_name: String,
-    created_at: i64,
-    last_used_at: i64,
-    expires_at: i64,
-}
-
-#[derive(Deserialize, Serialize)]
-struct DeviceSessionPagePosition {
-    created_at: i64,
-    id: String,
-}
-
-#[derive(Deserialize, ToSchema)]
-struct CreateDeviceAuthorization {
-    device_name: String,
-}
-
-#[derive(Serialize, ToSchema)]
-struct DeviceAuthorizationStarted {
-    request_id: String,
-    user_code: String,
-    verification_uri_complete: String,
-    expires_in: i64,
-    interval: i64,
-    poll_secret: String,
-}
-
-#[derive(Deserialize, ToSchema)]
-struct ApprovalQuery {
-    approval_secret: String,
-}
-
-#[derive(Serialize, ToSchema)]
-struct ApprovalDetails {
-    user_code: String,
-    device_name: String,
-    expires_at: i64,
-}
-
-#[derive(Serialize, ToSchema)]
-struct DeviceTokens {
-    access_token: String,
-    refresh_token: String,
-    expires_in: i64,
-}
-
-#[derive(Deserialize, ToSchema)]
-struct RefreshRequest {
-    refresh_token: String,
-}
-
-#[derive(Serialize, ToSchema)]
-struct DeviceSessionResponse {
-    device_name: String,
-}
-
-#[derive(Serialize, ToSchema)]
-struct DeviceCredentialResponse {
-    kind: auth::CredentialKind,
-    id: String,
-    name: String,
-}
-
-#[derive(Serialize, ToSchema)]
-struct DeviceMeResponse {
-    account: PublicUser,
-    credential: DeviceCredentialResponse,
-    session: Option<DeviceSessionResponse>,
-    billing: AccountBillingResponse,
-    credits: credits::CreditSummary,
-}
-
-#[derive(Serialize, ToSchema)]
 struct ErrorResponse {
     error: &'static str,
     message: &'static str,
-}
-
-#[derive(Serialize, ToSchema)]
-struct RegistryResponse {
-    format: String,
-    generation: u64,
-    active_key_id: String,
-    notaries: Vec<RegistryRecordResponse>,
-}
-
-#[derive(Serialize, ToSchema)]
-struct RegistryRecordResponse {
-    name: String,
-    operator: String,
-    host: String,
-    port: u16,
-    transport: NotaryTransportResponse,
-    key_id: String,
-    public_key: String,
-    status: NotaryKeyStatusResponse,
-    valid_from_unix_ms: u64,
-    valid_until_unix_ms: Option<u64>,
-    notarize_until_unix_ms: Option<u64>,
-}
-
-#[derive(Serialize, ToSchema)]
-#[serde(rename_all = "lowercase")]
-enum NotaryTransportResponse {
-    Tcp,
-    Tls,
-}
-
-#[derive(Serialize, ToSchema)]
-#[serde(rename_all = "lowercase")]
-enum NotaryKeyStatusResponse {
-    Active,
-    Retiring,
-    Retired,
-    Revoked,
-}
-
-impl From<Registry> for RegistryResponse {
-    fn from(directory: Registry) -> Self {
-        Self {
-            format: directory.format,
-            generation: directory.generation,
-            active_key_id: directory.active_key_id,
-            notaries: directory.notaries.into_iter().map(Into::into).collect(),
-        }
-    }
-}
-
-impl From<RegistryRecord> for RegistryRecordResponse {
-    fn from(record: RegistryRecord) -> Self {
-        Self {
-            name: record.name,
-            operator: record.operator,
-            host: record.host,
-            port: record.port,
-            transport: match record.transport {
-                NotaryTransport::Tcp => NotaryTransportResponse::Tcp,
-                NotaryTransport::Tls => NotaryTransportResponse::Tls,
-            },
-            key_id: record.key_id,
-            public_key: record.public_key,
-            status: match record.status {
-                NotaryKeyStatus::Active => NotaryKeyStatusResponse::Active,
-                NotaryKeyStatus::Retiring => NotaryKeyStatusResponse::Retiring,
-                NotaryKeyStatus::Retired => NotaryKeyStatusResponse::Retired,
-                NotaryKeyStatus::Revoked => NotaryKeyStatusResponse::Revoked,
-            },
-            valid_from_unix_ms: record.valid_from_unix_ms,
-            valid_until_unix_ms: record.valid_until_unix_ms,
-            notarize_until_unix_ms: record.notarize_until_unix_ms,
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -1138,9 +846,14 @@ mod tests {
         };
         assert_eq!(parse(&["serve"]).unwrap(), NotaryApiCommand::Serve);
         assert_eq!(parse(&["migrate"]).unwrap(), NotaryApiCommand::Migrate);
+        assert_eq!(
+            parse(&["verification-worker"]).unwrap(),
+            NotaryApiCommand::VerificationWorker
+        );
         assert_eq!(parse(&["--help"]).unwrap(), NotaryApiCommand::Help);
         assert!(parse(&[]).is_err());
         assert!(parse(&["serve", "unexpected"]).is_err());
+        assert!(parse(&["--verification-worker"]).is_err());
         assert!(parse(&["verification-worker", "--help"]).is_err());
     }
 
@@ -1170,7 +883,7 @@ mod tests {
 
     #[test]
     fn hosted_registry_response_is_the_canonical_runtime_contract() {
-        let response = RegistryResponse::from(directory_key());
+        let response = registry::RegistryResponse::from(directory_key());
         let encoded = serde_json::to_vec(&response).unwrap();
         let registry = parse_registry(&encoded).unwrap();
 
@@ -1537,7 +1250,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
-    async fn new_device_session_is_usable_until_its_refresh_expiry() {
+    async fn device_refresh_rotation_records_replay_and_revokes_the_chain() {
         let database = fresh_database().await;
         insert_test_github_user(&database.pool, "user-1", 1, "octo").await;
 
@@ -1558,32 +1271,30 @@ mod tests {
         assert_eq!((created_at, last_used_at), (now, now));
         assert_eq!(expires_at, now + DEVICE_REFRESH_TOKEN_TTL_SECS);
 
-        let refreshed = refresh_device_tokens(
-            State(NotaryApiState {
-                database: database.pool.clone(),
-                _test_database: Some(database),
-                http: reqwest::Client::new(),
-                github_client_id: "client-id".to_owned(),
-                github_client_secret: "secret".to_owned(),
-                github_callback_url: Url::parse(
-                    "https://notary.exalto.ai/api/auth/github/callback",
-                )
+        let original_refresh_token = tokens.refresh_token;
+        let state = NotaryApiState {
+            database: database.pool.clone(),
+            _test_database: Some(database),
+            http: reqwest::Client::new(),
+            github_client_id: "client-id".to_owned(),
+            github_client_secret: "secret".to_owned(),
+            github_callback_url: Url::parse("https://notary.exalto.ai/api/auth/github/callback")
                 .expect("callback URL"),
-                google_client_id: "google-client-id".to_owned(),
-                google_client_secret: "google-secret".to_owned(),
-                google_callback_url: Url::parse(
-                    "https://notary.exalto.ai/api/auth/google/callback",
-                )
+            google_client_id: "google-client-id".to_owned(),
+            google_client_secret: "google-secret".to_owned(),
+            google_callback_url: Url::parse("https://notary.exalto.ai/api/auth/google/callback")
                 .expect("Google callback URL"),
-                public_origin: Url::parse("https://notary.exalto.ai").expect("app URL"),
-                secure_cookies: true,
-                registry: directory_key(),
-                traces: traces::owner::TraceService::disabled_for_test(),
-                admission: Arc::new(NotaryAdmissionConfig::for_test()),
-                billing: billing::BillingService::disabled_for_test(),
-            }),
+            public_origin: Url::parse("https://notary.exalto.ai").expect("app URL"),
+            secure_cookies: true,
+            registry: directory_key(),
+            traces: traces::owner::TraceService::disabled_for_test(),
+            admission: Arc::new(NotaryAdmissionConfig::for_test()),
+            billing: billing::BillingService::disabled_for_test(),
+        };
+        let refreshed = refresh_device_tokens(
+            State(state.clone()),
             Json(RefreshRequest {
-                refresh_token: tokens.refresh_token,
+                refresh_token: original_refresh_token.clone(),
             }),
         )
         .await;
@@ -1592,6 +1303,25 @@ mod tests {
             Err(_) => panic!("new session refreshes"),
         };
         assert!(!refreshed.0.access_token.is_empty());
+
+        let replay = refresh_device_tokens(
+            State(state.clone()),
+            Json(RefreshRequest {
+                refresh_token: original_refresh_token,
+            }),
+        )
+        .await;
+        let replay = match replay {
+            Ok(_) => panic!("a rotated refresh token must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(replay.status, StatusCode::UNAUTHORIZED);
+        let revoked_at: Option<i64> =
+            sqlx::query_scalar("SELECT revoked_at FROM devices WHERE device_name = 'Test Device'")
+                .fetch_one(&state.database)
+                .await
+                .expect("load replay-revoked Device");
+        assert!(revoked_at.is_some());
     }
 
     #[tokio::test]

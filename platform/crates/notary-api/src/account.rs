@@ -2,6 +2,89 @@
 
 use super::*;
 use crate::auth::authenticated_web_user;
+use crate::browser_auth::BrowserAuthProvider;
+
+#[derive(Serialize, ToSchema)]
+pub(super) struct PublicUser {
+    pub(super) id: String,
+    pub(super) provider_display_name: String,
+    pub(super) avatar_url: Option<String>,
+    pub(super) auth_provider: BrowserAuthProvider,
+    pub(super) display_name: String,
+}
+
+#[derive(Serialize, ToSchema)]
+pub(super) struct MeResponse {
+    pub(super) account: PublicUser,
+    billing: AccountBillingResponse,
+    credits: credits::CreditSummary,
+    notary_stats: NotaryStats,
+    share_stats: ShareStats,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema)]
+pub(super) struct AccountBillingResponse {
+    pub(super) plan: credits::Plan,
+    pub(super) billing_status: credits::BillingStatus,
+    pub(super) purchase_mode: billing::BillingPurchaseMode,
+    pub(super) subscriptions_configured: bool,
+    pub(super) entitlements: credits::PlanEntitlements,
+}
+
+impl AccountBillingResponse {
+    pub(super) fn new(
+        state: credits::AccountBillingState,
+        purchase_mode: billing::BillingPurchaseMode,
+        subscriptions_configured: bool,
+        admission: &NotaryAdmissionConfig,
+    ) -> Self {
+        Self {
+            plan: state.plan,
+            billing_status: state.billing_status,
+            purchase_mode,
+            subscriptions_configured,
+            entitlements: credits::plan_entitlements(admission, state.plan),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+struct ShareStats {
+    total: i64,
+    admitted: i64,
+    in_progress: i64,
+    stored_bytes: i64,
+}
+
+#[derive(Debug, Eq, PartialEq, Serialize, ToSchema)]
+pub(super) struct NotaryStats {
+    /// Successfully completed capture operations.
+    pub(super) captures: i64,
+    /// Successfully completed notarization operations.
+    pub(super) notarizations: i64,
+}
+
+pub(super) async fn account_notary_stats(
+    database: &DatabasePool,
+    account_id: &str,
+) -> ApiResult<NotaryStats> {
+    let (captures, notarizations) = sqlx::query_as::<_, (i64, i64)>(
+        "SELECT
+             COUNT(*) FILTER (WHERE operations.mode = 'capture')::BIGINT,
+             COUNT(*) FILTER (WHERE operations.mode = 'notarization')::BIGINT
+         FROM admitted_operations AS operations
+         WHERE operations.account_id = $1
+           AND operations.terminal_outcome = 'completed'",
+    )
+    .bind(account_id)
+    .fetch_one(database)
+    .await
+    .map_err(database_error)?;
+    Ok(NotaryStats {
+        captures,
+        notarizations,
+    })
+}
 
 pub(super) fn router() -> OpenApiRouter<NotaryApiState> {
     OpenApiRouter::new().routes(routes!(me, delete_account))

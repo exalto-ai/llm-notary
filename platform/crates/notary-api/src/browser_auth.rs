@@ -1,6 +1,70 @@
 //! Browser OAuth state, callbacks, provider identities, and sessions.
 
 use super::*;
+use serde::Deserialize;
+
+#[derive(Deserialize, ToSchema)]
+pub(super) struct OAuthCallback {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub(super) struct OAuthLoginQuery {
+    return_to: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct GitHubToken {
+    access_token: String,
+}
+
+#[derive(Deserialize)]
+pub(super) struct GitHubUser {
+    id: i64,
+    login: String,
+    avatar_url: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct GoogleToken {
+    access_token: String,
+}
+
+#[derive(Deserialize)]
+pub(super) struct GoogleUser {
+    pub(super) sub: String,
+    pub(super) email: Option<String>,
+    pub(super) email_verified: Option<bool>,
+    pub(super) name: Option<String>,
+    pub(super) picture: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum BrowserAuthProvider {
+    Github,
+    Google,
+}
+
+impl BrowserAuthProvider {
+    pub(super) fn from_database(value: &str) -> ApiResult<Self> {
+        match value {
+            "github" => Ok(Self::Github),
+            "google" => Ok(Self::Google),
+            _ => Err(ApiError::internal(anyhow!(
+                "database contains an invalid browser authentication provider"
+            ))),
+        }
+    }
+}
+
+#[derive(Serialize, ToSchema)]
+pub(super) struct AuthProvidersResponse {
+    github: bool,
+    google: bool,
+}
 
 pub(super) fn router() -> OpenApiRouter<NotaryApiState> {
     OpenApiRouter::new()
