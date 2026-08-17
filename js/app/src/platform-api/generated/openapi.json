@@ -2094,7 +2094,7 @@
         "tags": [
           "health"
         ],
-        "summary": "Get the versioned notary directory",
+        "summary": "Get the versioned Notary Registry",
         "operationId": "notary",
         "responses": {
           "200": {
@@ -2898,7 +2898,7 @@
         "tags": [
           "sharing"
         ],
-        "summary": "Change a share's publication access settings",
+        "summary": "Change a hosted Trace's sharing access settings",
         "operationId": "update_share_settings",
         "parameters": [
           {
@@ -4791,6 +4791,8 @@
       "RegistryRecordResponse": {
         "type": "object",
         "required": [
+          "name",
+          "operator",
           "host",
           "port",
           "transport",
@@ -4806,6 +4808,9 @@
           "key_id": {
             "type": "string"
           },
+          "name": {
+            "type": "string"
+          },
           "notarize_until_unix_ms": {
             "type": [
               "integer",
@@ -4813,6 +4818,9 @@
             ],
             "format": "int64",
             "minimum": 0
+          },
+          "operator": {
+            "type": "string"
           },
           "port": {
             "type": "integer",

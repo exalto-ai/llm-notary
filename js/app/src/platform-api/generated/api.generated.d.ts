@@ -524,7 +524,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get the versioned notary directory */
+        /** Get the versioned Notary Registry */
         get: operations["notary"];
         put?: never;
         post?: never;
@@ -684,7 +684,7 @@ export interface paths {
         delete?: never;
         options?: never;
         head?: never;
-        /** Change a share's publication access settings */
+        /** Change a hosted Trace's sharing access settings */
         patch: operations["update_share_settings"];
         trace?: never;
     };
@@ -1176,8 +1176,10 @@ export interface components {
         RegistryRecordResponse: {
             host: string;
             key_id: string;
+            name: string;
             /** Format: int64 */
             notarize_until_unix_ms?: number | null;
+            operator: string;
             /** Format: int32 */
             port: number;
             public_key: string;
