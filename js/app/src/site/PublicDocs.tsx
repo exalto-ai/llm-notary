@@ -531,7 +531,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       {
         heading: 'Script-friendly output',
         body: 'Poll the same Trace share singleton on the loopback administration API so the browser or agent never receives the vault-held hosted credential.',
-        code: '{"trace_id":"trc-…","share_id":"…","progress":"preparing","visibility":"unlisted"}',
+        code: '{"trace_id":"trc-…","progress":"shared","visibility":"unlisted","access_enabled":true,"password_protected":false,"expires_at_unix_ms":null,"failure_code":null,"share_url":"https://notary.exalto.ai/s/trc-…","package_url":"https://notary.exalto.ai/api/public/traces/trc-…/package.llmtrace","updated_at_unix_ms":1785294000000}',
       },
       {
         heading: 'The upload boundary',

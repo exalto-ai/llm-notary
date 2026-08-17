@@ -41,11 +41,10 @@ separate field rather than overloading the backward-pagination cursor.
 
 | Surface | Response or field | Classification | Rationale or migration |
 | --- | --- | --- | --- |
-| Local `GET /v1/captures` | capture list | Paginated | Uses `(created_at_unix_ms, capture_id)` with stable traversal and cursor-scope tests. |
-| Local `GET /v1/operations` | operation list | Paginated | Uses `(created_at_unix_ms, operation_id)` with the same bounded cursor contract. |
-| Local `GET /v1/events` | event list | Paginated | Uses `event_id` for back-pagination and exposes a separate live high-water cursor. |
+| Local `GET /v1/traces` | Trace list | Paginated | Uses `(created_at_unix_ms, trace_id)` with stable traversal and cursor-scope tests. |
+| Local `GET /v1/activity` | Activity list | Paginated | Uses `event_id` for back-pagination and exposes a separate live high-water cursor. |
 | Local `GET /v1/notaries` and status `notaries` | configured notaries | Statically bounded | The trusted directory is configuration, not user data. |
-| Local capture detail `artifacts` and `finalizations` | child records | Embedded bounded | A capture has a fixed artifact set and one durable finalization lineage. |
+| Local Trace detail `artifacts` and `notarization` | child records | Embedded bounded | A Trace has a fixed artifact set and one durable notarization lineage. |
 | Local operation `attempt_history` | child records | Embedded detail | Complete attempt history is returned only for one explicitly selected operation, never in list rows. |
 | Hosted `GET /api/public/shares` | public shares | Paginated | Uses authenticated provider time plus share ID; the landing page requests five rows. |
 | Hosted `GET /api/me/shares` | account shares | Paginated | Uses creation time plus share ID under the account predicate. |
