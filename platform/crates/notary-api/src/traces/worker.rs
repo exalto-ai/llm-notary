@@ -490,7 +490,7 @@ async fn admit_claim(
     if artifacts.verified.package_sha256 != admitted_package_sha256 {
         bail!("verified package hash changed before admission");
     }
-    let stored = store_committed_artifacts(state, &job.trace_id, &artifacts).await?;
+    let stored = store_committed_artifacts(state, &job.trace_id, claim, &artifacts).await?;
     let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
     let update = sqlx::query(
         "UPDATE traces
@@ -620,6 +620,7 @@ async fn load_existing_public_artifacts(
 async fn store_committed_artifacts(
     state: &NotaryApiState,
     trace_id: &str,
+    verification_claim: &str,
     artifacts: &VerifiedArtifacts,
 ) -> Result<StoredPublicArtifacts> {
     let content_sha256 = sha256_hex(&artifacts.verified.trace);
@@ -632,6 +633,7 @@ async fn store_committed_artifacts(
     let stored = StoredPublicArtifacts {
         content_object_key: state.traces.storage.committed_artifact_key(
             trace_id,
+            verification_claim,
             "content",
             &content_sha256,
         )?,
@@ -639,6 +641,7 @@ async fn store_committed_artifacts(
         content_sha256,
         package_object_key: state.traces.storage.committed_artifact_key(
             trace_id,
+            verification_claim,
             "package",
             &package_sha256,
         )?,
@@ -986,6 +989,59 @@ mod tests {
                 (stored.content_object_key, "content".to_owned(), 1),
                 (stored.package_object_key, "package".to_owned(), 1),
             ]
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn failed_cleanup_from_an_old_claim_cannot_delete_retried_artifacts() {
+        let database = crate::fresh_database().await;
+        let storage = MockTraceStorage::new();
+        let state = NotaryApiState {
+            database: database.pool.clone(),
+            _test_database: Some(database),
+            http: reqwest::Client::new(),
+            github_client_id: String::new(),
+            github_client_secret: String::new(),
+            github_callback_url: Url::parse("https://example.test/auth/github").unwrap(),
+            google_client_id: String::new(),
+            google_client_secret: String::new(),
+            google_callback_url: Url::parse("https://example.test/auth/google").unwrap(),
+            public_origin: Url::parse("https://example.test").unwrap(),
+            secure_cookies: true,
+            registry: crate::tests::test_registry(),
+            traces: TraceService::mock(storage.clone()),
+            admission: std::sync::Arc::new(crate::config::NotaryAdmissionConfig::for_test()),
+            billing: crate::billing::BillingService::disabled_for_test(),
+        };
+        let sha256 = "d".repeat(64);
+        let failed_key = state
+            .traces
+            .storage
+            .committed_artifact_key("trc-retry", "claim-failed", "package", &sha256)
+            .unwrap();
+        let retried_key = state
+            .traces
+            .storage
+            .committed_artifact_key("trc-retry", "claim-retried", "package", &sha256)
+            .unwrap();
+        storage.object_bytes(&failed_key, b"first attempt".to_vec());
+        storage.fail_delete(&failed_key);
+        enqueue_cleanup_direct(&state, "trc-retry", &failed_key, "package", 1)
+            .await
+            .unwrap();
+        assert!(!cleanup_object(&state, &failed_key).await.unwrap());
+
+        storage.object_bytes(&retried_key, b"successful retry".to_vec());
+        storage.delete_failures.lock().unwrap().remove(&failed_key);
+        crate::traces::owner::cleanup_storage_objects(&state)
+            .await
+            .unwrap();
+
+        assert!(!storage.objects.lock().unwrap().contains_key(&failed_key));
+        assert_eq!(
+            storage.bodies.lock().unwrap().get(&retried_key).cloned(),
+            Some(b"successful retry".to_vec())
         );
     }
 

@@ -902,6 +902,8 @@ mod tests {
     #[test]
     fn hosted_registry_response_uses_the_canonical_external_key_field() {
         let response = registry::RegistryResponse::from(test_registry());
+        let bytes = serde_json::to_vec(&response).unwrap();
+        let parsed = registry::parse_registry_document(&bytes).unwrap();
         let encoded = serde_json::to_value(response).unwrap();
         let record = encoded["notaries"][0].as_object().unwrap();
 
@@ -910,6 +912,7 @@ mod tests {
         assert_eq!(record["operator"], "Exalto");
         assert!(record.contains_key("verification_key"));
         assert!(!record.contains_key("public_key"));
+        assert_eq!(parsed, test_registry());
     }
 
     fn lazy_test_state() -> NotaryApiState {

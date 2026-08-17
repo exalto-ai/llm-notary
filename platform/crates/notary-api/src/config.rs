@@ -5,7 +5,7 @@ use ipnet::IpNet;
 use sqlx::postgres::PgConnectOptions;
 use url::{Host, Url};
 
-use notary_core::registry::{Registry, parse_registry};
+use notary_core::registry::Registry;
 
 pub(crate) const DEFAULT_DATABASE_MAX_CONNECTIONS: u32 = 5;
 const MAX_DATABASE_CONNECTIONS: u32 = 64;
@@ -453,7 +453,7 @@ impl RegistryConfig {
         let path = PathBuf::from(required_env("NOTARY_API_REGISTRY_FILE")?);
         let bytes = std::fs::read(&path)
             .with_context(|| format!("reading Registry file {}", path.display()))?;
-        let registry = parse_registry(&bytes)
+        let registry = crate::registry::parse_registry_document(&bytes)
             .with_context(|| format!("parsing Registry file {}", path.display()))?;
         Ok(Self { registry })
     }
@@ -830,6 +830,24 @@ mod tests {
             RegistryConfig::from_env().err().unwrap().to_string(),
             "NOTARY_API_REGISTRY_FILE must be set"
         );
+    }
+
+    #[test]
+    fn registry_configuration_accepts_the_published_external_document() {
+        let _lock = ENVIRONMENT.lock().unwrap();
+        let registry_path =
+            env::temp_dir().join(format!("notary-api-registry-{}", uuid::Uuid::new_v4()));
+        let document = crate::registry::RegistryResponse::from(crate::tests::test_registry());
+        std::fs::write(&registry_path, serde_json::to_vec(&document).unwrap()).unwrap();
+        let registry_path_string = registry_path.to_string_lossy().into_owned();
+        let _environment =
+            EnvironmentGuard::set(&[("NOTARY_API_REGISTRY_FILE", Some(&registry_path_string))]);
+
+        assert_eq!(
+            RegistryConfig::from_env().unwrap().registry,
+            crate::tests::test_registry()
+        );
+        std::fs::remove_file(registry_path).unwrap();
     }
 
     #[test]
