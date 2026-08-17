@@ -100,7 +100,8 @@ pub(crate) struct AccountActionLinks {
 
 #[derive(Clone, Debug, Deserialize, Serialize, ToSchema)]
 pub(crate) struct BillingState {
-    pub(crate) service_plan: String,
+    #[serde(alias = "service_plan")]
+    pub(crate) plan: String,
     pub(crate) billing_status: String,
     #[serde(default)]
     pub(crate) purchase_mode: Option<String>,
@@ -1323,9 +1324,9 @@ mod tests {
     fn whoami_accepts_separate_capture_and_notarization_balances() {
         let response: WhoamiResponse = serde_json::from_value(serde_json::json!({
             "user": { "provider_display_name": "fixture-user" },
-            "credential": { "kind": "cli_session", "name": "fixture device" },
+            "credential": { "kind": "device_session", "name": "fixture device" },
             "session": { "device_name": "fixture device" },
-            "billing": { "service_plan": "one_gb", "billing_status": "active" },
+            "billing": { "plan": "one_gb", "billing_status": "active" },
             "credits": {
                 "capture": {
                     "total_granted_bytes": 1024,
@@ -1347,7 +1348,7 @@ mod tests {
             }
         }))
         .unwrap();
-        assert_eq!(response.billing.unwrap().service_plan, "one_gb");
+        assert_eq!(response.billing.unwrap().plan, "one_gb");
         let credits = response.credits.unwrap();
         assert_eq!(credits.capture.total_remaining_bytes, 1024);
         assert_eq!(credits.notarization.total_remaining_bytes, 2048);

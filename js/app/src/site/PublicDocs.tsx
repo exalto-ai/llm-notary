@@ -53,15 +53,15 @@ const docPages: Record<DocPageKey, DocPage> = {
         steps: [
           {
             title: 'Capture',
-            body: 'Point an SDK or agent at the local proxy. Requests and streamed responses continue normally while each completed provider call becomes an encrypted local bundle.',
+            body: 'Point an SDK or agent at the local proxy. Requests and streamed responses continue normally while each completed provider call becomes an encrypted local checkpoint.',
           },
           {
             title: 'Choose',
-            body: 'Bundles wait on your disk. Nothing is shared automatically, and interactive model use does not wait for the expensive proof step.',
+            body: 'Checkpoints wait on your disk. Nothing is shared automatically, and interactive model use does not wait for the expensive proof step.',
           },
           {
-            title: 'Finalize',
-            body: 'Turn a selected bundle into authenticated TLS evidence and a deterministic OTel GenAI trace. This can happen long after the original model call.',
+            title: 'Notarize',
+            body: 'Turn a selected checkpoint into authenticated TLS evidence and a deterministic OTel GenAI trace. This can happen long after the original model call.',
           },
           {
             title: 'Verify or share',
@@ -74,8 +74,8 @@ const docPages: Record<DocPageKey, DocPage> = {
         cards: [
           {
             meta: 'Private',
-            title: 'Encrypted bundle',
-            body: 'A sensitive local checkpoint that can be finalized later. It is not yet evidence another person can verify.',
+            title: 'Encrypted checkpoint',
+            body: 'A sensitive local checkpoint that can be notarized later. It is not yet evidence another person can verify.',
           },
           {
             meta: 'Portable',
@@ -92,9 +92,9 @@ const docPages: Record<DocPageKey, DocPage> = {
       {
         heading: 'What is automatic',
         items: [
-          'The first service start creates or opens the local encrypted-bundle vault. On a desktop OS, its random key is stored in the system credential service.',
+          'The first service start creates or opens the local encrypted-checkpoint vault. On a desktop OS, its random key is stored in the system credential service.',
           'The service discovers the production notary endpoint and public key from the LLM Notary directory, then pins that trust information locally.',
-          'Finalization and verification use the pinned notary identity. Normal hosted use does not require copying a public key into an API request.',
+          'Notarization and verification use the pinned notary identity. Normal hosted use does not require copying a public key into an API request.',
           'Provider credentials remain in your existing SDK or agent environment; LLM Notary does not require a project .env file.',
         ],
       },
@@ -118,7 +118,7 @@ const docPages: Record<DocPageKey, DocPage> = {
           {
             meta: 'User / client',
             title: 'Holds the plaintext',
-            body: 'The local proxy sees the request and response. A user cannot change authenticated bytes or invent a provider response and still produce valid finalized evidence.',
+            body: 'The local proxy sees the request and response. A user cannot change authenticated bytes or invent a provider response and still produce valid notarized evidence.',
           },
           {
             meta: 'Notary',
@@ -158,7 +158,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'How trust is established',
-        body: 'The service retrieves the versioned production notary directory over authenticated HTTPS and caches its key history. The JSON directory is not separately signed. Finalized packages identify the notary key that signed their evidence; verification accepts it only if that key was trusted at the package timestamp. A self-hosted deployment pairs `notary.endpoint` with `notary.public_key` in `config.toml`, but that is not part of the normal hosted workflow.',
+        body: 'The service retrieves the versioned production Notary Registry over authenticated HTTPS and caches its key history. The JSON directory is not separately signed. Notarized packages identify the notary key that signed their evidence; verification accepts it only if that key was trusted at the package timestamp. A self-hosted deployment pairs `notary.endpoint` with `notary.public_key` in `config.toml`, but that is not part of the normal hosted workflow.',
       },
     ],
   },
@@ -213,33 +213,33 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Install the agent skill',
-        body: 'The CLI bundles portable instructions for finding captures, finalizing with approval, verifying traces, diagnosing operations, and protecting private evidence. Install them for Codex, Claude Code, or both. The command does not contact or start the daemon. Use `--skills-dir /path/to/agent/skills` for another Agent Skills compatible client; re-run with `--force` only after inspecting a different existing skill. Claude Code uses `$CLAUDE_CONFIG_DIR/skills` when that environment variable is nonempty and `~/.claude/skills` otherwise. It detects changes inside an existing personal skills directory; restart it if that directory did not exist when the current session started.',
+        body: 'The CLI bundles portable instructions for finding Traces, notarizing with approval, verifying packages, diagnosing operations, and protecting private evidence. Install them for Codex, Claude Code, or both. The command does not contact or start the daemon. Use `--skills-dir /path/to/agent/skills` for another Agent Skills compatible client; re-run with `--force` only after inspecting a different existing skill. Claude Code uses `$CLAUDE_CONFIG_DIR/skills` when that environment variable is nonempty and `~/.claude/skills` otherwise. It detects changes inside an existing personal skills directory; restart it if that directory did not exist when the current session started.',
         code: 'llm-notary skill install --target codex\nllm-notary skill install --target claude\nllm-notary skill install --target all',
       },
       { heading: 'Start the service', code: 'notaryd' },
       {
         heading: 'Open the local dashboard',
-        body: 'Visit `http://127.0.0.1:8788` and use the tabs for captures, finalizations, trace verification, sharing, activity, and settings. The default loopback configuration opens directly. If `admin.auth` is enabled, sign in with its configured username and password; the dashboard exchanges them for an `HttpOnly` session and does not store the password.',
+        body: 'Visit `http://127.0.0.1:8788` and use the tabs for captures, notarizations, trace verification, sharing, activity, and settings. The default loopback configuration opens directly. If `admin.auth` is enabled, sign in with its configured username and password; the dashboard exchanges them for an `HttpOnly` session and does not store the password.',
       },
       {
         heading: 'Configuration file',
-        body: 'The first service start creates an editable `config.toml` at the standard user location: `~/.config/llm-notary/config.toml` on Linux, `%APPDATA%\\llm-notary\\config.toml` on Windows, and `~/Library/Application Support/llm-notary/config.toml` on macOS. It is written once and never replaced. Start with an explicit file when needed:',
+        body: 'The first service start creates an editable `config.toml` at the standard Notary user location: `~/.config/notary/config.toml` on Linux, `%APPDATA%\\notary\\config.toml` on Windows, and `~/Library/Application Support/notary/config.toml` on macOS. It is written once and never replaced. Start with an explicit file when needed:',
         code: 'notaryd --config /path/to/config.toml',
       },
       {
         heading: 'Use the command client',
-        body: "`llm-notary` is a short-lived client for the daemon's versioned loopback API. It checks daemon health and never opens the catalog or vault directly. Add `--json` for automation. Raw capture-list JSON includes stored prompt and output previews, so add `--metadata-only` before sending structured capture results to an agent transcript.",
-        code: 'llm-notary status\nllm-notary captures list --provider openai\nllm-notary --json captures list --provider openai --metadata-only\nllm-notary operations list --state failed --json\nllm-notary open',
+        body: "`llm-notary` is a short-lived client for the daemon's versioned loopback API. It checks daemon health and never opens the metadata store or vault directly. Add `--json` for automation. Raw capture-list JSON includes stored prompt and output previews, so add `--metadata-only` before sending structured capture results to an agent transcript.",
+        code: 'llm-notary status\nllm-notary captures list --provider openai\nllm-notary --json captures list --provider openai --metadata-only\nllm-notary operation op-example --json\nllm-notary open',
       },
       {
         heading: 'Connect a hosted account when needed',
-        body: 'Local capture, finalization, and verification do not require an account. Connect one to use account allowances, share a finalized trace, or manage the same device from hosted Settings. `llm-notary login` opens a browser approval flow and stores the rotating device credential only in the daemon credential vault. `whoami` shows the connected identity, plan, and balances without revealing the credential; `logout` disconnects that device without deleting local evidence.',
+        body: 'Local capture, notarization, and verification do not require an account. Connect one to use account allowances, share a notarized trace, or manage the same device from hosted Settings. `llm-notary login` opens a browser approval flow and stores the rotating device credential only in the daemon credential vault. `whoami` shows the connected identity, plan, and balances without revealing the credential; `logout` disconnects that device without deleting local evidence.',
         code: 'llm-notary login\nllm-notary whoami\nllm-notary logout',
       },
       {
         heading: 'Use an API key for unattended hosts',
-        body: 'Create a deployment-specific, least-privilege key in hosted Account settings and inject it as `LLM_NOTARY_API_KEY` or through the private `LLM_NOTARY_API_KEY_FILE`. The complete key is shown once and never belongs in `config.toml`, logs, or artifacts. One daemon can use an injected API key or a browser-approved device session, never both; revoke API keys from hosted Settings.',
-        code: 'export LLM_NOTARY_API_KEY_FILE=/run/secrets/llm-notary-api-key\nnotaryd',
+        body: 'Create a deployment-specific, least-privilege key in hosted Account settings and inject it as `NOTARYD_PLATFORM_API_KEY` or through the private `NOTARYD_PLATFORM_API_KEY_FILE`. The complete key is shown once and never belongs in `config.toml`, logs, or artifacts. One daemon can use an injected API key or a browser-approved device session, never both; revoke API keys from hosted Settings.',
+        code: 'export NOTARYD_PLATFORM_API_KEY_FILE=/run/secrets/notary-platform-api-key\nnotaryd',
       },
       {
         heading: 'What it controls',
@@ -260,8 +260,8 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Optional passphrase mode',
-        body: 'If you prefer a passphrase instead of the operating-system credential service, point `LLM_NOTARY_VAULT_PASSPHRASE_FILE` at a private UTF-8 file before the first service start. An empty passphrase is accepted for low-friction local testing, but it provides no meaningful protection if someone obtains both your captures and vault configuration.',
-        code: 'export LLM_NOTARY_VAULT_PASSPHRASE_FILE=/private/local/path/vault-passphrase\nnotaryd',
+        body: 'If you prefer a passphrase instead of the operating-system credential service, point `NOTARYD_VAULT_PASSPHRASE_FILE` at a private UTF-8 file before the first service start. An empty passphrase is accepted for low-friction local testing, but it provides no meaningful protection if someone obtains both your captures and vault configuration.',
+        code: 'export NOTARYD_VAULT_PASSPHRASE_FILE=/private/local/path/vault-passphrase\nnotaryd',
       },
       {
         heading: 'What happens online',
@@ -303,7 +303,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'OpenRouter + Chat Completions',
-        body: 'The model slug remains trace metadata. The resulting evidence authenticates OpenRouter—not the vendor named in that slug. The Authorization, HTTP-Referer, and X-Title header values are hidden in a finalized package.',
+        body: 'The model slug remains trace metadata. The resulting evidence authenticates OpenRouter—not the vendor named in that slug. The Authorization, HTTP-Referer, and X-Title header values are hidden in a notarized package.',
         code: 'curl http://127.0.0.1:8787/openrouter/api/v1/chat/completions \\\n  -H "Authorization: Bearer $OPENROUTER_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -H "HTTP-Referer: https://example.test" \\\n  -H "X-Title: LLM Notary example" \\\n  -d \'{"model":"YOUR_MODEL","stream":true,"messages":[{"role":"user","content":"Reply with exactly: llm-notary"}]}\'',
       },
       {
@@ -325,7 +325,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Codex + ChatGPT plan',
-        body: 'This flow is live-tested with Codex CLI. First run codex login status and confirm that Codex says it is logged in using ChatGPT. Do not set env_key in this provider. Codex owns the login and refreshes it; LLM Notary only forwards the request headers and hides every header value from the finalized package. The proof authenticates chatgpt.com and the disclosed bodies, not the account owner, plan, or billing. Codex desktop is not yet end-to-end tested or supported, and cloud work cannot reach the loopback route.',
+        body: 'This flow is live-tested with Codex CLI. First run codex login status and confirm that Codex says it is logged in using ChatGPT. Do not set env_key in this provider. Codex owns the login and refreshes it; LLM Notary only forwards the request headers and hides every header value from the notarized package. The proof authenticates chatgpt.com and the disclosed bodies, not the account owner, plan, or billing. Codex desktop is not yet end-to-end tested or supported, and cloud work cannot reach the loopback route.',
         code: 'Add this to ~/.codex/config.toml:\n\nmodel_provider = "llm-notary-chatgpt"\n\n[model_providers.llm-notary-chatgpt]\nname = "LLM Notary — ChatGPT plan"\nbase_url = "http://127.0.0.1:8787/codex"\nrequires_openai_auth = true\nwire_api = "responses"\nsupports_websockets = false',
       },
       {
@@ -339,7 +339,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Claude Code + claude.ai plan',
-        body: 'Run claude auth status first; Claude Code itself must report a saved first-party login. A login in the native Claude desktop app is separate. Remove apiKeyHelper and do not set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN. Claude Code owns login and refresh; LLM Notary forwards its authorization and Messages protocol unchanged and hides every header value from the finalized package. The proof authenticates api.anthropic.com and the disclosed bodies, not the account owner, subscription, or billing. Native Claude Desktop, web, Slack, remote, and cloud sessions do not run through this local route.',
+        body: 'Run claude auth status first; Claude Code itself must report a saved first-party login. A login in the native Claude desktop app is separate. Remove apiKeyHelper and do not set ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN. Claude Code owns login and refresh; LLM Notary forwards its authorization and Messages protocol unchanged and hides every header value from the notarized package. The proof authenticates api.anthropic.com and the disclosed bodies, not the account owner, subscription, or billing. Native Claude Desktop, web, Slack, remote, and cloud sessions do not run through this local route.',
         code: "env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \\\n  ANTHROPIC_BASE_URL=http://127.0.0.1:8787/anthropic \\\n  claude -p 'Reply with exactly: llm-notary'",
       },
       {
@@ -347,26 +347,26 @@ const docPages: Record<DocPageKey, DocPage> = {
         body: 'Set the provider base URL to http://127.0.0.1:8787/deepseek and retain DEEPSEEK_API_KEY in the OpenCode environment.',
       },
       {
-        heading: 'Search local captures',
-        body: 'Each completed provider interaction keeps its vault-encrypted bundle in the selected private artifact store and gains a row in the selected metadata store. Use the dashboard, or fetch the live OpenAPI document and query the local admin API:',
-        code: 'curl "http://127.0.0.1:8788/v1/captures?query=pricing&provider=openai"',
+        heading: 'Search local Traces',
+        body: 'Each completed provider interaction keeps its vault-encrypted checkpoint in the selected private artifact store and gains a row in the selected metadata store. Use the dashboard, or fetch the live OpenAPI document and query the local admin API:',
+        code: 'curl "http://127.0.0.1:8788/v1/traces?query=pricing&provider=openai"',
       },
       {
         heading: 'Search punctuation safely',
         body: 'Capture search treats punctuation as text boundaries instead of raw full-text-search syntax. Hyphenated terms, emphasis marks, multiple words, and double-quoted phrases return matches or an empty list through the normal JSON response.',
       },
       {
-        heading: 'Filter operations and activity',
-        body: 'The service applies operation state and event severity/type filters before returning bounded results. Coding agents should discover state, kind, capture, event type, severity, and time filters from the live OpenAPI document instead of reimplementing them client-side.',
-        code: 'GET /v1/operations?state=failed&kind=finalization&limit=20\nGET /v1/events?severity=error&event_type=finalization_failed&limit=20',
+        heading: 'Filter Traces and Activity',
+        body: 'The service applies Trace status and Activity severity/type filters before returning bounded results. Coding agents should discover state, status, provider, event type, severity, and time filters from the live OpenAPI document instead of reimplementing them client-side.',
+        code: 'GET /v1/traces?status=notarization_failed&limit=20\nGET /v1/activity?severity=error&event_type=notarization_failed&limit=20',
       },
       {
-        heading: 'What the catalog records',
-        body: 'A capture records its provider, request and response model when available, HTTP status, request and response sizes, duration, finalization state, and the retained artifact paths. By default, it indexes the first 1,000 characters of the request prompt and output as plain local text. It does not store header values, cookies, or credentials. Change the catalog path, disable full-text search, or set either preview limit to 0 in config.toml.',
+        heading: 'What Trace metadata records',
+        body: 'A Trace records its provider, request and response model when available, HTTP status, request and response sizes, duration, state, operational status, and retained artifact facts. By default, it indexes the first 1,000 characters of the request prompt and output as plain local text. It does not store header values, cookies, or credentials. Change the metadata path, disable full-text search, or set either preview limit to 0 in config.toml.',
       },
       {
         heading: 'Stopping and retrying',
-        body: 'Once the end-of-stream bundle is sealed, stopping the proxy does not invalidate it. Finalization can happen later. If finalization is interrupted, the unchanged bundle can be retried, although the interrupted proof computation starts over.',
+        body: 'Once the end-of-stream checkpoint is sealed, stopping the proxy does not invalidate it. Notarization can happen later. Retry a failed or interrupted attempt through the owning Trace; the unchanged checkpoint is retained, although interrupted proof computation starts over.',
       },
     ],
   },
@@ -404,26 +404,26 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Evidence is unchanged',
-        body: 'Admission and credit bookkeeping do not change TLSNotary evidence, trace-package verification, local bundle retention, or the trust claim. Self-hosted notaries do not need the hosted credit ledger unless their operator deliberately adopts it.',
+        body: 'Admission and credit bookkeeping do not change TLSNotary evidence, trace-package verification, local checkpoint retention, or the trust claim. Self-hosted notaries do not need the hosted credit ledger unless their operator deliberately adopts it.',
       },
     ],
   },
   'trace-packages': {
-    title: 'Finalize and verify.',
+    title: 'Notarize and verify',
     lead: 'Turn one encrypted capture into a portable evidence package, inspect its canonical OpenTelemetry trace, and verify the entire package offline.',
     blocks: [
       {
-        heading: 'Finalize one interaction',
-        body: 'Select a captured interaction in the dashboard or admin API. The service atomically writes storage.finalized_dir/<capture-id>.llmtrace by default, records that package in the catalog, and retains the encrypted source capture.',
-        code: 'curl -X POST http://127.0.0.1:8788/v1/captures/cap-example/finalizations',
+        heading: 'Notarize one interaction',
+        body: 'Select a Captured Trace in the dashboard or admin API. The service atomically commits `trace-packages/<trace-id>.llmtrace`, records that exact package in Trace metadata, and retains the encrypted source checkpoint.',
+        code: 'curl -X POST http://127.0.0.1:8788/v1/traces/trc-example/notarizations',
       },
       {
         heading: 'Notary discovery is automatic',
-        body: 'For hosted use, the service refreshes the production notary directory, selects a worker compatible with the capture, and verifies the resulting evidence against its locally pinned key history. For local or self-hosted use, set `notary.endpoint` and `notary.public_key` together in `config.toml`.',
+        body: 'For hosted use, the service refreshes the production Notary Registry, selects a worker compatible with the capture, and verifies the resulting evidence against its locally pinned key history. For local or self-hosted use, set `notary.endpoint` and `notary.public_key` together in `config.toml`.',
       },
       {
         heading: 'Fresh notary connection',
-        body: 'The original provider stream and proxy no longer need to be running. A new notary worker holding the same notary identity and key can complete finalization without a stored server-side checkpoint.',
+        body: 'The original provider stream and proxy no longer need to be running. A new notary session using the compatible signing identity can complete notarization from the encrypted local checkpoint.',
       },
       {
         heading: 'Expect this step to take time',
@@ -431,11 +431,11 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Interruption behavior',
-        body: 'The pending bundle is not consumed. If finalization fails or the service stops, retry the failed or interrupted durable operation through `POST /v1/operations/{operation_id}/retry`; proof work from the interrupted attempt is not resumed.',
+        body: 'The pending checkpoint is not consumed. If notarization fails or the service stops, retry through `POST /v1/traces/{trace_id}/notarizations`; proof work from the interrupted attempt is not resumed.',
       },
       {
         heading: 'Package layout',
-        code: '<capture-id>.llmtrace (ZIP)\n├── archive-manifest.json\n├── evidence.tlsn\n├── manifest.json\n├── request.disclosed.http\n├── response.disclosed.http\n└── trace.otlp.json',
+        code: '<trace-id>.llmtrace (ZIP)\n├── archive-manifest.json\n├── evidence.tlsn\n├── manifest.json\n├── request.disclosed.http\n├── response.disclosed.http\n└── trace.otlp.json',
       },
       {
         heading: 'Artifact responsibilities',
@@ -473,7 +473,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Package versus shared view',
-        body: 'The finalized `.llmtrace` package carries all cryptographic evidence and is independently verifiable. A shared session presents a readable view derived from that package and retains the exact admitted bytes for download and independent verification.',
+        body: 'The notarized `.llmtrace` package carries all cryptographic evidence and is independently verifiable. A shared session presents a readable view derived from that package and retains the exact admitted bytes for download and independent verification.',
       },
       {
         heading: 'Verify a portable package',
@@ -486,7 +486,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Download or verify locally',
-        code: 'GET /v1/captures/{capture_id}/package\nPOST /v1/captures/{capture_id}/trace:verify\nllm-notary traces verify ./capture.llmtrace',
+        code: 'GET /v1/traces/{trace_id}/package.llmtrace\nPOST /v1/traces/{trace_id}/verify\nllm-notary traces verify ./trace.llmtrace',
       },
       {
         heading: 'What verification checks',
@@ -500,7 +500,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Offline trust',
-        body: 'Verification does not contact the provider or a live notary. It uses the notary key history already cached by the service, or notary.public_key for a self-hosted endpoint. A hosted service must successfully refresh its directory before it can trust previously unseen evidence.',
+        body: 'Verification does not contact the provider or a live notary. It uses the notary key history already cached by the service, or notary.public_key for a self-hosted endpoint. A hosted service must successfully refresh its Registry before it can trust previously unseen evidence.',
       },
       {
         heading: 'Tool-use boundary',
@@ -510,7 +510,7 @@ const docPages: Record<DocPageKey, DocPage> = {
   },
   share: {
     title: 'Share a verified session',
-    lead: 'Sharing is a deliberate upload of one already-finalized package. The local service verifies it and shows the full disclosed conversation before it contacts LLM Notary.',
+    lead: 'Sharing is a deliberate upload of one already-notarized package. The local service verifies it and shows the full disclosed conversation before it contacts LLM Notary.',
     blocks: [
       {
         heading: 'Connect the local service',
@@ -522,16 +522,16 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Manage access after admission',
-        body: 'From Account → Traces, you can unpublish a trace, require a password, or set an expiry of up to 365 days. Protected Listed traces remain discoverable, but their conversation previews are withheld.',
+        body: 'From Account → Traces, you can stop sharing a trace, require a password, or set an expiry of up to 365 days. Protected Listed traces remain discoverable, but their conversation previews are withheld.',
       },
       {
-        heading: 'Submit one finalized package',
-        code: 'POST /v1/captures/{capture_id}/shares\n{"visibility":"unlisted"}',
+        heading: 'Share one Notarized Trace',
+        code: 'PUT /v1/traces/{trace_id}/share\n{"visibility":"unlisted"}',
       },
       {
         heading: 'Script-friendly output',
-        body: 'The status URL stays on the loopback administration API so the browser or agent never receives the vault-held hosted credential.',
-        code: '{"capture_id":"cap-…","share_id":"…","state":"queued","visibility":"unlisted","status_url":"/v1/shares/…"}',
+        body: 'Poll the same Trace share singleton on the loopback administration API so the browser or agent never receives the vault-held hosted credential.',
+        code: '{"trace_id":"trc-…","progress":"shared","visibility":"unlisted","access_enabled":true,"password_protected":false,"expires_at_unix_ms":null,"failure_code":null,"share_url":"https://notary.exalto.ai/s/trc-…","package_url":"https://notary.exalto.ai/api/public/traces/trc-…/package.llmtrace","updated_at_unix_ms":1785294000000}',
       },
       {
         heading: 'The upload boundary',
@@ -603,7 +603,7 @@ const docSubheadings: Partial<Record<DocPageKey, ReadonlySet<string>>> = {
     'Claude Code + Anthropic API key',
     'Claude Code + claude.ai plan',
     'OpenCode + DeepSeek',
-    'What the catalog records',
+    'What the metadata store records',
     'Stopping and retrying',
   ]),
   'trace-packages': new Set([
@@ -627,7 +627,7 @@ const docSubheadings: Partial<Record<DocPageKey, ReadonlySet<string>>> = {
   ]),
   share: new Set([
     'Choose visibility',
-    'Submit one finalized package',
+    'Submit one notarized package',
     'Script-friendly output',
     'Admission checks',
     'Current consent boundary',
@@ -658,13 +658,13 @@ const docOrder = docNavigation.flatMap((group) => group.pages.map(([key]) => key
 const docAliases: Record<string, DocPageKey> = {
   install: 'getting-started',
   proxy: 'getting-started',
-  bundles: 'getting-started',
+  checkpoints: 'getting-started',
   captures: 'getting-started',
   providers: 'getting-started',
   credits: 'hosted-credits',
   plans: 'hosted-credits',
   harnesses: 'getting-started',
-  finalize: 'trace-packages',
+  notarize: 'trace-packages',
   artifacts: 'trace-packages',
   verify: 'trace-packages',
   publish: 'share',

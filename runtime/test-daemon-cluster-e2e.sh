@@ -230,15 +230,16 @@ if [[ $profile == full ]]; then
   [[ $((provider_requests_after - provider_requests_before)) == 1 ]] || { echo "test load balancer replayed one provider request" >&2; exit 1; }
   trace_id=$("${compose[@]}" exec -T daemon-a awk 'tolower($1)=="x-notary-trace-id:" {gsub("\r","",$2); print $2}' /tmp/server-capture.headers)
   [[ $trace_id == trc-* ]] || { echo "server trace ID missing" >&2; exit 1; }
-  capture_b=$(admin_json daemon-b "/v1/traces/$trace_id")
-  printf '%s' "$capture_b" | "${compose[@]}" exec -T daemon-b jq -e --arg id "$trace_id" '.capture.trace_id==$id and .capture.capture_status=="captured" and any(.artifacts[]; .kind=="capture_checkpoint")' >/dev/null
+  trace_b=$(admin_json daemon-b "/v1/traces/$trace_id")
+  printf '%s' "$trace_b" | "${compose[@]}" exec -T daemon-b jq -e --arg id "$trace_id" \
+    '.trace_id==$id and .state=="captured" and .status==null and any(.artifacts[]; .kind=="capture_checkpoint")' >/dev/null
 
   echo "queueing notarization through the test load balancer"
   queued=$(load_balancer_admin_json "/v1/traces/$trace_id/notarizations" --request POST)
   operation_id=$(printf '%s' "$queued" | "${compose[@]}" exec -T daemon-b jq -er '.operation.operation_id')
   echo "checking the cross-replica event snapshot"
-  event_page_before=$(admin_json daemon-a "/v1/events?limit=1")
-  event_high_water=$(printf '%s' "$event_page_before" | "${compose[@]}" exec -T daemon-a jq -er '.high_water_cursor')
+  activity_page_before=$(admin_json daemon-a "/v1/activity?limit=1")
+  activity_high_water=$(printf '%s' "$activity_page_before" | "${compose[@]}" exec -T daemon-a jq -er '.high_water_cursor')
   echo "waiting for cross-replica notarization"
   for _ in $(seq 1 120); do
     operation=$(admin_json daemon-a "/v1/operations/$operation_id")
@@ -248,19 +249,19 @@ if [[ $profile == full ]]; then
     sleep 1
   done
   [[ $state == succeeded ]] || { echo "server notarization timed out" >&2; exit 1; }
-  load_balancer_admin_json "/v1/traces/$trace_id/package" --output /tmp/server.llmtrace
-  package_verification=$(admin_json daemon-a /v1/traces:verify \
+  load_balancer_admin_json "/v1/traces/$trace_id/package.llmtrace" --output /tmp/server.llmtrace
+  package_verification=$(admin_json daemon-a /v1/verify \
     --request POST \
     --header 'content-type: application/vnd.exalto.notary.trace-package+zip' \
     --header 'x-notary-trusted-notary-key: 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798' \
     --data-binary @/tmp/server.llmtrace)
   printf '%s' "$package_verification" | "${compose[@]}" exec -T daemon-a jq -e --arg id "$trace_id" \
-    '.trace_id==$id and .verified==true and .trust_source=="explicit_key"' >/dev/null
+    '.trace_id==$id and .outcome=="passed" and .trust_source=="explicit_key"' >/dev/null
   owner_rows=$("${compose[@]}" exec -T postgres psql -U daemon_e2e -d daemon_e2e -Atc "select count(*) from notaryd.operations where operation_id='$operation_id' and owner_instance_id in ('daemon-a','daemon-b') and claim_fence is not null")
   [[ $owner_rows == 1 ]] || { echo "notarization did not retain one fenced owner" >&2; exit 1; }
 
-  cross_replica_events=$(admin_json daemon-b "/v1/events?limit=200&after=$event_high_water")
-  printf '%s' "$cross_replica_events" | "${compose[@]}" exec -T daemon-b jq -e --arg operation "$operation_id" '
+  cross_replica_activity=$(admin_json daemon-b "/v1/activity?limit=200&after=$activity_high_water")
+  printf '%s' "$cross_replica_activity" | "${compose[@]}" exec -T daemon-b jq -e --arg operation "$operation_id" '
     ([.items[] | select(.operation_id==$operation)] | length) >= 1 and
     ([.items[].event_id] | unique | length) == ([.items[].event_id] | length)
   ' >/dev/null
@@ -313,7 +314,9 @@ if [[ $profile == full ]]; then
   [[ $stale_state == interrupted ]] || { echo "expired notarization was not interrupted" >&2; exit 1; }
   interrupted_events=$(psql_value "select count(*) from notaryd.events where operation_id='$stale_operation_id' and event_type='notarization_interrupted'")
   [[ $interrupted_events == 1 ]] || { echo "expired notarization emitted $interrupted_events interruption events" >&2; exit 1; }
-  admin_json daemon-b "/v1/operations/$stale_operation_id/retry" --request POST >/dev/null
+  stale_retry=$(admin_json daemon-b "/v1/traces/$stale_trace_id/notarizations" --request POST)
+  printf '%s' "$stale_retry" | "${compose[@]}" exec -T daemon-b jq -e --arg operation "$stale_operation_id" \
+    '.deduplicated==false and .operation.operation_id==$operation and .operation.state=="queued"' >/dev/null
   for _ in $(seq 1 120); do
     stale_operation=$(admin_json daemon-b "/v1/operations/$stale_operation_id")
     stale_state=$(printf '%s' "$stale_operation" | "${compose[@]}" exec -T daemon-b jq -r '.state')
@@ -432,8 +435,9 @@ if [[ $profile == full ]]; then
   wait_replica_slot_released daemon-b
   start_existing_service daemon-b
   wait_healthy daemon-b
-  rolling_capture=$(admin_json daemon-b "/v1/traces/$rolling_trace_id")
-  printf '%s' "$rolling_capture" | "${compose[@]}" exec -T daemon-b jq -e '.capture.streaming==true and .capture.capture_status=="captured"' >/dev/null
+  rolling_trace=$(admin_json daemon-b "/v1/traces/$rolling_trace_id")
+  printf '%s' "$rolling_trace" | "${compose[@]}" exec -T daemon-b jq -e \
+    '.streaming==true and .state=="captured" and .status==null' >/dev/null
   queued_peer_state=""
   for _ in $(seq 1 120); do
     queued_peer_operation=$(admin_json daemon-b "/v1/operations/$queued_during_drain_operation")

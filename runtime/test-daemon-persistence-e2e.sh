@@ -119,28 +119,28 @@ daemon_cli() {
 
 wait_for_trace_ready() {
   local trace_id=$1
-  local capture=""
+  local trace=""
   local state=""
   for _ in $(seq 1 40); do
-    capture=$(daemon_cli captures show "$trace_id")
-    if printf '%s' "$capture" | "${compose[@]}" exec -T "$daemon_service" jq -e '
-      .capture.capture_status == "captured" and
+    trace=$(daemon_cli captures show "$trace_id")
+    if printf '%s' "$trace" | "${compose[@]}" exec -T "$daemon_service" jq -e '
+      .state == "captured" and
       any(.artifacts[]; .kind == "capture_checkpoint")
     ' >/dev/null; then
-      printf '%s\n' "$capture"
+      printf '%s\n' "$trace"
       return 0
     fi
-    state=$(printf '%s' "$capture" | "${compose[@]}" exec -T "$daemon_service" jq -r \
-      '.capture.capture_status')
-    if [[ $state == failed ]]; then
-      echo "capture $trace_id failed before it became ready to notarize" >&2
-      printf '%s\n' "$capture" >&2
+    state=$(printf '%s' "$trace" | "${compose[@]}" exec -T "$daemon_service" jq -r \
+      '.status')
+    if [[ $state == capture_failed ]]; then
+      echo "Trace $trace_id failed during capture before it became ready to notarize" >&2
+      printf '%s\n' "$trace" >&2
       return 1
     fi
     sleep 0.25
   done
-  echo "capture $trace_id did not become ready to notarize" >&2
-  printf '%s\n' "$capture" >&2
+  echo "Trace $trace_id did not become ready to notarize" >&2
+  printf '%s\n' "$trace" >&2
   return 1
 }
 
@@ -504,8 +504,14 @@ assert_json "$fresh_status" '
   .metadata_status == "ready" and
   .artifact_backend == $artifact and
   .artifact_status == "ready" and
-  .counts.total_traces == 0 and
-  .counts.active_operations == 0
+  .counts == {
+    "captured": 0,
+    "notarizing": 0,
+    "notarized": 0,
+    "needs_attention": 0,
+    "capturing": 0,
+    "capture_failed": 0
+  }
 ' --arg metadata "$metadata_engine" --arg artifact "$artifact_engine"
 
 if [[ $artifact_engine == s3 ]]; then
@@ -679,28 +685,35 @@ wait_for_daemon
 recovered_status=$(daemon_cli status)
 if [[ $artifact_engine == s3 ]]; then
   assert_json "$recovered_status" '
-    .counts.total_traces == 3 and
+    .counts.captured == 2 and
     .counts.capturing == 0 and
-    .counts.failed == 1 and
-    .counts.ready_to_notarize == 2
+    .counts.capture_failed == 1 and
+    .counts.needs_attention == 1 and
+    .counts.notarizing == 0 and
+    .counts.notarized == 0
   '
-  missing_capture=$(daemon_cli captures show trc-e2e-missing)
-  assert_json "$missing_capture" '
-    .capture.capture_status == "failed" and
-    .capture.failure_code == "interrupted" and
+  missing_trace=$(daemon_cli captures show trc-e2e-missing)
+  assert_json "$missing_trace" '
+    .state == null and
+    .status == "capture_failed" and
+    .failure_code == "interrupted" and
     (.artifacts | length) == 0
   '
 else
   assert_json "$recovered_status" '
-    .counts.total_traces == 2 and
+    .counts.captured == 2 and
     .counts.capturing == 0 and
-    .counts.ready_to_notarize == 2
+    .counts.capture_failed == 0 and
+    .counts.needs_attention == 0 and
+    .counts.notarizing == 0 and
+    .counts.notarized == 0
   '
 fi
 
-recovered_capture=$(daemon_cli captures show trc-e2e-recovered)
-assert_json "$recovered_capture" '
-  .capture.capture_status == "captured" and
+recovered_trace=$(daemon_cli captures show trc-e2e-recovered)
+assert_json "$recovered_trace" '
+  .state == "captured" and
+  .status == null and
   .artifacts[0].kind == "capture_checkpoint" and
   .artifacts[0].size_bytes == 29 and
   .artifacts[0].sha256 == "43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d"
@@ -762,14 +775,15 @@ if [[ $profile == full ]]; then
 
   full_capture=$(wait_for_trace_ready "$full_trace_id")
   assert_json "$full_capture" '
-    .capture.trace_id == $trace_id and
-    .capture.provider == "openai" and
-    .capture.operation == "/v1/chat/completions" and
-    .capture.requested_model == "fixture-model" and
-    .capture.response_model == "fixture-model" and
-    .capture.http_status == 200 and
-    .capture.capture_status == "captured" and
-    .capture.notarization_status == "not_requested" and
+    .trace_id == $trace_id and
+    .provider == "openai" and
+    .operation == "/v1/chat/completions" and
+    .requested_model == "fixture-model" and
+    .response_model == "fixture-model" and
+    .http_status == 200 and
+    .state == "captured" and
+    .status == null and
+    .notarization == null and
     any(.artifacts[]; .kind == "capture_checkpoint")
   ' --arg trace_id "$full_trace_id"
 
@@ -815,20 +829,20 @@ if [[ $profile == full ]]; then
 
   daemon_verification=$(daemon_cli traces verify "$full_trace_id")
   assert_json "$daemon_verification" '
-    .trace_id == $trace_id and .verified == true
+    .trace_id == $trace_id and .outcome == "passed"
   ' --arg trace_id "$full_trace_id"
 
   "${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error \
       --output /tmp/daemon-e2e.llmtrace \
-      "http://127.0.0.1:8788/v1/traces/$full_trace_id/package"
+      "http://127.0.0.1:8788/v1/traces/$full_trace_id/package.llmtrace"
   full_package_sha=$("${compose[@]}" exec -T "$daemon_service" \
     sha256sum /tmp/daemon-e2e.llmtrace | awk '{print $1}')
   file_verification=$(daemon_cli traces verify /tmp/daemon-e2e.llmtrace \
     --trusted-notary-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)
   assert_json "$file_verification" '
     .trace_id == $trace_id and
-    .verified == true and
+    .outcome == "passed" and
     .trust_source == "explicit_key"
   ' --arg trace_id "$full_trace_id"
 
@@ -851,8 +865,7 @@ if [[ $profile == full ]]; then
   full_share=$(daemon_cli share "$full_trace_id")
   assert_json "$full_share" '
     .trace_id == $trace_id and
-    .share_id == "share-e2e" and
-    .state == "queued" and
+    .progress == "preparing" and
     .visibility == "unlisted"
   ' --arg trace_id "$full_trace_id"
   uploaded_share=$("${compose[@]}" exec -T "$daemon_service" \
@@ -873,7 +886,7 @@ if [[ $profile == full ]]; then
     done <<<"$object_paths"
   fi
 
-  echo "running and finalizing a streaming Proxy-TLS capture"
+  echo "running and notarizing a streaming Proxy-TLS capture"
   stream_response=$("${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error \
       --dump-header /tmp/daemon-e2e-stream.headers \
@@ -893,11 +906,12 @@ if [[ $profile == full ]]; then
   fi
   stream_capture=$(wait_for_trace_ready "$stream_trace_id")
   assert_json "$stream_capture" '
-    .capture.trace_id == $trace_id and
-    .capture.streaming == true and
-    .capture.capture_status == "captured" and
-    .capture.prompt_preview == "user: offline streaming E2E prompt" and
-    .capture.output_preview == "offline streaming response" and
+    .trace_id == $trace_id and
+    .streaming == true and
+    .state == "captured" and
+    .status == null and
+    .prompt_preview == "user: offline streaming E2E prompt" and
+    .output_preview == "offline streaming response" and
     any(.artifacts[]; .kind == "capture_checkpoint")
   ' --arg trace_id "$stream_trace_id"
   stream_notarization=$(daemon_cli notarization "$stream_trace_id" --wait)
@@ -914,24 +928,23 @@ if [[ $profile == full ]]; then
   ' --arg trace_id "$stream_trace_id"
   stream_verification=$(daemon_cli traces verify "$stream_trace_id")
   assert_json "$stream_verification" '
-    .trace_id == $trace_id and .verified == true
+    .trace_id == $trace_id and .outcome == "passed"
   ' --arg trace_id "$stream_trace_id"
   "${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error \
       --output /tmp/daemon-e2e-stream.llmtrace \
-      "http://127.0.0.1:8788/v1/traces/$stream_trace_id/package"
+      "http://127.0.0.1:8788/v1/traces/$stream_trace_id/package.llmtrace"
   stream_file_verification=$(daemon_cli traces verify /tmp/daemon-e2e-stream.llmtrace \
     --trusted-notary-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)
   assert_json "$stream_file_verification" '
-    .trace_id == $trace_id and .verified == true
+    .trace_id == $trace_id and .outcome == "passed"
   ' --arg trace_id "$stream_trace_id"
   stream_package_sha=$("${compose[@]}" exec -T "$daemon_service" \
     sha256sum /tmp/daemon-e2e-stream.llmtrace | awk '{print $1}')
   stream_share=$(daemon_cli share "$stream_trace_id")
   assert_json "$stream_share" '
     .trace_id == $trace_id and
-    .share_id == "share-e2e" and
-    .state == "queued"
+    .progress == "preparing"
   ' --arg trace_id "$stream_trace_id"
   uploaded_stream_share=$("${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error http://127.0.0.1:9797/debug/upload)
@@ -986,14 +999,19 @@ if [[ $profile == full ]]; then
   "${compose[@]}" up --detach --no-deps "$daemon_service"
   wait_for_daemon
 
-  interrupted=$(daemon_cli operations show "$crash_operation_id")
+  interrupted=$(daemon_cli operation "$crash_operation_id")
   assert_json "$interrupted" '
     .state == "interrupted" and .attempt == 1 and .retryable == true
   '
-  daemon_cli operations retry "$crash_operation_id" >/dev/null
+  retry_request=$(daemon_cli notarization "$crash_trace_id")
+  assert_json "$retry_request" '
+    .deduplicated == false and
+    .operation.operation_id == $operation_id and
+    .operation.state == "queued"
+  ' --arg operation_id "$crash_operation_id"
   crash_final_state=""
   for _ in $(seq 1 90); do
-    crash_final_state=$(daemon_cli operations show "$crash_operation_id")
+    crash_final_state=$(daemon_cli operation "$crash_operation_id")
     state=$(json_value "$crash_final_state" '.state')
     if [[ $state == succeeded ]]; then
       break
@@ -1038,36 +1056,46 @@ restart_status=$(daemon_cli status)
 if [[ $profile == full ]]; then
   if [[ $artifact_engine == s3 ]]; then
     assert_json "$restart_status" '
-      .counts.total_traces == 6 and
+      .counts.captured == 2 and
       .counts.notarized == 3 and
-      .counts.failed == 2 and
-      .counts.active_operations == 0
+      .counts.needs_attention == 2 and
+      .counts.capture_failed == 1 and
+      .counts.notarizing == 0 and
+      .counts.capturing == 0
     '
   else
     assert_json "$restart_status" '
-      .counts.total_traces == 5 and
+      .counts.captured == 2 and
       .counts.notarized == 3 and
-      .counts.failed == 1 and
-      .counts.active_operations == 0
+      .counts.needs_attention == 1 and
+      .counts.capture_failed == 0 and
+      .counts.notarizing == 0 and
+      .counts.capturing == 0
     '
   fi
 else
   if [[ $artifact_engine == s3 ]]; then
     assert_json "$restart_status" '
-      .counts.total_traces == 3 and
-      .counts.failed == 2 and
-      .counts.active_operations == 0
+      .counts.captured == 2 and
+      .counts.notarized == 0 and
+      .counts.needs_attention == 2 and
+      .counts.capture_failed == 1 and
+      .counts.notarizing == 0 and
+      .counts.capturing == 0
     '
   else
     assert_json "$restart_status" '
-      .counts.total_traces == 2 and
-      .counts.failed == 1 and
-      .counts.active_operations == 0
+      .counts.captured == 2 and
+      .counts.notarized == 0 and
+      .counts.needs_attention == 1 and
+      .counts.capture_failed == 0 and
+      .counts.notarizing == 0 and
+      .counts.capturing == 0
     '
   fi
 fi
 
-persisted_operation=$(daemon_cli operations show "$operation_id")
+persisted_operation=$(daemon_cli operation "$operation_id")
 assert_json "$persisted_operation" '
   .operation_id == $operation_id and
   .trace_id == "trc-e2e-notarize" and
@@ -1076,15 +1104,16 @@ assert_json "$persisted_operation" '
   .failure_code == $failure_code
 ' --arg operation_id "$operation_id" --arg failure_code "$expected_fixture_failure"
 
-persisted_capture=$(daemon_cli captures show trc-e2e-notarize)
-assert_json "$persisted_capture" '
-  .capture.capture_status == "captured" and
-  .capture.notarization_status == "failed" and
+persisted_trace=$(daemon_cli captures show trc-e2e-notarize)
+assert_json "$persisted_trace" '
+  .state == "captured" and
+  .status == "notarization_failed" and
+  .notarization.state == "failed" and
   .artifacts[0].sha256 == "43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d"
 '
 
 if [[ $profile == full ]]; then
-  persisted_full_operation=$(daemon_cli operations show "$full_operation_id")
+  persisted_full_operation=$(daemon_cli operation "$full_operation_id")
   assert_json "$persisted_full_operation" '
     .operation_id == $operation_id and
     .trace_id == $trace_id and
@@ -1093,16 +1122,17 @@ if [[ $profile == full ]]; then
     .progress.phase == "complete"
   ' --arg operation_id "$full_operation_id" --arg trace_id "$full_trace_id"
 
-  persisted_full_capture=$(daemon_cli captures show "$full_trace_id")
-  assert_json "$persisted_full_capture" '
-    .capture.capture_status == "captured" and
-    .capture.notarization_status == "succeeded" and
+  persisted_full_trace=$(daemon_cli captures show "$full_trace_id")
+  assert_json "$persisted_full_trace" '
+    .state == "notarized" and
+    .status == null and
+    .notarization.state == "succeeded" and
     any(.artifacts[]; .kind == "trace_package")
   '
   "${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error \
       --output /tmp/daemon-e2e-after-restart.llmtrace \
-      "http://127.0.0.1:8788/v1/traces/$full_trace_id/package"
+      "http://127.0.0.1:8788/v1/traces/$full_trace_id/package.llmtrace"
   restart_package_sha=$("${compose[@]}" exec -T "$daemon_service" \
     sha256sum /tmp/daemon-e2e-after-restart.llmtrace | awk '{print $1}')
   if [[ $restart_package_sha != "$full_package_sha" ]]; then
@@ -1112,19 +1142,21 @@ if [[ $profile == full ]]; then
   restart_verification=$(daemon_cli traces verify /tmp/daemon-e2e-after-restart.llmtrace \
     --trusted-notary-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)
   assert_json "$restart_verification" '
-    .trace_id == $trace_id and .verified == true
+    .trace_id == $trace_id and .outcome == "passed"
   ' --arg trace_id "$full_trace_id"
 
-  persisted_stream_operation=$(daemon_cli operations show "$stream_operation_id")
+  persisted_stream_operation=$(daemon_cli operation "$stream_operation_id")
   assert_json "$persisted_stream_operation" '
     .operation_id == $operation_id and
     .trace_id == $trace_id and
     .state == "succeeded"
   ' --arg operation_id "$stream_operation_id" --arg trace_id "$stream_trace_id"
-  persisted_stream_capture=$(daemon_cli captures show "$stream_trace_id")
-  assert_json "$persisted_stream_capture" '
-    .capture.streaming == true and
-    .capture.notarization_status == "succeeded" and
+  persisted_stream_trace=$(daemon_cli captures show "$stream_trace_id")
+  assert_json "$persisted_stream_trace" '
+    .streaming == true and
+    .state == "notarized" and
+    .status == null and
+    .notarization.state == "succeeded" and
     any(.artifacts[]; .kind == "trace_package")
   '
 fi

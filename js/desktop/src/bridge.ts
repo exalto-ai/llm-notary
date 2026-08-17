@@ -1,12 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
 
-export type CaptureCounts = {
-  total_traces: number;
-  capturing: number;
-  ready_to_notarize: number;
+export type TraceCounts = {
+  captured: number;
+  notarizing: number;
   notarized: number;
-  failed: number;
-  active_operations: number;
+  needs_attention: number;
+  capturing: number;
+  capture_failed: number;
 };
 
 export type DesktopState = {
@@ -24,7 +24,7 @@ export type DesktopState = {
   admin_listener: string;
   notary: string | null;
   capture_enabled: boolean;
-  counts: CaptureCounts;
+  counts: TraceCounts;
   message: string | null;
 };
 
@@ -58,7 +58,7 @@ export type AccountConnection = {
   device_name?: string | null;
   credential_kind?: string | null;
   credential_name?: string | null;
-  billing?: { service_plan: string; billing_status: string; purchase_mode?: string | null } | null;
+  billing?: { plan: string; billing_status: string; purchase_mode?: string | null } | null;
   credits?: { capture: AccountCreditBalance; notarization: AccountCreditBalance; reset_at: number } | null;
   links?: { account: string; usage: string; plans: string; settings: string } | null;
 };
@@ -72,13 +72,13 @@ export type AccountConnectionStarted = {
   state: string;
 };
 
-const emptyCounts: CaptureCounts = {
-  total_traces: 0,
-  capturing: 0,
-  ready_to_notarize: 0,
+const emptyCounts: TraceCounts = {
+  captured: 0,
+  notarizing: 0,
   notarized: 0,
-  failed: 0,
-  active_operations: 0,
+  needs_attention: 0,
+  capturing: 0,
+  capture_failed: 0,
 };
 
 export const isTauri = () => '__TAURI_INTERNALS__' in window;
@@ -137,8 +137,8 @@ function forcedState(): DesktopState | null {
       capture_enabled: screen === 'capture-on',
       version: '0.1.0',
       daemon_build_id: 'dev',
-      notary: 'directory',
-      counts: { ...emptyCounts, total_traces: 14, ready_to_notarize: 3, notarized: 8 },
+      notary: 'registry',
+      counts: { ...emptyCounts, captured: 3, notarizing: 1, notarized: 8, needs_attention: 2 },
     });
   }
   return null;

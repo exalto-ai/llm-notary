@@ -263,6 +263,24 @@ function proofPercent(operation: Operation | OperationSummary) {
   return Math.min(100, Math.floor((proof.bytes_completed / proof.bytes_total) * 100));
 }
 
+function traceDisplayStatus(trace: TraceSummary) {
+  return trace.status ?? trace.state ?? 'unknown';
+}
+
+function captureStatus(trace: TraceSummary) {
+  if (trace.status === 'capturing') return 'capturing';
+  if (trace.status === 'capture_failed') return 'failed';
+  return 'captured';
+}
+
+function notarizationStatus(trace: TraceSummary) {
+  if (trace.state === 'notarized') return 'succeeded';
+  if (trace.status === 'notarizing') return 'running';
+  if (trace.status === 'notarization_failed') return 'failed';
+  if (trace.status === 'notarization_interrupted') return 'interrupted';
+  return 'not_requested';
+}
+
 function EmptyState({
   icon: Icon = Archive,
   title,
@@ -512,10 +530,7 @@ function AccountConnectionCard({
           </div>
           {api.billing && (
             <dl className="account-connection-facts">
-              <Fact
-                label="Plan"
-                value={`${api.billing.service_plan} · ${api.billing.billing_status}`}
-              />
+              <Fact label="Plan" value={`${api.billing.plan} · ${api.billing.billing_status}`} />
               {api.billing.purchase_mode && (
                 <Fact label="Billing" value={api.billing.purchase_mode} />
               )}
@@ -1016,9 +1031,9 @@ function Sidebar({
 }) {
   const count = (view: DashboardView) =>
     view === 'captures'
-      ? status.counts.ready_to_notarize
+      ? status.counts.captured
       : view === 'notarizations'
-        ? status.counts.active_operations
+        ? status.counts.notarizing
         : undefined;
   return (
     <div className="sidebar-inner">
@@ -1060,9 +1075,9 @@ function TopNav({
 }) {
   const count = (view: DashboardView) =>
     view === 'captures'
-      ? status.counts.ready_to_notarize
+      ? status.counts.captured
       : view === 'notarizations'
-        ? status.counts.active_operations
+        ? status.counts.notarizing
         : undefined;
   return (
     <header className="local-topbar">
@@ -1207,10 +1222,10 @@ function OverviewView({
   const events = useQuery({ queryKey: ['events'], queryFn: () => api.events() });
   const stats = [
     ['Capturing', status.counts.capturing, 'active'],
-    ['Ready to notarize', status.counts.ready_to_notarize, 'muted'],
-    ['Notarizing', status.counts.active_operations, 'active'],
+    ['Captured', status.counts.captured, 'muted'],
+    ['Notarizing', status.counts.notarizing, 'active'],
     ['Notarized', status.counts.notarized, 'ready'],
-    ['Failed', status.counts.failed, 'danger'],
+    ['Needs attention', status.counts.needs_attention + status.counts.capture_failed, 'danger'],
   ] as const;
   return (
     <div className="view-page overview-page">
@@ -1245,8 +1260,8 @@ function OverviewView({
         <ServiceFact
           icon={Activity}
           label="Work queue"
-          value={status.counts.active_operations ? 'Active' : 'Idle'}
-          detail={`${status.counts.active_operations} operation${status.counts.active_operations === 1 ? '' : 's'}`}
+          value={status.counts.notarizing ? 'Active' : 'Idle'}
+          detail={`${status.counts.notarizing} operation${status.counts.notarizing === 1 ? '' : 's'}`}
         />
       </SimpleGrid>
       <section className="overview-work">
@@ -1270,25 +1285,23 @@ function OverviewView({
         <Paper className="next-action">
           <Text className="eyebrow">Next action</Text>
           <Title order={2}>
-            {status.counts.ready_to_notarize
+            {status.counts.captured
               ? 'Notarize captured evidence'
               : status.capture_enabled
                 ? 'Send a provider request'
                 : 'Capture requests are off'}
           </Title>
           <Text>
-            {status.counts.ready_to_notarize
-              ? `${status.counts.ready_to_notarize} trace${status.counts.ready_to_notarize === 1 ? ' is' : 's are'} ready to notarize.`
+            {status.counts.captured
+              ? `${status.counts.captured} trace${status.counts.captured === 1 ? ' is' : 's are'} captured.`
               : status.capture_enabled
                 ? `Point an SDK at the ${isCluster ? 'cluster' : 'local'} provider proxy to create a private capture.`
                 : 'Requests still use the provider proxy, but go directly to the provider and create no evidence.'}
           </Text>
           <Button
-            onClick={() =>
-              navigate({ view: status.counts.ready_to_notarize ? 'captures' : 'settings' })
-            }
+            onClick={() => navigate({ view: status.counts.captured ? 'captures' : 'settings' })}
           >
-            {status.counts.ready_to_notarize
+            {status.counts.captured
               ? 'Review captures'
               : status.capture_enabled
                 ? 'View proxy routes'
@@ -1356,8 +1369,8 @@ function CapturesView({
   const [query, setQuery] = useState('');
   const [model, setModel] = useState('');
   const [provider, setProvider] = useState<string | null>(null);
-  const [captureState, setCaptureState] = useState<string | null>(null);
-  const [notarization, setNotarization] = useState<string | null>(null);
+  const [traceState, setTraceState] = useState<string | null>(null);
+  const [operationalStatus, setOperationalStatus] = useState<string | null>(null);
   const [streaming, setStreaming] = useState<string | null>(null);
   const [time, setTime] = useState<string | null>(null);
   const mobile = useMediaQuery('(max-width: 820px)');
@@ -1368,8 +1381,8 @@ function CapturesView({
       query,
       model,
       provider,
-      captureState,
-      notarization,
+      traceState,
+      operationalStatus,
       streaming,
       createdAfter,
     ],
@@ -1378,8 +1391,8 @@ function CapturesView({
         query,
         model,
         provider: provider ?? undefined,
-        capture_status: captureState ?? undefined,
-        notarization_status: notarization ?? undefined,
+        state: traceState ?? undefined,
+        status: operationalStatus ?? undefined,
         streaming: streaming ? streaming === 'streaming' : undefined,
         created_after_unix_ms: createdAfter,
         limit: 50,
@@ -1398,8 +1411,7 @@ function CapturesView({
     [captures.data],
   );
   const activeId = selectedId ?? visible[0]?.trace_id;
-  const active =
-    visible.find((capture) => capture.trace_id === activeId) ?? selectedDetail.data?.capture;
+  const active = visible.find((capture) => capture.trace_id === activeId) ?? selectedDetail.data;
   const showDetail = Boolean(mobile && selectedId);
   return (
     <div className="view-page capture-page">
@@ -1429,18 +1441,24 @@ function CapturesView({
             onChange={setProvider}
           />
           <AxisSelect
-            ariaLabel="Capture state filter"
-            placeholder="All capture states"
-            data={['capturing', 'captured', 'failed']}
-            value={captureState}
-            onChange={setCaptureState}
+            ariaLabel="Trace state filter"
+            placeholder="All trace states"
+            data={['captured', 'notarized']}
+            value={traceState}
+            onChange={setTraceState}
           />
           <AxisSelect
-            ariaLabel="Notarization filter"
-            placeholder="All notarization states"
-            data={['not_requested', 'queued', 'running', 'succeeded', 'failed', 'interrupted']}
-            value={notarization}
-            onChange={setNotarization}
+            ariaLabel="Operational status filter"
+            placeholder="All operational statuses"
+            data={[
+              'capturing',
+              'capture_failed',
+              'notarizing',
+              'notarization_failed',
+              'notarization_interrupted',
+            ]}
+            value={operationalStatus}
+            onChange={setOperationalStatus}
           />
           <AxisSelect
             ariaLabel="Streaming filter"
@@ -1530,13 +1548,7 @@ function CaptureRow({
   return (
     <UnstyledButton className={`capture-row ${active ? 'is-active' : ''}`} onClick={onClick}>
       <span className="capture-row-state">
-        <StatusLabel
-          state={
-            capture.notarization_status === 'not_requested'
-              ? capture.capture_status
-              : capture.notarization_status
-          }
-        />
+        <StatusLabel state={traceDisplayStatus(capture)} />
       </span>
       <span className="capture-row-copy">
         <b>{capture.requested_model ?? 'Model not reported'}</b>
@@ -1567,11 +1579,6 @@ function CaptureInspector({
     queryKey: ['capture', capture.trace_id],
     queryFn: () => api.trace(capture.trace_id),
   });
-  const failedOperation = detail.data?.notarizations.find(
-    (operation) =>
-      operation.trace_id === capture.trace_id &&
-      ['failed', 'interrupted'].includes(operation.state),
-  );
   const notarize = useMutation({
     mutationFn: () => api.startNotarization(capture.trace_id),
     onSuccess: (result) => {
@@ -1582,27 +1589,13 @@ function CaptureInspector({
           : 'Proof generation will run in the background.',
       });
       queryClient.invalidateQueries({ queryKey: ['captures'] });
+      queryClient.invalidateQueries({ queryKey: ['capture', capture.trace_id] });
       queryClient.invalidateQueries({ queryKey: ['operations'] });
       queryClient.invalidateQueries({ queryKey: ['status'] });
       queryClient.invalidateQueries({ queryKey: ['events'] });
-      navigate({ view: 'notarizations', id: result.operation.operation_id });
+      navigate({ view: 'captures', id: capture.trace_id });
     },
     onError: (error) => mutationError('Could not notarize', error),
-  });
-  const retry = useMutation({
-    mutationFn: () => api.retry(requiredValue(failedOperation, 'failed operation').operation_id),
-    onSuccess: (operation) => {
-      notifications.show({
-        title: 'Retry queued',
-        message: 'The existing durable operation will make another attempt.',
-      });
-      queryClient.invalidateQueries({ queryKey: ['captures'] });
-      queryClient.invalidateQueries({ queryKey: ['operations'] });
-      queryClient.invalidateQueries({ queryKey: ['status'] });
-      queryClient.invalidateQueries({ queryKey: ['events'] });
-      navigate({ view: 'notarizations', id: operation.operation_id });
-    },
-    onError: (error) => mutationError('Could not retry notarization', error),
   });
   if (detail.isLoading) return <LoadingState />;
   if (detail.error) return <QueryError error={detail.error} title="Trace detail is unavailable" />;
@@ -1610,16 +1603,12 @@ function CaptureInspector({
   if (!value)
     return <ErrorState title="Trace detail is unavailable" onRetry={() => detail.refetch()} />;
   const incompatibleProviderResponse =
-    capture.capture_status === 'captured' &&
+    captureStatus(capture) === 'captured' &&
     capture.notarization_ineligibility_code === 'unsupported_provider_http_status';
   const canNotarize =
-    capture.capture_status === 'captured' &&
-    capture.notarization_status === 'not_requested' &&
+    captureStatus(capture) === 'captured' &&
+    notarizationStatus(capture) === 'not_requested' &&
     capture.notarization_eligible;
-  const canRetry =
-    capture.capture_status === 'captured' &&
-    capture.notarization_eligible &&
-    Boolean(failedOperation?.retryable);
   return (
     <article className="inspector capture-inspector">
       {mobile && (
@@ -1641,15 +1630,6 @@ function CaptureInspector({
               onClick={() => notarize.mutate()}
             >
               Notarize
-            </Button>
-          )}
-          {canRetry && (
-            <Button
-              loading={retry.isPending}
-              leftSection={<RefreshCw size={15} />}
-              onClick={() => retry.mutate()}
-            >
-              Retry notarization
             </Button>
           )}
         </Group>
@@ -1696,68 +1676,36 @@ function CaptureInspector({
         <ArtifactList detail={value} />
       </InspectorSection>
       <InspectorSection title="Notarization history">
-        <NotarizationHistory operations={value.notarizations} navigate={navigate} />
+        {value.notarization ? (
+          <OperationInspector api={api} operation={value.notarization} fixture={false} />
+        ) : (
+          <Text className="empty-copy">No notarization has been requested for this capture.</Text>
+        )}
       </InspectorSection>
     </article>
   );
 }
 
-function NotarizationHistory({
-  operations,
-  navigate,
-}: {
-  operations: Operation[];
-  navigate: (route: Route) => void;
-}) {
-  if (!operations.length)
-    return <Text className="empty-copy">No notarization has been requested for this capture.</Text>;
-  return (
-    <ol className="history-list">
-      {operations.map((operation) => (
-        <li key={operation.operation_id}>
-          <div>
-            <Group gap="xs">
-              <b>Attempted notarization</b>
-              <StatusLabel state={operation.state} />
-            </Group>
-            <Text>
-              {operation.attempt} proof attempt{operation.attempt === 1 ? '' : 's'} · queued{' '}
-              {formatDate(operation.created_at_unix_ms)}
-            </Text>
-          </div>
-          <Button
-            size="xs"
-            variant="subtle"
-            onClick={() => navigate({ view: 'notarizations', id: operation.operation_id })}
-          >
-            Inspect
-          </Button>
-        </li>
-      ))}
-    </ol>
-  );
-}
-
 function Lifecycle({ capture }: { capture: TraceSummary }) {
   const steps = [
-    { label: 'Captured', state: capture.capture_status === 'capturing' ? 'active' : 'ready' },
+    { label: 'Captured', state: captureStatus(capture) === 'capturing' ? 'active' : 'ready' },
     {
       label: 'Capture checkpoint encrypted',
       state:
-        capture.capture_status === 'captured'
+        captureStatus(capture) === 'captured'
           ? 'ready'
-          : capture.capture_status === 'failed'
+          : captureStatus(capture) === 'failed'
             ? 'danger'
             : 'muted',
     },
     {
       label: 'Notarized',
       state:
-        capture.notarization_status === 'succeeded'
+        notarizationStatus(capture) === 'succeeded'
           ? 'ready'
-          : ['running', 'queued'].includes(capture.notarization_status)
+          : ['running', 'queued'].includes(notarizationStatus(capture))
             ? 'active'
-            : capture.notarization_status === 'failed'
+            : notarizationStatus(capture) === 'failed'
               ? 'danger'
               : 'muted',
     },
@@ -1825,7 +1773,6 @@ function NotarizationsView({
     queryFn: ({ pageParam }) => api.operations({ limit: 50, cursor: pageParam }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor ?? undefined,
-    refetchInterval: 3_000,
   });
   const activeId = selectedId ?? operations.data?.pages[0]?.items[0]?.operation_id;
   const selectedOperation = useQuery({
@@ -1845,7 +1792,7 @@ function NotarizationsView({
         <QueryError error={operations.error} title="Notarizations are unavailable" />
       ) : selectedOperation.error ? (
         <QueryError error={selectedOperation.error} title="Notarization detail is unavailable" />
-      ) : !items.length && !active ? (
+      ) : !items.length && !active && !operations.hasNextPage ? (
         <EmptyState
           icon={ListChecks}
           title="No notarizations yet"
@@ -1972,15 +1919,16 @@ function OperationInspector({
 }) {
   const queryClient = useQueryClient();
   const retry = useMutation({
-    mutationFn: () => api.retry(operation.operation_id),
+    mutationFn: () => api.startNotarization(operation.trace_id),
     onSuccess: (updated) => {
       notifications.show({
         title: 'Retry queued',
         message: 'The same durable operation will make another attempt.',
       });
-      queryClient.setQueryData(['operation', operation.operation_id], updated);
+      queryClient.setQueryData(['operation', operation.operation_id], updated.operation);
       queryClient.invalidateQueries({ queryKey: ['operations'] });
       queryClient.invalidateQueries({ queryKey: ['captures'] });
+      queryClient.invalidateQueries({ queryKey: ['capture', operation.trace_id] });
       queryClient.invalidateQueries({ queryKey: ['status'] });
       queryClient.invalidateQueries({ queryKey: ['events'] });
     },
@@ -2073,7 +2021,7 @@ function TracesView({
   const captures = useInfiniteQuery({
     queryKey: ['captures', 'succeeded', query],
     queryFn: ({ pageParam }) =>
-      api.traces({ notarization_status: 'succeeded', query, limit: 50, cursor: pageParam }),
+      api.traces({ state: 'notarized', query, limit: 50, cursor: pageParam }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor ?? undefined,
   });
@@ -2313,10 +2261,10 @@ function TraceInspector({
               title="Verification passed"
               verified
               fields={[
-                ['Trace', verification.trace_id],
+                ['Trace', verification.trace_id ?? 'Not reported'],
                 ['Verified at', formatDate(verification.verified_at_unix_ms)],
-                ['Notary key', verification.notary_key_id],
-                ['Trust source', verification.trust_source],
+                ['Notary key', verification.notary_key_id ?? 'Not reported'],
+                ['Trust source', verification.trust_source ?? 'Not reported'],
               ]}
             />
           ) : (
@@ -2441,8 +2389,7 @@ function SharingView({
   const { account } = accountConnection;
   const captures = useInfiniteQuery({
     queryKey: ['captures', 'sharing'],
-    queryFn: ({ pageParam }) =>
-      api.traces({ notarization_status: 'succeeded', limit: 50, cursor: pageParam }),
+    queryFn: ({ pageParam }) => api.traces({ state: 'notarized', limit: 50, cursor: pageParam }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor ?? undefined,
   });
@@ -2462,12 +2409,12 @@ function SharingView({
     setConfirm(false);
   }, [selectedId, visibility]);
   const share = useQuery({
-    queryKey: ['share', submitted?.share_id],
-    queryFn: () => api.shareStatus(requiredValue(submitted, 'submitted share').share_id),
+    queryKey: ['share', submitted?.trace_id],
+    queryFn: () => api.shareStatus(requiredValue(submitted, 'submitted share').trace_id),
     enabled: Boolean(submitted),
     refetchInterval: (query) => {
-      const state = query.state.data?.state;
-      return state && ['admitted', 'rejected', 'expired', 'failed'].includes(state) ? false : 3_000;
+      const progress = query.state.data?.progress;
+      return progress && ['shared', 'rejected', 'failed'].includes(progress) ? false : 3_000;
     },
   });
   const createShare = useMutation({
@@ -2482,7 +2429,7 @@ function SharingView({
     },
     onError: (error) => mutationError('Sharing failed', error),
   });
-  const shareState = share.data?.state ?? submitted?.state;
+  const shareState = share.data?.progress ?? submitted?.progress;
   const shareUrl = share.data?.share_url ?? submitted?.share_url;
   const packageUrl = share.data?.package_url ?? submitted?.package_url;
   const transcripts = preview.data ? traceTranscripts(preview.data.trace) : [];
@@ -2492,25 +2439,21 @@ function SharingView({
     notifications.show({ title: 'URL copied', message: 'The share URL is on the clipboard.' });
   };
   const resultTitle =
-    shareState === 'admitted'
+    shareState === 'shared'
       ? 'Share ready'
       : shareState === 'rejected'
         ? 'Share rejected'
-        : shareState === 'expired'
-          ? 'Upload expired'
-          : shareState === 'failed'
-            ? 'Verification failed'
-            : 'Checking share';
+        : shareState === 'failed'
+          ? 'Verification failed'
+          : 'Checking share';
   const resultCopy =
-    shareState === 'admitted'
+    shareState === 'shared'
       ? `${submitted?.visibility === 'listed' ? 'Listed' : 'Unlisted'} · Anyone with the URL can open it.`
       : shareState === 'rejected'
         ? 'The package was rejected before a public URL was created.'
-        : shareState === 'expired'
-          ? 'The upload expired before verification finished.'
-          : shareState === 'failed'
-            ? 'Verification could not finish. Refresh the status or try again.'
-            : 'Uploaded. Checking the package and evidence.';
+        : shareState === 'failed'
+          ? 'Verification could not finish. Refresh the status or try again.'
+          : 'Uploaded. Checking the package and evidence.';
   const confirmationTitle = visibility === 'listed' ? 'List this share?' : 'Create this share?';
   const confirmationCopy =
     visibility === 'listed'
@@ -2605,7 +2548,6 @@ function SharingView({
             <StatusLabel state={shareState ?? 'queued'} />
           </Group>
           <Text>{resultCopy}</Text>
-          <code>{submitted.share_id}</code>
           {share.data?.failure_code && (
             <Text>
               Failure code: <code>{share.data.failure_code}</code>
@@ -2639,7 +2581,7 @@ function SharingView({
                 Refresh status
               </Button>
             )}
-            {fixture && shareState === 'admitted' && (
+            {fixture && shareState === 'shared' && (
               <Button
                 variant="subtle"
                 onClick={() => navigate({ view: 'traces', id: submitted.trace_id })}
@@ -2870,7 +2812,7 @@ function LocalNotaryRecord({
   record: Notary;
   activeKeyId?: string | null;
 }) {
-  const lifecycle = notaryLifecycle(record.status);
+  const lifecycle = notaryLifecycle(record.lifecycle);
   const copyKey = async () => {
     await navigator.clipboard.writeText(record.key_id);
     notifications.show({
@@ -2879,11 +2821,11 @@ function LocalNotaryRecord({
     });
   };
   return (
-    <article className={`local-notary-record local-notary-record--${record.status}`}>
+    <article className={`local-notary-record local-notary-record--${record.lifecycle}`}>
       <header>
-        <span className={`local-notary-state local-notary-state--${record.status}`}>
+        <span className={`local-notary-state local-notary-state--${record.lifecycle}`}>
           <i aria-hidden="true" />
-          {record.status}
+          {record.lifecycle}
         </span>
         {record.key_id === activeKeyId && (
           <span className="local-notary-selected">Selected active key</span>
@@ -2934,7 +2876,7 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
           <Title order={2}>Configured trust</Title>
         </div>
         {notaries.data?.generation != null && (
-          <Text>Directory generation {notaries.data.generation}</Text>
+          <Text>Registry generation {notaries.data.generation}</Text>
         )}
       </div>
       <Text className="settings-notaries-note">
@@ -2950,13 +2892,13 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
       ) : notaries.error ? (
         <div className="local-notary-state-panel" role="alert">
           <b>
-            {errorCode === 'notary_trust_state_invalid'
+            {errorCode === 'registry_state_invalid'
               ? 'Pinned trust state is malformed'
               : 'Local notary trust is unavailable'}
           </b>
           <span>
-            {errorCode === 'notary_trust_state_invalid'
-              ? 'The cached directory could not be validated. No notary is presented as usable.'
+            {errorCode === 'registry_state_invalid'
+              ? 'The cached Registry could not be validated. No notary is presented as usable.'
               : 'The local service could not return its configured trust metadata. No endpoint status can be inferred.'}
           </span>
           <Button variant="outline" onClick={() => notaries.refetch()}>
@@ -2967,7 +2909,7 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
         <div className="local-notary-state-panel">
           <b>No pinned notary records</b>
           <span>
-            The local service has not retained a directory generation. No notary is presented as
+            The local service has not retained a Registry generation. No notary is presented as
             available.
           </span>
         </div>
@@ -2979,7 +2921,7 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
               value={
                 notaries.data?.source === 'explicit_configuration'
                   ? 'Explicit self-hosted configuration'
-                  : 'Pinned directory'
+                  : 'Pinned Registry'
               }
             />
             {notaries.data?.registry_source && (
@@ -2989,7 +2931,7 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
           {notaries.data?.source === 'explicit_configuration' && (
             <Text className="explicit-notary-note">
               This endpoint and key come from local configuration and are not members of the hosted
-              directory.
+              Registry.
             </Text>
           )}
           <div className="local-notary-list">
@@ -3141,7 +3083,7 @@ function SettingsView({ status, api }: { status: Status; api: LocalApi }) {
           <Title order={2}>Preview storage</Title>
           <Text>
             Up to {status.preview_chars.toLocaleString()} characters of known text fields are
-            indexed {isCluster ? 'in shared metadata' : 'locally'}. Raw headers are never cataloged.
+            indexed {isCluster ? 'in shared metadata' : 'locally'}. Raw headers are never indexed.
           </Text>
           <dl className="receipt-list">
             <Fact label="Vault" value={status.vault} />

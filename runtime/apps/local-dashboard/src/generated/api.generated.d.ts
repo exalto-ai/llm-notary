@@ -72,18 +72,18 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get the LLM Notary account connection
+         * Get the Notary account connection
          * @description Reports whether this local service has an account connection used for hosted admission, credits, and sharing.
          */
         get: operations["account_status"];
         put?: never;
         /**
-         * Connect an LLM Notary account
+         * Connect a Notary account
          * @description Starts browser approval for an account connection used for hosted admission, credits, and sharing. Browser approval is unavailable while the daemon uses an injected API key.
          */
         post: operations["start_account_connection"];
         /**
-         * Disconnect the LLM Notary account
+         * Disconnect the Notary account
          * @description Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.
          */
         delete: operations["end_account_connection"];
@@ -101,7 +101,7 @@ export interface paths {
         };
         /**
          * Poll account authorization
-         * @description Checks a pending LLM Notary account approval after its required polling interval.
+         * @description Checks a pending Notary account approval after its required polling interval.
          */
         get: operations["poll_account_connection"];
         put?: never;
@@ -112,7 +112,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/events": {
+    "/v1/activity": {
         parameters: {
             query?: never;
             header?: never;
@@ -120,10 +120,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List service events
-         * @description Lists redacted event history with opaque back-pagination and a separate high-water cursor for following new events.
+         * List safe Activity
+         * @description Lists bounded, redacted Trace and service activity with opaque history pagination and a separate high-water cursor for following new items. Prompts, responses, credentials, headers, vault material, and decrypted capture content are never included.
          */
-        get: operations["events"];
+        get: operations["activity"];
         put?: never;
         post?: never;
         delete?: never;
@@ -140,30 +140,10 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get configured notary trust
-         * @description Returns a safe read-only projection of the local or server-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Registry membership describes allowed protocol use and does not report endpoint health.
+         * List Notaries
+         * @description Returns a safe read-only projection of the locally pinned Registry or the explicitly configured self-hosted endpoint and key. Registry membership describes allowed protocol use and does not report endpoint health.
          */
         get: operations["notaries"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/operations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List background operations
-         * @description Lists bounded operation summaries, including milestone progress, with opaque cursor pagination and optional state, kind, and capture filters. Fetch one operation for its complete attempt history.
-         */
-        get: operations["operations"];
         put?: never;
         post?: never;
         delete?: never;
@@ -192,20 +172,20 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/operations/{operation_id}/retry": {
+    "/v1/providers": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
-        put?: never;
         /**
-         * Retry an operation
-         * @description Requeues a failed or restart-interrupted operation while preserving its durable identity and attempt history.
+         * List supported providers
+         * @description Returns only notaryd's explicit provider adapters, their pinned upstream hosts, client API styles, proxy base URLs, and configured readiness.
          */
-        post: operations["retry_operation"];
+        get: operations["providers"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -260,26 +240,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/shares/{share_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get share status
-         * @description Returns the latest admission state and stable links for a share.
-         */
-        get: operations["share_status"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/status": {
         parameters: {
             query?: never;
@@ -289,7 +249,7 @@ export interface paths {
         };
         /**
          * Get local service status
-         * @description Returns listener addresses, bounded metadata and artifact-writer readiness, vault and notary configuration, preview limits, and current capture counts.
+         * @description Returns listener addresses, bounded metadata and artifact-writer readiness, vault and Notary configuration, preview limits, and current Trace counts.
          */
         get: operations["status"];
         put?: never;
@@ -308,8 +268,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Search local traces
-         * @description Lists the local capture metadata with opaque cursor pagination, punctuation-safe preview search, and exact metadata filters. The legacy offset parameter is rejected; restart traversal without a cursor instead.
+         * Search Traces
+         * @description Lists continuing Trace records in stable newest-first order with opaque cursor pagination and exact state, operational-status, provider, model, streaming, and date filters.
          */
         get: operations["traces"];
         put?: never;
@@ -328,10 +288,30 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get a capture
-         * @description Returns safe capture metadata, retained artifact digests, and notarization history for one capture.
+         * Get a Trace
+         * @description Returns one continuing Trace with capture facts, current state and operational status, retained evidence facts, notarization attempt history, and its canonical share summary.
          */
         get: operations["trace"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/traces/{trace_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect disclosed Trace content
+         * @description Returns the bounded manifest and canonical disclosed OpenTelemetry content from the retained package. It never returns the encrypted capture checkpoint or undisclosed request material.
+         */
+        get: operations["trace_content"];
         put?: never;
         post?: never;
         delete?: never;
@@ -350,8 +330,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Queue capture notarization
-         * @description Queues durable proof generation for an eligible captured provider response or returns its existing notarization operation. Traces with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.
+         * Notarize a Trace
+         * @description Idempotently starts, resumes, or retries the Trace's one durable notarization operation and returns its technical polling location.
          */
         post: operations["start_notarization"];
         delete?: never;
@@ -360,7 +340,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/traces/{trace_id}/package": {
+    "/v1/traces/{trace_id}/package.llmtrace": {
         parameters: {
             query?: never;
             header?: never;
@@ -368,8 +348,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Download a notarized verified package
-         * @description Returns the exact stored canonical .llmtrace bytes as the primary portable verification artifact.
+         * Export a Trace package
+         * @description Returns the exact retained canonical .llmtrace bytes without conversion, regeneration, or transformation, with length and SHA-256 metadata and no-store caching.
          */
         get: operations["download_package"];
         put?: never;
@@ -380,27 +360,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/traces/{trace_id}/shares": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Share a notarized verified session
-         * @description Verifies one notarized capture locally, applies the public disclosure safety policy, and uploads the exact package. Force overrides only unexplained high-entropy values.
-         */
-        post: operations["share_capture"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/traces/{trace_id}/trace": {
+    "/v1/traces/{trace_id}/share": {
         parameters: {
             query?: never;
             header?: never;
@@ -408,19 +368,27 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Decode a trace package
-         * @description Returns the trace package manifest and canonical OpenTelemetry trace for inspection.
+         * Get a Trace share
+         * @description Returns the current canonical share's safe access and progress state. Hosted intake and presigned upload URLs are never exposed.
          */
-        get: operations["trace_content"];
-        put?: never;
+        get: operations["get_trace_share"];
+        /**
+         * Create or update a Trace share
+         * @description Idempotently creates, resumes, retries, or changes the Trace's one canonical share after local verification and disclosure-safety checks. The encrypted .llmcapture is never uploaded.
+         */
+        put: operations["put_trace_share"];
         post?: never;
-        delete?: never;
+        /**
+         * Stop sharing a Trace
+         * @description Stops public access to the canonical share without deleting or changing the local Notarized Trace.
+         */
+        delete: operations["delete_trace_share"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/v1/traces/{trace_id}/trace:verify": {
+    "/v1/traces/{trace_id}/verify": {
         parameters: {
             query?: never;
             header?: never;
@@ -430,8 +398,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Verify a trace package
-         * @description Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.
+         * Verify a retained Trace
+         * @description Verifies the retained package evidence, disclosure, hashes, provider mapping, and canonical content against configured Notary trust.
          */
         post: operations["verify_trace"];
         delete?: never;
@@ -440,7 +408,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/traces:verify": {
+    "/v1/verify": {
         parameters: {
             query?: never;
             header?: never;
@@ -450,8 +418,8 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Verify a portable trace package
-         * @description Verifies uploaded .llmtrace bytes against an optional explicit notary key or the daemon's configured trust source. The package is processed in memory and is not retained.
+         * Verify a portable Trace package
+         * @description Verifies exactly one bounded .llmtrace body against a request-scoped key override or configured Notary trust. The package is never imported, retained, indexed, or shared.
          */
         post: operations["verify_uploaded_trace"];
         delete?: never;
@@ -499,72 +467,30 @@ export interface components {
         };
         /** @enum {string} */
         AccountConnectionState: "disconnected" | "connected" | "reauthorization_required" | "unavailable";
-        ArtifactResponse: {
-            kind: string;
-            sha256: string;
-            /** Format: int64 */
-            size_bytes: number;
-        };
-        BillingState: {
-            billing_status: string;
-            purchase_mode?: string | null;
-            service_plan: string;
-        };
-        CaptureDetailResponse: {
-            artifacts: components["schemas"]["ArtifactResponse"][];
-            capture: components["schemas"]["CaptureResponse"];
-            notarizations: components["schemas"]["OperationResponse"][];
-        };
-        CaptureResponse: {
-            capture_status: string;
-            /** Format: int64 */
-            completed_at_unix_ms?: number | null;
+        ActivityItem: {
             /** Format: int64 */
             created_at_unix_ms: number;
             /** Format: int64 */
-            duration_ms?: number | null;
-            failure_code?: string | null;
-            /** Format: int32 */
-            http_status?: number | null;
-            notarization_eligible: boolean;
-            notarization_ineligibility_code?: string | null;
-            notarization_status: string;
-            operation: string;
-            output_preview: string;
-            output_preview_truncated: boolean;
-            prompt_preview: string;
-            prompt_preview_truncated: boolean;
-            provider: string;
-            /** Format: int64 */
-            request_bytes: number;
-            requested_model?: string | null;
-            /** Format: int64 */
-            response_bytes?: number | null;
-            response_model?: string | null;
-            streaming: boolean;
-            trace_id: string;
+            event_id: number;
+            event_type: string;
+            message: string;
+            operation_id?: string | null;
+            severity: string;
+            trace_id?: string | null;
+        };
+        ActivityPage: {
+            /** @description Snapshot cursor for polling events committed after this response. */
+            high_water_cursor?: string | null;
+            items: components["schemas"]["ActivityItem"][];
+            next_cursor?: string | null;
+        };
+        BillingState: {
+            billing_status: string;
+            plan: string;
+            purchase_mode?: string | null;
         };
         CaptureSettingResponse: {
             enabled: boolean;
-        };
-        CountsResponse: {
-            /** Format: int64 */
-            active_operations: number;
-            /** Format: int64 */
-            capturing: number;
-            /** Format: int64 */
-            failed: number;
-            /** Format: int64 */
-            notarized: number;
-            /** Format: int64 */
-            ready_to_notarize: number;
-            /** Format: int64 */
-            total_traces: number;
-        };
-        CreateShareRequest: {
-            /** @description Accept only unexplained high-entropy false positives after review. */
-            force?: boolean;
-            visibility: components["schemas"]["ShareVisibility"];
         };
         CreditBalanceSummary: {
             /** Format: int64 */
@@ -593,22 +519,11 @@ export interface components {
         ErrorEnvelope: {
             error: components["schemas"]["ErrorBody"];
         };
-        EventListResponse: {
-            /** @description Snapshot cursor for polling events committed after this response. */
-            high_water_cursor?: string | null;
-            items: components["schemas"]["EventResponse"][];
-            next_cursor?: string | null;
-        };
-        EventResponse: {
+        EvidenceArtifact: {
+            kind: string;
+            sha256: string;
             /** Format: int64 */
-            created_at_unix_ms: number;
-            /** Format: int64 */
-            event_id: number;
-            event_type: string;
-            message: string;
-            operation_id?: string | null;
-            severity: string;
-            trace_id?: string | null;
+            size_bytes: number;
         };
         HealthResponse: {
             api_version: string;
@@ -624,7 +539,7 @@ export interface components {
             active_key_id?: string | null;
             /** Format: int64 */
             generation?: number | null;
-            notaries: components["schemas"]["NotaryResponse"][];
+            notaries: components["schemas"]["Notary"][];
             /** @description Public URL from which the current pinned Registry generation came. */
             registry_source?: string | null;
             /**
@@ -633,24 +548,7 @@ export interface components {
              */
             source: string;
         };
-        NotarizationResponse: {
-            deduplicated: boolean;
-            operation: components["schemas"]["OperationResponse"];
-        };
-        NotaryResponse: {
-            endpoint: string;
-            key_id: string;
-            /** Format: int64 */
-            notarize_until_unix_ms?: number | null;
-            /** @description One of `active`, `retiring`, `retired`, `revoked`, or `configured`. */
-            status: string;
-            transport: string;
-            /** Format: int64 */
-            valid_from_unix_ms?: number | null;
-            /** Format: int64 */
-            valid_until_unix_ms?: number | null;
-        };
-        OperationAttemptResponse: {
+        NotarizationAttempt: {
             /** Format: int32 */
             attempt: number;
             /** Format: int64 */
@@ -659,6 +557,27 @@ export interface components {
             /** Format: int64 */
             started_at_unix_ms: number;
             state: string;
+        };
+        NotarizationRequest: {
+            deduplicated: boolean;
+            operation: components["schemas"]["TechnicalOperation"];
+            trace_id: string;
+        };
+        Notary: {
+            endpoint: string;
+            key_id: string;
+            /** @description One of `active`, `retiring`, `retired`, `revoked`, or `configured`. */
+            lifecycle: string;
+            name: string;
+            /** Format: int64 */
+            notarize_until_unix_ms?: number | null;
+            operator: string;
+            transport: string;
+            /** Format: int64 */
+            valid_from_unix_ms?: number | null;
+            /** Format: int64 */
+            valid_until_unix_ms?: number | null;
+            verification_key: string;
         };
         OperationProgressResponse: {
             /**
@@ -680,104 +599,32 @@ export interface components {
             /** Format: int64 */
             commitments_total: number;
         };
-        OperationResponse: {
-            /** Format: int32 */
-            attempt: number;
-            attempt_history: components["schemas"]["OperationAttemptResponse"][];
-            /** Format: int64 */
-            completed_at_unix_ms?: number | null;
-            /** Format: int64 */
-            created_at_unix_ms: number;
-            failure_code?: string | null;
-            kind: string;
-            operation_id: string;
-            progress: components["schemas"]["OperationProgressResponse"];
-            retryable: boolean;
-            /** Format: int64 */
-            started_at_unix_ms?: number | null;
-            state: string;
-            trace_id: string;
+        Provider: {
+            client_api: string;
+            host: string;
+            id: string;
+            name: string;
+            proxy_base_url: string;
+            ready: boolean;
+            route_prefix: string;
         };
-        OperationSummaryResponse: {
-            /** Format: int32 */
-            attempt: number;
-            /** Format: int64 */
-            completed_at_unix_ms?: number | null;
-            /** Format: int64 */
-            created_at_unix_ms: number;
-            failure_code?: string | null;
-            kind: string;
-            operation_id: string;
-            progress: components["schemas"]["OperationProgressResponse"];
-            /** Format: int64 */
-            started_at_unix_ms?: number | null;
-            state: string;
-            trace_id: string;
+        ProvidersResponse: {
+            providers: components["schemas"]["Provider"][];
         };
-        /** @description Query fields shared by every paginated list route. */
-        PageQuery: {
-            /** @description Opaque continuation token returned by the same route and filter set. */
-            cursor?: string | null;
+        PutTraceShareRequest: {
             /**
              * Format: int32
-             * @description Number of items to return. Each route documents its own maximum.
+             * @description Optional expiry measured from the current time. Zero clears expiry.
              */
-            limit?: number | null;
-        };
-        /** @description Uniform response shape for every paginated list route. */
-        Page_CaptureResponse: {
-            items: {
-                capture_status: string;
-                /** Format: int64 */
-                completed_at_unix_ms?: number | null;
-                /** Format: int64 */
-                created_at_unix_ms: number;
-                /** Format: int64 */
-                duration_ms?: number | null;
-                failure_code?: string | null;
-                /** Format: int32 */
-                http_status?: number | null;
-                notarization_eligible: boolean;
-                notarization_ineligibility_code?: string | null;
-                notarization_status: string;
-                operation: string;
-                output_preview: string;
-                output_preview_truncated: boolean;
-                prompt_preview: string;
-                prompt_preview_truncated: boolean;
-                provider: string;
-                /** Format: int64 */
-                request_bytes: number;
-                requested_model?: string | null;
-                /** Format: int64 */
-                response_bytes?: number | null;
-                response_model?: string | null;
-                streaming: boolean;
-                trace_id: string;
-            }[];
-            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
-            next_cursor?: string | null;
-        };
-        /** @description Uniform response shape for every paginated list route. */
-        Page_OperationSummaryResponse: {
-            items: {
-                /** Format: int32 */
-                attempt: number;
-                /** Format: int64 */
-                completed_at_unix_ms?: number | null;
-                /** Format: int64 */
-                created_at_unix_ms: number;
-                failure_code?: string | null;
-                kind: string;
-                operation_id: string;
-                progress: components["schemas"]["OperationProgressResponse"];
-                /** Format: int64 */
-                started_at_unix_ms?: number | null;
-                state: string;
-                trace_id: string;
-            }[];
-            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
-            next_cursor?: string | null;
+            expires_in_days?: number | null;
+            /** @description Accept only reviewed, unexplained high-entropy safety findings. */
+            force?: boolean;
+            /**
+             * @description A new password, or an empty string to remove it. This value is never
+             *     logged, returned, or persisted by notaryd.
+             */
+            password?: string | null;
+            visibility: components["schemas"]["ShareVisibility"];
         };
         ReadinessResponse: {
             artifact_backend: string;
@@ -785,23 +632,8 @@ export interface components {
             service: string;
             status: string;
         };
-        ShareResponse: {
-            package_url?: string | null;
-            share_id: string;
-            share_url?: string | null;
-            state: string;
-            status_url: string;
-            trace_id: string;
-            visibility: components["schemas"]["ShareVisibility"];
-        };
-        ShareStatusResponse: {
-            failure_code?: string | null;
-            package_url?: string | null;
-            share_id: string;
-            share_url?: string | null;
-            state: string;
-            visibility: components["schemas"]["ShareVisibility"];
-        };
+        /** @enum {string} */
+        ShareProgress: "preparing" | "uploading" | "verifying" | "shared" | "rejected" | "failed";
         /** @enum {string} */
         ShareVisibility: "unlisted" | "listed";
         StatusResponse: {
@@ -811,7 +643,7 @@ export interface components {
             artifact_status: string;
             build_id: string;
             capture_enabled: boolean;
-            counts: components["schemas"]["CountsResponse"];
+            counts: components["schemas"]["TraceCounts"];
             incarnation_id?: string | null;
             instance_id?: string | null;
             lifecycle: string;
@@ -826,9 +658,97 @@ export interface components {
             vault: string;
             version: string;
         };
-        TraceResponse: {
+        TechnicalOperation: {
+            /** Format: int32 */
+            attempt: number;
+            attempt_history: components["schemas"]["NotarizationAttempt"][];
+            /** Format: int64 */
+            completed_at_unix_ms?: number | null;
+            /** Format: int64 */
+            created_at_unix_ms: number;
+            failure_code?: string | null;
+            kind: string;
+            operation_id: string;
+            progress: components["schemas"]["OperationProgressResponse"];
+            retryable: boolean;
+            /** Format: int64 */
+            started_at_unix_ms?: number | null;
+            state: string;
+            trace_id: string;
+        };
+        TraceContent: {
             manifest: unknown;
             trace: unknown;
+            trace_id: string;
+        };
+        TraceCounts: {
+            /** Format: int64 */
+            capture_failed: number;
+            /** Format: int64 */
+            captured: number;
+            /** Format: int64 */
+            capturing: number;
+            /** Format: int64 */
+            needs_attention: number;
+            /** Format: int64 */
+            notarized: number;
+            /** Format: int64 */
+            notarizing: number;
+        };
+        TraceDetail: components["schemas"]["TraceSummary"] & {
+            artifacts: components["schemas"]["EvidenceArtifact"][];
+            notarization: null | components["schemas"]["TechnicalOperation"];
+            share: null | components["schemas"]["TraceShare"];
+        };
+        /** @enum {string} */
+        TraceOperationalStatus: "capturing" | "capture_failed" | "notarizing" | "notarization_failed" | "notarization_interrupted";
+        TracePage: {
+            items: components["schemas"]["TraceSummary"][];
+            next_cursor?: string | null;
+        };
+        TraceShare: {
+            access_enabled: boolean;
+            /** Format: int64 */
+            expires_at_unix_ms?: number | null;
+            failure_code?: string | null;
+            package_url?: string | null;
+            password_protected: boolean;
+            progress: components["schemas"]["ShareProgress"];
+            share_url?: string | null;
+            trace_id: string;
+            /** Format: int64 */
+            updated_at_unix_ms: number;
+            visibility: components["schemas"]["ShareVisibility"];
+        };
+        /** @enum {string} */
+        TraceState: "captured" | "notarized";
+        TraceSummary: {
+            /** Format: int64 */
+            completed_at_unix_ms?: number | null;
+            /** Format: int64 */
+            created_at_unix_ms: number;
+            /** Format: int64 */
+            duration_ms?: number | null;
+            failure_code?: string | null;
+            /** Format: int32 */
+            http_status?: number | null;
+            notarization_eligible: boolean;
+            notarization_ineligibility_code?: string | null;
+            operation: string;
+            output_preview: string;
+            output_preview_truncated: boolean;
+            prompt_preview: string;
+            prompt_preview_truncated: boolean;
+            provider: string;
+            /** Format: int64 */
+            request_bytes: number;
+            requested_model?: string | null;
+            /** Format: int64 */
+            response_bytes?: number | null;
+            response_model?: string | null;
+            state: null | components["schemas"]["TraceState"];
+            status: null | components["schemas"]["TraceOperationalStatus"];
+            streaming: boolean;
             trace_id: string;
         };
         UpdateCaptureSetting: {
@@ -843,11 +763,14 @@ export interface components {
             latest_build_id?: string | null;
             update_available: boolean;
         };
-        VerificationResponse: {
-            notary_key_id: string;
-            trace_id: string;
-            trust_source: string;
-            verified: boolean;
+        /** @enum {string} */
+        VerificationOutcome: "passed" | "failed" | "unsupported";
+        VerificationResult: {
+            failure_code?: string | null;
+            notary_key_id?: string | null;
+            outcome: components["schemas"]["VerificationOutcome"];
+            trace_id?: string | null;
+            trust_source?: string | null;
             /** Format: int64 */
             verified_at_unix_ms: number;
         };
@@ -1093,7 +1016,7 @@ export interface operations {
             };
         };
     };
-    events: {
+    activity: {
         parameters: {
             query?: {
                 cursor?: string;
@@ -1117,7 +1040,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["EventListResponse"];
+                    "application/json": components["schemas"]["ActivityPage"];
                 };
             };
             400: {
@@ -1189,56 +1112,6 @@ export interface operations {
             };
         };
     };
-    operations: {
-        parameters: {
-            query?: {
-                state?: string;
-                kind?: string;
-                trace_id?: string;
-                /** @description Page size; defaults to 50 */
-                limit?: number;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Page_OperationSummaryResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
     operation: {
         parameters: {
             query?: never;
@@ -1255,7 +1128,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OperationResponse"];
+                    "application/json": components["schemas"]["TechnicalOperation"];
                 };
             };
             401: {
@@ -1284,42 +1157,24 @@ export interface operations {
             };
         };
     };
-    retry_operation: {
+    providers: {
         parameters: {
             query?: never;
             header?: never;
-            path: {
-                operation_id: string;
-            };
+            path?: never;
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            202: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OperationResponse"];
+                    "application/json": components["schemas"]["ProvidersResponse"];
                 };
             };
             401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            503: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1471,59 +1326,6 @@ export interface operations {
             };
         };
     };
-    share_status: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                share_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ShareStatusResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
     status: {
         parameters: {
             query?: never;
@@ -1563,16 +1365,17 @@ export interface operations {
         parameters: {
             query?: {
                 query?: string;
-                model?: string;
+                state?: components["schemas"]["TraceState"];
+                status?: components["schemas"]["TraceOperationalStatus"];
                 provider?: string;
-                capture_status?: string;
-                notarization_status?: string;
+                model?: string;
                 streaming?: boolean;
-                created_after_unix_ms?: number;
+                created_from_unix_ms?: number;
+                created_before_unix_ms?: number;
+                metadata_only?: boolean;
                 /** @description Page size; defaults to 50 */
                 limit?: number;
                 cursor?: string;
-                offset?: number;
             };
             header?: never;
             path?: never;
@@ -1585,7 +1388,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_CaptureResponse"];
+                    "application/json": components["schemas"]["TracePage"];
                 };
             };
             400: {
@@ -1630,7 +1433,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CaptureDetailResponse"];
+                    "application/json": components["schemas"]["TraceDetail"];
                 };
             };
             401: {
@@ -1642,6 +1445,67 @@ export interface operations {
                 };
             };
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    trace_content: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TraceContent"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1675,7 +1539,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NotarizationResponse"];
+                    "application/json": components["schemas"]["NotarizationRequest"];
                 };
             };
             401: {
@@ -1773,7 +1637,52 @@ export interface operations {
             };
         };
     };
-    share_capture: {
+    get_trace_share: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TraceShare"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    put_trace_share: {
         parameters: {
             query?: never;
             header?: never;
@@ -1784,16 +1693,32 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateShareRequest"];
+                "application/json": components["schemas"]["PutTraceShareRequest"];
             };
         };
         responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TraceShare"];
+                };
+            };
             202: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ShareResponse"];
+                    "application/json": components["schemas"]["TraceShare"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
             401: {
@@ -1838,7 +1763,7 @@ export interface operations {
             };
         };
     };
-    trace_content: {
+    delete_trace_share: {
         parameters: {
             query?: never;
             header?: never;
@@ -1849,39 +1774,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            200: {
+            /** @description Sharing stopped */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["TraceResponse"];
-                };
+                content?: never;
             };
             401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1915,7 +1815,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VerificationResponse"];
+                    "application/json": components["schemas"]["VerificationResult"];
                 };
             };
             401: {
@@ -1972,7 +1872,7 @@ export interface operations {
         parameters: {
             query?: never;
             header?: {
-                /** @description Optional compressed SEC1 notary public key in hexadecimal */
+                /** @description Optional request-scoped compressed SEC1 Notary verification key in hexadecimal */
                 "x-notary-trusted-notary-key"?: string | null;
             };
             path?: never;
@@ -1989,10 +1889,10 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["VerificationResponse"];
+                    "application/json": components["schemas"]["VerificationResult"];
                 };
             };
-            401: {
+            400: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2000,7 +1900,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorEnvelope"];
                 };
             };
-            422: {
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

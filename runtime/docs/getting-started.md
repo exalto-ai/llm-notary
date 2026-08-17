@@ -62,7 +62,7 @@ The two installed programs have separate jobs:
 - `notaryd` is the long-running local proxy and administration daemon.
 - `llm-notary` is a short-lived REST client for that daemon.
 
-`llm-notary` does not start the service and does not open the catalog, vault,
+`llm-notary` does not start the service and does not open the metadata store, vault,
 or artifacts directly.
 
 ## Install the portable agent skill
@@ -116,7 +116,7 @@ boundaries.
 notaryd
 ```
 
-The first start writes `config.toml` once and initializes the bundle vault. The
+The first start writes `config.toml` once and initializes the checkpoint vault. The
 default configuration enables the five built-in routes and binds only these
 distinct loopback listeners:
 
@@ -127,10 +127,10 @@ distinct loopback listeners:
 
 Configuration locations are:
 
-- Linux: `$XDG_CONFIG_HOME/llm-notary/config.toml` when `XDG_CONFIG_HOME` is
-  set, otherwise `~/.config/llm-notary/config.toml`
-- macOS: `~/Library/Application Support/llm-notary/config.toml`
-- Windows: `%APPDATA%\llm-notary\config.toml`
+- Linux: `$XDG_CONFIG_HOME/notary/config.toml` when `XDG_CONFIG_HOME` is set,
+  otherwise `~/.config/notary/config.toml`
+- macOS: `~/Library/Application Support/notary/config.toml`
+- Windows: `%APPDATA%\notary\config.toml`
 
 Use an explicit file when developing isolated configurations:
 
@@ -158,14 +158,14 @@ API](local-service.md#start-and-supervise-the-service).
 ## Choose a notary
 
 With no explicit notary configuration, the daemon obtains one-time hosted
-admission and the versioned notary directory from the configured public LLM
-Notary origin. The directory is authenticated by HTTPS; it is not a separately
+admission and the versioned notary Registry from the configured public LLM
+Notary origin. The Registry is authenticated by HTTPS; it is not a separately
 signed document. The client pins accepted generations and key lifecycle state
 locally.
 
 Each hosted capture requests a purpose-specific ticket without requesting a
 copy of the account balance or a byte grant. Each hosted notarization requests
-a separate ticket bound to the bundle's exact record digest and authenticated
+a separate ticket bound to the checkpoint's exact record digest and authenticated
 allowance. Tickets are neither cached nor renewed. Admission denial, exhausted
 allowance, expiry, and coordinator outages are returned as bounded errors that
 do not include the raw ticket or account credential.
@@ -210,13 +210,13 @@ Use a model available to the provider account. See [Provider and agent
 setup](provider-setup.md) for every route, including the live-tested Codex CLI
 and Claude Code subscription configurations.
 
-The response is relayed normally. After it ends, the daemon records a catalog
-row and vault-encrypts `<capture-id>.llmcapture`. The capture file is a private
+The response is relayed normally. After it ends, the daemon records a Trace
+row and vault-encrypts `<trace-id>.llmcapture`. The capture file is a private
 checkpoint containing enough information to reconstruct the original request,
 including its credential. Do not inspect, copy, or upload it as though it were
 a proof.
 
-Find the capture without decrypting every bundle:
+Find the Trace without decrypting every checkpoint:
 
 ```bash
 llm-notary captures list --provider openai --limit 20
@@ -239,9 +239,9 @@ llm-notary notarize trc-example --wait
 Without `--wait`, save the returned operation identifier and poll it while the
 operation is `queued` or `running`. With `--wait`, the CLI follows the operation
 and reports authenticated transcript bytes and completed commitments. Its
-terminal state is `notarized`, `failed`, or `interrupted`. A successful
-operation writes one deterministic `<capture-id>.llmtrace` package and retains
-the encrypted bundle. `--json --wait` suppresses intermediate lines so standard
+terminal state is `succeeded`, `failed`, or `interrupted`. A successful
+operation writes one deterministic `<trace-id>.llmtrace` package and retains
+the encrypted checkpoint. `--json --wait` suppresses intermediate lines so standard
 output remains one JSON value.
 
 ```bash

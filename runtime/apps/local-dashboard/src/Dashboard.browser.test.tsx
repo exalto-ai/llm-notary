@@ -2,9 +2,9 @@ import { createTheme, MantineProvider } from '@mantine/core';
 import { Notifications } from '@mantine/notifications';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { cleanup, render } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { page, userEvent } from 'vitest/browser';
-import { type LocalApi, LocalApiError, type Notaries } from './api';
+import { type LocalApi, LocalApiError, localApi, type Notaries } from './api';
 import { Dashboard } from './Dashboard';
 import { createFixtureApi, fixtureNotaries } from './fixtures';
 import '@mantine/core/styles.css';
@@ -26,7 +26,11 @@ function renderDashboard(hash = '/overview', api: LocalApi = createFixtureApi())
 }
 
 beforeEach(() => localStorage.clear());
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
+});
 
 describe('local evidence dashboard', () => {
   test('navigates, filters captures, and selects a capture', async () => {
@@ -38,7 +42,7 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('deepseek-v4-flash')).toBeVisible();
     await expect.element(page.getByText('gpt-5.2', { exact: true })).not.toBeInTheDocument();
     await page.getByRole('list', { name: 'Captures' }).getByRole('button').click();
-    await expect.element(page.getByText('trc-20260727-benchmark')).toBeVisible();
+    await expect.element(page.getByText('trc-20260727-benchmark').first()).toBeVisible();
   });
 
   test('loads another cursor page without downloading the full capture catalog', async () => {
@@ -62,6 +66,69 @@ describe('local evidence dashboard', () => {
     const requestedModel = samples[1].requested_model;
     if (!requestedModel) throw new Error('Expected the second fixture capture to name a model');
     await expect.element(page.getByText(requestedModel, { exact: true })).toBeVisible();
+  });
+
+  test('retains the live Trace cursor when a projected notarization page is empty', async () => {
+    const fixture = createFixtureApi();
+    const trace = (await fixture.traces({ limit: 1 })).items[0];
+    const traceDetail = { ...(await fixture.trace(trace.trace_id)), notarization: null };
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const path = String(input);
+      if (path === '/v1/traces?limit=1') {
+        return Response.json({ items: [trace], next_cursor: 'trace:next' });
+      }
+      if (path === `/v1/traces/${trace.trace_id}`) return Response.json(traceDetail);
+      throw new Error(`Unexpected dashboard request: ${path}`);
+    });
+
+    await expect(localApi.operations({ limit: 1 })).resolves.toEqual({
+      items: [],
+      next_cursor: 'trace:next',
+    });
+  });
+
+  test('can load older notarizations after an empty projected Trace page', async () => {
+    const fixture = createFixtureApi();
+    const operation = (await fixture.operations()).items[0];
+    const cursors: Array<string | undefined> = [];
+    const api: LocalApi = {
+      ...fixture,
+      operations: async (filters = {}) => {
+        const cursor = typeof filters.cursor === 'string' ? filters.cursor : undefined;
+        cursors.push(cursor);
+        return cursor === 'trace:next'
+          ? { items: [operation], next_cursor: null }
+          : { items: [], next_cursor: 'trace:next' };
+      },
+    };
+
+    renderDashboard('/notarizations', api);
+    await expect
+      .element(page.getByRole('button', { name: 'Load more notarizations' }))
+      .toBeVisible();
+    await page.getByRole('button', { name: 'Load more notarizations' }).click();
+    await expect.poll(() => cursors).toContain('trace:next');
+    await expect
+      .element(page.getByRole('button', { name: `Inspect ${operation.operation_id}` }))
+      .toBeVisible();
+  });
+
+  test('does not periodically refetch the projected notarization collection', async () => {
+    const fixture = createFixtureApi();
+    let collectionRequests = 0;
+    const api: LocalApi = {
+      ...fixture,
+      operations: async (filters = {}) => {
+        collectionRequests += 1;
+        return fixture.operations(filters);
+      },
+    };
+    vi.useFakeTimers();
+    renderDashboard('/notarizations', api);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(collectionRequests).toBe(1);
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(collectionRequests).toBe(1);
   });
 
   test('uses the authenticated provider for icons instead of a namespaced model slug', async () => {
@@ -180,7 +247,7 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('Online', { exact: true })).not.toBeInTheDocument();
   });
 
-  test('distinguishes explicit self-hosted configuration from the directory', async () => {
+  test('distinguishes explicit self-hosted configuration from the Registry', async () => {
     const explicit: Notaries = {
       source: 'explicit_configuration',
       registry_source: null,
@@ -188,10 +255,13 @@ describe('local evidence dashboard', () => {
       active_key_id: null,
       notaries: [
         {
+          name: 'Configured Notary',
+          operator: 'Local configuration',
           endpoint: 'tcp://127.0.0.1:7047',
           transport: 'tcp',
           key_id: 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-          status: 'configured',
+          verification_key: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+          lifecycle: 'configured',
           valid_from_unix_ms: null,
           valid_until_unix_ms: null,
           notarize_until_unix_ms: null,
@@ -203,10 +273,10 @@ describe('local evidence dashboard', () => {
       .element(page.getByRole('heading', { name: 'Explicit self-hosted configuration' }))
       .toBeVisible();
     await expect
-      .element(page.getByText('are not members of the hosted directory', { exact: false }))
+      .element(page.getByText('are not members of the hosted Registry', { exact: false }))
       .toBeVisible();
     await expect
-      .element(page.getByText('Directory generation', { exact: false }))
+      .element(page.getByText('Registry generation', { exact: false }))
       .not.toBeInTheDocument();
   });
 
@@ -220,7 +290,7 @@ describe('local evidence dashboard', () => {
 
   test('handles empty, malformed, and unavailable local notary trust without a false status', async () => {
     const empty: Notaries = {
-      source: 'directory',
+      source: 'registry',
       registry_source: null,
       generation: null,
       active_key_id: null,
@@ -236,7 +306,7 @@ describe('local evidence dashboard', () => {
     renderDashboard('/settings', {
       ...createFixtureApi(),
       notaries: async () => {
-        throw new LocalApiError(500, 'notary_trust_state_invalid', 'Invalid');
+        throw new LocalApiError(500, 'registry_state_invalid', 'Invalid');
       },
     });
     await expect.element(page.getByText('Pinned trust state is malformed')).toBeVisible();
@@ -337,7 +407,6 @@ describe('local evidence dashboard', () => {
   test('shows capture notarization and durable attempt histories', async () => {
     renderDashboard('/captures/trc-20260727-benchmark');
     await expect.element(page.getByRole('heading', { name: 'Notarization history' })).toBeVisible();
-    await page.getByRole('button', { name: 'Inspect' }).click();
     await expect.element(page.getByText('Attempt 2', { exact: true })).toBeVisible();
     await expect.element(page.getByText('Attempt 1', { exact: true })).toBeVisible();
     await expect.element(page.getByText('service_restarted')).toBeVisible();
@@ -367,7 +436,7 @@ describe('local evidence dashboard', () => {
       )?.state,
     ).toBe('queued');
     expect(
-      (await api.traces({ notarization_status: 'succeeded', limit: 200 })).items.some(
+      (await api.traces({ state: 'notarized', limit: 200 })).items.some(
         (item) => item.trace_id === captureId,
       ),
     ).toBe(false);
@@ -386,9 +455,9 @@ describe('local evidence dashboard', () => {
         (item) => item.operation_id === queued.operation.operation_id,
       )?.state,
     ).toBe('running');
-    expect((await api.trace(captureId)).capture.notarization_status).toBe('running');
+    expect((await api.trace(captureId)).status).toBe('notarizing');
     expect(
-      (await api.traces({ notarization_status: 'succeeded', limit: 200 })).items.some(
+      (await api.traces({ state: 'notarized', limit: 200 })).items.some(
         (item) => item.trace_id === captureId,
       ),
     ).toBe(false);
@@ -398,10 +467,10 @@ describe('local evidence dashboard', () => {
         (item) => item.operation_id === queued.operation.operation_id,
       )?.state,
     ).toBe('succeeded');
-    const capture = (await api.trace(captureId)).capture;
-    expect(capture.notarization_status).toBe('succeeded');
+    const capture = await api.trace(captureId);
+    expect(capture.state).toBe('notarized');
     expect(
-      (await api.traces({ notarization_status: 'succeeded', limit: 200 })).items.some(
+      (await api.traces({ state: 'notarized', limit: 200 })).items.some(
         (item) => item.trace_id === captureId,
       ),
     ).toBe(true);
@@ -425,12 +494,12 @@ describe('local evidence dashboard', () => {
     expect(traceJson).toContain(capture.output_preview);
     expect((await api.verify(captureId)).trace_id).toBe(captureId);
     expect((await api.share(captureId, 'unlisted')).trace_id).toBe(captureId);
-    const initialShare = await api.shareStatus('share-fixture');
-    expect(initialShare.state).toBe('queued');
-    expect((await api.shareStatus('share-fixture')).state).toBe('verifying');
-    const admitted = await api.shareStatus('share-fixture');
-    expect(admitted.state).toBe('admitted');
-    expect(admitted.share_url).toContain('/s/share-fixture');
+    const initialShare = await api.shareStatus(captureId);
+    expect(initialShare.progress).toBe('preparing');
+    expect((await api.shareStatus(captureId)).progress).toBe('verifying');
+    const admitted = await api.shareStatus(captureId);
+    expect(admitted.progress).toBe('shared');
+    expect(admitted.share_url).toContain('/traces/share-fixture');
 
     renderDashboard(`/traces/${captureId}`, api);
     await expect.element(page.getByRole('heading', { name: captureId })).toBeVisible();
@@ -463,7 +532,7 @@ describe('local evidence dashboard', () => {
               signed_in: true,
               provider_display_name: 'approved-user',
               device_name: 'Local dashboard',
-              credential_kind: 'cli_session',
+              credential_kind: 'device_session',
               credential_name: 'Local dashboard',
             },
       share: async (captureId, visibility) => {
@@ -471,10 +540,11 @@ describe('local evidence dashboard', () => {
         chosenVisibility = visibility;
         return {
           trace_id: captureId,
-          share_id: 'share-fixture',
-          state: 'queued',
+          progress: 'preparing',
           visibility,
-          status_url: '/v1/shares/share-fixture',
+          access_enabled: true,
+          password_protected: false,
+          updated_at_unix_ms: Date.now(),
           share_url: null,
           package_url: null,
         };
@@ -493,7 +563,6 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('approved-user')).toBeVisible();
     await page.getByRole('button', { name: 'Share trace' }).click();
     await page.getByRole('button', { name: 'Create share' }).click();
-    await expect.element(page.getByText('share-fixture')).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Refresh status' })).toBeVisible();
     expect(sharedCapture).toBe('trc-20260727-research-brief');
     expect(chosenVisibility).toBe('unlisted');
@@ -530,11 +599,11 @@ describe('local evidence dashboard', () => {
       .element(page.getByText('Anyone with the URL can read', { exact: false }))
       .toBeVisible();
     await page.getByRole('button', { name: 'Create share' }).click();
-    await expect.element(page.getByText('queued', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('preparing', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Refresh status' }).click();
     await expect.element(page.getByText('verifying', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Refresh status' }).click();
-    await expect.element(page.getByText('admitted', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('shared', { exact: true })).toBeVisible();
     await expect.element(page.getByRole('heading', { name: 'Share ready' })).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Copy URL' })).toBeVisible();
     await page.getByRole('button', { name: 'Open local trace' }).click();

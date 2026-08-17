@@ -281,7 +281,7 @@ function DesktopAccountCard({
     <div className="native-account-heading"><div><span className="section-label">Account</span>{!compact && <h2>Hosted account</h2>}</div><span className={`account-state account-state--${state}`}>{state === 'connected' ? 'Connected' : state === 'reauthorization_required' ? 'Reconnect required' : state === 'unavailable' ? 'Temporarily unavailable' : 'Not connected'}</span></div>
     {account && connected ? <>
       <div className="native-account-identity"><div><strong>{accountName(account)}</strong><span>{accountProvider(account)} · {account.credential_name || account.device_name || 'Connected service'}</span></div>{account.credential_kind === 'api_key' && <small>API key</small>}</div>
-      {account.billing && <div className="native-account-facts"><div><span>Plan</span><strong>{account.billing.service_plan}</strong></div><div><span>Billing</span><strong>{account.billing.billing_status}{account.billing.purchase_mode ? ` · ${account.billing.purchase_mode}` : ''}</strong></div>{account.credits && <div><span>Notarization used</span><strong>{formatAccountBytes(account.credits.notarization.total_used_bytes)}</strong></div>}{account.credits && <div><span>Notarization remaining</span><strong>{formatAccountBytes(account.credits.notarization.total_remaining_bytes)}</strong></div>}{account.credits && <div><span>Capture used</span><strong>{formatAccountBytes(account.credits.capture.total_used_bytes)}</strong></div>}{account.credits && <div><span>Capture remaining</span><strong>{formatAccountBytes(account.credits.capture.total_remaining_bytes)}</strong></div>}{account.credits && <div><span>Included monthly</span><strong>{formatAccountBytes(account.credits.notarization.included_monthly_remaining_bytes)}</strong></div>}{account.credits && <div><span>Supplemental</span><strong>{formatAccountBytes(account.credits.notarization.supplemental_remaining_bytes)}</strong></div>}{account.credits && <div><span>Reset</span><strong>{formatAccountDate(account.credits.reset_at)}</strong></div>}{account.credits?.notarization.next_grant_expiration && <div><span>Next expiration</span><strong>{formatAccountDate(account.credits.notarization.next_grant_expiration)}</strong></div>}</div>}
+      {account.billing && <div className="native-account-facts"><div><span>Plan</span><strong>{account.billing.plan}</strong></div><div><span>Billing</span><strong>{account.billing.billing_status}{account.billing.purchase_mode ? ` · ${account.billing.purchase_mode}` : ''}</strong></div>{account.credits && <div><span>Notarization used</span><strong>{formatAccountBytes(account.credits.notarization.total_used_bytes)}</strong></div>}{account.credits && <div><span>Notarization remaining</span><strong>{formatAccountBytes(account.credits.notarization.total_remaining_bytes)}</strong></div>}{account.credits && <div><span>Capture used</span><strong>{formatAccountBytes(account.credits.capture.total_used_bytes)}</strong></div>}{account.credits && <div><span>Capture remaining</span><strong>{formatAccountBytes(account.credits.capture.total_remaining_bytes)}</strong></div>}{account.credits && <div><span>Included monthly</span><strong>{formatAccountBytes(account.credits.notarization.included_monthly_remaining_bytes)}</strong></div>}{account.credits && <div><span>Supplemental</span><strong>{formatAccountBytes(account.credits.notarization.supplemental_remaining_bytes)}</strong></div>}{account.credits && <div><span>Reset</span><strong>{formatAccountDate(account.credits.reset_at)}</strong></div>}{account.credits?.notarization.next_grant_expiration && <div><span>Next expiration</span><strong>{formatAccountDate(account.credits.notarization.next_grant_expiration)}</strong></div>}</div>}
       {account.links && <div className="native-account-links"><button type="button" onClick={() => void action(account.links!.account)}>Open account</button><button type="button" onClick={() => void action(account.links!.usage)}>Usage and credits</button><button type="button" onClick={() => void action(account.links!.plans)}>Plans and pricing</button><button type="button" onClick={() => void action(account.links!.settings)}>{account.credential_kind === 'api_key' ? 'Manage API keys' : 'Account settings'}</button></div>}
       {account.credential_kind !== 'api_key' && <button className="mac-button is-small" type="button" onClick={() => void disconnect()} disabled={busy}>Disconnect this device</button>}
       {onContinue && <button className="mac-button is-primary is-large" type="button" onClick={onContinue}>Continue setup <ChevronRight size={15} /></button>}
@@ -310,7 +310,7 @@ function updateChipLabel(update: DesktopUpdateState) {
 
 function updateRestartBlockReason(state: DesktopState) {
   if (state.counts.capturing > 0) return 'Finish the active capture before restarting.';
-  if (state.counts.active_operations > 0) return 'Finish the active notarization before restarting.';
+  if (state.counts.notarizing > 0) return 'Finish the active notarization before restarting.';
   if (state.running && !state.managed_by_desktop) return 'Stop or update the separately managed local service first.';
   return null;
 }
@@ -516,8 +516,8 @@ function Sidebar({ state, view, onNavigate }: { state: DesktopState; view: View;
   const groups: Array<Array<{ view: View; label: string; icon: typeof Gauge; count?: number }>> = [
     [
       { view: 'home', label: 'Home', icon: Gauge },
-      { view: 'captures', label: 'Captures', icon: Archive, count: state.counts.ready_to_notarize },
-      { view: 'notarizations', label: 'Notarizations', icon: ListChecks, count: state.counts.active_operations },
+      { view: 'captures', label: 'Captures', icon: Archive, count: state.counts.captured },
+      { view: 'notarizations', label: 'Notarizations', icon: ListChecks, count: state.counts.notarizing },
       { view: 'traces', label: 'Notarized traces', icon: FileCheck2 },
     ],
     [
@@ -630,14 +630,14 @@ function HomeView({ state, busy, notice, onNavigate, onStart, onStop, onRestart 
 
     <section className="home-grid">
       <div className="native-card capture-card">
-        <header><div><span className="section-label">Capture workspace</span><h2>Private evidence</h2></div><span>{state.counts.total_traces} total</span></header>
+        <header><div><span className="section-label">Capture workspace</span><h2>Private evidence</h2></div><span>{state.counts.captured + state.counts.notarized + state.counts.capturing + state.counts.capture_failed} total</span></header>
         <div className="capture-counts">
-          <button onClick={() => onNavigate('captures')}><b>{state.counts.ready_to_notarize}</b><span>Ready to notarize</span><ChevronRight size={14} /></button>
+          <button onClick={() => onNavigate('captures')}><b>{state.counts.captured}</b><span>Captured</span><ChevronRight size={14} /></button>
           <button onClick={() => onNavigate('traces')}><b>{state.counts.notarized}</b><span>Notarized traces</span><ChevronRight size={14} /></button>
-          <button onClick={() => onNavigate('activity')}><b>{state.counts.failed}</b><span>Need attention</span><ChevronRight size={14} /></button>
+          <button onClick={() => onNavigate('activity')}><b>{state.counts.needs_attention}</b><span>Need attention</span><ChevronRight size={14} /></button>
         </div>
-        <button className="card-action" onClick={() => onNavigate(state.counts.ready_to_notarize ? 'captures' : 'connections')}>
-          {state.counts.ready_to_notarize ? 'Review private captures' : 'Connect a model client'} <ChevronRight size={15} />
+        <button className="card-action" onClick={() => onNavigate(state.counts.captured ? 'captures' : 'connections')}>
+          {state.counts.captured ? 'Review private captures' : 'Connect a model client'} <ChevronRight size={15} />
         </button>
       </div>
 
@@ -646,7 +646,7 @@ function HomeView({ state, busy, notice, onNavigate, onStart, onStop, onRestart 
         <p>{vault.detail}</p>
         <dl>
           <div><dt>Provider proxy</dt><dd>{state.proxy_listener}</dd></div>
-          <div><dt>Notary trust</dt><dd>{state.notary === 'directory' ? 'Signed directory' : state.notary ?? 'Unavailable'}</dd></div>
+          <div><dt>Registry</dt><dd>{state.notary === 'registry' ? 'Signed Registry' : state.notary ?? 'Unavailable'}</dd></div>
           <div><dt>Service version</dt><dd>{state.version ?? 'Not running'}</dd></div>
         </dl>
       </div>

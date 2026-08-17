@@ -20,6 +20,7 @@ use crate::{
     metadata::{
         CaptureCompletion, EventFilters, NewTrace, OperationAttempt, OperationFilters,
         OperationPagePosition, TerminalOperationResult, TraceFilters, TracePagePosition,
+        TraceShareRecord,
     },
 };
 
@@ -34,6 +35,7 @@ where
     make_store().await.readiness().await.unwrap();
     capture_mode_is_durable_and_evented(make_store()).await;
     capture_lifecycle(make_store().await).await;
+    canonical_trace_share_is_durable(make_store().await).await;
     preview_search(make_store().await, full_text_search).await;
     capture_filters_pagination_and_counts(make_store().await).await;
     operation_filters_and_pagination(make_store().await).await;
@@ -42,6 +44,58 @@ where
     concurrent_retry_is_deduplicated(make_store().await).await;
     event_page_and_high_water_are_atomic(make_store().await).await;
     invalid_limits_and_ranges(make_store().await).await;
+}
+
+async fn canonical_trace_share_is_durable(store: Arc<dyn MetadataStore>) {
+    insert_completed(&store, new_capture("trc-share", 1), 200).await;
+    assert!(store.trace_share("trc-share").await.unwrap().is_none());
+
+    let initial = TraceShareRecord {
+        trace_id: "trc-share".into(),
+        hosted_trace_id: "trc-hosted-one".into(),
+        progress: "verifying".into(),
+        visibility: "unlisted".into(),
+        access_enabled: true,
+        password_protected: false,
+        expires_at_unix_ms: None,
+        failure_code: None,
+        share_url: None,
+        package_url: None,
+        updated_at_unix_ms: 10,
+    };
+    store.put_trace_share(initial.clone()).await.unwrap();
+    assert_eq!(store.trace_share("trc-share").await.unwrap(), Some(initial));
+
+    let updated = TraceShareRecord {
+        hosted_trace_id: "trc-hosted-one".into(),
+        progress: "shared".into(),
+        visibility: "listed".into(),
+        password_protected: true,
+        expires_at_unix_ms: Some(20),
+        share_url: Some("https://notary.example/traces/share-one".into()),
+        package_url: Some(
+            "https://notary.example/api/public/traces/share-one/package.llmtrace".into(),
+        ),
+        updated_at_unix_ms: 11,
+        ..store.trace_share("trc-share").await.unwrap().unwrap()
+    };
+    store.put_trace_share(updated.clone()).await.unwrap();
+    assert_eq!(store.trace_share("trc-share").await.unwrap(), Some(updated));
+    let mut invalid = store.trace_share("trc-share").await.unwrap().unwrap();
+    invalid.updated_at_unix_ms = u64::MAX;
+    assert_invalid(
+        store.put_trace_share(invalid).await,
+        "timestamp_out_of_range",
+    );
+    let mut invalid = store.trace_share("trc-share").await.unwrap().unwrap();
+    invalid.expires_at_unix_ms = Some(u64::MAX);
+    assert_invalid(
+        store.put_trace_share(invalid).await,
+        "timestamp_out_of_range",
+    );
+    assert!(store.delete_trace_share("trc-share").await.unwrap());
+    assert!(!store.delete_trace_share("trc-share").await.unwrap());
+    assert!(store.trace_share("trc-share").await.unwrap().is_none());
 }
 
 async fn capture_mode_is_durable_and_evented<Fut>(store: Fut)
@@ -506,6 +560,48 @@ async fn capture_filters_pagination_and_counts(store: Arc<dyn MetadataStore>) {
         ids(
             &store
                 .traces(TraceFilters {
+                    state: Some("captured".to_owned()),
+                    limit: 20,
+                    ..TraceFilters::default()
+                })
+                .await
+                .unwrap(),
+            |trace| &trace.trace_id,
+        ),
+        vec!["trc-filter-b", "trc-filter-a"]
+    );
+    assert_eq!(
+        ids(
+            &store
+                .traces(TraceFilters {
+                    status: Some("capturing".to_owned()),
+                    limit: 20,
+                    ..TraceFilters::default()
+                })
+                .await
+                .unwrap(),
+            |trace| &trace.trace_id,
+        ),
+        vec!["trc-filter-d"]
+    );
+    assert_eq!(
+        ids(
+            &store
+                .traces(TraceFilters {
+                    status: Some("capture_failed".to_owned()),
+                    limit: 20,
+                    ..TraceFilters::default()
+                })
+                .await
+                .unwrap(),
+            |trace| &trace.trace_id,
+        ),
+        vec!["trc-filter-c"]
+    );
+    assert_eq!(
+        ids(
+            &store
+                .traces(TraceFilters {
                     notarization_status: Some("not_requested".to_owned()),
                     streaming: Some(true),
                     limit: 20,
@@ -530,6 +626,20 @@ async fn capture_filters_pagination_and_counts(store: Arc<dyn MetadataStore>) {
             |capture| &capture.trace_id,
         ),
         vec!["trc-filter-d", "trc-filter-c", "trc-filter-b"]
+    );
+    assert_eq!(
+        ids(
+            &store
+                .traces(TraceFilters {
+                    created_before_unix_ms: Some(200),
+                    limit: 20,
+                    ..TraceFilters::default()
+                })
+                .await
+                .unwrap(),
+            |trace| &trace.trace_id,
+        ),
+        vec!["trc-filter-c", "trc-filter-b", "trc-filter-a"]
     );
 
     let all = store
@@ -567,12 +677,12 @@ async fn capture_filters_pagination_and_counts(store: Arc<dyn MetadataStore>) {
     assert_eq!(second_page, all[2..]);
 
     let counts = store.counts().await.unwrap();
-    assert_eq!(counts.total_traces, 4);
-    assert_eq!(counts.capturing, 1);
-    assert_eq!(counts.ready_to_notarize, 1);
+    assert_eq!(counts.captured, 2);
+    assert_eq!(counts.notarizing, 0);
     assert_eq!(counts.notarized, 0);
-    assert_eq!(counts.failed, 1);
-    assert_eq!(counts.active_operations, 0);
+    assert_eq!(counts.needs_attention, 1);
+    assert_eq!(counts.capturing, 1);
+    assert_eq!(counts.capture_failed, 1);
 }
 
 async fn operation_filters_and_pagination(store: Arc<dyn MetadataStore>) {
@@ -642,11 +752,11 @@ async fn operation_filters_and_pagination(store: Arc<dyn MetadataStore>) {
         Some(op_a)
     );
     assert!(store.operation("op-missing").await.unwrap().is_none());
-    assert_eq!(store.counts().await.unwrap().active_operations, 3);
+    assert_eq!(store.counts().await.unwrap().notarizing, 3);
 
     let claimed = store.claim_next_notarization(30).await.unwrap().unwrap();
     assert_eq!(claimed.trace_id, "trc-ops-a");
-    assert_eq!(store.counts().await.unwrap().active_operations, 3);
+    assert_eq!(store.counts().await.unwrap().notarizing, 3);
 }
 
 async fn notarization_lifecycle(store: Arc<dyn MetadataStore>) {
@@ -1353,6 +1463,16 @@ async fn invalid_limits_and_ranges(store: Arc<dyn MetadataStore>) {
             })
             .await,
         "created_after_out_of_range",
+    );
+    assert_invalid(
+        store
+            .traces(TraceFilters {
+                created_before_unix_ms: Some(u64::MAX),
+                limit: 1,
+                ..TraceFilters::default()
+            })
+            .await,
+        "created_before_out_of_range",
     );
     assert_invalid(
         store

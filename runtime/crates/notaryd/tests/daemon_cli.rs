@@ -161,8 +161,8 @@ async fn daemon_uses_the_versioned_loopback_api_for_reads_and_mutations() {
         .await
         .unwrap();
     assert_eq!(status["admin_listener"], admin.to_string());
-    assert_eq!(status["counts"]["total_traces"], 1);
-    assert_eq!(status["counts"]["ready_to_notarize"], 1);
+    assert_eq!(status["counts"]["captured"], 1);
+    assert_eq!(status["counts"]["notarizing"], 0);
     assert_eq!(status["updates"]["current_build_id"], "dev");
     assert_eq!(status["updates"]["enabled"], false);
 
@@ -176,7 +176,8 @@ async fn daemon_uses_the_versioned_loopback_api_for_reads_and_mutations() {
         .json()
         .await
         .unwrap();
-    assert_eq!(capture["capture"]["capture_status"], "captured");
+    assert_eq!(capture["state"], "captured");
+    assert_eq!(capture["status"], serde_json::Value::Null);
 
     let notarize: serde_json::Value = client
         .post(format!(

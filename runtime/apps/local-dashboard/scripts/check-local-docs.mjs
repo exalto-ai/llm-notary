@@ -30,27 +30,31 @@ const expectedOperations = {
   '/v1/status': { get: ['200', '401', '503'] },
   '/v1/settings/capture': { get: ['200', '401', '503'], put: ['200', '401', '503'] },
   '/v1/notaries': { get: ['200', '401', '500', '503'] },
+  '/v1/providers': { get: ['200', '401'] },
   '/v1/traces': { get: ['200', '400', '401', '503'] },
   '/v1/traces/{trace_id}': { get: ['200', '401', '404', '503'] },
   '/v1/traces/{trace_id}/notarizations': { post: ['202', '401', '404', '409', '503'] },
-  '/v1/operations': { get: ['200', '400', '401', '503'] },
   '/v1/operations/{operation_id}': { get: ['200', '401', '404', '503'] },
-  '/v1/operations/{operation_id}/retry': { post: ['202', '401', '409', '503'] },
-  '/v1/traces/{trace_id}/package': { get: ['200', '401', '404', '409', '500', '503'] },
-  '/v1/traces/{trace_id}/trace': { get: ['200', '401', '404', '409', '500', '503'] },
-  '/v1/traces/{trace_id}/trace:verify': {
+  '/v1/traces/{trace_id}/package.llmtrace': {
+    get: ['200', '401', '404', '409', '500', '503'],
+  },
+  '/v1/traces/{trace_id}/content': { get: ['200', '401', '404', '409', '500', '503'] },
+  '/v1/traces/{trace_id}/verify': {
     post: ['200', '401', '404', '409', '422', '500', '503'],
   },
-  '/v1/traces:verify': { post: ['200', '401', '422', '500', '503'] },
-  '/v1/events': { get: ['200', '400', '401', '503'] },
+  '/v1/verify': { post: ['200', '400', '401', '500', '503'] },
+  '/v1/activity': { get: ['200', '400', '401', '503'] },
   '/v1/account': {
     get: ['200', '401', '503'],
     post: ['202', '401', '409', '503'],
     delete: ['204', '401', '409', '503'],
   },
   '/v1/account/{request_id}': { get: ['200', '401', '404', '503'] },
-  '/v1/traces/{trace_id}/shares': { post: ['202', '401', '404', '409', '500', '503'] },
-  '/v1/shares/{share_id}': { get: ['200', '401', '404', '409', '503'] },
+  '/v1/traces/{trace_id}/share': {
+    get: ['200', '401', '404', '503'],
+    put: ['200', '202', '400', '401', '404', '409', '500', '503'],
+    delete: ['204', '401', '503'],
+  },
 };
 
 const actualPaths = Object.keys(openapi.paths).sort();
@@ -93,19 +97,19 @@ function parameterNames(path, method) {
 }
 const expectedParameters = {
   'GET /v1/traces': [
-    'capture_status',
-    'created_after_unix_ms',
+    'created_before_unix_ms',
+    'created_from_unix_ms',
     'cursor',
-    'notarization_status',
     'limit',
+    'metadata_only',
     'model',
-    'offset',
     'provider',
     'query',
+    'state',
+    'status',
     'streaming',
   ],
-  'GET /v1/operations': ['trace_id', 'cursor', 'kind', 'limit', 'state'],
-  'GET /v1/events': [
+  'GET /v1/activity': [
     'after',
     'trace_id',
     'created_after_unix_ms',
@@ -115,7 +119,7 @@ const expectedParameters = {
     'operation_id',
     'severity',
   ],
-  'GET /v1/shares/{share_id}': ['share_id'],
+  'GET /v1/traces/{trace_id}/share': ['trace_id'],
 };
 for (const [operation, expected] of Object.entries(expectedParameters)) {
   const [method, path] = operation.split(' ');
@@ -126,18 +130,19 @@ for (const [operation, expected] of Object.entries(expectedParameters)) {
 }
 
 const expectedRequiredFields = {
-  Page_CaptureResponse: ['items'],
-  Page_OperationSummaryResponse: ['items'],
-  CaptureDetailResponse: ['artifacts', 'capture', 'notarizations'],
-  CaptureResponse: [
+  TracePage: ['items'],
+  TraceDetail: [
+    'artifacts',
+    'notarization',
+    'share',
     'trace_id',
+    'state',
+    'status',
     'created_at_unix_ms',
     'provider',
     'operation',
     'streaming',
     'request_bytes',
-    'capture_status',
-    'notarization_status',
     'notarization_eligible',
     'prompt_preview',
     'prompt_preview_truncated',
@@ -146,13 +151,15 @@ const expectedRequiredFields = {
   ],
   ErrorBody: ['code', 'message'],
   ErrorEnvelope: ['error'],
-  EventResponse: ['event_id', 'created_at_unix_ms', 'event_type', 'severity', 'message'],
-  EventListResponse: ['items'],
-  NotarizationResponse: ['operation', 'deduplicated'],
+  ActivityItem: ['event_id', 'created_at_unix_ms', 'event_type', 'severity', 'message'],
+  ActivityPage: ['items'],
+  NotarizationRequest: ['trace_id', 'operation', 'deduplicated'],
   NotariesResponse: ['source', 'notaries'],
-  NotaryResponse: ['endpoint', 'transport', 'key_id', 'status'],
-  OperationAttemptResponse: ['attempt', 'state', 'started_at_unix_ms'],
-  OperationResponse: [
+  Notary: ['name', 'operator', 'endpoint', 'transport', 'key_id', 'verification_key', 'lifecycle'],
+  Provider: ['id', 'name', 'host', 'client_api', 'route_prefix', 'proxy_base_url', 'ready'],
+  ProvidersResponse: ['providers'],
+  NotarizationAttempt: ['attempt', 'state', 'started_at_unix_ms'],
+  TechnicalOperation: [
     'operation_id',
     'kind',
     'trace_id',
@@ -162,15 +169,6 @@ const expectedRequiredFields = {
     'created_at_unix_ms',
     'progress',
     'retryable',
-  ],
-  OperationSummaryResponse: [
-    'operation_id',
-    'kind',
-    'trace_id',
-    'state',
-    'attempt',
-    'created_at_unix_ms',
-    'progress',
   ],
   OperationProgressResponse: ['phase', 'updated_at_unix_ms'],
   OperationProofProgressResponse: [
@@ -187,21 +185,57 @@ const expectedRequiredFields = {
     'poll_interval_seconds',
     'state',
   ],
-  ShareResponse: ['trace_id', 'share_id', 'state', 'visibility', 'status_url'],
-  ShareStatusResponse: ['share_id', 'state', 'visibility'],
-  TraceResponse: ['trace_id', 'manifest', 'trace'],
-  VerificationResponse: [
+  TraceShare: [
     'trace_id',
-    'verified',
-    'verified_at_unix_ms',
-    'notary_key_id',
-    'trust_source',
+    'progress',
+    'visibility',
+    'access_enabled',
+    'password_protected',
+    'updated_at_unix_ms',
   ],
+  TraceContent: ['trace_id', 'manifest', 'trace'],
+  TraceSummary: [
+    'trace_id',
+    'state',
+    'status',
+    'created_at_unix_ms',
+    'provider',
+    'operation',
+    'streaming',
+    'request_bytes',
+    'notarization_eligible',
+    'prompt_preview',
+    'prompt_preview_truncated',
+    'output_preview',
+    'output_preview_truncated',
+  ],
+  VerificationResult: ['outcome', 'verified_at_unix_ms'],
 };
+function requiredFields(schema) {
+  const value = openapi.components.schemas[schema];
+  if (!value) return [];
+  const direct = value.required ?? [];
+  const composed = (value.allOf ?? []).flatMap((entry) => {
+    if (entry.$ref) return requiredFields(entry.$ref.split('/').at(-1));
+    const nested = entry.required ?? [];
+    return [...nested, ...(entry.allOf ?? []).flatMap(() => [])];
+  });
+  return [...new Set([...direct, ...composed])];
+}
 for (const [schema, expected] of Object.entries(expectedRequiredFields)) {
-  const actual = [...(openapi.components.schemas[schema]?.required ?? [])].sort();
+  const actual = requiredFields(schema).sort();
   if (JSON.stringify(actual) !== JSON.stringify([...expected].sort())) {
     throw new Error(`${schema} required fields changed: ${actual.join(', ')}`);
+  }
+}
+
+const shareRequest = openapi.components.schemas.PutTraceShareRequest;
+if (shareRequest?.properties?.password?.writeOnly !== true) {
+  throw new Error('PutTraceShareRequest.password must remain write-only');
+}
+for (const forbidden of ['password', 'intake_url', 'upload_url', 'status_url']) {
+  if (openapi.components.schemas.TraceShare?.properties?.[forbidden]) {
+    throw new Error(`TraceShare must not expose ${forbidden}`);
   }
 }
 
@@ -210,6 +244,8 @@ for (const term of [
   'deduplicated',
   'attempt_history',
   'notarization_eligible',
+  'state',
+  'status',
   'retryable',
   'progress.proof',
   'bytes_completed',
@@ -219,6 +255,8 @@ for (const term of [
   'poll_interval_seconds',
   'notary_key_id',
   'trust_source',
+  'password_protected',
+  'access_enabled',
 ]) {
   if (!workflowContent.includes(term))
     throw new Error(`Workflow documentation is missing contract term: ${term}`);

@@ -85,7 +85,7 @@ that deterministic incompatibility.
 
 ## Monitor and retry notarization
 
-The operation queue shows state, capture identifier, attempt, enqueue time, and
+The operation queue shows state, Trace identifier, attempt, enqueue time, and
 the current notarization milestone. The inspector shows timestamps and
 `attempt_history`, with one durable record for each worker attempt. Proof
 generation may take minutes and usually dominates notarization, so the UI does
@@ -107,7 +107,7 @@ views:
 
 - **Summary** describes the authenticated inference and package format, then
   renders the disclosed prompt and response as a readable conversation. This
-  is notarized trace content, not decrypted source-bundle data.
+  is notarized trace content, not decrypted checkpoint data.
 - **Evidence** shows the exact trace hash, authenticated provider, source time,
   and manifest format reported by the selected package.
 - **Trace** shows the canonical OpenTelemetry document.
@@ -115,7 +115,7 @@ views:
   locally** rechecks the package.
 
 **Download verified package** saves the exact canonical
-`<capture-id>.llmtrace` bytes produced by notarization. It is the artifact to
+`<trace-id>.llmtrace` bytes produced by notarization. It is the artifact to
 retain, share privately with an intended verifier, or submit for a public link. The
 package discloses request and response bodies; review that privacy boundary
 before sharing it. The source `.llmcapture` remains vault-encrypted private
@@ -123,7 +123,7 @@ retry state and is never a shareable verification artifact.
 
 ![Notarized trace inspector in dark mode with the Verification tab selected and a passed verification result showing the capture, verification time, notary key identifier, and directory trust source.](images/local-dashboard/trace-verification.png)
 
-Bundle availability is not the same as trace verification. Only the
+Package availability is not the same as trace verification. Only the
 successful verification result confirms that the notarized package's evidence,
 disclosure, hashes, provider mapping, and canonical trace bytes agree.
 
@@ -132,10 +132,10 @@ disclosure, hashes, provider mapping, and canonical trace bytes agree.
 The Share view shows the disclosed conversation before upload, then asks for
 Unlisted (the default) or Listed visibility. Both start accessible to anyone
 with the link; Unlisted only stays out of the Library. After admission, the
-hosted account’s Traces view can unpublish the share, require a password, or set
+hosted account’s Traces view can stop sharing, require a password, or set
 an expiry. The source `.llmcapture` is never an input, and
 nothing is uploaded merely because a trace was notarized or verified. After
-submission, the dashboard polls `GET /v1/shares/{share_id}` through the local
+submission, the dashboard polls `GET /v1/traces/{trace_id}/share` through the local
 service. Successful admission makes **Copy link** the primary action and also
 offers the exact admitted package for independent verification. Remote account
 credentials never enter the browser.
@@ -155,7 +155,7 @@ link is ready early. Once admitted, the stable link is the primary result.
 
 ## Activity and settings
 
-Activity asks the service to filter by severity, capture identifier, operation
+Activity asks the service to filter by severity, Trace identifier, operation
 identifier, event type, or time instead of downloading a broad history and
 filtering it in the browser. Events contain bounded messages and identifiers,
 never request bodies, response bodies, raw headers, credentials, or filesystem
@@ -208,7 +208,7 @@ accent.
 | Service unavailable | Confirm the foreground process is running and the browser uses the configured loopback admin address, normally port 8788. |
 | Address already in use | Stop the other process or assign distinct loopback `proxy.listen` and `admin.listen` ports, then restart. |
 | Unauthorized session | Confirm that `admin.auth` is enabled, then enter its configured username and password. Restart the service after changing the hash. Never add the password to the URL. |
-| Vault unavailable | Unlock the OS credential store or supply the configured private passphrase file, then restart. Do not move encrypted bundles outside their initialized vault profile. |
+| Vault unavailable | Unlock the OS credential store or supply the configured private passphrase file, then restart. Do not move encrypted checkpoints outside their initialized vault profile. |
 | Notary directory unavailable | Check network access and directory configuration. An explicit local notary endpoint is appropriate only for local/self-hosted development. |
 | Operation interrupted | A running job was stopped by service restart. Inspect its safe code and use Retry notarization. |
 | Missing artifact | Keep metadata and its filesystem directories or private S3 prefix together. Check `artifact_missing`, `artifact_corrupt`, `artifact_backend_unavailable`, or `artifact_backend_unconfigured`; the API intentionally does not accept a replacement path or object key. |
@@ -218,7 +218,7 @@ accent.
 
 All images above come from `apps/local-dashboard/src/fixtures.ts`. The data
 is synthetic and fixed: it contains no real user prompts, provider keys, account
-names, local paths, or bundle contents. The dashboard labels this state
+names, local paths, or checkpoint contents. The dashboard labels this state
 **Sample data** and starts with the synthetic
 `sample-user` identity already connected. Neither label describes a production
 account type. Desktop viewports use 1440 × 1000 px;

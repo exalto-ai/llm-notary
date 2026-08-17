@@ -18,7 +18,7 @@ seams, but those implementations are not part of this workspace.
 | Provider client | yes | provider credential | Sends an ordinary provider request to a fixed local route |
 | `notaryd` | yes | vault, metadata, operations, artifacts, trust cache | Proxies requests, captures private state, notarizes, and verifies |
 | `llm-notary` | only API responses requested by the user | none | Calls the daemon's versioned administration API |
-| Local dashboard | only safe catalog fields and deliberately opened notarized disclosures | browser session preference | Uses the same administration API as the CLI |
+| Local dashboard | only safe metadata store fields and deliberately opened notarized disclosures | browser session preference | Uses the same administration API as the CLI |
 | `llm-notary-server` | no | signing key | Resolves the provider, relays encrypted TLS records, witnesses sessions, and completes proof work |
 | Model provider | yes | provider-owned | Serves an ordinary HTTPS request without an LLM Notary integration |
 | Artifact backend | encrypted capture or disclosed package bytes | filesystem or private S3-compatible objects | Retains immutable artifacts after size and SHA-256 validation |
@@ -29,7 +29,7 @@ credentials, prompts, and response plaintext. The remote notary learns the
 selected provider hostname, ciphertext sizes, timing, and protocol metadata,
 but it must not receive credential values or application plaintext.
 
-`llm-notary` is intentionally a thin REST client. It does not open the catalog,
+`llm-notary` is intentionally a thin REST client. It does not open the metadata store,
 vault, captures, or protocol implementation directly. The local dashboard uses
 the same generated OpenAPI contract and never receives a hosted credential or
 a decrypted source capture.
@@ -172,7 +172,7 @@ for hosted-directory rotation and revocation.
   a later request does not prove that a local tool ran or produced that result.
 - The canonical trace is deterministically derived from authenticated request
   and response bodies.
-- Catalog previews, local operation events, account labels, share visibility,
+- Metadata previews, local operation events, account labels, share visibility,
   and publisher labels are local or hosted observations. Displaying them beside
   a verified trace does not turn them into cryptographic claims.
 - A rendered shared session is an inspection view. The retained exact

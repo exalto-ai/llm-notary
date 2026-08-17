@@ -1,6 +1,6 @@
 # Local service and REST API
 
-In the default local profile, one `notaryd` process owns the catalog,
+In the default local profile, one `notaryd` process owns the metadata store,
 vault, artifacts, and durable operation state. The short-lived
 `llm-notary` command talks to it through the versioned loopback API.
 `notaryd` owns two different loopback listeners:
@@ -59,13 +59,14 @@ The process logs lifecycle metadata to standard error and exits when it cannot
 bind either listener or safely open its storage. A service manager such as
 systemd, launchd, or the Windows Service Control Manager can supervise this
 same foreground command. Stop it through the manager or with the terminal's
-normal interrupt; do not run a second process against the same catalog.
+normal interrupt; do not run a second process against the same metadata store.
 
 On interrupt or termination, the daemon first closes both listeners to new
 requests. Existing provider response streams are allowed to finish and seal
 their private capture, and the notarization worker stops claiming queued work
 after it finishes the operation it already owns. Queued operations remain in
-the catalog for the next start. The desktop app requests the same drain over
+the metadata store for the next start. The desktop app requests the same drain
+over
 its private child-process pipe. It does not send a kill signal as an update or
 normal stop mechanism.
 
@@ -245,12 +246,12 @@ the exact requirement is a local configuration choice.
 Start with the default flow:
 
 ```bash
-export LLM_NOTARY_ADMIN_ORIGIN=http://127.0.0.1:8788
+export NOTARYD_ADMIN_ORIGIN=http://127.0.0.1:8788
 
-curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/healthz"
-curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/readyz"
-curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/openapi.json" > /tmp/llm-notary-openapi.json
-curl --fail-with-body "$LLM_NOTARY_ADMIN_ORIGIN/v1/status"
+curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/healthz"
+curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/readyz"
+curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/openapi.json" > /tmp/llm-notary-openapi.json
+curl --fail-with-body "$NOTARYD_ADMIN_ORIGIN/v1/status"
 ```
 
 Keep the origin fixed to the configured loopback listener. Do not accept an
@@ -366,33 +367,32 @@ use `1`. Error text is safe and never echoes credentials or plaintext headers.
 
 ## API conventions
 
-- `/v1` is the current administration API version. Fetch `/openapi.json` at
-  runtime rather than guessing routes, fields, or future versions.
+- `/v1` is the current administration API version. Fetch `GET /openapi.json`
+  at runtime rather than guessing routes, fields, or future versions. Use
+  `GET /healthz` for liveness and `GET /readyz` for dependency readiness.
 - Request and response bodies are JSON where the OpenAPI operation declares a
-  body. Identifiers are opaque strings such as `cap-…` and `op-…`.
+  body. Trace and operation identifiers are opaque strings such as `trc-…` and
+  `op-…`.
 - Errors use `{"error":{"code":"safe_code","message":"safe message"}}`.
   Codes and messages exclude credentials, plaintext headers, and local paths.
   Invalid query values use the same JSON envelope; for example, a negative
   `limit` returns `invalid_query_parameter` instead of a framework error page.
-- Capture lists use `limit` and an opaque `cursor`. Supported filters are
-  `query`, `provider`, `model`, `capture_state`, `notarization_status`,
-  `streaming`, and `created_after_unix_ms`. A cursor is valid only with the
-  route and filters that produced it. The removed `offset` parameter returns
-  `offset_pagination_removed`; callers must restart at page one and follow
-  `next_cursor`.
-- Capture search treats punctuation as token boundaries, so `safety-review`
+- Trace lists use `limit` and an opaque `cursor`. Supported filters are
+  `query`, `state`, `status`, `provider`, `model`, `streaming`,
+  `created_from_unix_ms`, `created_before_unix_ms`, and `metadata_only`. A
+  cursor is valid only with the route and filters that produced it. Offset
+  pagination and old capture/notarization filter aliases are rejected.
+- Trace search treats punctuation as token boundaries, so `safety-review`
   and `**safety**` are safe inputs. Space-separated words must all match;
   double quotes preserve a phrase such as `"safety review"`.
-- Operation lists support exact `state`, `kind`, and `trace_id` filters plus
-  `limit` and an opaque `cursor`.
 - Activity supports exact `severity`, `event_type`, `trace_id`, and
   `operation_id` filters, a `created_after_unix_ms` lower bound, and `limit`.
   Use `next_cursor` to continue backward through history. Save the separate
   `high_water_cursor` and pass it as `after` to follow newer events without
   changing the meaning of the back-pagination cursor.
-- Mutations that start or retry background work return `202 Accepted`. Record
-  the returned operation identifier and poll its resource. A 202 response does
-  not mean the proof is complete.
+- Mutations that start background work return `202 Accepted`. Record the
+  returned operation identifier and poll its technical resource. A 202
+  response does not mean the proof is complete.
 - Cancellation is not implemented. Do not invent or call a cancellation route.
 
 The OpenAPI document is the complete schema reference. This compact map shows
@@ -400,84 +400,95 @@ which workflow owns each operation:
 
 | Workflow | Operations |
 | --- | --- |
+| Discovery | `GET /healthz`, `GET /readyz`, `GET /openapi.json` |
 | Session and status | `POST /v1/session`, `DELETE /v1/session`, `GET /v1/status` |
-| Notary trust | `GET /v1/notaries` |
-| Captures | `GET /v1/traces`, `GET /v1/traces/{trace_id}` |
-| Notarization | `POST /v1/traces/{trace_id}/notarizations`, `GET /v1/operations`, `GET /v1/operations/{operation_id}`, `POST /v1/operations/{operation_id}/retry` |
-| Notarized trace | `GET /v1/traces/{trace_id}/package`, `GET /v1/traces/{trace_id}/trace`, `POST /v1/traces/{trace_id}/trace:verify` |
-| Activity | `GET /v1/events` |
+| Capture setting | `GET /v1/settings/capture`, `PUT /v1/settings/capture` |
+| Notaries and providers | `GET /v1/notaries`, `GET /v1/providers` |
+| Traces | `GET /v1/traces`, `GET /v1/traces/{trace_id}` |
+| Notarization | `POST /v1/traces/{trace_id}/notarizations`, `GET /v1/operations/{operation_id}` |
+| Notarized Trace | `GET /v1/traces/{trace_id}/package.llmtrace`, `GET /v1/traces/{trace_id}/content`, `POST /v1/traces/{trace_id}/verify` |
+| Portable verification | `POST /v1/verify` |
+| Activity | `GET /v1/activity` |
 | Account connection | `GET /v1/account`, `POST /v1/account`, `GET /v1/account/{request_id}`, `DELETE /v1/account` |
-| Sharing | `POST /v1/traces/{trace_id}/shares`, `GET /v1/shares/{share_id}` |
+| Sharing | `GET /v1/traces/{trace_id}/share`, `PUT /v1/traces/{trace_id}/share`, `DELETE /v1/traces/{trace_id}/share` |
 
 `GET /v1/notaries` returns a safe read-only view of the locally pinned or
-server-shared notary
-directory and trust history, or the explicitly configured self-hosted endpoint
-and key. Its lifecycle records describe allowed protocol use; they are not an
-endpoint health check.
+server-shared Registry, or the explicitly configured self-hosted endpoint and
+key. Each Notary preserves its proper `name`, `operator`, verification key, and
+`lifecycle`. Registry membership describes allowed protocol use; it is not an
+endpoint health check. `GET /v1/providers` is the explicit provider allowlist:
+it reports pinned hosts, client API styles, proxy route prefixes, and configured
+readiness without accepting arbitrary upstream hosts.
 
-For example, search the plain-text preview index and fetch one capture by its
+For example, search the plain-text preview index and fetch one Trace by its
 identifier:
 
 ```bash
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces?query=sanitized&provider=openai&limit=20"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces?query=sanitized&provider=openai&limit=20"
 
 trace_id=trc-example
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id"
 ```
 
-Inspect only failed notarizations or error events without downloading and
-filtering the entire bounded history in the client:
+Inspect only failed/interrupted Traces or error Activity without downloading
+and filtering the entire bounded history in the client:
 
 ```bash
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations?state=failed&kind=notarization&limit=20"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces?status=notarization_failed&limit=20"
 
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/events?severity=error&event_type=notarization_failed&limit=20"
+  "$NOTARYD_ADMIN_ORIGIN/v1/activity?severity=error&event_type=notarization_failed&limit=20"
 ```
 
-The catalog preview is local plaintext. Set `prompt_preview_chars` and
+The searchable preview is local plaintext. Set `prompt_preview_chars` and
 `output_preview_chars` to `0` when even a short searchable preview is not
 appropriate for the machine.
 
-## Capture and notarization lifecycle
+## Trace and notarization lifecycle
 
-A provider request begins as `capturing`. A successfully sealed encrypted
-bundle becomes `captured`; a capture failure becomes `failed`. Its notarization
-state moves independently through `not_requested`, `queued`, `running`, and
-`notarized`, or ends in `failed` or `interrupted`. The status field
-`ready_to_notarize` counts eligible captured responses whose notarization state
-is still `not_requested`.
+A Trace has stable `state: captured` once its encrypted checkpoint is committed.
+It remains Captured while notarization is queued, running, failed, or
+interrupted, and becomes `state: notarized` only when the exact `.llmtrace`
+package is committed and available. A request still being captured or whose
+source capture failed has null state and `status: capturing` or
+`status: capture_failed`. The other operational statuses are `notarizing`,
+`notarization_failed`, and `notarization_interrupted`; a stable state without a
+subordinate condition has null status. `GET /v1/status` exposes `captured`,
+`notarizing`, `notarized`, `needs_attention`, `capturing`, and `capture_failed`
+counts.
 
 The current provider normalizers support successful response schemas only.
-When capture completes with a non-`2xx` provider status, capture detail sets
+When capture completes with a non-`2xx` provider status, Trace detail sets
 `notarization_eligible` to `false` and reports
 `notarization_ineligibility_code: unsupported_provider_http_status`. Starting
 notarization returns `409` with the same code before any proof work is queued.
-The encrypted bundle remains local and unchanged; retry is not offered because
+The encrypted checkpoint remains local and unchanged; retry is not offered because
 the recorded provider response cannot become successful on a later attempt.
 
-Queue notarization with `POST /v1/traces/{trace_id}/notarizations` and save
-the durable operation identifier from the 202 response. Poll it with
+Queue or retry notarization with `POST /v1/traces/{trace_id}/notarizations` and
+save the durable operation identifier from the 202 response. Poll it with
 `GET /v1/operations/{operation_id}`:
 
 ```bash
 trace_id=trc-example
 response=$(curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/notarizations")
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/notarizations")
 operation_id=$(printf '%s' "$response" | jq -r '.operation.operation_id')
 printf 'Queued operation %s\n' "$operation_id"
 
 curl --fail-with-body \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations/$operation_id"
+  "$NOTARYD_ADMIN_ORIGIN/v1/operations/$operation_id"
 ```
 
-If the same capture is submitted while an operation already exists, the
-service returns that operation and sets `deduplicated` to `true`. It does not
-start a competing proof. Poll while `state` is `queued` or `running`; terminal
-states are `notarized`, `failed`, and `interrupted`.
+If the same Trace is submitted while active work already exists, the service
+returns that operation and sets `deduplicated` to `true`. It does not start a
+competing proof. A failed or interrupted operation is requeued through the same
+Trace action, preserving its identifier and `attempt_history`. Poll while
+operation `state` is `queued` or `running`; terminal states are `succeeded`,
+`failed`, and `interrupted`.
 
 Every operation response includes `progress.phase`. The values are `queued`,
 `preparing`, `proving`, `signing`, `packaging`, and `complete`; these are named
@@ -490,20 +501,17 @@ packaging. The daemon updates durable counters at most about once per second.
 
 After a restart, work that was `running` is recorded as `interrupted` with the
 safe code `service_restarted`. Queued work remains durable. Retry only a
-`failed` or `interrupted` operation whose response says `retryable: true` with
-`POST /v1/operations/{operation_id}/retry`; retrying requeues the same
-operation and increments its attempt when the worker claims it:
+`failed` or `interrupted` operation whose response says `retryable: true` by
+posting the owning Trace action again:
 
 ```bash
 curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/operations/$operation_id/retry"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/notarizations"
 ```
 
-Capture detail includes its `notarizations` history. Operation list rows are
-bounded summaries; `GET /v1/operations/{operation_id}` includes `retryable`
-and complete `attempt_history`, so an agent can avoid deterministic rejections
-and distinguish earlier interrupted or failed attempts from the current
-aggregate state without searching an event page.
+Trace detail includes the current technical `notarization` with `retryable` and
+complete `attempt_history`, so an agent can distinguish earlier interrupted or
+failed attempts from the current aggregate state without searching Activity.
 
 ## Validation, verification, and sharing
 
@@ -518,33 +526,37 @@ TLSNotary evidence, disclosed HTTP artifacts, manifest, archive manifest, and
 canonical OpenTelemetry JSON. Every HTTP header value is hidden except the
 exact structural value `Transfer-Encoding: chunked`; the authenticated request
 and response bodies remain disclosed. Download its exact bytes or verify it
-through the capture identifier:
+through the Trace identifier:
 
 ```bash
 trace_id=trc-example
 curl --fail-with-body --output "$trace_id.llmtrace" \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/package"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/package.llmtrace"
 
 curl --fail-with-body -X POST \
-  "$LLM_NOTARY_ADMIN_ORIGIN/v1/traces/$trace_id/trace:verify"
+  "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/verify"
 ```
 
-`POST /v1/traces:verify` accepts portable `.llmtrace` bytes for in-memory
-verification without adding them to the catalog or artifact store. The thin
-CLI uses this loopback route for path-based verification.
+`POST /v1/verify` accepts one bounded portable `.llmtrace` body for in-memory
+verification without importing, retaining, indexing, or sharing it. It
+returns `outcome: passed`, `failed`, or `unsupported`; failures are results,
+not competing Trace states. The thin CLI uses this loopback route for
+path-based verification.
 
-A successful response contains `verified: true`, a verification time, notary
-key identifier, and trust source. This operation rechecks the evidence,
+A successful response contains `outcome: passed`, a verification time,
+`notary_key_id`, and `trust_source`. This operation rechecks the evidence,
 disclosure, hashes, provider adapter, and canonical trace bytes.
-`GET /v1/traces/{trace_id}/trace` decodes the same notarized package into
+`GET /v1/traces/{trace_id}/content` decodes the same notarized package into
 its manifest and canonical trace document for inspection; it does not replace
 the verification operation.
 
 Sharing is a later, explicit consent decision. It is never part of local
 notarization. The `/v1/account` device flow authorizes the local service, and
-`POST /v1/traces/{trace_id}/shares` accepts only an eligible notarized
-capture plus an explicit `unlisted` or `listed` visibility. Ask the user before
-sharing or changing service configuration. Device authorization starts with `202 Accepted`; obey
+`PUT /v1/traces/{trace_id}/share` creates or updates the one canonical share
+for an eligible Notarized Trace with explicit `unlisted` or `listed`
+visibility. It may also set expiry and a write-only password; responses expose
+only `password_protected`, never the password. Ask the user before sharing or
+changing service configuration. Device authorization starts with `202 Accepted`; obey
 its `poll_interval_seconds` and keep polling the returned
 `/v1/account/{request_id}` route while `signed_in` is false.
 When the daemon uses an injected API key, `POST /v1/account` and
@@ -555,23 +567,28 @@ the exact notarized package and applies the same versioned public-disclosure
 safety policy used by hosted admission. The hosted worker repeats both checks;
 local acceptance never guarantees admission by a newer server policy.
 An explicit `force: true` request, exposed by `llm-notary share --force`, accepts
-only unexplained high-entropy values after the publisher reviews the complete
+only unexplained high-entropy values after the user reviews the complete
 disclosure. It cannot override known secret patterns, credential fields,
 disclosed header values, signed credential queries, invalid archives, or failed
 cryptographic verification.
-After submission, poll `GET /v1/shares/{share_id}` on the local admin
-listener. The service uses the vault-held account credential
+After submission, poll `GET /v1/traces/{trace_id}/share` on the local admin
+listener. Progress is `preparing`, `uploading`, `verifying`, `shared`,
+`rejected`, or `failed`. The safe response includes `access_enabled`, visibility,
+expiry, and access URLs but never an intake or presigned upload URL. The service
+uses the vault-held account credential
 to fetch admission state; agents and the dashboard never receive that
 credential. A missing share returns `404`; missing or expired account
 authorization returns `409`; a temporary platform or network failure returns
-`503` rather than pretending the share disappeared. An admitted response
+`503` rather than pretending the share disappeared. A shared response
 contains the stable `share_url` and exact public `package_url`. Anyone with an
 Unlisted or Listed link can read the disclosure; this is not private access.
+`DELETE /v1/traces/{trace_id}/share` stops public access without deleting or
+changing the local Notarized Trace; repeated deletion is safe.
 
 ## Local trust boundary
 
 The API is intentionally identifier-based. It does not accept arbitrary input
-or output paths and does not return decrypted bundle contents, credential
+or output paths and does not return decrypted checkpoint contents, credential
 values, cookies, raw authenticated headers, vault keys, token values, or
 presigned upload URLs. API errors and activity events follow the same rule.
 Foreground startup diagnostics can name a configured local path when that path

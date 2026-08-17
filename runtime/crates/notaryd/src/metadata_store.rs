@@ -14,7 +14,7 @@ use crate::{
     metadata::{
         CaptureCompletion, EventFilters, EventSnapshot, IncompleteCapture, MetadataCounts,
         NewTrace, Operation, OperationAttempt, OperationFilters, RegistrySnapshot,
-        TerminalOperationResult, TraceFilters, TraceSummary,
+        TerminalOperationResult, TraceFilters, TraceShareRecord, TraceSummary,
     },
     registry::Registry,
 };
@@ -187,6 +187,10 @@ pub trait MetadataStore: Send + Sync {
     async fn trace(&self, trace_id: &str) -> MetadataResult<Option<TraceSummary>>;
     async fn artifacts(&self, trace_id: &str) -> MetadataResult<Vec<ArtifactRecord>>;
     async fn counts(&self) -> MetadataResult<MetadataCounts>;
+
+    async fn trace_share(&self, trace_id: &str) -> MetadataResult<Option<TraceShareRecord>>;
+    async fn put_trace_share(&self, share: TraceShareRecord) -> MetadataResult<()>;
+    async fn delete_trace_share(&self, trace_id: &str) -> MetadataResult<bool>;
 
     async fn enqueue_notarization(
         &self,

@@ -115,15 +115,37 @@ pub struct Event {
     pub message: String,
 }
 
+/// Durable local association between a trace and its one canonical hosted share.
+/// Secret inputs are never persisted here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TraceShareRecord {
+    pub trace_id: String,
+    pub hosted_trace_id: String,
+    pub progress: String,
+    pub visibility: String,
+    pub access_enabled: bool,
+    pub password_protected: bool,
+    pub expires_at_unix_ms: Option<u64>,
+    pub failure_code: Option<String>,
+    pub share_url: Option<String>,
+    pub package_url: Option<String>,
+    pub updated_at_unix_ms: u64,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct TraceFilters {
     pub query: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
+    /// Derived product state: `captured` or `notarized`.
+    pub state: Option<String>,
+    /// Derived operational status such as `notarizing` or `capture_failed`.
+    pub status: Option<String>,
     pub capture_status: Option<String>,
     pub notarization_status: Option<String>,
     pub streaming: Option<bool>,
     pub created_after_unix_ms: Option<u64>,
+    pub created_before_unix_ms: Option<u64>,
     pub cursor: Option<TracePagePosition>,
     pub limit: usize,
 }
@@ -200,12 +222,12 @@ impl From<&Operation> for OperationPagePosition {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct MetadataCounts {
-    pub total_traces: u64,
-    pub capturing: u64,
-    pub ready_to_notarize: u64,
+    pub captured: u64,
+    pub notarizing: u64,
     pub notarized: u64,
-    pub failed: u64,
-    pub active_operations: u64,
+    pub needs_attention: u64,
+    pub capturing: u64,
+    pub capture_failed: u64,
 }
 
 /// One validated, server-wide Registry revision plus every retained
