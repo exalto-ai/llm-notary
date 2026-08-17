@@ -10,15 +10,15 @@ import {
   approveDeviceAuthorization,
   type getCurrentUser,
   getDeviceAuthorizationApproval,
-  getNotaryDirectory,
+  getRegistry,
 } from '../platform-api/client';
 import { sessionDate } from './format';
 
 type CurrentUser = NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>;
 type AccountIdentity = Pick<CurrentUser, 'display_name' | 'provider_display_name'>;
 type DeviceAuthorizationDetails = Awaited<ReturnType<typeof getDeviceAuthorizationApproval>>;
-type HostedDirectory = Awaited<ReturnType<typeof getNotaryDirectory>>;
-type HostedNotary = HostedDirectory['notaries'][number];
+type HostedRegistry = Awaited<ReturnType<typeof getRegistry>>;
+type HostedNotary = HostedRegistry['notaries'][number];
 type AuthorizationTone = 'neutral' | 'attention' | 'success' | 'ready';
 type AuthorizationFact = readonly [label: string, value: ReactNode];
 
@@ -241,7 +241,7 @@ const hostedNotaryStatuses: ReadonlySet<HostedNotary['status']> = new Set([
   'revoked',
 ]);
 
-function normalizeHostedDirectory(payload: HostedDirectory): HostedDirectory {
+function normalizeHostedRegistry(payload: HostedRegistry): HostedRegistry {
   if (
     !payload ||
     typeof payload !== 'object' ||
@@ -370,19 +370,19 @@ export function HostedNotaryRecord({
 }
 
 export function NotariesPage() {
-  const [directory, setDirectory] = useState<HostedDirectory | null>(null);
+  const [registry, setRegistry] = useState<HostedRegistry | null>(null);
   const [error, setError] = useState<'malformed' | 'unavailable' | null>(null);
   const [reload, setReload] = useState(0);
   const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    setDirectory(null);
+    setRegistry(null);
     setError(null);
-    getNotaryDirectory()
+    getRegistry()
       .then((payload) => {
         if (cancelled) return;
         try {
-          setDirectory(normalizeHostedDirectory(payload));
+          setRegistry(normalizeHostedRegistry(payload));
         } catch {
           setError('malformed');
         }
@@ -399,8 +399,8 @@ export function NotariesPage() {
     setCopiedKeyId(keyId);
   };
   const available =
-    directory?.notaries.filter(
-      (record) => record.key_id === directory.active_key_id || record.status === 'retiring',
+    registry?.notaries.filter(
+      (record) => record.key_id === registry.active_key_id || record.status === 'retiring',
     ) || [];
   return (
     <main className="notaries-shell">
@@ -408,13 +408,13 @@ export function NotariesPage() {
         <span className="eyebrow">Public trust metadata</span>
         <h1>Notaries and trust</h1>
         <p>
-          This is the signing-key lifecycle directory used by verification. It describes permitted
+          This is the signing-key lifecycle Registry used by verification. It describes permitted
           protocol work and retained trust records; it does not report endpoint health, uptime, or
           capacity.
         </p>
       </header>
-      {directory === null && !error ? (
-        <div className="notary-loading" role="status" aria-label="Loading notary directory">
+      {registry === null && !error ? (
+        <div className="notary-loading" role="status" aria-label="Loading notary Registry">
           <i />
           <i />
           <i />
@@ -423,24 +423,24 @@ export function NotariesPage() {
         <section className="notary-page-state" role="alert">
           <h2>
             {error === 'malformed'
-              ? 'The notary directory is malformed'
-              : 'The notary directory is unavailable'}
+              ? 'The notary Registry is malformed'
+              : 'The notary Registry is unavailable'}
           </h2>
           <p>
             {error === 'malformed'
-              ? 'The response could not be read as a valid signing-key lifecycle directory. No notary is presented as usable.'
+              ? 'The response could not be read as a valid signing-key lifecycle Registry. No notary is presented as usable.'
               : 'The public trust metadata could not be loaded. No endpoint status can be inferred from this failure.'}
           </p>
           <button type="button" onClick={() => setReload((value) => value + 1)}>
             Try again
           </button>
         </section>
-      ) : directory === null ? null : directory.notaries.length === 0 ? (
+      ) : registry === null ? null : registry.notaries.length === 0 ? (
         <section className="notary-page-state">
           <h2>No notary records are published</h2>
           <p>
-            The directory contains no trust records. No capture or finalization endpoint is
-            presented as available.
+            The Registry contains no trust records. No Capture or Notarization endpoint is presented
+            as available.
           </p>
         </section>
       ) : (
@@ -451,7 +451,7 @@ export function NotariesPage() {
                 <span className="eyebrow">Protocol lifecycle</span>
                 <h2 id="available-notaries">Available for protocol work</h2>
               </div>
-              <span>Generation {directory.generation}</span>
+              <span>Generation {registry.generation}</span>
             </div>
             <p className="notary-section-note">
               These records describe allowed work within configured time windows. They are not a
@@ -463,7 +463,7 @@ export function NotariesPage() {
                   <HostedNotaryRecord
                     key={record.key_id}
                     record={record}
-                    activeKeyId={directory.active_key_id}
+                    activeKeyId={registry.active_key_id}
                     copiedKeyId={copiedKeyId}
                     onCopy={copyKeyId}
                     compact
@@ -481,15 +481,15 @@ export function NotariesPage() {
                 <h2 id="notary-history">Trust history</h2>
               </div>
               <span>
-                {directory.notaries.length} {directory.notaries.length === 1 ? 'record' : 'records'}
+                {registry.notaries.length} {registry.notaries.length === 1 ? 'record' : 'records'}
               </span>
             </div>
             <div className="notary-records">
-              {directory.notaries.map((record) => (
+              {registry.notaries.map((record) => (
                 <HostedNotaryRecord
                   key={record.key_id}
                   record={record}
-                  activeKeyId={directory.active_key_id}
+                  activeKeyId={registry.active_key_id}
                   copiedKeyId={copiedKeyId}
                   onCopy={copyKeyId}
                 />

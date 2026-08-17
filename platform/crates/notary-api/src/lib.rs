@@ -367,7 +367,7 @@ impl NotaryApiArgs {
         let command = match arguments.as_slice() {
             [command] if command == "serve" => NotaryApiCommand::Serve,
             [command] if command == "migrate" => NotaryApiCommand::Migrate,
-            [command] if command == "--verification-worker" => NotaryApiCommand::VerificationWorker,
+            [command] if command == "verification-worker" => NotaryApiCommand::VerificationWorker,
             [help] if help == "--help" || help == "-h" || help == "help" => NotaryApiCommand::Help,
             [version] if version == "--version" || version == "-V" => NotaryApiCommand::Version,
             [command, help]

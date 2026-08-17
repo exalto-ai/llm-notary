@@ -122,6 +122,20 @@ const billingFixture = (overrides = {}) => ({
   ...overrides,
 });
 
+const usageFixture = ({
+  credits = creditsFixture(),
+  captures = 0,
+  notarizations = 0,
+  total = 0,
+  shared = 0,
+  verifying = 0,
+  storedBytes = 0,
+} = {}) => ({
+  credits,
+  operations: { captures, notarizations },
+  hosted_traces: { total, shared, verifying, stored_bytes: storedBytes },
+});
+
 describe('hosted site', () => {
   test('makes the current macOS app the primary landing action', async () => {
     expect(latestMacosDownloadHref('build-123 0.1.0')).toBe(
@@ -246,7 +260,7 @@ describe('hosted site', () => {
 
     resolveCurrentUser({
       provider_display_name: 'fixture-user',
-      share_stats: { total: 0, admitted: 0, in_progress: 0 },
+      usage: usageFixture(),
     });
     await expect
       .element(page.getByRole('heading', { name: 'Settings', exact: true }))
@@ -332,8 +346,7 @@ describe('hosted site', () => {
       <Dashboard
         user={{
           provider_display_name: 'fixture-user',
-          credits: null,
-          share_stats: { total: 3, admitted: 2, in_progress: 1 },
+          usage: usageFixture({ credits: null, total: 3, shared: 2, verifying: 1 }),
         }}
         view="credits"
         theme="light"
@@ -365,9 +378,14 @@ describe('hosted site', () => {
       <Dashboard
         user={{
           provider_display_name: 'fixture-user',
-          credits: null,
-          notary_stats: { captures: 12, notarizations: 7 },
-          share_stats: { total: 3, admitted: 2, in_progress: 1 },
+          usage: usageFixture({
+            credits: null,
+            captures: 12,
+            notarizations: 7,
+            total: 3,
+            shared: 2,
+            verifying: 1,
+          }),
         }}
         view="overview"
         theme="light"
@@ -424,8 +442,7 @@ describe('hosted site', () => {
         user={{
           provider_display_name: 'fixture-user',
           billing: billingFixture(),
-          credits: creditsFixture(),
-          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+          usage: usageFixture(),
         }}
         view="credits"
         theme="light"
@@ -472,8 +489,7 @@ describe('hosted site', () => {
         user={{
           provider_display_name: 'fixture-user',
           billing: billingFixture({ purchase_mode: 'live' }),
-          credits: creditsFixture(),
-          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+          usage: usageFixture(),
         }}
         view="credits"
         theme="light"
@@ -524,8 +540,7 @@ describe('hosted site', () => {
         user={{
           provider_display_name: 'fixture-user',
           billing: billingFixture({ purchase_mode: 'live', subscriptions_configured: true }),
-          credits: creditsFixture(50_000_000),
-          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+          usage: usageFixture({ credits: creditsFixture(50_000_000) }),
         }}
         startSubscriptionCheckout={async (plan, idempotencyKey) => {
           checkoutRequest = { plan, idempotencyKey };
@@ -549,8 +564,7 @@ describe('hosted site', () => {
         user={{
           provider_display_name: 'fixture-user',
           billing: billingFixture({ plan: 'one_gb', purchase_mode: 'live' }),
-          credits: creditsFixture(),
-          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+          usage: usageFixture(),
         }}
         startBillingPortal={async () => ({
           portal_url: 'https://billing.stripe.com/p/session/test',
@@ -580,8 +594,7 @@ describe('hosted site', () => {
         user={{
           provider_display_name: 'fixture-user',
           billing: billingFixture(),
-          credits,
-          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+          usage: usageFixture({ credits }),
         }}
       />,
     );
@@ -602,8 +615,7 @@ describe('hosted site', () => {
         user={{
           provider_display_name: 'fixture-user',
           billing: billingFixture({ purchase_mode: 'test' }),
-          credits,
-          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+          usage: usageFixture({ credits }),
         }}
       />,
     );
@@ -633,8 +645,7 @@ describe('hosted site', () => {
         user={{
           provider_display_name: 'fixture-user',
           billing: billingFixture({ purchase_mode: 'test' }),
-          credits,
-          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+          usage: usageFixture({ credits }),
         }}
         view="credits"
         route="credits?checkout=success&purchase_id=purchase-1"
@@ -657,7 +668,7 @@ describe('hosted site', () => {
         }}
         loadCurrentUser={async () => ({
           billing: billingFixture({ plan: 'one_gb', purchase_mode: 'test' }),
-          credits,
+          usage: usageFixture({ credits }),
         })}
         checkoutPollBaseDelay={0}
         checkoutPollMaxAttempts={4}
@@ -681,8 +692,7 @@ describe('hosted site', () => {
         user={{
           provider_display_name: 'fixture-user',
           billing: billingFixture({ purchase_mode: 'test' }),
-          credits,
-          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+          usage: usageFixture({ credits }),
         }}
         view="credits"
         route="credits?checkout=success&purchase_id=purchase-1"
@@ -729,8 +739,7 @@ describe('hosted site', () => {
         user={{
           provider_display_name: 'fixture-user',
           billing: billingFixture({ purchase_mode: 'test' }),
-          credits,
-          share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
+          usage: usageFixture({ credits }),
         }}
         view="credits"
         route="credits?checkout=success&purchase_id=purchase-1"
@@ -1388,8 +1397,7 @@ describe('hosted site', () => {
       <Dashboard
         user={{
           provider_display_name: 'fixture-user',
-          credits: null,
-          share_stats: { total: 1, admitted: 1, in_progress: 0 },
+          usage: usageFixture({ credits: null, total: 1, shared: 1 }),
         }}
         view="traces"
         theme="light"

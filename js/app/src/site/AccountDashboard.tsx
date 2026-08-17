@@ -546,7 +546,7 @@ export function DeleteAccountPanel({
   );
 }
 
-function CreditUtilizationFallback({ credits }: { credits: CurrentUser['credits'] }) {
+function CreditUtilizationFallback({ credits }: { credits: CurrentUser['usage']['credits'] }) {
   const notarization = credits.notarization;
   return (
     <section
@@ -917,7 +917,7 @@ export function Dashboard({
   const [shareSettingsTarget, setHostedTraceSettingsTarget] = useState<HostedTrace | null>(null);
   const [unpublishTarget, setUnpublishTarget] = useState<HostedTrace | null>(null);
   const [savingShare, setSavingShare] = useState<string | null>(null);
-  const [credits, setCredits] = useState<CurrentUser['credits']>(user.credits);
+  const [credits, setCredits] = useState<CurrentUser['usage']['credits']>(user.usage.credits);
   const [creditOffers, setCreditOffers] = useState<CreditOffer[] | null>(null);
   const [creditError, setCreditError] = useState<string | null>(null);
   const [claimingOffer, setClaimingOffer] = useState<string | null>(null);
@@ -1056,7 +1056,7 @@ export function Dashboard({
           try {
             const account = await loadCurrentUser();
             if (!cancelled && account) {
-              setCredits(account.credits);
+              setCredits(account.usage.credits);
               setBilling(account.billing);
               const generation = creditHistoryGeneration.current + 1;
               creditHistoryGeneration.current = generation;
@@ -1112,7 +1112,7 @@ export function Dashboard({
       try {
         const account = await loadCurrentUser();
         if (cancelled || !account) return;
-        setCredits(account.credits);
+        setCredits(account.usage.credits);
         setBilling(account.billing);
         if (account.billing.plan !== 'free' || account.billing.billing_status === 'review') {
           setSubscriptionStatus(account.billing.billing_status === 'active' ? 'active' : 'review');
@@ -1347,8 +1347,8 @@ export function Dashboard({
     }
   };
 
-  const admittedCount = user.share_stats?.admitted ?? 0;
-  const activeCount = user.share_stats?.in_progress ?? 0;
+  const sharedCount = user.usage.hosted_traces.shared;
+  const activeCount = user.usage.hosted_traces.verifying;
   const purchaseMode = billing.purchase_mode || 'disabled';
   const checkoutEnabled = purchaseMode === 'test' || purchaseMode === 'live';
   const subscriptionCheckoutEnabled = checkoutEnabled && billing.subscriptions_configured === true;
@@ -1363,7 +1363,7 @@ export function Dashboard({
     <main className="dashboard-shell dashboard-shell--account">
       <DashboardMobileNavigation
         activeView={activeView}
-        traceCount={user.share_stats?.total ?? '—'}
+        traceCount={user.usage.hosted_traces.total}
       />
       <div className="dashboard-layout">
         <aside className="dashboard-sidebar" aria-label="Dashboard navigation">
@@ -1381,7 +1381,7 @@ export function Dashboard({
               aria-current={activeView === 'traces' ? 'page' : undefined}
             >
               <span>Traces</span>
-              <small>{user.share_stats?.total ?? '—'}</small>
+              <small>{user.usage.hosted_traces.total}</small>
             </a>
             <a
               className={activeView === 'credits' ? 'active' : ''}
@@ -1414,15 +1414,15 @@ export function Dashboard({
                 </div>
                 <div>
                   <span>Completed captures</span>
-                  <b>{user.notary_stats?.captures ?? '—'}</b>
+                  <b>{user.usage.operations.captures}</b>
                 </div>
                 <div>
                   <span>Completed notarizations</span>
-                  <b>{user.notary_stats?.notarizations ?? '—'}</b>
+                  <b>{user.usage.operations.notarizations}</b>
                 </div>
                 <div>
-                  <span>Admitted traces</span>
-                  <b>{shares === null ? '—' : admittedCount}</b>
+                  <span>Shared traces</span>
+                  <b>{shares === null ? '—' : sharedCount}</b>
                 </div>
                 <div>
                   <span>In progress</span>
@@ -1562,7 +1562,7 @@ export function Dashboard({
                     </div>
                     <div>
                       <span>Trace storage</span>
-                      <b>{decimalSize(user.share_stats?.stored_bytes ?? 0)}</b>
+                      <b>{decimalSize(user.usage.hosted_traces.stored_bytes)}</b>
                       <small>
                         {billing.entitlements?.trace_storage_bytes == null
                           ? 'No fixed plan limit*'

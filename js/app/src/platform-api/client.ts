@@ -50,11 +50,11 @@ export async function getListedTraces(
   return data;
 }
 
-export async function getNotaryDirectory() {
+export async function getRegistry() {
   const { data, error, response } = await client.GET('/api/registry');
   if (!response.ok || !data) {
     throw new PlatformApiError(
-      errorMessage(error, 'Could not load the notary directory.'),
+      errorMessage(error, 'Could not load the notary Registry.'),
       response.status,
     );
   }
@@ -389,14 +389,7 @@ export async function getCurrentUser() {
   return {
     ...data.account,
     billing: data.billing,
-    credits: usage.data.credits,
-    notary_stats: usage.data.operations,
-    share_stats: {
-      total: usage.data.hosted_traces.total,
-      admitted: usage.data.hosted_traces.shared,
-      in_progress: usage.data.hosted_traces.verifying,
-      stored_bytes: usage.data.hosted_traces.stored_bytes,
-    },
+    usage: usage.data,
   };
 }
 
