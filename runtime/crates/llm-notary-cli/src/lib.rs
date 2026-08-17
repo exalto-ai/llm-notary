@@ -122,6 +122,7 @@ impl std::error::Error for CliError {}
     name = "llm-notary",
     about = "Inspect and operate the local LLM Notary daemon",
     version,
+    long_version = format!("{} ({BUILD_ID})", env!("CARGO_PKG_VERSION")),
     arg_required_else_help = true
 )]
 struct Cli {
@@ -2023,6 +2024,18 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(arguments).is_ok());
         }
+    }
+
+    #[test]
+    fn version_flag_reports_the_exact_build_identity() {
+        let error = Cli::try_parse_from(["llm-notary", "--version"]).unwrap_err();
+
+        assert_eq!(error.kind(), ErrorKind::DisplayVersion);
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("{} ({BUILD_ID})", env!("CARGO_PKG_VERSION")))
+        );
     }
 
     #[tokio::test]

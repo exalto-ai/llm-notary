@@ -31,7 +31,12 @@ pub use llm_notary_updater as update;
 #[command(
     name = "llm-notaryd",
     about = "Run the LLM Notary proxy and administration daemon",
-    version
+    version,
+    long_version = format!(
+        "{} ({})",
+        env!("CARGO_PKG_VERSION"),
+        llm_notary_updater::BUILD_ID
+    )
 )]
 struct DaemonCli {
     /// Versioned local service configuration file. Defaults to the standard
@@ -191,5 +196,17 @@ mod tests {
             ])
             .is_ok()
         );
+    }
+
+    #[test]
+    fn version_flag_reports_the_exact_build_identity() {
+        let error = DaemonCli::try_parse_from(["llm-notaryd", "--version"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(error.to_string().contains(&format!(
+            "{} ({})",
+            env!("CARGO_PKG_VERSION"),
+            llm_notary_updater::BUILD_ID
+        )));
     }
 }
