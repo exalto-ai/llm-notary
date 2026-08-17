@@ -44,8 +44,15 @@ jq -e '
 
 checks="$(flyctl checks list --app "$app" --json)"
 jq -e '
-  length >= 2
-  and all(.[]; (.status // .Status) == "passing")
+  if type == "object" then
+    length >= 2
+    and all(.[]; length >= 1 and all(.[]; (.status // .Status) == "passing"))
+  elif type == "array" then
+    length >= 2
+    and all(.[]; (.status // .Status) == "passing")
+  else
+    false
+  end
 ' >/dev/null <<<"$checks"
 
 # PR5 moves the Notary to the V2 redemption contract before removing V1 from

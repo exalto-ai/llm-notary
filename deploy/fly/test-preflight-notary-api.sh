@@ -67,7 +67,11 @@ case "$1 $2" in
     ;;
   "checks list")
     status="${MOCK_CHECK_STATUS:-passing}"
-    printf '[{"status":"%s"},{"status":"%s"}]\n' "$status" "$status"
+    if [ "${MOCK_FLAT_CHECKS:-0}" = 1 ]; then
+      printf '[{"status":"%s"},{"status":"%s"}]\n' "$status" "$status"
+    else
+      printf '{"machine-one":[{"name":"servicecheck-00-http-8080","status":"%s"}],"machine-two":[{"name":"servicecheck-00-http-8080","status":"%s"}]}\n' "$status" "$status"
+    fi
     ;;
   *)
     echo "unexpected flyctl invocation: $*" >&2
@@ -93,6 +97,8 @@ MOCK
 chmod +x "$test_dir/bin/curl"
 
 PATH="$test_dir/bin:$PATH" bash "$script_dir/preflight-notary-api.sh" >/dev/null
+PATH="$test_dir/bin:$PATH" MOCK_FLAT_CHECKS=1 \
+  bash "$script_dir/preflight-notary-api.sh" >/dev/null
 for invalid in \
   'MOCK_CONTRACT=legacy-v0' \
   'MOCK_MEMORY_MB=512' \
