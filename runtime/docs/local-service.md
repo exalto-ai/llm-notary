@@ -99,7 +99,7 @@ sc.exe create LLMNotary binPath= '"C:\Program Files\LLM Notary\notaryd.exe" --co
 The smallest useful explicit configuration is:
 
 ```toml
-format = "llm-notary/agent-config/v1"
+format = "notary/notaryd-config/v1"
 
 [proxy]
 listen = "127.0.0.1:8787"

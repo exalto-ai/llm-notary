@@ -122,10 +122,10 @@ jobs:
         run: >-
           curl --fail --retry 5 --retry-all-errors --retry-delay 2
           --max-time 20 https://notary.exalto.ai/api/readyz
-      # Deliberately present a capture ticket as a finalization. The notary
-      # must reach the authenticated coordinator and return admission_denied,
+      # Deliberately present a capture ticket as a notarization. The notary
+      # must reach the authenticated platform API and return admission_denied,
       # but it must not admit the operation or consume the ticket.
-      - name: Verify v3 TLS notary admission control
+      - name: Verify TLS notary admission control
         run: |
           python3 - <<'PY'
           import json
@@ -155,7 +155,7 @@ jobs:
 
                   encoded_ticket = ticket.encode()
                   prelude = (
-                      b"LLMN\x00\x00\x00\x03\x03"
+                      b"NTRY\x00\x00\x00\x01\x03"
                       + len(encoded_ticket).to_bytes(2, "big")
                       + encoded_ticket
                   )
