@@ -355,36 +355,6 @@ impl SqliteMetadata {
         Ok(traces)
     }
 
-    /// Recovers one durable capture checkpoint found by the artifact backend.
-    pub fn recover_capture_record(&self, trace_id: &str, artifact: &ArtifactRecord) -> Result<()> {
-        require_artifact(artifact, trace_id, ArtifactKind::CaptureCheckpoint)?;
-        let connection = self.connection.lock().expect("metadata mutex poisoned");
-        let transaction = connection.unchecked_transaction()?;
-        let changed = transaction.execute(
-            "UPDATE traces SET capture_status = 'captured', failure_code = NULL
-             WHERE trace_id = ? AND capture_status = 'capturing'",
-            params![trace_id],
-        )?;
-        if changed != 1 {
-            anyhow::bail!("capture is not recoverable");
-        }
-        insert_artifact(&transaction, artifact)?;
-        if self.full_text_search {
-            transaction.execute(
-                "DELETE FROM trace_search WHERE trace_id = ?",
-                params![trace_id],
-            )?;
-            transaction.execute(
-                "INSERT INTO trace_search(trace_id, prompt_preview, output_preview)
-                 SELECT trace_id, prompt_preview, output_preview
-                 FROM traces WHERE trace_id = ?",
-                params![trace_id],
-            )?;
-        }
-        transaction.commit()?;
-        Ok(())
-    }
-
     /// Lists traces using the complete REST filter set. Filter values are
     /// bound parameters, and the result is always bounded.
     pub fn filtered_traces(&self, filters: &TraceFilters) -> Result<Vec<TraceSummary>> {
@@ -1595,16 +1565,6 @@ fn insert_event(
 mod tests {
     use super::*;
 
-    fn checkpoint_artifact(id: &str) -> ArtifactRecord {
-        ArtifactRecord::new(
-            ArtifactKey::new(id, ArtifactKind::CaptureCheckpoint).unwrap(),
-            ArtifactLocator::from_stored(format!("test-artifacts/{id}.llmcapture")).unwrap(),
-            10,
-            "00".repeat(32),
-        )
-        .unwrap()
-    }
-
     #[test]
     fn rejects_pre_cutover_migration_journal() {
         let directory = tempfile::tempdir().unwrap();
@@ -1623,49 +1583,6 @@ mod tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("unsupported pre-cutover"));
-    }
-
-    #[test]
-    fn prepared_capture_recovery_preserves_its_search_preview() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("metadata.db");
-        let metadata = SqliteMetadata::open(&path, true).unwrap();
-        let connection = metadata.connection.lock().unwrap();
-        connection
-            .execute(
-                "INSERT INTO traces (
-                    trace_id, created_at_unix_ms, completed_at_unix_ms, provider,
-                    operation, requested_model, response_model, http_status, streaming,
-                    request_bytes, response_bytes, duration_ms, prompt_preview,
-                    prompt_preview_truncated, output_preview, output_preview_truncated,
-                    config_fingerprint, capture_status, notarization_status, failure_code
-                 ) VALUES (
-                    'trc-legacy-prepared', 1, 2, 'openai', 'responses', 'gpt-5',
-                    'gpt-5', 200, 0, 12, 24, 1, 'Legacy staged prompt', 0,
-                    'Legacy staged output', 0, 'sha256:test', 'capturing',
-                    'not_requested', NULL
-                 )",
-                [],
-            )
-            .unwrap();
-        drop(connection);
-        metadata
-            .recover_capture_record(
-                "trc-legacy-prepared",
-                &checkpoint_artifact("trc-legacy-prepared"),
-            )
-            .unwrap();
-        let matches = metadata
-            .filtered_traces(&TraceFilters {
-                query: Some("legacy output".to_owned()),
-                limit: 50,
-                ..TraceFilters::default()
-            })
-            .unwrap();
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].trace_id, "trc-legacy-prepared");
-        assert_eq!(matches[0].expected_artifact_size_bytes, None);
-        assert_eq!(matches[0].expected_artifact_sha256, None);
     }
 
     #[test]

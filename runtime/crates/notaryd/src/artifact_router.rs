@@ -58,7 +58,7 @@ impl RoutedArtifactStore {
         }
     }
 
-    /// Publishes server-owned bytes under a claim-scoped physical S3 key.
+    /// Commits server-owned bytes under a claim-scoped physical S3 key.
     /// The logical artifact key remains unchanged in metadata.
     pub(crate) async fn put_scoped(
         &self,

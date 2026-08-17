@@ -192,18 +192,6 @@ impl MetadataStore for SqliteMetadataStore {
         self.blocking(SqliteMetadata::incomplete_captures).await
     }
 
-    async fn recover_capture(
-        &self,
-        trace_id: &str,
-        artifact: ArtifactRecord,
-    ) -> MetadataResult<()> {
-        validate_trace_id(trace_id)?;
-        validate_artifact_size(&artifact)?;
-        let trace_id = trace_id.to_owned();
-        self.blocking(move |metadata| metadata.recover_capture_record(&trace_id, &artifact))
-            .await
-    }
-
     async fn traces(&self, filters: TraceFilters) -> MetadataResult<Vec<TraceSummary>> {
         validate_limit(filters.limit)?;
         if filters.query.as_deref() == Some("") {

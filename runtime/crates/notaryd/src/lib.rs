@@ -58,7 +58,6 @@ enum DaemonCommand {
         orphan_grace_days: u64,
     },
     /// Initialize shared key material for a clustered deployment.
-    #[command(alias = "server")]
     Cluster {
         #[command(subcommand)]
         command: ClusterCommand,
@@ -184,6 +183,16 @@ mod tests {
                 "/run/secrets/cluster-vault.key",
             ])
             .is_ok()
+        );
+        assert!(
+            DaemonCli::try_parse_from([
+                "notaryd",
+                "server",
+                "init",
+                "--vault-key",
+                "/run/secrets/cluster-vault.key",
+            ])
+            .is_err()
         );
         assert!(
             DaemonCli::try_parse_from([

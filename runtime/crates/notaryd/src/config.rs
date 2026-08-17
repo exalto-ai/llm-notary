@@ -107,7 +107,7 @@ pub struct ProxyConfig {
 #[serde(deny_unknown_fields)]
 pub struct NotaryConfig {
     /// Optional explicit endpoint. Without this the client uses the signed
-    /// notary directory at the configured public API origin.
+    /// Registry at the configured public API origin.
     pub endpoint: Option<String>,
     /// Explicit SEC1 secp256k1 trust anchor for `endpoint`. The endpoint and
     /// key are configured together so a self-hosted connection cannot become

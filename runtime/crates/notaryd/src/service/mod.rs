@@ -2,8 +2,8 @@ mod api_origin;
 pub(crate) mod auth;
 pub(crate) mod config;
 pub(crate) mod proxy;
-pub(crate) mod publish;
 pub(crate) mod registry;
+pub(crate) mod sharing;
 pub(crate) mod storage;
 
 /// Public API origin compiled into released clients. Override it at build time

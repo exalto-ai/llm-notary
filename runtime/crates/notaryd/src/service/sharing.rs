@@ -1,3 +1,5 @@
+//! Hosted sharing client for verified trace packages.
+
 use std::collections::BTreeMap;
 
 use crate::{
@@ -140,7 +142,7 @@ pub(crate) async fn share_package_bytes(
 
     // Everything above is intentionally local so malformed packages never
     // create a share. Authenticate first to recover the configured
-    // API origin, then refresh that origin's directory before any upload.
+    // API origin, then refresh that origin's Registry before any upload.
     let authenticated = auth::authenticate().await?;
     if let Some(shared) = shared_trust {
         registry_service::registry_key_at(
@@ -191,12 +193,13 @@ pub(crate) async fn share_package_bytes(
 pub(crate) async fn share_status(
     share_id: &str,
 ) -> std::result::Result<ShareStatus, ShareStatusError> {
-    let authenticated = auth::authenticate_for_publication_status()
-        .await
-        .map_err(|error| match error {
-            auth::PublicationAuthenticationError::Required => ShareStatusError::Authentication,
-            auth::PublicationAuthenticationError::Unavailable => ShareStatusError::Unavailable,
-        })?;
+    let authenticated =
+        auth::authenticate_for_sharing_status()
+            .await
+            .map_err(|error| match error {
+                auth::SharingAuthenticationError::Required => ShareStatusError::Authentication,
+                auth::SharingAuthenticationError::Unavailable => ShareStatusError::Unavailable,
+            })?;
     let client = http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -624,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn publication_status_preserves_not_found_authentication_and_outage_errors() {
+    fn sharing_status_preserves_not_found_authentication_and_outage_errors() {
         assert!(matches!(
             share_status_http_error(StatusCode::NOT_FOUND),
             Some(ShareStatusError::NotFound)

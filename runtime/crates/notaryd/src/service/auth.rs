@@ -391,7 +391,7 @@ pub(crate) struct AdmissionTicket {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) enum PublicationAuthenticationError {
+pub(crate) enum SharingAuthenticationError {
     Required,
     Unavailable,
 }
@@ -783,21 +783,20 @@ impl AdmissionResponse {
     }
 }
 
-pub(crate) async fn authenticate_for_publication_status()
--> std::result::Result<AuthenticatedApi, PublicationAuthenticationError> {
-    match credential_configuration().map_err(|_| PublicationAuthenticationError::Unavailable)? {
+pub(crate) async fn authenticate_for_sharing_status()
+-> std::result::Result<AuthenticatedApi, SharingAuthenticationError> {
+    match credential_configuration().map_err(|_| SharingAuthenticationError::Unavailable)? {
         CredentialConfiguration::Anonymous { .. } => {
-            return Err(PublicationAuthenticationError::Required);
+            return Err(SharingAuthenticationError::Required);
         }
         CredentialConfiguration::ApiKey(authenticated) => return Ok(authenticated),
         CredentialConfiguration::DeviceSession { .. } => {}
     }
     let _refresh = credential_refresh_guard().await;
-    let mut credentials = load_credentials_for_publication_status()?;
-    let (access_token, rotated_refresh_token) =
-        refresh_for_publication_status(&credentials).await?;
+    let mut credentials = load_credentials_for_sharing_status()?;
+    let (access_token, rotated_refresh_token) = refresh_for_sharing_status(&credentials).await?;
     credentials.refresh_token = rotated_refresh_token;
-    save_credentials(&credentials).map_err(|_| PublicationAuthenticationError::Unavailable)?;
+    save_credentials(&credentials).map_err(|_| SharingAuthenticationError::Unavailable)?;
     Ok(AuthenticatedApi {
         origin: credentials.api_origin,
         access_token,
@@ -954,12 +953,12 @@ async fn refresh(credentials: &FileCredentials) -> Result<(String, String)> {
     Ok((response.access_token, response.refresh_token))
 }
 
-async fn refresh_for_publication_status(
+async fn refresh_for_sharing_status(
     credentials: &FileCredentials,
-) -> std::result::Result<(String, String), PublicationAuthenticationError> {
+) -> std::result::Result<(String, String), SharingAuthenticationError> {
     let client = http_client_builder()
         .build()
-        .map_err(|_| PublicationAuthenticationError::Unavailable)?;
+        .map_err(|_| SharingAuthenticationError::Unavailable)?;
     let response = client
         .post(credentials.api_origin.api_url("/api/cli/token"))
         .json(&RefreshRequest {
@@ -967,20 +966,20 @@ async fn refresh_for_publication_status(
         })
         .send()
         .await
-        .map_err(|_| PublicationAuthenticationError::Unavailable)?;
+        .map_err(|_| SharingAuthenticationError::Unavailable)?;
     if matches!(
         response.status(),
         StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN
     ) {
-        return Err(PublicationAuthenticationError::Required);
+        return Err(SharingAuthenticationError::Required);
     }
     if !response.status().is_success() {
-        return Err(PublicationAuthenticationError::Unavailable);
+        return Err(SharingAuthenticationError::Unavailable);
     }
     let response = response
         .json::<RefreshResponse>()
         .await
-        .map_err(|_| PublicationAuthenticationError::Unavailable)?;
+        .map_err(|_| SharingAuthenticationError::Unavailable)?;
     let _ = response.expires_in;
     Ok((response.access_token, response.refresh_token))
 }
@@ -1015,28 +1014,28 @@ fn load_credentials() -> Result<FileCredentials> {
     Ok(credentials)
 }
 
-fn load_credentials_for_publication_status()
--> std::result::Result<FileCredentials, PublicationAuthenticationError> {
-    let path = credentials_path().map_err(|_| PublicationAuthenticationError::Unavailable)?;
-    load_credentials_for_publication_status_at(&path)
+fn load_credentials_for_sharing_status()
+-> std::result::Result<FileCredentials, SharingAuthenticationError> {
+    let path = credentials_path().map_err(|_| SharingAuthenticationError::Unavailable)?;
+    load_credentials_for_sharing_status_at(&path)
 }
 
-fn load_credentials_for_publication_status_at(
+fn load_credentials_for_sharing_status_at(
     path: &Path,
-) -> std::result::Result<FileCredentials, PublicationAuthenticationError> {
+) -> std::result::Result<FileCredentials, SharingAuthenticationError> {
     let data = match fs::read(path) {
         Ok(data) => data,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Err(PublicationAuthenticationError::Required);
+            return Err(SharingAuthenticationError::Required);
         }
-        Err(_) => return Err(PublicationAuthenticationError::Unavailable),
+        Err(_) => return Err(SharingAuthenticationError::Unavailable),
     };
     let mut credentials: FileCredentials =
-        serde_json::from_slice(&data).map_err(|_| PublicationAuthenticationError::Unavailable)?;
+        serde_json::from_slice(&data).map_err(|_| SharingAuthenticationError::Unavailable)?;
     if credentials.refresh_token.is_empty() {
         credentials.refresh_token = keychain_load()
-            .map_err(|_| PublicationAuthenticationError::Unavailable)?
-            .ok_or(PublicationAuthenticationError::Required)?;
+            .map_err(|_| SharingAuthenticationError::Unavailable)?
+            .ok_or(SharingAuthenticationError::Required)?;
     }
     Ok(credentials)
 }
@@ -1246,10 +1245,10 @@ fn keychain_delete() -> Result<()> {
 mod tests {
     use super::*;
 
-    async fn publication_status_refresh_result(
+    async fn sharing_status_refresh_result(
         status: StatusCode,
         body: &'static str,
-    ) -> std::result::Result<(String, String), PublicationAuthenticationError> {
+    ) -> std::result::Result<(String, String), SharingAuthenticationError> {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
         let app = axum::Router::new().route(
@@ -1263,7 +1262,7 @@ mod tests {
             api_origin: ApiOrigin::parse(&origin).unwrap(),
             refresh_token: "refresh-token".to_owned(),
         };
-        let result = refresh_for_publication_status(&credentials).await;
+        let result = refresh_for_sharing_status(&credentials).await;
         server.abort();
         result
     }
@@ -1499,24 +1498,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn publication_status_refresh_distinguishes_reauthorization_from_outages() {
+    async fn sharing_status_refresh_distinguishes_reauthorization_from_outages() {
         assert_eq!(
-            publication_status_refresh_result(StatusCode::UNAUTHORIZED, "{}")
+            sharing_status_refresh_result(StatusCode::UNAUTHORIZED, "{}")
                 .await
                 .unwrap_err(),
-            PublicationAuthenticationError::Required
+            SharingAuthenticationError::Required
         );
         assert_eq!(
-            publication_status_refresh_result(StatusCode::SERVICE_UNAVAILABLE, "{}")
+            sharing_status_refresh_result(StatusCode::SERVICE_UNAVAILABLE, "{}")
                 .await
                 .unwrap_err(),
-            PublicationAuthenticationError::Unavailable
+            SharingAuthenticationError::Unavailable
         );
         assert_eq!(
-            publication_status_refresh_result(StatusCode::OK, "not-json")
+            sharing_status_refresh_result(StatusCode::OK, "not-json")
                 .await
                 .unwrap_err(),
-            PublicationAuthenticationError::Unavailable
+            SharingAuthenticationError::Unavailable
         );
     }
 
@@ -1549,19 +1548,19 @@ mod tests {
     }
 
     #[test]
-    fn publication_status_credential_load_distinguishes_absence_from_broken_storage() {
+    fn sharing_status_credential_load_distinguishes_absence_from_broken_storage() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("config").join("credentials.json");
         assert!(matches!(
-            load_credentials_for_publication_status_at(&path),
-            Err(PublicationAuthenticationError::Required)
+            load_credentials_for_sharing_status_at(&path),
+            Err(SharingAuthenticationError::Required)
         ));
 
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, b"not-json").unwrap();
         assert!(matches!(
-            load_credentials_for_publication_status_at(&path),
-            Err(PublicationAuthenticationError::Unavailable)
+            load_credentials_for_sharing_status_at(&path),
+            Err(SharingAuthenticationError::Unavailable)
         ));
 
         let credentials = FileCredentials {
@@ -1569,7 +1568,7 @@ mod tests {
             refresh_token: "refresh-token".to_owned(),
         };
         write_file_credentials_at(&path, &credentials).unwrap();
-        let loaded = load_credentials_for_publication_status_at(&path).unwrap();
+        let loaded = load_credentials_for_sharing_status_at(&path).unwrap();
         assert_eq!(loaded.api_origin, credentials.api_origin);
         assert_eq!(loaded.refresh_token, credentials.refresh_token);
     }

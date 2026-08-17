@@ -181,7 +181,6 @@ enum CliCommand {
     /// Show the LLM Notary account connected to this daemon.
     Whoami,
     /// Create a public link for a notarized verified session.
-    #[command(alias = "publish")]
     Share(ShareArgs),
     /// List redacted daemon events.
     Events(EventListArgs),
@@ -2015,7 +2014,6 @@ mod tests {
                 "--visibility",
                 "listed",
             ],
-            vec!["llm-notary", "publish", "trc-example"],
             vec!["llm-notary", "events"],
             vec!["llm-notary", "events", "--all"],
             vec!["llm-notary", "events", "--after", "high-water"],
@@ -2024,6 +2022,7 @@ mod tests {
         ] {
             assert!(Cli::try_parse_from(arguments).is_ok());
         }
+        assert!(Cli::try_parse_from(["llm-notary", "publish", "trc-example"]).is_err());
     }
 
     #[test]

@@ -501,7 +501,7 @@ impl ArtifactStore for FileSystemArtifactStore {
             .map_err(|error| invalid("invalid_storage_root", error))?;
         let staged = stage_source(&path, source).await?;
         let key = key.clone();
-        tokio::task::spawn_blocking(move || publish_artifact(&path, key, staged))
+        tokio::task::spawn_blocking(move || commit_artifact(&path, key, staged))
             .await
             .map_err(|error| {
                 backend(anyhow!(error).context("filesystem artifact writer task failed"))
@@ -844,7 +844,7 @@ fn create_staged_file(path: &Path) -> Result<(PendingArtifact, File)> {
     Ok((pending, file))
 }
 
-fn publish_artifact(
+fn commit_artifact(
     path: &Path,
     key: ArtifactKey,
     staged: StagedArtifact,
@@ -872,7 +872,7 @@ fn publish_artifact(
             let actual = inspect_artifact(path, expected.key.clone(), expected.size_bytes)?;
             if actual != expected {
                 return Err(integrity(anyhow!(
-                    "published artifact {} does not match the staged bytes",
+                    "committed artifact {} does not match the staged bytes",
                     path.display()
                 )));
             }
@@ -892,7 +892,7 @@ fn publish_artifact(
             }
         }
         Err(error) => Err(backend(
-            anyhow!(error).context(format!("atomically publishing artifact {}", path.display())),
+            anyhow!(error).context(format!("atomically committing artifact {}", path.display())),
         )),
     }
 }

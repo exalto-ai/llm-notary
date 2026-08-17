@@ -100,14 +100,6 @@ fn otlp_traces_enabled() -> bool {
 }
 
 fn describe_metrics() {
-    describe_counter!(
-        "llm_notary_http_requests_total",
-        "HTTP responses by method, route, and status"
-    );
-    describe_histogram!(
-        "llm_notary_http_request_duration_seconds",
-        "HTTP request duration by method and route"
-    );
     describe_gauge!(
         "llm_notary_notary_active_sessions",
         "Currently active notary protocol sessions"

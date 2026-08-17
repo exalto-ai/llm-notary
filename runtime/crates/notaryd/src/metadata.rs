@@ -30,7 +30,7 @@ pub struct CaptureCompletion {
     pub response_model: Option<String>,
     pub output_preview: String,
     pub output_preview_truncated: bool,
-    /// Exact encrypted capture-checkpoint bytes this completion is allowed to publish.
+    /// Exact encrypted capture-checkpoint bytes this completion is allowed to commit.
     pub expected_artifact_size_bytes: u64,
     pub expected_artifact_sha256: String,
 }

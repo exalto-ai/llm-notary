@@ -815,17 +815,17 @@ async fn initialize_notary(
     match config.notary_endpoint()? {
         Some(notary) => Ok(notary),
         None if cluster_runtime.is_some() => {
-            let (registry, directory_url) =
+            let (registry, registry_source_url) =
                 fetch_registry_from(&super::auth::configured_api_origin()?).await?;
-            let trust = persistence
+            let snapshot = persistence
                 .cluster_metadata()
-                .pin_registry(registry, directory_url.as_str())
+                .pin_registry(registry, registry_source_url.as_str())
                 .await?;
-            let active = trust
+            let active = snapshot
                 .records
                 .iter()
-                .find(|record| record.key_id == trust.active_key_id)
-                .context("shared notary trust is missing its active endpoint")?;
+                .find(|record| record.key_id == snapshot.active_key_id)
+                .context("shared Registry is missing its active endpoint")?;
             resolve_notary(active).await
         }
         None => discover_notary().await,
@@ -837,8 +837,8 @@ pub(crate) async fn refresh_registry() -> Result<Registry> {
 }
 
 pub(crate) async fn refresh_registry_from(api_origin: &ApiOrigin) -> Result<Registry> {
-    let (registry, directory_url) = fetch_registry_from(api_origin).await?;
-    pin(registry.clone(), directory_url.as_str())?;
+    let (registry, registry_source_url) = fetch_registry_from(api_origin).await?;
+    pin(registry.clone(), registry_source_url.as_str())?;
     tracing::info!(
         key_id = %registry.active_key_id,
         key_count = registry.notaries.len(),
@@ -848,20 +848,20 @@ pub(crate) async fn refresh_registry_from(api_origin: &ApiOrigin) -> Result<Regi
 }
 
 pub(crate) async fn fetch_registry_from(api_origin: &ApiOrigin) -> Result<(Registry, url::Url)> {
-    let directory_url = registry_url(api_origin);
+    let registry_source_url = registry_url(api_origin);
     let bytes = http_client_builder()
         .build()?
-        .get(directory_url.clone())
+        .get(registry_source_url.clone())
         .send()
         .await
-        .with_context(|| format!("fetching notary endpoint from {directory_url}"))?
+        .with_context(|| format!("fetching notary endpoint from {registry_source_url}"))?
         .error_for_status()
-        .with_context(|| format!("fetching notary endpoint from {directory_url}"))?
+        .with_context(|| format!("fetching notary endpoint from {registry_source_url}"))?
         .bytes()
         .await
         .context("reading notary registry from LLM Notary API")?;
     let registry = parse_registry(&bytes)?;
-    Ok((registry, directory_url))
+    Ok((registry, registry_source_url))
 }
 
 fn registry_url(api_origin: &ApiOrigin) -> url::Url {
@@ -2686,7 +2686,7 @@ mod tests {
     }
 
     #[test]
-    fn directory_discovery_stays_on_the_configured_api_origin() {
+    fn registry_discovery_stays_on_the_configured_api_origin() {
         assert_eq!(
             registry_url(&ApiOrigin::parse("https://self-hosted.example").unwrap()).as_str(),
             "https://self-hosted.example/api/registry"

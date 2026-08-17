@@ -1338,6 +1338,40 @@ mod tests {
     }
 
     #[test]
+    fn daemon_status_counts_round_trip_through_the_desktop_contract() {
+        let status: AdminStatus = serde_json::from_value(serde_json::json!({
+            "version": "0.1.0",
+            "build_id": "test-build",
+            "proxy_listener": "127.0.0.1:8787",
+            "admin_listener": "127.0.0.1:8788",
+            "vault": "OS vault",
+            "notary": "Registry",
+            "capture_enabled": true,
+            "counts": {
+                "total_traces": 14,
+                "capturing": 1,
+                "ready_to_notarize": 3,
+                "notarized": 8,
+                "failed": 2,
+                "active_operations": 1
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            serde_json::to_value(&status.counts).unwrap(),
+            serde_json::json!({
+                "total_traces": 14,
+                "capturing": 1,
+                "ready_to_notarize": 3,
+                "notarized": 8,
+                "failed": 2,
+                "active_operations": 1
+            })
+        );
+    }
+
+    #[test]
     fn passphrase_vaults_wait_for_an_in_memory_unlock() {
         let session = VaultSession::default();
         assert!(passphrase_vault_is_locked("passphrase", &session));

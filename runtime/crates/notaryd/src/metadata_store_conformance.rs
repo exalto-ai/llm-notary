@@ -190,10 +190,6 @@ async fn capture_lifecycle(store: Arc<dyn MetadataStore>) {
     assert_eq!(failed.capture_status, "failed");
     assert_eq!(failed.failure_code.as_deref(), Some("notary_error"));
 
-    store
-        .begin_capture(new_capture("trc-lifecycle-recovered", 30))
-        .await
-        .unwrap();
     let mut capturing = store
         .incomplete_captures()
         .await
@@ -202,30 +198,7 @@ async fn capture_lifecycle(store: Arc<dyn MetadataStore>) {
         .map(|capture| capture.trace_id)
         .collect::<Vec<_>>();
     capturing.sort();
-    assert_eq!(
-        capturing,
-        vec!["trc-lifecycle-complete", "trc-lifecycle-recovered"]
-    );
-
-    let recovered_artifact = artifact(
-        "trc-lifecycle-recovered",
-        ArtifactKind::CaptureCheckpoint,
-        2,
-    );
-    store
-        .recover_capture("trc-lifecycle-recovered", recovered_artifact.clone())
-        .await
-        .unwrap();
-    assert!(
-        store
-            .recover_capture("trc-lifecycle-recovered", recovered_artifact.clone())
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        store.artifacts("trc-lifecycle-recovered").await.unwrap(),
-        vec![recovered_artifact]
-    );
+    assert_eq!(capturing, vec!["trc-lifecycle-complete"]);
 
     let checkpoint = artifact("trc-lifecycle-complete", ArtifactKind::CaptureCheckpoint, 3);
     let mut completed = completion("trc-lifecycle-complete", 40, 200);
@@ -343,15 +316,6 @@ async fn capture_lifecycle(store: Arc<dyn MetadataStore>) {
             .complete_capture(
                 completion("trc-missing", 50, 200),
                 artifact("trc-missing", ArtifactKind::CaptureCheckpoint, 5),
-            )
-            .await
-            .is_err()
-    );
-    assert!(
-        store
-            .recover_capture(
-                "trc-missing",
-                artifact("trc-missing", ArtifactKind::CaptureCheckpoint, 6),
             )
             .await
             .is_err()
@@ -1613,12 +1577,6 @@ async fn invalid_limits_and_ranges(store: Arc<dyn MetadataStore>) {
                 completion("trc-invalid-completion", 2, 200),
                 oversized_artifact.clone(),
             )
-            .await,
-        "artifact_size_out_of_range",
-    );
-    assert_invalid(
-        store
-            .recover_capture("trc-invalid-completion", oversized_artifact.clone())
             .await,
         "artifact_size_out_of_range",
     );

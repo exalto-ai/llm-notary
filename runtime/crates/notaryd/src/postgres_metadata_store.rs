@@ -1110,54 +1110,6 @@ impl MetadataStore for PostgresMetadataStore {
             .map_err(db)
     }
 
-    async fn recover_capture(
-        &self,
-        trace_id: &str,
-        artifact: ArtifactRecord,
-    ) -> MetadataResult<()> {
-        self.require_local_mutation()?;
-        validate_trace_id(trace_id)?;
-        validate_artifact(&artifact)?;
-        require_artifact(&artifact, trace_id, ArtifactKind::CaptureCheckpoint)?;
-        let mut transaction = self
-            .pool
-            .begin()
-            .await
-            .map_err(|error| db(anyhow!(error).context("starting capture recovery")))?;
-        let changed = sqlx::query(
-            "UPDATE notaryd.traces
-             SET capture_status = 'captured', failure_code = NULL
-             WHERE trace_id = $1 AND capture_status = 'capturing'",
-        )
-        .bind(trace_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| db(anyhow!(error).context("recovering capture")))?
-        .rows_affected();
-        if changed != 1 {
-            return Err(db(anyhow!("capture is not recoverable")));
-        }
-        insert_artifact(&mut transaction, &artifact).await?;
-        sqlx::query(
-            "INSERT INTO notaryd.trace_search
-                (trace_id, prompt_document, output_document)
-             SELECT trace_id, to_tsvector('simple', prompt_preview),
-                to_tsvector('simple', output_preview)
-             FROM notaryd.traces WHERE trace_id = $1
-             ON CONFLICT (trace_id) DO UPDATE SET
-                prompt_document = excluded.prompt_document,
-                output_document = excluded.output_document",
-        )
-        .bind(trace_id)
-        .execute(&mut *transaction)
-        .await
-        .map_err(|error| db(anyhow!(error).context("indexing recovered capture preview")))?;
-        transaction
-            .commit()
-            .await
-            .map_err(|error| db(anyhow!(error).context("committing capture recovery")))
-    }
-
     async fn traces(&self, filters: TraceFilters) -> MetadataResult<Vec<TraceSummary>> {
         let limit = validate_limit(filters.limit)?;
         if let Some(value) = filters.created_after_unix_ms {
@@ -3060,34 +3012,34 @@ impl ServerMetadataStore for PostgresMetadataStore {
 
     async fn pin_registry(
         &self,
-        directory: Registry,
+        registry: Registry,
         registry_source: &str,
     ) -> MetadataResult<RegistrySnapshot> {
         let mut transaction = self
             .pool
             .begin()
             .await
-            .map_err(|error| db(anyhow!(error).context("starting notary trust transaction")))?;
+            .map_err(|error| db(anyhow!(error).context("starting Registry transaction")))?;
         let current = sqlx::query_scalar::<_, Vec<u8>>(
             "SELECT registry_json FROM notaryd.registry
              WHERE singleton = TRUE FOR UPDATE",
         )
         .fetch_optional(&mut *transaction)
         .await
-        .map_err(|error| db(anyhow!(error).context("locking shared notary trust")))?
+        .map_err(|error| db(anyhow!(error).context("locking shared Registry snapshot")))?
         .map(|bytes| {
             serde_json::from_slice::<RegistrySnapshot>(&bytes)
-                .context("parsing shared notary trust")
+                .context("parsing shared Registry snapshot")
                 .map_err(db)
         })
         .transpose()?;
-        let trust =
-            crate::service::registry::merge_registry_snapshot(current, directory, registry_source)
-                .map_err(|error| db(error.context("merging shared notary trust")))?;
-        let generation = i64::try_from(trust.generation)
+        let snapshot =
+            crate::service::registry::merge_registry_snapshot(current, registry, registry_source)
+                .map_err(|error| db(error.context("merging shared Registry snapshot")))?;
+        let generation = i64::try_from(snapshot.generation)
             .map_err(|_| MetadataStoreError::InvalidInput("notary_generation_out_of_range"))?;
-        let registry_json = serde_json::to_vec(&trust)
-            .map_err(|error| db(anyhow!(error).context("encoding shared notary trust")))?;
+        let registry_json = serde_json::to_vec(&snapshot)
+            .map_err(|error| db(anyhow!(error).context("encoding shared Registry snapshot")))?;
         if registry_json.len() > 1_048_576 {
             return Err(MetadataStoreError::InvalidInput("registry_too_large"));
         }
@@ -3104,18 +3056,18 @@ impl ServerMetadataStore for PostgresMetadataStore {
                  updated_at=clock_timestamp()",
         )
         .bind(generation)
-        .bind(&trust.registry_sha256)
-        .bind(&trust.registry_source)
-        .bind(&trust.active_key_id)
+        .bind(&snapshot.registry_sha256)
+        .bind(&snapshot.registry_source)
+        .bind(&snapshot.active_key_id)
         .bind(&registry_json)
         .execute(&mut *transaction)
         .await
-        .map_err(|error| db(anyhow!(error).context("publishing shared notary trust")))?;
+        .map_err(|error| db(anyhow!(error).context("storing shared Registry snapshot")))?;
         transaction
             .commit()
             .await
-            .map_err(|error| db(anyhow!(error).context("committing shared notary trust")))?;
-        Ok(trust)
+            .map_err(|error| db(anyhow!(error).context("committing shared Registry snapshot")))?;
+        Ok(snapshot)
     }
 
     async fn registry_snapshot(&self) -> MetadataResult<Option<RegistrySnapshot>> {
@@ -3124,13 +3076,13 @@ impl ServerMetadataStore for PostgresMetadataStore {
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|error| db(anyhow!(error).context("reading shared notary trust")))?
+        .map_err(|error| db(anyhow!(error).context("reading shared Registry snapshot")))?
         .map(|bytes| {
             serde_json::from_slice::<RegistrySnapshot>(&bytes)
-                .context("parsing shared notary trust")
-                .and_then(|trust| {
-                    crate::service::registry::validate_registry_snapshot(&trust)?;
-                    Ok(trust)
+                .context("parsing shared Registry snapshot")
+                .and_then(|snapshot| {
+                    crate::service::registry::validate_registry_snapshot(&snapshot)?;
+                    Ok(snapshot)
                 })
                 .map_err(db)
         })
@@ -3670,7 +3622,7 @@ mod tests {
         store.revoke_dashboard_session(&token_hash).await.unwrap();
         assert!(!store.dashboard_session_valid(&token_hash, 0).await.unwrap());
 
-        let directory_record = |seed: u8| {
+        let registry_record = |seed: u8| {
             let signing = k256::ecdsa::SigningKey::from_slice(&[seed; 32]).unwrap();
             let public_key = signing.verifying_key().to_sec1_bytes().to_vec();
             RegistryRecord {
@@ -3687,27 +3639,27 @@ mod tests {
                 notarize_until_unix_ms: None,
             }
         };
-        let old = directory_record(9);
-        let new = directory_record(10);
+        let old = registry_record(9);
+        let new = registry_record(10);
         let source = "https://api.example/api/registry";
-        let first_directory = Registry {
+        let first_registry = Registry {
             format: REGISTRY_FORMAT.into(),
             generation: 1,
             active_key_id: old.key_id.clone(),
             notaries: vec![old.clone()],
         };
         store
-            .pin_registry(first_directory.clone(), source)
+            .pin_registry(first_registry.clone(), source)
             .await
             .unwrap();
-        let second_directory = Registry {
+        let second_registry = Registry {
             format: REGISTRY_FORMAT.into(),
             generation: 2,
             active_key_id: new.key_id.clone(),
             notaries: vec![new.clone()],
         };
         let updated = store
-            .pin_registry(second_directory.clone(), source)
+            .pin_registry(second_registry.clone(), source)
             .await
             .unwrap();
         assert_eq!(updated.generation, 2);
@@ -3722,7 +3674,7 @@ mod tests {
         );
 
         let replayed = store
-            .pin_registry(second_directory.clone(), source)
+            .pin_registry(second_registry.clone(), source)
             .await
             .unwrap();
         assert_eq!(replayed.generation, updated.generation);
@@ -3741,7 +3693,7 @@ mod tests {
         let mirror_source = "https://mirror.example/api/registry";
         assert!(
             store
-                .pin_registry(second_directory.clone(), mirror_source)
+                .pin_registry(second_registry.clone(), mirror_source)
                 .await
                 .is_err()
         );
@@ -3775,7 +3727,7 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(store.pin_registry(first_directory, source).await.is_err());
+        assert!(store.pin_registry(first_registry, source).await.is_err());
 
         let mut revoked_old = old.clone();
         revoked_old.status = NotaryKeyStatus::Revoked;
@@ -3930,23 +3882,6 @@ mod tests {
         .execute(&mut legacy)
         .await
         .unwrap();
-        sqlx::query(
-            "INSERT INTO notaryd.traces (
-                trace_id, created_at_unix_ms, completed_at_unix_ms, provider,
-                operation, requested_model, response_model, http_status, streaming,
-                request_bytes, response_bytes, duration_ms, prompt_preview,
-                prompt_preview_truncated, output_preview, output_preview_truncated,
-                config_fingerprint, capture_status, notarization_status, failure_code
-             ) VALUES (
-                'trc-legacy-prepared', 1, 2, 'openai', 'responses', 'gpt-5',
-                'gpt-5', 200, FALSE, 12, 24, 1, 'Legacy staged prompt', FALSE,
-                'Legacy staged output', FALSE, 'sha256:test', 'capturing',
-                'not_requested', NULL
-             )",
-        )
-        .execute(&mut legacy)
-        .await
-        .unwrap();
         drop(legacy);
         migrate_database(
             &legacy_url,
@@ -3956,36 +3891,6 @@ mod tests {
         )
         .await
         .unwrap();
-        let legacy_store = PostgresMetadataStore::connect(
-            &legacy_url,
-            2,
-            Duration::from_secs(5),
-            Duration::from_secs(5),
-            PostgresSslMode::Disable,
-            true,
-        )
-        .await
-        .unwrap();
-        legacy_store
-            .recover_capture(
-                "trc-legacy-prepared",
-                conformance::artifact("trc-legacy-prepared", ArtifactKind::CaptureCheckpoint, 2),
-            )
-            .await
-            .unwrap();
-        let legacy_matches = legacy_store
-            .traces(TraceFilters {
-                query: Some("legacy output".to_owned()),
-                limit: 20,
-                ..TraceFilters::default()
-            })
-            .await
-            .unwrap();
-        assert_eq!(legacy_matches.len(), 1);
-        assert_eq!(legacy_matches[0].trace_id, "trc-legacy-prepared");
-        assert_eq!(legacy_matches[0].expected_artifact_size_bytes, None);
-        assert_eq!(legacy_matches[0].expected_artifact_sha256, None);
-
         sqlx::query("CREATE ROLE daemon_runtime LOGIN PASSWORD 'runtime-test-password'")
             .execute(&server.admin)
             .await

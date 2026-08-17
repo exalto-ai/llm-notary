@@ -183,8 +183,6 @@ pub trait MetadataStore: Send + Sync {
         artifact: ArtifactRecord,
     ) -> MetadataResult<()>;
     async fn incomplete_captures(&self) -> MetadataResult<Vec<IncompleteCapture>>;
-    async fn recover_capture(&self, trace_id: &str, artifact: ArtifactRecord)
-    -> MetadataResult<()>;
     async fn traces(&self, filters: TraceFilters) -> MetadataResult<Vec<TraceSummary>>;
     async fn trace(&self, trace_id: &str) -> MetadataResult<Option<TraceSummary>>;
     async fn artifacts(&self, trace_id: &str) -> MetadataResult<Vec<ArtifactRecord>>;

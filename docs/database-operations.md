@@ -91,8 +91,8 @@ The local daemon migrations live under
 advisory lock. They do not use the hosted platform's `platform/migrations/`
 directory or SQLx migration journal.
 
-Select `catalog.backend = "postgres"` and supply
-`LLM_NOTARY_METADATA_DATABASE_URL` (or its `_FILE` form), then run:
+Select `metadata.backend = "postgres"` and supply
+`NOTARYD_METADATA_DATABASE_URL` (or its `_FILE` form), then run:
 
 ```bash
 notaryd migrate --config /etc/llm-notary/config.toml
@@ -101,9 +101,9 @@ notaryd --config /etc/llm-notary/config.toml
 
 By default the migrate command uses the same URL. For least-privilege
 deployments, give the runtime role only data access and override migrations
-with `LLM_NOTARY_METADATA_MIGRATION_URL` or its `_FILE` form.
+with `NOTARYD_METADATA_MIGRATION_URL` or its `_FILE` form.
 
-Keep `catalog.postgres.ssl_mode = "verify_full"` for remote databases and
+Keep `metadata.postgres.ssl_mode = "verify_full"` for remote databases and
 provide the CA settings required by the PostgreSQL URL. `require` encrypts but
 does not validate the server hostname. `disable` is only for an explicitly
 trusted local test server.
@@ -150,7 +150,7 @@ stopped. Resolve every reported finding. The command is report-only and never
 deletes objects. No
 SQLite-to-PostgreSQL or filesystem-to-S3 importer is provided.
 
-Keep the sum of `catalog.postgres.max_connections` across running daemons plus
+Keep the sum of `metadata.postgres.max_connections` across running daemons plus
 one direct migrator connection within the provider's pool budget. PostgreSQL
 with filesystem artifacts remains single-process. Multiple daemon replicas are
 supported only by cluster mode with PostgreSQL and S3; see

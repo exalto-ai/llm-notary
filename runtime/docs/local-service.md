@@ -120,21 +120,21 @@ listen = "127.0.0.1:8788"
 
 ### Metadata backend
 
-SQLite remains the default, and existing catalogs open in place. To run one
-daemon with PostgreSQL instead, change only the backend:
+SQLite remains the default. Pre-cutover databases are rejected rather than
+migrated. To run one daemon with PostgreSQL instead, change only the backend:
 
 ```toml
-[catalog]
+[metadata]
 backend = "postgres"
 ```
 
 ```bash
-export LLM_NOTARY_METADATA_DATABASE_URL='postgresql://…'
+export NOTARYD_METADATA_DATABASE_URL='postgresql://…'
 notaryd migrate --config /path/to/config.toml
 notaryd --config /path/to/config.toml
 ```
 
-Use `LLM_NOTARY_METADATA_DATABASE_URL_FILE` for a mounted secret. The defaults
+Use `NOTARYD_METADATA_DATABASE_URL_FILE` for a mounted secret. The defaults
 verify the database certificate and hostname and use up to eight pooled
 connections. Separate migration credentials, TLS/pool tuning, role grants, and
 backup steps are covered in [cluster operations](cluster-operations.md).
@@ -147,9 +147,9 @@ cluster mode is enabled with PostgreSQL and S3.
 
 ### Artifact backend
 
-The filesystem remains the default artifact writer. Existing untagged catalog
-paths and legacy `.llmbundle` files continue to read in place. To write new
-vault-encrypted `.llmcapture` checkpoints and exact `.llmtrace` packages to an
+The filesystem remains the default artifact writer. Pre-cutover paths and
+legacy `.llmbundle` files are not imported or read. To write vault-encrypted
+`.llmcapture` checkpoints and exact `.llmtrace` packages to an
 S3-compatible private bucket, select S3 explicitly:
 
 ```toml
@@ -160,38 +160,36 @@ backend = "s3"
 bucket = "llm-notary-private"
 ```
 
-That minimal form uses AWS S3 in `us-east-1`, the private `llm-notary`
+That minimal form uses AWS S3 in `us-east-1`, the private `notaryd`
 prefix, HTTPS, virtual-hosted addressing, and bounded timeouts. Set `region`
 for another AWS region. S3-compatible services may also set `endpoint` and
 `force_path_style`; plain HTTP additionally requires the explicit
 `allow_insecure_http = true` opt-in and is intended only for a trusted local
-emulator such as MinIO. Filesystem directories remain available as legacy
-readers when old metadata still points at local artifacts.
+emulator such as MinIO.
 
 Credentials never belong in `config.toml`. Set
-`LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID` and
-`LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY`, or use their `_FILE` forms. An
-optional session token uses `LLM_NOTARY_ARTIFACT_S3_SESSION_TOKEN` or its
+`NOTARYD_ARTIFACT_S3_ACCESS_KEY_ID` and
+`NOTARYD_ARTIFACT_S3_SECRET_ACCESS_KEY`, or use their `_FILE` forms. An
+optional session token uses `NOTARYD_ARTIFACT_S3_SESSION_TOKEN` or its
 `_FILE` form. A direct value wins without reading the corresponding file.
 Ambient instance metadata and shared SDK profiles are not used.
 
 An explicit endpoint must be an origin with no credentials, path, query, or
 fragment. Give the runtime `GetObject` and `PutObject` access within the
 configured prefix, plus `ListBucket` constrained with `s3:prefix` to the
-managed `daemon-private/` namespace. Readiness uses one bounded, non-mutating
+managed `notaryd/` namespace. Readiness uses one bounded, non-mutating
 list request against that namespace; reconciliation uses the same permission.
 Runtime credentials do not need `DeleteObject`. Objects are always addressed
-under `daemon-private/deferred_bundle` or
-`notaryd/trace-packages`. Neither bucket nor object keys contain
+under `notaryd/capture-checkpoints` or `notaryd/trace-packages`. Neither bucket
+nor object keys contain
 prompts, outputs, or provider credentials.
 
 The daemon privately spools, hashes, conditionally creates, reads back, and
 verifies each object before metadata can advertise it. A retry reuses an exact
 size/hash match and never overwrites different bytes. Locators record the
 backend, so filesystem and S3 records remain independently readable when the
-selected writer changes. Keep the old S3 profile and credentials configured if
-metadata still references it. Writes go to one selected backend only; there is
-no dual-write migration or automatic copy.
+selected writer changes. Writes go to one selected backend only; there is no
+dual-write migration or automatic copy.
 
 Missing objects return `artifact_missing`; wrong size or hash returns
 `artifact_corrupt`; size limits, immutable collisions, unavailable backends,

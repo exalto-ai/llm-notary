@@ -197,8 +197,8 @@ idempotency, and then runs the same REST, restart, artifact, and full Proxy-TLS
 assertions as SQLite. It also stops PostgreSQL beneath a running daemon and
 checks that `/healthz` remains live, `/readyz` returns `503`, and readiness
 recovers after the database restarts. Runtime receives only
-`LLM_NOTARY_METADATA_DATABASE_URL`; the one-shot migrator receives only
-`LLM_NOTARY_METADATA_MIGRATION_URL`. The daemon never applies PostgreSQL schema
+`NOTARYD_METADATA_DATABASE_URL`; the one-shot migrator receives only
+`NOTARYD_METADATA_MIGRATION_URL`. The daemon never applies PostgreSQL schema
 changes during normal service startup.
 
 Set `DAEMON_E2E_POSTGRES_SCENARIOS=extended` on a PostgreSQL matrix entry to

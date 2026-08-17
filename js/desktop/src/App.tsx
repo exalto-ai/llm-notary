@@ -56,7 +56,7 @@ import notaryMark from './notary-mark.svg';
 type View =
   | 'home'
   | 'captures'
-  | 'finalizations'
+  | 'notarizations'
   | 'traces'
   | 'sharing'
   | 'activity'
@@ -64,7 +64,7 @@ type View =
   | 'service-details'
   | 'settings';
 
-type WorkspaceView = 'captures' | 'finalizations' | 'traces' | 'sharing' | 'activity' | 'settings';
+type WorkspaceView = 'captures' | 'notarizations' | 'traces' | 'sharing' | 'activity' | 'settings';
 type OnboardingStep = 'welcome' | 'protection' | 'provider' | 'account' | 'ready';
 type VaultSetupMode = 'keychain' | 'passphrase';
 
@@ -114,8 +114,8 @@ const onboardingSteps: OnboardingStep[] = ['welcome', 'protection', 'provider', 
 const viewMeta: Record<View, { title: string; subtitle: string }> = {
   home: { title: 'LLM Notary', subtitle: 'Private capture service' },
   captures: { title: 'Captures', subtitle: 'Private evidence on this Mac' },
-  finalizations: { title: 'Finalizations', subtitle: 'Notary proof operations' },
-  traces: { title: 'Verified traces', subtitle: 'Portable .llmtrace packages' },
+  notarizations: { title: 'Notarizations', subtitle: 'Notary proof operations' },
+  traces: { title: 'Notarized traces', subtitle: 'Portable .llmtrace packages' },
   sharing: { title: 'Share', subtitle: 'Choose exactly what becomes public' },
   activity: { title: 'Activity', subtitle: 'Safe local service events' },
   connections: { title: 'Models & providers', subtitle: 'Connect the tools you already use' },
@@ -125,7 +125,7 @@ const viewMeta: Record<View, { title: string; subtitle: string }> = {
 
 const workspaceRoutes: Partial<Record<View, WorkspaceView>> = {
   captures: 'captures',
-  finalizations: 'finalizations',
+  notarizations: 'notarizations',
   traces: 'traces',
   sharing: 'sharing',
   activity: 'activity',
@@ -310,7 +310,7 @@ function updateChipLabel(update: DesktopUpdateState) {
 
 function updateRestartBlockReason(state: DesktopState) {
   if (state.counts.capturing > 0) return 'Finish the active capture before restarting.';
-  if (state.counts.active_operations > 0) return 'Finish the active finalization before restarting.';
+  if (state.counts.active_operations > 0) return 'Finish the active notarization before restarting.';
   if (state.running && !state.managed_by_desktop) return 'Stop or update the separately managed local service first.';
   return null;
 }
@@ -516,9 +516,9 @@ function Sidebar({ state, view, onNavigate }: { state: DesktopState; view: View;
   const groups: Array<Array<{ view: View; label: string; icon: typeof Gauge; count?: number }>> = [
     [
       { view: 'home', label: 'Home', icon: Gauge },
-      { view: 'captures', label: 'Captures', icon: Archive, count: state.counts.ready_to_finalize },
-      { view: 'finalizations', label: 'Finalizations', icon: ListChecks, count: state.counts.active_operations },
-      { view: 'traces', label: 'Verified traces', icon: FileCheck2 },
+      { view: 'captures', label: 'Captures', icon: Archive, count: state.counts.ready_to_notarize },
+      { view: 'notarizations', label: 'Notarizations', icon: ListChecks, count: state.counts.active_operations },
+      { view: 'traces', label: 'Notarized traces', icon: FileCheck2 },
     ],
     [
       { view: 'sharing', label: 'Share', icon: Send },
@@ -630,14 +630,14 @@ function HomeView({ state, busy, notice, onNavigate, onStart, onStop, onRestart 
 
     <section className="home-grid">
       <div className="native-card capture-card">
-        <header><div><span className="section-label">Capture workspace</span><h2>Private evidence</h2></div><span>{state.counts.total_captures} total</span></header>
+        <header><div><span className="section-label">Capture workspace</span><h2>Private evidence</h2></div><span>{state.counts.total_traces} total</span></header>
         <div className="capture-counts">
-          <button onClick={() => onNavigate('captures')}><b>{state.counts.ready_to_finalize}</b><span>Ready to finalize</span><ChevronRight size={14} /></button>
-          <button onClick={() => onNavigate('traces')}><b>{state.counts.finalized}</b><span>Verified traces</span><ChevronRight size={14} /></button>
+          <button onClick={() => onNavigate('captures')}><b>{state.counts.ready_to_notarize}</b><span>Ready to notarize</span><ChevronRight size={14} /></button>
+          <button onClick={() => onNavigate('traces')}><b>{state.counts.notarized}</b><span>Notarized traces</span><ChevronRight size={14} /></button>
           <button onClick={() => onNavigate('activity')}><b>{state.counts.failed}</b><span>Need attention</span><ChevronRight size={14} /></button>
         </div>
-        <button className="card-action" onClick={() => onNavigate(state.counts.ready_to_finalize ? 'captures' : 'connections')}>
-          {state.counts.ready_to_finalize ? 'Review private captures' : 'Connect a model client'} <ChevronRight size={15} />
+        <button className="card-action" onClick={() => onNavigate(state.counts.ready_to_notarize ? 'captures' : 'connections')}>
+          {state.counts.ready_to_notarize ? 'Review private captures' : 'Connect a model client'} <ChevronRight size={15} />
         </button>
       </div>
 
@@ -978,7 +978,7 @@ function SetupTrustDiagram() {
   return <figure
     className="setup-trust-diagram"
     role="img"
-    aria-label="The model provider sends an encrypted response through the remote notary to LLM Notary on this Mac. The remote notary sees encrypted protocol data, while plaintext is decrypted locally for you and private evidence can be finalized into a notarized trace."
+    aria-label="The model provider sends an encrypted response through the remote notary to LLM Notary on this Mac. The remote notary sees encrypted protocol data, while plaintext is decrypted locally for you and private evidence can be notarized into a portable trace."
   >
     <div className="setup-trust-flow" aria-hidden="true">
       <section className="setup-trust-node setup-provider-node">
@@ -1012,7 +1012,7 @@ function SetupTrustDiagram() {
         </div>
         <div className="setup-local-outputs">
           <div><UserRound /><span><strong>You</strong><small>Readable response</small></span></div>
-          <div><FileCheck2 /><span><strong>Notarized trace</strong><small>Only when you finalize</small></span></div>
+          <div><FileCheck2 /><span><strong>Notarized trace</strong><small>Only when you notarize</small></span></div>
         </div>
       </section>
     </div>
@@ -1141,7 +1141,7 @@ function OnboardingAside({ step, state, provider }: {
     },
     protection: {
       title: 'Private before public',
-      copy: 'A capture stays on this Mac until you explicitly finalize and share selected evidence.',
+      copy: 'A capture stays on this Mac until you explicitly notarize and share selected evidence.',
     },
     provider: {
       title: `Connect ${provider.name}`,
@@ -1149,11 +1149,11 @@ function OnboardingAside({ step, state, provider }: {
     },
     account: {
       title: 'Account connection is optional',
-      copy: 'Hosted credits, usage, and account-owned sharing are available when you sign in. Local capture, finalization, and verification work without an account.',
+      copy: 'Hosted credits, usage, and account-owned sharing are available when you sign in. Local capture, notarization, and verification work without an account.',
     },
     ready: {
       title: 'One app, end to end',
-      copy: 'Review private captures, finalize proof, inspect verified traces, and choose sharing from this window.',
+      copy: 'Review private captures, notarize proof, inspect notarized traces, and choose sharing from this window.',
     },
   }[step];
   return <aside className="onboarding-aside">
@@ -1163,7 +1163,7 @@ function OnboardingAside({ step, state, provider }: {
     {step === 'welcome' ? <dl className="aside-trust-facts">
       <div><dt>Remote notary</dt><dd>Provider hostname, encrypted traffic, sizes, timing, and protocol metadata—never plaintext</dd></div>
       <div><dt>This Mac</dt><dd>Provider credentials, prompts, responses, and private captures</dd></div>
-      <div><dt>Shared later</dt><dd>Only the evidence you explicitly finalize and choose to share</dd></div>
+      <div><dt>Shared later</dt><dd>Only the evidence you explicitly notarize and choose to share</dd></div>
     </dl> : <div className="aside-route">
       <RouteStop title="Model client" detail="Keeps the credential" active={step === 'ready' || state.running} />
       <RouteStop title="LLM Notary" detail="Captures locally" active={step === 'ready' || state.running} />

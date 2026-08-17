@@ -210,36 +210,34 @@ impl Persistence {
         let mut summary = RecoverySummary::default();
         for incomplete in self.metadata.incomplete_captures().await? {
             let trace_id = incomplete.trace_id;
-            let key = ArtifactKey::new(&trace_id, ArtifactKind::CaptureCheckpoint)?;
-            let completion = incomplete.completion;
-            if completion.is_none() && !interrupt_unprepared {
-                continue;
-            }
-            if let Some(artifact) = self.artifacts.find(&key, MAX_ARCHIVE_WIRE_BYTES).await? {
-                if let Some(completion) = completion {
-                    anyhow::ensure!(
-                        artifact.size_bytes == completion.expected_artifact_size_bytes
-                            && artifact.sha256 == completion.expected_artifact_sha256,
-                        "stored artifact does not match the prepared capture commit"
-                    );
-                    self.metadata.complete_capture(completion, artifact).await?;
-                } else {
-                    // Compatibility for traces left by schema-v6 daemons
-                    // which predate staged completion descriptors.
-                    self.metadata.recover_capture(&trace_id, artifact).await?;
+            match incomplete.completion {
+                Some(completion) => {
+                    let key = ArtifactKey::new(&trace_id, ArtifactKind::CaptureCheckpoint)?;
+                    if let Some(artifact) =
+                        self.artifacts.find(&key, MAX_ARCHIVE_WIRE_BYTES).await?
+                    {
+                        anyhow::ensure!(
+                            artifact.size_bytes == completion.expected_artifact_size_bytes
+                                && artifact.sha256 == completion.expected_artifact_sha256,
+                            "stored artifact does not match the prepared capture commit"
+                        );
+                        self.metadata.complete_capture(completion, artifact).await?;
+                        summary.recovered_checkpoints += 1;
+                    } else {
+                        // A storage timeout can be ambiguous: the conditional PUT may
+                        // become visible after the process restarts. Keep the staged
+                        // completion recoverable and let the bounded background pass
+                        // attach exact bytes when they appear.
+                        summary.pending_commits += 1;
+                    }
                 }
-                summary.recovered_checkpoints += 1;
-            } else if completion.is_some() {
-                // A storage timeout can be ambiguous: the conditional PUT may
-                // become visible after the process restarts. Keep the staged
-                // completion recoverable and let the bounded background pass
-                // attach exact bytes when they appear.
-                summary.pending_commits += 1;
-            } else {
-                self.metadata
-                    .mark_capture_failed(&trace_id, "interrupted")
-                    .await?;
-                summary.interrupted_captures += 1;
+                None if interrupt_unprepared => {
+                    self.metadata
+                        .mark_capture_failed(&trace_id, "interrupted")
+                        .await?;
+                    summary.interrupted_captures += 1;
+                }
+                None => {}
             }
         }
         Ok(summary)
@@ -282,7 +280,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn recovery_uses_the_artifact_contract_for_present_and_missing_checkpoints() {
+    async fn recovery_does_not_adopt_an_unprepared_checkpoint() {
         let directory = tempfile::tempdir().unwrap();
         let persistence = Persistence::open(&config(directory.path())).await.unwrap();
         for trace_id in ["trc-present", "trc-missing"] {
@@ -305,8 +303,8 @@ mod tests {
         assert_eq!(
             persistence.reconcile_incomplete_captures().await.unwrap(),
             RecoverySummary {
-                recovered_checkpoints: 1,
-                interrupted_captures: 1,
+                recovered_checkpoints: 0,
+                interrupted_captures: 2,
                 pending_commits: 0,
             }
         );
@@ -317,8 +315,17 @@ mod tests {
                 .await
                 .unwrap()
                 .unwrap()
-                .capture_status,
-            "captured"
+                .failure_code
+                .as_deref(),
+            Some("interrupted")
+        );
+        assert!(
+            persistence
+                .metadata
+                .artifacts("trc-present")
+                .await
+                .unwrap()
+                .is_empty()
         );
         assert_eq!(
             persistence

@@ -577,7 +577,7 @@ fn require_plain_directory(package: &Path) -> Result<()> {
         .with_context(|| format!("reading trace package {}", package.display()))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         bail!(
-            "publish expects one trace package package directory: {}",
+            "trace package builder expects one package directory: {}",
             package.display()
         );
     }

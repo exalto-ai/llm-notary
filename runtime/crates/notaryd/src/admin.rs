@@ -58,7 +58,7 @@ use crate::{
     },
     persistence::Persistence,
     registry::{NotaryKeyStatus, RegistryRecord, key_id},
-    service::{DEFAULT_PUBLIC_ORIGIN, auth, proxy, publish, registry as registry_service},
+    service::{DEFAULT_PUBLIC_ORIGIN, auth, proxy, registry as registry_service, sharing},
     vault::Vault,
 };
 
@@ -1457,7 +1457,7 @@ enum ShareVisibility {
     Listed,
 }
 
-impl From<ShareVisibility> for publish::ShareVisibility {
+impl From<ShareVisibility> for sharing::ShareVisibility {
     fn from(value: ShareVisibility) -> Self {
         match value {
             ShareVisibility::Unlisted => Self::Unlisted,
@@ -1503,7 +1503,7 @@ async fn share_capture(
     } else {
         None
     };
-    let (share, verified_trace_id, _) = publish::share_package_bytes(
+    let (share, verified_trace_id, _) = sharing::share_package_bytes(
         &bytes,
         state.config.notary.public_key.as_deref(),
         shared_trust.as_ref(),
@@ -1533,14 +1533,14 @@ async fn share_status(
 ) -> Result<Json<ShareStatusResponse>, ApiError> {
     validate_id(&share_id, "")?;
     let _credentials = state.account_credentials.lock().await;
-    let status = publish::share_status(&share_id)
+    let status = sharing::share_status(&share_id)
         .await
         .map_err(|error| match error {
-            publish::ShareStatusError::Authentication => {
+            sharing::ShareStatusError::Authentication => {
                 ApiError::account_authentication_required()
             }
-            publish::ShareStatusError::NotFound => ApiError::not_found("share_not_found"),
-            publish::ShareStatusError::Unavailable => {
+            sharing::ShareStatusError::NotFound => ApiError::not_found("share_not_found"),
+            sharing::ShareStatusError::Unavailable => {
                 ApiError::service_unavailable("share_status_unavailable")
             }
         })?;
@@ -1549,8 +1549,8 @@ async fn share_status(
         state: status.state,
         failure_code: status.failure_code,
         visibility: match status.visibility {
-            publish::ShareVisibility::Unlisted => ShareVisibility::Unlisted,
-            publish::ShareVisibility::Listed => ShareVisibility::Listed,
+            sharing::ShareVisibility::Unlisted => ShareVisibility::Unlisted,
+            sharing::ShareVisibility::Listed => ShareVisibility::Listed,
         },
         share_url: status.share_url,
         package_url: status.package_url,
