@@ -102,6 +102,22 @@ CREATE TABLE notaryd.events (
 CREATE INDEX events_created_idx
     ON notaryd.events(created_at_unix_ms DESC);
 
+CREATE TABLE notaryd.trace_shares (
+    trace_id TEXT PRIMARY KEY REFERENCES notaryd.traces(trace_id) ON DELETE CASCADE,
+    hosted_trace_id TEXT NOT NULL UNIQUE CHECK (length(hosted_trace_id) BETWEEN 1 AND 256),
+    progress TEXT NOT NULL CHECK (
+        progress IN ('preparing', 'uploading', 'verifying', 'shared', 'rejected', 'failed')
+    ),
+    visibility TEXT NOT NULL CHECK (visibility IN ('listed', 'unlisted')),
+    access_enabled BOOLEAN NOT NULL,
+    password_protected BOOLEAN NOT NULL,
+    expires_at_unix_ms BIGINT CHECK (expires_at_unix_ms >= 0),
+    failure_code TEXT,
+    share_url TEXT,
+    package_url TEXT,
+    updated_at_unix_ms BIGINT NOT NULL CHECK (updated_at_unix_ms >= 0)
+);
+
 ALTER TABLE notaryd.traces
     ADD COLUMN expected_artifact_size_bytes BIGINT CHECK (expected_artifact_size_bytes >= 0),
     ADD COLUMN expected_artifact_sha256 TEXT CHECK (

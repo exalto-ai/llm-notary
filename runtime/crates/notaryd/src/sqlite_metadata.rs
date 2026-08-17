@@ -1252,6 +1252,21 @@ fn migrate(connection: &mut Connection) -> Result<()> {
                 message TEXT NOT NULL
             );
             CREATE INDEX events_created_idx ON events(created_at_unix_ms DESC);
+            CREATE TABLE trace_shares (
+                trace_id TEXT PRIMARY KEY REFERENCES traces(trace_id) ON DELETE CASCADE,
+                hosted_trace_id TEXT NOT NULL UNIQUE CHECK (length(hosted_trace_id) BETWEEN 1 AND 256),
+                progress TEXT NOT NULL CHECK (
+                    progress IN ('preparing', 'uploading', 'verifying', 'shared', 'rejected', 'failed')
+                ),
+                visibility TEXT NOT NULL CHECK (visibility IN ('listed', 'unlisted')),
+                access_enabled INTEGER NOT NULL CHECK (access_enabled IN (0, 1)),
+                password_protected INTEGER NOT NULL CHECK (password_protected IN (0, 1)),
+                expires_at_unix_ms INTEGER,
+                failure_code TEXT,
+                share_url TEXT,
+                package_url TEXT,
+                updated_at_unix_ms INTEGER NOT NULL
+            );
             CREATE TABLE settings (
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 capture_enabled INTEGER NOT NULL CHECK (capture_enabled IN (0, 1))
@@ -1271,6 +1286,7 @@ fn validate_schema(connection: &Connection) -> Result<()> {
         "operations",
         "operation_attempts",
         "events",
+        "trace_shares",
         "settings",
     ] {
         let exists = connection.query_row(
