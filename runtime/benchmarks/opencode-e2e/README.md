@@ -33,8 +33,8 @@ The ignored repository `.env` must contain these dedicated values:
 
 ```dotenv
 OPENROUTER_FREE_TIER_API_KEY=...
-LLM_NOTARY_E2E_API_KEY=...
-LLM_NOTARY_SLACK_WEBHOOK_URL=...
+NOTARYD_E2E_API_KEY=...
+NOTARYD_E2E_SLACK_WEBHOOK_URL=...
 ```
 
 `OPENROUTER_FREE_TIER_API_KEY` is intentionally separate from a normal paid
@@ -44,7 +44,9 @@ isolated child process.
 Build and run from the repository root:
 
 ```bash
-cargo build --release --locked -p notaryd --bins -p llm-notary-cli --bin llm-notary
+cargo build --manifest-path runtime/Cargo.toml --target-dir target \
+  --release --locked -p notaryd --bin notaryd \
+  -p llm-notary-cli --bin llm-notary
 npm install --global opencode-ai@1.18.11
 
 set -a
@@ -53,12 +55,12 @@ set +a
 
 result=/tmp/llm-notary-opencode-e2e-result.json
 set +e
-python3 benchmarks/opencode-e2e/run.py \
+python3 runtime/benchmarks/opencode-e2e/run.py \
   --llm-notary target/release/llm-notary \
   --notaryd target/release/notaryd \
   --result "$result"
 status=$?
-python3 benchmarks/opencode-e2e/notify.py "$result" || true
+python3 runtime/benchmarks/opencode-e2e/notify.py "$result" || true
 exit "$status"
 ```
 
@@ -81,6 +83,9 @@ repository secrets:
 - `OPENROUTER_FREE_TIER_API_KEY`
 - `LLM_NOTARY_E2E_API_KEY`
 - `LLM_NOTARY_SLACK_WEBHOOK_URL`
+
+The workflow maps the latter two repository secret names to the canonical
+`NOTARYD_E2E_API_KEY` and `NOTARYD_E2E_SLACK_WEBHOOK_URL` process variables.
 
 The workflow retains only `opencode-e2e-result.json`. The optional manual model
 override must still be an exact OpenRouter `:free` model with tool support and
