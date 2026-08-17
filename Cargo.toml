@@ -1,6 +1,6 @@
 [workspace]
 members = [
-    "platform/crates/llm-notary-api",
+    "platform/crates/notary-api",
     "platform/crates/llm-notary-hosted-server",
     "js/desktop/src-tauri",
 ]

@@ -362,7 +362,7 @@ export async function getCurrentUser() {
     );
   }
   return {
-    ...data.user,
+    ...data.account,
     billing: data.billing,
     credits: data.credits,
     notary_stats: data.notary_stats,

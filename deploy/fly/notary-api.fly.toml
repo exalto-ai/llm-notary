@@ -1,0 +1,98 @@
+app = "llm-notary-prod-api"
+primary_region = "sjc"
+kill_signal = "SIGTERM"
+kill_timeout = "30s"
+
+[build]
+  dockerfile = "../../Dockerfile"
+  build-target = "notary-api"
+
+[deploy]
+  # Run the SQLx baseline / future migrations once before replacing API
+  # Machines. A failure leaves the existing release serving traffic.
+  release_command = "notary-api migrate"
+  release_command_timeout = "5m"
+
+[env]
+  # A normal rolling deploy is allowed only after the one-time canonical API
+  # bootstrap. The preflight checks this marker on every existing Machine.
+  NOTARY_API_DEPLOYMENT_CONTRACT = "canonical-v1"
+  NOTARY_API_LISTEN = "0.0.0.0:8080"
+  NOTARY_PUBLIC_ORIGIN = "https://notary.exalto.ai"
+  NOTARY_API_REGISTRY_FILE = "/run/secrets/notary_registry"
+  NOTARY_API_GOOGLE_CLIENT_SECRET_FILE = "/run/secrets/google_oauth_client_secret"
+  NOTARY_API_GITHUB_CLIENT_SECRET_FILE = "/run/secrets/github_oauth_client_secret"
+  NOTARY_API_STRIPE_SECRET_KEY_FILE = "/run/secrets/stripe_secret_key"
+  NOTARY_API_STRIPE_WEBHOOK_SECRET_FILE = "/run/secrets/stripe_webhook_secret"
+  NOTARY_API_S3_PREFIX = "notary-api"
+  NOTARY_API_S3_FORCE_PATH_STYLE = "true"
+  NOTARY_API_ADMISSION_SERVICE_TOKEN_FILE = "/run/secrets/admission_service_token"
+  NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_FILE = "/run/secrets/anonymous_subject_hmac_key"
+  NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_VERSION = "1"
+  # Requests arrive only from the separate web app over Fly's private network.
+  NOTARY_API_ADMISSION_TRUSTED_PROXY_CIDRS = "fdaa::/16"
+  # Keep the per-Machine pool small. With both replicas active this is ten
+  # database connections; use Neon's pooled connection URL.
+  NOTARY_API_DATABASE_MAX_CONNECTIONS = "5"
+
+[metrics]
+  # Fly scrapes this private route every 15 seconds; it is not exposed through
+  # the public web gateway.
+  port = 8080
+  path = "/metrics"
+
+[http_service]
+  internal_port = 8080
+  force_https = false
+  # Both provisioned API Machines remain running so requests and background
+  # workers do not incur cold starts.
+  auto_stop_machines = "off"
+  auto_start_machines = false
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 25
+    hard_limit = 50
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "15s"
+    method = "GET"
+    path = "/api/readyz"
+    timeout = "5s"
+
+[[files]]
+  guest_path = "/run/secrets/admission_service_token"
+  secret_name = "ADMISSION_SERVICE_TOKEN_B64"
+
+[[files]]
+  guest_path = "/run/secrets/anonymous_subject_hmac_key"
+  secret_name = "ANONYMOUS_SUBJECT_HMAC_KEY_B64"
+
+[[files]]
+  guest_path = "/run/secrets/notary_registry"
+  secret_name = "NOTARY_REGISTRY_B64"
+
+[[files]]
+  guest_path = "/run/secrets/google_oauth_client_secret"
+  secret_name = "GOOGLE_OAUTH_CLIENT_SECRET_B64"
+
+[[files]]
+  guest_path = "/run/secrets/github_oauth_client_secret"
+  secret_name = "GITHUB_OAUTH_CLIENT_SECRET_B64"
+
+[[files]]
+  guest_path = "/run/secrets/stripe_secret_key"
+  secret_name = "STRIPE_SECRET_KEY_B64"
+
+[[files]]
+  guest_path = "/run/secrets/stripe_webhook_secret"
+  secret_name = "STRIPE_WEBHOOK_SECRET_B64"
+
+[[vm]]
+  # Verification isolates an up-to-128 MiB package in a child process while
+  # the API parent retains its request buffer. Leave headroom for decoded ZIP
+  # entries, proof verification, the registry, and ordinary API workers.
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

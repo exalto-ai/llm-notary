@@ -3,14 +3,14 @@ services:
     # The API image includes the SQLx migrator. Run it to completion before
     # starting or replacing API replicas so a fresh deployment cannot serve
     # database-backed routes against an unmigrated schema.
-    image: ${API_IMAGE:-llm-notary-api:local}
+    image: ${NOTARY_API_IMAGE:-notary-api:local}
     build:
       context: .
       dockerfile: Dockerfile
-      target: api
-    command: ["llm-notary-api-migrate"]
+      target: notary-api
+    command: ["notary-api", "migrate"]
     environment:
-      DATABASE_MIGRATIONS_URL: ${DATABASE_MIGRATIONS_URL:?Set DATABASE_MIGRATIONS_URL to the direct PostgreSQL connection URL used only for migrations}
+      NOTARY_API_MIGRATION_DATABASE_URL: ${NOTARY_API_MIGRATION_DATABASE_URL:?Set NOTARY_API_MIGRATION_DATABASE_URL to the direct PostgreSQL connection URL used only for migrations}
     read_only: true
     tmpfs:
       - /tmp
@@ -20,51 +20,44 @@ services:
       - ALL
     restart: "no"
 
-  api:
-    image: ${API_IMAGE:-llm-notary-api:local}
+  notary-api:
+    image: ${NOTARY_API_IMAGE:-notary-api:local}
     build:
       context: .
       dockerfile: Dockerfile
-      target: api
+      target: notary-api
     depends_on:
       migrate:
         condition: service_completed_successfully
     environment:
       # Use Neon's pooled URL in shared deployments. It is intentionally
       # external so every API replica shares one durable source of truth.
-      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL to the PostgreSQL connection URL}
-      LLM_NOTARY_DATABASE_MAX_CONNECTIONS: ${LLM_NOTARY_DATABASE_MAX_CONNECTIONS:-5}
-      # Configure Google, GitHub, or both. The API requires at least one
-      # complete client ID/secret pair and exposes only configured providers.
-      GOOGLE_OAUTH_CLIENT_ID: ${GOOGLE_OAUTH_CLIENT_ID:-}
-      GOOGLE_OAUTH_CLIENT_SECRET: ${GOOGLE_OAUTH_CLIENT_SECRET:-}
-      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
-      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
-      LLM_NOTARY_API_LISTEN: 0.0.0.0:8080
-      LLM_NOTARY_PUBLIC_ORIGIN: ${LLM_NOTARY_PUBLIC_ORIGIN:?Set LLM_NOTARY_PUBLIC_ORIGIN to the public site origin}
-      LLM_NOTARY_NOTARY_HOST: ${LLM_NOTARY_NOTARY_HOST:?Set LLM_NOTARY_NOTARY_HOST to the public notary hostname or IP}
-      LLM_NOTARY_NOTARY_PORT: ${NOTARY_PORT:-7047}
-      LLM_NOTARY_NOTARY_TRANSPORT: ${LLM_NOTARY_NOTARY_TRANSPORT:-tcp}
-      LLM_NOTARY_NOTARY_PUBLIC_KEY: ${LLM_NOTARY_NOTARY_PUBLIC_KEY:?Set LLM_NOTARY_NOTARY_PUBLIC_KEY to the notary SEC1 public key}
-      LLM_NOTARY_NOTARY_DIRECTORY_JSON: ${LLM_NOTARY_NOTARY_DIRECTORY_JSON:-}
-      LLM_NOTARY_NOTARY_DIRECTORY_GENERATION: ${LLM_NOTARY_NOTARY_DIRECTORY_GENERATION:-1}
-      LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS: ${LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS:-0}
-      LLM_NOTARY_S3_ACCESS_KEY_ID: ${LLM_NOTARY_S3_ACCESS_KEY_ID:?Set LLM_NOTARY_S3_ACCESS_KEY_ID to the bucket-scoped Spaces access key}
-      LLM_NOTARY_S3_SECRET_ACCESS_KEY: ${LLM_NOTARY_S3_SECRET_ACCESS_KEY:?Set LLM_NOTARY_S3_SECRET_ACCESS_KEY to the bucket-scoped Spaces secret key}
-      LLM_NOTARY_S3_BUCKET: ${LLM_NOTARY_S3_BUCKET:?Set LLM_NOTARY_S3_BUCKET to the private intake Space}
-      LLM_NOTARY_S3_ENDPOINT: ${LLM_NOTARY_S3_ENDPOINT:?Set LLM_NOTARY_S3_ENDPOINT to the regional Spaces origin endpoint}
-      LLM_NOTARY_S3_REGION: ${LLM_NOTARY_S3_REGION:?Set LLM_NOTARY_S3_REGION to the Space region}
-      LLM_NOTARY_S3_PREFIX: ${LLM_NOTARY_S3_PREFIX:-llm-notary}
-      LLM_NOTARY_S3_FORCE_PATH_STYLE: ${LLM_NOTARY_S3_FORCE_PATH_STYLE:-true}
-      LLM_NOTARY_INTAKE_MAX_BYTES: ${LLM_NOTARY_INTAKE_MAX_BYTES:-134299648}
-      LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS: ${LLM_NOTARY_INTAKE_UPLOAD_TTL_SECS:-900}
-      LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE: /run/secrets/admission_service_token
-      LLM_NOTARY_ANONYMOUS_SUBJECT_HMAC_KEY_FILE: /run/secrets/anonymous_subject_hmac_key
-      LLM_NOTARY_ANONYMOUS_SUBJECT_HMAC_KEY_VERSION: ${LLM_NOTARY_ANONYMOUS_SUBJECT_HMAC_KEY_VERSION:-1}
+      NOTARY_API_DATABASE_URL: ${NOTARY_API_DATABASE_URL:?Set NOTARY_API_DATABASE_URL to the PostgreSQL connection URL}
+      NOTARY_API_DATABASE_MAX_CONNECTIONS: ${NOTARY_API_DATABASE_MAX_CONNECTIONS:-5}
+      # This reference deployment configures both providers so either account
+      # type remains usable during the canonical configuration cutover.
+      NOTARY_API_GOOGLE_CLIENT_ID: ${NOTARY_API_GOOGLE_CLIENT_ID:?Set NOTARY_API_GOOGLE_CLIENT_ID}
+      NOTARY_API_GOOGLE_CLIENT_SECRET_FILE: /run/secrets/google_oauth_client_secret
+      NOTARY_API_GITHUB_CLIENT_ID: ${NOTARY_API_GITHUB_CLIENT_ID:?Set NOTARY_API_GITHUB_CLIENT_ID}
+      NOTARY_API_GITHUB_CLIENT_SECRET_FILE: /run/secrets/github_oauth_client_secret
+      NOTARY_API_LISTEN: 0.0.0.0:8080
+      NOTARY_PUBLIC_ORIGIN: ${NOTARY_PUBLIC_ORIGIN:?Set NOTARY_PUBLIC_ORIGIN to the public site origin}
+      NOTARY_API_REGISTRY_FILE: /run/secrets/notary_registry
+      NOTARY_API_S3_ACCESS_KEY_ID: ${NOTARY_API_S3_ACCESS_KEY_ID:?Set NOTARY_API_S3_ACCESS_KEY_ID to the bucket-scoped access key}
+      NOTARY_API_S3_SECRET_ACCESS_KEY: ${NOTARY_API_S3_SECRET_ACCESS_KEY:?Set NOTARY_API_S3_SECRET_ACCESS_KEY to the bucket-scoped secret key}
+      NOTARY_API_S3_BUCKET: ${NOTARY_API_S3_BUCKET:?Set NOTARY_API_S3_BUCKET to the private Trace bucket}
+      NOTARY_API_S3_ENDPOINT: ${NOTARY_API_S3_ENDPOINT:?Set NOTARY_API_S3_ENDPOINT to the regional S3 endpoint}
+      NOTARY_API_S3_REGION: ${NOTARY_API_S3_REGION:?Set NOTARY_API_S3_REGION}
+      NOTARY_API_S3_PREFIX: ${NOTARY_API_S3_PREFIX:-notary-api}
+      NOTARY_API_S3_FORCE_PATH_STYLE: ${NOTARY_API_S3_FORCE_PATH_STYLE:-true}
+      NOTARY_API_STORAGE_MAX_PACKAGE_BYTES: ${NOTARY_API_STORAGE_MAX_PACKAGE_BYTES:-134299648}
+      NOTARY_API_STORAGE_UPLOAD_TTL_SECS: ${NOTARY_API_STORAGE_UPLOAD_TTL_SECS:-900}
+      NOTARY_API_ADMISSION_SERVICE_TOKEN_FILE: /run/secrets/admission_service_token
+      NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_FILE: /run/secrets/anonymous_subject_hmac_key
+      NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_VERSION: ${NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_VERSION:-1}
       # The API is internal to this Compose network; only the stable Caddy
-      # gateway may supply X-LLM-Notary-Client-IP.
-      LLM_NOTARY_TRUSTED_PROXY_CIDRS: ${LLM_NOTARY_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # gateway may supply x-notary-client-ip.
+      NOTARY_API_ADMISSION_TRUSTED_PROXY_CIDRS: ${NOTARY_API_ADMISSION_TRUSTED_PROXY_CIDRS:-172.16.0.0/12}
     read_only: true
     tmpfs:
       - /tmp
@@ -77,6 +70,12 @@ services:
         target: admission_service_token
       - source: anonymous_subject_hmac_key
         target: anonymous_subject_hmac_key
+      - source: notary_registry
+        target: notary_registry
+      - source: google_oauth_client_secret
+        target: google_oauth_client_secret
+      - source: github_oauth_client_secret
+        target: github_oauth_client_secret
     restart: unless-stopped
 
   site:
@@ -85,14 +84,14 @@ services:
       context: ./js/app
       dockerfile: Dockerfile
       args:
-        LLM_NOTARY_PUBLIC_ORIGIN: ${LLM_NOTARY_PUBLIC_ORIGIN:?Set LLM_NOTARY_PUBLIC_ORIGIN to the public site origin}
+        LLM_NOTARY_PUBLIC_ORIGIN: ${NOTARY_PUBLIC_ORIGIN:?Set NOTARY_PUBLIC_ORIGIN to the public site origin}
     restart: unless-stopped
 
   web:
     # Pinned so normal application deployments never replace the tunnel origin.
     image: caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     depends_on:
-      - api
+      - notary-api
       - site
     ports:
       - "127.0.0.1:${WEB_HTTP_PORT:-80}:80"
@@ -109,9 +108,9 @@ services:
     environment:
       NOTARY_SIGNING_KEY_FILE: /run/secrets/notary_signing_key
       LLM_NOTARY_NOTARY_PUBLIC_KEY: ${LLM_NOTARY_NOTARY_PUBLIC_KEY:?Set LLM_NOTARY_NOTARY_PUBLIC_KEY to the notary SEC1 public key}
-      LLM_NOTARY_ADMISSION_API_ORIGIN: http://api:8080
+      LLM_NOTARY_ADMISSION_API_ORIGIN: http://notary-api:8080
       LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE: /run/secrets/admission_service_token
-      LLM_NOTARY_NOTARY_DIRECTORY_GENERATION: ${LLM_NOTARY_NOTARY_DIRECTORY_GENERATION:-1}
+      LLM_NOTARY_REGISTRY_GENERATION: ${LLM_NOTARY_REGISTRY_GENERATION:-1}
       LLM_NOTARY_INSTANCE_ID: ${LLM_NOTARY_INSTANCE_ID:-notary-compose-1}
       LLM_NOTARY_USAGE_OUTBOX_DIR: /var/lib/llm-notary/usage-outbox
       # Internal-only scrape endpoint. Do not publish it through the gateway.
@@ -153,9 +152,15 @@ secrets:
   notary_signing_key:
     file: ${NOTARY_SIGNING_KEY_FILE:?Set NOTARY_SIGNING_KEY_FILE to the host signing-key path}
   admission_service_token:
-    file: ${ADMISSION_SERVICE_TOKEN_FILE:?Set ADMISSION_SERVICE_TOKEN_FILE to the shared API/notary admission service-token path}
+    file: ${NOTARY_API_ADMISSION_SERVICE_TOKEN_FILE:?Set NOTARY_API_ADMISSION_SERVICE_TOKEN_FILE to the shared notary-api/notary-server admission service-token path}
   anonymous_subject_hmac_key:
-    file: ${ANONYMOUS_SUBJECT_HMAC_KEY_FILE:?Set ANONYMOUS_SUBJECT_HMAC_KEY_FILE to the API anonymous-subject HMAC key path}
+    file: ${NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_FILE:?Set NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_FILE to the notary-api anonymous-subject HMAC key path}
+  notary_registry:
+    file: ${NOTARY_API_REGISTRY_FILE:?Set NOTARY_API_REGISTRY_FILE to the canonical Registry JSON path}
+  google_oauth_client_secret:
+    file: ${NOTARY_API_GOOGLE_CLIENT_SECRET_FILE:?Set NOTARY_API_GOOGLE_CLIENT_SECRET_FILE}
+  github_oauth_client_secret:
+    file: ${NOTARY_API_GITHUB_CLIENT_SECRET_FILE:?Set NOTARY_API_GITHUB_CLIENT_SECRET_FILE}
 
 volumes:
   notary_data:

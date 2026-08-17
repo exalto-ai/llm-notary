@@ -12,7 +12,7 @@
 *.pem
 *.sqlite
 *.bundle.json
-llm-notary-api.db
+notary-api.db
 js/app/node_modules/
 js/app/dist/
 js/app/.vitest-attachments/

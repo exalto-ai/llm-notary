@@ -6,7 +6,7 @@ useDefault = true
 [[rules]]
 id = "llm-notary-private-artifact"
 description = "LLM Notary private evidence or local credential artifact"
-path = '''(?i)(^|/)(bundles?|captures?|traces?)(/|$)|(^|/)llm-notary-api\.db$|\.(llmcapture|llmbundle|bundle\.json|key|pem|sqlite)$'''
+path = '''(?i)(^|/)(bundles?|captures?|traces?)(/|$)|(^|/)notary-api\.db$|\.(llmcapture|llmbundle|bundle\.json|key|pem|sqlite)$'''
 tags = ["llm-notary", "private-artifact"]
 
 [[rules.allowlists]]

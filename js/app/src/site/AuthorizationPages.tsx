@@ -357,7 +357,7 @@ export function HostedNotaryRecord({
               <dd>{formatNotaryBoundary(record.valid_until_unix_ms)}</dd>
             </div>
             <div>
-              <dt>Finalization cutoff</dt>
+              <dt>Notarization cutoff</dt>
               <dd>{formatNotaryBoundary(record.notarize_until_unix_ms)}</dd>
             </div>
           </>
@@ -468,7 +468,7 @@ export function NotariesPage() {
                   />
                 ))
               ) : (
-                <p>No records are designated for new captures or compatible finalizations.</p>
+                <p>No records are designated for new captures or compatible notarizations.</p>
               )}
             </div>
           </section>

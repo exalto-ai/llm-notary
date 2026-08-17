@@ -132,8 +132,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start CLI device authorization */
-        post: operations["start_cli_authorization"];
+        /** Start Device device authorization */
+        post: operations["start_device_authorization"];
         delete?: never;
         options?: never;
         head?: never;
@@ -148,10 +148,10 @@ export interface paths {
             cookie?: never;
         };
         /** Get browser approval details */
-        get: operations["cli_approval_details"];
+        get: operations["device_approval_details"];
         put?: never;
-        /** Approve a CLI device authorization */
-        post: operations["approve_cli_authorization"];
+        /** Approve a Device device authorization */
+        post: operations["approve_device_authorization"];
         delete?: never;
         options?: never;
         head?: never;
@@ -167,8 +167,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Complete CLI device authorization */
-        post: operations["complete_cli_authorization"];
+        /** Complete Device device authorization */
+        post: operations["complete_device_authorization"];
         delete?: never;
         options?: never;
         head?: never;
@@ -184,8 +184,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Revoke a CLI session by refresh token */
-        post: operations["logout_cli_session"];
+        /** Revoke a Device session by refresh token */
+        post: operations["logout_device_session"];
         delete?: never;
         options?: never;
         head?: never;
@@ -199,8 +199,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get the CLI access-token identity */
-        get: operations["cli_me"];
+        /** Get the Device access-token identity */
+        get: operations["device_me"];
         put?: never;
         post?: never;
         delete?: never;
@@ -216,8 +216,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List the browser user's active CLI sessions */
-        get: operations["list_cli_sessions"];
+        /** List the browser user's active Device sessions */
+        get: operations["list_devices"];
         put?: never;
         post?: never;
         delete?: never;
@@ -236,8 +236,8 @@ export interface paths {
         get?: never;
         put?: never;
         post?: never;
-        /** Revoke one of the browser user's CLI sessions */
-        delete: operations["revoke_web_cli_session"];
+        /** Revoke one of the browser user's Device sessions */
+        delete: operations["revoke_web_device_session"];
         options?: never;
         head?: never;
         patch?: never;
@@ -252,8 +252,8 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Rotate CLI access and refresh tokens */
-        post: operations["refresh_cli_tokens"];
+        /** Rotate Device access and refresh tokens */
+        post: operations["refresh_device_tokens"];
         delete?: never;
         options?: never;
         head?: never;
@@ -508,7 +508,7 @@ export interface paths {
             cookie?: never;
         };
         /** List the browser user's shares */
-        get: operations["list_web_publish_jobs"];
+        get: operations["list_web_traces"];
         put?: never;
         post?: never;
         delete?: never;
@@ -524,7 +524,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get the versioned notary directory */
+        /** Get the versioned Notary Registry */
         get: operations["notary"];
         put?: never;
         post?: never;
@@ -592,7 +592,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Download the exact admitted portable proof package */
+        /** Download the exact verified portable proof package */
         get: operations["public_share_package"];
         put?: never;
         post?: never;
@@ -626,7 +626,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Download the admitted canonical OpenTelemetry trace */
+        /** Download the verified canonical OpenTelemetry trace */
         get: operations["public_share_trace"];
         put?: never;
         post?: never;
@@ -663,7 +663,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Create or resume a share */
-        post: operations["create_publish_job"];
+        post: operations["create_hosted_trace"];
         delete?: never;
         options?: never;
         head?: never;
@@ -678,13 +678,13 @@ export interface paths {
             cookie?: never;
         };
         /** Get a share's admission state */
-        get: operations["get_publish_job"];
+        get: operations["get_hosted_trace"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /** Change a share's publication access settings */
+        /** Change a hosted Trace's sharing access settings */
         patch: operations["update_share_settings"];
         trace?: never;
     };
@@ -698,7 +698,7 @@ export interface paths {
         get?: never;
         put?: never;
         /** Complete the upload for a share */
-        post: operations["complete_publish_job"];
+        post: operations["complete_hosted_trace_upload"];
         delete?: never;
         options?: never;
         head?: never;
@@ -729,8 +729,8 @@ export interface components {
         AccountBillingResponse: {
             billing_status: components["schemas"]["BillingStatus"];
             entitlements: components["schemas"]["PlanEntitlements"];
+            plan: components["schemas"]["Plan"];
             purchase_mode: components["schemas"]["BillingPurchaseMode"];
-            service_plan: components["schemas"]["ServicePlan"];
             subscriptions_configured: boolean;
         };
         AdmissionLimits: {
@@ -744,15 +744,15 @@ export interface components {
             max_private_chunk_commitments: number;
         };
         /** @enum {string} */
-        AdmissionMode: "capture" | "finalize";
+        AdmissionMode: "capture" | "notarization";
         /** @enum {string} */
         AdmissionRedemptionContract: "one_operation_v1";
         AdmissionTicketResponse: {
             /** Format: int64 */
-            directory_generation: number;
-            /** Format: int64 */
             expires_at: number;
             limits: components["schemas"]["AdmissionLimits"];
+            /** Format: int64 */
+            registry_generation: number;
             ticket: string;
         };
         ApiKeyResponse: {
@@ -770,7 +770,7 @@ export interface components {
             scopes: components["schemas"]["ApiScope"][];
         };
         /** @enum {string} */
-        ApiScope: "account:read" | "notary:admit" | "publish:read" | "publish:write";
+        ApiScope: "account:read" | "traces:read" | "traces:share" | "capture:request" | "notarization:request";
         ApprovalDetails: {
             device_name: string;
             /** Format: int64 */
@@ -816,37 +816,6 @@ export interface components {
             credits: components["schemas"]["CreditSummary"];
             offer_id: string;
         };
-        CliAuthorizationStarted: {
-            /** Format: int64 */
-            expires_in: number;
-            /** Format: int64 */
-            interval: number;
-            poll_secret: string;
-            request_id: string;
-            user_code: string;
-            verification_uri_complete: string;
-        };
-        CliCredentialResponse: {
-            id: string;
-            kind: components["schemas"]["CredentialKind"];
-            name: string;
-        };
-        CliMeResponse: {
-            billing: components["schemas"]["AccountBillingResponse"];
-            credential: components["schemas"]["CliCredentialResponse"];
-            credits: components["schemas"]["CreditSummary"];
-            session?: null | components["schemas"]["CliSessionResponse"];
-            user: components["schemas"]["PublicUser"];
-        };
-        CliSessionResponse: {
-            device_name: string;
-        };
-        CliTokens: {
-            access_token: string;
-            /** Format: int64 */
-            expires_in: number;
-            refresh_token: string;
-        };
         CreateApiKeyRequest: {
             /** Format: int64 */
             expires_at?: number | null;
@@ -866,20 +835,21 @@ export interface components {
             checkout_url: string;
             purchase: components["schemas"]["BillingPurchase"];
         };
-        CreateCliAuthorization: {
+        CreateDeviceAuthorization: {
             device_name: string;
         };
-        CreatePortalSessionResponse: {
-            portal_url: string;
-        };
-        CreatePublishJob: {
-            archive_format: string;
+        CreateHostedTraceRequest: {
             /** @description Accept unexplained high-entropy values after reviewing the disclosure. */
-            force?: boolean;
+            allow_high_entropy?: boolean;
+            package_format: string;
             sha256: string;
             /** Format: int64 */
             size_bytes: number;
+            source_trace_id: string;
             visibility: components["schemas"]["ShareVisibility"];
+        };
+        CreatePortalSessionResponse: {
+            portal_url: string;
         };
         CreateShareReport: {
             message?: string | null;
@@ -897,7 +867,7 @@ export interface components {
             checkout_url: string;
         };
         /** @enum {string} */
-        CredentialKind: "cli_session" | "api_key";
+        CredentialKind: "device_session" | "api_key";
         CreditBalanceSummary: {
             /** Format: int64 */
             included_monthly_remaining_bytes: number;
@@ -949,6 +919,37 @@ export interface components {
             /** Format: int64 */
             reset_at: number;
         };
+        DeviceAuthorizationStarted: {
+            /** Format: int64 */
+            expires_in: number;
+            /** Format: int64 */
+            interval: number;
+            poll_secret: string;
+            request_id: string;
+            user_code: string;
+            verification_uri_complete: string;
+        };
+        DeviceCredentialResponse: {
+            id: string;
+            kind: components["schemas"]["CredentialKind"];
+            name: string;
+        };
+        DeviceMeResponse: {
+            account: components["schemas"]["PublicUser"];
+            billing: components["schemas"]["AccountBillingResponse"];
+            credential: components["schemas"]["DeviceCredentialResponse"];
+            credits: components["schemas"]["CreditSummary"];
+            session?: null | components["schemas"]["DeviceSessionResponse"];
+        };
+        DeviceSessionResponse: {
+            device_name: string;
+        };
+        DeviceTokens: {
+            access_token: string;
+            /** Format: int64 */
+            expires_in: number;
+            refresh_token: string;
+        };
         ErrorResponse: {
             error: string;
             message: string;
@@ -975,35 +976,11 @@ export interface components {
             share_url: string;
         };
         MeResponse: {
+            account: components["schemas"]["PublicUser"];
             billing: components["schemas"]["AccountBillingResponse"];
             credits: components["schemas"]["CreditSummary"];
             notary_stats: components["schemas"]["NotaryStats"];
             share_stats: components["schemas"]["ShareStats"];
-            user: components["schemas"]["PublicUser"];
-        };
-        NotaryDirectoryRecordResponse: {
-            host: string;
-            key_id: string;
-            name: string;
-            /** Format: int64 */
-            notarize_until_unix_ms?: number | null;
-            operator: string;
-            /** Format: int32 */
-            port: number;
-            public_key: string;
-            status: components["schemas"]["NotaryKeyStatusResponse"];
-            transport: components["schemas"]["NotaryTransportResponse"];
-            /** Format: int64 */
-            valid_from_unix_ms: number;
-            /** Format: int64 */
-            valid_until_unix_ms?: number | null;
-        };
-        NotaryDirectoryResponse: {
-            active_key_id: string;
-            format: string;
-            /** Format: int64 */
-            generation: number;
-            notaries: components["schemas"]["NotaryDirectoryRecordResponse"][];
         };
         /** @enum {string} */
         NotaryKeyStatusResponse: "active" | "retiring" | "retired" | "revoked";
@@ -1015,9 +992,9 @@ export interface components {
             captures: number;
             /**
              * Format: int64
-             * @description Successfully completed finalization operations.
+             * @description Successfully completed notarization operations.
              */
-            finalizations: number;
+            notarizations: number;
         };
         /** @enum {string} */
         NotaryTransportResponse: "tcp" | "tls";
@@ -1078,14 +1055,12 @@ export interface components {
         /** @description Uniform response shape for every paginated list route. */
         Page_ShareResponse: {
             items: {
-                /** Format: int64 */
-                admitted_at?: number | null;
+                allow_high_entropy: boolean;
                 /** Format: int64 */
                 created_at: number;
                 /** Format: int64 */
                 expires_at?: number | null;
                 failure_code?: string | null;
-                force: boolean;
                 id: string;
                 package_url?: string | null;
                 password_protected: boolean;
@@ -1095,13 +1070,15 @@ export interface components {
                 status_url: string;
                 /** Format: int64 */
                 updated_at: number;
+                /** Format: int64 */
+                verified_at?: number | null;
                 visibility: components["schemas"]["ShareVisibility"];
             }[];
             /** @description Cursor for the next page, or `null` when this page exhausts the query. */
             next_cursor?: string | null;
         };
         /** @description Uniform response shape for every paginated list route. */
-        Page_WebCliSession: {
+        Page_WebDeviceSession: {
             items: {
                 /** Format: int64 */
                 created_at: number;
@@ -1115,6 +1092,8 @@ export interface components {
             /** @description Cursor for the next page, or `null` when this page exhausts the query. */
             next_cursor?: string | null;
         };
+        /** @enum {string} */
+        Plan: "free" | "one_gb" | "ten_gb";
         PlanEntitlements: {
             /** Format: int64 */
             monthly_capture_bytes: number;
@@ -1128,11 +1107,10 @@ export interface components {
         };
         PublicShareDetail: {
             /** Format: int64 */
-            admitted_at: number;
-            /** Format: int64 */
             authenticated_at_unix_ms?: number | null;
-            /** Format: int64 */
-            directory_generation?: number | null;
+            content_sha256: string;
+            disclosure_safety_override: boolean;
+            disclosure_safety_version: string;
             /** Format: int64 */
             expires_at?: number | null;
             host: string;
@@ -1145,16 +1123,15 @@ export interface components {
             package_url: string;
             password_protected: boolean;
             provider: string;
-            public_package_safety_override: boolean;
-            public_package_safety_version: string;
             publisher: string;
+            /** Format: int64 */
+            registry_generation?: number | null;
             share_url: string;
-            trace_sha256: string;
             trace_url: string;
             trust_source?: string | null;
             verification_state: string;
             /** Format: int64 */
-            verified_at?: number | null;
+            verified_at: number;
             visibility: string;
         };
         PublicUser: {
@@ -1168,10 +1145,10 @@ export interface components {
         PurchaseState: "creating" | "checkout_open" | "paid" | "failed" | "refunded" | "disputed";
         RedeemAdmissionRequest: {
             contract: components["schemas"]["AdmissionRedemptionContract"];
-            /** Format: int64 */
-            directory_generation: number;
             mode: components["schemas"]["AdmissionMode"];
             notary_instance_id: string;
+            /** Format: int64 */
+            registry_generation: number;
             ticket: string;
             /**
              * @description The caller durably settles usage by operation ID. The stop-legacy
@@ -1181,8 +1158,6 @@ export interface components {
         };
         RedeemedOperationResponse: {
             /** Format: int64 */
-            authenticated_allowance_bytes?: number | null;
-            /** Format: int64 */
             max_attestable_http_bytes: number;
             /** Format: int64 */
             max_frame_bytes: number;
@@ -1190,28 +1165,50 @@ export interface components {
             max_private_chunk_bytes: number;
             /** Format: int64 */
             max_private_chunk_commitments: number;
+            /** Format: int64 */
+            notarization_allowance_bytes?: number | null;
             operation_id: string;
             record_digest?: string | null;
         };
         RefreshRequest: {
             refresh_token: string;
         };
-        /** @enum {string} */
-        ServicePlan: "free" | "one_gb" | "ten_gb";
+        RegistryRecordResponse: {
+            host: string;
+            key_id: string;
+            name: string;
+            /** Format: int64 */
+            notarize_until_unix_ms?: number | null;
+            operator: string;
+            /** Format: int32 */
+            port: number;
+            public_key: string;
+            status: components["schemas"]["NotaryKeyStatusResponse"];
+            transport: components["schemas"]["NotaryTransportResponse"];
+            /** Format: int64 */
+            valid_from_unix_ms: number;
+            /** Format: int64 */
+            valid_until_unix_ms?: number | null;
+        };
+        RegistryResponse: {
+            active_key_id: string;
+            format: string;
+            /** Format: int64 */
+            generation: number;
+            notaries: components["schemas"]["RegistryRecordResponse"][];
+        };
         /** @enum {string} */
         ShareReportReason: "sensitive_information" | "harassment" | "illegal_content" | "spam" | "other";
         ShareReportReceipt: {
             received: boolean;
         };
         ShareResponse: {
-            /** Format: int64 */
-            admitted_at?: number | null;
+            allow_high_entropy: boolean;
             /** Format: int64 */
             created_at: number;
             /** Format: int64 */
             expires_at?: number | null;
             failure_code?: string | null;
-            force: boolean;
             id: string;
             package_url?: string | null;
             password_protected: boolean;
@@ -1221,6 +1218,8 @@ export interface components {
             status_url: string;
             /** Format: int64 */
             updated_at: number;
+            /** Format: int64 */
+            verified_at?: number | null;
             visibility: components["schemas"]["ShareVisibility"];
         };
         ShareStats: {
@@ -1272,19 +1271,19 @@ export interface components {
         VerificationResponse: {
             /** Format: int64 */
             authenticated_at_unix_ms: number;
-            capture_id: string;
-            /** Format: int64 */
-            directory_generation: number;
+            content_sha256: string;
             host: string;
             notary_key_id: string;
             package_sha256: string;
             provider: string;
+            /** Format: int64 */
+            registry_generation: number;
             trace: unknown;
-            trace_sha256: string;
+            trace_id: string;
             trust_source: string;
             verified: boolean;
         };
-        WebCliSession: {
+        WebDeviceSession: {
             /** Format: int64 */
             created_at: number;
             device_name: string;
@@ -1577,7 +1576,7 @@ export interface operations {
             };
         };
     };
-    start_cli_authorization: {
+    start_device_authorization: {
         parameters: {
             query?: never;
             header?: never;
@@ -1586,7 +1585,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateCliAuthorization"];
+                "application/json": components["schemas"]["CreateDeviceAuthorization"];
             };
         };
         responses: {
@@ -1595,7 +1594,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CliAuthorizationStarted"];
+                    "application/json": components["schemas"]["DeviceAuthorizationStarted"];
                 };
             };
             400: {
@@ -1616,7 +1615,7 @@ export interface operations {
             };
         };
     };
-    cli_approval_details: {
+    device_approval_details: {
         parameters: {
             query: {
                 approval_secret: string;
@@ -1671,7 +1670,7 @@ export interface operations {
             };
         };
     };
-    approve_cli_authorization: {
+    approve_device_authorization: {
         parameters: {
             query: {
                 approval_secret: string;
@@ -1684,7 +1683,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description CLI device authorized */
+            /** @description Device device authorized */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -1717,7 +1716,7 @@ export interface operations {
             };
         };
     };
-    complete_cli_authorization: {
+    complete_device_authorization: {
         parameters: {
             query?: never;
             header?: never;
@@ -1733,7 +1732,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CliTokens"];
+                    "application/json": components["schemas"]["DeviceTokens"];
                 };
             };
             401: {
@@ -1770,7 +1769,7 @@ export interface operations {
             };
         };
     };
-    logout_cli_session: {
+    logout_device_session: {
         parameters: {
             query?: never;
             header?: never;
@@ -1783,7 +1782,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description CLI session revoked */
+            /** @description Device session revoked */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -1800,7 +1799,7 @@ export interface operations {
             };
         };
     };
-    cli_me: {
+    device_me: {
         parameters: {
             query?: never;
             header?: never;
@@ -1814,7 +1813,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CliMeResponse"];
+                    "application/json": components["schemas"]["DeviceMeResponse"];
                 };
             };
             401: {
@@ -1843,7 +1842,7 @@ export interface operations {
             };
         };
     };
-    list_cli_sessions: {
+    list_devices: {
         parameters: {
             query?: {
                 /** @description Page size; defaults to 50 */
@@ -1861,7 +1860,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_WebCliSession"];
+                    "application/json": components["schemas"]["Page_WebDeviceSession"];
                 };
             };
             400: {
@@ -1890,7 +1889,7 @@ export interface operations {
             };
         };
     };
-    revoke_web_cli_session: {
+    revoke_web_device_session: {
         parameters: {
             query?: never;
             header?: never;
@@ -1901,7 +1900,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description CLI session revoked */
+            /** @description Device session revoked */
             204: {
                 headers: {
                     [name: string]: unknown;
@@ -1934,7 +1933,7 @@ export interface operations {
             };
         };
     };
-    refresh_cli_tokens: {
+    refresh_device_tokens: {
         parameters: {
             query?: never;
             header?: never;
@@ -1952,7 +1951,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CliTokens"];
+                    "application/json": components["schemas"]["DeviceTokens"];
                 };
             };
             401: {
@@ -2733,7 +2732,7 @@ export interface operations {
             };
         };
     };
-    list_web_publish_jobs: {
+    list_web_traces: {
         parameters: {
             query?: {
                 /** @description Page size; defaults to 50 */
@@ -2794,7 +2793,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["NotaryDirectoryResponse"];
+                    "application/json": components["schemas"]["RegistryResponse"];
                 };
             };
         };
@@ -3182,7 +3181,7 @@ export interface operations {
             };
         };
     };
-    create_publish_job: {
+    create_hosted_trace: {
         parameters: {
             query?: never;
             header: {
@@ -3194,7 +3193,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreatePublishJob"];
+                "application/json": components["schemas"]["CreateHostedTraceRequest"];
             };
         };
         responses: {
@@ -3274,7 +3273,7 @@ export interface operations {
             };
         };
     };
-    get_publish_job: {
+    get_hosted_trace: {
         parameters: {
             query?: never;
             header?: never;
@@ -3416,7 +3415,7 @@ export interface operations {
             };
         };
     };
-    complete_publish_job: {
+    complete_hosted_trace_upload: {
         parameters: {
             query?: never;
             header?: never;

@@ -110,7 +110,7 @@ const creditsFixture = (remaining = 1_024) => ({
 });
 
 const billingFixture = (overrides = {}) => ({
-  service_plan: 'free',
+  plan: 'free',
   billing_status: 'active',
   purchase_mode: 'disabled',
   subscriptions_configured: false,
@@ -364,13 +364,13 @@ describe('hosted site', () => {
     await expect.element(trigger).toHaveAttribute('aria-expanded', 'false');
   });
 
-  test('shows completed captures and finalizations in the account overview', async () => {
+  test('shows completed captures and notarizations in the account overview', async () => {
     render(
       <Dashboard
         user={{
           provider_display_name: 'fixture-user',
           credits: null,
-          notary_stats: { captures: 12, finalizations: 7 },
+          notary_stats: { captures: 12, notarizations: 7 },
           share_stats: { total: 3, admitted: 2, in_progress: 1 },
         }}
         view="overview"
@@ -387,7 +387,7 @@ describe('hosted site', () => {
 
     const summary = document.querySelector('.dashboard-summary');
     expect(summary?.textContent).toContain('Completed captures12');
-    expect(summary?.textContent).toContain('Completed finalizations7');
+    expect(summary?.textContent).toContain('Completed notarizations7');
   });
 
   test('discards an old credit-history page after claiming an offer', async () => {
@@ -552,7 +552,7 @@ describe('hosted site', () => {
         {...common}
         user={{
           provider_display_name: 'fixture-user',
-          billing: billingFixture({ service_plan: 'one_gb', purchase_mode: 'live' }),
+          billing: billingFixture({ plan: 'one_gb', purchase_mode: 'live' }),
           credits: creditsFixture(),
           share_stats: { total: 0, admitted: 0, in_progress: 0, stored_bytes: 0 },
         }}
@@ -660,7 +660,7 @@ describe('hosted site', () => {
           return purchase(pollCalls === 2 ? 'checkout_open' : 'paid');
         }}
         loadCurrentUser={async () => ({
-          billing: billingFixture({ service_plan: 'one_gb', purchase_mode: 'test' }),
+          billing: billingFixture({ plan: 'one_gb', purchase_mode: 'test' }),
           credits,
         })}
         checkoutPollBaseDelay={0}
@@ -901,9 +901,10 @@ describe('hosted site', () => {
     expect(createRequest.name).toBe('Nightly CI');
     expect(createRequest.scopes).toEqual([
       'account:read',
-      'notary:admit',
-      'publish:read',
-      'publish:write',
+      'traces:read',
+      'traces:share',
+      'capture:request',
+      'notarization:request',
     ]);
     await page.getByRole('button', { name: 'I stored the key' }).click();
     await expect.element(page.getByText(secret)).not.toBeInTheDocument();
@@ -1173,20 +1174,19 @@ describe('hosted site', () => {
       id: 'share-12',
       visibility: 'unlisted',
       publisher: 'fixture-user',
-      admitted_at: 1_786_000_000,
+      verified_at: 1_786_000_000,
       authenticated_at_unix_ms: 1_786_000_000_000,
-      verified_at: 1_786_000_001,
       provider: 'anthropic',
       host: 'api.anthropic.com',
       model: 'claude-sonnet-4-6',
       verification_state: 'verified',
       notary_key_id: 'sha256:abc',
-      directory_generation: 42,
-      trust_source: 'hosted_notary_directory',
-      trace_sha256: 'b'.repeat(64),
+      registry_generation: 42,
+      trust_source: 'hosted_registry',
+      content_sha256: 'b'.repeat(64),
       package_size_bytes: 4096,
       package_sha256: 'c'.repeat(64),
-      public_package_safety_version: 'notary/public-package-safety/v1',
+      disclosure_safety_version: 'notary/public-package-safety/v1',
       trace_url: '/api/public/shares/share-12/trace.otlp.json',
       package_url: '/api/public/shares/share-12/package.llmtrace',
       share_url: 'https://example.test/s/share-12',
@@ -1279,20 +1279,19 @@ describe('hosted site', () => {
         password_protected: true,
         expires_at: 4_102_444_800,
         publisher: 'fixture-user',
-        admitted_at: 1_786_000_000,
+        verified_at: 1_786_000_000,
         authenticated_at_unix_ms: 1_786_000_000_000,
-        verified_at: 1_786_000_001,
         provider: 'openai',
         host: 'api.openai.com',
         model: 'gpt-5.2',
         verification_state: 'verified',
         notary_key_id: 'sha256:abc',
-        directory_generation: 42,
-        trust_source: 'hosted_notary_directory',
-        trace_sha256: 'b'.repeat(64),
+        registry_generation: 42,
+        trust_source: 'hosted_registry',
+        content_sha256: 'b'.repeat(64),
         package_size_bytes: 2048,
         package_sha256: 'c'.repeat(64),
-        public_package_safety_version: 'notary/public-package-safety/v1',
+        disclosure_safety_version: 'notary/public-package-safety/v1',
         trace_url: '/api/public/shares/protected-share/trace.otlp.json',
         package_url: '/api/public/shares/protected-share/package.llmtrace',
         share_url: 'https://example.test/s/protected-share',
@@ -1349,7 +1348,7 @@ describe('hosted site', () => {
       published: true,
       password_protected: false,
       expires_at: null,
-      admitted_at: 1_786_000_000,
+      verified_at: 1_786_000_000,
       updated_at: 1_786_000_000,
       failure_code: null,
       share_url: 'https://example.test/s/share-managed',
@@ -1423,14 +1422,14 @@ describe('hosted site', () => {
   test('requires disclosure consent before hosted package verification', async () => {
     const verified = {
       verified: true,
-      capture_id: 'sanitized-capture',
+      source_trace_id: 'sanitized-capture',
       provider: 'openai',
       host: 'api.openai.com',
       authenticated_at_unix_ms: 1_786_000_000_000,
       notary_key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-      trust_source: 'production_directory',
-      directory_generation: 42,
-      trace_sha256: 'b'.repeat(64),
+      trust_source: 'hosted_registry',
+      registry_generation: 42,
+      content_sha256: 'b'.repeat(64),
       package_sha256: 'c'.repeat(64),
       trace: await loadLibraryTrace('verified'),
     };

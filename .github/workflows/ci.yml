@@ -55,7 +55,7 @@ jobs:
               - '.github/workflows/release.yml'
               - 'Cargo.toml'
               - 'Cargo.lock'
-              - 'platform/crates/llm-notary-api/**'
+              - 'platform/crates/notary-api/**'
               - 'runtime/apps/local-dashboard/**'
               - 'runtime/crates/notaryd/**'
               - 'js/app/**'
@@ -141,9 +141,9 @@ jobs:
       - run: python3 -m unittest runtime/tooling/test_check_boundary.py
       - name: Install native build tools
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends build-essential
-      - run: cargo clippy -p llm-notary-api -p llm-notary-hosted-server --all-targets --all-features -- -D warnings
+      - run: cargo clippy -p notary-api -p llm-notary-hosted-server --all-targets --all-features -- -D warnings
       - run: cargo clippy --manifest-path runtime/Cargo.toml --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test -p llm-notary-api -p llm-notary-hosted-server --all-targets --all-features
+      - run: cargo test -p notary-api -p llm-notary-hosted-server --all-targets --all-features
       - run: cargo test --manifest-path runtime/Cargo.toml --workspace --all-targets --all-features
 
   postgres-integration:
@@ -163,7 +163,7 @@ jobs:
         # The skipped live-bucket test is the sole ignored platform test that
         # is not backed by a disposable PostgreSQL container.
         run: >-
-          cargo test -p llm-notary-api -- --ignored
+          cargo test -p notary-api -- --ignored
           --skip live_s3_presigned_upload_and_promotion_round_trip
           --test-threads=4
       - name: Run PostgreSQL-backed daemon metadata tests
@@ -299,29 +299,34 @@ jobs:
         run: docker build --target builder .
       - name: Test Fly image digest resolution
         run: bash deploy/fly/test-resolve-image-digest.sh
+      - name: Test notary-api deployment preflight
+        run: bash deploy/fly/test-preflight-notary-api.sh
       - name: Validate Compose configuration
         run: |
           openssl rand -hex 32 > "$RUNNER_TEMP/notary-signing-key"
           openssl rand -hex 32 > "$RUNNER_TEMP/admission-service-token"
           openssl rand -hex 32 > "$RUNNER_TEMP/anonymous-subject-hmac-key"
+          printf '%s\n' '{}' > "$RUNNER_TEMP/notary-registry.json"
+          printf '%s\n' 'google-ci-secret' > "$RUNNER_TEMP/google-oauth-secret"
+          printf '%s\n' 'github-ci-secret' > "$RUNNER_TEMP/github-oauth-secret"
           NOTARY_SIGNING_KEY_FILE="$RUNNER_TEMP/notary-signing-key" \
-            ADMISSION_SERVICE_TOKEN_FILE="$RUNNER_TEMP/admission-service-token" \
-            ANONYMOUS_SUBJECT_HMAC_KEY_FILE="$RUNNER_TEMP/anonymous-subject-hmac-key" \
+            NOTARY_API_ADMISSION_SERVICE_TOKEN_FILE="$RUNNER_TEMP/admission-service-token" \
+            NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_FILE="$RUNNER_TEMP/anonymous-subject-hmac-key" \
+            NOTARY_API_REGISTRY_FILE="$RUNNER_TEMP/notary-registry.json" \
+            NOTARY_API_GOOGLE_CLIENT_SECRET_FILE="$RUNNER_TEMP/google-oauth-secret" \
+            NOTARY_API_GITHUB_CLIENT_SECRET_FILE="$RUNNER_TEMP/github-oauth-secret" \
             LLM_NOTARY_NOTARY_PUBLIC_KEY=0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 \
             CLOUDFLARE_TUNNEL_TOKEN=ci-placeholder \
-            GITHUB_OAUTH_CLIENT_ID=ci-placeholder \
-            GITHUB_OAUTH_CLIENT_SECRET=ci-placeholder \
-            GOOGLE_OAUTH_CLIENT_ID=ci-placeholder \
-            GOOGLE_OAUTH_CLIENT_SECRET=ci-placeholder \
-            DATABASE_URL=postgresql://ci-placeholder:ci-placeholder@db.example.com/llm_notary?sslmode=require \
-            DATABASE_MIGRATIONS_URL=postgresql://ci-placeholder:ci-placeholder@db.example.com/llm_notary?sslmode=require \
-            LLM_NOTARY_NOTARY_HOST=203.0.113.10 \
-            LLM_NOTARY_S3_ACCESS_KEY_ID=ci-placeholder \
-            LLM_NOTARY_S3_SECRET_ACCESS_KEY=ci-placeholder \
-            LLM_NOTARY_S3_BUCKET=llm-notary-ci \
-            LLM_NOTARY_S3_ENDPOINT=https://sfo3.digitaloceanspaces.com \
-            LLM_NOTARY_S3_REGION=sfo3 \
-            LLM_NOTARY_PUBLIC_ORIGIN=https://example.com \
+            NOTARY_API_GITHUB_CLIENT_ID=ci-placeholder \
+            NOTARY_API_GOOGLE_CLIENT_ID=ci-placeholder \
+            NOTARY_API_DATABASE_URL=postgresql://ci-placeholder:ci-placeholder@db.example.com/notary_api?sslmode=require \
+            NOTARY_API_MIGRATION_DATABASE_URL=postgresql://ci-placeholder:ci-placeholder@db.example.com/notary_api?sslmode=require \
+            NOTARY_API_S3_ACCESS_KEY_ID=ci-placeholder \
+            NOTARY_API_S3_SECRET_ACCESS_KEY=ci-placeholder \
+            NOTARY_API_S3_BUCKET=notary-api-ci \
+            NOTARY_API_S3_ENDPOINT=https://sfo3.digitaloceanspaces.com \
+            NOTARY_API_S3_REGION=sfo3 \
+            NOTARY_PUBLIC_ORIGIN=https://example.com \
             docker compose config --quiet
       - name: Validate standalone daemon cluster bundle
         run: |

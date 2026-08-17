@@ -10,15 +10,15 @@ migrator at the other's migration journal.
 Create a Neon project in the API region and obtain both its pooled and direct
 connection URLs. Store them only in the deployment secret store:
 
-- `DATABASE_URL` is the pooled URL used by API replicas.
-- `DATABASE_MIGRATIONS_URL` is the direct URL used only by the migrator.
+- `NOTARY_API_DATABASE_URL` is the pooled URL used by API replicas.
+- `NOTARY_API_MIGRATION_DATABASE_URL` is the direct URL used only by the migrator.
 
 Retain `sslmode=require`; remove Neon's optional `channel_binding=require`
 parameter, which SQLx does not use. SQLx migrations use a session advisory
 lock, which Neon’s transaction-mode pooler does not support, so the migrator
 must never use the pooled URL.
 
-Budget the total of `LLM_NOTARY_DATABASE_MAX_CONNECTIONS` across API replicas,
+Budget the total of `NOTARY_API_DATABASE_MAX_CONNECTIONS` across API replicas,
 plus one transient migration connection, within the Neon plan's limit. The
 production configuration uses two API Machines with a five-connection pool per
 Machine, so reserve ten pooled connections plus one direct migration
@@ -29,8 +29,8 @@ the current API release:
 
 ```bash
 fly secrets set --stage \
-  DATABASE_URL='postgresql://…-pooler…?sslmode=require' \
-  DATABASE_MIGRATIONS_URL='postgresql://…?sslmode=require' \
+  NOTARY_API_DATABASE_URL='postgresql://…-pooler…?sslmode=require' \
+  NOTARY_API_MIGRATION_DATABASE_URL='postgresql://…?sslmode=require' \
   -a llm-notary-prod-api
 ```
 
@@ -44,7 +44,7 @@ URL, signing key, capture, or environment file.
 
 `platform/migrations/0001_initial.sql` is the PostgreSQL baseline. Do not alter
 an applied migration: schema changes must use new, forward-only migration files.
-Fly runs `llm-notary-api-migrate` as the API release command before replacing
+Fly runs `notary-api migrate` as the API release command before replacing
 any API Machines. Compose runs the same one-shot `migrate` service before it
 starts API replicas. SQLx takes an advisory migration lock. The migrator uses a
 60-second PostgreSQL lock timeout so contention fails clearly instead of
@@ -59,11 +59,11 @@ and remove obsolete schema only after at least one further successful release.
 A migration that cannot meet this expand/contract sequence needs a separately
 reviewed, staged rollout and recovery procedure before it is merged.
 
-1. Preserve the notary signing key and published notary directory so existing
+1. Preserve the notary signing key and published Registry history so existing
    evidence keeps the same trust history. Do not generate new signing material.
 2. Confirm both staged secrets exist, then merge the release. The normal Fly
    deploy invokes the release command against the direct
-   `DATABASE_MIGRATIONS_URL`; no database secret belongs in GitHub.
+   `NOTARY_API_MIGRATION_DATABASE_URL`; no database secret belongs in GitHub.
 3. Confirm the release command applied pending migrations and that two Machines
    become healthy:
 
@@ -79,8 +79,8 @@ reviewed, staged rollout and recovery procedure before it is merged.
 For source development, run the same migrator before starting the API:
 
 ```bash
-DATABASE_MIGRATIONS_URL='postgresql://…?sslmode=require' \
-cargo run -p llm-notary-api --bin llm-notary-api-migrate
+NOTARY_API_MIGRATION_DATABASE_URL='postgresql://…?sslmode=require' \
+cargo run -p notary-api -- migrate
 ```
 
 ## Operate a PostgreSQL-backed local daemon

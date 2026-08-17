@@ -1,6 +1,6 @@
 # Fly.io deployment
 
-The production deployment runs three Fly apps in `sjc`. Two 256 MB shared-CPU
+The production deployment runs three Fly apps in `sjc`. Two 1 GB shared-CPU
 API Machines and one 256 MB shared-CPU web Machine remain running continuously;
 the notary Machine keeps its suspend-on-idle behavior:
 
@@ -32,13 +32,13 @@ fly volumes create notary_data --region sjc --size 1 \
 
 The notary's TLS handler can use Fly's shared IPv4 routing.
 Create a Neon PostgreSQL database and stage its pooled connection URL as the
-`DATABASE_URL` Fly secret and its direct connection URL as the
-`DATABASE_MIGRATIONS_URL` Fly secret before deploying the API; staging avoids
+`NOTARY_API_DATABASE_URL` Fly secret and its direct connection URL as the
+`NOTARY_API_MIGRATION_DATABASE_URL` Fly secret before deploying the API; staging avoids
 restarting the previous API revision. The API deploy runs the supplied migrator
 once as Fly's release command before replacing Machines. Create a private
-Tigris bucket for the API; the service accepts the standard `AWS_*` and
-`BUCKET_NAME` variables that `fly storage create` sets, as well as the portable
-`LLM_NOTARY_S3_*` variables used by self-hosted container deployments.
+Tigris bucket for the API, then map its bucket, endpoint, region, and scoped
+credentials to the exact `NOTARY_API_S3_*` settings. The API intentionally does
+not read ambient `AWS_*` or provider-specific fallback names.
 
 CLI archives use a separate public Tigris bucket named
 `llm-notary-prod-downloads`. The web gateway proxies `/downloads` to that
@@ -48,7 +48,8 @@ environment holds the download bucket's `LLM_NOTARY_DOWNLOADS_ACCESS_KEY_ID` and
 `LLM_NOTARY_DOWNLOADS_SECRET_ACCESS_KEY`. No deployed Fly app needs that
 upload credential.
 
-Three base64-encoded file secrets are required:
+The API uses base64-encoded Fly file secrets for every credential and for the
+canonical Registry document:
 
 - `NOTARY_SIGNING_KEY_B64` on the notary.
 - `ADMISSION_SERVICE_TOKEN_B64` on both the API and notary. Use the same
@@ -57,10 +58,17 @@ Three base64-encoded file secrets are required:
 - `ANONYMOUS_SUBJECT_HMAC_KEY_B64` on the API only. It derives period-scoped
   opaque Public credit subjects and must be independent of the admission and
   signing keys. Increment the configured key version when rotating it.
+- `NOTARY_REGISTRY_B64` on the API contains the complete versioned Registry
+  JSON. This file is the only hosted Registry configuration source.
+- `GOOGLE_OAUTH_CLIENT_SECRET_B64` and `GITHUB_OAUTH_CLIENT_SECRET_B64` contain
+  the configured browser OAuth secrets. Their non-secret client IDs use
+  `NOTARY_API_GOOGLE_CLIENT_ID` and `NOTARY_API_GITHUB_CLIENT_ID`.
+- `STRIPE_SECRET_KEY_B64` and `STRIPE_WEBHOOK_SECRET_B64` contain the Stripe
+  secrets when billing is enabled.
 
-The API also needs at least one browser OAuth client, the notary public key,
-and its signing-key directory. Google is the primary sign-in path; stage
-`GOOGLE_OAUTH_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET` on the API and set
+The API also needs at least one browser OAuth client and the canonical Registry
+containing the notary signing-key history. Google is the primary sign-in path; stage
+`NOTARY_API_GOOGLE_CLIENT_ID` and `GOOGLE_OAUTH_CLIENT_SECRET_B64` on the API and set
 its Web application callback to
 `https://notary.exalto.ai/api/auth/google/callback`. The requested Google
 scopes are only `openid`, `email`, and `profile`. Keep the existing GitHub
@@ -74,7 +82,7 @@ the secret does not appear in the process arguments:
 
 ```bash
 jq -r '(.web // .installed) |
-  "GOOGLE_OAUTH_CLIENT_ID=\(.client_id)\nGOOGLE_OAUTH_CLIENT_SECRET=\(.client_secret)"' \
+  "NOTARY_API_GOOGLE_CLIENT_ID=\(.client_id)\nGOOGLE_OAUTH_CLIENT_SECRET_B64=\(.client_secret | @base64)"' \
   /secure/path/google-oauth-client.json |
   flyctl secrets import --stage -a llm-notary-prod-api
 ```
@@ -108,60 +116,61 @@ neither secret enters shell history:
 
 ```bash
 read -rs STRIPE_VALUE
-printf 'LLM_NOTARY_STRIPE_SECRET_KEY=%s\n' "$STRIPE_VALUE" | \
+printf 'STRIPE_SECRET_KEY_B64=%s\n' "$(printf %s "$STRIPE_VALUE" | base64)" | \
   flyctl secrets import --stage -a llm-notary-prod-api
 read -rs STRIPE_VALUE
-printf 'LLM_NOTARY_STRIPE_WEBHOOK_SECRET=%s\n' "$STRIPE_VALUE" | \
+printf 'STRIPE_WEBHOOK_SECRET_B64=%s\n' "$(printf %s "$STRIPE_VALUE" | base64)" | \
   flyctl secrets import --stage -a llm-notary-prod-api
-printf '%s\n' 'LLM_NOTARY_STRIPE_CREDIT_PRICE_ID=price_...' \
-  'LLM_NOTARY_STRIPE_ONE_GB_PRICE_ID=price_...' \
-  'LLM_NOTARY_STRIPE_TEN_GB_PRICE_ID=price_...' | \
+printf '%s\n' 'NOTARY_API_STRIPE_CREDIT_PRICE_ID=price_...' \
+  'NOTARY_API_STRIPE_ONE_GB_PRICE_ID=price_...' \
+  'NOTARY_API_STRIPE_TEN_GB_PRICE_ID=price_...' | \
   flyctl secrets import --stage -a llm-notary-prod-api
 unset STRIPE_VALUE
 ```
 
-The legacy `LLM_NOTARY_STRIPE_PRICE_ID` setting is no longer read. Confirm it is
-absent when auditing production secrets; if an older deployment left it behind,
-remove it without restarting the current Machines:
-
-```bash
-flyctl secrets unset --stage LLM_NOTARY_STRIPE_PRICE_ID \
-  -a llm-notary-prod-api
-```
+Legacy inline Stripe settings are not read. Remove them after the file-secret
+cutover so the deployment has one authoritative credential path.
 
 The account API exposes the configured purchase mode as `disabled`, `test`, or
 `live`. Verify that the dashboard hides Checkout when disabled and shows its
 test-mode warning before exercising a test Price. Do not promote a test secret,
 Price, or webhook endpoint into a live configuration.
 
-Migration `0022_subscription_plans.sql` intentionally clears prototype billing,
-credit, and active admission rows while preserving accounts and public traces.
-Take a database backup, drain hosted admission traffic, and deploy the migration
-and matching API/notary images as one coordinated maintenance release. Migration
-`0024_remove_subscription_rollback_compat.sql` removes the temporary
-`notarization` defaults; every API image kept for rollback must write
-`credit_kind` explicitly.
-
-Migration `0026_one_operation_admission.sql` added the one-operation ticket
-binding without removing the prior lease schema. Migration
-`0027_operation_usage_settlement.sql` added durable admitted-operation and
-settlement state and linked each debit to its operation ID. Keep the notary's
-`notary_data` volume: `/data/usage-outbox` retains measured usage until the
-private settlement endpoint acknowledges it, including across Machine restarts
-or coordinator outages.
-
-Migration `0028_detach_legacy_admission.sql` was the expand-compatible detach
-layer: it stopped runtime use of leases, legacy ticket fields, digest-keyed
-debits, and the release outbox while preserving rollback to the stop-legacy
-image. After that detached image was deployed and smoke-tested, migration
-`0029_contract_legacy_admission.sql` removed the retained database and
-configuration surface. The immediately previous image uses only authenticated
-ticket allowances, operation IDs, and `/data/usage-outbox`, so it remains
-rollback-compatible with the contracted schema.
+Milestone 1 deliberately starts from the single `0001_initial.sql` PostgreSQL
+baseline in the `notary_api` schema. It is a clean cutover, not an in-place
+upgrade from prototype hosted schemas. Back up any prototype data that must be
+kept, provision a fresh database, and validate the baseline before directing
+traffic to this release. Keep the notary's `notary_data` volume:
+`/data/usage-outbox` retains measured usage until the private settlement
+endpoint acknowledges it, including across Machine restarts or coordinator
+outages.
 
 Operation usage must be acknowledged in PostgreSQL or remain durably queued
 under `/data/usage-outbox`; never print raw admission tickets while performing
 an audit.
+
+## One-time notary-api cutover
+
+Milestone 1 replaces the prototype API configuration and database with one
+clean canonical contract. It is not a rolling migration from the previous
+schema. Enter a maintenance window and stop public routing and admission
+issuance before the first canonical Machine starts. Drain legacy sessions and
+usage outboxes, then provision the fresh database and stage the canonical
+`NOTARY_API_*` settings and file secrets. Replace both Machines while traffic
+remains stopped, or bootstrap a separate app, using a reviewed canonical image
+and `deploy/fly/notary-api.fly.toml`. Verify readiness and the complete
+admission/redeem/settle path, switch or resume traffic only after both Machines
+are healthy, then run `bash deploy/fly/preflight-notary-api.sh`.
+
+The preflight requires two started, healthy, digest-pinned Machines carrying
+the `canonical-v1` deployment marker and at least 1 GB of memory, plus the
+required database, storage, Registry, OAuth, and admission secret names.
+Normal CI is therefore unable to treat a legacy image as its rollback target.
+Preserve the
+legacy image, configuration, and database separately for an operator-driven
+cutback until the canonical bootstrap is accepted; do not point either image at
+the other schema. Never bootstrap one canonical Machine alongside a routed
+legacy replica: the two schemas cannot share tickets, sessions, or settlements.
 
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private
@@ -179,18 +188,18 @@ durable-settlement capability so an older notary cannot leave an operation row
 that it does not know how to settle during an API-first rollout. The reusable
 browser/CLI credential and raw admission ticket stay out of that report.
 
-Preserve the existing notary directory so finalized packages continue to use
+Preserve the existing Registry history so notarized packages continue to use
 the same timestamp-scoped trust history. Ongoing PostgreSQL and Neon operations
 are documented in [Database operations](../../docs/database-operations.md).
 
-Clients fetch the directory over authenticated HTTPS and cache it by
-generation; the JSON document is not separately signed. When moving its
+Clients fetch the Registry over authenticated HTTPS and cache it by generation;
+the JSON document is not separately signed. When moving its
 advertised hostname, transport, port, or key set, increase
-`LLM_NOTARY_NOTARY_DIRECTORY_GENERATION`; reusing a generation for different
-directory contents is intentionally rejected as a rollback/conflict.
+the generation inside `NOTARY_REGISTRY_B64`; reusing a generation for different
+Registry contents is intentionally rejected as a rollback/conflict.
 
 The TLS certificate authenticates the network endpoint but does not replace the
-notary signing key in the directory. A self-hosted notary can advertise either
+notary signing key in the Registry. A self-hosted notary can advertise either
 `tcp` or `tls`; TLS termination need not be provided by Fly.
 
 ## Production rollout
@@ -248,19 +257,19 @@ Normal production changes must go through CI:
 ```bash
 label="manual-$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)"
 fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary.fly.toml
-fly deploy --build-only --push --image-label "$label" -c deploy/fly/api.fly.toml
+fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary-api.fly.toml
 fly deploy js/app --build-only --push --image-label "$label" \
   -c "$PWD/deploy/fly/web.fly.toml"
 
 fly auth docker
-api_image="registry.fly.io/llm-notary-prod-api@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-api:$label")"
+notary_api_image="registry.fly.io/llm-notary-prod-api@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-api:$label")"
 notary_image="registry.fly.io/llm-notary-prod-notary@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-notary:$label")"
 web_image="registry.fly.io/llm-notary-prod-web@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-web:$label")"
 
 fly deploy --image "$notary_image" \
   --ha=false -c deploy/fly/notary.fly.toml
-fly deploy --image "$api_image" \
-  --ha=true -c deploy/fly/api.fly.toml
+fly deploy --image "$notary_api_image" \
+  --ha=true -c deploy/fly/notary-api.fly.toml
 fly deploy js/app --image "$web_image" \
   --ha=false -c "$PWD/deploy/fly/web.fly.toml"
 ```
@@ -304,15 +313,15 @@ With that token in `FLY_METRICS_TOKEN`, query
 sum(rate(fly_edge_http_responses_count{app="llm-notary-prod-web"}[5m])) by (status)
 
 # p95 API handler latency by route (application time, excluding Fly routing).
-histogram_quantile(0.95, sum(rate(llm_notary_http_request_duration_seconds_bucket{app="llm-notary-prod-api"}[5m])) by (le, route))
+histogram_quantile(0.95, sum(rate(notary_api_http_request_duration_seconds_bucket{app="llm-notary-prod-api"}[5m])) by (le, route))
 
 # Admission backlog and age of its oldest item.
-max(llm_notary_admission_queue_depth{app="llm-notary-prod-api"})
-max(llm_notary_admission_oldest_queued_seconds{app="llm-notary-prod-api"})
+max(notary_api_trace_verification_queue_depth{app="llm-notary-prod-api"})
+max(notary_api_trace_verification_oldest_queued_seconds{app="llm-notary-prod-api"})
 
 # Admission outcomes and p95 verification time.
-sum(increase(llm_notary_admission_jobs_total{app="llm-notary-prod-api"}[1h])) by (outcome)
-histogram_quantile(0.95, sum(rate(llm_notary_admission_duration_seconds_bucket{app="llm-notary-prod-api"}[15m])) by (le, outcome))
+sum(increase(notary_api_trace_verifications_total{app="llm-notary-prod-api"}[1h])) by (outcome)
+histogram_quantile(0.95, sum(rate(notary_api_trace_verification_duration_seconds_bucket{app="llm-notary-prod-api"}[15m])) by (le, outcome))
 
 # Raw TCP demand plus active notary protocol sessions.
 sum(increase(fly_edge_tcp_connects_count{app="llm-notary-prod-notary"}[5m]))

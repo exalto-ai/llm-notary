@@ -15,7 +15,7 @@ documentation update rules that protect LLM Notary's trust boundaries.
 | `runtime/crates/llm-notary-server/` | coordinator-free remote notary runtime and generic admission/lifecycle seam |
 | `runtime/apps/local-dashboard/` | independently locked dashboard source, generated local API, tests, and assets |
 | `platform/crates/llm-notary-hosted-server/` | private hosted ticket redemption, durable usage outbox, and settlement adapter |
-| `platform/crates/llm-notary-api/` | hosted API, identity, admission tickets, sharing, verification, Library, and billing |
+| `platform/crates/notary-api/` | hosted API, identity, admission tickets, sharing, verification, Library, and billing |
 | `platform/migrations/` | forward-only hosted schema migrations |
 | `js/app/` | private platform website |
 | `compose.yml`, `deploy/`, `.github/workflows/` | containers, production deployment, and CI |
@@ -71,13 +71,13 @@ cargo fmt --manifest-path runtime/Cargo.toml --check \
   -p notary-core -p notaryd -p llm-notary-cli \
   -p llm-notary-updater -p llm-notary-server
 cargo clippy \
-  -p llm-notary-api \
+  -p notary-api \
   -p llm-notary-hosted-server \
   --all-targets --all-features -- -D warnings
 cargo clippy --manifest-path runtime/Cargo.toml \
   --workspace --all-targets --all-features -- -D warnings
 cargo test \
-  -p llm-notary-api \
+  -p notary-api \
   -p llm-notary-hosted-server \
   --all-targets --all-features
 cargo test --manifest-path runtime/Cargo.toml \
@@ -98,12 +98,12 @@ The PostgreSQL-backed API tests need a running Docker daemon and create their
 own disposable database:
 
 ```bash
-cargo test -p llm-notary-api \
-  new_cli_session_is_usable_until_its_refresh_expiry -- --ignored
-cargo test -p llm-notary-api \
-  web_users_can_list_and_revoke_only_their_cli_sessions -- --ignored
-cargo test -p llm-notary-api \
-  service_admission::tests -- --ignored
+cargo test -p notary-api \
+  device_refresh_rotation_records_replay_and_revokes_the_chain -- --ignored
+cargo test -p notary-api \
+  web_users_can_list_and_revoke_only_their_devices -- --ignored
+cargo test -p notary-api \
+  admissions::tests -- --ignored
 ```
 
 Large proof and real-provider checks are opt-in. The

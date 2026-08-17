@@ -4205,44 +4205,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "92daf443525c4cce67b150400bc2316076100ce0b3686209eb8cf3c31612e6f0"
 
 [[package]]
-name = "llm-notary-api"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "aws-sdk-s3",
- "axum",
- "axum-extra",
- "base64 0.22.1",
- "dotenvy",
- "hex",
- "hmac 0.12.1",
- "ipnet",
- "k256",
- "metrics",
- "notary-core",
- "opentelemetry",
- "opentelemetry-http",
- "rand 0.9.5",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "sqlx",
- "testcontainers-modules",
- "time",
- "tls-server-fixture",
- "tlsn",
- "tokio",
- "tracing",
- "tracing-opentelemetry",
- "url",
- "utoipa",
- "utoipa-axum",
- "uuid",
-]
-
-[[package]]
 name = "llm-notary-desktop"
 version = "0.1.0"
 dependencies = [
@@ -4980,6 +4942,44 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
+
+[[package]]
+name = "notary-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "aws-sdk-s3",
+ "axum",
+ "axum-extra",
+ "base64 0.22.1",
+ "dotenvy",
+ "hex",
+ "hmac 0.12.1",
+ "ipnet",
+ "k256",
+ "metrics",
+ "notary-core",
+ "opentelemetry",
+ "opentelemetry-http",
+ "rand 0.9.5",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "testcontainers-modules",
+ "time",
+ "tls-server-fixture",
+ "tlsn",
+ "tokio",
+ "tracing",
+ "tracing-opentelemetry",
+ "url",
+ "utoipa",
+ "utoipa-axum",
+ "uuid",
+]
 
 [[package]]
 name = "notary-core"

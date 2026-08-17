@@ -23,7 +23,7 @@ struct AdmissionCoordinator {
     origin: Url,
     service_token: Arc<str>,
     instance_id: Arc<str>,
-    directory_generation: u64,
+    registry_generation: u64,
     usage_outbox: UsageOutbox,
 }
 
@@ -32,7 +32,7 @@ struct RedeemRequest<'a> {
     ticket: &'a str,
     notary_instance_id: &'a str,
     mode: &'static str,
-    directory_generation: u64,
+    registry_generation: u64,
     contract: &'static str,
     usage_settlement: bool,
 }
@@ -45,7 +45,7 @@ struct RedeemedOperation {
     max_private_chunk_bytes: i64,
     max_private_chunk_commitments: i64,
     record_digest: Option<String>,
-    authenticated_allowance_bytes: Option<i64>,
+    notarization_allowance_bytes: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -67,7 +67,7 @@ enum CoordinatorRejection {
     Denied,
     Expired,
     CaptureAllowanceExhausted,
-    FinalizationAllowanceExhausted,
+    NotarizationAllowanceExhausted,
     Unavailable(anyhow::Error),
 }
 
@@ -110,10 +110,10 @@ impl AdmissionCoordinator {
         {
             bail!("LLM_NOTARY_INSTANCE_ID must be a safe identifier of at most 128 bytes");
         }
-        let directory_generation = env::var("LLM_NOTARY_NOTARY_DIRECTORY_GENERATION")
+        let registry_generation = env::var("LLM_NOTARY_REGISTRY_GENERATION")
             .unwrap_or_else(|_| "1".to_owned())
             .parse()
-            .context("LLM_NOTARY_NOTARY_DIRECTORY_GENERATION must be a u64")?;
+            .context("LLM_NOTARY_REGISTRY_GENERATION must be a u64")?;
         let usage_outbox = UsageOutbox::open(
             env::var("LLM_NOTARY_USAGE_OUTBOX_DIR")
                 .context("LLM_NOTARY_USAGE_OUTBOX_DIR must be set")?,
@@ -127,7 +127,7 @@ impl AdmissionCoordinator {
             origin,
             service_token: Arc::from(service_token),
             instance_id: Arc::from(instance_id),
-            directory_generation,
+            registry_generation,
             usage_outbox,
         })
     }
@@ -154,7 +154,7 @@ impl AdmissionCoordinator {
                 ticket,
                 notary_instance_id: self.instance_id.as_ref(),
                 mode: session_mode_label(mode),
-                directory_generation: self.directory_generation,
+                registry_generation: self.registry_generation,
                 contract: "one_operation_v1",
                 usage_settlement: true,
             })
@@ -251,9 +251,9 @@ fn coordinator_rejection(
             CoordinatorRejection::CaptureAllowanceExhausted
         }
         reqwest::StatusCode::PAYMENT_REQUIRED
-            if error_code == Some("finalization_credits_exhausted") =>
+            if error_code == Some("notarization_credits_exhausted") =>
         {
-            CoordinatorRejection::FinalizationAllowanceExhausted
+            CoordinatorRejection::NotarizationAllowanceExhausted
         }
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
             CoordinatorRejection::Unavailable(anyhow::anyhow!(
@@ -360,7 +360,7 @@ fn coordinator_admission_rejection(
         CoordinatorRejection::CaptureAllowanceExhausted => {
             NotaryAdmissionRejection::CaptureAllowanceExhausted
         }
-        CoordinatorRejection::FinalizationAllowanceExhausted => {
+        CoordinatorRejection::NotarizationAllowanceExhausted => {
             NotaryAdmissionRejection::NotarizationAllowanceExhausted
         }
         CoordinatorRejection::Unavailable(error) => {
@@ -411,12 +411,12 @@ fn operation_constraints(
         match (
             mode,
             operation.record_digest.as_deref(),
-            operation.authenticated_allowance_bytes,
+            operation.notarization_allowance_bytes,
         ) {
             (NotarySessionMode::Capture, None, None) => (None, policy_attestable),
             (NotarySessionMode::Notarization, Some(digest), Some(allowance)) => {
                 let bytes = hex::decode(digest).context("coordinator record digest is not hex")?;
-                let allowance = positive("authenticated_allowance_bytes", allowance)?;
+                let allowance = positive("notarization_allowance_bytes", allowance)?;
                 (
                     Some(bytes.try_into().map_err(|_| {
                         anyhow::anyhow!("coordinator record digest is not 32 bytes")
@@ -447,7 +447,7 @@ fn operation_constraints(
 fn session_mode_label(mode: NotarySessionMode) -> &'static str {
     match mode {
         NotarySessionMode::Capture => "capture",
-        NotarySessionMode::Notarization => "finalize",
+        NotarySessionMode::Notarization => "notarization",
     }
 }
 
@@ -462,7 +462,7 @@ mod tests {
             ticket: "opaque-ticket",
             notary_instance_id: "notary-test",
             mode: "capture",
-            directory_generation: 1,
+            registry_generation: 1,
             contract: "one_operation_v1",
             usage_settlement: true,
         })
@@ -477,7 +477,7 @@ mod tests {
             "max_private_chunk_bytes": 512,
             "max_private_chunk_commitments": 4,
             "record_digest": null,
-            "authenticated_allowance_bytes": null,
+            "notarization_allowance_bytes": null,
             "future_additive_field": "accepted"
         }))
         .unwrap();
@@ -487,13 +487,13 @@ mod tests {
     #[test]
     fn coordinator_policy_returns_only_tighter_candidate_limits() {
         let operation = RedeemedOperation {
-            operation_id: "operation-finalize".to_owned(),
+            operation_id: "operation-notarization".to_owned(),
             max_attestable_http_bytes: 8 << 20,
             max_frame_bytes: 64 << 20,
             max_private_chunk_bytes: 256 << 10,
             max_private_chunk_commitments: 256,
             record_digest: Some("ab".repeat(32)),
-            authenticated_allowance_bytes: Some(8 << 20),
+            notarization_allowance_bytes: Some(8 << 20),
         };
         let limits = operation_constraints(NotarySessionMode::Notarization, &operation)
             .expect("valid limits");
@@ -507,7 +507,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_policy_rejects_a_finalization_digest() {
+    fn capture_policy_rejects_a_notarization_digest() {
         let operation = RedeemedOperation {
             operation_id: "operation-capture".to_owned(),
             max_attestable_http_bytes: 1024,
@@ -515,7 +515,7 @@ mod tests {
             max_private_chunk_bytes: 1024,
             max_private_chunk_commitments: 1,
             record_digest: Some("ab".repeat(32)),
-            authenticated_allowance_bytes: Some(1024),
+            notarization_allowance_bytes: Some(1024),
         };
         assert!(operation_constraints(NotarySessionMode::Capture, &operation).is_err());
     }
@@ -534,7 +534,7 @@ mod tests {
             origin: Url::parse(&format!("http://{address}/")).unwrap(),
             service_token: Arc::from("x".repeat(32)),
             instance_id: Arc::from("notary-test"),
-            directory_generation: 1,
+            registry_generation: 1,
             usage_outbox: UsageOutbox::open(outbox_directory.path()).unwrap(),
         };
 
@@ -561,7 +561,7 @@ mod tests {
                     "max_private_chunk_bytes": 512,
                     "max_private_chunk_commitments": 4,
                     "record_digest": null,
-                    "authenticated_allowance_bytes": null
+                    "notarization_allowance_bytes": null
                 }))
             }),
         );
@@ -571,7 +571,7 @@ mod tests {
             origin: Url::parse(&format!("http://{address}/")).unwrap(),
             service_token: Arc::from("x".repeat(32)),
             instance_id: Arc::from("notary-test"),
-            directory_generation: 1,
+            registry_generation: 1,
             usage_outbox: UsageOutbox::open(outbox_directory.path()).unwrap(),
         };
         let grant = coordinator
@@ -605,7 +605,7 @@ mod tests {
                     "max_private_chunk_bytes": 512,
                     "max_private_chunk_commitments": 4,
                     "record_digest": null,
-                    "authenticated_allowance_bytes": null
+                    "notarization_allowance_bytes": null
                 }))
             }),
         );
@@ -615,7 +615,7 @@ mod tests {
             origin: Url::parse(&format!("http://{address}/")).unwrap(),
             service_token: Arc::from("x".repeat(32)),
             instance_id: Arc::from("notary-test"),
-            directory_generation: 1,
+            registry_generation: 1,
             usage_outbox: UsageOutbox::open(outbox_directory.path()).unwrap(),
         };
 
@@ -739,7 +739,7 @@ mod tests {
             origin: Url::parse(&format!("http://{address}/")).unwrap(),
             service_token: Arc::from("x".repeat(32)),
             instance_id: Arc::from("notary-test"),
-            directory_generation: 1,
+            registry_generation: 1,
             usage_outbox: outbox,
         };
 
@@ -797,7 +797,7 @@ mod tests {
             origin: Url::parse(&format!("http://{address}/")).unwrap(),
             service_token: Arc::from("x".repeat(32)),
             instance_id: Arc::from("notary-test"),
-            directory_generation: 1,
+            registry_generation: 1,
             usage_outbox,
         };
 
@@ -850,9 +850,9 @@ mod tests {
         assert!(matches!(
             coordinator_rejection(
                 reqwest::StatusCode::PAYMENT_REQUIRED,
-                Some("finalization_credits_exhausted"),
+                Some("notarization_credits_exhausted"),
             ),
-            CoordinatorRejection::FinalizationAllowanceExhausted
+            CoordinatorRejection::NotarizationAllowanceExhausted
         ));
     }
 }
