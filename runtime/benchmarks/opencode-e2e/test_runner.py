@@ -73,6 +73,23 @@ class EventParsingTests(unittest.TestCase):
 
 
 class GateAndClassificationTests(unittest.TestCase):
+    def test_workflow_maps_secrets_to_canonical_canary_environment(self) -> None:
+        workflow = (
+            Path(__file__).resolve().parents[3]
+            / ".github"
+            / "workflows"
+            / "opencode-e2e.yml"
+        ).read_text()
+        self.assertIn(
+            "NOTARYD_E2E_API_KEY: ${{ secrets.LLM_NOTARY_E2E_API_KEY }}",
+            workflow,
+        )
+        self.assertIn(
+            "NOTARYD_E2E_SLACK_WEBHOOK_URL: "
+            "${{ secrets.LLM_NOTARY_SLACK_WEBHOOK_URL }}",
+            workflow,
+        )
+
     def test_parser_exposes_the_canonical_notaryd_option(self) -> None:
         with patch.object(sys, "argv", ["run.py", "--notaryd", "/tmp/notaryd"]):
             arguments = run.parse_arguments()
