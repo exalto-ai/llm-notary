@@ -6,7 +6,7 @@ LLM Notary creates selectively disclosed, independently verifiable evidence for 
 
 - [`runtime/`](runtime/README.md) is the complete public runtime: `notaryd`, the thin `llm-notary` REST client, the generic remote notary, protocol/evidence contracts, local dashboard, updater, documentation, CI, and pinned TLSNotary sources. It builds on its own and is the only tree projected into the public runtime repository.
 - `platform/crates/notary-api` owns accounts, credits, billing, uploads, sharing, and the hosted HTTP API.
-- `platform/crates/llm-notary-hosted-server` adapts hosted admission and usage settlement to the generic runtime notary.
+- `platform/crates/notary-server-platform-adapter` injects private platform admission and usage settlement policy into the generic runtime notary.
 - `platform/migrations` contains forward-only hosted database migrations.
 - `js/app` is the public website and hosted dashboard; `js/desktop` is the private native wrapper around `notaryd`.
 - `deploy`, `compose.yml`, and the root `Dockerfile` define Exalto's hosted deployment.
@@ -21,7 +21,7 @@ runtime/tooling/check-boundary.sh
 
 ```bash
 cargo fmt --check
-cargo test -p notary-api -p llm-notary-hosted-server --all-targets --all-features
+cargo test -p notary-api -p notary-server-platform-adapter --all-targets --all-features
 cargo test --manifest-path runtime/Cargo.toml --workspace --all-targets --all-features
 npm --prefix runtime/apps/local-dashboard run build
 npm --prefix js/app run build

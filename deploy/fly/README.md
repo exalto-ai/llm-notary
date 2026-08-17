@@ -51,10 +51,10 @@ upload credential.
 The API uses base64-encoded Fly file secrets for every credential and for the
 canonical Registry document:
 
-- `NOTARY_SIGNING_KEY_B64` on the notary.
+- `NOTARY_SERVER_SIGNING_KEY_B64` on the notary.
 - `ADMISSION_SERVICE_TOKEN_B64` on both the API and notary. Use the same
   random value in both apps; it authenticates only the notary's narrow admission
-  coordinator calls and is never sent to local clients.
+  platform API calls and is never sent to local clients.
 - `ANONYMOUS_SUBJECT_HMAC_KEY_B64` on the API only. It derives period-scoped
   opaque Public credit subjects and must be independent of the admission and
   signing keys. Increment the configured key version when rotating it.
@@ -142,7 +142,7 @@ upgrade from prototype hosted schemas. Back up any prototype data that must be
 kept, provision a fresh database, and validate the baseline before directing
 traffic to this release. Keep the notary's `notary_data` volume:
 `/data/usage-outbox` retains measured usage until the private settlement
-endpoint acknowledges it, including across Machine restarts or coordinator
+endpoint acknowledges it, including across Machine restarts or platform API
 outages.
 
 Operation usage must be acknowledged in PostgreSQL or remain durably queued
@@ -325,7 +325,7 @@ histogram_quantile(0.95, sum(rate(notary_api_trace_verification_duration_seconds
 
 # Raw TCP demand plus active notary protocol sessions.
 sum(increase(fly_edge_tcp_connects_count{app="llm-notary-prod-notary"}[5m]))
-sum(llm_notary_notary_active_sessions{app="llm-notary-prod-notary"}) by (mode)
+sum(notary_server_active_sessions{app="llm-notary-prod-notary"}) by (mode)
 ```
 
 The binaries can also export OTLP traces when an

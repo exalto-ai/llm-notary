@@ -1,4 +1,4 @@
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    llm_notary_server::run().await
+    notary_server_platform_adapter::run().await
 }

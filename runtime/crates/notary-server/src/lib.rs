@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    fs,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::{
@@ -12,7 +12,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use axum::{Router, http::header, response::IntoResponse, routing::get};
-use clap::Parser;
+use clap::{Args as ClapArgs, Parser, Subcommand};
 use k256::ecdsa::SigningKey;
 use metrics::{counter, gauge, histogram};
 use notary_core::{
@@ -24,95 +24,280 @@ use notary_core::{
 use tokio::{
     net::TcpListener,
     sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError, watch},
+    task::JoinSet,
     time::{MissedTickBehavior, timeout},
 };
 use tracing::Instrument as _;
 
 #[derive(Parser, Debug)]
-#[command(about = "LLM Notary TLSNotary service")]
-struct Args {
-    /// Print the signing key's SEC1 public key and exit. Used by deployment
-    /// health checks without exposing the private key.
-    #[arg(long)]
-    print_public_key: bool,
-    #[arg(long, default_value = "127.0.0.1:7047")]
-    listen: SocketAddr,
+#[command(
+    name = "notary-server",
+    about = "Notary remote Proxy-TLS server",
+    version
+)]
+pub struct NotaryServerArgs {
+    #[command(subcommand)]
+    pub command: NotaryServerCommand,
+}
 
-    /// A file containing exactly 32 hexadecimal bytes. This key is the trust
-    /// root for receipts, so use an HSM/KMS in a real deployment.
-    #[arg(long)]
-    signing_key: PathBuf,
+impl NotaryServerArgs {
+    pub fn parse_env() -> Self {
+        Self::parse()
+    }
+}
 
-    /// Reject new capture sessions while continuing to notarize bundles that
-    /// were captured before a planned key handoff.
-    #[arg(long)]
-    notarize_only: bool,
+#[derive(Debug, Subcommand)]
+pub enum NotaryServerCommand {
+    /// Serve Capture and Notarization protocol sessions.
+    Serve(NotaryServerServeArgs),
+    /// Print the signing key's SEC1 public key and exit.
+    PublicKey(NotaryServerPublicKeyArgs),
+}
 
-    /// Exact provider hostnames this notary may connect to in Proxy-TLS mode.
-    /// Supplying this explicitly is required in production; the development
-    /// defaults cover the supported provider adapters.
-    #[arg(long, default_values_t = [
-        "api.openai.com".to_owned(),
-        "chatgpt.com".to_owned(),
-        "api.anthropic.com".to_owned(),
-        "api.deepseek.com".to_owned(),
-        "openrouter.ai".to_owned(),
-    ])]
-    allow_host: Vec<String>,
+#[derive(Clone, Debug, ClapArgs)]
+pub struct NotaryServerPublicKeyArgs {
+    /// File containing exactly 32 hexadecimal signing-key bytes.
+    #[arg(long, env = "NOTARY_SERVER_SIGNING_KEY_FILE")]
+    pub signing_key_file: PathBuf,
+}
+
+#[derive(Clone, Debug, ClapArgs)]
+pub struct NotaryServerServeArgs {
+    /// Public protocol listener.
+    #[arg(long, env = "NOTARY_SERVER_LISTEN", default_value = "127.0.0.1:7047")]
+    pub listen: SocketAddr,
+
+    /// File containing exactly 32 hexadecimal signing-key bytes.
+    #[arg(long, env = "NOTARY_SERVER_SIGNING_KEY_FILE")]
+    pub signing_key_file: PathBuf,
+
+    /// Reject Capture sessions while continuing Notarization sessions.
+    #[arg(long, env = "NOTARY_SERVER_NOTARIZATION_ONLY")]
+    pub notarization_only: bool,
+
+    /// Exact provider hostname the server may resolve and connect to.
+    #[arg(
+        long = "allow-host",
+        env = "NOTARY_SERVER_ALLOW_HOSTS",
+        value_delimiter = ',',
+        action = clap::ArgAction::Append
+    )]
+    pub allow_hosts: Vec<String>,
 
     /// Largest private-proof chunk accepted from a client. This is a service
     /// resource limit; clients cannot raise it in their proof request.
-    #[arg(long, default_value_t = 128 * 1024)]
-    max_private_chunk_bytes: usize,
+    #[arg(
+        long,
+        env = "NOTARY_SERVER_MAX_PRIVATE_CHUNK_BYTES",
+        default_value_t = 128 * 1024
+    )]
+    pub max_private_chunk_bytes: usize,
 
     /// Largest total private transcript commitment set accepted in one proof.
     /// This bounds transcript bytes when every individual chunk is valid.
-    #[arg(long, default_value_t = DEFAULT_MAX_ATTESTABLE_HTTP_BYTES)]
-    max_total_private_chunk_bytes: usize,
+    #[arg(
+        long,
+        env = "NOTARY_SERVER_MAX_TOTAL_PRIVATE_CHUNK_BYTES",
+        default_value_t = DEFAULT_MAX_ATTESTABLE_HTTP_BYTES
+    )]
+    pub max_total_private_chunk_bytes: usize,
 
     /// Largest number of private commitments accepted in one proof. Each
     /// commitment creates a child proof VM, so this bounds fixed proof work.
-    #[arg(long, default_value_t = 128)]
-    max_private_chunk_commitments: usize,
+    #[arg(
+        long,
+        env = "NOTARY_SERVER_MAX_PRIVATE_CHUNK_COMMITMENTS",
+        default_value_t = 128
+    )]
+    pub max_private_chunk_commitments: usize,
 
     /// Largest serialized proof or attestation frame accepted from a paired
     /// proxy. This must match the proxy's --max-frame-bytes setting.
-    #[arg(long, default_value_t = DEFAULT_NOTARY_MAX_FRAME_BYTES)]
-    max_frame_bytes: usize,
+    #[arg(
+        long,
+        env = "NOTARY_SERVER_MAX_FRAME_BYTES",
+        default_value_t = DEFAULT_NOTARY_MAX_FRAME_BYTES
+    )]
+    pub max_frame_bytes: usize,
 
     /// Maximum number of simultaneous live Proxy-TLS capture sessions.
     ///
     /// This is independent from --max-concurrent-notarizations so deferred
     /// proofs cannot consume all capacity needed for live provider traffic.
-    #[arg(long, default_value_t = 8)]
-    max_concurrent_captures: usize,
+    #[arg(
+        long,
+        env = "NOTARY_SERVER_MAX_CONCURRENT_CAPTURES",
+        default_value_t = 8
+    )]
+    pub max_concurrent_captures: usize,
 
     /// Maximum number of simultaneous deferred private-proof notarizations.
     ///
     /// This is independent from --max-concurrent-captures. Notarization is
     /// the CPU- and memory-intensive phase, while capture prioritizes live
     /// request latency.
-    #[arg(long, default_value_t = 1)]
-    max_concurrent_notarizations: usize,
+    #[arg(
+        long,
+        env = "NOTARY_SERVER_MAX_CONCURRENT_NOTARIZATIONS",
+        default_value_t = 1
+    )]
+    pub max_concurrent_notarizations: usize,
 
     /// Maximum number of sockets waiting to send a valid protocol prelude.
-    #[arg(long, default_value_t = 128)]
-    max_pending_connections: usize,
+    #[arg(
+        long,
+        env = "NOTARY_SERVER_MAX_PENDING_CONNECTIONS",
+        default_value_t = 128
+    )]
+    pub max_pending_connections: usize,
 
     /// Time allowed for a new socket to send its complete protocol prelude.
-    #[arg(long, default_value_t = 10)]
-    prelude_timeout_secs: u64,
+    #[arg(long, env = "NOTARY_SERVER_PRELUDE_TIMEOUT_SECS", default_value_t = 10)]
+    pub prelude_timeout_secs: u64,
 
     /// Hard wall-clock limit for one notary protocol session.
-    #[arg(long, default_value_t = 30 * 60)]
-    session_timeout_secs: u64,
+    #[arg(
+        long,
+        env = "NOTARY_SERVER_SESSION_TIMEOUT_SECS",
+        default_value_t = 30 * 60
+    )]
+    pub session_timeout_secs: u64,
+
+    /// Internal-only Prometheus listener.
+    #[arg(long, env = "NOTARY_SERVER_METRICS_LISTEN")]
+    pub metrics_listen: Option<SocketAddr>,
 
     /// Emit per-session cgroup CPU and memory measurements in structured logs.
     ///
     /// This is intended for one-session-at-a-time Linux container profiling.
     /// The metrics are unavailable outside cgroup v2 environments.
-    #[arg(long)]
+    #[arg(long, env = "NOTARY_SERVER_PROFILE_SESSIONS")]
+    pub profile_sessions: bool,
+}
+
+#[derive(Clone)]
+pub struct NotaryServerConfig {
+    listen: SocketAddr,
+    metrics_listen: Option<SocketAddr>,
+    signing_key: Arc<SigningKey>,
+    public_key: String,
+    allowed_hosts: Arc<Vec<String>>,
+    notarization_only: bool,
+    max_private_chunk_bytes: usize,
+    max_total_private_chunk_bytes: usize,
+    max_private_chunk_commitments: usize,
+    max_frame_bytes: usize,
+    max_concurrent_captures: usize,
+    max_concurrent_notarizations: usize,
+    max_pending_connections: usize,
+    prelude_timeout: Duration,
+    session_timeout: Duration,
     profile_sessions: bool,
+}
+
+impl NotaryServerConfig {
+    pub fn from_args(args: NotaryServerServeArgs) -> Result<Self> {
+        validate_positive_limits(&args)?;
+        let signing_key = Arc::new(read_signing_key(&args.signing_key_file)?);
+        let public_key = hex::encode(signing_key.verifying_key().to_sec1_bytes());
+        let allowed_hosts = Arc::new(validate_allowed_hosts(args.allow_hosts)?);
+        Ok(Self {
+            listen: args.listen,
+            metrics_listen: args.metrics_listen,
+            signing_key,
+            public_key,
+            allowed_hosts,
+            notarization_only: args.notarization_only,
+            max_private_chunk_bytes: args.max_private_chunk_bytes,
+            max_total_private_chunk_bytes: args.max_total_private_chunk_bytes,
+            max_private_chunk_commitments: args.max_private_chunk_commitments,
+            max_frame_bytes: args.max_frame_bytes,
+            max_concurrent_captures: args.max_concurrent_captures,
+            max_concurrent_notarizations: args.max_concurrent_notarizations,
+            max_pending_connections: args.max_pending_connections,
+            prelude_timeout: Duration::from_secs(args.prelude_timeout_secs),
+            session_timeout: Duration::from_secs(args.session_timeout_secs),
+            profile_sessions: args.profile_sessions,
+        })
+    }
+
+    pub fn public_key(&self) -> &str {
+        &self.public_key
+    }
+}
+
+fn validate_positive_limits(args: &NotaryServerServeArgs) -> Result<()> {
+    if args.max_private_chunk_bytes == 0
+        || args.max_total_private_chunk_bytes == 0
+        || args.max_private_chunk_commitments == 0
+        || args.max_concurrent_captures == 0
+        || args.max_concurrent_notarizations == 0
+        || args.max_pending_connections == 0
+        || args.prelude_timeout_secs == 0
+        || args.session_timeout_secs == 0
+    {
+        bail!("Notary server resource limits must be non-zero");
+    }
+    if args.max_total_private_chunk_bytes < args.max_private_chunk_bytes {
+        bail!("total private-chunk bytes must be at least one private chunk");
+    }
+    if args.max_frame_bytes == 0 || args.max_frame_bytes > u32::MAX as usize {
+        bail!(
+            "Notary server frame limit must be between 1 and {} bytes",
+            u32::MAX
+        );
+    }
+    Ok(())
+}
+
+fn validate_allowed_hosts(hosts: Vec<String>) -> Result<Vec<String>> {
+    let mut hosts = hosts
+        .into_iter()
+        .map(|host| host.trim().to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    if hosts.is_empty() {
+        bail!("at least one explicit --allow-host is required");
+    }
+    for host in &hosts {
+        if host.is_empty()
+            || host.len() > 253
+            || host.parse::<std::net::IpAddr>().is_ok()
+            || host.split('.').any(|label| {
+                label.is_empty()
+                    || label.len() > 63
+                    || !label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                    || label.starts_with('-')
+                    || label.ends_with('-')
+            })
+        {
+            bail!("allowed provider host is not a valid explicit hostname");
+        }
+    }
+    hosts.sort();
+    hosts.dedup();
+    Ok(hosts)
+}
+
+fn read_signing_key(path: &Path) -> Result<SigningKey> {
+    let key_text =
+        fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let key_text = key_text
+        .strip_suffix("\r\n")
+        .or_else(|| key_text.strip_suffix('\n'))
+        .unwrap_or(&key_text);
+    let bytes = hex::decode(key_text).context("signing key must be hexadecimal")?;
+    if bytes.len() != 32 {
+        bail!("signing key must contain exactly 32 bytes");
+    }
+    SigningKey::from_slice(&bytes).context("invalid secp256k1 key")
+}
+
+pub fn print_public_key(args: &NotaryServerPublicKeyArgs) -> Result<()> {
+    let key = read_signing_key(&args.signing_key_file)?;
+    println!("{}", hex::encode(key.verifying_key().to_sec1_bytes()));
+    Ok(())
 }
 
 /// The bounded, opaque value supplied in a versioned notary prelude.
@@ -165,7 +350,7 @@ pub enum SessionOutcome {
 /// Optional durable lifecycle hook owned by an injected admission adapter.
 ///
 /// Implementations should persist locally and return promptly. In particular,
-/// reporting an admitted session must not depend on a coordinator remaining
+/// reporting an admitted session must not depend on an external policy service remaining
 /// reachable while the cryptographic protocol is running.
 pub trait SessionLifecycle: Send + Sync {
     fn record_authenticated_bytes(&self, bytes: usize) -> Result<()>;
@@ -197,7 +382,7 @@ pub trait AdmissionPolicy: Send + Sync {
     ) -> std::result::Result<AdmissionGrant, NotaryAdmissionRejection>;
 }
 
-/// Coordinator-free public policy. Ticketless v1/v2 sessions are accepted;
+/// Public ticketless policy. Ticketless v1/v2 sessions are accepted;
 /// any unexpected opaque admission value fails closed.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TicketlessAdmissionPolicy;
@@ -654,148 +839,218 @@ fn delta(start: Option<u64>, end: Option<u64>) -> Option<u64> {
     end.and_then(|end| start.and_then(|start| end.checked_sub(start)))
 }
 
-/// Runs the remote Proxy-TLS notary service.
+/// Parses the public executable command and runs the ticketless server.
 pub async fn run() -> Result<()> {
-    run_with_policy_factory(|| Ok(Arc::new(TicketlessAdmissionPolicy))).await
+    match NotaryServerArgs::parse_env().command {
+        NotaryServerCommand::PublicKey(args) => print_public_key(&args),
+        NotaryServerCommand::Serve(args) => {
+            let config = NotaryServerConfig::from_args(args)?;
+            let _telemetry = notary_core::telemetry::init("notary-server")?;
+            serve(
+                config,
+                Arc::new(TicketlessAdmissionPolicy),
+                shutdown_signal(),
+            )
+            .await
+        }
+    }
 }
 
-/// Runs the remote Proxy-TLS notary service with an injected admission policy.
-pub async fn run_with_policy(admission: Arc<dyn AdmissionPolicy>) -> Result<()> {
-    run_with_policy_factory(|| Ok(admission)).await
-}
-
-/// Runs the remote Proxy-TLS notary service with a lazily initialized admission policy.
-pub async fn run_with_policy_factory<F>(admission: F) -> Result<()>
-where
-    F: FnOnce() -> Result<Arc<dyn AdmissionPolicy>>,
-{
-    let _telemetry = notary_core::telemetry::init("llm-notary-server")?;
-    let args = Args::parse();
-    if args.max_private_chunk_bytes == 0
-        || args.max_total_private_chunk_bytes == 0
-        || args.max_private_chunk_commitments == 0
-        || args.max_concurrent_captures == 0
-        || args.max_concurrent_notarizations == 0
-        || args.max_pending_connections == 0
-        || args.prelude_timeout_secs == 0
-        || args.session_timeout_secs == 0
-    {
-        bail!("notary resource limits must be non-zero");
-    }
-    if args.max_frame_bytes == 0 || args.max_frame_bytes > u32::MAX as usize {
-        bail!(
-            "notary frame limit must be between 1 and {} bytes",
-            u32::MAX
-        );
-    }
-    let key_text = std::fs::read_to_string(&args.signing_key)
-        .with_context(|| format!("reading {}", args.signing_key.display()))?;
-    let bytes = hex::decode(key_text.trim()).context("signing key must be hexadecimal")?;
-    if bytes.len() != 32 {
-        bail!("signing key must contain exactly 32 bytes");
-    }
-    let key = Arc::new(SigningKey::from_slice(&bytes).context("invalid secp256k1 key")?);
-    let public_key = hex::encode(key.verifying_key().to_sec1_bytes());
-    if args.print_public_key {
-        println!("{public_key}");
-        return Ok(());
-    }
-    let admission = admission()?;
-    let allowed_hosts = Arc::new(
-        args.allow_host
-            .into_iter()
-            .map(|host| host.to_ascii_lowercase())
-            .collect::<Vec<_>>(),
-    );
-    let listener = TcpListener::bind(args.listen).await?;
-    let session_budgets = SessionBudgets::new(
-        args.max_concurrent_captures,
-        args.max_concurrent_notarizations,
-    );
-    let connection_permits = Arc::new(Semaphore::new(args.max_pending_connections));
-    gauge!("llm_notary_notary_active_sessions", "mode" => "capture").set(0.0);
-    gauge!("llm_notary_notary_active_sessions", "mode" => "notarization").set(0.0);
-    gauge!("llm_notary_notary_pending_connections").set(0.0);
-    if let Some(metrics_listen) = env::var("LLM_NOTARY_METRICS_LISTEN")
-        .ok()
-        .filter(|value| !value.is_empty())
-        .map(|value| value.parse::<SocketAddr>())
-        .transpose()
-        .context("LLM_NOTARY_METRICS_LISTEN must be a socket address")?
-    {
-        tokio::spawn(async move {
-            let listener = match TcpListener::bind(metrics_listen).await {
-                Ok(listener) => listener,
-                Err(error) => {
-                    tracing::error!(%error, %metrics_listen, "binding notary metrics listener failed");
-                    return;
+/// Installs the process termination signal used by executable composition.
+pub fn shutdown_signal() -> watch::Receiver<bool> {
+    let (sender, receiver) = watch::channel(false);
+    tokio::spawn(async move {
+        #[cfg(unix)]
+        {
+            let terminate =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+            match terminate {
+                Ok(mut terminate) => {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {}
+                        _ = terminate.recv() => {}
+                    }
                 }
-            };
-            tracing::info!(%metrics_listen, "notary metrics listener active");
-            if let Err(error) =
-                axum::serve(listener, Router::new().route("/metrics", get(metrics))).await
-            {
-                tracing::error!(%error, "notary metrics listener stopped");
+                Err(_) => {
+                    let _ = tokio::signal::ctrl_c().await;
+                }
             }
-        });
-    }
-    tracing::info!(
-        address = %args.listen,
-        public_key,
-        max_concurrent_captures = args.max_concurrent_captures,
-        max_concurrent_notarizations = args.max_concurrent_notarizations,
-        "LLM Notary service listening"
-    );
-    println!("LLM Notary public key: {public_key}");
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+        let _ = sender.send(true);
+    });
+    receiver
+}
 
+/// Binds the configured listeners and serves until shutdown.
+pub async fn serve(
+    config: NotaryServerConfig,
+    admission: Arc<dyn AdmissionPolicy>,
+    shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    let listener = TcpListener::bind(config.listen)
+        .await
+        .with_context(|| format!("binding Notary server listener {}", config.listen))?;
+    serve_on_listener(config, listener, admission, shutdown).await
+}
+
+/// Serves on a caller-supplied listener for deterministic integration tests.
+pub async fn serve_on_listener(
+    config: NotaryServerConfig,
+    listener: TcpListener,
+    admission: Arc<dyn AdmissionPolicy>,
+    mut shutdown: watch::Receiver<bool>,
+) -> Result<()> {
+    let address = listener
+        .local_addr()
+        .context("reading Notary server address")?;
+    let metrics_listener = match config.metrics_listen {
+        Some(metrics_address) => Some(
+            TcpListener::bind(metrics_address)
+                .await
+                .with_context(|| format!("binding Notary metrics listener {metrics_address}"))?,
+        ),
+        None => None,
+    };
+    let session_budgets = SessionBudgets::new(
+        config.max_concurrent_captures,
+        config.max_concurrent_notarizations,
+    );
+    let connection_permits = Arc::new(Semaphore::new(config.max_pending_connections));
+    gauge!("notary_server_active_sessions", "mode" => "capture").set(0.0);
+    gauge!("notary_server_active_sessions", "mode" => "notarization").set(0.0);
+    gauge!("notary_server_pending_connections").set(0.0);
+
+    let (internal_stop, internal_shutdown) = watch::channel(false);
+    let metrics_task = metrics_listener.map(|metrics_listener| {
+        let metrics_address = metrics_listener
+            .local_addr()
+            .expect("bound metrics listener has an address");
+        let mut internal_shutdown = internal_shutdown.clone();
+        tracing::info!(%metrics_address, "Notary server metrics listener active");
+        tokio::spawn(async move {
+            axum::serve(
+                metrics_listener,
+                Router::new().route("/metrics", get(metrics)),
+            )
+            .with_graceful_shutdown(async move {
+                while !*internal_shutdown.borrow() {
+                    if internal_shutdown.changed().await.is_err() {
+                        break;
+                    }
+                }
+            })
+            .await
+            .context("Notary server metrics listener stopped")
+        })
+    });
+    tracing::info!(
+        %address,
+        public_key = %config.public_key,
+        max_concurrent_captures = config.max_concurrent_captures,
+        max_concurrent_notarizations = config.max_concurrent_notarizations,
+        "Notary server listening"
+    );
+    println!("Notary server public key: {}", config.public_key);
+
+    enum ServeEvent {
+        Shutdown,
+        ConnectionFinished(Option<std::result::Result<(), tokio::task::JoinError>>),
+        Accepted(std::io::Result<(tokio::net::TcpStream, SocketAddr)>),
+    }
+    let mut connections = JoinSet::new();
+    let mut result = Ok(());
     loop {
-        let (stream, _address) = listener.accept().await?;
-        stream.set_nodelay(true)?;
+        if *shutdown.borrow() {
+            break;
+        }
+        let event = tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    ServeEvent::Shutdown
+                } else {
+                    continue;
+                }
+            }
+            connection = connections.join_next(), if !connections.is_empty() => {
+                ServeEvent::ConnectionFinished(connection)
+            }
+            accepted = listener.accept() => ServeEvent::Accepted(accepted),
+        };
+        let accepted = match event {
+            ServeEvent::Shutdown => break,
+            ServeEvent::ConnectionFinished(Some(Ok(()))) | ServeEvent::ConnectionFinished(None) => {
+                continue;
+            }
+            ServeEvent::ConnectionFinished(Some(Err(error))) => {
+                result = Err(anyhow::Error::new(error));
+                break;
+            }
+            ServeEvent::Accepted(accepted) => accepted,
+        };
+        let (stream, _peer) = match accepted {
+            Ok(accepted) => accepted,
+            Err(error) => {
+                result = Err(error).context("accepting Notary server connection");
+                break;
+            }
+        };
+        if let Err(error) = stream.set_nodelay(true) {
+            tracing::warn!(%error, "configuring Notary client socket failed");
+            continue;
+        }
         let Ok(connection_permit) = Arc::clone(&connection_permits).try_acquire_owned() else {
-            counter!("llm_notary_notary_sessions_total", "mode" => "unknown", "outcome" => "rejected_pending_limit").increment(1);
-            tracing::warn!("notary connection rejected at pending-connection limit");
+            counter!("notary_server_sessions_total", "mode" => "unknown", "outcome" => "rejected_pending_limit").increment(1);
+            tracing::warn!("Notary connection rejected at pending-connection limit");
             continue;
         };
-        gauge!("llm_notary_notary_pending_connections")
-            .set((args.max_pending_connections - connection_permits.available_permits()) as f64);
-        tracing::info!("notary client connected");
-        let key = Arc::clone(&key);
-        let allowed_hosts = Arc::clone(&allowed_hosts);
-        let max_private_chunk_bytes = args.max_private_chunk_bytes;
-        let max_total_private_chunk_bytes = args.max_total_private_chunk_bytes;
-        let max_private_chunk_commitments = args.max_private_chunk_commitments;
-        let max_frame_bytes = args.max_frame_bytes;
-        let prelude_timeout = std::time::Duration::from_secs(args.prelude_timeout_secs);
-        let session_timeout = std::time::Duration::from_secs(args.session_timeout_secs);
-        let connection_permits = Arc::clone(&connection_permits);
-        let session_budgets = session_budgets.clone();
-        let notarize_only = args.notarize_only;
-        let profile_sessions = args.profile_sessions;
-        let max_pending_connections = args.max_pending_connections;
-        let max_concurrent_captures = args.max_concurrent_captures;
-        let max_concurrent_notarizations = args.max_concurrent_notarizations;
-        let admission = admission.clone();
-        tokio::spawn(handle_connection(ConnectionTask {
+        gauge!("notary_server_pending_connections")
+            .set((config.max_pending_connections - connection_permits.available_permits()) as f64);
+        tracing::info!("Notary client connected");
+        connections.spawn(handle_connection(ConnectionTask {
             stream,
             connection_permit,
-            key,
-            allowed_hosts,
-            max_private_chunk_bytes,
-            max_total_private_chunk_bytes,
-            max_private_chunk_commitments,
-            max_frame_bytes,
-            prelude_timeout,
-            session_timeout,
-            connection_permits,
-            session_budgets,
-            notarize_only,
-            profile_sessions,
-            max_pending_connections,
-            max_concurrent_captures,
-            max_concurrent_notarizations,
-            admission,
+            key: Arc::clone(&config.signing_key),
+            allowed_hosts: Arc::clone(&config.allowed_hosts),
+            max_private_chunk_bytes: config.max_private_chunk_bytes,
+            max_total_private_chunk_bytes: config.max_total_private_chunk_bytes,
+            max_private_chunk_commitments: config.max_private_chunk_commitments,
+            max_frame_bytes: config.max_frame_bytes,
+            prelude_timeout: config.prelude_timeout,
+            session_timeout: config.session_timeout,
+            connection_permits: Arc::clone(&connection_permits),
+            session_budgets: session_budgets.clone(),
+            notarization_only: config.notarization_only,
+            profile_sessions: config.profile_sessions,
+            max_pending_connections: config.max_pending_connections,
+            max_concurrent_captures: config.max_concurrent_captures,
+            max_concurrent_notarizations: config.max_concurrent_notarizations,
+            admission: Arc::clone(&admission),
         }));
     }
+
+    let _ = internal_stop.send(true);
+    while let Some(connection) = connections.join_next().await {
+        if let Err(error) = connection {
+            tracing::error!(%error, "Notary connection task failed");
+            if result.is_ok() {
+                result = Err(anyhow::Error::new(error));
+            }
+        }
+    }
+    if let Some(metrics_task) = metrics_task {
+        match metrics_task.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) if result.is_ok() => result = Err(error),
+            Ok(Err(error)) => tracing::error!(%error, "Notary metrics shutdown failed"),
+            Err(error) if result.is_ok() => result = Err(anyhow::Error::new(error)),
+            Err(error) => tracing::error!(%error, "Notary metrics task failed"),
+        }
+    }
+    result
 }
 
 struct ConnectionTask {
@@ -811,7 +1066,7 @@ struct ConnectionTask {
     session_timeout: Duration,
     connection_permits: Arc<Semaphore>,
     session_budgets: SessionBudgets,
-    notarize_only: bool,
+    notarization_only: bool,
     profile_sessions: bool,
     max_pending_connections: usize,
     max_concurrent_captures: usize,
@@ -833,7 +1088,7 @@ async fn handle_connection(task: ConnectionTask) {
         session_timeout,
         connection_permits,
         session_budgets,
-        notarize_only,
+        notarization_only,
         profile_sessions,
         max_pending_connections,
         max_concurrent_captures,
@@ -844,28 +1099,28 @@ async fn handle_connection(task: ConnectionTask) {
         Ok(Ok(prelude)) => prelude,
         Ok(Err(error)) => {
             drop(connection_permit);
-            gauge!("llm_notary_notary_pending_connections")
+            gauge!("notary_server_pending_connections")
                 .set((max_pending_connections - connection_permits.available_permits()) as f64);
-            counter!("llm_notary_notary_sessions_total", "mode" => "unknown", "outcome" => "invalid_prelude").increment(1);
-            tracing::warn!(%error, "invalid notary session prelude");
+            counter!("notary_server_sessions_total", "mode" => "unknown", "outcome" => "invalid_prelude").increment(1);
+            tracing::warn!(%error, "invalid Notary session prelude");
             return;
         }
         Err(_) => {
             drop(connection_permit);
-            gauge!("llm_notary_notary_pending_connections")
+            gauge!("notary_server_pending_connections")
                 .set((max_pending_connections - connection_permits.available_permits()) as f64);
-            counter!("llm_notary_notary_sessions_total", "mode" => "unknown", "outcome" => "prelude_timed_out").increment(1);
-            tracing::warn!("notary session prelude timed out");
+            counter!("notary_server_sessions_total", "mode" => "unknown", "outcome" => "prelude_timed_out").increment(1);
+            tracing::warn!("Notary session prelude timed out");
             return;
         }
     };
     drop(connection_permit);
-    gauge!("llm_notary_notary_pending_connections")
+    gauge!("notary_server_pending_connections")
         .set((max_pending_connections - connection_permits.available_permits()) as f64);
     let mode = prelude.mode();
-    if !session_mode_allowed(notarize_only, mode) {
-        counter!("llm_notary_notary_sessions_total", "mode" => session_mode_label(mode), "outcome" => "rejected_notarize_only").increment(1);
-        tracing::warn!("capture rejected by notarize-only notary");
+    if !session_mode_allowed(notarization_only, mode) {
+        counter!("notary_server_sessions_total", "mode" => session_mode_label(mode), "outcome" => "rejected_notarization_only").increment(1);
+        tracing::warn!("Capture rejected by notarization-only Notary server");
         if let Err(error) = write_notary_admission(
             &mut stream,
             &prelude,
@@ -878,10 +1133,10 @@ async fn handle_connection(task: ConnectionTask) {
         return;
     }
     let Ok(session_permit) = session_budgets.try_acquire(mode) else {
-        counter!("llm_notary_notary_sessions_total", "mode" => session_mode_label(mode), "outcome" => "rejected_concurrency_limit").increment(1);
+        counter!("notary_server_sessions_total", "mode" => session_mode_label(mode), "outcome" => "rejected_concurrency_limit").increment(1);
         tracing::warn!(
             mode = session_mode_label(mode),
-            "notary session rejected at mode concurrency limit"
+            "Notary session rejected at mode concurrency limit"
         );
         let rejection = match mode {
             NotarySessionMode::Capture => NotaryAdmissionRejection::CaptureAtCapacity,
@@ -901,7 +1156,7 @@ async fn handle_connection(task: ConnectionTask) {
     {
         Ok(grant) => grant,
         Err(rejection) => {
-            counter!("llm_notary_notary_sessions_total", "mode" => session_mode_label(mode), "outcome" => "rejected_policy").increment(1);
+            counter!("notary_server_sessions_total", "mode" => session_mode_label(mode), "outcome" => "rejected_policy").increment(1);
             if let Err(error) = write_notary_admission(&mut stream, &prelude, Err(rejection)).await
             {
                 tracing::debug!(%error, "could not send notary admission rejection");
@@ -951,7 +1206,7 @@ async fn handle_connection(task: ConnectionTask) {
         NotarySessionMode::Capture => max_concurrent_captures,
         NotarySessionMode::Notarization => max_concurrent_notarizations,
     };
-    gauge!("llm_notary_notary_active_sessions", "mode" => session_mode_label(mode))
+    gauge!("notary_server_active_sessions", "mode" => session_mode_label(mode))
         .set((max_concurrent_sessions - session_budgets.available_permits(mode)) as f64);
     let started = Instant::now();
     let session_span = tracing::info_span!(
@@ -992,11 +1247,11 @@ async fn handle_connection(task: ConnectionTask) {
             result.authenticated_transcript_bytes,
         ),
         Ok(Err((settlement_outcome, error))) => {
-            tracing::warn!(%error, "notary session failed");
+            tracing::warn!(%error, "Notary session failed");
             ("failed", settlement_outcome, 0)
         }
         Err(_) => {
-            tracing::warn!("notary session timed out");
+            tracing::warn!("Notary session timed out");
             ("timed_out", SessionOutcome::ClientFailed, 0)
         }
     };
@@ -1010,10 +1265,10 @@ async fn handle_connection(task: ConnectionTask) {
     if let Some(profile) = profile {
         profile.finish(outcome).await;
     }
-    counter!("llm_notary_notary_sessions_total", "mode" => session_mode_label(mode), "outcome" => outcome).increment(1);
-    histogram!("llm_notary_notary_session_duration_seconds", "mode" => session_mode_label(mode), "outcome" => outcome).record(started.elapsed().as_secs_f64());
+    counter!("notary_server_sessions_total", "mode" => session_mode_label(mode), "outcome" => outcome).increment(1);
+    histogram!("notary_server_session_duration_seconds", "mode" => session_mode_label(mode), "outcome" => outcome).record(started.elapsed().as_secs_f64());
     drop(session_permit);
-    gauge!("llm_notary_notary_active_sessions", "mode" => session_mode_label(mode))
+    gauge!("notary_server_active_sessions", "mode" => session_mode_label(mode))
         .set((max_concurrent_sessions - session_budgets.available_permits(mode)) as f64);
 }
 
@@ -1079,8 +1334,8 @@ fn session_mode_label(mode: NotarySessionMode) -> &'static str {
     }
 }
 
-fn session_mode_allowed(notarize_only: bool, mode: NotarySessionMode) -> bool {
-    !notarize_only || mode == NotarySessionMode::Notarization
+fn session_mode_allowed(notarization_only: bool, mode: NotarySessionMode) -> bool {
+    !notarization_only || mode == NotarySessionMode::Notarization
 }
 
 #[cfg(test)]
@@ -1088,6 +1343,34 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    fn test_server_args(signing_key_file: PathBuf) -> NotaryServerServeArgs {
+        NotaryServerServeArgs {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            signing_key_file,
+            notarization_only: false,
+            allow_hosts: vec!["api.openai.com".to_owned()],
+            max_private_chunk_bytes: 1024,
+            max_total_private_chunk_bytes: 2048,
+            max_private_chunk_commitments: 2,
+            max_frame_bytes: 4096,
+            max_concurrent_captures: 2,
+            max_concurrent_notarizations: 1,
+            max_pending_connections: 2,
+            prelude_timeout_secs: 1,
+            session_timeout_secs: 2,
+            metrics_listen: None,
+            profile_sessions: false,
+        }
+    }
+
+    fn test_server_config() -> (tempfile::TempDir, NotaryServerConfig) {
+        let directory = tempfile::tempdir().unwrap();
+        let signing_key_file = directory.path().join("signing-key");
+        fs::write(&signing_key_file, format!("{}\n", "01".repeat(32))).unwrap();
+        let config = NotaryServerConfig::from_args(test_server_args(signing_key_file)).unwrap();
+        (directory, config)
+    }
 
     #[derive(Clone)]
     struct RecordingLifecycle {
@@ -1164,7 +1447,7 @@ mod tests {
             session_timeout,
             connection_permits,
             session_budgets: SessionBudgets::new(1, 1),
-            notarize_only: false,
+            notarization_only: false,
             profile_sessions: false,
             max_pending_connections: 1,
             max_concurrent_captures: 1,
@@ -1175,14 +1458,21 @@ mod tests {
     }
 
     async fn write_capture_prelude(client: &mut tokio::net::TcpStream) {
-        let ticket = b"opaque-ticket";
+        write_capture_prelude_with_admission(client, Some("opaque-ticket")).await;
+    }
+
+    async fn write_capture_prelude_with_admission(
+        client: &mut tokio::net::TcpStream,
+        admission_value: Option<&str>,
+    ) {
+        let admission_value = admission_value.unwrap_or_default().as_bytes();
         client.write_all(b"NTRY\0\0\0\x01").await.unwrap();
         client.write_all(&[2]).await.unwrap();
         client
-            .write_all(&(ticket.len() as u16).to_be_bytes())
+            .write_all(&(admission_value.len() as u16).to_be_bytes())
             .await
             .unwrap();
-        client.write_all(ticket).await.unwrap();
+        client.write_all(admission_value).await.unwrap();
         client.flush().await.unwrap();
     }
 
@@ -1194,7 +1484,147 @@ mod tests {
     }
 
     #[test]
-    fn notarize_only_rejects_capture_before_protocol_admission() {
+    fn canonical_cli_requires_an_explicit_subcommand_and_allowlist() {
+        let parsed = NotaryServerArgs::try_parse_from([
+            "notary-server",
+            "serve",
+            "--signing-key-file",
+            "signing-key",
+            "--allow-host",
+            "api.openai.com",
+            "--allow-host",
+            "api.anthropic.com",
+        ])
+        .unwrap();
+        let NotaryServerCommand::Serve(args) = parsed.command else {
+            panic!("expected serve command");
+        };
+        assert_eq!(args.allow_hosts, ["api.openai.com", "api.anthropic.com"]);
+
+        let parsed = NotaryServerArgs::try_parse_from([
+            "notary-server",
+            "public-key",
+            "--signing-key-file",
+            "signing-key",
+        ])
+        .unwrap();
+        assert!(matches!(parsed.command, NotaryServerCommand::PublicKey(_)));
+
+        assert!(NotaryServerArgs::try_parse_from(["notary-server"]).is_err());
+        assert!(
+            NotaryServerArgs::try_parse_from([
+                "notary-server",
+                "--signing-key-file",
+                "signing-key"
+            ])
+            .is_err()
+        );
+        assert!(
+            NotaryServerArgs::try_parse_from([
+                "notary-server",
+                "serve",
+                "--signing-key",
+                "signing-key"
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn validated_config_rejects_implicit_or_invalid_provider_access() {
+        let directory = tempfile::tempdir().unwrap();
+        let signing_key_file = directory.path().join("signing-key");
+        fs::write(&signing_key_file, "01".repeat(32)).unwrap();
+
+        let mut args = test_server_args(signing_key_file.clone());
+        args.allow_hosts.clear();
+        assert!(NotaryServerConfig::from_args(args).is_err());
+
+        for invalid_host in ["*", "127.0.0.1", "https://api.openai.com", "-bad.test"] {
+            let mut args = test_server_args(signing_key_file.clone());
+            args.allow_hosts = vec![invalid_host.to_owned()];
+            assert!(
+                NotaryServerConfig::from_args(args).is_err(),
+                "accepted invalid provider host {invalid_host}"
+            );
+        }
+
+        let mut args = test_server_args(signing_key_file);
+        args.allow_hosts = vec![
+            "API.OPENAI.COM".to_owned(),
+            "api.anthropic.com".to_owned(),
+            "api.openai.com".to_owned(),
+        ];
+        let config = NotaryServerConfig::from_args(args).unwrap();
+        assert_eq!(
+            config.allowed_hosts.as_slice(),
+            ["api.anthropic.com", "api.openai.com"]
+        );
+    }
+
+    #[test]
+    fn validated_config_rejects_zero_or_inconsistent_limits() {
+        let directory = tempfile::tempdir().unwrap();
+        let signing_key_file = directory.path().join("signing-key");
+        fs::write(&signing_key_file, "01".repeat(32)).unwrap();
+
+        let mut args = test_server_args(signing_key_file.clone());
+        args.max_pending_connections = 0;
+        assert!(NotaryServerConfig::from_args(args).is_err());
+
+        let mut args = test_server_args(signing_key_file.clone());
+        args.max_total_private_chunk_bytes = args.max_private_chunk_bytes - 1;
+        assert!(NotaryServerConfig::from_args(args).is_err());
+
+        let mut args = test_server_args(signing_key_file);
+        args.max_frame_bytes = u32::MAX as usize + 1;
+        assert!(NotaryServerConfig::from_args(args).is_err());
+    }
+
+    #[test]
+    fn signing_key_file_allows_one_line_ending_but_no_other_whitespace() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("signing-key");
+        fs::write(&path, format!("{}\r\n", "01".repeat(32))).unwrap();
+        assert!(read_signing_key(&path).is_ok());
+        fs::write(&path, format!(" {}\n", "01".repeat(32))).unwrap();
+        assert!(read_signing_key(&path).is_err());
+        fs::write(&path, format!("{}\n\n", "01".repeat(32))).unwrap();
+        assert!(read_signing_key(&path).is_err());
+    }
+
+    #[tokio::test]
+    async fn injected_shutdown_stops_accepting_and_waits_for_connection_tasks() {
+        let (_directory, mut config) = test_server_config();
+        config.prelude_timeout = Duration::from_millis(150);
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (shutdown_sender, shutdown) = watch::channel(false);
+        let mut server = tokio::spawn(serve_on_listener(
+            config,
+            listener,
+            Arc::new(TicketlessAdmissionPolicy),
+            shutdown,
+        ));
+        let mut client = tokio::net::TcpStream::connect(address).await.unwrap();
+        client.write_all(b"NTRY").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        shutdown_sender.send(true).unwrap();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), &mut server)
+                .await
+                .is_err()
+        );
+        tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .expect("server ignored injected shutdown")
+            .expect("server task panicked")
+            .expect("server failed during shutdown");
+    }
+
+    #[test]
+    fn notarization_only_rejects_capture_before_protocol_admission() {
         assert!(!session_mode_allowed(true, NotarySessionMode::Capture));
         assert!(session_mode_allowed(true, NotarySessionMode::Notarization));
         assert!(session_mode_allowed(false, NotarySessionMode::Capture));
@@ -1222,7 +1652,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn coordinator_free_policy_accepts_only_ticketless_sessions() {
+    async fn ticketless_policy_accepts_only_ticketless_sessions() {
         let policy = TicketlessAdmissionPolicy;
         assert!(
             policy
@@ -1242,6 +1672,44 @@ mod tests {
                 .await,
             Err(NotaryAdmissionRejection::AdmissionDenied)
         ));
+    }
+
+    #[tokio::test]
+    async fn ticketless_policy_runs_through_the_shared_session_contract() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let client = tokio::net::TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (stream, _) = listener.accept().await.unwrap();
+        let connection_permits = Arc::new(Semaphore::new(1));
+        let connection_permit = Arc::clone(&connection_permits).try_acquire_owned().unwrap();
+        let task = tokio::spawn(handle_connection(ConnectionTask {
+            stream,
+            connection_permit,
+            key: Arc::new(SigningKey::from_slice(&[1; 32]).unwrap()),
+            allowed_hosts: Arc::new(vec!["api.openai.com".to_owned()]),
+            max_private_chunk_bytes: 1024,
+            max_total_private_chunk_bytes: 1024,
+            max_private_chunk_commitments: 1,
+            max_frame_bytes: 1024,
+            prelude_timeout: Duration::from_secs(1),
+            session_timeout: Duration::from_secs(1),
+            connection_permits,
+            session_budgets: SessionBudgets::new(1, 1),
+            notarization_only: false,
+            profile_sessions: false,
+            max_pending_connections: 1,
+            max_concurrent_captures: 1,
+            max_concurrent_notarizations: 1,
+            admission: Arc::new(TicketlessAdmissionPolicy),
+        }));
+        let mut client = client;
+        write_capture_prelude_with_admission(&mut client, None).await;
+        let mut response = [0; 1];
+        client.read_exact(&mut response).await.unwrap();
+        assert_eq!(response, [1]);
+        drop(client);
+        wait_for_connection(task).await;
     }
 
     #[test]

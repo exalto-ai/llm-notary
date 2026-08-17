@@ -3,7 +3,7 @@ members = [
     "crates/llm-notary-cli",
     "crates/notary-core",
     "crates/notaryd",
-    "crates/llm-notary-server",
+    "crates/notary-server",
     "crates/llm-notary-updater",
 ]
 exclude = ["vendor/tlsn", "vendor/tlsn-utils"]

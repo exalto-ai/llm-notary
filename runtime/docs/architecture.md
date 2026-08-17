@@ -19,7 +19,7 @@ seams, but those implementations are not part of this workspace.
 | `notaryd` | yes | vault, metadata, operations, artifacts, trust cache | Proxies requests, captures private state, notarizes, and verifies |
 | `llm-notary` | only API responses requested by the user | none | Calls the daemon's versioned administration API |
 | Local dashboard | only safe metadata store fields and deliberately opened notarized disclosures | browser session preference | Uses the same administration API as the CLI |
-| `llm-notary-server` | no | signing key | Resolves the provider, relays encrypted TLS records, witnesses sessions, and completes proof work |
+| `notary-server` | no | signing key | Resolves the provider, relays encrypted TLS records, witnesses sessions, and completes proof work |
 | Model provider | yes | provider-owned | Serves an ordinary HTTPS request without an LLM Notary integration |
 | Artifact backend | encrypted capture or disclosed package bytes | filesystem or private S3-compatible objects | Retains immutable artifacts after size and SHA-256 validation |
 | Independent verifier | disclosed package contents | chosen trust policy | Verifies a portable `.llmtrace` without contacting the provider or notary |

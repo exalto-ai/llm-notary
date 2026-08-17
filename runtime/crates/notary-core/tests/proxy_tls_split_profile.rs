@@ -1,7 +1,7 @@
 //! Opt-in, split-container resource benchmark for the production capture and
 //! notarization protocol.
 //!
-//! Run a memory-limited `llm-notary-server --profile-sessions` container, then
+//! Run a memory-limited `notary-server serve --profile-sessions` container, then
 //! run this test from a separate client container on the same Docker network.
 //! The test deliberately sends an invalid, synthetic OpenAI credential: the
 //! provider should reject it, but the request and response still exercise the

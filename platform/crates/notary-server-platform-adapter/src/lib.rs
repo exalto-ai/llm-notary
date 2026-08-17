@@ -2,29 +2,32 @@ use std::{env, fs, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
-use llm_notary_server::{
-    AdmissionConstraints, AdmissionGrant, AdmissionPolicy, AdmissionRequest, SessionLifecycle,
-    SessionOutcome,
-};
 use metrics::{counter, gauge};
 use notary_core::{NotaryAdmissionRejection, NotarySessionMode};
+use notary_server::{
+    AdmissionConstraints, AdmissionGrant, AdmissionPolicy, AdmissionRequest, NotaryServerArgs,
+    NotaryServerCommand, NotaryServerConfig, SessionLifecycle, SessionOutcome, print_public_key,
+    serve, shutdown_signal,
+};
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-mod outbox;
+mod settlement_outbox;
 
-use outbox::{PendingUsageSettlement, UsageMode, UsageOutbox, UsageSettlementOutcome};
+use settlement_outbox::{
+    PendingUsageSettlement, UsageMode, UsageSettlementOutbox, UsageSettlementOutcome,
+};
 
 const USAGE_OUTBOX_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone)]
-struct AdmissionCoordinator {
+struct PlatformAdmissionPolicy {
     http: reqwest::Client,
     origin: Url,
     service_token: Arc<str>,
     instance_id: Arc<str>,
     registry_generation: u64,
-    usage_outbox: UsageOutbox,
+    usage_outbox: UsageSettlementOutbox,
 }
 
 #[derive(Serialize)]
@@ -58,11 +61,11 @@ struct UsageSettlementRequest<'a> {
 }
 
 #[derive(Deserialize)]
-struct CoordinatorErrorResponse {
+struct PlatformErrorResponse {
     error: String,
 }
 
-enum CoordinatorRejection {
+enum PlatformPolicyRejection {
     Capacity,
     Denied,
     Expired,
@@ -71,61 +74,40 @@ enum CoordinatorRejection {
     Unavailable(anyhow::Error),
 }
 
-impl AdmissionCoordinator {
+impl PlatformAdmissionPolicy {
     fn from_env() -> Result<Self> {
-        let origin = env::var("LLM_NOTARY_ADMISSION_API_ORIGIN")
-            .context("LLM_NOTARY_ADMISSION_API_ORIGIN must be set")?;
-        let origin = Url::parse(&origin)
-            .context("LLM_NOTARY_ADMISSION_API_ORIGIN must be an absolute URL")?;
-        if origin.cannot_be_a_base() || origin.query().is_some() || origin.fragment().is_some() {
-            bail!("LLM_NOTARY_ADMISSION_API_ORIGIN must be a base URL without query or fragment");
-        }
-        if origin.scheme() != "https"
-            && !(origin.scheme() == "http"
-                && origin.host_str().is_some_and(|host| {
-                    host == "localhost"
-                        || host == "127.0.0.1"
-                        || host == "::1"
-                        || host.ends_with(".flycast")
-                }))
-        {
-            bail!("admission API origin must use HTTPS, loopback HTTP, or private Flycast HTTP");
-        }
-        let token_file = env::var("LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE")
-            .context("LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE must be set")?;
-        let service_token = fs::read_to_string(&token_file)
-            .with_context(|| format!("reading admission service token file {token_file}"))?;
-        let service_token = service_token.trim();
-        if !(32..=512).contains(&service_token.len()) {
-            bail!("admission service token must contain between 32 and 512 bytes");
-        }
-        let instance_id = env::var("LLM_NOTARY_INSTANCE_ID")
-            .or_else(|_| env::var("FLY_MACHINE_ID"))
-            .unwrap_or_else(|_| format!("notary-{}", std::process::id()));
+        let origin = env::var("NOTARY_SERVER_PLATFORM_API_ORIGIN")
+            .context("NOTARY_SERVER_PLATFORM_API_ORIGIN must be set")?;
+        let origin = validate_platform_origin(&origin)?;
+        let token_file = env::var("NOTARY_SERVER_PLATFORM_SERVICE_TOKEN_FILE")
+            .context("NOTARY_SERVER_PLATFORM_SERVICE_TOKEN_FILE must be set")?;
+        let service_token = read_service_token(&token_file)?;
+        let instance_id = env::var("NOTARY_SERVER_INSTANCE_ID")
+            .context("NOTARY_SERVER_INSTANCE_ID must be set")?;
         if instance_id.is_empty()
             || instance_id.len() > 128
             || !instance_id
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
         {
-            bail!("LLM_NOTARY_INSTANCE_ID must be a safe identifier of at most 128 bytes");
+            bail!("NOTARY_SERVER_INSTANCE_ID must be a safe identifier of at most 128 bytes");
         }
-        let registry_generation = env::var("LLM_NOTARY_REGISTRY_GENERATION")
-            .unwrap_or_else(|_| "1".to_owned())
+        let registry_generation = env::var("NOTARY_SERVER_REGISTRY_GENERATION")
+            .context("NOTARY_SERVER_REGISTRY_GENERATION must be set")?
             .parse()
-            .context("LLM_NOTARY_REGISTRY_GENERATION must be a u64")?;
-        let usage_outbox = UsageOutbox::open(
-            env::var("LLM_NOTARY_USAGE_OUTBOX_DIR")
-                .context("LLM_NOTARY_USAGE_OUTBOX_DIR must be set")?,
+            .context("NOTARY_SERVER_REGISTRY_GENERATION must be a u64")?;
+        let usage_outbox = UsageSettlementOutbox::open(
+            env::var("NOTARY_SERVER_USAGE_OUTBOX_DIR")
+                .context("NOTARY_SERVER_USAGE_OUTBOX_DIR must be set")?,
         )?;
         Ok(Self {
             http: reqwest::Client::builder()
-                .user_agent("LLM-Notary-Service/0.1")
+                .user_agent("notary-server/0.1")
                 .timeout(Duration::from_secs(5))
                 .build()
-                .context("building admission coordinator client")?,
+                .context("building platform API client")?,
             origin,
-            service_token: Arc::from(service_token),
+            service_token,
             instance_id: Arc::from(instance_id),
             registry_generation,
             usage_outbox,
@@ -135,17 +117,17 @@ impl AdmissionCoordinator {
     fn endpoint(&self, path: &str) -> Result<Url> {
         self.origin
             .join(path)
-            .with_context(|| format!("building admission coordinator URL for {path}"))
+            .with_context(|| format!("building platform API URL for {path}"))
     }
 
     async fn redeem(
         &self,
         ticket: &str,
         mode: NotarySessionMode,
-    ) -> std::result::Result<RedeemedOperation, CoordinatorRejection> {
+    ) -> std::result::Result<RedeemedOperation, PlatformPolicyRejection> {
         let url = self
             .endpoint("/api/internal/notary/admissions/redeem")
-            .map_err(CoordinatorRejection::Unavailable)?;
+            .map_err(PlatformPolicyRejection::Unavailable)?;
         let response = self
             .http
             .post(url)
@@ -160,25 +142,25 @@ impl AdmissionCoordinator {
             })
             .send()
             .await
-            .map_err(|error| CoordinatorRejection::Unavailable(error.into()))?;
+            .map_err(|error| PlatformPolicyRejection::Unavailable(error.into()))?;
         match response.status() {
             reqwest::StatusCode::OK => response
                 .json()
                 .await
-                .map_err(|error| CoordinatorRejection::Unavailable(error.into())),
+                .map_err(|error| PlatformPolicyRejection::Unavailable(error.into())),
             status => {
                 let error_code = response
-                    .json::<CoordinatorErrorResponse>()
+                    .json::<PlatformErrorResponse>()
                     .await
                     .ok()
                     .map(|error| error.error);
-                Err(coordinator_rejection(status, error_code.as_deref()))
+                Err(platform_rejection(status, error_code.as_deref()))
             }
         }
     }
 }
 
-impl AdmissionCoordinator {
+impl PlatformAdmissionPolicy {
     async fn settle_usage(&self, pending: &PendingUsageSettlement) -> Result<()> {
         let outcome = pending
             .outcome
@@ -202,7 +184,7 @@ impl AdmissionCoordinator {
             response.status(),
             reqwest::StatusCode::NO_CONTENT | reqwest::StatusCode::GONE
         ) {
-            bail!("usage coordinator returned {}", response.status());
+            bail!("usage settlement API returned {}", response.status());
         }
         Ok(())
     }
@@ -215,64 +197,87 @@ impl AdmissionCoordinator {
                 return;
             }
         };
-        gauge!("llm_notary_usage_outbox_pending").set(pending.len() as f64);
+        gauge!("notary_server_usage_settlement_outbox_pending").set(pending.len() as f64);
         for entry in pending {
             match self.settle_usage(&entry).await {
                 Ok(()) => {
                     if self.usage_outbox.remove(&entry.operation_id).is_err() {
                         tracing::error!("removing settled usage outbox entry failed");
                     } else {
-                        counter!("llm_notary_usage_outbox_deliveries_total", "outcome" => "delivered")
+                        counter!("notary_server_usage_settlement_deliveries_total", "outcome" => "delivered")
                             .increment(1);
                     }
                 }
                 Err(error) => {
-                    counter!("llm_notary_usage_outbox_deliveries_total", "outcome" => "retry")
+                    counter!("notary_server_usage_settlement_deliveries_total", "outcome" => "retry")
                         .increment(1);
                     tracing::warn!(%error, "usage settlement delivery will be retried");
                 }
             }
         }
     }
+
+    async fn run_usage_settlement_worker(
+        &self,
+        mut shutdown: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()> {
+        let mut ticker = tokio::time::interval(USAGE_OUTBOX_RETRY_INTERVAL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            if *shutdown.borrow() {
+                self.replay_usage_outbox().await;
+                return Ok(());
+            }
+            tokio::select! {
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow() {
+                        self.replay_usage_outbox().await;
+                        return Ok(());
+                    }
+                }
+                _ = ticker.tick() => self.replay_usage_outbox().await,
+            }
+        }
+    }
 }
 
-fn coordinator_rejection(
+fn platform_rejection(
     status: reqwest::StatusCode,
     error_code: Option<&str>,
-) -> CoordinatorRejection {
+) -> PlatformPolicyRejection {
     match status {
-        reqwest::StatusCode::TOO_MANY_REQUESTS => CoordinatorRejection::Capacity,
+        reqwest::StatusCode::TOO_MANY_REQUESTS => PlatformPolicyRejection::Capacity,
         reqwest::StatusCode::GONE if error_code == Some("admission_ticket_expired") => {
-            CoordinatorRejection::Expired
+            PlatformPolicyRejection::Expired
         }
         reqwest::StatusCode::PAYMENT_REQUIRED
             if error_code == Some("capture_credits_exhausted") =>
         {
-            CoordinatorRejection::CaptureAllowanceExhausted
+            PlatformPolicyRejection::CaptureAllowanceExhausted
         }
         reqwest::StatusCode::PAYMENT_REQUIRED
             if error_code == Some("notarization_credits_exhausted") =>
         {
-            CoordinatorRejection::NotarizationAllowanceExhausted
+            PlatformPolicyRejection::NotarizationAllowanceExhausted
         }
         reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
-            CoordinatorRejection::Unavailable(anyhow::anyhow!(
-                "admission coordinator rejected service authentication"
+            PlatformPolicyRejection::Unavailable(anyhow::anyhow!(
+                "platform API rejected service authentication"
             ))
         }
-        status if status.is_client_error() => CoordinatorRejection::Denied,
-        status => CoordinatorRejection::Unavailable(anyhow::anyhow!(
-            "admission coordinator returned {status}"
-        )),
+        status if status.is_client_error() => PlatformPolicyRejection::Denied,
+        status => {
+            PlatformPolicyRejection::Unavailable(anyhow::anyhow!("platform API returned {status}"))
+        }
     }
 }
 
-struct HostedLifecycle {
+struct PlatformSessionLifecycle {
     operation_id: String,
-    usage_outbox: UsageOutbox,
+    usage_outbox: UsageSettlementOutbox,
 }
 
-impl SessionLifecycle for HostedLifecycle {
+impl SessionLifecycle for PlatformSessionLifecycle {
     fn record_authenticated_bytes(&self, bytes: usize) -> Result<()> {
         self.usage_outbox
             .record_authenticated_bytes(&self.operation_id, bytes)
@@ -290,7 +295,7 @@ impl SessionLifecycle for HostedLifecycle {
 }
 
 #[async_trait]
-impl AdmissionPolicy for AdmissionCoordinator {
+impl AdmissionPolicy for PlatformAdmissionPolicy {
     async fn admit(
         &self,
         request: AdmissionRequest<'_>,
@@ -301,7 +306,7 @@ impl AdmissionPolicy for AdmissionCoordinator {
         let operation = self
             .redeem(ticket, request.mode)
             .await
-            .map_err(|rejection| coordinator_admission_rejection(request.mode, rejection))?;
+            .map_err(|rejection| platform_admission_rejection(request.mode, rejection))?;
         let pending = PendingUsageSettlement {
             operation_id: operation.operation_id.clone(),
             notary_instance_id: self.instance_id.to_string(),
@@ -321,7 +326,7 @@ impl AdmissionPolicy for AdmissionCoordinator {
         let constraints = match operation_constraints(request.mode, &operation) {
             Ok(constraints) => constraints,
             Err(error) => {
-                tracing::error!(%error, "admission coordinator returned invalid notary limits");
+                tracing::error!(%error, "platform API returned invalid Notary limits");
                 if self
                     .usage_outbox
                     .finish(
@@ -338,7 +343,7 @@ impl AdmissionPolicy for AdmissionCoordinator {
         };
         Ok(AdmissionGrant {
             constraints,
-            lifecycle: Some(Arc::new(HostedLifecycle {
+            lifecycle: Some(Arc::new(PlatformSessionLifecycle {
                 operation_id: operation.operation_id,
                 usage_outbox: self.usage_outbox.clone(),
             })),
@@ -346,47 +351,108 @@ impl AdmissionPolicy for AdmissionCoordinator {
     }
 }
 
-fn coordinator_admission_rejection(
+fn platform_admission_rejection(
     mode: NotarySessionMode,
-    rejection: CoordinatorRejection,
+    rejection: PlatformPolicyRejection,
 ) -> NotaryAdmissionRejection {
     match rejection {
-        CoordinatorRejection::Capacity => match mode {
+        PlatformPolicyRejection::Capacity => match mode {
             NotarySessionMode::Capture => NotaryAdmissionRejection::CaptureAtCapacity,
             NotarySessionMode::Notarization => NotaryAdmissionRejection::NotarizationAtCapacity,
         },
-        CoordinatorRejection::Denied => NotaryAdmissionRejection::AdmissionDenied,
-        CoordinatorRejection::Expired => NotaryAdmissionRejection::AdmissionExpired,
-        CoordinatorRejection::CaptureAllowanceExhausted => {
+        PlatformPolicyRejection::Denied => NotaryAdmissionRejection::AdmissionDenied,
+        PlatformPolicyRejection::Expired => NotaryAdmissionRejection::AdmissionExpired,
+        PlatformPolicyRejection::CaptureAllowanceExhausted => {
             NotaryAdmissionRejection::CaptureAllowanceExhausted
         }
-        CoordinatorRejection::NotarizationAllowanceExhausted => {
+        PlatformPolicyRejection::NotarizationAllowanceExhausted => {
             NotaryAdmissionRejection::NotarizationAllowanceExhausted
         }
-        CoordinatorRejection::Unavailable(error) => {
-            tracing::error!(%error, "admission coordinator request failed");
+        PlatformPolicyRejection::Unavailable(error) => {
+            tracing::error!(%error, "platform API admission request failed");
             NotaryAdmissionRejection::AdmissionServiceUnavailable
         }
     }
 }
 
-/// Runs Exalto's hosted adapter around the public remote notary runtime.
+/// Runs Exalto's platform policy around the shared Notary server runtime.
 pub async fn run() -> Result<()> {
-    llm_notary_server::run_with_policy_factory(|| {
-        let admission = AdmissionCoordinator::from_env()?;
-        admission.usage_outbox.recover_after_restart()?;
-        let usage_replayer = admission.clone();
-        tokio::spawn(async move {
-            let mut ticker = tokio::time::interval(USAGE_OUTBOX_RETRY_INTERVAL);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-            loop {
-                ticker.tick().await;
-                usage_replayer.replay_usage_outbox().await;
-            }
-        });
-        Ok(Arc::new(admission) as Arc<dyn AdmissionPolicy>)
-    })
-    .await
+    run_command(NotaryServerArgs::parse_env().command).await
+}
+
+async fn run_command(command: NotaryServerCommand) -> Result<()> {
+    match command {
+        NotaryServerCommand::PublicKey(args) => print_public_key(&args),
+        NotaryServerCommand::Serve(args) => {
+            let config = NotaryServerConfig::from_args(args)?;
+            let policy = Arc::new(PlatformAdmissionPolicy::from_env()?);
+            policy.usage_outbox.recover_after_restart()?;
+            let _telemetry = notary_core::telemetry::init("notary-server")?;
+            serve_with_platform_policy(config, policy, shutdown_signal()).await
+        }
+    }
+}
+
+async fn serve_with_platform_policy(
+    config: NotaryServerConfig,
+    policy: Arc<PlatformAdmissionPolicy>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) -> Result<()> {
+    // Stop settlement only after the shared server has drained its tracked
+    // sessions. A session that finishes during graceful shutdown can therefore
+    // stage its terminal usage before the worker's final replay.
+    let (worker_stop, worker_shutdown) = tokio::sync::watch::channel(false);
+    let server_policy = Arc::clone(&policy);
+    let server = async move {
+        let result = serve(config, server_policy as Arc<dyn AdmissionPolicy>, shutdown).await;
+        let _ = worker_stop.send(true);
+        result
+    };
+    let (server_result, worker_result) =
+        tokio::join!(server, policy.run_usage_settlement_worker(worker_shutdown));
+    server_result?;
+    worker_result
+}
+
+fn validate_platform_origin(value: &str) -> Result<Url> {
+    let origin =
+        Url::parse(value).context("NOTARY_SERVER_PLATFORM_API_ORIGIN must be an absolute URL")?;
+    if origin.cannot_be_a_base()
+        || origin.query().is_some()
+        || origin.fragment().is_some()
+        || !origin.username().is_empty()
+        || origin.password().is_some()
+        || origin.path() != "/"
+    {
+        bail!(
+            "NOTARY_SERVER_PLATFORM_API_ORIGIN must be an origin without credentials, path, query, or fragment"
+        );
+    }
+    if origin.scheme() != "https"
+        && !(origin.scheme() == "http"
+            && origin.host_str().is_some_and(|host| {
+                host == "localhost"
+                    || host == "127.0.0.1"
+                    || host == "::1"
+                    || host.ends_with(".flycast")
+            }))
+    {
+        bail!("platform API origin must use HTTPS, loopback HTTP, or private Flycast HTTP");
+    }
+    Ok(origin)
+}
+
+fn read_service_token(path: &str) -> Result<Arc<str>> {
+    let token = fs::read_to_string(path)
+        .with_context(|| format!("reading platform service token file {path}"))?;
+    let token = token
+        .strip_suffix("\r\n")
+        .or_else(|| token.strip_suffix('\n'))
+        .unwrap_or(&token);
+    if !(32..=512).contains(&token.len()) || token.bytes().any(|byte| byte.is_ascii_whitespace()) {
+        bail!("platform service token must contain 32 to 512 non-whitespace bytes");
+    }
+    Ok(Arc::from(token))
 }
 
 fn operation_constraints(
@@ -395,11 +461,11 @@ fn operation_constraints(
 ) -> Result<AdmissionConstraints> {
     let positive = |name: &str, value: i64| -> Result<usize> {
         if value <= 0 {
-            bail!("coordinator {name} must be positive");
+            bail!("platform {name} must be positive");
         }
         value
             .try_into()
-            .with_context(|| format!("coordinator {name} does not fit in usize"))
+            .with_context(|| format!("platform {name} does not fit in usize"))
     };
     let max_private_chunk_bytes =
         positive("max_private_chunk_bytes", operation.max_private_chunk_bytes)?;
@@ -407,27 +473,28 @@ fn operation_constraints(
         "max_attestable_http_bytes",
         operation.max_attestable_http_bytes,
     )?;
-    let (expected_record_digest, authenticated_allowance) =
-        match (
-            mode,
-            operation.record_digest.as_deref(),
-            operation.notarization_allowance_bytes,
-        ) {
-            (NotarySessionMode::Capture, None, None) => (None, policy_attestable),
-            (NotarySessionMode::Notarization, Some(digest), Some(allowance)) => {
-                let bytes = hex::decode(digest).context("coordinator record digest is not hex")?;
-                let allowance = positive("notarization_allowance_bytes", allowance)?;
-                (
-                    Some(bytes.try_into().map_err(|_| {
-                        anyhow::anyhow!("coordinator record digest is not 32 bytes")
-                    })?),
-                    allowance,
-                )
-            }
-            _ => bail!("coordinator record digest does not match the session mode"),
-        };
+    let (expected_record_digest, authenticated_allowance) = match (
+        mode,
+        operation.record_digest.as_deref(),
+        operation.notarization_allowance_bytes,
+    ) {
+        (NotarySessionMode::Capture, None, None) => (None, policy_attestable),
+        (NotarySessionMode::Notarization, Some(digest), Some(allowance)) => {
+            let bytes = hex::decode(digest).context("platform record digest is not hex")?;
+            let allowance = positive("notarization_allowance_bytes", allowance)?;
+            (
+                Some(
+                    bytes
+                        .try_into()
+                        .map_err(|_| anyhow::anyhow!("platform record digest is not 32 bytes"))?,
+                ),
+                allowance,
+            )
+        }
+        _ => bail!("platform record digest does not match the session mode"),
+    };
     if authenticated_allowance > policy_attestable {
-        bail!("coordinator allowance exceeds its per-session ceiling");
+        bail!("platform allowance exceeds its per-session ceiling");
     }
     Ok(AdmissionConstraints {
         expected_record_digest,
@@ -455,6 +522,68 @@ fn session_mode_label(mode: NotarySessionMode) -> &'static str {
 mod tests {
     use super::*;
     use axum::Router;
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+    #[test]
+    fn platform_origin_is_an_origin_and_never_carries_credentials() {
+        for valid in [
+            "https://platform.example.com",
+            "http://localhost:8080",
+            "http://notary-api.internal.flycast",
+        ] {
+            assert!(
+                validate_platform_origin(valid).is_ok(),
+                "rejected valid platform origin {valid}"
+            );
+        }
+        for invalid in [
+            "http://platform.example.com",
+            "https://user:secret@platform.example.com",
+            "https://platform.example.com/api",
+            "https://platform.example.com?query=1",
+            "https://platform.example.com#fragment",
+        ] {
+            assert!(
+                validate_platform_origin(invalid).is_err(),
+                "accepted invalid platform origin {invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn platform_service_token_allows_one_line_ending_only() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("service-token");
+        fs::write(&path, format!("{}\r\n", "x".repeat(32))).unwrap();
+        assert_eq!(
+            read_service_token(path.to_str().unwrap()).unwrap().as_ref(),
+            "x".repeat(32)
+        );
+        fs::write(&path, format!(" {}\n", "x".repeat(32))).unwrap();
+        assert!(read_service_token(path.to_str().unwrap()).is_err());
+        fs::write(&path, format!("{}\n\n", "x".repeat(32))).unwrap();
+        assert!(read_service_token(path.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn usage_mode_uses_the_canonical_notarization_wire_value() {
+        assert_eq!(
+            serde_json::to_value(UsageMode::Notarization).unwrap(),
+            "notarization"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_key_command_is_isolated_from_platform_configuration() {
+        let directory = tempfile::tempdir().unwrap();
+        let signing_key_file = directory.path().join("signing-key");
+        fs::write(&signing_key_file, format!("{}\n", "01".repeat(32))).unwrap();
+        run_command(NotaryServerCommand::PublicKey(
+            notary_server::NotaryServerPublicKeyArgs { signing_key_file },
+        ))
+        .await
+        .unwrap();
+    }
 
     #[test]
     fn redemption_requires_one_operation_with_durable_settlement() {
@@ -485,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_policy_returns_only_tighter_candidate_limits() {
+    fn platform_policy_returns_only_tighter_candidate_limits() {
         let operation = RedeemedOperation {
             operation_id: "operation-notarization".to_owned(),
             max_attestable_http_bytes: 8 << 20,
@@ -521,12 +650,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn coordinator_outage_fails_closed() {
+    async fn platform_outage_fails_closed() {
         let outbox_directory = tempfile::tempdir().unwrap();
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let address = listener.local_addr().unwrap();
         drop(listener);
-        let coordinator = AdmissionCoordinator {
+        let policy = PlatformAdmissionPolicy {
             http: reqwest::Client::builder()
                 .timeout(Duration::from_millis(250))
                 .build()
@@ -535,19 +664,19 @@ mod tests {
             service_token: Arc::from("x".repeat(32)),
             instance_id: Arc::from("notary-test"),
             registry_generation: 1,
-            usage_outbox: UsageOutbox::open(outbox_directory.path()).unwrap(),
+            usage_outbox: UsageSettlementOutbox::open(outbox_directory.path()).unwrap(),
         };
 
         assert!(matches!(
-            coordinator
+            policy
                 .redeem("opaque-ticket", NotarySessionMode::Capture)
                 .await,
-            Err(CoordinatorRejection::Unavailable(_))
+            Err(PlatformPolicyRejection::Unavailable(_))
         ));
     }
 
     #[tokio::test]
-    async fn admitted_operation_needs_no_coordinator_liveness() {
+    async fn admitted_operation_needs_no_platform_liveness() {
         let outbox_directory = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -566,15 +695,15 @@ mod tests {
             }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let coordinator = AdmissionCoordinator {
+        let policy = PlatformAdmissionPolicy {
             http: reqwest::Client::new(),
             origin: Url::parse(&format!("http://{address}/")).unwrap(),
             service_token: Arc::from("x".repeat(32)),
             instance_id: Arc::from("notary-test"),
             registry_generation: 1,
-            usage_outbox: UsageOutbox::open(outbox_directory.path()).unwrap(),
+            usage_outbox: UsageSettlementOutbox::open(outbox_directory.path()).unwrap(),
         };
-        let grant = coordinator
+        let grant = policy
             .admit(AdmissionRequest {
                 mode: NotarySessionMode::Capture,
                 admission_value: Some("opaque-ticket"),
@@ -582,12 +711,115 @@ mod tests {
             .await
             .expect("one-operation admission should be accepted");
         server.abort();
-        let lifecycle = grant.lifecycle.expect("hosted lifecycle");
+        let lifecycle = grant.lifecycle.expect("platform lifecycle");
         lifecycle.record_authenticated_bytes(321).unwrap();
         lifecycle.finish(SessionOutcome::Completed, 321).unwrap();
         assert_eq!(grant.constraints.max_total_private_chunk_bytes, Some(1024));
         assert_eq!(grant.constraints.session_timeout, None);
-        assert_eq!(coordinator.usage_outbox.ready().unwrap().len(), 1);
+        assert_eq!(policy.usage_outbox.ready().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn platform_policy_runs_through_the_shared_server_contract() {
+        let directory = tempfile::tempdir().unwrap();
+        let signing_key_file = directory.path().join("signing-key");
+        fs::write(&signing_key_file, format!("{}\n", "01".repeat(32))).unwrap();
+
+        let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let api_address = api_listener.local_addr().unwrap();
+        let api = Router::new().route(
+            "/api/internal/notary/admissions/redeem",
+            axum::routing::post(|| async {
+                axum::Json(serde_json::json!({
+                    "operation_id": "operation-shared-server",
+                    "max_attestable_http_bytes": 1024,
+                    "max_frame_bytes": 2048,
+                    "max_private_chunk_bytes": 512,
+                    "max_private_chunk_commitments": 4,
+                    "record_digest": null,
+                    "notarization_allowance_bytes": null
+                }))
+            }),
+        );
+        let api_server = tokio::spawn(async move { axum::serve(api_listener, api).await.unwrap() });
+        let policy = Arc::new(PlatformAdmissionPolicy {
+            http: reqwest::Client::new(),
+            origin: Url::parse(&format!("http://{api_address}/")).unwrap(),
+            service_token: Arc::from("x".repeat(32)),
+            instance_id: Arc::from("notary-test"),
+            registry_generation: 1,
+            usage_outbox: UsageSettlementOutbox::open(directory.path().join("outbox")).unwrap(),
+        });
+        let server_config = NotaryServerConfig::from_args(notary_server::NotaryServerServeArgs {
+            listen: "127.0.0.1:0".parse().unwrap(),
+            signing_key_file,
+            notarization_only: false,
+            allow_hosts: vec!["api.openai.com".to_owned()],
+            max_private_chunk_bytes: 1024,
+            max_total_private_chunk_bytes: 1024,
+            max_private_chunk_commitments: 4,
+            max_frame_bytes: 2048,
+            max_concurrent_captures: 1,
+            max_concurrent_notarizations: 1,
+            max_pending_connections: 1,
+            prelude_timeout_secs: 1,
+            session_timeout_secs: 1,
+            metrics_listen: None,
+            profile_sessions: false,
+        })
+        .unwrap();
+        let notary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let notary_address = notary_listener.local_addr().unwrap();
+        let (shutdown_sender, shutdown) = tokio::sync::watch::channel(false);
+        let server_policy = Arc::clone(&policy);
+        let notary_server = tokio::spawn(notary_server::serve_on_listener(
+            server_config,
+            notary_listener,
+            server_policy as Arc<dyn AdmissionPolicy>,
+            shutdown,
+        ));
+
+        let mut client = tokio::net::TcpStream::connect(notary_address)
+            .await
+            .unwrap();
+        let ticket = b"opaque-ticket";
+        client.write_all(b"NTRY\0\0\0\x01\x02").await.unwrap();
+        client
+            .write_all(&(ticket.len() as u16).to_be_bytes())
+            .await
+            .unwrap();
+        client.write_all(ticket).await.unwrap();
+        client.flush().await.unwrap();
+        let mut admission = [0; 1];
+        client.read_exact(&mut admission).await.unwrap();
+        assert_eq!(admission, [1]);
+        drop(client);
+
+        let settled = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let ready = policy.usage_outbox.ready().unwrap();
+                if !ready.is_empty() {
+                    break ready;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("shared server did not finish the platform lifecycle");
+        assert_eq!(settled[0].operation_id, "operation-shared-server");
+        assert_eq!(
+            settled[0].outcome,
+            Some(UsageSettlementOutcome::ClientFailed)
+        );
+
+        shutdown_sender.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), notary_server)
+            .await
+            .expect("shared server ignored shutdown")
+            .expect("shared server panicked")
+            .expect("shared server failed");
+        api_server.abort();
+        let _ = api_server.await;
     }
 
     #[tokio::test]
@@ -610,17 +842,17 @@ mod tests {
             }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let coordinator = AdmissionCoordinator {
+        let policy = PlatformAdmissionPolicy {
             http: reqwest::Client::new(),
             origin: Url::parse(&format!("http://{address}/")).unwrap(),
             service_token: Arc::from("x".repeat(32)),
             instance_id: Arc::from("notary-test"),
             registry_generation: 1,
-            usage_outbox: UsageOutbox::open(outbox_directory.path()).unwrap(),
+            usage_outbox: UsageSettlementOutbox::open(outbox_directory.path()).unwrap(),
         };
 
         assert!(matches!(
-            coordinator
+            policy
                 .admit(AdmissionRequest {
                     mode: NotarySessionMode::Capture,
                     admission_value: Some("opaque-ticket"),
@@ -628,7 +860,7 @@ mod tests {
                 .await,
             Err(NotaryAdmissionRejection::AdmissionServiceUnavailable)
         ));
-        let pending = coordinator.usage_outbox.ready().unwrap();
+        let pending = policy.usage_outbox.ready().unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].operation_id, "operation-invalid-limits");
         assert_eq!(
@@ -649,14 +881,14 @@ mod tests {
             authenticated_bytes: 0,
             outcome: None,
         };
-        let outbox = UsageOutbox::open(directory.path()).unwrap();
+        let outbox = UsageSettlementOutbox::open(directory.path()).unwrap();
         outbox.stage(&pending).unwrap();
         outbox
             .record_authenticated_bytes(&pending.operation_id, 321)
             .unwrap();
         drop(outbox);
 
-        let restarted = UsageOutbox::open(directory.path()).unwrap();
+        let restarted = UsageSettlementOutbox::open(directory.path()).unwrap();
         restarted.recover_after_restart().unwrap();
         assert_eq!(
             restarted.ready().unwrap(),
@@ -671,11 +903,11 @@ mod tests {
     #[test]
     fn usage_outbox_rejects_conflicting_local_reports() {
         let directory = tempfile::tempdir().unwrap();
-        let outbox = UsageOutbox::open(directory.path()).unwrap();
+        let outbox = UsageSettlementOutbox::open(directory.path()).unwrap();
         let pending = PendingUsageSettlement {
             operation_id: "operation-conflict".to_owned(),
             notary_instance_id: "notary-test".to_owned(),
-            mode: UsageMode::Finalize,
+            mode: UsageMode::Notarization,
             authenticated_bytes: 0,
             outcome: None,
         };
@@ -711,7 +943,7 @@ mod tests {
     #[tokio::test]
     async fn successful_usage_replay_removes_only_delivered_entries() {
         let directory = tempfile::tempdir().unwrap();
-        let outbox = UsageOutbox::open(directory.path()).unwrap();
+        let outbox = UsageSettlementOutbox::open(directory.path()).unwrap();
         let pending = PendingUsageSettlement {
             operation_id: "operation-delivery".to_owned(),
             notary_instance_id: "notary-test".to_owned(),
@@ -734,7 +966,7 @@ mod tests {
             axum::routing::post(|| async { reqwest::StatusCode::NO_CONTENT }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let coordinator = AdmissionCoordinator {
+        let policy = PlatformAdmissionPolicy {
             http: reqwest::Client::new(),
             origin: Url::parse(&format!("http://{address}/")).unwrap(),
             service_token: Arc::from("x".repeat(32)),
@@ -743,8 +975,8 @@ mod tests {
             usage_outbox: outbox,
         };
 
-        coordinator.replay_usage_outbox().await;
-        assert!(coordinator.usage_outbox.ready().unwrap().is_empty());
+        policy.replay_usage_outbox().await;
+        assert!(policy.usage_outbox.ready().unwrap().is_empty());
         server.abort();
         let _ = server.await;
 
@@ -752,8 +984,8 @@ mod tests {
             operation_id: "operation-retry".to_owned(),
             ..pending
         };
-        coordinator.usage_outbox.stage(&retry).unwrap();
-        coordinator
+        policy.usage_outbox.stage(&retry).unwrap();
+        policy
             .usage_outbox
             .finish(
                 &retry.operation_id,
@@ -761,14 +993,60 @@ mod tests {
                 19,
             )
             .unwrap();
-        coordinator.replay_usage_outbox().await;
-        assert_eq!(coordinator.usage_outbox.ready().unwrap().len(), 1);
+        policy.replay_usage_outbox().await;
+        assert_eq!(policy.usage_outbox.ready().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn settlement_worker_flushes_ready_usage_during_shutdown() {
+        let directory = tempfile::tempdir().unwrap();
+        let usage_outbox = UsageSettlementOutbox::open(directory.path()).unwrap();
+        let pending = PendingUsageSettlement {
+            operation_id: "operation-shutdown".to_owned(),
+            notary_instance_id: "notary-test".to_owned(),
+            mode: UsageMode::Notarization,
+            authenticated_bytes: 0,
+            outcome: None,
+        };
+        usage_outbox.stage(&pending).unwrap();
+        usage_outbox
+            .finish(&pending.operation_id, UsageSettlementOutcome::Completed, 29)
+            .unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/api/internal/notary/operations/settle",
+            axum::routing::post(|| async { reqwest::StatusCode::NO_CONTENT }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let policy = PlatformAdmissionPolicy {
+            http: reqwest::Client::new(),
+            origin: Url::parse(&format!("http://{address}/")).unwrap(),
+            service_token: Arc::from("x".repeat(32)),
+            instance_id: Arc::from("notary-test"),
+            registry_generation: 1,
+            usage_outbox,
+        };
+        let (shutdown_sender, shutdown) = tokio::sync::watch::channel(false);
+        let worker_policy = policy.clone();
+        let worker =
+            tokio::spawn(async move { worker_policy.run_usage_settlement_worker(shutdown).await });
+        shutdown_sender.send(true).unwrap();
+        tokio::time::timeout(Duration::from_secs(1), worker)
+            .await
+            .expect("settlement worker ignored shutdown")
+            .expect("settlement worker panicked")
+            .expect("settlement worker failed");
+        assert!(policy.usage_outbox.ready().unwrap().is_empty());
+        server.abort();
+        let _ = server.await;
     }
 
     #[tokio::test]
     async fn gone_operation_acknowledgement_removes_usage_entry() {
         let usage_directory = tempfile::tempdir().unwrap();
-        let usage_outbox = UsageOutbox::open(usage_directory.path()).unwrap();
+        let usage_outbox = UsageSettlementOutbox::open(usage_directory.path()).unwrap();
         let pending = PendingUsageSettlement {
             operation_id: "operation-deleted-account".to_owned(),
             notary_instance_id: "notary-test".to_owned(),
@@ -792,7 +1070,7 @@ mod tests {
             axum::routing::post(|| async { reqwest::StatusCode::GONE }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
-        let coordinator = AdmissionCoordinator {
+        let policy = PlatformAdmissionPolicy {
             http: reqwest::Client::new(),
             origin: Url::parse(&format!("http://{address}/")).unwrap(),
             service_token: Arc::from("x".repeat(32)),
@@ -801,58 +1079,58 @@ mod tests {
             usage_outbox,
         };
 
-        coordinator.replay_usage_outbox().await;
-        assert!(coordinator.usage_outbox.ready().unwrap().is_empty());
+        policy.replay_usage_outbox().await;
+        assert!(policy.usage_outbox.ready().unwrap().is_empty());
         server.abort();
         let _ = server.await;
     }
 
     #[test]
-    fn coordinator_authentication_failure_is_not_a_user_denial() {
+    fn platform_authentication_failure_is_not_a_user_denial() {
         assert!(matches!(
-            coordinator_rejection(reqwest::StatusCode::UNAUTHORIZED, None),
-            CoordinatorRejection::Unavailable(_)
+            platform_rejection(reqwest::StatusCode::UNAUTHORIZED, None),
+            PlatformPolicyRejection::Unavailable(_)
         ));
         assert!(matches!(
-            coordinator_rejection(reqwest::StatusCode::FORBIDDEN, None),
-            CoordinatorRejection::Unavailable(_)
+            platform_rejection(reqwest::StatusCode::FORBIDDEN, None),
+            PlatformPolicyRejection::Unavailable(_)
         ));
         assert!(matches!(
-            coordinator_rejection(reqwest::StatusCode::CONFLICT, None),
-            CoordinatorRejection::Denied
+            platform_rejection(reqwest::StatusCode::CONFLICT, None),
+            PlatformPolicyRejection::Denied
         ));
         assert!(matches!(
-            coordinator_rejection(reqwest::StatusCode::GONE, Some("admission_ticket_expired"),),
-            CoordinatorRejection::Expired
+            platform_rejection(reqwest::StatusCode::GONE, Some("admission_ticket_expired"),),
+            PlatformPolicyRejection::Expired
         ));
         assert!(matches!(
-            coordinator_rejection(reqwest::StatusCode::GONE, None),
-            CoordinatorRejection::Denied
+            platform_rejection(reqwest::StatusCode::GONE, None),
+            PlatformPolicyRejection::Denied
         ));
         assert!(matches!(
-            coordinator_rejection(reqwest::StatusCode::TOO_MANY_REQUESTS, None),
-            CoordinatorRejection::Capacity
+            platform_rejection(reqwest::StatusCode::TOO_MANY_REQUESTS, None),
+            PlatformPolicyRejection::Capacity
         ));
         assert!(matches!(
-            coordinator_rejection(
+            platform_rejection(
                 reqwest::StatusCode::TOO_MANY_REQUESTS,
                 Some("service_capacity"),
             ),
-            CoordinatorRejection::Capacity
+            PlatformPolicyRejection::Capacity
         ));
         assert!(matches!(
-            coordinator_rejection(
+            platform_rejection(
                 reqwest::StatusCode::PAYMENT_REQUIRED,
                 Some("capture_credits_exhausted"),
             ),
-            CoordinatorRejection::CaptureAllowanceExhausted
+            PlatformPolicyRejection::CaptureAllowanceExhausted
         ));
         assert!(matches!(
-            coordinator_rejection(
+            platform_rejection(
                 reqwest::StatusCode::PAYMENT_REQUIRED,
                 Some("notarization_credits_exhausted"),
             ),
-            CoordinatorRejection::NotarizationAllowanceExhausted
+            PlatformPolicyRejection::NotarizationAllowanceExhausted
         ));
     }
 }

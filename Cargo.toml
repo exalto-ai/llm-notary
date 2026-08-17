@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "platform/crates/notary-api",
-    "platform/crates/llm-notary-hosted-server",
+    "platform/crates/notary-server-platform-adapter",
     "js/desktop/src-tauri",
 ]
 exclude = ["runtime"]

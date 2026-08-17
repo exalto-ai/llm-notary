@@ -1,6 +1,6 @@
 # Run a clustered daemon
 
-Cluster mode runs interchangeable `notaryd` replicas with PostgreSQL metadata, S3-compatible private artifacts, one shared vault key, and an explicit remote notary endpoint/key. It does not require an account, credit coordinator, or hosted API credential.
+Cluster mode runs interchangeable `notaryd` replicas with PostgreSQL metadata, S3-compatible private artifacts, one shared vault key, and an explicit remote notary endpoint/key. It does not require a hosted account or API credential.
 
 The reference Compose deployment runs two daemon replicas plus PostgreSQL and MinIO. Your ingress owns TLS and exposes separate provider and administration origins.
 

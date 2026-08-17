@@ -100,21 +100,23 @@ services:
     restart: unless-stopped
 
   notary:
-    image: ${NOTARY_IMAGE:-llm-notary-server:local}
+    image: ${NOTARY_IMAGE:-notary-server:local}
     build:
       context: .
       dockerfile: Dockerfile
       target: notary
     environment:
-      NOTARY_SIGNING_KEY_FILE: /run/secrets/notary_signing_key
-      LLM_NOTARY_NOTARY_PUBLIC_KEY: ${LLM_NOTARY_NOTARY_PUBLIC_KEY:?Set LLM_NOTARY_NOTARY_PUBLIC_KEY to the notary SEC1 public key}
-      LLM_NOTARY_ADMISSION_API_ORIGIN: http://notary-api:8080
-      LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE: /run/secrets/admission_service_token
-      LLM_NOTARY_REGISTRY_GENERATION: ${LLM_NOTARY_REGISTRY_GENERATION:-1}
-      LLM_NOTARY_INSTANCE_ID: ${LLM_NOTARY_INSTANCE_ID:-notary-compose-1}
-      LLM_NOTARY_USAGE_OUTBOX_DIR: /var/lib/llm-notary/usage-outbox
+      NOTARY_SERVER_LISTEN: 0.0.0.0:7047
+      NOTARY_SERVER_SIGNING_KEY_FILE: /run/secrets/notary_signing_key
+      NOTARY_SERVER_ALLOW_HOSTS: api.openai.com,chatgpt.com,api.anthropic.com,api.deepseek.com,openrouter.ai
+      NOTARY_SERVER_PUBLIC_KEY: ${NOTARY_SERVER_PUBLIC_KEY:?Set NOTARY_SERVER_PUBLIC_KEY to the notary SEC1 public key}
+      NOTARY_SERVER_PLATFORM_API_ORIGIN: http://notary-api:8080
+      NOTARY_SERVER_PLATFORM_SERVICE_TOKEN_FILE: /run/secrets/admission_service_token
+      NOTARY_SERVER_REGISTRY_GENERATION: ${NOTARY_SERVER_REGISTRY_GENERATION:-1}
+      NOTARY_SERVER_INSTANCE_ID: ${NOTARY_SERVER_INSTANCE_ID:-notary-compose-1}
+      NOTARY_SERVER_USAGE_OUTBOX_DIR: /var/lib/notary-server/usage-outbox
       # Internal-only scrape endpoint. Do not publish it through the gateway.
-      LLM_NOTARY_METRICS_LISTEN: 0.0.0.0:9090
+      NOTARY_SERVER_METRICS_LISTEN: 0.0.0.0:9090
     ports:
       - "${NOTARY_PORT:-7047}:7047"
     mem_limit: 1g
@@ -125,7 +127,7 @@ services:
         target: admission_service_token
     read_only: true
     volumes:
-      - notary_data:/var/lib/llm-notary
+      - notary_data:/var/lib/notary-server
     tmpfs:
       - /tmp
     security_opt:
@@ -134,7 +136,7 @@ services:
       - ALL
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "test \"$(llm-notary-server --signing-key /run/secrets/notary_signing_key --print-public-key)\" = \"$${LLM_NOTARY_NOTARY_PUBLIC_KEY}\""]
+      test: ["CMD-SHELL", "test \"$(notary-server public-key --signing-key-file /run/secrets/notary_signing_key)\" = \"$${NOTARY_SERVER_PUBLIC_KEY}\""]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -150,7 +152,7 @@ services:
 
 secrets:
   notary_signing_key:
-    file: ${NOTARY_SIGNING_KEY_FILE:?Set NOTARY_SIGNING_KEY_FILE to the host signing-key path}
+    file: ${NOTARY_SERVER_SIGNING_KEY_FILE:?Set NOTARY_SERVER_SIGNING_KEY_FILE to the host signing-key path}
   admission_service_token:
     file: ${NOTARY_API_ADMISSION_SERVICE_TOKEN_FILE:?Set NOTARY_API_ADMISSION_SERVICE_TOKEN_FILE to the shared notary-api/notary-server admission service-token path}
   anonymous_subject_hmac_key:

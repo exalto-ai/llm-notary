@@ -136,14 +136,14 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo fmt --manifest-path runtime/Cargo.toml --check -p notary-core -p notaryd -p llm-notary-cli -p llm-notary-updater -p llm-notary-server
+      - run: cargo fmt --manifest-path runtime/Cargo.toml --check -p notary-core -p notaryd -p llm-notary-cli -p llm-notary-updater -p notary-server
       - run: runtime/tooling/check-boundary.sh
       - run: python3 -m unittest runtime/tooling/test_check_boundary.py
       - name: Install native build tools
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends build-essential
-      - run: cargo clippy -p notary-api -p llm-notary-hosted-server --all-targets --all-features -- -D warnings
+      - run: cargo clippy -p notary-api -p notary-server-platform-adapter --all-targets --all-features -- -D warnings
       - run: cargo clippy --manifest-path runtime/Cargo.toml --workspace --all-targets --all-features -- -D warnings
-      - run: cargo test -p notary-api -p llm-notary-hosted-server --all-targets --all-features
+      - run: cargo test -p notary-api -p notary-server-platform-adapter --all-targets --all-features
       - run: cargo test --manifest-path runtime/Cargo.toml --workspace --all-targets --all-features
 
   postgres-integration:
@@ -309,13 +309,13 @@ jobs:
           printf '%s\n' '{}' > "$RUNNER_TEMP/notary-registry.json"
           printf '%s\n' 'google-ci-secret' > "$RUNNER_TEMP/google-oauth-secret"
           printf '%s\n' 'github-ci-secret' > "$RUNNER_TEMP/github-oauth-secret"
-          NOTARY_SIGNING_KEY_FILE="$RUNNER_TEMP/notary-signing-key" \
+          NOTARY_SERVER_SIGNING_KEY_FILE="$RUNNER_TEMP/notary-signing-key" \
             NOTARY_API_ADMISSION_SERVICE_TOKEN_FILE="$RUNNER_TEMP/admission-service-token" \
             NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_FILE="$RUNNER_TEMP/anonymous-subject-hmac-key" \
             NOTARY_API_REGISTRY_FILE="$RUNNER_TEMP/notary-registry.json" \
             NOTARY_API_GOOGLE_CLIENT_SECRET_FILE="$RUNNER_TEMP/google-oauth-secret" \
             NOTARY_API_GITHUB_CLIENT_SECRET_FILE="$RUNNER_TEMP/github-oauth-secret" \
-            LLM_NOTARY_NOTARY_PUBLIC_KEY=0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 \
+            NOTARY_SERVER_PUBLIC_KEY=0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798 \
             CLOUDFLARE_TUNNEL_TOKEN=ci-placeholder \
             NOTARY_API_GITHUB_CLIENT_ID=ci-placeholder \
             NOTARY_API_GOOGLE_CLIENT_ID=ci-placeholder \

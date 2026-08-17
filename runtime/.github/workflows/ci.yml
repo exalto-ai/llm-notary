@@ -22,7 +22,7 @@ jobs:
             echo 'llm-notary-cli depends on a daemon, protocol, or storage package' >&2
             exit 1
           fi
-      - run: cargo fmt --check -p notary-core -p notaryd -p llm-notary-cli -p llm-notary-updater -p llm-notary-server
+      - run: cargo fmt --check -p notary-core -p notaryd -p llm-notary-cli -p llm-notary-updater -p notary-server
       - run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --locked --workspace --all-targets --all-features
 

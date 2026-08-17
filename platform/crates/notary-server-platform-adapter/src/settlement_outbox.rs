@@ -13,7 +13,7 @@ use notary_core::NotarySessionMode;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
-pub(super) struct UsageOutbox {
+pub(super) struct UsageSettlementOutbox {
     pub(super) directory: Arc<PathBuf>,
     write_lock: Arc<Mutex<()>>,
     next_temp_id: Arc<AtomicU64>,
@@ -23,14 +23,14 @@ pub(super) struct UsageOutbox {
 #[serde(rename_all = "snake_case")]
 pub(super) enum UsageMode {
     Capture,
-    Finalize,
+    Notarization,
 }
 
 impl UsageMode {
     pub(super) fn for_session(mode: NotarySessionMode) -> Self {
         match mode {
             NotarySessionMode::Capture => Self::Capture,
-            NotarySessionMode::Notarization => Self::Finalize,
+            NotarySessionMode::Notarization => Self::Notarization,
         }
     }
 }
@@ -63,7 +63,7 @@ fn sync_directory(_directory: &Path) -> Result<()> {
     Ok(())
 }
 
-impl UsageOutbox {
+impl UsageSettlementOutbox {
     pub(super) fn open(directory: impl Into<PathBuf>) -> Result<Self> {
         let directory = directory.into();
         if directory.as_os_str().is_empty() {

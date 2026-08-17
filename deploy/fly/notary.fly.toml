@@ -8,16 +8,21 @@ kill_timeout = "30s"
   build-target = "notary"
 
 [env]
-  LLM_NOTARY_METRICS_LISTEN = "0.0.0.0:9090"
-  LLM_NOTARY_ADMISSION_API_ORIGIN = "http://llm-notary-prod-api.flycast"
-  LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE = "/run/secrets/admission_service_token"
-  LLM_NOTARY_REGISTRY_GENERATION = "4"
-  LLM_NOTARY_USAGE_OUTBOX_DIR = "/data/usage-outbox"
+  NOTARY_SERVER_LISTEN = "0.0.0.0:7047"
+  NOTARY_SERVER_SIGNING_KEY_FILE = "/run/secrets/notary_signing_key"
+  NOTARY_SERVER_ALLOW_HOSTS = "api.openai.com,chatgpt.com,api.anthropic.com,api.deepseek.com,openrouter.ai"
+  NOTARY_SERVER_METRICS_LISTEN = "0.0.0.0:9090"
+  NOTARY_SERVER_PROFILE_SESSIONS = "true"
+  NOTARY_SERVER_PLATFORM_API_ORIGIN = "http://llm-notary-prod-api.flycast"
+  NOTARY_SERVER_PLATFORM_SERVICE_TOKEN_FILE = "/run/secrets/admission_service_token"
+  NOTARY_SERVER_REGISTRY_GENERATION = "4"
+  NOTARY_SERVER_INSTANCE_ID = "alice-production"
+  NOTARY_SERVER_USAGE_OUTBOX_DIR = "/data/usage-outbox"
 
 [processes]
 # This emits operational resource measurements only; it never logs transcripts,
 # headers, credentials, or bundle paths.
-app = "--profile-sessions"
+app = "serve"
 
 [[mounts]]
   source = "notary_data"
@@ -52,7 +57,7 @@ app = "--profile-sessions"
 
 [[files]]
   guest_path = "/run/secrets/notary_signing_key"
-  secret_name = "NOTARY_SIGNING_KEY_B64"
+  secret_name = "NOTARY_SERVER_SIGNING_KEY_B64"
 
 [[files]]
   guest_path = "/run/secrets/admission_service_token"
