@@ -889,7 +889,7 @@ mod tests {
 
     #[test]
     fn hosted_registry_response_is_the_canonical_runtime_contract() {
-        let response = registry::RegistryResponse::from(directory_key());
+        let response = registry::RegistryResponse::from(test_registry());
         let encoded = serde_json::to_vec(&response).unwrap();
         let registry = parse_registry(&encoded).unwrap();
 

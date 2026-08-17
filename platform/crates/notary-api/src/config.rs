@@ -45,7 +45,7 @@ pub struct StripeConfig {
     pub(crate) livemode: bool,
 }
 
-/// Admission coordinator authentication and effective hosted-service policy.
+/// Notary admission authentication and effective hosted-service policy.
 #[derive(Clone)]
 pub struct NotaryAdmissionConfig {
     pub service_token: String,
