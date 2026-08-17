@@ -11,7 +11,7 @@
 			# configured internal port (8080). Do not target that internal port
 			# directly from another Fly app.
 			reverse_proxy http://llm-notary-prod-api.flycast {
-				header_up X-LLM-Notary-Client-IP {http.request.header.Fly-Client-IP}
+				header_up X-Notary-Client-IP {http.request.header.Fly-Client-IP}
 				lb_try_duration 8s
 				lb_try_interval 250ms
 			}

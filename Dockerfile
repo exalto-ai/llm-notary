@@ -10,7 +10,7 @@ RUN cargo build --locked --release \
     -p llm-notary-hosted-server --bin llm-notary-hosted-server \
     -p notary-api --bin notary-api
 
-FROM debian:bookworm-slim AS api
+FROM debian:bookworm-slim AS notary-api
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \

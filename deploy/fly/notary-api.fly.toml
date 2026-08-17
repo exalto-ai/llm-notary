@@ -5,7 +5,7 @@ kill_timeout = "30s"
 
 [build]
   dockerfile = "../../Dockerfile"
-  build-target = "api"
+  build-target = "notary-api"
 
 [deploy]
   # Run the SQLx baseline / future migrations once before replacing API

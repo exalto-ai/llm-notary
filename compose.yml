@@ -3,11 +3,11 @@ services:
     # The API image includes the SQLx migrator. Run it to completion before
     # starting or replacing API replicas so a fresh deployment cannot serve
     # database-backed routes against an unmigrated schema.
-    image: ${API_IMAGE:-notary-api:local}
+    image: ${NOTARY_API_IMAGE:-notary-api:local}
     build:
       context: .
       dockerfile: Dockerfile
-      target: api
+      target: notary-api
     command: ["notary-api", "migrate"]
     environment:
       NOTARY_API_MIGRATION_DATABASE_URL: ${NOTARY_API_MIGRATION_DATABASE_URL:?Set NOTARY_API_MIGRATION_DATABASE_URL to the direct PostgreSQL connection URL used only for migrations}
@@ -20,12 +20,12 @@ services:
       - ALL
     restart: "no"
 
-  api:
-    image: ${API_IMAGE:-notary-api:local}
+  notary-api:
+    image: ${NOTARY_API_IMAGE:-notary-api:local}
     build:
       context: .
       dockerfile: Dockerfile
-      target: api
+      target: notary-api
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -91,7 +91,7 @@ services:
     # Pinned so normal application deployments never replace the tunnel origin.
     image: caddy@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     depends_on:
-      - api
+      - notary-api
       - site
     ports:
       - "127.0.0.1:${WEB_HTTP_PORT:-80}:80"
@@ -108,7 +108,7 @@ services:
     environment:
       NOTARY_SIGNING_KEY_FILE: /run/secrets/notary_signing_key
       LLM_NOTARY_NOTARY_PUBLIC_KEY: ${LLM_NOTARY_NOTARY_PUBLIC_KEY:?Set LLM_NOTARY_NOTARY_PUBLIC_KEY to the notary SEC1 public key}
-      LLM_NOTARY_ADMISSION_API_ORIGIN: http://api:8080
+      LLM_NOTARY_ADMISSION_API_ORIGIN: http://notary-api:8080
       LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE: /run/secrets/admission_service_token
       LLM_NOTARY_REGISTRY_GENERATION: ${LLM_NOTARY_REGISTRY_GENERATION:-1}
       LLM_NOTARY_INSTANCE_ID: ${LLM_NOTARY_INSTANCE_ID:-notary-compose-1}
@@ -152,9 +152,9 @@ secrets:
   notary_signing_key:
     file: ${NOTARY_SIGNING_KEY_FILE:?Set NOTARY_SIGNING_KEY_FILE to the host signing-key path}
   admission_service_token:
-    file: ${ADMISSION_SERVICE_TOKEN_FILE:?Set ADMISSION_SERVICE_TOKEN_FILE to the shared API/notary admission service-token path}
+    file: ${NOTARY_API_ADMISSION_SERVICE_TOKEN_FILE:?Set NOTARY_API_ADMISSION_SERVICE_TOKEN_FILE to the shared notary-api/notary-server admission service-token path}
   anonymous_subject_hmac_key:
-    file: ${ANONYMOUS_SUBJECT_HMAC_KEY_FILE:?Set ANONYMOUS_SUBJECT_HMAC_KEY_FILE to the API anonymous-subject HMAC key path}
+    file: ${NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_FILE:?Set NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_FILE to the notary-api anonymous-subject HMAC key path}
   notary_registry:
     file: ${NOTARY_API_REGISTRY_FILE:?Set NOTARY_API_REGISTRY_FILE to the canonical Registry JSON path}
   google_oauth_client_secret:

@@ -308,8 +308,8 @@ jobs:
           printf '%s\n' 'google-ci-secret' > "$RUNNER_TEMP/google-oauth-secret"
           printf '%s\n' 'github-ci-secret' > "$RUNNER_TEMP/github-oauth-secret"
           NOTARY_SIGNING_KEY_FILE="$RUNNER_TEMP/notary-signing-key" \
-            ADMISSION_SERVICE_TOKEN_FILE="$RUNNER_TEMP/admission-service-token" \
-            ANONYMOUS_SUBJECT_HMAC_KEY_FILE="$RUNNER_TEMP/anonymous-subject-hmac-key" \
+            NOTARY_API_ADMISSION_SERVICE_TOKEN_FILE="$RUNNER_TEMP/admission-service-token" \
+            NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_FILE="$RUNNER_TEMP/anonymous-subject-hmac-key" \
             NOTARY_API_REGISTRY_FILE="$RUNNER_TEMP/notary-registry.json" \
             NOTARY_API_GOOGLE_CLIENT_SECRET_FILE="$RUNNER_TEMP/google-oauth-secret" \
             NOTARY_API_GITHUB_CLIENT_SECRET_FILE="$RUNNER_TEMP/github-oauth-secret" \

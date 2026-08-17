@@ -234,19 +234,19 @@ Normal production changes must go through CI:
 ```bash
 label="manual-$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)"
 fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary.fly.toml
-fly deploy --build-only --push --image-label "$label" -c deploy/fly/api.fly.toml
+fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary-api.fly.toml
 fly deploy js/app --build-only --push --image-label "$label" \
   -c "$PWD/deploy/fly/web.fly.toml"
 
 fly auth docker
-api_image="registry.fly.io/llm-notary-prod-api@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-api:$label")"
+notary_api_image="registry.fly.io/llm-notary-prod-api@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-api:$label")"
 notary_image="registry.fly.io/llm-notary-prod-notary@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-notary:$label")"
 web_image="registry.fly.io/llm-notary-prod-web@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-web:$label")"
 
 fly deploy --image "$notary_image" \
   --ha=false -c deploy/fly/notary.fly.toml
-fly deploy --image "$api_image" \
-  --ha=true -c deploy/fly/api.fly.toml
+fly deploy --image "$notary_api_image" \
+  --ha=true -c deploy/fly/notary-api.fly.toml
 fly deploy js/app --image "$web_image" \
   --ha=false -c "$PWD/deploy/fly/web.fly.toml"
 ```
@@ -290,15 +290,15 @@ With that token in `FLY_METRICS_TOKEN`, query
 sum(rate(fly_edge_http_responses_count{app="llm-notary-prod-web"}[5m])) by (status)
 
 # p95 API handler latency by route (application time, excluding Fly routing).
-histogram_quantile(0.95, sum(rate(llm_notary_http_request_duration_seconds_bucket{app="llm-notary-prod-api"}[5m])) by (le, route))
+histogram_quantile(0.95, sum(rate(notary_api_http_request_duration_seconds_bucket{app="llm-notary-prod-api"}[5m])) by (le, route))
 
 # Admission backlog and age of its oldest item.
-max(llm_notary_admission_queue_depth{app="llm-notary-prod-api"})
-max(llm_notary_admission_oldest_queued_seconds{app="llm-notary-prod-api"})
+max(notary_api_trace_verification_queue_depth{app="llm-notary-prod-api"})
+max(notary_api_trace_verification_oldest_queued_seconds{app="llm-notary-prod-api"})
 
 # Admission outcomes and p95 verification time.
-sum(increase(llm_notary_admission_jobs_total{app="llm-notary-prod-api"}[1h])) by (outcome)
-histogram_quantile(0.95, sum(rate(llm_notary_admission_duration_seconds_bucket{app="llm-notary-prod-api"}[15m])) by (le, outcome))
+sum(increase(notary_api_trace_verifications_total{app="llm-notary-prod-api"}[1h])) by (outcome)
+histogram_quantile(0.95, sum(rate(notary_api_trace_verification_duration_seconds_bucket{app="llm-notary-prod-api"}[15m])) by (le, outcome))
 
 # Raw TCP demand plus active notary protocol sessions.
 sum(increase(fly_edge_tcp_connects_count{app="llm-notary-prod-notary"}[5m]))
