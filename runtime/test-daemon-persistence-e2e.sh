@@ -552,13 +552,19 @@ if [[ $metadata_engine == sqlite ]]; then
 PRAGMA foreign_keys = ON;
 BEGIN IMMEDIATE;
 INSERT INTO traces (
-    trace_id, created_at_unix_ms, provider, operation, requested_model,
-    streaming, request_bytes, prompt_preview, prompt_preview_truncated,
-    config_fingerprint, capture_status, notarization_status
+    trace_id, created_at_unix_ms, completed_at_unix_ms, provider, operation,
+    requested_model, response_model, http_status, streaming, request_bytes,
+    response_bytes, duration_ms, prompt_preview, prompt_preview_truncated,
+    output_preview, output_preview_truncated, config_fingerprint,
+    capture_status, notarization_status, expected_artifact_size_bytes,
+    expected_artifact_sha256
 ) VALUES (
-    'trc-e2e-recovered', 1700000000000, 'openai', '/v1/responses', 'fixture-model',
-    0, 41, 'offline recovery fixture', 0,
-    'sha256:offline-fixture', 'capturing', 'not_requested'
+    'trc-e2e-recovered', 1700000000000, 1700000000005, 'openai', '/v1/responses',
+    'fixture-model', 'fixture-model', 200, 0, 41,
+    29, 5, 'offline recovery fixture', 0,
+    'offline recovered fixture', 0, 'sha256:offline-fixture',
+    'capturing', 'not_requested', 29,
+    '43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d'
 );
 INSERT INTO traces (
     trace_id, created_at_unix_ms, completed_at_unix_ms, provider, operation,
@@ -591,13 +597,19 @@ else
   postgres_psql >/dev/null <<SQL
 BEGIN;
 INSERT INTO notaryd.traces (
-    trace_id, created_at_unix_ms, provider, operation, requested_model,
-    streaming, request_bytes, prompt_preview, prompt_preview_truncated,
-    config_fingerprint, capture_status, notarization_status
+    trace_id, created_at_unix_ms, completed_at_unix_ms, provider, operation,
+    requested_model, response_model, http_status, streaming, request_bytes,
+    response_bytes, duration_ms, prompt_preview, prompt_preview_truncated,
+    output_preview, output_preview_truncated, config_fingerprint,
+    capture_status, notarization_status, expected_artifact_size_bytes,
+    expected_artifact_sha256
 ) VALUES (
-    'trc-e2e-recovered', 1700000000000, 'openai', '/v1/responses', 'fixture-model',
-    FALSE, 41, 'offline recovery fixture', FALSE,
-    'sha256:offline-fixture', 'capturing', 'not_requested'
+    'trc-e2e-recovered', 1700000000000, 1700000000005, 'openai', '/v1/responses',
+    'fixture-model', 'fixture-model', 200, FALSE, 41,
+    29, 5, 'offline recovery fixture', FALSE,
+    'offline recovered fixture', FALSE, 'sha256:offline-fixture',
+    'capturing', 'not_requested', 29,
+    '43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d'
 );
 INSERT INTO notaryd.traces (
     trace_id, created_at_unix_ms, completed_at_unix_ms, provider, operation,

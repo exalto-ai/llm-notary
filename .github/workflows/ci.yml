@@ -327,7 +327,7 @@ jobs:
         run: |
           set -euo pipefail
           state="$RUNNER_TEMP/llm-notary-cluster"
-          LLM_NOTARY_CLUSTER_STATE_DIR="$state" \
+          NOTARYD_CLUSTER_STATE_DIR="$state" \
             runtime/llm-notary-cluster.sh init \
               proxy.example.com admin.example.com \
               tls://notary.example.com:7047 \
@@ -344,7 +344,7 @@ jobs:
           ' <<<"$rendered" >/dev/null
           test "$(wc -c < "$state/secrets/cluster-vault.key")" -eq 32
           test ! -e "$state/secrets/vault-passphrase"
-          if LLM_NOTARY_CLUSTER_STATE_DIR="$state" \
+          if NOTARYD_CLUSTER_STATE_DIR="$state" \
             runtime/llm-notary-cluster.sh init \
               proxy.example.com admin.example.com \
               tls://notary.example.com:7047 \

@@ -29,14 +29,16 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return
-        if self.path == "/api/notary":
+        if self.path == "/api/registry":
             self.respond_json(
                 {
-                    "format": "llm-notary/notary-directory/v3",
+                    "format": "notary/registry/v1",
                     "generation": 1,
                     "active_key_id": KEY_ID,
                     "notaries": [
                         {
+                            "name": "Alice",
+                            "operator": "Exalto",
                             "host": "notary",
                             "port": 7047,
                             "transport": "tcp",
@@ -63,7 +65,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/api/shares":
             request = json.loads(self.read_body())
-            if request.get("archive_format") != "llmnotary.trace-package-archive/v2":
+            if request.get("archive_format") != "notary/trace-package/v1":
                 self.send_error(400)
                 return
             type(self).expected_size = int(request["size_bytes"])

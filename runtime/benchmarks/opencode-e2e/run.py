@@ -534,7 +534,7 @@ class Canary:
         private_write(self.root / "private" / "platform-api-key", self.platform_key)
         try:
             self.daemon = subprocess.Popen(
-                [self.arguments.llm_notaryd, "--config", str(self.config)],
+                [self.arguments.notaryd, "--config", str(self.config)],
                 env=self.environment,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,

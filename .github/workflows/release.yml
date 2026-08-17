@@ -81,10 +81,10 @@ jobs:
         with:
           key: cli-${{ matrix.target }}
       - name: Build release binaries
-        run: cargo build --manifest-path runtime/Cargo.toml --target-dir target --locked --release --target ${{ matrix.target }} -p llm-notary-cli --bin llm-notary -p llm-notary-daemon --bin llm-notaryd
+        run: cargo build --manifest-path runtime/Cargo.toml --target-dir target --locked --release --target ${{ matrix.target }} -p llm-notary-cli --bin llm-notary -p notaryd --bin notaryd
       - name: Exercise Windows trust-store replacement
         if: runner.os == 'Windows'
-        run: cargo test --manifest-path runtime/Cargo.toml --target-dir target --locked --release --target ${{ matrix.target }} -p llm-notary-daemon cli::notary::tests::write_store_atomically_replaces_an_existing_file
+        run: cargo test --manifest-path runtime/Cargo.toml --target-dir target --locked --release --target ${{ matrix.target }} -p notaryd service::registry::tests::write_store_atomically_replaces_an_existing_file
       - name: Package archive
         shell: bash
         env:
@@ -100,9 +100,9 @@ jobs:
           suffix=""
           if [[ "$TARGET" == *windows* ]]; then suffix=".exe"; fi
           cp "target/$TARGET/release/llm-notary${suffix}" "$folder/"
-          cp "target/$TARGET/release/llm-notaryd${suffix}" "$folder/"
+          cp "target/$TARGET/release/notaryd${suffix}" "$folder/"
           "target/$TARGET/release/llm-notary${suffix}" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
-          "target/$TARGET/release/llm-notaryd${suffix}" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
+          "target/$TARGET/release/notaryd${suffix}" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
           cp runtime/LICENSE-APACHE runtime/LICENSE-MIT runtime/THIRD-PARTY-NOTICES.md "$folder/"
           if [[ "$ARCHIVE" == "zip" ]]; then
             archive="${folder}.zip"
@@ -119,13 +119,13 @@ jobs:
           mkdir release
           mv "$archive" "${archive}.sha256" release/
           cp "target/$TARGET/release/llm-notary${suffix}" "release/llm-notary-${ASSET}${suffix}"
-          cp "target/$TARGET/release/llm-notaryd${suffix}" "release/llm-notaryd-${ASSET}${suffix}"
+          cp "target/$TARGET/release/notaryd${suffix}" "release/notaryd-${ASSET}${suffix}"
           if command -v sha256sum >/dev/null; then
             (cd release && sha256sum "llm-notary-${ASSET}${suffix}" > "llm-notary-${ASSET}${suffix}.sha256")
-            (cd release && sha256sum "llm-notaryd-${ASSET}${suffix}" > "llm-notaryd-${ASSET}${suffix}.sha256")
+            (cd release && sha256sum "notaryd-${ASSET}${suffix}" > "notaryd-${ASSET}${suffix}.sha256")
           else
             (cd release && shasum -a 256 "llm-notary-${ASSET}${suffix}" > "llm-notary-${ASSET}${suffix}.sha256")
-            (cd release && shasum -a 256 "llm-notaryd-${ASSET}${suffix}" > "llm-notaryd-${ASSET}${suffix}.sha256")
+            (cd release && shasum -a 256 "notaryd-${ASSET}${suffix}" > "notaryd-${ASSET}${suffix}.sha256")
           fi
       - uses: actions/upload-artifact@v7
         with:
@@ -294,13 +294,13 @@ jobs:
             "LLM-Notary-macos-arm64.dmg" \
             "LLM-Notary-macos-arm64.app.tar.gz" \
             "llm-notary-linux-x86_64" \
-            "llm-notaryd-linux-x86_64" \
+            "notaryd-linux-x86_64" \
             "llm-notary-linux-aarch64" \
-            "llm-notaryd-linux-aarch64" \
+            "notaryd-linux-aarch64" \
             "llm-notary-darwin-aarch64" \
-            "llm-notaryd-darwin-aarch64" \
+            "notaryd-darwin-aarch64" \
             "llm-notary-windows-x86_64.exe" \
-            "llm-notaryd-windows-x86_64.exe" \
+            "notaryd-windows-x86_64.exe" \
             "release.json"; do
             test -f "release/$asset"
             test -f "release/$asset.sha256"
@@ -339,7 +339,7 @@ jobs:
               *.sha256) content_type='text/plain; charset=utf-8' ;;
               *.sig) content_type='text/plain; charset=utf-8' ;;
               *.json) content_type='application/json; charset=utf-8' ;;
-              llm-notary-*|llm-notaryd-*) content_type=application/octet-stream ;;
+              llm-notary-*|notaryd-*) content_type=application/octet-stream ;;
               *) echo "unexpected release file: $name" >&2; exit 1 ;;
             esac
             uploaded=false

@@ -1,7 +1,9 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import notify
 import run
@@ -71,6 +73,12 @@ class EventParsingTests(unittest.TestCase):
 
 
 class GateAndClassificationTests(unittest.TestCase):
+    def test_parser_exposes_the_canonical_notaryd_option(self) -> None:
+        with patch.object(sys, "argv", ["run.py", "--notaryd", "/tmp/notaryd"]):
+            arguments = run.parse_arguments()
+        self.assertEqual(arguments.notaryd, "/tmp/notaryd")
+        self.assertFalse(hasattr(arguments, "llm_notaryd"))
+
     def test_canary_publications_are_listed(self) -> None:
         self.assertEqual(run.SHARE_VISIBILITY, "listed")
 

@@ -56,7 +56,7 @@ jobs:
           set -euo pipefail
           docker compose -f compose.daemon-e2e.yml config --quiet
           state="$RUNNER_TEMP/llm-notary-cluster"
-          LLM_NOTARY_CLUSTER_STATE_DIR="$state" \
+          NOTARYD_CLUSTER_STATE_DIR="$state" \
             ./llm-notary-cluster.sh init \
               proxy.example.com admin.example.com \
               tls://notary.example.com:7047 \
@@ -64,7 +64,7 @@ jobs:
               >/dev/null
           docker compose --env-file "$state/.env" -f compose.cluster.yml config --quiet
           test "$(wc -c < "$state/secrets/cluster-vault.key")" -eq 32
-          if LLM_NOTARY_CLUSTER_STATE_DIR="$state" \
+          if NOTARYD_CLUSTER_STATE_DIR="$state" \
             ./llm-notary-cluster.sh init \
               proxy.example.com admin.example.com \
               tls://notary.example.com:7047 \
