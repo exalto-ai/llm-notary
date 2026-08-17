@@ -58,12 +58,20 @@ struct RedeemRequest<'a> {
 #[derive(Deserialize)]
 struct RedeemedOperation {
     operation_id: String,
+    activation_deadline: i64,
     max_attestable_http_bytes: i64,
     max_frame_bytes: i64,
     max_private_chunk_bytes: i64,
     max_private_chunk_commitments: i64,
     record_digest: Option<String>,
     notarization_allowance_bytes: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct ActivateOperationRequest<'a> {
+    operation_id: &'a str,
+    notary_instance_id: &'a str,
+    mode: &'static str,
 }
 
 #[derive(Serialize)]
@@ -152,7 +160,7 @@ impl PlatformAdmissionPolicy {
                 notary_instance_id: self.instance_id.as_ref(),
                 mode: session_mode_label(mode),
                 registry_generation: self.registry_generation,
-                contract: "one_operation_v1",
+                contract: "one_operation_v2",
                 usage_settlement: true,
             })
             .send()
@@ -172,6 +180,26 @@ impl PlatformAdmissionPolicy {
                 Err(platform_rejection(status, error_code.as_deref()))
             }
         }
+    }
+
+    async fn activate(&self, operation_id: &str, mode: NotarySessionMode) -> Result<()> {
+        let url = self.endpoint("/api/internal/notary/operations/activate")?;
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(self.service_token.as_ref())
+            .json(&ActivateOperationRequest {
+                operation_id,
+                notary_instance_id: self.instance_id.as_ref(),
+                mode: session_mode_label(mode),
+            })
+            .send()
+            .await
+            .context("activating admitted operation")?;
+        if response.status() != reqwest::StatusCode::NO_CONTENT {
+            bail!("operation activation API returned {}", response.status());
+        }
+        Ok(())
     }
 }
 
@@ -440,6 +468,21 @@ impl AdmissionPolicy for PlatformAdmissionPolicy {
                 return Err(NotaryAdmissionRejection::AdmissionServiceUnavailable);
             }
         };
+        if let Err(error) = self.activate(&operation.operation_id, request.mode).await {
+            tracing::error!(%error, "activating admitted operation failed");
+            if self
+                .usage_outbox
+                .finish(
+                    &operation.operation_id,
+                    UsageSettlementOutcome::ServiceFailed,
+                    0,
+                )
+                .is_err()
+            {
+                tracing::error!("recording unactivated operation for settlement failed");
+            }
+            return Err(NotaryAdmissionRejection::AdmissionServiceUnavailable);
+        }
         Ok(AdmissionGrant {
             constraints,
             lifecycle: Some(Arc::new(PlatformSessionLifecycle {
@@ -560,6 +603,9 @@ fn operation_constraints(
     mode: NotarySessionMode,
     operation: &RedeemedOperation,
 ) -> Result<AdmissionConstraints> {
+    if operation.activation_deadline <= 0 {
+        bail!("platform activation deadline must be positive");
+    }
     let positive = |name: &str, value: i64| -> Result<usize> {
         if value <= 0 {
             bail!("platform {name} must be positive");
@@ -713,21 +759,22 @@ mod tests {
     }
 
     #[test]
-    fn redemption_requires_one_operation_with_durable_settlement() {
+    fn redemption_requires_two_phase_operation_activation() {
         let request = serde_json::to_value(RedeemRequest {
             ticket: "opaque-ticket",
             notary_instance_id: "notary-test",
             mode: "capture",
             registry_generation: 1,
-            contract: "one_operation_v1",
+            contract: "one_operation_v2",
             usage_settlement: true,
         })
         .unwrap();
-        assert_eq!(request["contract"], "one_operation_v1");
+        assert_eq!(request["contract"], "one_operation_v2");
         assert_eq!(request["usage_settlement"], true);
 
         let operation: RedeemedOperation = serde_json::from_value(serde_json::json!({
             "operation_id": "operation-test",
+            "activation_deadline": 1234,
             "max_attestable_http_bytes": 1024,
             "max_frame_bytes": 2048,
             "max_private_chunk_bytes": 512,
@@ -744,6 +791,7 @@ mod tests {
     fn platform_policy_returns_only_tighter_candidate_limits() {
         let operation = RedeemedOperation {
             operation_id: "operation-notarization".to_owned(),
+            activation_deadline: 1234,
             max_attestable_http_bytes: 8 << 20,
             max_frame_bytes: 64 << 20,
             max_private_chunk_bytes: 256 << 10,
@@ -766,6 +814,7 @@ mod tests {
     fn capture_policy_rejects_a_notarization_digest() {
         let operation = RedeemedOperation {
             operation_id: "operation-capture".to_owned(),
+            activation_deadline: 1234,
             max_attestable_http_bytes: 1024,
             max_frame_bytes: 1024,
             max_private_chunk_bytes: 1024,
@@ -807,20 +856,26 @@ mod tests {
         let outbox_directory = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let app = Router::new().route(
-            "/api/internal/notary/admissions/redeem",
-            axum::routing::post(|| async {
-                axum::Json(serde_json::json!({
-                    "operation_id": "operation-capture",
-                    "max_attestable_http_bytes": 1024,
-                    "max_frame_bytes": 2048,
-                    "max_private_chunk_bytes": 512,
-                    "max_private_chunk_commitments": 4,
-                    "record_digest": null,
-                    "notarization_allowance_bytes": null
-                }))
-            }),
-        );
+        let app = Router::new()
+            .route(
+                "/api/internal/notary/admissions/redeem",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({
+                        "operation_id": "operation-capture",
+                        "activation_deadline": 1234,
+                        "max_attestable_http_bytes": 1024,
+                        "max_frame_bytes": 2048,
+                        "max_private_chunk_bytes": 512,
+                        "max_private_chunk_commitments": 4,
+                        "record_digest": null,
+                        "notarization_allowance_bytes": null
+                    }))
+                }),
+            )
+            .route(
+                "/api/internal/notary/operations/activate",
+                axum::routing::post(|| async { axum::http::StatusCode::NO_CONTENT }),
+            );
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let policy = PlatformAdmissionPolicy {
             http: reqwest::Client::new(),
@@ -854,28 +909,34 @@ mod tests {
 
         let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let api_address = api_listener.local_addr().unwrap();
-        let api = Router::new().route(
-            "/api/internal/notary/admissions/redeem",
-            axum::routing::post(
-                |axum::Json(request): axum::Json<serde_json::Value>| async move {
-                    let notarization =
-                        request.get("mode").and_then(|mode| mode.as_str()) == Some("notarization");
-                    axum::Json(serde_json::json!({
-                        "operation_id": if notarization {
-                            "operation-shared-notarization"
-                        } else {
-                            "operation-shared-capture"
-                        },
-                        "max_attestable_http_bytes": 1024,
-                        "max_frame_bytes": 2048,
-                        "max_private_chunk_bytes": 512,
-                        "max_private_chunk_commitments": 4,
-                        "record_digest": notarization.then(|| "11".repeat(32)),
-                        "notarization_allowance_bytes": notarization.then_some(1024)
-                    }))
-                },
-            ),
-        );
+        let api = Router::new()
+            .route(
+                "/api/internal/notary/admissions/redeem",
+                axum::routing::post(
+                    |axum::Json(request): axum::Json<serde_json::Value>| async move {
+                        let notarization = request.get("mode").and_then(|mode| mode.as_str())
+                            == Some("notarization");
+                        axum::Json(serde_json::json!({
+                            "operation_id": if notarization {
+                                "operation-shared-notarization"
+                            } else {
+                                "operation-shared-capture"
+                            },
+                            "activation_deadline": 1234,
+                            "max_attestable_http_bytes": 1024,
+                            "max_frame_bytes": 2048,
+                            "max_private_chunk_bytes": 512,
+                            "max_private_chunk_commitments": 4,
+                            "record_digest": notarization.then(|| "11".repeat(32)),
+                            "notarization_allowance_bytes": notarization.then_some(1024)
+                        }))
+                    },
+                ),
+            )
+            .route(
+                "/api/internal/notary/operations/activate",
+                axum::routing::post(|| async { axum::http::StatusCode::NO_CONTENT }),
+            );
         let api_server = tokio::spawn(async move { axum::serve(api_listener, api).await.unwrap() });
         let policy = Arc::new(PlatformAdmissionPolicy {
             http: reqwest::Client::new(),
@@ -954,6 +1015,7 @@ mod tests {
             axum::routing::post(|| async {
                 axum::Json(serde_json::json!({
                     "operation_id": "operation-invalid-limits",
+                    "activation_deadline": 1234,
                     "max_attestable_http_bytes": 0,
                     "max_frame_bytes": 2048,
                     "max_private_chunk_bytes": 512,
@@ -988,6 +1050,64 @@ mod tests {
         assert_eq!(
             pending[0].outcome,
             Some(UsageSettlementOutcome::ServiceFailed)
+        );
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn activation_failure_leaves_a_durable_service_failed_settlement() {
+        let outbox_directory = tempfile::tempdir().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let app = Router::new()
+            .route(
+                "/api/internal/notary/admissions/redeem",
+                axum::routing::post(|| async {
+                    axum::Json(serde_json::json!({
+                        "operation_id": "operation-activation-outage",
+                        "activation_deadline": 1234,
+                        "max_attestable_http_bytes": 1024,
+                        "max_frame_bytes": 2048,
+                        "max_private_chunk_bytes": 512,
+                        "max_private_chunk_commitments": 4,
+                        "record_digest": null,
+                        "notarization_allowance_bytes": null
+                    }))
+                }),
+            )
+            .route(
+                "/api/internal/notary/operations/activate",
+                axum::routing::post(|| async { axum::http::StatusCode::SERVICE_UNAVAILABLE }),
+            );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let policy = PlatformAdmissionPolicy {
+            http: reqwest::Client::new(),
+            origin: Url::parse(&format!("http://{address}/")).unwrap(),
+            service_token: Arc::from("x".repeat(32)),
+            instance_id: Arc::from("notary-test"),
+            registry_generation: 1,
+            usage_outbox: UsageSettlementOutbox::open(outbox_directory.path()).unwrap(),
+        };
+
+        assert!(matches!(
+            policy
+                .admit(AdmissionRequest {
+                    mode: NotarySessionMode::Capture,
+                    admission_value: Some("opaque-ticket"),
+                })
+                .await,
+            Err(NotaryAdmissionRejection::AdmissionServiceUnavailable)
+        ));
+        assert_eq!(
+            policy.usage_outbox.ready().unwrap(),
+            vec![PendingUsageSettlement {
+                operation_id: "operation-activation-outage".to_owned(),
+                notary_instance_id: "notary-test".to_owned(),
+                mode: UsageMode::Capture,
+                authenticated_bytes: 0,
+                outcome: Some(UsageSettlementOutcome::ServiceFailed),
+            }]
         );
         server.abort();
         let _ = server.await;

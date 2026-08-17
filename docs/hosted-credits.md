@@ -44,10 +44,12 @@ may therefore put an account slightly over its allowance; the exact usage is
 recorded, the balance can become negative, and the API denies the next ticket
 until allowance is available again.
 
-The redeem request must explicitly advertise `one_operation_v1` and durable
-settlement support. Requests missing either capability are rejected before the
-ticket is consumed. Every admitted session therefore receives the operation ID
-used by its durable usage outbox.
+The redeem request must explicitly advertise `one_operation_v2` and durable
+settlement support. Redemption creates a pending operation with a short
+activation deadline. The notary stages the operation in its durable usage
+outbox, validates its limits, and activates it before starting protocol work.
+Every admitted session therefore has an activated operation ID that its durable
+usage outbox can settle after a process or API outage.
 
 The operation-only rollout is complete. Migration
 `0028_detach_legacy_admission.sql` first detached runtime reads and writes while
