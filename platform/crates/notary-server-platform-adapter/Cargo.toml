@@ -25,4 +25,5 @@ url = "2.5"
 
 [dev-dependencies]
 axum = "0.8"
+notary-server = { path = "../../../runtime/crates/notary-server", features = ["test-support"] }
 tempfile = "3.20"

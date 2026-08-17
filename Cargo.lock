@@ -5002,6 +5002,7 @@ dependencies = [
  "clap",
  "hex",
  "k256",
+ "libc",
  "metrics",
  "notary-core",
  "tokio",

@@ -19,7 +19,7 @@ jobs:
     environment: production
     env:
       IMAGE_LABEL: ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-      NOTARY_IMAGE_TAG: registry.fly.io/llm-notary-prod-notary:ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+      NOTARY_IMAGE_TAG: registry.fly.io/llm-notary-prod-server:ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
       NOTARY_API_IMAGE_TAG: registry.fly.io/llm-notary-prod-api:ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
       WEB_IMAGE_TAG: registry.fly.io/llm-notary-prod-web:ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -103,7 +103,7 @@ jobs:
           }
 
           {
-            echo "notary=$(current_image llm-notary-prod-notary "$NOTARY_TOKEN")"
+            echo "notary=$(current_image llm-notary-prod-server "$NOTARY_TOKEN")"
             echo "notary_api=$(current_image llm-notary-prod-api "$NOTARY_API_TOKEN")"
             echo "web=$(current_image llm-notary-prod-web "$WEB_TOKEN")"
           } >> "$GITHUB_OUTPUT"

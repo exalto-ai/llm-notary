@@ -771,11 +771,9 @@ fn validate_settlement_bytes(
 ) -> ApiResult<()> {
     match request.mode {
         AdmissionMode::Capture => {
-            if request.outcome == UsageSettlementOutcome::Completed
-                && request.authenticated_bytes > operation.max_attestable_http_bytes
-            {
+            if request.authenticated_bytes > operation.max_attestable_http_bytes {
                 return Err(ApiError::bad_request(
-                    "completed capture usage exceeds the admitted protocol limit",
+                    "capture usage exceeds the admitted protocol limit",
                 ));
             }
         }
@@ -1505,7 +1503,7 @@ mod tests {
         let mut state = test_state().await;
         let mut admission = NotaryAdmissionConfig::for_test();
         admission.public.monthly_capture_bytes = 10;
-        admission.public.max_attestable_http_bytes = 10;
+        admission.public.max_attestable_http_bytes = 12;
         state.admission = std::sync::Arc::new(admission);
         let ticket = issue_admission(
             State(state.clone()),
@@ -1542,6 +1540,18 @@ mod tests {
             authenticated_bytes: 11,
             outcome: UsageSettlementOutcome::ClientFailed,
         };
+
+        let oversized = settle_usage(
+            State(state.clone()),
+            service_headers(&state),
+            Json(UsageSettlementRequest {
+                authenticated_bytes: 13,
+                ..report()
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(oversized.status, StatusCode::BAD_REQUEST);
 
         assert_eq!(
             settle_usage(

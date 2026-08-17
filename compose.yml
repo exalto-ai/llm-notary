@@ -68,14 +68,23 @@ services:
     secrets:
       - source: admission_service_token
         target: admission_service_token
+        mode: 0400
       - source: anonymous_subject_hmac_key
         target: anonymous_subject_hmac_key
+        mode: 0400
       - source: notary_registry
         target: notary_registry
+        mode: 0400
       - source: google_oauth_client_secret
         target: google_oauth_client_secret
+        mode: 0400
       - source: github_oauth_client_secret
         target: github_oauth_client_secret
+        mode: 0400
+    networks:
+      default:
+        aliases:
+          - notary-api.internal
     restart: unless-stopped
 
   site:
@@ -110,11 +119,12 @@ services:
       NOTARY_SERVER_SIGNING_KEY_FILE: /run/secrets/notary_signing_key
       NOTARY_SERVER_ALLOW_HOSTS: api.openai.com,chatgpt.com,api.anthropic.com,api.deepseek.com,openrouter.ai
       NOTARY_SERVER_PUBLIC_KEY: ${NOTARY_SERVER_PUBLIC_KEY:?Set NOTARY_SERVER_PUBLIC_KEY to the notary SEC1 public key}
-      NOTARY_SERVER_PLATFORM_API_ORIGIN: http://notary-api:8080
+      NOTARY_SERVER_PLATFORM_API_ORIGIN: http://notary-api.internal:8080
       NOTARY_SERVER_PLATFORM_SERVICE_TOKEN_FILE: /run/secrets/admission_service_token
       NOTARY_SERVER_REGISTRY_GENERATION: ${NOTARY_SERVER_REGISTRY_GENERATION:-1}
       NOTARY_SERVER_INSTANCE_ID: ${NOTARY_SERVER_INSTANCE_ID:-notary-compose-1}
       NOTARY_SERVER_USAGE_OUTBOX_DIR: /var/lib/notary-server/usage-outbox
+      NOTARY_SERVER_SHUTDOWN_GRACE_SECS: ${NOTARY_SERVER_SHUTDOWN_GRACE_SECS:-15}
       # Internal-only scrape endpoint. Do not publish it through the gateway.
       NOTARY_SERVER_METRICS_LISTEN: 0.0.0.0:9090
     ports:
@@ -123,8 +133,10 @@ services:
     secrets:
       - source: notary_signing_key
         target: notary_signing_key
+        mode: 0400
       - source: admission_service_token
         target: admission_service_token
+        mode: 0400
     read_only: true
     volumes:
       - notary_data:/var/lib/notary-server
@@ -135,6 +147,7 @@ services:
     cap_drop:
       - ALL
     restart: unless-stopped
+    stop_grace_period: 30s
     healthcheck:
       test: ["CMD-SHELL", "test \"$(notary-server public-key --signing-key-file /run/secrets/notary_signing_key)\" = \"$${NOTARY_SERVER_PUBLIC_KEY}\""]
       interval: 30s

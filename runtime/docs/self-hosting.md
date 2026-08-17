@@ -33,7 +33,7 @@ Use `tls://notary.example:443` when a public-CA TLS endpoint protects the networ
 
 The notary owns the upstream network connection, so every permitted hostname must be present in `--allow-host`. Keep the signing key outside the repository with owner-only permissions, encrypted backups, and restricted process access. Use `--notarization-only` during a planned key rotation so existing private captures can finish without admitting new capture sessions.
 
-Important hard limits include `--max-concurrent-captures`, `--max-concurrent-notarizations`, `--max-total-private-chunk-bytes`, `--max-private-chunk-bytes`, `--max-private-chunk-commitments`, `--max-frame-bytes`, and `--session-timeout-secs`. Keep the total-private-byte limit at least as large as the daemon's `proxy.max_attestable_http_bytes`.
+Important hard limits include `--max-concurrent-captures`, `--max-concurrent-notarizations`, `--max-total-private-chunk-bytes`, `--max-private-chunk-bytes`, `--max-private-chunk-commitments`, `--max-frame-bytes`, and `--session-timeout-secs`. Keep the total-private-byte limit at least as large as the daemon's `proxy.max_attestable_http_bytes`. Set the process supervisor's stop budget above `--shutdown-grace-secs`; shutdown stops admission, cancels active protocol work with a service-failed outcome, and waits only for the configured bounded drain.
 
 The base server uses the runtime's ticketless admission policy. Product-specific account or billing admission belongs in a separate adapter implementing `AdmissionPolicy`; it is not part of the public runtime.
 

@@ -174,6 +174,7 @@ For local or self-hosted development, start a notary and explicitly pin its
 key:
 
 ```bash
+install -m 0600 /dev/null notary.dev.key
 openssl rand -hex 32 > notary.dev.key
 cargo run -p notary-server --bin notary-server -- \
   serve \

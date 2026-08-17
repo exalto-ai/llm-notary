@@ -1,4 +1,10 @@
-use std::{env, fs, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    env,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
@@ -7,7 +13,7 @@ use notary_core::{NotaryAdmissionRejection, NotarySessionMode};
 use notary_server::{
     AdmissionConstraints, AdmissionGrant, AdmissionPolicy, AdmissionRequest, NotaryServerArgs,
     NotaryServerCommand, NotaryServerConfig, SessionLifecycle, SessionOutcome, print_public_key,
-    serve, shutdown_signal,
+    read_private_file, serve, shutdown_signal,
 };
 use serde::{Deserialize, Serialize};
 use url::Url;
@@ -19,6 +25,15 @@ use settlement_outbox::{
 };
 
 const USAGE_OUTBOX_RETRY_INTERVAL: Duration = Duration::from_secs(2);
+const USAGE_OUTBOX_BATCH_SIZE: usize = 16;
+const USAGE_OUTBOX_MAX_BACKOFF: Duration = Duration::from_secs(60);
+const USAGE_OUTBOX_SHUTDOWN_FLUSH: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Copy)]
+struct SettlementRetry {
+    failures: u32,
+    not_before: Instant,
+}
 
 #[derive(Clone)]
 struct PlatformAdmissionPolicy {
@@ -189,26 +204,80 @@ impl PlatformAdmissionPolicy {
         Ok(())
     }
 
+    #[cfg(test)]
     async fn replay_usage_outbox(&self) {
+        self.replay_usage_outbox_batch(&mut HashMap::new(), USAGE_OUTBOX_BATCH_SIZE, None)
+            .await;
+    }
+
+    async fn replay_usage_outbox_batch(
+        &self,
+        retries: &mut HashMap<String, SettlementRetry>,
+        batch_size: usize,
+        deadline: Option<Instant>,
+    ) {
+        match self.usage_outbox.retry_terminal_writes() {
+            Ok(0) => {}
+            Ok(remaining) => tracing::warn!(
+                remaining,
+                "terminal usage outbox writes remain queued for retry"
+            ),
+            Err(error) => tracing::error!(%error, "retrying terminal usage outbox writes failed"),
+        }
         let pending = match self.usage_outbox.ready() {
             Ok(pending) => pending,
-            Err(_) => {
-                tracing::error!("reading usage settlement outbox failed");
+            Err(error) => {
+                tracing::error!(%error, "reading usage settlement outbox failed");
                 return;
             }
         };
         gauge!("notary_server_usage_settlement_outbox_pending").set(pending.len() as f64);
-        for entry in pending {
-            match self.settle_usage(&entry).await {
+        let now = Instant::now();
+        let due = pending
+            .into_iter()
+            .filter(|entry| {
+                retries
+                    .get(&entry.operation_id)
+                    .is_none_or(|retry| retry.not_before <= now)
+            })
+            .take(batch_size)
+            .collect::<Vec<_>>();
+        for entry in due {
+            let delivery = match deadline {
+                Some(deadline) => {
+                    let remaining = deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    match tokio::time::timeout(remaining, self.settle_usage(&entry)).await {
+                        Ok(result) => result,
+                        Err(_) => Err(anyhow::anyhow!("usage settlement flush deadline elapsed")),
+                    }
+                }
+                None => self.settle_usage(&entry).await,
+            };
+            match delivery {
                 Ok(()) => {
                     if self.usage_outbox.remove(&entry.operation_id).is_err() {
                         tracing::error!("removing settled usage outbox entry failed");
                     } else {
+                        retries.remove(&entry.operation_id);
                         counter!("notary_server_usage_settlement_deliveries_total", "outcome" => "delivered")
                             .increment(1);
                     }
                 }
                 Err(error) => {
+                    let failures = retries
+                        .get(&entry.operation_id)
+                        .map_or(1, |retry| retry.failures.saturating_add(1));
+                    retries.insert(
+                        entry.operation_id.clone(),
+                        SettlementRetry {
+                            failures,
+                            not_before: Instant::now()
+                                + settlement_retry_delay(&entry.operation_id, failures),
+                        },
+                    );
                     counter!("notary_server_usage_settlement_deliveries_total", "outcome" => "retry")
                         .increment(1);
                     tracing::warn!(%error, "usage settlement delivery will be retried");
@@ -223,22 +292,52 @@ impl PlatformAdmissionPolicy {
     ) -> Result<()> {
         let mut ticker = tokio::time::interval(USAGE_OUTBOX_RETRY_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut retries = HashMap::new();
         loop {
             if *shutdown.borrow() {
-                self.replay_usage_outbox().await;
+                retries.clear();
+                self.replay_usage_outbox_batch(
+                    &mut retries,
+                    usize::MAX,
+                    Some(Instant::now() + USAGE_OUTBOX_SHUTDOWN_FLUSH),
+                )
+                .await;
                 return Ok(());
             }
             tokio::select! {
                 changed = shutdown.changed() => {
                     if changed.is_err() || *shutdown.borrow() {
-                        self.replay_usage_outbox().await;
+                        retries.clear();
+                        self.replay_usage_outbox_batch(
+                            &mut retries,
+                            usize::MAX,
+                            Some(Instant::now() + USAGE_OUTBOX_SHUTDOWN_FLUSH),
+                        ).await;
                         return Ok(());
                     }
                 }
-                _ = ticker.tick() => self.replay_usage_outbox().await,
+                _ = ticker.tick() => {
+                    self.replay_usage_outbox_batch(
+                        &mut retries,
+                        USAGE_OUTBOX_BATCH_SIZE,
+                        None,
+                    ).await
+                },
             }
         }
     }
+}
+
+fn settlement_retry_delay(operation_id: &str, failures: u32) -> Duration {
+    let exponential = 1_u64 << failures.saturating_sub(1).min(5);
+    let base = USAGE_OUTBOX_RETRY_INTERVAL
+        .saturating_mul(u32::try_from(exponential).unwrap_or(u32::MAX))
+        .min(USAGE_OUTBOX_MAX_BACKOFF);
+    let jitter_millis = operation_id.bytes().fold(0_u64, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(byte.into())
+    }) % 500;
+    base.saturating_add(Duration::from_millis(jitter_millis))
+        .min(USAGE_OUTBOX_MAX_BACKOFF)
 }
 
 fn platform_rejection(
@@ -434,21 +533,23 @@ fn validate_platform_origin(value: &str) -> Result<Url> {
                 host == "localhost"
                     || host == "127.0.0.1"
                     || host == "::1"
+                    || host == "notary-api.internal"
                     || host.ends_with(".flycast")
             }))
     {
-        bail!("platform API origin must use HTTPS, loopback HTTP, or private Flycast HTTP");
+        bail!("platform API origin must use HTTPS, loopback HTTP, or explicitly private HTTP");
     }
     Ok(origin)
 }
 
 fn read_service_token(path: &str) -> Result<Arc<str>> {
-    let token = fs::read_to_string(path)
-        .with_context(|| format!("reading platform service token file {path}"))?;
+    let token_bytes = read_private_file(Path::new(path), "platform service token")?;
+    let token =
+        std::str::from_utf8(&token_bytes).context("platform service token must be UTF-8")?;
     let token = token
         .strip_suffix("\r\n")
         .or_else(|| token.strip_suffix('\n'))
-        .unwrap_or(&token);
+        .unwrap_or(token);
     if !(32..=512).contains(&token.len()) || token.bytes().any(|byte| byte.is_ascii_whitespace()) {
         bail!("platform service token must contain 32 to 512 non-whitespace bytes");
     }
@@ -522,13 +623,23 @@ fn session_mode_label(mode: NotarySessionMode) -> &'static str {
 mod tests {
     use super::*;
     use axum::Router;
-    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    use std::fs;
+
+    fn write_private_test_file(path: &Path, contents: impl AsRef<[u8]>) {
+        fs::write(path, contents).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
 
     #[test]
     fn platform_origin_is_an_origin_and_never_carries_credentials() {
         for valid in [
             "https://platform.example.com",
             "http://localhost:8080",
+            "http://notary-api.internal:8080",
             "http://notary-api.internal.flycast",
         ] {
             assert!(
@@ -554,15 +665,31 @@ mod tests {
     fn platform_service_token_allows_one_line_ending_only() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("service-token");
-        fs::write(&path, format!("{}\r\n", "x".repeat(32))).unwrap();
+        write_private_test_file(&path, format!("{}\r\n", "x".repeat(32)));
         assert_eq!(
             read_service_token(path.to_str().unwrap()).unwrap().as_ref(),
             "x".repeat(32)
         );
-        fs::write(&path, format!(" {}\n", "x".repeat(32))).unwrap();
+        write_private_test_file(&path, format!(" {}\n", "x".repeat(32)));
         assert!(read_service_token(path.to_str().unwrap()).is_err());
-        fs::write(&path, format!("{}\n\n", "x".repeat(32))).unwrap();
+        write_private_test_file(&path, format!("{}\n\n", "x".repeat(32)));
         assert!(read_service_token(path.to_str().unwrap()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn platform_service_token_rejects_insecure_permissions_and_symlinks() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("service-token");
+        write_private_test_file(&path, "x".repeat(32));
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o604)).unwrap();
+        assert!(read_service_token(path.to_str().unwrap()).is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let link = directory.path().join("service-token-link");
+        symlink(&path, &link).unwrap();
+        assert!(read_service_token(link.to_str().unwrap()).is_err());
     }
 
     #[test]
@@ -577,7 +704,7 @@ mod tests {
     async fn public_key_command_is_isolated_from_platform_configuration() {
         let directory = tempfile::tempdir().unwrap();
         let signing_key_file = directory.path().join("signing-key");
-        fs::write(&signing_key_file, format!("{}\n", "01".repeat(32))).unwrap();
+        write_private_test_file(&signing_key_file, format!("{}\n", "01".repeat(32)));
         run_command(NotaryServerCommand::PublicKey(
             notary_server::NotaryServerPublicKeyArgs { signing_key_file },
         ))
@@ -723,23 +850,31 @@ mod tests {
     async fn platform_policy_runs_through_the_shared_server_contract() {
         let directory = tempfile::tempdir().unwrap();
         let signing_key_file = directory.path().join("signing-key");
-        fs::write(&signing_key_file, format!("{}\n", "01".repeat(32))).unwrap();
+        write_private_test_file(&signing_key_file, format!("{}\n", "01".repeat(32)));
 
         let api_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let api_address = api_listener.local_addr().unwrap();
         let api = Router::new().route(
             "/api/internal/notary/admissions/redeem",
-            axum::routing::post(|| async {
-                axum::Json(serde_json::json!({
-                    "operation_id": "operation-shared-server",
-                    "max_attestable_http_bytes": 1024,
-                    "max_frame_bytes": 2048,
-                    "max_private_chunk_bytes": 512,
-                    "max_private_chunk_commitments": 4,
-                    "record_digest": null,
-                    "notarization_allowance_bytes": null
-                }))
-            }),
+            axum::routing::post(
+                |axum::Json(request): axum::Json<serde_json::Value>| async move {
+                    let notarization =
+                        request.get("mode").and_then(|mode| mode.as_str()) == Some("notarization");
+                    axum::Json(serde_json::json!({
+                        "operation_id": if notarization {
+                            "operation-shared-notarization"
+                        } else {
+                            "operation-shared-capture"
+                        },
+                        "max_attestable_http_bytes": 1024,
+                        "max_frame_bytes": 2048,
+                        "max_private_chunk_bytes": 512,
+                        "max_private_chunk_commitments": 4,
+                        "record_digest": notarization.then(|| "11".repeat(32)),
+                        "notarization_allowance_bytes": notarization.then_some(1024)
+                    }))
+                },
+            ),
         );
         let api_server = tokio::spawn(async move { axum::serve(api_listener, api).await.unwrap() });
         let policy = Arc::new(PlatformAdmissionPolicy {
@@ -764,41 +899,33 @@ mod tests {
             max_pending_connections: 1,
             prelude_timeout_secs: 1,
             session_timeout_secs: 1,
+            shutdown_grace_secs: 1,
             metrics_listen: None,
             profile_sessions: false,
         })
         .unwrap();
-        let notary_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let notary_address = notary_listener.local_addr().unwrap();
-        let (shutdown_sender, shutdown) = tokio::sync::watch::channel(false);
-        let server_policy = Arc::clone(&policy);
-        let notary_server = tokio::spawn(notary_server::serve_on_listener(
-            server_config,
-            notary_listener,
-            server_policy as Arc<dyn AdmissionPolicy>,
-            shutdown,
-        ));
-
-        let mut client = tokio::net::TcpStream::connect(notary_address)
+        let server_policy: Arc<dyn AdmissionPolicy> = policy.clone();
+        for (mode, ticket) in [
+            (NotarySessionMode::Capture, "opaque-capture-ticket"),
+            (
+                NotarySessionMode::Notarization,
+                "opaque-notarization-ticket",
+            ),
+        ] {
+            notary_server::test_support::exercise_admission_policy_contract(
+                server_config.clone(),
+                Arc::clone(&server_policy),
+                mode,
+                Some(ticket),
+            )
             .await
             .unwrap();
-        let ticket = b"opaque-ticket";
-        client.write_all(b"NTRY\0\0\0\x01\x02").await.unwrap();
-        client
-            .write_all(&(ticket.len() as u16).to_be_bytes())
-            .await
-            .unwrap();
-        client.write_all(ticket).await.unwrap();
-        client.flush().await.unwrap();
-        let mut admission = [0; 1];
-        client.read_exact(&mut admission).await.unwrap();
-        assert_eq!(admission, [1]);
-        drop(client);
+        }
 
         let settled = tokio::time::timeout(Duration::from_secs(1), async {
             loop {
                 let ready = policy.usage_outbox.ready().unwrap();
-                if !ready.is_empty() {
+                if ready.len() == 2 {
                     break ready;
                 }
                 tokio::time::sleep(Duration::from_millis(5)).await;
@@ -806,18 +933,13 @@ mod tests {
         })
         .await
         .expect("shared server did not finish the platform lifecycle");
-        assert_eq!(settled[0].operation_id, "operation-shared-server");
-        assert_eq!(
-            settled[0].outcome,
-            Some(UsageSettlementOutcome::ClientFailed)
+        assert_eq!(settled[0].operation_id, "operation-shared-capture");
+        assert_eq!(settled[1].operation_id, "operation-shared-notarization");
+        assert!(
+            settled
+                .iter()
+                .all(|entry| { entry.outcome == Some(UsageSettlementOutcome::ClientFailed) })
         );
-
-        shutdown_sender.send(true).unwrap();
-        tokio::time::timeout(Duration::from_secs(1), notary_server)
-            .await
-            .expect("shared server ignored shutdown")
-            .expect("shared server panicked")
-            .expect("shared server failed");
         api_server.abort();
         let _ = api_server.await;
     }
@@ -937,6 +1059,58 @@ mod tests {
                     42,
                 )
                 .is_err()
+        );
+    }
+
+    #[test]
+    fn usage_outbox_retries_a_transient_terminal_write() {
+        let directory = tempfile::tempdir().unwrap();
+        let outbox = UsageSettlementOutbox::open(directory.path()).unwrap();
+        let pending = PendingUsageSettlement {
+            operation_id: "operation-terminal-retry".to_owned(),
+            notary_instance_id: "notary-test".to_owned(),
+            mode: UsageMode::Capture,
+            authenticated_bytes: 0,
+            outcome: None,
+        };
+        outbox.stage(&pending).unwrap();
+
+        let displaced = directory.path().with_extension("displaced");
+        fs::rename(directory.path(), &displaced).unwrap();
+        fs::write(directory.path(), b"temporarily unavailable").unwrap();
+        assert!(
+            outbox
+                .finish(
+                    &pending.operation_id,
+                    UsageSettlementOutcome::ServiceFailed,
+                    31,
+                )
+                .is_err()
+        );
+        fs::remove_file(directory.path()).unwrap();
+        fs::rename(&displaced, directory.path()).unwrap();
+
+        assert_eq!(outbox.retry_terminal_writes().unwrap(), 0);
+        assert_eq!(
+            outbox.ready().unwrap(),
+            vec![PendingUsageSettlement {
+                authenticated_bytes: 31,
+                outcome: Some(UsageSettlementOutcome::ServiceFailed),
+                ..pending
+            }]
+        );
+    }
+
+    #[test]
+    fn settlement_retry_backoff_is_bounded_and_stable() {
+        assert_eq!(
+            settlement_retry_delay("operation-stable", 1),
+            settlement_retry_delay("operation-stable", 1)
+        );
+        assert!(settlement_retry_delay("operation-stable", 1) >= USAGE_OUTBOX_RETRY_INTERVAL);
+        assert_eq!(
+            settlement_retry_delay("operation-stable", u32::MAX),
+            USAGE_OUTBOX_MAX_BACKOFF
         );
     }
 

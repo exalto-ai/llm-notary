@@ -27,7 +27,7 @@ operation state that must survive restarts and Machine replacement:
 
 ```bash
 fly volumes create notary_data --region sjc --size 1 \
-  -a llm-notary-prod-notary
+  -a llm-notary-prod-server
 ```
 
 The notary's TLS handler can use Fly's shared IPv4 routing.
@@ -263,7 +263,7 @@ fly deploy js/app --build-only --push --image-label "$label" \
 
 fly auth docker
 notary_api_image="registry.fly.io/llm-notary-prod-api@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-api:$label")"
-notary_image="registry.fly.io/llm-notary-prod-notary@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-notary:$label")"
+notary_image="registry.fly.io/llm-notary-prod-server@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-server:$label")"
 web_image="registry.fly.io/llm-notary-prod-web@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-web:$label")"
 
 fly deploy --image "$notary_image" \
@@ -289,6 +289,10 @@ generation. Add capacity with `fly scale count <n> -a llm-notary-prod-api`,
 keeping the total configured database pool size within the Neon connection
 budget.
 
+The notary's 30-second Fly stop timeout contains the 15-second shared-server
+drain and the platform adapter's final 10-second settlement flush. Keep those
+budgets bounded and leave headroom for process startup and task-group teardown.
+
 ## Metrics
 
 Fly scrapes the API's private `:8080/metrics` endpoint and the notary's
@@ -301,7 +305,7 @@ Create a short-lived, read-only organization token before querying the API;
 do not use a deploy token or commit this token to an environment file:
 
 ```bash
-fly tokens create readonly --org <org-slug> --expiry 1h --name llm-notary-metrics
+fly tokens create readonly --org <org-slug> --expiry 1h --name notary-metrics
 ```
 
 With that token in `FLY_METRICS_TOKEN`, query
@@ -315,17 +319,17 @@ sum(rate(fly_edge_http_responses_count{app="llm-notary-prod-web"}[5m])) by (stat
 # p95 API handler latency by route (application time, excluding Fly routing).
 histogram_quantile(0.95, sum(rate(notary_api_http_request_duration_seconds_bucket{app="llm-notary-prod-api"}[5m])) by (le, route))
 
-# Admission backlog and age of its oldest item.
+# Trace-verification backlog and age of its oldest item.
 max(notary_api_trace_verification_queue_depth{app="llm-notary-prod-api"})
 max(notary_api_trace_verification_oldest_queued_seconds{app="llm-notary-prod-api"})
 
-# Admission outcomes and p95 verification time.
+# Trace-verification outcomes and p95 verification time.
 sum(increase(notary_api_trace_verifications_total{app="llm-notary-prod-api"}[1h])) by (outcome)
 histogram_quantile(0.95, sum(rate(notary_api_trace_verification_duration_seconds_bucket{app="llm-notary-prod-api"}[15m])) by (le, outcome))
 
 # Raw TCP demand plus active notary protocol sessions.
-sum(increase(fly_edge_tcp_connects_count{app="llm-notary-prod-notary"}[5m]))
-sum(notary_server_active_sessions{app="llm-notary-prod-notary"}) by (mode)
+sum(increase(fly_edge_tcp_connects_count{app="llm-notary-prod-server"}[5m]))
+sum(notary_server_active_sessions{app="llm-notary-prod-server"}) by (mode)
 ```
 
 The binaries can also export OTLP traces when an
