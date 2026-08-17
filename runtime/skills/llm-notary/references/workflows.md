@@ -11,7 +11,7 @@ Check the service, then list captures using server-side filters:
 ```bash
 llm-notary --json status
 llm-notary --json captures list --metadata-only --provider openai --limit 20
-llm-notary --json captures list --metadata-only --notarization-state notarized --limit 20
+llm-notary --json captures list --metadata-only --state notarized --limit 20
 llm-notary captures show trc-example
 ```
 
@@ -55,16 +55,16 @@ Explain that notarization generates a proof, can take substantially longer
 than capture, and does not publish anything. After the user approves, run:
 
 ```bash
-llm-notary --json notarize trc-example --wait
+llm-notary --json notarization trc-example --wait
 ```
 
 Without `--wait`, save the returned `op-...` identifier and poll it:
 
 ```bash
-llm-notary --json operations show op-example
+llm-notary --json operation op-example
 ```
 
-Treat `notarized`, `failed`, and `interrupted` as terminal states. Use the
+Treat `succeeded`, `failed`, and `interrupted` as terminal states. Use the
 operation's attempt history and redacted daemon events when explaining a
 failure:
 
@@ -75,10 +75,10 @@ llm-notary --json events --operation-id op-example --limit 20
 Ask again before retrying a failed or interrupted operation:
 
 ```bash
-llm-notary --json operations retry op-example
+llm-notary --json notarization trc-example
 ```
 
-After notarization succeeds, verify the capture and report `verified`,
+After notarization succeeds, verify the Trace and report `outcome`,
 `verified_at_unix_ms`, `notary_key_id`, and `trust_source`. Do not infer a
 stronger claim than the returned verification result.
 
@@ -104,9 +104,9 @@ Do not use `--force` merely to bypass a warning. Review the reported disclosure
 finding with the user first. Concrete secret detections and verification
 failures remain blocked.
 
-Save the returned `share_id` and follow its documented status URL through the
-loopback API. Do not claim the trace is reachable until the state is
-`admitted`.
+Save the returned `share_id` and poll the owning Trace's canonical share
+resource through the loopback API. Do not claim the Trace is reachable until
+`progress` is `shared`.
 
 ## Account and authentication changes
 

@@ -38,7 +38,7 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('deepseek-v4-flash')).toBeVisible();
     await expect.element(page.getByText('gpt-5.2', { exact: true })).not.toBeInTheDocument();
     await page.getByRole('list', { name: 'Captures' }).getByRole('button').click();
-    await expect.element(page.getByText('trc-20260727-benchmark')).toBeVisible();
+    await expect.element(page.getByText('trc-20260727-benchmark').first()).toBeVisible();
   });
 
   test('loads another cursor page without downloading the full capture catalog', async () => {
@@ -188,10 +188,13 @@ describe('local evidence dashboard', () => {
       active_key_id: null,
       notaries: [
         {
+          name: 'Configured Notary',
+          operator: 'Local configuration',
           endpoint: 'tcp://127.0.0.1:7047',
           transport: 'tcp',
           key_id: 'sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
-          status: 'configured',
+          verification_key: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+          lifecycle: 'configured',
           valid_from_unix_ms: null,
           valid_until_unix_ms: null,
           notarize_until_unix_ms: null,
@@ -337,7 +340,6 @@ describe('local evidence dashboard', () => {
   test('shows capture notarization and durable attempt histories', async () => {
     renderDashboard('/captures/trc-20260727-benchmark');
     await expect.element(page.getByRole('heading', { name: 'Notarization history' })).toBeVisible();
-    await page.getByRole('button', { name: 'Inspect' }).click();
     await expect.element(page.getByText('Attempt 2', { exact: true })).toBeVisible();
     await expect.element(page.getByText('Attempt 1', { exact: true })).toBeVisible();
     await expect.element(page.getByText('service_restarted')).toBeVisible();
@@ -367,7 +369,7 @@ describe('local evidence dashboard', () => {
       )?.state,
     ).toBe('queued');
     expect(
-      (await api.traces({ notarization_status: 'succeeded', limit: 200 })).items.some(
+      (await api.traces({ state: 'notarized', limit: 200 })).items.some(
         (item) => item.trace_id === captureId,
       ),
     ).toBe(false);
@@ -386,9 +388,9 @@ describe('local evidence dashboard', () => {
         (item) => item.operation_id === queued.operation.operation_id,
       )?.state,
     ).toBe('running');
-    expect((await api.trace(captureId)).capture.notarization_status).toBe('running');
+    expect((await api.trace(captureId)).status).toBe('notarizing');
     expect(
-      (await api.traces({ notarization_status: 'succeeded', limit: 200 })).items.some(
+      (await api.traces({ state: 'notarized', limit: 200 })).items.some(
         (item) => item.trace_id === captureId,
       ),
     ).toBe(false);
@@ -398,10 +400,10 @@ describe('local evidence dashboard', () => {
         (item) => item.operation_id === queued.operation.operation_id,
       )?.state,
     ).toBe('succeeded');
-    const capture = (await api.trace(captureId)).capture;
-    expect(capture.notarization_status).toBe('succeeded');
+    const capture = await api.trace(captureId);
+    expect(capture.state).toBe('notarized');
     expect(
-      (await api.traces({ notarization_status: 'succeeded', limit: 200 })).items.some(
+      (await api.traces({ state: 'notarized', limit: 200 })).items.some(
         (item) => item.trace_id === captureId,
       ),
     ).toBe(true);
@@ -425,12 +427,12 @@ describe('local evidence dashboard', () => {
     expect(traceJson).toContain(capture.output_preview);
     expect((await api.verify(captureId)).trace_id).toBe(captureId);
     expect((await api.share(captureId, 'unlisted')).trace_id).toBe(captureId);
-    const initialShare = await api.shareStatus('share-fixture');
-    expect(initialShare.state).toBe('queued');
-    expect((await api.shareStatus('share-fixture')).state).toBe('verifying');
-    const admitted = await api.shareStatus('share-fixture');
-    expect(admitted.state).toBe('admitted');
-    expect(admitted.share_url).toContain('/s/share-fixture');
+    const initialShare = await api.shareStatus(captureId);
+    expect(initialShare.progress).toBe('preparing');
+    expect((await api.shareStatus(captureId)).progress).toBe('verifying');
+    const admitted = await api.shareStatus(captureId);
+    expect(admitted.progress).toBe('shared');
+    expect(admitted.share_url).toContain('/traces/share-fixture');
 
     renderDashboard(`/traces/${captureId}`, api);
     await expect.element(page.getByRole('heading', { name: captureId })).toBeVisible();
@@ -472,9 +474,11 @@ describe('local evidence dashboard', () => {
         return {
           trace_id: captureId,
           share_id: 'share-fixture',
-          state: 'queued',
+          progress: 'preparing',
           visibility,
-          status_url: '/v1/shares/share-fixture',
+          published: true,
+          password_protected: false,
+          updated_at_unix_ms: Date.now(),
           share_url: null,
           package_url: null,
         };
@@ -530,11 +534,11 @@ describe('local evidence dashboard', () => {
       .element(page.getByText('Anyone with the URL can read', { exact: false }))
       .toBeVisible();
     await page.getByRole('button', { name: 'Create share' }).click();
-    await expect.element(page.getByText('queued', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('preparing', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Refresh status' }).click();
     await expect.element(page.getByText('verifying', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Refresh status' }).click();
-    await expect.element(page.getByText('admitted', { exact: true })).toBeVisible();
+    await expect.element(page.getByText('shared', { exact: true })).toBeVisible();
     await expect.element(page.getByRole('heading', { name: 'Share ready' })).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Copy URL' })).toBeVisible();
     await page.getByRole('button', { name: 'Open local trace' }).click();

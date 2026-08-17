@@ -14,7 +14,10 @@ use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, Query, Request, State, rejection::QueryRejection},
+    extract::{
+        DefaultBodyLimit, Path, Query, Request, State,
+        rejection::{JsonRejection, QueryRejection},
+    },
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
@@ -47,8 +50,8 @@ use crate::{
     config::NotarydConfig,
     metadata::TerminalOperationResult,
     metadata::{
-        Event, EventFilters, Operation, OperationAttempt, OperationFilters, OperationPagePosition,
-        RegistrySnapshot, TraceFilters, TracePagePosition, TraceSummary,
+        Event, EventFilters, Operation, OperationAttempt, OperationFilters, RegistrySnapshot,
+        TraceFilters, TracePagePosition, TraceShareRecord, TraceSummary as StoredTraceSummary,
     },
     metadata_store::{MetadataStore, MetadataStoreError, NotarizationClaim},
     notarization::{
@@ -208,25 +211,27 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
             get(capture_setting).put(update_capture_setting),
         )
         .route("/v1/notaries", get(notaries))
+        .route("/v1/providers", get(providers))
         .route("/v1/traces", get(traces))
         .route("/v1/traces/{trace_id}", get(trace))
         .route(
             "/v1/traces/{trace_id}/notarizations",
             post(start_notarization),
         )
-        .route("/v1/operations", get(operations))
         .route("/v1/operations/{operation_id}", get(operation))
-        .route("/v1/operations/{operation_id}/retry", post(retry_operation))
-        .route("/v1/traces/{trace_id}/trace", get(trace_content))
-        .route("/v1/traces/{trace_id}/package", get(download_package))
-        .route("/v1/traces/{trace_id}/trace:verify", post(verify_trace))
+        .route("/v1/traces/{trace_id}/content", get(trace_content))
         .route(
-            "/v1/traces:verify",
+            "/v1/traces/{trace_id}/package.llmtrace",
+            get(download_package),
+        )
+        .route("/v1/traces/{trace_id}/verify", post(verify_trace))
+        .route(
+            "/v1/verify",
             post(verify_uploaded_trace).layer(DefaultBodyLimit::max(
                 usize::try_from(MAX_ARCHIVE_WIRE_BYTES).expect("archive limit fits in usize"),
             )),
         )
-        .route("/v1/events", get(events))
+        .route("/v1/activity", get(activity))
         .route(
             "/v1/account",
             get(account_status)
@@ -234,8 +239,12 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
                 .delete(end_account_connection),
         )
         .route("/v1/account/{request_id}", get(poll_account_connection))
-        .route("/v1/traces/{trace_id}/shares", post(share_capture))
-        .route("/v1/shares/{share_id}", get(share_status))
+        .route(
+            "/v1/traces/{trace_id}/share",
+            get(get_trace_share)
+                .put(put_trace_share)
+                .delete(delete_trace_share),
+        )
         .route("/v1/session", delete(end_session))
         .route_layer(middleware::from_fn_with_state(state.clone(), require_auth));
     Ok(Router::new()
@@ -248,6 +257,7 @@ pub(crate) fn router(state: AdminState) -> Result<Router> {
         .route("/openapi.json", get(openapi))
         .route("/v1/session", post(start_session))
         .merge(protected)
+        .method_not_allowed_fallback(|| async { StatusCode::NOT_FOUND })
         .layer(DefaultBodyLimit::max(1024 * 1024))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::new(
@@ -323,26 +333,27 @@ fn embedded_dashboard_response(path: &str, desktop_embed: bool) -> Response {
 #[derive(OpenApi)]
 #[openapi(
     info(
-        title = "LLM Notary local administration API",
+        title = "Notary local administration API",
         version = "1.0.0",
         description = "Loopback administration API. Routes are available without credentials by default; configure admin.auth to require HTTP Basic authentication."
     ),
     paths(
-        health, readiness, openapi, start_session, end_session, status, capture_setting, update_capture_setting, notaries, traces, trace,
-        start_notarization, operations, operation, retry_operation, trace_content,
-        download_package, verify_trace, verify_uploaded_trace, events, account_status, start_account_connection,
-        end_account_connection, poll_account_connection, share_capture,
-        share_status
+        health, readiness, openapi, start_session, end_session, status, capture_setting,
+        update_capture_setting, notaries, providers, traces, trace, start_notarization,
+        operation, trace_content, download_package, verify_trace, verify_uploaded_trace,
+        activity, account_status, start_account_connection, end_account_connection,
+        poll_account_connection, get_trace_share, put_trace_share, delete_trace_share
     ),
     components(schemas(
-        HealthResponse, ReadinessResponse, StatusResponse, CaptureSettingResponse, UpdateCaptureSetting, CountsResponse, UpdateStatusResponse, NotariesResponse, NotaryResponse,
-        PageQuery, CaptureResponse, CaptureDetailResponse, ArtifactResponse,
-        OperationSummaryResponse, OperationResponse, OperationProgressResponse,
-        OperationProofProgressResponse, OperationAttemptResponse,
-        NotarizationResponse, EventResponse,
-        EventListResponse, TraceResponse, VerificationResponse, AccountConnectionResponse,
-        AccountConnectionRequest, AccountConnectionStartedResponse, CreateShareRequest,
-        ShareVisibility, ShareResponse, ShareStatusResponse,
+        HealthResponse, ReadinessResponse, StatusResponse, CaptureSettingResponse,
+        UpdateCaptureSetting, TraceCounts, UpdateStatusResponse, NotariesResponse, Notary,
+        ProvidersResponse, Provider, TraceState, TraceOperationalStatus, TracePage, TraceSummary,
+        TraceDetail, EvidenceArtifact, TechnicalOperation, OperationProgressResponse,
+        OperationProofProgressResponse, NotarizationAttempt,
+        NotarizationRequest, ActivityItem, ActivityPage, TraceContent, VerificationResult,
+        VerificationOutcome, AccountConnectionResponse, AccountConnectionRequest,
+        AccountConnectionStartedResponse, PutTraceShareRequest, ShareVisibility,
+        ShareProgress, TraceShare,
         ErrorBody, ErrorEnvelope
     )),
     modifiers(&SecurityAddon),
@@ -539,7 +550,7 @@ fn session_hash(token: &str) -> [u8; 32] {
     digest.finalize().into()
 }
 
-#[utoipa::path(get, path = "/v1/status", summary = "Get local service status", description = "Returns listener addresses, bounded metadata and artifact-writer readiness, vault and notary configuration, preview limits, and current capture counts.", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/status", summary = "Get local service status", description = "Returns listener addresses, bounded metadata and artifact-writer readiness, vault and Notary configuration, preview limits, and current Trace counts.", responses((status = 200, body = StatusResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>, ApiError> {
     let metadata = state.persistence.metadata.clone();
     let probe_state = state.clone();
@@ -613,7 +624,7 @@ async fn status(State(state): State<AdminState>) -> Result<Json<StatusResponse>,
         }
         .into(),
         preview_chars: state.config.metadata.prompt_preview_chars,
-        counts: CountsResponse::from(counts),
+        counts: TraceCounts::from(counts),
         updates: UpdateStatusResponse {
             enabled: update.enabled,
             current_build_id: update.current_build_id.clone(),
@@ -658,7 +669,7 @@ async fn update_capture_setting(
     Ok(Json(CaptureSettingResponse { enabled }))
 }
 
-#[utoipa::path(get, path = "/v1/notaries", summary = "Get configured notary trust", description = "Returns a safe read-only projection of the local or server-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Registry membership describes allowed protocol use and does not report endpoint health.", responses((status = 200, body = NotariesResponse), (status = 401, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/notaries", summary = "List Notaries", description = "Returns a safe read-only projection of the locally pinned Registry or the explicitly configured self-hosted endpoint and key. Registry membership describes allowed protocol use and does not report endpoint health.", responses((status = 200, body = NotariesResponse), (status = 401, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn notaries(State(state): State<AdminState>) -> Result<Json<NotariesResponse>, ApiError> {
     let shared = if state.cluster_runtime.is_some() && state.config.notary.endpoint.is_none() {
         state
@@ -687,11 +698,14 @@ fn notaries_response(
             registry_source: None,
             generation: None,
             active_key_id: None,
-            notaries: vec![NotaryResponse {
+            notaries: vec![Notary {
+                name: "Configured notary".into(),
+                operator: "Self-hosted".into(),
                 endpoint: endpoint.to_string(),
                 transport: endpoint.transport.scheme().into(),
                 key_id: key_id(&public_key),
-                status: "configured".into(),
+                verification_key: hex::encode(public_key),
+                lifecycle: "configured".into(),
                 valid_from_unix_ms: None,
                 valid_until_unix_ms: None,
                 notarize_until_unix_ms: None,
@@ -729,7 +743,7 @@ fn registry_notaries_response(pinned: registry_service::PinnedRegistryState) -> 
         registry_source: pinned.registry_source,
         generation: Some(pinned.generation),
         active_key_id: Some(active_key_id),
-        notaries: records.into_iter().map(NotaryResponse::from).collect(),
+        notaries: records.into_iter().map(Notary::from).collect(),
     }
 }
 
@@ -745,31 +759,101 @@ fn notary_record_order(record: &RegistryRecord, active_key_id: &str) -> u8 {
     }
 }
 
+#[utoipa::path(get, path = "/v1/providers", summary = "List supported providers", description = "Returns only notaryd's explicit provider adapters, their pinned upstream hosts, client API styles, proxy base URLs, and configured readiness.", responses((status = 200, body = ProvidersResponse), (status = 401, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn providers(State(state): State<AdminState>) -> Json<ProvidersResponse> {
+    let proxy_origin = state
+        .config
+        .cluster
+        .as_ref()
+        .map(|cluster| cluster.proxy_origin.clone())
+        .unwrap_or_else(|| format!("http://{}", state.config.proxy.listen));
+    let definitions = [
+        (
+            "openai",
+            "OpenAI",
+            "api.openai.com",
+            "OpenAI Responses and Chat Completions",
+            &state.config.providers.openai,
+        ),
+        (
+            "openai_codex",
+            "OpenAI Codex",
+            "chatgpt.com",
+            "OpenAI Responses (Codex)",
+            &state.config.providers.codex,
+        ),
+        (
+            "anthropic",
+            "Anthropic",
+            "api.anthropic.com",
+            "Anthropic Messages",
+            &state.config.providers.anthropic,
+        ),
+        (
+            "deepseek",
+            "DeepSeek",
+            "api.deepseek.com",
+            "OpenAI-compatible Chat Completions",
+            &state.config.providers.deepseek,
+        ),
+        (
+            "openrouter",
+            "OpenRouter",
+            "openrouter.ai",
+            "OpenAI-compatible Chat Completions",
+            &state.config.providers.openrouter,
+        ),
+    ];
+    Json(ProvidersResponse {
+        providers: definitions
+            .into_iter()
+            .map(|(id, name, host, client_api, config)| Provider {
+                id: id.into(),
+                name: name.into(),
+                host: host.into(),
+                client_api: client_api.into(),
+                route_prefix: config.route_prefix.clone(),
+                proxy_base_url: format!("{proxy_origin}{}", config.route_prefix),
+                ready: config.enabled,
+            })
+            .collect(),
+    })
+}
+
 #[derive(Debug, Default, Deserialize)]
-struct CaptureQuery {
+#[serde(deny_unknown_fields)]
+struct TraceQuery {
     query: Option<String>,
     model: Option<String>,
     provider: Option<String>,
-    capture_status: Option<String>,
-    notarization_status: Option<String>,
+    state: Option<TraceState>,
+    status: Option<TraceOperationalStatus>,
     streaming: Option<bool>,
-    created_after_unix_ms: Option<u64>,
+    created_from_unix_ms: Option<u64>,
+    created_before_unix_ms: Option<u64>,
+    metadata_only: Option<bool>,
     limit: Option<u32>,
     cursor: Option<String>,
-    offset: Option<u64>,
 }
 
-#[utoipa::path(get, path = "/v1/traces", summary = "Search local traces", description = "Lists the local capture metadata with opaque cursor pagination, punctuation-safe preview search, and exact metadata filters. The legacy offset parameter is rejected; restart traversal without a cursor instead.", params(("query" = Option<String>, Query), ("model" = Option<String>, Query), ("provider" = Option<String>, Query), ("capture_status" = Option<String>, Query), ("notarization_status" = Option<String>, Query), ("streaming" = Option<bool>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200), ("cursor" = Option<String>, Query), ("offset" = Option<u64>, Query)), responses((status = 200, body = Page<CaptureResponse>), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/traces", summary = "Search Traces", description = "Lists continuing Trace records in stable newest-first order with opaque cursor pagination and exact state, operational-status, provider, model, streaming, and date filters.", params(("query" = Option<String>, Query), ("state" = Option<TraceState>, Query), ("status" = Option<TraceOperationalStatus>, Query), ("provider" = Option<String>, Query), ("model" = Option<String>, Query), ("streaming" = Option<bool>, Query), ("created_from_unix_ms" = Option<u64>, Query), ("created_before_unix_ms" = Option<u64>, Query), ("metadata_only" = Option<bool>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200), ("cursor" = Option<String>, Query)), responses((status = 200, body = TracePage), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn traces(
     State(state): State<AdminState>,
-    query: Result<Query<CaptureQuery>, QueryRejection>,
-) -> Result<Json<Page<CaptureResponse>>, ApiError> {
+    query: Result<Query<TraceQuery>, QueryRejection>,
+) -> Result<Json<TracePage>, ApiError> {
     let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
-    if query.offset.is_some() {
-        return Err(ApiError::bad_request("offset_pagination_removed"));
+    for timestamp in [query.created_from_unix_ms, query.created_before_unix_ms]
+        .into_iter()
+        .flatten()
+    {
+        validate_persisted_query_integer(timestamp)?;
     }
-    if let Some(created_after) = query.created_after_unix_ms {
-        validate_persisted_query_integer(created_after)?;
+    if query
+        .created_from_unix_ms
+        .zip(query.created_before_unix_ms)
+        .is_some_and(|(from, before)| from > before)
+    {
+        return Err(ApiError::bad_request("invalid_date_range"));
     }
     let limit = PageQuery {
         limit: query.limit,
@@ -783,10 +867,12 @@ async fn traces(
             &query.query,
             &query.model,
             &query.provider,
-            &query.capture_status,
-            &query.notarization_status,
+            &query.state,
+            &query.status,
             query.streaming,
-            query.created_after_unix_ms,
+            query.created_from_unix_ms,
+            query.created_before_unix_ms,
+            query.metadata_only,
         ),
         "created_at_unix_ms desc, trace_id desc",
     )
@@ -807,10 +893,16 @@ async fn traces(
             query: query.query,
             model: query.model,
             provider: query.provider,
-            capture_status: query.capture_status,
-            notarization_status: query.notarization_status,
+            state: query.state.map(TraceState::as_str).map(str::to_owned),
+            status: query
+                .status
+                .map(TraceOperationalStatus::as_str)
+                .map(str::to_owned),
+            capture_status: None,
+            notarization_status: None,
             streaming: query.streaming,
-            created_after_unix_ms: query.created_after_unix_ms,
+            created_after_unix_ms: query.created_from_unix_ms,
+            created_before_unix_ms: query.created_before_unix_ms,
             cursor,
             limit: limit + 1,
         })
@@ -820,17 +912,21 @@ async fn traces(
         TracePagePosition::from(capture)
     })
     .map_err(pagination_api_error)?;
-    Ok(Json(Page {
-        items: page.items.into_iter().map(CaptureResponse::from).collect(),
+    Ok(Json(TracePage {
+        items: page
+            .items
+            .into_iter()
+            .map(|trace| TraceSummary::from_stored(trace, query.metadata_only.unwrap_or(false)))
+            .collect(),
         next_cursor: page.next_cursor,
     }))
 }
 
-#[utoipa::path(get, path = "/v1/traces/{trace_id}", summary = "Get a capture", description = "Returns safe capture metadata, retained artifact digests, and notarization history for one capture.", params(("trace_id" = String, Path)), responses((status = 200, body = CaptureDetailResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/traces/{trace_id}", summary = "Get a Trace", description = "Returns one continuing Trace with capture facts, current state and operational status, retained evidence facts, notarization attempt history, and its canonical share summary.", params(("trace_id" = String, Path)), responses((status = 200, body = TraceDetail), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn trace(
     State(state): State<AdminState>,
     Path(trace_id): Path<String>,
-) -> Result<Json<CaptureDetailResponse>, ApiError> {
+) -> Result<Json<TraceDetail>, ApiError> {
     validate_id(&trace_id, "trc-")?;
     let capture = state
         .persistence
@@ -838,7 +934,7 @@ async fn trace(
         .trace(&trace_id)
         .await
         .map_err(|_| ApiError::internal("metadata_query_failed"))?
-        .ok_or_else(|| ApiError::not_found("capture_not_found"))?;
+        .ok_or_else(|| ApiError::not_found("trace_not_found"))?;
     let artifacts = state
         .persistence
         .metadata
@@ -856,33 +952,41 @@ async fn trace(
         })
         .await
         .map_err(|_| ApiError::internal("metadata_query_failed"))?;
-    let mut notarizations = Vec::with_capacity(operations.len());
-    for operation in operations {
-        notarizations.push(
+    let notarization = match operations.into_iter().next() {
+        Some(operation) => Some(
             operation_response(&state.persistence.metadata, operation)
                 .await
                 .map_err(|_| ApiError::internal("metadata_query_failed"))?,
-        );
-    }
-    Ok(Json(CaptureDetailResponse {
-        capture: capture.into(),
+        ),
+        None => None,
+    };
+    let share = state
+        .persistence
+        .metadata
+        .trace_share(&trace_id)
+        .await
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?
+        .map(TraceShare::from_record);
+    Ok(Json(TraceDetail {
+        trace: capture.into(),
         artifacts: artifacts
             .into_iter()
-            .map(|artifact| ArtifactResponse {
+            .map(|artifact| EvidenceArtifact {
                 kind: artifact.key.kind().as_str().to_owned(),
                 size_bytes: artifact.size_bytes,
                 sha256: artifact.sha256,
             })
             .collect(),
-        notarizations,
+        notarization,
+        share,
     }))
 }
 
-#[utoipa::path(post, path = "/v1/traces/{trace_id}/notarizations", summary = "Queue capture notarization", description = "Queues durable proof generation for an eligible captured provider response or returns its existing notarization operation. Traces with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.", params(("trace_id" = String, Path)), responses((status = 202, body = NotarizationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/traces/{trace_id}/notarizations", summary = "Notarize a Trace", description = "Idempotently starts, resumes, or retries the Trace's one durable notarization operation and returns its technical polling location.", params(("trace_id" = String, Path)), responses((status = 202, body = NotarizationRequest), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_notarization(
     State(state): State<AdminState>,
     Path(trace_id): Path<String>,
-) -> Result<(StatusCode, Json<NotarizationResponse>), ApiError> {
+) -> Result<Response, ApiError> {
     validate_id(&trace_id, "trc-")?;
     let capture = state
         .persistence
@@ -912,80 +1016,25 @@ async fn start_notarization(
         queued.1,
     );
     state.work_available.notify_one();
+    let location = HeaderValue::from_str(&format!("/v1/operations/{}", queued.0.operation_id))
+        .map_err(|_| ApiError::internal("operation_location_invalid"))?;
     Ok((
         StatusCode::ACCEPTED,
-        Json(NotarizationResponse {
+        [(header::LOCATION, location)],
+        Json(NotarizationRequest {
+            trace_id,
             operation: queued.0,
             deduplicated: queued.1,
         }),
-    ))
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct OperationQuery {
-    state: Option<String>,
-    kind: Option<String>,
-    trace_id: Option<String>,
-    limit: Option<u32>,
-    cursor: Option<String>,
-}
-
-#[utoipa::path(get, path = "/v1/operations", summary = "List background operations", description = "Lists bounded operation summaries, including milestone progress, with opaque cursor pagination and optional state, kind, and capture filters. Fetch one operation for its complete attempt history.", params(("state" = Option<String>, Query), ("kind" = Option<String>, Query), ("trace_id" = Option<String>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200), ("cursor" = Option<String>, Query)), responses((status = 200, body = Page<OperationSummaryResponse>), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn operations(
-    State(state): State<AdminState>,
-    query: Result<Query<OperationQuery>, QueryRejection>,
-) -> Result<Json<Page<OperationSummaryResponse>>, ApiError> {
-    let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
-    let limit = PageQuery {
-        limit: query.limit,
-        cursor: query.cursor.clone(),
-    }
-    .limit(50, 200)
-    .map_err(pagination_api_error)?;
-    let scope = CursorScope::new(
-        "/v1/operations",
-        &(&query.state, &query.kind, &query.trace_id),
-        "created_at_unix_ms desc, operation_id desc",
     )
-    .map_err(pagination_api_error)?;
-    let cursor = query
-        .cursor
-        .as_deref()
-        .map(|cursor| decode_cursor::<OperationPagePosition>(&scope, cursor))
-        .transpose()
-        .map_err(pagination_api_error)?;
-    if let Some(position) = cursor.as_ref() {
-        validate_persisted_cursor_integer(position.created_at_unix_ms)?;
-    }
-    let values = state
-        .persistence
-        .metadata
-        .operations(OperationFilters {
-            state: query.state,
-            kind: query.kind,
-            trace_id: query.trace_id,
-            cursor,
-            limit: limit + 1,
-        })
-        .await
-        .map_err(metadata_api_error)?
-        .into_iter()
-        .map(OperationSummaryResponse::from)
-        .collect::<Vec<_>>();
-    let page =
-        Page::from_limit_plus_one(values, limit, &scope, |operation| OperationPagePosition {
-            created_at_unix_ms: operation.created_at_unix_ms,
-            operation_id: operation.operation_id.clone(),
-        })
-        .map_err(pagination_api_error)?;
-    Ok(Json(page))
+        .into_response())
 }
 
-#[utoipa::path(get, path = "/v1/operations/{operation_id}", summary = "Get an operation", description = "Returns the current state, milestone progress, and complete attempt history for one durable operation.", params(("operation_id" = String, Path)), responses((status = 200, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/operations/{operation_id}", summary = "Get an operation", description = "Returns the current state, milestone progress, and complete attempt history for one durable operation.", params(("operation_id" = String, Path)), responses((status = 200, body = TechnicalOperation), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn operation(
     State(state): State<AdminState>,
     Path(operation_id): Path<String>,
-) -> Result<Json<OperationResponse>, ApiError> {
+) -> Result<Json<TechnicalOperation>, ApiError> {
     validate_id(&operation_id, "op-")?;
     let operation = state
         .persistence
@@ -1000,39 +1049,16 @@ async fn operation(
     Ok(Json(value))
 }
 
-#[utoipa::path(post, path = "/v1/operations/{operation_id}/retry", summary = "Retry an operation", description = "Requeues a failed or restart-interrupted operation while preserving its durable identity and attempt history.", params(("operation_id" = String, Path)), responses((status = 202, body = OperationResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn retry_operation(
-    State(state): State<AdminState>,
-    Path(operation_id): Path<String>,
-) -> Result<(StatusCode, Json<OperationResponse>), ApiError> {
-    validate_id(&operation_id, "op-")?;
-    let operation = state
-        .persistence
-        .metadata
-        .retry_operation(
-            &operation_id,
-            now_ms().map_err(|_| ApiError::internal("clock_failed"))?,
-        )
-        .await
-        .map_err(|_| ApiError::internal("operation_retry_failed"))?
-        .ok_or_else(|| ApiError::conflict("operation_not_retryable"))?;
-    let value = operation_response(&state.persistence.metadata, operation)
-        .await
-        .map_err(|_| ApiError::internal("metadata_query_failed"))?;
-    state.work_available.notify_one();
-    Ok((StatusCode::ACCEPTED, Json(value)))
-}
-
-#[utoipa::path(get, path = "/v1/traces/{trace_id}/trace", summary = "Decode a trace package", description = "Returns the trace package manifest and canonical OpenTelemetry trace for inspection.", params(("trace_id" = String, Path)), responses((status = 200, body = TraceResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/traces/{trace_id}/content", summary = "Inspect disclosed Trace content", description = "Returns the bounded manifest and canonical disclosed OpenTelemetry content from the retained package. It never returns the encrypted capture checkpoint or undisclosed request material.", params(("trace_id" = String, Path)), responses((status = 200, body = TraceContent), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn trace_content(
     State(state): State<AdminState>,
     Path(trace_id): Path<String>,
-) -> Result<Json<TraceResponse>, ApiError> {
+) -> Result<Json<TraceContent>, ApiError> {
     validate_id(&trace_id, "trc-")?;
     let bytes = trace_package_bytes(&state.persistence, &trace_id).await?;
-    let value = tokio::task::spawn_blocking(move || -> Result<TraceResponse> {
+    let value = tokio::task::spawn_blocking(move || -> Result<TraceContent> {
         let archive = read_trace_package_archive(&bytes)?;
-        Ok(TraceResponse {
+        Ok(TraceContent {
             trace_id,
             manifest: serde_json::from_slice(archive.file("manifest.json")?)?,
             trace: serde_json::from_slice(archive.file("trace.otlp.json")?)?,
@@ -1044,13 +1070,13 @@ async fn trace_content(
     Ok(Json(value))
 }
 
-#[utoipa::path(get, path = "/v1/traces/{trace_id}/package", summary = "Download a notarized verified package", description = "Returns the exact stored canonical .llmtrace bytes as the primary portable verification artifact.", params(("trace_id" = String, Path)), responses((status = 200, body = Vec<u8>, content_type = "application/vnd.exalto.notary.trace-package+zip"), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/traces/{trace_id}/package.llmtrace", summary = "Export a Trace package", description = "Returns the exact retained canonical .llmtrace bytes without conversion, regeneration, or transformation, with length and SHA-256 metadata and no-store caching.", params(("trace_id" = String, Path)), responses((status = 200, body = Vec<u8>, content_type = "application/vnd.exalto.notary.trace-package+zip"), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn download_package(
     State(state): State<AdminState>,
     Path(trace_id): Path<String>,
 ) -> Result<Response, ApiError> {
     validate_id(&trace_id, "trc-")?;
-    let bytes = trace_package_bytes(&state.persistence, &trace_id).await?;
+    let (record, bytes) = trace_package(&state.persistence, &trace_id).await?;
     let content_disposition =
         HeaderValue::from_str(&format!("attachment; filename=\"{trace_id}.llmtrace\""))
             .map_err(|_| ApiError::internal("package_filename_invalid"))?;
@@ -1062,6 +1088,16 @@ async fn download_package(
                 HeaderValue::from_static(ARCHIVE_CONTENT_TYPE),
             ),
             (header::CONTENT_DISPOSITION, content_disposition),
+            (
+                header::CONTENT_LENGTH,
+                HeaderValue::from_str(&bytes.len().to_string())
+                    .map_err(|_| ApiError::internal("package_length_invalid"))?,
+            ),
+            (
+                header::HeaderName::from_static("x-notary-sha256"),
+                HeaderValue::from_str(&record.sha256)
+                    .map_err(|_| ApiError::internal("package_digest_invalid"))?,
+            ),
             (
                 header::CACHE_CONTROL,
                 HeaderValue::from_static("private, no-store"),
@@ -1076,11 +1112,11 @@ async fn download_package(
         .into_response())
 }
 
-#[utoipa::path(post, path = "/v1/traces/{trace_id}/trace:verify", summary = "Verify a trace package", description = "Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.", params(("trace_id" = String, Path)), responses((status = 200, body = VerificationResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/traces/{trace_id}/verify", summary = "Verify a retained Trace", description = "Verifies the retained package evidence, disclosure, hashes, provider mapping, and canonical content against configured Notary trust.", params(("trace_id" = String, Path)), responses((status = 200, body = VerificationResult), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn verify_trace(
     State(state): State<AdminState>,
     Path(trace_id): Path<String>,
-) -> Result<Json<VerificationResponse>, ApiError> {
+) -> Result<Json<VerificationResult>, ApiError> {
     validate_id(&trace_id, "trc-")?;
     let bytes = trace_package_bytes(&state.persistence, &trace_id).await?;
     let verified_at_unix_ms = now_ms().map_err(|_| ApiError::internal("clock_error"))?;
@@ -1101,7 +1137,7 @@ async fn verify_trace(
         } else {
             None
         };
-    let value = tokio::task::spawn_blocking(move || -> Result<VerificationResponse> {
+    let value = tokio::task::spawn_blocking(move || -> Result<VerificationResult> {
         let embedded_key = trace_package_notary_key_bytes(&bytes)?;
         let (trusted_key, notary_key_id, trust_source) = match configured_key {
             Some(key) => {
@@ -1120,12 +1156,13 @@ async fn verify_trace(
             }
         };
         let manifest = verify_trace_package_bytes(&bytes, &trusted_key)?.manifest;
-        Ok(VerificationResponse {
-            trace_id: manifest.trace_id().into(),
-            verified: true,
+        Ok(VerificationResult {
+            outcome: VerificationOutcome::Passed,
+            trace_id: Some(manifest.trace_id().into()),
             verified_at_unix_ms,
-            notary_key_id,
-            trust_source,
+            notary_key_id: Some(notary_key_id),
+            trust_source: Some(trust_source),
+            failure_code: None,
         })
     })
     .await
@@ -1134,12 +1171,12 @@ async fn verify_trace(
     Ok(Json(value))
 }
 
-#[utoipa::path(post, path = "/v1/traces:verify", summary = "Verify a portable trace package", description = "Verifies uploaded .llmtrace bytes against an optional explicit notary key or the daemon's configured trust source. The package is processed in memory and is not retained.", request_body(content = Vec<u8>, content_type = "application/vnd.exalto.notary.trace-package+zip"), params(("x-notary-trusted-notary-key" = Option<String>, Header, description = "Optional compressed SEC1 notary public key in hexadecimal")), responses((status = 200, body = VerificationResponse), (status = 401, body = ErrorEnvelope), (status = 422, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/verify", summary = "Verify a portable Trace package", description = "Verifies exactly one bounded .llmtrace body against a request-scoped key override or configured Notary trust. The package is never imported, retained, cataloged, or shared.", request_body(content = Vec<u8>, content_type = "application/vnd.exalto.notary.trace-package+zip"), params(("x-notary-trusted-notary-key" = Option<String>, Header, description = "Optional request-scoped compressed SEC1 Notary verification key in hexadecimal")), responses((status = 200, body = VerificationResult), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn verify_uploaded_trace(
     State(state): State<AdminState>,
     headers: HeaderMap,
     bytes: Bytes,
-) -> Result<Json<VerificationResponse>, ApiError> {
+) -> Result<Json<VerificationResult>, ApiError> {
     let explicit_key = headers
         .get(TRUSTED_NOTARY_KEY_HEADER)
         .map(|value| value.to_str().map(str::to_owned))
@@ -1163,7 +1200,7 @@ async fn verify_uploaded_trace(
         } else {
             None
         };
-    let value = tokio::task::spawn_blocking(move || -> Result<VerificationResponse> {
+    let value = tokio::task::spawn_blocking(move || -> Result<VerificationResult> {
         let embedded_key = trace_package_notary_key_bytes(&bytes)?;
         let (trusted_key, notary_key_id, trust_source) = if let Some(value) = explicit_key {
             let (key, key_id) = registry_service::explicit_key(&value)?;
@@ -1182,22 +1219,47 @@ async fn verify_uploaded_trace(
             (embedded_key, key_id, trust)
         };
         let manifest = verify_trace_package_bytes(&bytes, &trusted_key)?.manifest;
-        Ok(VerificationResponse {
-            trace_id: manifest.trace_id().into(),
-            verified: true,
+        Ok(VerificationResult {
+            outcome: VerificationOutcome::Passed,
+            trace_id: Some(manifest.trace_id().into()),
             verified_at_unix_ms,
-            notary_key_id,
-            trust_source,
+            notary_key_id: Some(notary_key_id),
+            trust_source: Some(trust_source),
+            failure_code: None,
         })
     })
     .await
-    .map_err(|_| ApiError::internal("verification_task_failed"))?
-    .map_err(|_| ApiError::unprocessable("trace_verification_failed"))?;
-    Ok(Json(value))
+    .map_err(|_| ApiError::internal("verification_task_failed"))?;
+    Ok(Json(match value {
+        Ok(value) => value,
+        Err(error) => {
+            let unsupported = format!("{error:#}").contains("unsupported");
+            VerificationResult {
+                outcome: if unsupported {
+                    VerificationOutcome::Unsupported
+                } else {
+                    VerificationOutcome::Failed
+                },
+                trace_id: None,
+                verified_at_unix_ms,
+                notary_key_id: None,
+                trust_source: None,
+                failure_code: Some(
+                    if unsupported {
+                        "unsupported_trace_package"
+                    } else {
+                        "verification_failed"
+                    }
+                    .into(),
+                ),
+            }
+        }
+    }))
 }
 
 #[derive(Debug, Default, Deserialize)]
-struct EventQuery {
+#[serde(deny_unknown_fields)]
+struct ActivityQuery {
     /// Back-pagination cursor returned as `next_cursor`.
     cursor: Option<String>,
     /// High-water cursor returned by an earlier response; follows newer events.
@@ -1210,11 +1272,11 @@ struct EventQuery {
     limit: Option<u32>,
 }
 
-#[utoipa::path(get, path = "/v1/events", summary = "List service events", description = "Lists redacted event history with opaque back-pagination and a separate high-water cursor for following new events.", params(("cursor" = Option<String>, Query), ("after" = Option<String>, Query), ("severity" = Option<String>, Query), ("event_type" = Option<String>, Query), ("trace_id" = Option<String>, Query), ("operation_id" = Option<String>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200)), responses((status = 200, body = EventListResponse), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn events(
+#[utoipa::path(get, path = "/v1/activity", summary = "List safe Activity", description = "Lists bounded, redacted Trace and service activity with opaque history pagination and a separate high-water cursor for following new items. Prompts, responses, credentials, headers, vault material, and decrypted capture content are never included.", params(("cursor" = Option<String>, Query), ("after" = Option<String>, Query), ("severity" = Option<String>, Query), ("event_type" = Option<String>, Query), ("trace_id" = Option<String>, Query), ("operation_id" = Option<String>, Query), ("created_after_unix_ms" = Option<u64>, Query), ("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 200)), responses((status = 200, body = ActivityPage), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn activity(
     State(state): State<AdminState>,
-    query: Result<Query<EventQuery>, QueryRejection>,
-) -> Result<Json<EventListResponse>, ApiError> {
+    query: Result<Query<ActivityQuery>, QueryRejection>,
+) -> Result<Json<ActivityPage>, ApiError> {
     let Query(query) = query.map_err(|_| ApiError::bad_request("invalid_query_parameter"))?;
     if let Some(created_after) = query.created_after_unix_ms {
         validate_persisted_query_integer(created_after)?;
@@ -1232,7 +1294,7 @@ async fn events(
         &query.operation_id,
         query.created_after_unix_ms,
     );
-    let follow_scope = CursorScope::new("/v1/events", &(filter_scope, "follow"), "event_id asc")
+    let follow_scope = CursorScope::new("/v1/activity", &(filter_scope, "follow"), "event_id asc")
         .map_err(pagination_api_error)?;
     let after = query
         .after
@@ -1244,7 +1306,7 @@ async fn events(
         validate_persisted_cursor_integer(position.event_id)?;
     }
     let page_scope = CursorScope::new(
-        "/v1/events",
+        "/v1/activity",
         &(
             &query.severity,
             &query.event_type,
@@ -1306,14 +1368,14 @@ async fn events(
         .map(|event_id| encode_cursor(&follow_scope, &EventPagePosition { event_id }))
         .transpose()
         .map_err(pagination_api_error)?;
-    Ok(Json(EventListResponse {
+    Ok(Json(ActivityPage {
         items: page.items.into_iter().map(Into::into).collect(),
         next_cursor: page.next_cursor,
         high_water_cursor,
     }))
 }
 
-#[utoipa::path(get, path = "/v1/account", summary = "Get the LLM Notary account connection", description = "Reports whether this local service has an account connection used for hosted admission, credits, and sharing.", responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/account", summary = "Get the Notary account connection", description = "Reports whether this local service has an account connection used for hosted admission, credits, and sharing.", responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn account_status(
     State(_state): State<AdminState>,
 ) -> Result<Json<AccountConnectionResponse>, ApiError> {
@@ -1355,7 +1417,7 @@ fn default_device_name() -> String {
     auth::DEFAULT_DEVICE_NAME.to_owned()
 }
 
-#[utoipa::path(post, path = "/v1/account", summary = "Connect an LLM Notary account", description = "Starts browser approval for an account connection used for hosted admission, credits, and sharing. Browser approval is unavailable while the daemon uses an injected API key.", request_body = AccountConnectionRequest, responses((status = 202, body = AccountConnectionStartedResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(post, path = "/v1/account", summary = "Connect a Notary account", description = "Starts browser approval for an account connection used for hosted admission, credits, and sharing. Browser approval is unavailable while the daemon uses an injected API key.", request_body = AccountConnectionRequest, responses((status = 202, body = AccountConnectionStartedResponse), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn start_account_connection(
     State(state): State<AdminState>,
     Json(body): Json<AccountConnectionRequest>,
@@ -1384,7 +1446,7 @@ async fn start_account_connection(
     Ok((StatusCode::ACCEPTED, Json(response)))
 }
 
-#[utoipa::path(get, path = "/v1/account/{request_id}", summary = "Poll account authorization", description = "Checks a pending LLM Notary account approval after its required polling interval.", params(("request_id" = String, Path)), responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(get, path = "/v1/account/{request_id}", summary = "Poll account authorization", description = "Checks a pending Notary account approval after its required polling interval.", params(("request_id" = String, Path)), responses((status = 200, body = AccountConnectionResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn poll_account_connection(
     State(state): State<AdminState>,
     Path(request_id): Path<String>,
@@ -1436,7 +1498,7 @@ async fn poll_account_connection(
     }
 }
 
-#[utoipa::path(delete, path = "/v1/account", summary = "Disconnect the LLM Notary account", description = "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.", responses((status = 204, description = "Account disconnected; hosted sessions return to public access"), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+#[utoipa::path(delete, path = "/v1/account", summary = "Disconnect the Notary account", description = "Removes the local account credentials. Future hosted sessions use public access until a new browser approval is completed. Injected API keys must instead be revoked in the hosted dashboard.", responses((status = 204, description = "Account disconnected; hosted sessions return to public access"), (status = 401, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
 async fn end_account_connection(State(state): State<AdminState>) -> Result<StatusCode, ApiError> {
     let _credentials = state.account_credentials.lock().await;
     if auth::api_key_mode_active()
@@ -1466,95 +1528,262 @@ impl From<ShareVisibility> for sharing::ShareVisibility {
     }
 }
 
-#[derive(Debug, Deserialize, ToSchema)]
+#[derive(Deserialize)]
+#[serde(transparent)]
+struct SecretInput(String);
+
+impl SecretInput {
+    fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for SecretInput {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.0);
+    }
+}
+
+#[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-struct CreateShareRequest {
+struct PutTraceShareRequest {
     visibility: ShareVisibility,
-    /// Accept only unexplained high-entropy false positives after review.
+    /// Optional expiry measured from the current time. Zero clears expiry.
+    #[schema(maximum = 365)]
+    expires_in_days: Option<u32>,
+    /// A new password, or an empty string to remove it. This value is never
+    /// logged, returned, or persisted by notaryd.
+    #[schema(value_type = Option<String>, write_only, min_length = 0, max_length = 128)]
+    password: Option<SecretInput>,
+    /// Accept only reviewed, unexplained high-entropy safety findings.
     #[serde(default)]
     force: bool,
 }
 
-#[utoipa::path(post, path = "/v1/traces/{trace_id}/shares", summary = "Share a notarized verified session", description = "Verifies one notarized capture locally, applies the public disclosure safety policy, and uploads the exact package. Force overrides only unexplained high-entropy values.", params(("trace_id" = String, Path)), request_body = CreateShareRequest, responses((status = 202, body = ShareResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn share_capture(
+#[utoipa::path(get, path = "/v1/traces/{trace_id}/share", summary = "Get a Trace share", description = "Returns the current canonical share's safe access and progress state. Hosted intake and presigned upload URLs are never exposed.", params(("trace_id" = String, Path)), responses((status = 200, body = TraceShare), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn get_trace_share(
     State(state): State<AdminState>,
     Path(trace_id): Path<String>,
-    Json(body): Json<CreateShareRequest>,
-) -> Result<(StatusCode, Json<ShareResponse>), ApiError> {
+) -> Result<Json<TraceShare>, ApiError> {
     validate_id(&trace_id, "trc-")?;
-    let bytes = trace_package_bytes(&state.persistence, &trace_id).await?;
-    let _credentials = state.account_credentials.lock().await;
-    let shared_trust = if state.cluster_runtime.is_some() && state.config.notary.endpoint.is_none()
-    {
-        let (registry, source) = proxy::fetch_registry_from(
-            &auth::configured_api_origin()
-                .map_err(|_| ApiError::internal("share_configuration_invalid"))?,
-        )
+    let stored = state
+        .persistence
+        .metadata
+        .trace_share(&trace_id)
         .await
-        .map_err(|_| ApiError::service_unavailable("registry_unavailable"))?;
-        Some(
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?
+        .ok_or_else(|| ApiError::not_found("trace_share_not_found"))?;
+    let _credentials = state.account_credentials.lock().await;
+    let status = match sharing::share_status(&stored.share_id).await {
+        Ok(status) => status,
+        Err(sharing::ShareStatusError::NotFound) => {
             state
                 .persistence
-                .cluster_metadata()
-                .pin_registry(registry, source.as_str())
+                .metadata
+                .delete_trace_share(&trace_id)
                 .await
-                .map_err(|_| ApiError::service_unavailable("registry_not_ready"))?,
-        )
-    } else {
-        None
+                .map_err(|_| ApiError::internal("metadata_update_failed"))?;
+            return Err(ApiError::not_found("trace_share_not_found"));
+        }
+        Err(error) => return Err(share_status_api_error(error)),
     };
-    let (share, verified_trace_id, _) = sharing::share_package_bytes(
-        &bytes,
-        state.config.notary.public_key.as_deref(),
-        shared_trust.as_ref(),
-        body.visibility.into(),
-        body.force,
-    )
-    .await
-    .map_err(|_| ApiError::internal("share_failed"))?;
-    Ok((
-        StatusCode::ACCEPTED,
-        Json(ShareResponse {
-            trace_id: verified_trace_id,
-            status_url: format!("/v1/shares/{}", share.share_id),
-            share_id: share.share_id,
-            state: share.state,
-            visibility: body.visibility,
-            share_url: share.share_url,
-            package_url: share.package_url,
-        }),
-    ))
+    let record = trace_share_record_from_status(trace_id, status)?;
+    state
+        .persistence
+        .metadata
+        .put_trace_share(record.clone())
+        .await
+        .map_err(|_| ApiError::internal("metadata_update_failed"))?;
+    Ok(Json(TraceShare::from_record(record)))
 }
 
-#[utoipa::path(get, path = "/v1/shares/{share_id}", summary = "Get share status", description = "Returns the latest admission state and stable links for a share.", params(("share_id" = String, Path)), responses((status = 200, body = ShareStatusResponse), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
-async fn share_status(
+#[utoipa::path(put, path = "/v1/traces/{trace_id}/share", summary = "Create or update a Trace share", description = "Idempotently creates, resumes, retries, or changes the Trace's one canonical share after local verification and disclosure-safety checks. The encrypted .llmcapture is never uploaded.", params(("trace_id" = String, Path)), request_body = PutTraceShareRequest, responses((status = 200, body = TraceShare), (status = 202, body = TraceShare), (status = 400, body = ErrorEnvelope), (status = 401, body = ErrorEnvelope), (status = 404, body = ErrorEnvelope), (status = 409, body = ErrorEnvelope), (status = 500, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn put_trace_share(
     State(state): State<AdminState>,
-    Path(share_id): Path<String>,
-) -> Result<Json<ShareStatusResponse>, ApiError> {
-    validate_id(&share_id, "")?;
+    Path(trace_id): Path<String>,
+    body: std::result::Result<Json<PutTraceShareRequest>, JsonRejection>,
+) -> Result<Response, ApiError> {
+    let Json(body) = body.map_err(|_| ApiError::bad_request("invalid_request_body"))?;
+    validate_id(&trace_id, "trc-")?;
+    if body.expires_in_days.is_some_and(|days| days > 365)
+        || body.password.as_ref().is_some_and(|password| {
+            let length = password.expose().len();
+            length != 0 && !(8..=128).contains(&length)
+        })
+    {
+        return Err(ApiError::bad_request("invalid_share_access_settings"));
+    }
     let _credentials = state.account_credentials.lock().await;
-    let status = sharing::share_status(&share_id)
+    let existing = state
+        .persistence
+        .metadata
+        .trace_share(&trace_id)
         .await
-        .map_err(|error| match error {
-            sharing::ShareStatusError::Authentication => {
-                ApiError::account_authentication_required()
-            }
-            sharing::ShareStatusError::NotFound => ApiError::not_found("share_not_found"),
-            sharing::ShareStatusError::Unavailable => {
-                ApiError::service_unavailable("share_status_unavailable")
-            }
-        })?;
-    Ok(Json(ShareStatusResponse {
-        share_id: status.share_id,
-        state: status.state,
-        failure_code: status.failure_code,
-        visibility: match status.visibility {
-            sharing::ShareVisibility::Unlisted => ShareVisibility::Unlisted,
-            sharing::ShareVisibility::Listed => ShareVisibility::Listed,
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?;
+    let mut created = false;
+    let record = if let Some(existing) = existing {
+        let status = sharing::update_share_settings(
+            &existing.share_id,
+            Some(body.visibility.into()),
+            Some(true),
+            body.password.as_ref().map(SecretInput::expose),
+            body.expires_in_days,
+        )
+        .await
+        .map_err(share_status_api_error)?;
+        trace_share_record_from_status(trace_id.clone(), status)?
+    } else {
+        created = true;
+        let bytes = trace_package_bytes(&state.persistence, &trace_id).await?;
+        let shared_trust = load_share_registry(&state).await?;
+        let (share, verified_trace_id, _) = sharing::share_package_bytes(
+            &bytes,
+            state.config.notary.public_key.as_deref(),
+            shared_trust.as_ref(),
+            body.visibility.into(),
+            body.force,
+        )
+        .await
+        .map_err(|_| ApiError::internal("share_failed"))?;
+        if verified_trace_id != trace_id {
+            return Err(ApiError::conflict("trace_package_identity_mismatch"));
+        }
+        let initial_status = sharing::ShareStatus {
+            share_id: share.share_id,
+            state: share.state,
+            failure_code: None,
+            share_url: share.share_url,
+            package_url: share.package_url,
+            visibility: share.visibility,
+            published: share.published,
+            password_protected: share.password_protected,
+            expires_at: share.expires_at,
+        };
+        // Persist the hosted identity before the optional access update so a
+        // transient PATCH failure can resume this share instead of creating a
+        // second one on retry.
+        let initial_record = trace_share_record_from_status(trace_id.clone(), initial_status)?;
+        state
+            .persistence
+            .metadata
+            .put_trace_share(initial_record.clone())
+            .await
+            .map_err(|_| ApiError::internal("metadata_update_failed"))?;
+        if body.password.is_some() || body.expires_in_days.is_some() {
+            let status = sharing::update_share_settings(
+                &initial_record.share_id,
+                Some(body.visibility.into()),
+                Some(true),
+                body.password.as_ref().map(SecretInput::expose),
+                body.expires_in_days,
+            )
+            .await
+            .map_err(share_status_api_error)?;
+            trace_share_record_from_status(trace_id.clone(), status)?
+        } else {
+            initial_record
+        }
+    };
+    state
+        .persistence
+        .metadata
+        .put_trace_share(record.clone())
+        .await
+        .map_err(|_| ApiError::internal("metadata_update_failed"))?;
+    Ok((
+        if created {
+            StatusCode::ACCEPTED
+        } else {
+            StatusCode::OK
         },
+        Json(TraceShare::from_record(record)),
+    )
+        .into_response())
+}
+
+#[utoipa::path(delete, path = "/v1/traces/{trace_id}/share", summary = "Stop sharing a Trace", description = "Stops public access to the canonical share without deleting or changing the local Notarized Trace.", params(("trace_id" = String, Path)), responses((status = 204, description = "Sharing stopped"), (status = 401, body = ErrorEnvelope), (status = 503, body = ErrorEnvelope)), security((), ("basicAuth" = [])), tag = "local-admin")]
+async fn delete_trace_share(
+    State(state): State<AdminState>,
+    Path(trace_id): Path<String>,
+) -> Result<StatusCode, ApiError> {
+    validate_id(&trace_id, "trc-")?;
+    let Some(stored) = state
+        .persistence
+        .metadata
+        .trace_share(&trace_id)
+        .await
+        .map_err(|_| ApiError::internal("metadata_query_failed"))?
+    else {
+        return Ok(StatusCode::NO_CONTENT);
+    };
+    let _credentials = state.account_credentials.lock().await;
+    match sharing::update_share_settings(&stored.share_id, None, Some(false), None, None).await {
+        Ok(_) | Err(sharing::ShareStatusError::NotFound) => {}
+        Err(error) => return Err(share_status_api_error(error)),
+    }
+    state
+        .persistence
+        .metadata
+        .delete_trace_share(&trace_id)
+        .await
+        .map_err(|_| ApiError::internal("metadata_update_failed"))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn load_share_registry(state: &AdminState) -> Result<Option<RegistrySnapshot>, ApiError> {
+    if state.cluster_runtime.is_none() || state.config.notary.endpoint.is_some() {
+        return Ok(None);
+    }
+    let (registry, source) = proxy::fetch_registry_from(
+        &auth::configured_api_origin()
+            .map_err(|_| ApiError::internal("share_configuration_invalid"))?,
+    )
+    .await
+    .map_err(|_| ApiError::service_unavailable("registry_unavailable"))?;
+    state
+        .persistence
+        .cluster_metadata()
+        .pin_registry(registry, source.as_str())
+        .await
+        .map(Some)
+        .map_err(|_| ApiError::service_unavailable("registry_not_ready"))
+}
+
+fn share_status_api_error(error: sharing::ShareStatusError) -> ApiError {
+    match error {
+        sharing::ShareStatusError::Authentication => ApiError::account_authentication_required(),
+        sharing::ShareStatusError::NotFound => ApiError::not_found("trace_share_not_found"),
+        sharing::ShareStatusError::Unavailable => {
+            ApiError::service_unavailable("share_status_unavailable")
+        }
+    }
+}
+
+fn trace_share_record_from_status(
+    trace_id: String,
+    status: sharing::ShareStatus,
+) -> Result<TraceShareRecord, ApiError> {
+    Ok(TraceShareRecord {
+        trace_id,
+        share_id: status.share_id,
+        state: ShareProgress::from_hosted(&status.state).as_str().into(),
+        visibility: status.visibility.as_str().into(),
+        published: status.published,
+        password_protected: status.password_protected,
+        expires_at_unix_ms: match status.expires_at {
+            Some(value) => Some(
+                u64::try_from(value)
+                    .ok()
+                    .and_then(|value| value.checked_mul(1_000))
+                    .ok_or_else(|| ApiError::internal("share_expiry_invalid"))?,
+            ),
+            None => None,
+        },
+        failure_code: status.failure_code,
         share_url: status.share_url,
         package_url: status.package_url,
-    }))
+        updated_at_unix_ms: now_ms().map_err(|_| ApiError::internal("clock_error"))?,
+    })
 }
 
 async fn artifact_record(
@@ -1576,13 +1805,26 @@ async fn trace_package_bytes(
     persistence: &Persistence,
     trace_id: &str,
 ) -> Result<Vec<u8>, ApiError> {
+    trace_package(persistence, trace_id)
+        .await
+        .map(|(_, bytes)| bytes)
+}
+
+async fn trace_package(
+    persistence: &Persistence,
+    trace_id: &str,
+) -> Result<(ArtifactRecord, Vec<u8>), ApiError> {
     let record = artifact_record(persistence, trace_id, ArtifactKind::TracePackage).await?;
     let verified = persistence
         .artifacts
         .read_verified(&record, MAX_ARCHIVE_WIRE_BYTES)
         .await
         .map_err(map_artifact_read_error)?;
-    verified.into_bytes().await.map_err(map_artifact_read_error)
+    let bytes = verified
+        .into_bytes()
+        .await
+        .map_err(map_artifact_read_error)?;
+    Ok((record, bytes))
 }
 
 fn map_artifact_read_error(error: ArtifactStoreError) -> ApiError {
@@ -2173,24 +2415,24 @@ struct ReadinessResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct CountsResponse {
-    total_traces: u64,
-    capturing: u64,
-    ready_to_notarize: u64,
+struct TraceCounts {
+    captured: u64,
+    notarizing: u64,
     notarized: u64,
-    failed: u64,
-    active_operations: u64,
+    needs_attention: u64,
+    capturing: u64,
+    capture_failed: u64,
 }
 
-impl From<crate::metadata::MetadataCounts> for CountsResponse {
+impl From<crate::metadata::MetadataCounts> for TraceCounts {
     fn from(value: crate::metadata::MetadataCounts) -> Self {
         Self {
-            total_traces: value.total_traces,
-            capturing: value.capturing,
-            ready_to_notarize: value.ready_to_notarize,
+            captured: value.captured,
+            notarizing: value.notarizing,
             notarized: value.notarized,
-            failed: value.failed,
-            active_operations: value.active_operations,
+            needs_attention: value.needs_attention,
+            capturing: value.capturing,
+            capture_failed: value.capture_failed,
         }
     }
 }
@@ -2215,7 +2457,7 @@ struct StatusResponse {
     vault: String,
     notary: String,
     preview_chars: usize,
-    counts: CountsResponse,
+    counts: TraceCounts,
     updates: UpdateStatusResponse,
 }
 
@@ -2250,32 +2492,54 @@ struct NotariesResponse {
     /// Selected active Registry key. Explicit configuration has no Registry
     /// lifecycle selection and therefore leaves this field unset.
     active_key_id: Option<String>,
-    notaries: Vec<NotaryResponse>,
+    notaries: Vec<Notary>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct NotaryResponse {
+struct Notary {
+    name: String,
+    operator: String,
     endpoint: String,
     transport: String,
     key_id: String,
+    verification_key: String,
     /// One of `active`, `retiring`, `retired`, `revoked`, or `configured`.
-    status: String,
+    lifecycle: String,
     valid_from_unix_ms: Option<u64>,
     valid_until_unix_ms: Option<u64>,
     notarize_until_unix_ms: Option<u64>,
 }
 
-impl From<RegistryRecord> for NotaryResponse {
+#[derive(Debug, Serialize, ToSchema)]
+struct ProvidersResponse {
+    providers: Vec<Provider>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct Provider {
+    id: String,
+    name: String,
+    host: String,
+    client_api: String,
+    route_prefix: String,
+    proxy_base_url: String,
+    ready: bool,
+}
+
+impl From<RegistryRecord> for Notary {
     fn from(record: RegistryRecord) -> Self {
         let endpoint = record
             .endpoint()
             .expect("validated pinned notary record has an endpoint")
             .to_string();
         Self {
+            name: record.name,
+            operator: record.operator,
             endpoint,
             transport: record.transport.scheme().into(),
             key_id: record.key_id,
-            status: match record.status {
+            verification_key: record.public_key,
+            lifecycle: match record.status {
                 NotaryKeyStatus::Active => "active",
                 NotaryKeyStatus::Retiring => "retiring",
                 NotaryKeyStatus::Retired => "retired",
@@ -2289,9 +2553,51 @@ impl From<RegistryRecord> for NotaryResponse {
     }
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum TraceState {
+    Captured,
+    Notarized,
+}
+
+impl TraceState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Captured => "captured",
+            Self::Notarized => "notarized",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum TraceOperationalStatus {
+    Capturing,
+    CaptureFailed,
+    Notarizing,
+    NotarizationFailed,
+    NotarizationInterrupted,
+}
+
+impl TraceOperationalStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Capturing => "capturing",
+            Self::CaptureFailed => "capture_failed",
+            Self::Notarizing => "notarizing",
+            Self::NotarizationFailed => "notarization_failed",
+            Self::NotarizationInterrupted => "notarization_interrupted",
+        }
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
-struct CaptureResponse {
+struct TraceSummary {
     trace_id: String,
+    #[schema(required)]
+    state: Option<TraceState>,
+    #[schema(required)]
+    status: Option<TraceOperationalStatus>,
     created_at_unix_ms: u64,
     completed_at_unix_ms: Option<u64>,
     provider: String,
@@ -2303,8 +2609,6 @@ struct CaptureResponse {
     request_bytes: u64,
     response_bytes: Option<u64>,
     duration_ms: Option<u64>,
-    capture_status: String,
-    notarization_status: String,
     notarization_eligible: bool,
     notarization_ineligibility_code: Option<String>,
     prompt_preview: String,
@@ -2314,12 +2618,27 @@ struct CaptureResponse {
     failure_code: Option<String>,
 }
 
-impl From<TraceSummary> for CaptureResponse {
-    fn from(value: TraceSummary) -> Self {
+#[derive(Debug, Serialize, ToSchema)]
+struct TracePage {
+    items: Vec<TraceSummary>,
+    next_cursor: Option<String>,
+}
+
+impl From<StoredTraceSummary> for TraceSummary {
+    fn from(value: StoredTraceSummary) -> Self {
+        Self::from_stored(value, false)
+    }
+}
+
+impl TraceSummary {
+    fn from_stored(value: StoredTraceSummary, metadata_only: bool) -> Self {
         let notarization_eligible = notarization_eligible(&value);
         let notarization_ineligibility_code = notarization_ineligibility_code(&value);
+        let (state, status) = trace_state_and_status(&value);
         Self {
             trace_id: value.trace_id,
+            state,
+            status,
             created_at_unix_ms: value.created_at_unix_ms,
             completed_at_unix_ms: value.completed_at_unix_ms,
             provider: value.provider,
@@ -2331,35 +2650,68 @@ impl From<TraceSummary> for CaptureResponse {
             request_bytes: value.request_bytes,
             response_bytes: value.response_bytes,
             duration_ms: value.duration_ms,
-            capture_status: value.capture_status,
-            notarization_status: value.notarization_status,
             notarization_eligible,
             notarization_ineligibility_code: notarization_ineligibility_code.map(str::to_owned),
-            prompt_preview: value.prompt_preview,
-            prompt_preview_truncated: value.prompt_preview_truncated,
-            output_preview: value.output_preview,
-            output_preview_truncated: value.output_preview_truncated,
+            prompt_preview: (!metadata_only)
+                .then_some(value.prompt_preview)
+                .unwrap_or_default(),
+            prompt_preview_truncated: !metadata_only && value.prompt_preview_truncated,
+            output_preview: (!metadata_only)
+                .then_some(value.output_preview)
+                .unwrap_or_default(),
+            output_preview_truncated: !metadata_only && value.output_preview_truncated,
             failure_code: value.failure_code,
         }
     }
 }
 
+fn trace_state_and_status(
+    value: &StoredTraceSummary,
+) -> (Option<TraceState>, Option<TraceOperationalStatus>) {
+    match (
+        value.capture_status.as_str(),
+        value.notarization_status.as_str(),
+    ) {
+        ("capturing", _) => (None, Some(TraceOperationalStatus::Capturing)),
+        ("failed", _) => (None, Some(TraceOperationalStatus::CaptureFailed)),
+        ("captured", "succeeded") => (Some(TraceState::Notarized), None),
+        ("captured", "queued" | "running") => (
+            Some(TraceState::Captured),
+            Some(TraceOperationalStatus::Notarizing),
+        ),
+        ("captured", "failed") => (
+            Some(TraceState::Captured),
+            Some(TraceOperationalStatus::NotarizationFailed),
+        ),
+        ("captured", "interrupted") => (
+            Some(TraceState::Captured),
+            Some(TraceOperationalStatus::NotarizationInterrupted),
+        ),
+        ("captured", _) => (Some(TraceState::Captured), None),
+        _ => (None, None),
+    }
+}
+
 #[derive(Debug, Serialize, ToSchema)]
-struct ArtifactResponse {
+struct EvidenceArtifact {
     kind: String,
     size_bytes: u64,
     sha256: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct CaptureDetailResponse {
-    capture: CaptureResponse,
-    artifacts: Vec<ArtifactResponse>,
-    notarizations: Vec<OperationResponse>,
+struct TraceDetail {
+    #[serde(flatten)]
+    trace: TraceSummary,
+    artifacts: Vec<EvidenceArtifact>,
+    #[schema(required)]
+    notarization: Option<TechnicalOperation>,
+    #[schema(required)]
+    share: Option<TraceShare>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct OperationResponse {
+struct TechnicalOperation {
     operation_id: String,
     kind: String,
     trace_id: String,
@@ -2371,39 +2723,7 @@ struct OperationResponse {
     failure_code: Option<String>,
     progress: OperationProgressResponse,
     retryable: bool,
-    attempt_history: Vec<OperationAttemptResponse>,
-}
-
-#[derive(Debug, Serialize, ToSchema)]
-struct OperationSummaryResponse {
-    operation_id: String,
-    kind: String,
-    trace_id: String,
-    state: String,
-    attempt: u32,
-    created_at_unix_ms: u64,
-    started_at_unix_ms: Option<u64>,
-    completed_at_unix_ms: Option<u64>,
-    failure_code: Option<String>,
-    progress: OperationProgressResponse,
-}
-
-impl From<Operation> for OperationSummaryResponse {
-    fn from(value: Operation) -> Self {
-        let progress = OperationProgressResponse::from(&value);
-        Self {
-            operation_id: value.operation_id,
-            kind: value.kind,
-            trace_id: value.trace_id,
-            state: value.state,
-            attempt: value.attempt,
-            created_at_unix_ms: value.created_at_unix_ms,
-            started_at_unix_ms: value.started_at_unix_ms,
-            completed_at_unix_ms: value.completed_at_unix_ms,
-            failure_code: value.failure_code,
-            progress,
-        }
-    }
+    attempt_history: Vec<NotarizationAttempt>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -2442,7 +2762,7 @@ impl From<&Operation> for OperationProgressResponse {
 async fn operation_response(
     metadata: &Arc<dyn MetadataStore>,
     value: Operation,
-) -> Result<OperationResponse> {
+) -> Result<TechnicalOperation> {
     let attempt_history = metadata
         .operation_attempts(&value.operation_id)
         .await?
@@ -2455,7 +2775,7 @@ async fn operation_response(
         .is_some_and(|capture| notarization_eligible(&capture));
     let retryable = ["failed", "interrupted"].contains(&value.state.as_str()) && eligible_capture;
     let progress = OperationProgressResponse::from(&value);
-    Ok(OperationResponse {
+    Ok(TechnicalOperation {
         operation_id: value.operation_id,
         kind: value.kind,
         trace_id: value.trace_id,
@@ -2473,13 +2793,13 @@ async fn operation_response(
 
 const UNSUPPORTED_PROVIDER_HTTP_STATUS: &str = "unsupported_provider_http_status";
 
-fn notarization_eligible(capture: &TraceSummary) -> bool {
+fn notarization_eligible(capture: &StoredTraceSummary) -> bool {
     capture
         .http_status
         .is_some_and(|status| (200..=299).contains(&status))
 }
 
-fn notarization_ineligibility_code(capture: &TraceSummary) -> Option<&'static str> {
+fn notarization_ineligibility_code(capture: &StoredTraceSummary) -> Option<&'static str> {
     capture
         .http_status
         .is_some_and(|status| !(200..=299).contains(&status))
@@ -2487,7 +2807,7 @@ fn notarization_ineligibility_code(capture: &TraceSummary) -> Option<&'static st
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct OperationAttemptResponse {
+struct NotarizationAttempt {
     attempt: u32,
     state: String,
     started_at_unix_ms: u64,
@@ -2495,7 +2815,7 @@ struct OperationAttemptResponse {
     failure_code: Option<String>,
 }
 
-impl From<OperationAttempt> for OperationAttemptResponse {
+impl From<OperationAttempt> for NotarizationAttempt {
     fn from(value: OperationAttempt) -> Self {
         Self {
             attempt: value.attempt,
@@ -2508,13 +2828,14 @@ impl From<OperationAttempt> for OperationAttemptResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct NotarizationResponse {
-    operation: OperationResponse,
+struct NotarizationRequest {
+    trace_id: String,
+    operation: TechnicalOperation,
     deduplicated: bool,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct EventResponse {
+struct ActivityItem {
     event_id: u64,
     created_at_unix_ms: u64,
     event_type: String,
@@ -2524,7 +2845,7 @@ struct EventResponse {
     message: String,
 }
 
-impl From<Event> for EventResponse {
+impl From<Event> for ActivityItem {
     fn from(value: Event) -> Self {
         Self {
             event_id: value.event_id,
@@ -2539,8 +2860,8 @@ impl From<Event> for EventResponse {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct EventListResponse {
-    items: Vec<EventResponse>,
+struct ActivityPage {
+    items: Vec<ActivityItem>,
     next_cursor: Option<String>,
     /// Snapshot cursor for polling events committed after this response.
     high_water_cursor: Option<String>,
@@ -2552,19 +2873,28 @@ struct EventPagePosition {
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct TraceResponse {
+struct TraceContent {
     trace_id: String,
     manifest: serde_json::Value,
     trace: serde_json::Value,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct VerificationResponse {
-    trace_id: String,
-    verified: bool,
+#[serde(rename_all = "snake_case")]
+enum VerificationOutcome {
+    Passed,
+    Failed,
+    Unsupported,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+struct VerificationResult {
+    outcome: VerificationOutcome,
+    trace_id: Option<String>,
     verified_at_unix_ms: u64,
-    notary_key_id: String,
-    trust_source: String,
+    notary_key_id: Option<String>,
+    trust_source: Option<String>,
+    failure_code: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -2596,25 +2926,76 @@ struct AccountConnectionStartedResponse {
     state: String,
 }
 
-#[derive(Debug, Serialize, ToSchema)]
-struct ShareResponse {
-    trace_id: String,
-    share_id: String,
-    state: String,
-    visibility: ShareVisibility,
-    status_url: String,
-    share_url: Option<String>,
-    package_url: Option<String>,
+#[derive(Clone, Copy, Debug, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+enum ShareProgress {
+    Preparing,
+    Uploading,
+    Verifying,
+    Shared,
+    Rejected,
+    Failed,
+}
+
+impl ShareProgress {
+    fn from_hosted(value: &str) -> Self {
+        match value {
+            "preparing" | "queued" => Self::Preparing,
+            "uploading" => Self::Uploading,
+            "verifying" => Self::Verifying,
+            "admitted" | "shared" => Self::Shared,
+            "rejected" => Self::Rejected,
+            _ => Self::Failed,
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Preparing => "preparing",
+            Self::Uploading => "uploading",
+            Self::Verifying => "verifying",
+            Self::Shared => "shared",
+            Self::Rejected => "rejected",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-struct ShareStatusResponse {
+struct TraceShare {
+    trace_id: String,
     share_id: String,
-    state: String,
-    failure_code: Option<String>,
+    progress: ShareProgress,
     visibility: ShareVisibility,
+    published: bool,
+    password_protected: bool,
+    expires_at_unix_ms: Option<u64>,
+    failure_code: Option<String>,
     share_url: Option<String>,
     package_url: Option<String>,
+    updated_at_unix_ms: u64,
+}
+
+impl TraceShare {
+    fn from_record(record: TraceShareRecord) -> Self {
+        Self {
+            trace_id: record.trace_id,
+            share_id: record.share_id,
+            progress: ShareProgress::from_hosted(&record.state),
+            visibility: if record.visibility == "listed" {
+                ShareVisibility::Listed
+            } else {
+                ShareVisibility::Unlisted
+            },
+            published: record.published,
+            password_protected: record.password_protected,
+            expires_at_unix_ms: record.expires_at_unix_ms,
+            failure_code: record.failure_code,
+            share_url: record.share_url,
+            package_url: record.package_url,
+            updated_at_unix_ms: record.updated_at_unix_ms,
+        }
+    }
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -2826,6 +3207,108 @@ mod tests {
         );
     }
 
+    #[test]
+    fn trace_product_state_covers_every_persisted_lifecycle_condition() {
+        let trace = |capture_status: &str, notarization_status: &str| StoredTraceSummary {
+            trace_id: "trc-state".into(),
+            created_at_unix_ms: 1,
+            completed_at_unix_ms: None,
+            provider: "openai".into(),
+            operation: "responses".into(),
+            requested_model: None,
+            response_model: None,
+            http_status: None,
+            streaming: false,
+            request_bytes: 1,
+            response_bytes: None,
+            duration_ms: None,
+            capture_status: capture_status.into(),
+            notarization_status: notarization_status.into(),
+            prompt_preview: String::new(),
+            prompt_preview_truncated: false,
+            output_preview: String::new(),
+            output_preview_truncated: false,
+            expected_artifact_size_bytes: None,
+            expected_artifact_sha256: None,
+            failure_code: None,
+        };
+        for (capture, notarization, expected_state, expected_status) in [
+            ("capturing", "not_requested", None, Some("capturing")),
+            ("failed", "not_requested", None, Some("capture_failed")),
+            ("captured", "not_requested", Some("captured"), None),
+            ("captured", "queued", Some("captured"), Some("notarizing")),
+            ("captured", "running", Some("captured"), Some("notarizing")),
+            (
+                "captured",
+                "failed",
+                Some("captured"),
+                Some("notarization_failed"),
+            ),
+            (
+                "captured",
+                "interrupted",
+                Some("captured"),
+                Some("notarization_interrupted"),
+            ),
+            ("captured", "succeeded", Some("notarized"), None),
+        ] {
+            let (state, status) = trace_state_and_status(&trace(capture, notarization));
+            assert_eq!(state.map(TraceState::as_str), expected_state);
+            assert_eq!(status.map(TraceOperationalStatus::as_str), expected_status);
+        }
+    }
+
+    #[test]
+    fn hosted_share_states_map_to_the_bounded_product_progress() {
+        for (hosted, expected) in [
+            ("preparing", "preparing"),
+            ("queued", "preparing"),
+            ("uploading", "uploading"),
+            ("verifying", "verifying"),
+            ("admitted", "shared"),
+            ("shared", "shared"),
+            ("rejected", "rejected"),
+            ("failed", "failed"),
+            ("future_state", "failed"),
+        ] {
+            assert_eq!(ShareProgress::from_hosted(hosted).as_str(), expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn share_access_inputs_are_bounded_and_unknown_fields_are_rejected() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = router(state(directory.path()).await).unwrap();
+        for body in [
+            r#"{"visibility":"unlisted","password":"short"}"#,
+            r#"{"visibility":"listed","expires_in_days":366}"#,
+            r#"{"visibility":"unlisted","intake_url":"https://attacker.example"}"#,
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::put("/v1/traces/trc-share/share")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(
+                response.headers().get(header::CONTENT_TYPE).unwrap(),
+                "application/json"
+            );
+            let body: serde_json::Value =
+                serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap();
+            assert!(matches!(
+                body["error"]["code"].as_str(),
+                Some("invalid_share_access_settings" | "invalid_request_body")
+            ));
+        }
+    }
+
     async fn state(directory: &std::path::Path) -> AdminState {
         state_with_auth(directory, None).await
     }
@@ -2999,12 +3482,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn portable_trace_verification_rejects_invalid_uploaded_bytes() {
+    async fn portable_trace_verification_reports_invalid_uploaded_bytes_without_retaining_them() {
         let directory = tempfile::tempdir().unwrap();
         let response = router(protected_state(directory.path()).await)
             .unwrap()
             .oneshot(
-                Request::post("/v1/traces:verify")
+                Request::post("/v1/verify")
                     .header(
                         header::AUTHORIZATION,
                         basic_header("local-admin", "correct horse battery staple"),
@@ -3018,11 +3501,13 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(response.status(), StatusCode::OK);
         let body: serde_json::Value =
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
-        assert_eq!(body["error"]["code"], "trace_verification_failed");
+        assert_eq!(body["outcome"], "failed");
+        assert_eq!(body["failure_code"], "verification_failed");
+        assert_eq!(body["trace_id"], serde_json::Value::Null);
     }
 
     #[test]
@@ -3086,22 +3571,20 @@ mod tests {
             "/v1/status",
             "/v1/settings/capture",
             "/v1/notaries",
+            "/v1/providers",
             "/v1/traces",
             "/v1/traces/{trace_id}",
             "/v1/traces/{trace_id}/notarizations",
-            "/v1/operations",
             "/v1/operations/{operation_id}",
-            "/v1/operations/{operation_id}/retry",
-            "/v1/traces/{trace_id}/trace",
-            "/v1/traces/{trace_id}/package",
-            "/v1/traces/{trace_id}/trace:verify",
-            "/v1/traces:verify",
-            "/v1/events",
+            "/v1/traces/{trace_id}/content",
+            "/v1/traces/{trace_id}/package.llmtrace",
+            "/v1/traces/{trace_id}/verify",
+            "/v1/traces/{trace_id}/share",
+            "/v1/verify",
+            "/v1/activity",
             "/v1/session",
             "/v1/account",
             "/v1/account/{request_id}",
-            "/v1/traces/{trace_id}/shares",
-            "/v1/shares/{share_id}",
         ] {
             assert!(body["paths"].get(path).is_some(), "OpenAPI missing {path}");
         }
@@ -3110,23 +3593,23 @@ mod tests {
             ("/v1/settings/capture", "get"),
             ("/v1/settings/capture", "put"),
             ("/v1/notaries", "get"),
+            ("/v1/providers", "get"),
             ("/v1/traces", "get"),
             ("/v1/traces/{trace_id}", "get"),
             ("/v1/traces/{trace_id}/notarizations", "post"),
-            ("/v1/operations", "get"),
             ("/v1/operations/{operation_id}", "get"),
-            ("/v1/operations/{operation_id}/retry", "post"),
-            ("/v1/traces/{trace_id}/trace", "get"),
-            ("/v1/traces/{trace_id}/package", "get"),
-            ("/v1/traces/{trace_id}/trace:verify", "post"),
-            ("/v1/traces:verify", "post"),
-            ("/v1/events", "get"),
+            ("/v1/traces/{trace_id}/content", "get"),
+            ("/v1/traces/{trace_id}/package.llmtrace", "get"),
+            ("/v1/traces/{trace_id}/verify", "post"),
+            ("/v1/traces/{trace_id}/share", "get"),
+            ("/v1/traces/{trace_id}/share", "put"),
+            ("/v1/traces/{trace_id}/share", "delete"),
+            ("/v1/verify", "post"),
+            ("/v1/activity", "get"),
             ("/v1/account", "get"),
             ("/v1/account", "post"),
             ("/v1/account", "delete"),
             ("/v1/account/{request_id}", "get"),
-            ("/v1/traces/{trace_id}/shares", "post"),
-            ("/v1/shares/{share_id}", "get"),
             ("/v1/session", "delete"),
         ] {
             assert!(
@@ -3161,6 +3644,39 @@ mod tests {
             }
         }
         assert_eq!(documented_operations, 26);
+    }
+
+    #[tokio::test]
+    async fn removed_product_routes_return_not_found() {
+        let directory = tempfile::tempdir().unwrap();
+        let app = router(state(directory.path()).await).unwrap();
+        for (method, path) in [
+            ("GET", "/v1/captures"),
+            ("GET", "/v1/captures/trc-removed"),
+            ("POST", "/v1/captures/trc-removed/finalizations"),
+            ("GET", "/v1/captures/trc-removed/package"),
+            ("GET", "/v1/captures/trc-removed/trace"),
+            ("POST", "/v1/captures/trc-removed/trace:verify"),
+            ("POST", "/v1/captures/trc-removed/shares"),
+            ("GET", "/v1/shares/share-removed"),
+            ("GET", "/v1/events"),
+            ("GET", "/v1/operations"),
+            ("POST", "/v1/operations/op-removed/retry"),
+            ("POST", "/v1/traces:verify"),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
+        }
     }
 
     #[tokio::test]
@@ -3253,7 +3769,7 @@ mod tests {
         let response = router(state)
             .unwrap()
             .oneshot(
-                Request::get(format!("/v1/traces/{trace_id}/package"))
+                Request::get(format!("/v1/traces/{trace_id}/package.llmtrace"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3303,7 +3819,7 @@ mod tests {
             response
                 .notaries
                 .iter()
-                .map(|record| record.status.as_str())
+                .map(|record| record.lifecycle.as_str())
                 .collect::<Vec<_>>(),
             ["active", "retiring", "retired", "revoked"]
         );
@@ -3327,7 +3843,7 @@ mod tests {
         assert_eq!(response.generation, None);
         assert_eq!(response.active_key_id, None);
         assert_eq!(response.notaries.len(), 1);
-        assert_eq!(response.notaries[0].status, "configured");
+        assert_eq!(response.notaries[0].lifecycle, "configured");
         assert_eq!(response.notaries[0].key_id, key_id(&public_key));
         assert_eq!(response.notaries[0].endpoint, "tcp://127.0.0.1:7047");
     }
@@ -3336,11 +3852,7 @@ mod tests {
     async fn invalid_numeric_queries_use_the_json_error_envelope() {
         let directory = tempfile::tempdir().unwrap();
         let app = router(state(directory.path()).await).unwrap();
-        for path in [
-            "/v1/traces?limit=-1",
-            "/v1/operations?limit=-1",
-            "/v1/events?limit=-1",
-        ] {
+        for path in ["/v1/traces?limit=-1", "/v1/activity?limit=-1"] {
             let response = app
                 .clone()
                 .oneshot(Request::get(path).body(Body::empty()).unwrap())
@@ -3497,13 +4009,13 @@ mod tests {
         for (path, expected) in [
             ("/v1/traces?cursor=not-a-cursor", "invalid_cursor"),
             ("/v1/traces?limit=201", "invalid_page_limit"),
-            ("/v1/traces?offset=100", "offset_pagination_removed"),
+            ("/v1/traces?offset=100", "invalid_query_parameter"),
             (
                 &format!("/v1/traces?provider=anthropic&cursor={cursor}"),
                 "cursor_scope_mismatch",
             ),
             (
-                &format!("/v1/operations?cursor={cursor}"),
+                &format!("/v1/activity?cursor={cursor}"),
                 "cursor_scope_mismatch",
             ),
         ] {
@@ -3535,18 +4047,14 @@ mod tests {
                 &no_text,
                 None::<bool>,
                 None::<u64>,
+                None::<u64>,
+                None::<bool>,
             ),
             "created_at_unix_ms desc, trace_id desc",
         )
         .unwrap();
-        let operation_scope = CursorScope::new(
-            "/v1/operations",
-            &(&no_text, &no_text, &no_text),
-            "created_at_unix_ms desc, operation_id desc",
-        )
-        .unwrap();
         let event_page_scope = CursorScope::new(
-            "/v1/events",
+            "/v1/activity",
             &(
                 &no_text,
                 &no_text,
@@ -3559,7 +4067,7 @@ mod tests {
         )
         .unwrap();
         let event_follow_scope = CursorScope::new(
-            "/v1/events",
+            "/v1/activity",
             &(
                 (&no_text, &no_text, &no_text, &no_text, None::<u64>),
                 "follow",
@@ -3572,14 +4080,6 @@ mod tests {
             &TracePagePosition {
                 created_at_unix_ms: u64::MAX,
                 trace_id: "trc-forged".to_owned(),
-            },
-        )
-        .unwrap();
-        let operation_cursor = encode_cursor(
-            &operation_scope,
-            &OperationPagePosition {
-                created_at_unix_ms: u64::MAX,
-                operation_id: "op-forged".to_owned(),
             },
         )
         .unwrap();
@@ -3597,23 +4097,19 @@ mod tests {
                 "invalid_cursor",
             ),
             (
-                format!("/v1/operations?cursor={operation_cursor}"),
+                format!("/v1/activity?cursor={event_page_cursor}"),
                 "invalid_cursor",
             ),
             (
-                format!("/v1/events?cursor={event_page_cursor}"),
+                format!("/v1/activity?after={event_follow_cursor}"),
                 "invalid_cursor",
             ),
             (
-                format!("/v1/events?after={event_follow_cursor}"),
-                "invalid_cursor",
-            ),
-            (
-                format!("/v1/traces?created_after_unix_ms={}", u64::MAX),
+                format!("/v1/traces?created_from_unix_ms={}", u64::MAX),
                 "invalid_query_parameter",
             ),
             (
-                format!("/v1/events?created_after_unix_ms={}", u64::MAX),
+                format!("/v1/activity?created_after_unix_ms={}", u64::MAX),
                 "invalid_query_parameter",
             ),
         ] {
@@ -3696,7 +4192,7 @@ mod tests {
         let first = app
             .clone()
             .oneshot(
-                Request::get("/v1/events?limit=1")
+                Request::get("/v1/activity?limit=1")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3709,7 +4205,7 @@ mod tests {
         let older = app
             .clone()
             .oneshot(
-                Request::get(format!("/v1/events?limit=1&cursor={history_cursor}"))
+                Request::get(format!("/v1/activity?limit=1&cursor={history_cursor}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3775,7 +4271,7 @@ mod tests {
             .unwrap();
         let newer = app
             .oneshot(
-                Request::get(format!("/v1/events?limit=1&after={high_water}"))
+                Request::get(format!("/v1/activity?limit=1&after={high_water}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -3856,13 +4352,13 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
-        assert_eq!(body["capture"]["http_status"], 401);
-        assert_eq!(body["capture"]["notarization_eligible"], false);
+        assert_eq!(body["http_status"], 401);
+        assert_eq!(body["notarization_eligible"], false);
         assert_eq!(
-            body["capture"]["notarization_ineligibility_code"],
+            body["notarization_ineligibility_code"],
             UNSUPPORTED_PROVIDER_HTTP_STATUS
         );
-        assert_eq!(body["notarizations"], serde_json::json!([]));
+        assert_eq!(body["notarization"], serde_json::Value::Null);
 
         let response = app
             .oneshot(

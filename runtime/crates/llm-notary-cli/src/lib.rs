@@ -164,11 +164,8 @@ enum CliCommand {
     },
     /// Queue proof generation for a capture.
     Notarization(NotarizeArgs),
-    /// List, inspect, or retry daemon-owned operations.
-    Operations {
-        #[command(subcommand)]
-        command: OperationsCommand,
-    },
+    /// Inspect one technical background operation by its polling identifier.
+    Operation(IdArgs),
     /// Inspect or verify a notarized trace.
     Traces {
         #[command(subcommand)]
@@ -254,16 +251,6 @@ enum CapturesCommand {
 }
 
 #[derive(Subcommand, Debug)]
-enum OperationsCommand {
-    /// List durable operations using server-side filters.
-    List(OperationListArgs),
-    /// Show one operation and its attempt history.
-    Show(IdArgs),
-    /// Requeue a failed or interrupted operation.
-    Retry(IdArgs),
-}
-
-#[derive(Subcommand, Debug)]
 enum TracesCommand {
     /// Show the canonical trace and manifest for a notarized capture.
     Show(IdArgs),
@@ -342,9 +329,9 @@ struct CaptureListArgs {
     #[arg(long)]
     provider: Option<String>,
     #[arg(long)]
-    capture_status: Option<String>,
+    state: Option<String>,
     #[arg(long)]
-    notarization_status: Option<String>,
+    status: Option<String>,
     #[arg(long)]
     limit: Option<usize>,
     /// Continue from an opaque cursor returned by the daemon.
@@ -356,24 +343,6 @@ struct CaptureListArgs {
     /// Omit prompt and output previews from structured output.
     #[arg(long)]
     metadata_only: bool,
-}
-
-#[derive(Args, Debug, Default)]
-struct OperationListArgs {
-    #[arg(long)]
-    state: Option<String>,
-    #[arg(long)]
-    kind: Option<String>,
-    #[arg(long)]
-    trace_id: Option<String>,
-    #[arg(long)]
-    limit: Option<usize>,
-    /// Continue from an opaque cursor returned by the daemon.
-    #[arg(long)]
-    cursor: Option<String>,
-    /// Traverse every remaining page and emit one combined result.
-    #[arg(long)]
-    all: bool,
 }
 
 #[derive(Args, Debug, Default)]
@@ -1123,7 +1092,7 @@ impl AdminClient {
         }
         let bytes = fs::read(path)
             .map_err(|_| CliError::invalid("the .llmtrace path could not be read"))?;
-        let url = self.url("/v1/traces:verify", &[])?;
+        let url = self.url("/v1/verify", &[])?;
         let mut request = self
             .client
             .post(url)
@@ -1329,32 +1298,17 @@ async fn execute(
             }
             Ok(response)
         }
-        CliCommand::Operations { command } => match command {
-            OperationsCommand::List(args) => {
-                list_request(client, "/v1/operations", operation_query(args), args.all).await
-            }
-            OperationsCommand::Show(args) => {
-                validate_identifier(&args.id, "op-")?;
-                client
-                    .request(Method::GET, &format!("/v1/operations/{}", args.id), &[])
-                    .await
-            }
-            OperationsCommand::Retry(args) => {
-                validate_identifier(&args.id, "op-")?;
-                client
-                    .request(
-                        Method::POST,
-                        &format!("/v1/operations/{}/retry", args.id),
-                        &[],
-                    )
-                    .await
-            }
-        },
+        CliCommand::Operation(args) => {
+            validate_identifier(&args.id, "op-")?;
+            client
+                .request(Method::GET, &format!("/v1/operations/{}", args.id), &[])
+                .await
+        }
         CliCommand::Traces { command } => match command {
             TracesCommand::Show(args) => {
                 validate_identifier(&args.id, "trc-")?;
                 client
-                    .request(Method::GET, &format!("/v1/traces/{}/trace", args.id), &[])
+                    .request(Method::GET, &format!("/v1/traces/{}/content", args.id), &[])
                     .await
             }
             TracesCommand::Verify(args) => {
@@ -1372,7 +1326,7 @@ async fn execute(
                 client
                     .request(
                         Method::POST,
-                        &format!("/v1/traces/{}/trace:verify", args.target),
+                        &format!("/v1/traces/{}/verify", args.target),
                         &[],
                     )
                     .await
@@ -1388,15 +1342,15 @@ async fn execute(
             validate_identifier(&args.id, "trc-")?;
             client
                 .request_json(
-                    Method::POST,
-                    &format!("/v1/traces/{}/shares", args.id),
+                    Method::PUT,
+                    &format!("/v1/traces/{}/share", args.id),
                     &[],
                     &json!({ "visibility": args.visibility.as_str(), "force": args.force }),
                 )
                 .await
         }
         CliCommand::Events(args) => {
-            list_request(client, "/v1/events", event_query(args), args.all).await
+            list_request(client, "/v1/activity", event_query(args), args.all).await
         }
         CliCommand::Notaries { .. } => client.request(Method::GET, "/v1/notaries", &[]).await,
         CliCommand::Open => {
@@ -1541,12 +1495,11 @@ fn capture_query(args: &CaptureListArgs) -> Vec<(String, String)> {
     push_string(&mut query, "query", args.query.as_deref());
     push_string(&mut query, "model", args.model.as_deref());
     push_string(&mut query, "provider", args.provider.as_deref());
-    push_string(&mut query, "capture_status", args.capture_status.as_deref());
-    push_string(
-        &mut query,
-        "notarization_status",
-        args.notarization_status.as_deref(),
-    );
+    push_string(&mut query, "state", args.state.as_deref());
+    push_string(&mut query, "status", args.status.as_deref());
+    if args.metadata_only {
+        query.push(("metadata_only".to_owned(), "true".to_owned()));
+    }
     push_number(&mut query, "limit", args.limit);
     push_string(&mut query, "cursor", args.cursor.as_deref());
     query
@@ -1569,16 +1522,6 @@ fn remove_capture_previews(value: &mut Value) -> Result<(), CliError> {
         }
     }
     Ok(())
-}
-
-fn operation_query(args: &OperationListArgs) -> Vec<(String, String)> {
-    let mut query = Vec::new();
-    push_string(&mut query, "state", args.state.as_deref());
-    push_string(&mut query, "kind", args.kind.as_deref());
-    push_string(&mut query, "trace_id", args.trace_id.as_deref());
-    push_number(&mut query, "limit", args.limit);
-    push_string(&mut query, "cursor", args.cursor.as_deref());
-    query
 }
 
 fn event_query(args: &EventListArgs) -> Vec<(String, String)> {
@@ -1669,7 +1612,7 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             unreachable!("direct commands provide their own human output")
         }
         CliCommand::Status => Ok(format!(
-            "notaryd {} ({})\nproxy {}\nadmin {}\nmetadata {} ({})\nartifacts {} ({})\ncaptures {} total, {} ready to notarize, {} notarized, {} failed\noperations {} active\nupdates {}",
+            "notaryd {} ({})\nproxy {}\nadmin {}\nmetadata {} ({})\nartifacts {} ({})\ntraces {} captured, {} notarizing, {} notarized, {} need attention\nsource capture {} active, {} failed\nupdates {}",
             value_string(value, "/version"),
             value_string(value, "/build_id"),
             value_string(value, "/proxy_listener"),
@@ -1678,11 +1621,12 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             value_string(value, "/metadata_status"),
             value_string(value, "/artifact_backend"),
             value_string(value, "/artifact_status"),
-            value_string(value, "/counts/total_traces"),
-            value_string(value, "/counts/ready_to_notarize"),
+            value_string(value, "/counts/captured"),
+            value_string(value, "/counts/notarizing"),
             value_string(value, "/counts/notarized"),
-            value_string(value, "/counts/failed"),
-            value_string(value, "/counts/active_operations"),
+            value_string(value, "/counts/needs_attention"),
+            value_string(value, "/counts/capturing"),
+            value_string(value, "/counts/capture_failed"),
             if value.pointer("/updates/enabled").and_then(Value::as_bool) == Some(false) {
                 "disabled for this source build".to_owned()
             } else if value
@@ -1716,21 +1660,21 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
                 value_string(item, "/trace_id"),
                 value_string(item, "/provider"),
                 value_string(item, "/requested_model"),
-                value_string(item, "/capture_status"),
-                value_string(item, "/notarization_status"),
+                value_string(item, "/state"),
+                value_string(item, "/status"),
             )
         }),
         CliCommand::Captures {
             command: CapturesCommand::Show(_),
         } => Ok(format!(
-            "capture {}\nprovider {}\nmodel {}\nstate {} / {}\nrequest {} bytes; response {} bytes",
-            value_string(value, "/capture/trace_id"),
-            value_string(value, "/capture/provider"),
-            value_string(value, "/capture/requested_model"),
-            value_string(value, "/capture/capture_status"),
-            value_string(value, "/capture/notarization_status"),
-            value_string(value, "/capture/request_bytes"),
-            value_string(value, "/capture/response_bytes"),
+            "trace {}\nprovider {}\nmodel {}\nstate {} / {}\nrequest {} bytes; response {} bytes",
+            value_string(value, "/trace_id"),
+            value_string(value, "/provider"),
+            value_string(value, "/requested_model"),
+            value_string(value, "/state"),
+            value_string(value, "/status"),
+            value_string(value, "/request_bytes"),
+            value_string(value, "/response_bytes"),
         )),
         CliCommand::Notarization(args) => Ok(format!(
             "{} operation {} ({})",
@@ -1748,22 +1692,8 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             value_string(value, "/operation/operation_id"),
             value_string(value, "/operation/state"),
         )),
-        CliCommand::Operations {
-            command: OperationsCommand::List(_),
-        } => list_lines(value, "/items", |item| {
-            format!(
-                "{}\t{}\t{}\t{}\t{}",
-                value_string(item, "/operation_id"),
-                value_string(item, "/kind"),
-                value_string(item, "/state"),
-                value_string(item, "/progress/phase"),
-                value_string(item, "/trace_id"),
-            )
-        }),
-        CliCommand::Operations {
-            command: OperationsCommand::Show(_) | OperationsCommand::Retry(_),
-        } => Ok(format!(
-            "operation {}\nkind {}\ncapture {}\nstate {}\nprogress {}\nattempt {}",
+        CliCommand::Operation(_) => Ok(format!(
+            "operation {}\nkind {}\ntrace {}\nstate {}\nprogress {}\nattempt {}",
             value_string(value, "/operation_id"),
             value_string(value, "/kind"),
             value_string(value, "/trace_id"),
@@ -1778,7 +1708,8 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
         CliCommand::Traces {
             command: TracesCommand::Verify(_),
         } => Ok(format!(
-            "Verified capture {} with {} ({})",
+            "Verification {} for Trace {} with {} ({})",
+            value_string(value, "/outcome"),
             value_string(value, "/trace_id"),
             value_string(value, "/notary_key_id"),
             value_string(value, "/trust_source"),
@@ -1869,11 +1800,11 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             "Disconnected from LLM Notary. Future hosted sessions use public access.".to_owned(),
         ),
         CliCommand::Share(_) => Ok(format!(
-            "Queued {} share {} for capture {} ({})",
+            "{} {} share {} for Trace {}",
+            value_string(value, "/progress"),
             value_string(value, "/visibility"),
             value_string(value, "/share_id"),
             value_string(value, "/trace_id"),
-            value_string(value, "/state"),
         )),
         CliCommand::Events(_) => list_lines(value, "/items", |item| {
             format!(
@@ -1886,8 +1817,9 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
         }),
         CliCommand::Notaries { .. } => list_lines(value, "/notaries", |item| {
             format!(
-                "{}\t{}\t{}",
-                value_string(item, "/status"),
+                "{}\t{}\t{}\t{}",
+                value_string(item, "/lifecycle"),
+                value_string(item, "/name"),
                 value_string(item, "/endpoint"),
                 value_string(item, "/key_id"),
             )
@@ -2001,10 +1933,7 @@ mod tests {
             vec!["llm-notary", "captures", "show", "trc-example"],
             vec!["llm-notary", "notarization", "trc-example"],
             vec!["llm-notary", "notarization", "trc-example", "--wait"],
-            vec!["llm-notary", "operations", "list"],
-            vec!["llm-notary", "operations", "list", "--all"],
-            vec!["llm-notary", "operations", "show", "op-example"],
-            vec!["llm-notary", "operations", "retry", "op-example"],
+            vec!["llm-notary", "operation", "op-example"],
             vec!["llm-notary", "traces", "show", "trc-example"],
             vec!["llm-notary", "traces", "verify", "trc-example"],
             vec!["llm-notary", "login"],

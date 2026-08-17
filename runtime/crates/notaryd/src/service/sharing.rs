@@ -63,6 +63,16 @@ struct ShareJob {
     failure_code: Option<String>,
     share_url: Option<String>,
     package_url: Option<String>,
+    #[serde(default = "default_true")]
+    published: bool,
+    #[serde(default)]
+    password_protected: bool,
+    #[serde(default)]
+    expires_at: Option<i64>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -85,6 +95,9 @@ pub(crate) struct ShareOutput {
     pub(crate) visibility: ShareVisibility,
     pub(crate) share_url: Option<String>,
     pub(crate) package_url: Option<String>,
+    pub(crate) published: bool,
+    pub(crate) password_protected: bool,
+    pub(crate) expires_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -95,6 +108,9 @@ pub(crate) struct ShareStatus {
     pub(crate) share_url: Option<String>,
     pub(crate) package_url: Option<String>,
     pub(crate) visibility: ShareVisibility,
+    pub(crate) published: bool,
+    pub(crate) password_protected: bool,
+    pub(crate) expires_at: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -186,6 +202,9 @@ pub(crate) async fn share_package_bytes(
         visibility: share.visibility,
         share_url,
         package_url,
+        published: share.published,
+        password_protected: share.password_protected,
+        expires_at: share.expires_at,
     };
     Ok((output, verified.manifest.trace_id().to_owned(), key_id))
 }
@@ -200,6 +219,13 @@ pub(crate) async fn share_status(
                 auth::SharingAuthenticationError::Required => ShareStatusError::Authentication,
                 auth::SharingAuthenticationError::Unavailable => ShareStatusError::Unavailable,
             })?;
+    share_status_with_authenticated(&authenticated, share_id).await
+}
+
+async fn share_status_with_authenticated(
+    authenticated: &auth::AuthenticatedApi,
+    share_id: &str,
+) -> std::result::Result<ShareStatus, ShareStatusError> {
     let client = http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
@@ -224,18 +250,96 @@ pub(crate) async fn share_status(
     if share.id != share_id {
         return Err(ShareStatusError::Unavailable);
     }
+    share_job_status(&authenticated.origin, share).map_err(|_| ShareStatusError::Unavailable)
+}
+
+#[derive(Serialize)]
+struct UpdateShareSettings<'a> {
+    visibility: Option<&'a str>,
+    published: Option<bool>,
+    password: Option<&'a str>,
+    expires_in_days: Option<u32>,
+}
+
+/// Changes only public access settings; the caller retains ownership of all
+/// secret input and this function never returns it.
+pub(crate) async fn update_share_settings(
+    share_id: &str,
+    visibility: Option<ShareVisibility>,
+    published: Option<bool>,
+    password: Option<&str>,
+    expires_in_days: Option<u32>,
+) -> std::result::Result<ShareStatus, ShareStatusError> {
+    let authenticated =
+        auth::authenticate_for_sharing_status()
+            .await
+            .map_err(|error| match error {
+                auth::SharingAuthenticationError::Required => ShareStatusError::Authentication,
+                auth::SharingAuthenticationError::Unavailable => ShareStatusError::Unavailable,
+            })?;
+    update_share_settings_with_authenticated(
+        &authenticated,
+        share_id,
+        visibility,
+        published,
+        password,
+        expires_in_days,
+    )
+    .await
+}
+
+async fn update_share_settings_with_authenticated(
+    authenticated: &auth::AuthenticatedApi,
+    share_id: &str,
+    visibility: Option<ShareVisibility>,
+    published: Option<bool>,
+    password: Option<&str>,
+    expires_in_days: Option<u32>,
+) -> std::result::Result<ShareStatus, ShareStatusError> {
+    let client = http_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| ShareStatusError::Unavailable)?;
+    let response = client
+        .patch(
+            authenticated
+                .origin
+                .api_url(&format!("/api/shares/{share_id}")),
+        )
+        .bearer_auth(&authenticated.access_token)
+        .json(&UpdateShareSettings {
+            visibility: visibility.map(ShareVisibility::as_str),
+            published,
+            password,
+            expires_in_days,
+        })
+        .send()
+        .await
+        .map_err(|_| ShareStatusError::Unavailable)?;
+    if let Some(error) = share_status_http_error(response.status()) {
+        return Err(error);
+    }
+    let share = response
+        .json::<ShareJob>()
+        .await
+        .map_err(|_| ShareStatusError::Unavailable)?;
+    if share.id != share_id {
+        return Err(ShareStatusError::Unavailable);
+    }
+    share_job_status(&authenticated.origin, share).map_err(|_| ShareStatusError::Unavailable)
+}
+
+fn share_job_status(origin: &ApiOrigin, share: ShareJob) -> Result<ShareStatus> {
     let share_url = share
         .share_url
         .as_deref()
-        .map(|value| absolute_same_origin_url(&authenticated.origin, value))
-        .transpose()
-        .map_err(|_| ShareStatusError::Unavailable)?;
+        .map(|value| absolute_same_origin_url(origin, value))
+        .transpose()?;
     let package_url = share
         .package_url
         .as_deref()
-        .map(|value| absolute_same_origin_url(&authenticated.origin, value))
-        .transpose()
-        .map_err(|_| ShareStatusError::Unavailable)?;
+        .map(|value| absolute_same_origin_url(origin, value))
+        .transpose()?;
     Ok(ShareStatus {
         share_id: share.id,
         state: share.state,
@@ -243,6 +347,9 @@ pub(crate) async fn share_status(
         share_url,
         package_url,
         visibility: share.visibility,
+        published: share.published,
+        password_protected: share.password_protected,
+        expires_at: share.expires_at,
     })
 }
 
@@ -493,7 +600,7 @@ mod tests {
         body::Bytes,
         extract::{Path, State},
         http::{HeaderMap, StatusCode},
-        routing::{get, post, put},
+        routing::{get, patch, post, put},
     };
 
     use super::*;
@@ -582,6 +689,87 @@ mod tests {
         assert_eq!(result.id, "job-1");
         assert_eq!(result.state, "queued");
         assert_eq!(&*uploads.uploaded.lock().unwrap(), archive);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn reads_and_updates_only_safe_share_access_state() {
+        async fn status(headers: HeaderMap) -> Json<serde_json::Value> {
+            assert_eq!(headers["authorization"], "Bearer access-token");
+            Json(serde_json::json!({
+                "id": "job-1",
+                "state": "verifying",
+                "visibility": "unlisted",
+                "status_url": "/api/shares/job-1",
+                "published": true,
+                "password_protected": false,
+                "expires_at": null,
+                "failure_code": null,
+                "share_url": null,
+                "package_url": null
+            }))
+        }
+        async fn update(
+            headers: HeaderMap,
+            Json(request): Json<serde_json::Value>,
+        ) -> Json<serde_json::Value> {
+            assert_eq!(headers["authorization"], "Bearer access-token");
+            assert_eq!(request["visibility"], "listed");
+            assert_eq!(request["published"], true);
+            assert_eq!(request["password"], "reviewed-password");
+            assert_eq!(request["expires_in_days"], 30);
+            Json(serde_json::json!({
+                "id": "job-1",
+                "state": "admitted",
+                "visibility": "listed",
+                "status_url": "/api/shares/job-1",
+                "published": true,
+                "password_protected": true,
+                "expires_at": 2_000_000_000,
+                "failure_code": null,
+                "share_url": "/traces/job-1",
+                "package_url": "/api/public/traces/job-1/package.llmtrace"
+            }))
+        }
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let app = Router::new().route("/api/shares/job-1", get(status).merge(patch(update)));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let authenticated = auth::AuthenticatedApi {
+            origin: ApiOrigin::parse(&origin).unwrap(),
+            access_token: "access-token".to_owned(),
+        };
+
+        let current = share_status_with_authenticated(&authenticated, "job-1")
+            .await
+            .unwrap();
+        assert_eq!(current.state, "verifying");
+        assert!(!current.password_protected);
+        let updated = update_share_settings_with_authenticated(
+            &authenticated,
+            "job-1",
+            Some(ShareVisibility::Listed),
+            Some(true),
+            Some("reviewed-password"),
+            Some(30),
+        )
+        .await
+        .unwrap();
+        assert_eq!(updated.state, "admitted");
+        assert_eq!(updated.visibility, ShareVisibility::Listed);
+        assert!(updated.password_protected);
+        assert_eq!(updated.expires_at, Some(2_000_000_000));
+        let expected_share_url = format!("{origin}/traces/job-1");
+        let expected_package_url = format!("{origin}/api/public/traces/job-1/package.llmtrace");
+        assert_eq!(
+            updated.share_url.as_deref(),
+            Some(expected_share_url.as_str())
+        );
+        assert_eq!(
+            updated.package_url.as_deref(),
+            Some(expected_package_url.as_str())
+        );
         server.abort();
     }
 

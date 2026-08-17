@@ -18,7 +18,7 @@ handles configured local authentication without exposing a password in a URL.
 3. Prefer a documented CLI command. When the CLI does not expose the requested
    operation, fetch `/openapi.json` from the configured loopback admin origin
    and follow that installed contract rather than a memorized route or schema.
-4. Ask for confirmation before finalizing a capture, retrying proof work,
+4. Ask for confirmation before notarizing a Trace, retrying proof work,
    connecting or disconnecting an account, or sharing a trace.
 5. Read [references/workflows.md](references/workflows.md) before performing a
    state-changing operation or diagnosing a failed operation.
@@ -47,8 +47,8 @@ persist the password itself.
 
 ## Report precisely
 
-- Distinguish capture, notarization, verification, and sharing as separate
-  states.
+- Distinguish Captured and Notarized Trace states from operational status,
+  verification outcome, and sharing progress.
 - Treat notarization and sharing as asynchronous. Preserve returned operation
   or share identifiers and poll only the documented status operation.
 - Branch on stable JSON fields and `error.code`; do not parse human-readable

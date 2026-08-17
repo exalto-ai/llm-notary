@@ -3,25 +3,27 @@ import type { components, paths } from './generated/api.generated';
 export type Status = components['schemas']['StatusResponse'];
 export type CaptureSetting = components['schemas']['CaptureSettingResponse'];
 export type Notaries = components['schemas']['NotariesResponse'];
-export type Notary = components['schemas']['NotaryResponse'];
-export type TraceSummary = components['schemas']['CaptureResponse'];
-export type TraceDetail = components['schemas']['CaptureDetailResponse'];
-export type Operation = components['schemas']['OperationResponse'];
-export type OperationSummary = components['schemas']['OperationSummaryResponse'];
-export type Event = components['schemas']['EventResponse'];
-export type TraceContent = components['schemas']['TraceResponse'];
-export type Verification = components['schemas']['VerificationResponse'];
+export type Notary = components['schemas']['Notary'];
+export type Providers = components['schemas']['ProvidersResponse'];
+export type TraceSummary = components['schemas']['TraceSummary'];
+export type TraceDetail = components['schemas']['TraceDetail'];
+export type Operation = components['schemas']['TechnicalOperation'];
+export type OperationSummary = Operation;
+export type Event = components['schemas']['ActivityItem'];
+export type TraceContent = components['schemas']['TraceContent'];
+export type Verification = components['schemas']['VerificationResult'];
 export type AccountConnection = components['schemas']['AccountConnectionResponse'];
 export type AccountConnectionStarted = components['schemas']['AccountConnectionStartedResponse'];
-export type Share = components['schemas']['ShareResponse'];
-export type ShareStatus = components['schemas']['ShareStatusResponse'];
+export type Share = components['schemas']['TraceShare'];
 export type ShareVisibility = components['schemas']['ShareVisibility'];
 type TraceList = paths['/v1/traces']['get']['responses'][200]['content']['application/json'];
 type NotarizationResult =
   paths['/v1/traces/{trace_id}/notarizations']['post']['responses'][202]['content']['application/json'];
-type OperationList =
-  paths['/v1/operations']['get']['responses'][200]['content']['application/json'];
-type EventList = paths['/v1/events']['get']['responses'][200]['content']['application/json'];
+type EventList = paths['/v1/activity']['get']['responses'][200]['content']['application/json'];
+type OperationList = {
+  items: Operation[];
+  next_cursor?: string | null;
+};
 
 export class LocalApiError extends Error {
   status: number;
@@ -123,6 +125,7 @@ export const localApi = {
       body: { enabled },
     }),
   notaries: () => request<Notaries>('/v1/notaries'),
+  providers: () => request<Providers>('/v1/providers'),
   traces: (filters: Record<string, string | number | boolean | undefined> = {}) =>
     request<TraceList>(`/v1/traces${queryString(filters)}`),
   trace: (traceId: string) => request<TraceDetail>(`/v1/traces/${encodeURIComponent(traceId)}`),
@@ -130,22 +133,33 @@ export const localApi = {
     request<NotarizationResult>(`/v1/traces/${encodeURIComponent(traceId)}/notarizations`, {
       method: 'POST',
     }),
-  operations: (filters: Record<string, string | number | boolean | undefined> = {}) =>
-    request<OperationList>(`/v1/operations${queryString(filters)}`),
   operation: (operationId: string) =>
     request<Operation>(`/v1/operations/${encodeURIComponent(operationId)}`),
-  retry: (operationId: string) =>
-    request<Operation>(`/v1/operations/${encodeURIComponent(operationId)}/retry`, {
-      method: 'POST',
-    }),
+  // The standalone dashboard keeps its pre-Milestone-2 operation view by projecting
+  // technical operations from canonical Trace detail. There is deliberately no
+  // operation-list HTTP resource in the public administration contract.
+  operations: async (
+    filters: Record<string, string | number | boolean | undefined> = {},
+  ): Promise<OperationList> => {
+    const page = await request<TraceList>(`/v1/traces${queryString(filters)}`);
+    const details = await Promise.all(
+      page.items.map((trace) =>
+        request<TraceDetail>(`/v1/traces/${encodeURIComponent(trace.trace_id)}`),
+      ),
+    );
+    return {
+      items: details.flatMap((trace) => (trace.notarization ? [trace.notarization] : [])),
+      next_cursor: page.next_cursor,
+    };
+  },
   events: (filters: Record<string, string | number | boolean | undefined> = {}) =>
-    request<EventList>(`/v1/events${queryString(filters)}`),
+    request<EventList>(`/v1/activity${queryString(filters)}`),
   traceContent: (traceId: string) =>
-    request<TraceContent>(`/v1/traces/${encodeURIComponent(traceId)}/trace`),
+    request<TraceContent>(`/v1/traces/${encodeURIComponent(traceId)}/content`),
   downloadPackage: (traceId: string) =>
-    requestBlob(`/v1/traces/${encodeURIComponent(traceId)}/package`),
+    requestBlob(`/v1/traces/${encodeURIComponent(traceId)}/package.llmtrace`),
   verify: (traceId: string) =>
-    request<Verification>(`/v1/traces/${encodeURIComponent(traceId)}/trace:verify`, {
+    request<Verification>(`/v1/traces/${encodeURIComponent(traceId)}/verify`, {
       method: 'POST',
     }),
   account: () => request<AccountConnection>('/v1/account'),
@@ -158,12 +172,14 @@ export const localApi = {
     request<AccountConnection>(`/v1/account/${encodeURIComponent(requestId)}`),
   disconnectAccount: () => request<void>('/v1/account', { method: 'DELETE' }),
   share: (traceId: string, visibility: ShareVisibility) =>
-    request<Share>(`/v1/traces/${encodeURIComponent(traceId)}/shares`, {
-      method: 'POST',
+    request<Share>(`/v1/traces/${encodeURIComponent(traceId)}/share`, {
+      method: 'PUT',
       body: { visibility },
     }),
-  shareStatus: (shareId: string) =>
-    request<ShareStatus>(`/v1/shares/${encodeURIComponent(shareId)}`),
+  shareStatus: (traceId: string) =>
+    request<Share>(`/v1/traces/${encodeURIComponent(traceId)}/share`),
+  stopSharing: (traceId: string) =>
+    request<void>(`/v1/traces/${encodeURIComponent(traceId)}/share`, { method: 'DELETE' }),
 };
 
 export type LocalApi = typeof localApi;

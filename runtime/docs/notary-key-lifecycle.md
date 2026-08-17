@@ -67,7 +67,7 @@ per-user state.
 the key may sign. `notarize_until_unix_ms` is the later wall-clock drain
 deadline for already-created bundles. The authenticated provider-connection
 timestamp in a capture or notarized package selects the historical trust
-window. `POST /v1/traces/{trace_id}/trace:verify` remains offline and
+window. `POST /v1/traces/{trace_id}/verify` remains offline and
 therefore uses the last cached Registry. Sharing always refreshes the Registry
 and enforces current revocation state before sending any bytes, even
 when a configured explicit key was used for the initial local verification.

@@ -8,8 +8,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::artifact_store::{ArtifactKey, ArtifactKind, ArtifactLocator, ArtifactRecord};
 use crate::metadata::{
     CaptureCompletion, Event, EventFilters, IncompleteCapture, MetadataCounts, NewTrace, Operation,
-    OperationAttempt, OperationFilters, TerminalOperationResult, TraceFilters, TraceSummary,
-    trace_search_expression,
+    OperationAttempt, OperationFilters, TerminalOperationResult, TraceFilters, TraceShareRecord,
+    TraceSummary, trace_search_expression,
 };
 
 const METADATA_SCHEMA_VERSION: i64 = 1;
@@ -392,6 +392,31 @@ impl SqliteMetadata {
                 values.push(value.to_owned().into());
             }
         }
+        match filters.state.as_deref() {
+            Some("captured") => sql.push_str(
+                " AND c.capture_status = 'captured' AND c.notarization_status != 'succeeded'",
+            ),
+            Some("notarized") => sql.push_str(
+                " AND c.capture_status = 'captured' AND c.notarization_status = 'succeeded'",
+            ),
+            Some(_) => return Ok(Vec::new()),
+            None => {}
+        }
+        match filters.status.as_deref() {
+            Some("capturing") => sql.push_str(" AND c.capture_status = 'capturing'"),
+            Some("capture_failed") => sql.push_str(" AND c.capture_status = 'failed'"),
+            Some("notarizing") => sql.push_str(
+                " AND c.capture_status = 'captured' AND c.notarization_status IN ('queued', 'running')",
+            ),
+            Some("notarization_failed") => sql.push_str(
+                " AND c.capture_status = 'captured' AND c.notarization_status = 'failed'",
+            ),
+            Some("notarization_interrupted") => sql.push_str(
+                " AND c.capture_status = 'captured' AND c.notarization_status = 'interrupted'",
+            ),
+            Some(_) => return Ok(Vec::new()),
+            None => {}
+        }
         if let Some(streaming) = filters.streaming {
             sql.push_str(" AND c.streaming = ?");
             values.push(streaming.into());
@@ -399,6 +424,10 @@ impl SqliteMetadata {
         if let Some(created_after) = filters.created_after_unix_ms {
             sql.push_str(" AND c.created_at_unix_ms >= ?");
             values.push(i64::try_from(created_after)?.into());
+        }
+        if let Some(created_before) = filters.created_before_unix_ms {
+            sql.push_str(" AND c.created_at_unix_ms <= ?");
+            values.push(i64::try_from(created_before)?.into());
         }
         if let Some(cursor) = &filters.cursor {
             sql.push_str(
@@ -469,48 +498,109 @@ impl SqliteMetadata {
         connection
             .query_row(
                 "SELECT
-                    COUNT(*),
+                    SUM(capture_status = 'captured' AND notarization_status != 'succeeded'),
+                    SUM(capture_status = 'captured' AND notarization_status IN ('queued', 'running')),
+                    SUM(capture_status = 'captured' AND notarization_status = 'succeeded'),
+                    SUM(capture_status = 'failed' OR notarization_status IN ('failed', 'interrupted')),
                     SUM(capture_status = 'capturing'),
-                    SUM(capture_status = 'captured' AND notarization_status = 'not_requested'
-                        AND http_status BETWEEN 200 AND 299),
-                    SUM(notarization_status = 'succeeded'),
-                    SUM(capture_status = 'failed' OR notarization_status = 'failed'),
-                    (SELECT COUNT(*) FROM operations WHERE state IN ('queued', 'running'))
+                    SUM(capture_status = 'failed')
                  FROM traces",
                 [],
                 |row| {
                     Ok(MetadataCounts {
-                        total_traces: row.get::<_, i64>(0)?.try_into().unwrap_or(0),
-                        capturing: row
+                        captured: row
+                            .get::<_, Option<i64>>(0)?
+                            .unwrap_or(0)
+                            .try_into()
+                            .unwrap_or(0),
+                        notarizing: row
                             .get::<_, Option<i64>>(1)?
                             .unwrap_or(0)
                             .try_into()
                             .unwrap_or(0),
-                        ready_to_notarize: row
+                        notarized: row
                             .get::<_, Option<i64>>(2)?
                             .unwrap_or(0)
                             .try_into()
                             .unwrap_or(0),
-                        notarized: row
+                        needs_attention: row
                             .get::<_, Option<i64>>(3)?
                             .unwrap_or(0)
                             .try_into()
                             .unwrap_or(0),
-                        failed: row
+                        capturing: row
                             .get::<_, Option<i64>>(4)?
                             .unwrap_or(0)
                             .try_into()
                             .unwrap_or(0),
-                        active_operations: row.get::<_, i64>(5)?.try_into().unwrap_or(0),
+                        capture_failed: row
+                            .get::<_, Option<i64>>(5)?
+                            .unwrap_or(0)
+                            .try_into()
+                            .unwrap_or(0),
                     })
                 },
             )
             .map_err(Into::into)
     }
 
-    /// Queues a notarization or returns the durable operation that already
-    /// represents it. Failed and interrupted work keeps the same identity and
-    /// must be resumed through the explicit retry endpoint.
+    pub fn trace_share(&self, trace_id: &str) -> Result<Option<TraceShareRecord>> {
+        let connection = self.connection.lock().expect("metadata mutex poisoned");
+        connection
+            .query_row(
+                "SELECT trace_id, share_id, state, visibility, published,
+                        password_protected, expires_at_unix_ms, failure_code,
+                        share_url, package_url, updated_at_unix_ms
+                 FROM trace_shares WHERE trace_id = ?",
+                params![trace_id],
+                trace_share_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn put_trace_share(&self, share: &TraceShareRecord) -> Result<()> {
+        let connection = self.connection.lock().expect("metadata mutex poisoned");
+        connection.execute(
+            "INSERT INTO trace_shares (
+                trace_id, share_id, state, visibility, published, password_protected,
+                expires_at_unix_ms, failure_code, share_url, package_url, updated_at_unix_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(trace_id) DO UPDATE SET
+                share_id = excluded.share_id, state = excluded.state,
+                visibility = excluded.visibility, published = excluded.published,
+                password_protected = excluded.password_protected,
+                expires_at_unix_ms = excluded.expires_at_unix_ms,
+                failure_code = excluded.failure_code, share_url = excluded.share_url,
+                package_url = excluded.package_url,
+                updated_at_unix_ms = excluded.updated_at_unix_ms",
+            params![
+                share.trace_id,
+                share.share_id,
+                share.state,
+                share.visibility,
+                share.published,
+                share.password_protected,
+                share.expires_at_unix_ms.map(i64::try_from).transpose()?,
+                share.failure_code,
+                share.share_url,
+                share.package_url,
+                i64::try_from(share.updated_at_unix_ms)?,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_trace_share(&self, trace_id: &str) -> Result<bool> {
+        let connection = self.connection.lock().expect("metadata mutex poisoned");
+        Ok(connection.execute(
+            "DELETE FROM trace_shares WHERE trace_id = ?",
+            params![trace_id],
+        )? > 0)
+    }
+
+    /// Queues, resumes, or returns the one durable notarization operation for
+    /// a trace. Retries keep the operation identity and attempt history.
     pub fn enqueue_notarization(
         &self,
         trace_id: &str,
@@ -531,7 +621,7 @@ impl SqliteMetadata {
         if !exists {
             return Ok(None);
         }
-        if let Some(operation) = transaction
+        if let Some(mut operation) = transaction
             .query_row(
                 "SELECT * FROM operations WHERE trace_id = ? AND kind = 'notarization' ORDER BY created_at_unix_ms DESC LIMIT 1",
                 params![trace_id],
@@ -539,6 +629,38 @@ impl SqliteMetadata {
             )
             .optional()?
         {
+            if matches!(operation.state.as_str(), "failed" | "interrupted") {
+                transaction.execute(
+                    "UPDATE operations
+                     SET state = 'queued', started_at_unix_ms = NULL,
+                         completed_at_unix_ms = NULL, failure_code = NULL,
+                         progress_phase = 'queued', progress_updated_at_unix_ms = ?,
+                         proof_bytes_completed = 0, proof_bytes_total = 0,
+                         proof_commitments_completed = 0, proof_commitments_total = 0
+                     WHERE operation_id = ? AND state IN ('failed', 'interrupted')",
+                    params![i64::try_from(now)?, operation.operation_id],
+                )?;
+                transaction.execute(
+                    "UPDATE traces SET notarization_status = 'queued' WHERE trace_id = ?",
+                    params![trace_id],
+                )?;
+                insert_event(
+                    &transaction,
+                    now,
+                    "notarization_queued",
+                    Some(trace_id),
+                    Some(&operation.operation_id),
+                    "info",
+                    "Notarization retry queued",
+                )?;
+                operation = transaction.query_row(
+                    "SELECT * FROM operations WHERE operation_id = ?",
+                    params![operation.operation_id],
+                    operation_from_row,
+                )?;
+                transaction.commit()?;
+                return Ok(Some((operation, false)));
+            }
             return Ok(Some((operation, true)));
         }
         let operation_id = format!("op-{}", uuid::Uuid::new_v4().simple());
@@ -1558,6 +1680,43 @@ fn event_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Event> {
         operation_id: row.get("operation_id")?,
         severity: row.get("severity")?,
         message: row.get("message")?,
+    })
+}
+
+fn trace_share_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TraceShareRecord> {
+    let expires_at_unix_ms = row
+        .get::<_, Option<i64>>("expires_at_unix_ms")?
+        .map(TryInto::try_into)
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                6,
+                rusqlite::types::Type::Integer,
+                Box::new(error),
+            )
+        })?;
+    let updated_at_unix_ms = row
+        .get::<_, i64>("updated_at_unix_ms")?
+        .try_into()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                10,
+                rusqlite::types::Type::Integer,
+                Box::new(error),
+            )
+        })?;
+    Ok(TraceShareRecord {
+        trace_id: row.get("trace_id")?,
+        share_id: row.get("share_id")?,
+        state: row.get("state")?,
+        visibility: row.get("visibility")?,
+        published: row.get("published")?,
+        password_protected: row.get("password_protected")?,
+        expires_at_unix_ms,
+        failure_code: row.get("failure_code")?,
+        share_url: row.get("share_url")?,
+        package_url: row.get("package_url")?,
+        updated_at_unix_ms,
     })
 }
 

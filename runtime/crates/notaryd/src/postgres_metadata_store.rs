@@ -21,7 +21,7 @@ use crate::{
     metadata::{
         CaptureCompletion, Event, EventFilters, EventSnapshot, IncompleteCapture, MetadataCounts,
         NewTrace, Operation, OperationAttempt, OperationFilters, RegistrySnapshot,
-        TerminalOperationResult, TraceFilters, TraceSummary, trace_search_parts,
+        TerminalOperationResult, TraceFilters, TraceShareRecord, TraceSummary, trace_search_parts,
     },
     metadata_store::{
         CaptureClaim, CaptureRecoveryClaim, MetadataResult, MetadataStore, MetadataStoreError,
@@ -589,6 +589,22 @@ fn event_from_row(row: &PgRow) -> anyhow::Result<Event> {
     })
 }
 
+fn trace_share_from_row(row: &PgRow) -> anyhow::Result<TraceShareRecord> {
+    Ok(TraceShareRecord {
+        trace_id: row.try_get("trace_id")?,
+        share_id: row.try_get("share_id")?,
+        state: row.try_get("state")?,
+        visibility: row.try_get("visibility")?,
+        published: row.try_get("published")?,
+        password_protected: row.try_get("password_protected")?,
+        expires_at_unix_ms: row_optional_u64(row, "expires_at_unix_ms")?,
+        failure_code: row.try_get("failure_code")?,
+        share_url: row.try_get("share_url")?,
+        package_url: row.try_get("package_url")?,
+        updated_at_unix_ms: row_u64(row, "updated_at_unix_ms")?,
+    })
+}
+
 async fn insert_event(
     connection: &mut PgConnection,
     now: i64,
@@ -1115,6 +1131,9 @@ impl MetadataStore for PostgresMetadataStore {
         if let Some(value) = filters.created_after_unix_ms {
             invalid_i64(value, "created_after_out_of_range")?;
         }
+        if let Some(value) = filters.created_before_unix_ms {
+            invalid_i64(value, "created_before_out_of_range")?;
+        }
         if let Some(cursor) = &filters.cursor {
             invalid_i64(cursor.created_at_unix_ms, "cursor_out_of_range")?;
         }
@@ -1167,6 +1186,30 @@ impl MetadataStore for PostgresMetadataStore {
                     .push_bind(value);
             }
         }
+        match filters.state.as_deref() {
+            Some("captured") => query.push(
+                " AND c.capture_status = 'captured' AND c.notarization_status != 'succeeded'",
+            ),
+            Some("notarized") => query
+                .push(" AND c.capture_status = 'captured' AND c.notarization_status = 'succeeded'"),
+            Some(_) => return Ok(Vec::new()),
+            None => &mut query,
+        };
+        match filters.status.as_deref() {
+            Some("capturing") => query.push(" AND c.capture_status = 'capturing'"),
+            Some("capture_failed") => query.push(" AND c.capture_status = 'failed'"),
+            Some("notarizing") => query.push(
+                " AND c.capture_status = 'captured' AND c.notarization_status IN ('queued', 'running')",
+            ),
+            Some("notarization_failed") => query.push(
+                " AND c.capture_status = 'captured' AND c.notarization_status = 'failed'",
+            ),
+            Some("notarization_interrupted") => query.push(
+                " AND c.capture_status = 'captured' AND c.notarization_status = 'interrupted'",
+            ),
+            Some(_) => return Ok(Vec::new()),
+            None => &mut query,
+        };
         if let Some(streaming) = filters.streaming {
             query.push(" AND c.streaming = ").push_bind(streaming);
         }
@@ -1174,6 +1217,11 @@ impl MetadataStore for PostgresMetadataStore {
             query
                 .push(" AND c.created_at_unix_ms >= ")
                 .push_bind(i64::try_from(created_after).expect("validated timestamp"));
+        }
+        if let Some(created_before) = filters.created_before_unix_ms {
+            query
+                .push(" AND c.created_at_unix_ms <= ")
+                .push_bind(i64::try_from(created_before).expect("validated timestamp"));
         }
         if let Some(cursor) = &filters.cursor {
             let created = i64::try_from(cursor.created_at_unix_ms).expect("validated cursor");
@@ -1250,16 +1298,16 @@ impl MetadataStore for PostgresMetadataStore {
     async fn counts(&self) -> MetadataResult<MetadataCounts> {
         let row = sqlx::query(
             "SELECT
-                COUNT(*) AS total,
-                COUNT(*) FILTER (WHERE capture_status = 'capturing') AS capturing,
                 COUNT(*) FILTER (WHERE capture_status = 'captured'
-                    AND notarization_status = 'not_requested' AND http_status BETWEEN 200 AND 299)
-                    AS ready,
-                COUNT(*) FILTER (WHERE notarization_status = 'succeeded') AS notarized,
-                COUNT(*) FILTER (WHERE capture_status = 'failed' OR notarization_status = 'failed')
-                    AS failed,
-                (SELECT COUNT(*) FROM notaryd.operations
-                 WHERE state IN ('queued', 'running')) AS active
+                    AND notarization_status != 'succeeded') AS captured,
+                COUNT(*) FILTER (WHERE capture_status = 'captured'
+                    AND notarization_status IN ('queued', 'running')) AS notarizing,
+                COUNT(*) FILTER (WHERE capture_status = 'captured'
+                    AND notarization_status = 'succeeded') AS notarized,
+                COUNT(*) FILTER (WHERE capture_status = 'failed'
+                    OR notarization_status IN ('failed', 'interrupted')) AS needs_attention,
+                COUNT(*) FILTER (WHERE capture_status = 'capturing') AS capturing,
+                COUNT(*) FILTER (WHERE capture_status = 'failed') AS capture_failed
              FROM notaryd.traces",
         )
         .fetch_one(&self.pool)
@@ -1267,13 +1315,79 @@ impl MetadataStore for PostgresMetadataStore {
         .map_err(|error| db(anyhow!(error).context("counting daemon metadata")))?;
         let value = |name| -> anyhow::Result<u64> { Ok(row.try_get::<i64, _>(name)?.try_into()?) };
         Ok(MetadataCounts {
-            total_traces: value("total").map_err(db)?,
-            capturing: value("capturing").map_err(db)?,
-            ready_to_notarize: value("ready").map_err(db)?,
+            captured: value("captured").map_err(db)?,
+            notarizing: value("notarizing").map_err(db)?,
             notarized: value("notarized").map_err(db)?,
-            failed: value("failed").map_err(db)?,
-            active_operations: value("active").map_err(db)?,
+            needs_attention: value("needs_attention").map_err(db)?,
+            capturing: value("capturing").map_err(db)?,
+            capture_failed: value("capture_failed").map_err(db)?,
         })
+    }
+
+    async fn trace_share(&self, trace_id: &str) -> MetadataResult<Option<TraceShareRecord>> {
+        validate_trace_id(trace_id)?;
+        sqlx::query(
+            "SELECT trace_id, share_id, state, visibility, published,
+                    password_protected, expires_at_unix_ms, failure_code,
+                    share_url, package_url, updated_at_unix_ms
+             FROM notaryd.trace_shares WHERE trace_id = $1",
+        )
+        .bind(trace_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| db(anyhow!(error).context("querying trace share")))?
+        .as_ref()
+        .map(trace_share_from_row)
+        .transpose()
+        .map_err(db)
+    }
+
+    async fn put_trace_share(&self, share: TraceShareRecord) -> MetadataResult<()> {
+        validate_trace_id(&share.trace_id)?;
+        let expires_at = share
+            .expires_at_unix_ms
+            .map(|value| invalid_i64(value, "timestamp_out_of_range"))
+            .transpose()?;
+        let updated_at = invalid_i64(share.updated_at_unix_ms, "timestamp_out_of_range")?;
+        sqlx::query(
+            "INSERT INTO notaryd.trace_shares (
+                trace_id, share_id, state, visibility, published, password_protected,
+                expires_at_unix_ms, failure_code, share_url, package_url, updated_at_unix_ms
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             ON CONFLICT(trace_id) DO UPDATE SET
+                share_id = EXCLUDED.share_id, state = EXCLUDED.state,
+                visibility = EXCLUDED.visibility, published = EXCLUDED.published,
+                password_protected = EXCLUDED.password_protected,
+                expires_at_unix_ms = EXCLUDED.expires_at_unix_ms,
+                failure_code = EXCLUDED.failure_code, share_url = EXCLUDED.share_url,
+                package_url = EXCLUDED.package_url,
+                updated_at_unix_ms = EXCLUDED.updated_at_unix_ms",
+        )
+        .bind(&share.trace_id)
+        .bind(&share.share_id)
+        .bind(&share.state)
+        .bind(&share.visibility)
+        .bind(share.published)
+        .bind(share.password_protected)
+        .bind(expires_at)
+        .bind(&share.failure_code)
+        .bind(&share.share_url)
+        .bind(&share.package_url)
+        .bind(updated_at)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| db(anyhow!(error).context("storing trace share")))?;
+        Ok(())
+    }
+
+    async fn delete_trace_share(&self, trace_id: &str) -> MetadataResult<bool> {
+        validate_trace_id(trace_id)?;
+        let result = sqlx::query("DELETE FROM notaryd.trace_shares WHERE trace_id = $1")
+            .bind(trace_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|error| db(anyhow!(error).context("deleting trace share")))?;
+        Ok(result.rows_affected() > 0)
     }
 
     async fn enqueue_notarization(
@@ -1312,9 +1426,48 @@ impl MetadataStore for PostgresMetadataStore {
         .await
         .map_err(|error| db(anyhow!(error).context("checking existing notarization")))?
         {
-            return operation_from_row(&row)
-                .map(|operation| Some((operation, true)))
-                .map_err(db);
+            let operation = operation_from_row(&row).map_err(db)?;
+            if matches!(operation.state.as_str(), "failed" | "interrupted") {
+                let row = sqlx::query(
+                    "UPDATE notaryd.operations SET
+                        state = 'queued', started_at_unix_ms = NULL,
+                        completed_at_unix_ms = NULL, failure_code = NULL,
+                        progress_phase = 'queued', progress_updated_at_unix_ms = $2,
+                        proof_bytes_completed = 0, proof_bytes_total = 0,
+                        proof_commitments_completed = 0, proof_commitments_total = 0
+                     WHERE operation_id = $1 AND state IN ('failed', 'interrupted')
+                     RETURNING *",
+                )
+                .bind(&operation.operation_id)
+                .bind(now)
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(|error| db(anyhow!(error).context("requeueing notarization")))?;
+                sqlx::query(
+                    "UPDATE notaryd.traces SET notarization_status = 'queued' WHERE trace_id = $1",
+                )
+                .bind(trace_id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(|error| db(anyhow!(error).context("requeueing trace notarization")))?;
+                insert_event(
+                    &mut transaction,
+                    now,
+                    "notarization_queued",
+                    Some(trace_id),
+                    Some(&operation.operation_id),
+                    "info",
+                    "Notarization retry queued",
+                )
+                .await?;
+                let operation = operation_from_row(&row).map_err(db)?;
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|error| db(anyhow!(error).context("committing notarization retry")))?;
+                return Ok(Some((operation, false)));
+            }
+            return Ok(Some((operation, true)));
         }
         let operation_id = format!("op-{}", uuid::Uuid::new_v4().simple());
         let row = sqlx::query(

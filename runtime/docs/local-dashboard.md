@@ -135,7 +135,7 @@ with the link; Unlisted only stays out of the Library. After admission, the
 hosted account’s Traces view can unpublish the share, require a password, or set
 an expiry. The source `.llmcapture` is never an input, and
 nothing is uploaded merely because a trace was notarized or verified. After
-submission, the dashboard polls `GET /v1/shares/{share_id}` through the local
+submission, the dashboard polls `GET /v1/traces/{trace_id}/share` through the local
 service. Successful admission makes **Copy link** the primary action and also
 offers the exact admitted package for independent verification. Remote account
 credentials never enter the browser.

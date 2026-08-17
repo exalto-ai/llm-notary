@@ -2,7 +2,7 @@ export type NotaryStatus = 'active' | 'retiring' | 'retired' | 'revoked' | 'conf
 
 export type NotaryLifecycleRecord = {
   key_id: string;
-  status: NotaryStatus | string;
+  lifecycle: NotaryStatus | string;
   valid_from_unix_ms?: number | null;
 };
 
@@ -63,8 +63,8 @@ export function orderNotaries<T extends NotaryLifecycleRecord>(
     const leftSelected = left.key_id === activeKeyId ? -1 : 0;
     const rightSelected = right.key_id === activeKeyId ? -1 : 0;
     if (leftSelected !== rightSelected) return leftSelected - rightSelected;
-    const leftOrder = lifecycleOrder[left.status as NotaryStatus] ?? 99;
-    const rightOrder = lifecycleOrder[right.status as NotaryStatus] ?? 99;
+    const leftOrder = lifecycleOrder[left.lifecycle as NotaryStatus] ?? 99;
+    const rightOrder = lifecycleOrder[right.lifecycle as NotaryStatus] ?? 99;
     if (leftOrder !== rightOrder) return leftOrder - rightOrder;
     const validFrom = (right.valid_from_unix_ms ?? 0) - (left.valid_from_unix_ms ?? 0);
     return validFrom || left.key_id.localeCompare(right.key_id);
