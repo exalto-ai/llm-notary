@@ -248,11 +248,12 @@ gives each image a tag unique to the commit and CI run. The rollout then uses
 that tag to resolve an immutable `sha256` digest and deploys only the digest.
 It therefore neither rebuilds nor promotes a different image:
 
-1. Deploy the API and check it through the still-old web gateway. Any release
-   migration runs before the new API starts and must remain writable by the
-   recorded rollback image.
-2. Deploy the notary-server after every API replica accepts the V2 activation
-   contract. Its durable usage outbox remains valid across the rolling change.
+1. Deploy the notary-server against the currently deployed dual-contract API.
+   The server begins redeeming and activating V2 operations while the API still
+   accepts both V1 and V2.
+2. Deploy the V2-only API and check it through the still-old web gateway. Any
+   release migration runs before the new API starts and must remain writable by
+   the recorded rollback image.
 3. Deploy the web gateway and check the public readiness route again.
 4. For a client-affecting change, build every CLI platform, upload and verify
    one immutable object set, then move the website's `latest` pointer.
@@ -284,7 +285,9 @@ hide it.
 
 For a break-glass, operator-driven deployment from the repository root, use the
 same build-then-deploy split and retain the previous image references for
-rollback. Deploy the API before the notary-server, as CI does.
+rollback. For this V2 cutover, deploy the notary-server first and the API
+second, as CI does. Roll back the API to its dual-contract image before rolling
+the server back to V1.
 Normal production changes must go through CI:
 
 ```bash

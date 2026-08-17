@@ -3626,7 +3626,6 @@
       "AdmissionRedemptionContract": {
         "type": "string",
         "enum": [
-          "one_operation_v1",
           "one_operation_v2"
         ]
       },

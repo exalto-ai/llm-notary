@@ -818,7 +818,7 @@ export interface components {
         /** @enum {string} */
         AdmissionMode: "capture" | "notarization";
         /** @enum {string} */
-        AdmissionRedemptionContract: "one_operation_v1" | "one_operation_v2";
+        AdmissionRedemptionContract: "one_operation_v2";
         AdmissionTicketResponse: {
             /** Format: int64 */
             expires_at: number;
