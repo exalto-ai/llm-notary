@@ -99,11 +99,11 @@ own disposable database:
 
 ```bash
 cargo test -p notary-api \
-  new_cli_session_is_usable_until_its_refresh_expiry -- --ignored
+  device_refresh_rotation_records_replay_and_revokes_the_chain -- --ignored
 cargo test -p notary-api \
-  web_users_can_list_and_revoke_only_their_cli_sessions -- --ignored
+  web_users_can_list_and_revoke_only_their_devices -- --ignored
 cargo test -p notary-api \
-  service_admission::tests -- --ignored
+  admissions::tests -- --ignored
 ```
 
 Large proof and real-provider checks are opt-in. The

@@ -55,6 +55,42 @@ struct ExistingPublicArtifacts {
     package_sha256: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AdmissionUpdateState {
+    Applied,
+    NotApplied,
+    Ambiguous,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArtifactReconciliation {
+    MatchesPublicTrace,
+    DoesNotMatch,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArtifactDisposition {
+    Admit,
+    CleanUp,
+    Retain,
+}
+
+fn artifact_disposition(
+    update: AdmissionUpdateState,
+    reconciliation: ArtifactReconciliation,
+) -> ArtifactDisposition {
+    if update == AdmissionUpdateState::Applied
+        || reconciliation == ArtifactReconciliation::MatchesPublicTrace
+    {
+        ArtifactDisposition::Admit
+    } else if reconciliation == ArtifactReconciliation::DoesNotMatch {
+        ArtifactDisposition::CleanUp
+    } else {
+        ArtifactDisposition::Retain
+    }
+}
+
 impl ExistingPublicArtifacts {
     fn matches(&self, stored: &StoredPublicArtifacts) -> bool {
         self.content_object_key == stored.content_object_key
@@ -142,9 +178,9 @@ async fn claim_next_job(state: &NotaryApiState) -> Result<Option<(HostedTraceRow
 }
 
 #[tracing::instrument(
-    name = "share.admission",
+    name = "trace.verification",
     skip_all,
-    fields(share.id = %job.trace_id, archive.size_bytes = tracing::field::Empty)
+    fields(trace.id = %job.trace_id, archive.size_bytes = tracing::field::Empty)
 )]
 async fn process_claim(state: &NotaryApiState, job: HostedTraceRow, claim: String) {
     let started = Instant::now();
@@ -236,7 +272,7 @@ async fn process_claim(state: &NotaryApiState, job: HostedTraceRow, claim: Strin
             }
         }
         Err(AdmissionFailure::Reject(code, error)) => {
-            tracing::info!(share_id = %job.trace_id, failure_code = %code, %error, "share rejected");
+            tracing::info!(trace_id = %job.trace_id, failure_code = %code, %error, "hosted Trace rejected");
             reject_claim(
                 state,
                 &job,
@@ -504,38 +540,44 @@ async fn admit_claim(
     .bind(claim)
     .execute(&state.database)
     .await;
-    match update {
-        Ok(result) if result.rows_affected() == 1 => {}
-        Ok(_) => {
-            match existing_public_artifacts_match(state, &job.trace_id, &stored).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    cleanup_committed_artifacts(state, &job.trace_id, &stored).await?;
-                    bail!("share claim was lost before admission");
-                }
-                Err(error) => {
-                    // The stored keys may already belong to a concurrently admitted
-                    // Trace. Retain them until database truth can be read again.
-                    return Err(error.context(
-                        "share claim was lost and committed artifacts could not be reconciled",
-                    ));
-                }
+    let (update_state, update_error) = match update {
+        Ok(result) if result.rows_affected() == 1 => (AdmissionUpdateState::Applied, None),
+        Ok(_) => (AdmissionUpdateState::NotApplied, None),
+        Err(error) => (AdmissionUpdateState::Ambiguous, Some(error)),
+    };
+    let reconciliation_result = if update_state == AdmissionUpdateState::Applied {
+        None
+    } else {
+        Some(existing_public_artifacts_match(state, &job.trace_id, &stored).await)
+    };
+    let reconciliation = match reconciliation_result.as_ref() {
+        None => ArtifactReconciliation::Unknown,
+        Some(Ok(true)) => ArtifactReconciliation::MatchesPublicTrace,
+        Some(Ok(false)) => ArtifactReconciliation::DoesNotMatch,
+        Some(Err(_)) => ArtifactReconciliation::Unknown,
+    };
+    match artifact_disposition(update_state, reconciliation) {
+        ArtifactDisposition::Admit => {}
+        ArtifactDisposition::CleanUp => {
+            cleanup_committed_artifacts(state, &job.trace_id, &stored).await?;
+            if let Some(error) = update_error {
+                return Err(error.into());
             }
+            bail!("hosted Trace verification claim was lost before admission");
         }
-        Err(error) => {
-            match existing_public_artifacts_match(state, &job.trace_id, &stored).await {
-                Ok(true) => {}
-                Ok(false) => {
-                    cleanup_committed_artifacts(state, &job.trace_id, &stored).await?;
-                    return Err(error.into());
-                }
-                Err(_) => {
-                    // A connection loss can arrive after PostgreSQL committed the
-                    // admission. Deleting while both writes are ambiguous could
-                    // remove the public artifacts referenced by that committed row.
-                    return Err(error.into());
-                }
+        ArtifactDisposition::Retain => {
+            // A connection loss can arrive after PostgreSQL committed the
+            // admission. Deleting while both writes are ambiguous could remove
+            // the public artifacts referenced by that committed row.
+            if let Some(error) = update_error {
+                return Err(error.into());
             }
+            let error = reconciliation_result
+                .expect("a non-applied update must be reconciled")
+                .expect_err("unknown reconciliation must contain an error");
+            return Err(error.context(
+                "hosted Trace verification claim was lost and committed artifacts could not be reconciled",
+            ));
         }
     }
     purge_private_object(state, job).await;
@@ -577,7 +619,7 @@ async fn load_existing_public_artifacts(
 
 async fn store_committed_artifacts(
     state: &NotaryApiState,
-    share_id: &str,
+    trace_id: &str,
     artifacts: &VerifiedArtifacts,
 ) -> Result<StoredPublicArtifacts> {
     let content_sha256 = sha256_hex(&artifacts.verified.trace);
@@ -589,14 +631,14 @@ async fn store_committed_artifacts(
     }
     let stored = StoredPublicArtifacts {
         content_object_key: state.traces.storage.committed_artifact_key(
-            share_id,
+            trace_id,
             "content",
             &content_sha256,
         )?,
         content_size_bytes: artifacts.verified.trace.len().try_into()?,
         content_sha256,
         package_object_key: state.traces.storage.committed_artifact_key(
-            share_id,
+            trace_id,
             "package",
             &package_sha256,
         )?,
@@ -641,7 +683,7 @@ async fn store_committed_artifacts(
     }
     .await;
     if let Err(error) = result {
-        cleanup_committed_artifacts(state, share_id, &stored)
+        cleanup_committed_artifacts(state, trace_id, &stored)
             .await
             .context("queueing incomplete committed artifacts for cleanup")?;
         return Err(error);
@@ -753,9 +795,9 @@ async fn reject_claim(
     .await
     {
         Ok(result) if result.rows_affected() == 1 => purge_private_object(state, job).await,
-        Ok(_) => tracing::warn!(share_id = %job.trace_id, "share rejection lost its claim"),
+        Ok(_) => tracing::warn!(trace_id = %job.trace_id, "hosted Trace rejection lost its claim"),
         Err(error) => {
-            tracing::error!(share_id = %job.trace_id, %error, "recording rejection failed")
+            tracing::error!(trace_id = %job.trace_id, %error, "recording hosted Trace rejection failed")
         }
     }
 }
@@ -766,7 +808,7 @@ async fn retry_claim(
     claim: &str,
     error: anyhow::Error,
 ) {
-    tracing::error!(share_id = %job.trace_id, %error, "share admission will retry");
+    tracing::error!(trace_id = %job.trace_id, %error, "hosted Trace verification will retry");
     let now = unix_timestamp().unwrap_or(job.updated_at);
     if let Err(update_error) = sqlx::query(
         "UPDATE traces
@@ -780,7 +822,7 @@ async fn retry_claim(
     .execute(&state.database)
     .await
     {
-        tracing::error!(share_id = %job.trace_id, %update_error, "requeueing share failed");
+        tracing::error!(trace_id = %job.trace_id, %update_error, "requeueing hosted Trace failed");
     }
 }
 
@@ -798,14 +840,14 @@ async fn purge_private_object(state: &NotaryApiState, job: &HostedTraceRow) {
             .execute(&state.database)
             .await
             {
-                tracing::error!(share_id = %job.trace_id, %error, "recording private purge failed");
+                tracing::error!(trace_id = %job.trace_id, %error, "recording private purge failed");
             }
         }
         Ok(false) => {
-            tracing::warn!(share_id = %job.trace_id, "private object purge remains queued")
+            tracing::warn!(trace_id = %job.trace_id, "private object purge remains queued")
         }
         Err(error) => {
-            tracing::error!(share_id = %job.trace_id, %error, "private object purge failed")
+            tracing::error!(trace_id = %job.trace_id, %error, "private object purge failed")
         }
     }
 }
@@ -861,6 +903,26 @@ mod tests {
         owner::TraceService,
         storage::{MockTraceStorage, StoredObject},
     };
+
+    #[test]
+    fn ambiguous_admission_updates_never_delete_artifacts_without_database_truth() {
+        use AdmissionUpdateState::{Ambiguous, Applied, NotApplied};
+        use ArtifactDisposition::{Admit, CleanUp, Retain};
+        use ArtifactReconciliation::{DoesNotMatch, MatchesPublicTrace, Unknown};
+
+        for (update, reconciliation, expected) in [
+            (Applied, Unknown, Admit),
+            (Applied, DoesNotMatch, Admit),
+            (NotApplied, MatchesPublicTrace, Admit),
+            (NotApplied, DoesNotMatch, CleanUp),
+            (NotApplied, Unknown, Retain),
+            (Ambiguous, MatchesPublicTrace, Admit),
+            (Ambiguous, DoesNotMatch, CleanUp),
+            (Ambiguous, Unknown, Retain),
+        ] {
+            assert_eq!(artifact_disposition(update, reconciliation), expected);
+        }
+    }
 
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL container"]

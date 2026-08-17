@@ -153,20 +153,24 @@ an audit.
 
 Milestone 1 replaces the prototype API configuration and database with one
 clean canonical contract. It is not a rolling migration from the previous
-schema. Before enabling normal deployment, provision the fresh database, stage
-the canonical `NOTARY_API_*` settings and file secrets, and bootstrap a reviewed
-canonical API image on both Machines with `deploy/fly/notary-api.fly.toml`.
-Verify readiness and the admission/redeem/settle path against that image, then
-run `bash deploy/fly/preflight-notary-api.sh`.
+schema. Enter a maintenance window and stop public routing and admission
+issuance before the first canonical Machine starts. Drain legacy sessions and
+usage outboxes, then provision the fresh database and stage the canonical
+`NOTARY_API_*` settings and file secrets. Replace both Machines while traffic
+remains stopped, or bootstrap a separate app, using a reviewed canonical image
+and `deploy/fly/notary-api.fly.toml`. Verify readiness and the complete
+admission/redeem/settle path, switch or resume traffic only after both Machines
+are healthy, then run `bash deploy/fly/preflight-notary-api.sh`.
 
-The preflight requires two digest-pinned Machines carrying the
-`canonical-v1` deployment marker and at least 1 GB of memory, plus the required
-database, storage, Registry, OAuth, and admission secret names. Normal CI is
-therefore unable to treat a legacy image as its rollback target. Preserve the
+The preflight requires two started, healthy, digest-pinned Machines carrying
+the `canonical-v1` deployment marker and at least 1 GB of memory, plus the
+required database, storage, Registry, OAuth, and admission secret names.
+Normal CI is therefore unable to treat a legacy image as its rollback target.
+Preserve the
 legacy image, configuration, and database separately for an operator-driven
 cutback until the canonical bootstrap is accepted; do not point either image at
-the other schema. Drain legacy admissions and usage outboxes before switching
-traffic so no one-time ticket or settlement crosses the database boundary.
+the other schema. Never bootstrap one canonical Machine alongside a routed
+legacy replica: the two schemas cannot share tickets, sessions, or settlements.
 
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private

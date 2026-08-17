@@ -31,6 +31,7 @@ jq -e '
 machines="$(flyctl machines list --app "$app" --json)"
 jq -e '
   length >= 2
+  and all(.[].state; . == "started")
   and ([
     .[]?.image_ref
     | "\(.registry)/\(.repository)@\(.digest)"
@@ -39,5 +40,11 @@ jq -e '
   and all(.[].config.env.NOTARY_API_DEPLOYMENT_CONTRACT; . == "canonical-v1")
   and all(.[].config.guest.memory_mb; . >= 1024)
 ' >/dev/null <<<"$machines"
+
+checks="$(flyctl checks list --app "$app" --json)"
+jq -e '
+  length >= 2
+  and all(.[]; (.status // .Status) == "passing")
+' >/dev/null <<<"$checks"
 
 echo "Fly notary-api preflight passed for $app."

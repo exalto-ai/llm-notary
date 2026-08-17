@@ -43,15 +43,20 @@ case "$1 $2" in
   "machines list")
     memory="${MOCK_MEMORY_MB:-1024}"
     contract="${MOCK_CONTRACT:-canonical-v1}"
+    state="${MOCK_MACHINE_STATE:-started}"
     first="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     second="$first"
     if [ "${MOCK_MULTIPLE_IMAGES:-0}" = 1 ]; then
       second="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     fi
     printf '[
-      {"image_ref":{"registry":"registry.fly.io","repository":"api","digest":"sha256:%s"},"config":{"env":{"NOTARY_API_DEPLOYMENT_CONTRACT":"%s"},"guest":{"memory_mb":%s}}},
-      {"image_ref":{"registry":"registry.fly.io","repository":"api","digest":"sha256:%s"},"config":{"env":{"NOTARY_API_DEPLOYMENT_CONTRACT":"%s"},"guest":{"memory_mb":%s}}}
-    ]\n' "$first" "$contract" "$memory" "$second" "$contract" "$memory"
+      {"state":"%s","image_ref":{"registry":"registry.fly.io","repository":"api","digest":"sha256:%s"},"config":{"env":{"NOTARY_API_DEPLOYMENT_CONTRACT":"%s"},"guest":{"memory_mb":%s}}},
+      {"state":"%s","image_ref":{"registry":"registry.fly.io","repository":"api","digest":"sha256:%s"},"config":{"env":{"NOTARY_API_DEPLOYMENT_CONTRACT":"%s"},"guest":{"memory_mb":%s}}}
+    ]\n' "$state" "$first" "$contract" "$memory" "$state" "$second" "$contract" "$memory"
+    ;;
+  "checks list")
+    status="${MOCK_CHECK_STATUS:-passing}"
+    printf '[{"status":"%s"},{"status":"%s"}]\n' "$status" "$status"
     ;;
   *)
     echo "unexpected flyctl invocation: $*" >&2
@@ -65,7 +70,9 @@ PATH="$test_dir/bin:$PATH" bash "$script_dir/preflight-notary-api.sh" >/dev/null
 for invalid in \
   'MOCK_CONTRACT=legacy-v0' \
   'MOCK_MEMORY_MB=512' \
-  'MOCK_MULTIPLE_IMAGES=1'; do
+  'MOCK_MULTIPLE_IMAGES=1' \
+  'MOCK_MACHINE_STATE=stopped' \
+  'MOCK_CHECK_STATUS=critical'; do
   if env PATH="$test_dir/bin:$PATH" $invalid \
       bash "$script_dir/preflight-notary-api.sh" >/dev/null 2>&1; then
     echo "preflight accepted invalid Machine state: $invalid" >&2
