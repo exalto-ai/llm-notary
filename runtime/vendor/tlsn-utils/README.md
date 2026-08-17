@@ -34,7 +34,7 @@ The workspace `Cargo.toml` redirects the git dependency to this path with a
 Parser unit tests covering long escape-dense strings, `\uXXXX` escapes, span
 stability, and the nesting boundary live in `spansy/src/json/span.rs`.
 End-to-end regression tests over HTTP transcripts live in
-`crates/llm-notary-core/tests/json_stack_safety.rs`.
+`crates/notary-core/tests/json_stack_safety.rs`.
 
 Upstream does not have an equivalent fix as of 2026-07-31 (checked at upstream
 `f0d7215bfcad836b8769fdc768d703a20de04036`); if upstream lands one, drop this
