@@ -362,14 +362,14 @@ export const fixtureStatus: Status = {
 
 export const fixtureNotaries: Notaries = {
   source: 'registry',
-  registry_source: 'https://notary.exalto.ai/api/notary',
+  registry_source: 'https://notary.exalto.ai/api/registry',
   generation: 12,
   active_key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   notaries: [
     {
       name: 'Alice',
       operator: 'Exalto',
-      endpoint: 'tls://llm-notary-prod-notary.fly.dev:443',
+      endpoint: 'tls://alice.notary.exalto.ai:443',
       transport: 'tls',
       key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       verification_key: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -694,9 +694,9 @@ export function createFixtureApi({
     display_name: 'Sample User',
     auth_provider: 'github',
     device_name: 'Local dashboard',
-    credential_kind: 'cli_session',
+    credential_kind: 'device_session',
     credential_name: 'Local dashboard',
-    billing: { service_plan: 'one_gb', billing_status: 'active', purchase_mode: 'test' },
+    billing: { plan: 'one_gb', billing_status: 'active', purchase_mode: 'test' },
     credits: {
       reset_at: Math.floor((fixtureNow + hour * 24 * 10) / 1000),
       capture: {
@@ -1105,7 +1105,7 @@ export function createFixtureApi({
         provider_display_name: 'sample-user',
         display_name: 'Sample User',
         device_name: 'Local dashboard',
-        credential_kind: 'cli_session',
+        credential_kind: 'device_session',
         credential_name: 'Local dashboard',
       };
       return account;

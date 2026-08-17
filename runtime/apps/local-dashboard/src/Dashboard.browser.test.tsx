@@ -287,7 +287,7 @@ describe('local evidence dashboard', () => {
     renderDashboard('/settings', {
       ...createFixtureApi(),
       notaries: async () => {
-        throw new LocalApiError(500, 'notary_trust_state_invalid', 'Invalid');
+        throw new LocalApiError(500, 'registry_state_invalid', 'Invalid');
       },
     });
     await expect.element(page.getByText('Pinned trust state is malformed')).toBeVisible();
@@ -513,7 +513,7 @@ describe('local evidence dashboard', () => {
               signed_in: true,
               provider_display_name: 'approved-user',
               device_name: 'Local dashboard',
-              credential_kind: 'cli_session',
+              credential_kind: 'device_session',
               credential_name: 'Local dashboard',
             },
       share: async (captureId, visibility) => {

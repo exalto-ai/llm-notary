@@ -486,8 +486,8 @@ export interface components {
         };
         BillingState: {
             billing_status: string;
+            plan: string;
             purchase_mode?: string | null;
-            service_plan: string;
         };
         CaptureSettingResponse: {
             enabled: boolean;

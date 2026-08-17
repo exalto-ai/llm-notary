@@ -530,10 +530,7 @@ function AccountConnectionCard({
           </div>
           {api.billing && (
             <dl className="account-connection-facts">
-              <Fact
-                label="Plan"
-                value={`${api.billing.service_plan} · ${api.billing.billing_status}`}
-              />
+              <Fact label="Plan" value={`${api.billing.plan} · ${api.billing.billing_status}`} />
               {api.billing.purchase_mode && (
                 <Fact label="Billing" value={api.billing.purchase_mode} />
               )}
@@ -2897,12 +2894,12 @@ function SettingsNotaries({ api }: { api: LocalApi }) {
       ) : notaries.error ? (
         <div className="local-notary-state-panel" role="alert">
           <b>
-            {errorCode === 'notary_trust_state_invalid'
+            {errorCode === 'registry_state_invalid'
               ? 'Pinned trust state is malformed'
               : 'Local notary trust is unavailable'}
           </b>
           <span>
-            {errorCode === 'notary_trust_state_invalid'
+            {errorCode === 'registry_state_invalid'
               ? 'The cached Registry could not be validated. No notary is presented as usable.'
               : 'The local service could not return its configured trust metadata. No endpoint status can be inferred.'}
           </span>

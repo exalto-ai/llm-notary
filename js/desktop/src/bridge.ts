@@ -58,7 +58,7 @@ export type AccountConnection = {
   device_name?: string | null;
   credential_kind?: string | null;
   credential_name?: string | null;
-  billing?: { service_plan: string; billing_status: string; purchase_mode?: string | null } | null;
+  billing?: { plan: string; billing_status: string; purchase_mode?: string | null } | null;
   credits?: { capture: AccountCreditBalance; notarization: AccountCreditBalance; reset_at: number } | null;
   links?: { account: string; usage: string; plans: string; settings: string } | null;
 };
