@@ -39,6 +39,7 @@ test('release manifest is deterministic and binds every installable payload', as
   assert.deepEqual(first, second);
   assert.equal(first.platforms['darwin-aarch64'].signature, signature);
   assert.equal(first.artifacts['linux-x86_64'].llm_notary.name, 'llm-notary-linux-x86_64');
+  assert.equal(first.artifacts['linux-x86_64'].llm_notaryd.name, 'notaryd-linux-x86_64');
   assert.match(first.desktop['darwin-aarch64'].updater.url, /\/builds\/[a-f0-9-]+\//);
 });
 
