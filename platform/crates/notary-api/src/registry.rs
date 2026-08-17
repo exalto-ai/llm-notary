@@ -86,7 +86,7 @@ pub(super) fn router() -> OpenApiRouter<NotaryApiState> {
 #[utoipa::path(
     get,
     path = "/api/notary",
-    summary = "Get the versioned notary directory",
+    summary = "Get the versioned Notary Registry",
     responses((status = 200, body = RegistryResponse)),
     tag = "health"
 )]

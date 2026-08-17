@@ -23,6 +23,7 @@ fn worker_rejects_malformed_packages_with_a_stable_code() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"A").unwrap();
     stdin
         .write_all(&(registry.len() as u64).to_be_bytes())
         .unwrap();
@@ -83,6 +84,7 @@ fn sanitized_valid_package_traverses_the_isolated_worker() {
         .spawn()
         .unwrap();
     let mut stdin = child.stdin.take().unwrap();
+    stdin.write_all(b"A").unwrap();
     stdin
         .write_all(&(registry.len() as u64).to_be_bytes())
         .unwrap();
@@ -109,24 +111,28 @@ fn sanitized_valid_package_traverses_the_isolated_worker() {
     );
     let body_length = u64::from_be_bytes(output.stdout[1..9].try_into().unwrap()) as usize;
     assert_eq!(body_length, output.stdout.len() - 9);
-    let body: serde_json::Value = serde_json::from_slice(&output.stdout[9..]).unwrap();
-    assert_eq!(body["verified"], true);
-    assert_eq!(body["source_trace_id"], "trc-test");
-    assert_eq!(body["provider"], "test-server.io");
-    assert_eq!(body["host"], "test-server.io");
-    assert_eq!(body["notary_key_id"], key_id);
-    assert_eq!(body["registry_generation"], 42);
-    assert_eq!(body["trust_source"], "hosted_registry");
+    let metadata_length = u64::from_be_bytes(output.stdout[9..17].try_into().unwrap()) as usize;
+    let trace_offset = 17 + metadata_length;
+    let metadata: serde_json::Value =
+        serde_json::from_slice(&output.stdout[17..trace_offset]).unwrap();
+    let trace: serde_json::Value = serde_json::from_slice(&output.stdout[trace_offset..]).unwrap();
+    assert_eq!(metadata["verified"], true);
+    assert_eq!(metadata["source_trace_id"], "trc-test");
+    assert_eq!(metadata["provider"], "test-server.io");
+    assert_eq!(metadata["host"], "test-server.io");
+    assert_eq!(metadata["notary_key_id"], key_id);
+    assert_eq!(metadata["registry_generation"], 42);
+    assert_eq!(metadata["trust_source"], "hosted_registry");
     assert_eq!(
-        body["package_sha256"],
+        metadata["package_sha256"],
         "c2b5159f0a7cbdc4a9a24e1fdec14b125e83ae32393704af20885796c86da3dd"
     );
     assert_eq!(
-        body["content_sha256"],
+        metadata["content_sha256"],
         "cf53f483fe8f438c2660323f1b0a4332394299aa2bb2b38beda24da0607342fa"
     );
     assert_eq!(
-        body["trace"]["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"],
+        trace["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"],
         "gen_ai.inference"
     );
 }

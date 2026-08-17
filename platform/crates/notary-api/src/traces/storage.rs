@@ -164,7 +164,7 @@ impl TraceStorage {
         expires_in: Duration,
     ) -> Result<UploadRequest> {
         match self {
-            Self::Disabled => bail!("publication intake storage is disabled"),
+            Self::Disabled => bail!("hosted Trace staging storage is disabled"),
             Self::S3(storage) => {
                 let presigned = storage
                     .client
@@ -219,7 +219,7 @@ impl TraceStorage {
 
     pub async fn head_object(&self, object_key: &str) -> Result<Option<StoredObject>> {
         match self {
-            Self::Disabled => bail!("publication intake storage is disabled"),
+            Self::Disabled => bail!("hosted Trace staging storage is disabled"),
             Self::S3(storage) => {
                 match storage
                     .client
@@ -260,7 +260,7 @@ impl TraceStorage {
 
     pub async fn get_object(&self, object_key: &str, max_bytes: usize) -> Result<Option<Vec<u8>>> {
         match self {
-            Self::Disabled => bail!("publication intake storage is disabled"),
+            Self::Disabled => bail!("hosted Trace staging storage is disabled"),
             Self::S3(storage) => {
                 let output = match storage
                     .client
@@ -319,7 +319,7 @@ impl TraceStorage {
 
     pub async fn promote_object(&self, source_key: &str, destination_key: &str) -> Result<()> {
         match self {
-            Self::Disabled => bail!("publication intake storage is disabled"),
+            Self::Disabled => bail!("hosted Trace staging storage is disabled"),
             Self::S3(storage) => {
                 storage
                     .client
@@ -357,7 +357,7 @@ impl TraceStorage {
         bytes: &[u8],
     ) -> Result<()> {
         match self {
-            Self::Disabled => bail!("publication storage is disabled"),
+            Self::Disabled => bail!("hosted Trace storage is disabled"),
             Self::S3(storage) => {
                 let content_type = if kind == "package" {
                     ARCHIVE_CONTENT_TYPE
@@ -471,7 +471,7 @@ impl TraceStorage {
 
     fn prefix(&self) -> Result<&str> {
         match self {
-            Self::Disabled => bail!("publication intake storage is disabled"),
+            Self::Disabled => bail!("hosted Trace staging storage is disabled"),
             Self::S3(storage) => Ok(&storage.prefix),
             #[cfg(test)]
             Self::Mock(storage) => Ok(&storage.prefix),

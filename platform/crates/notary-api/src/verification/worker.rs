@@ -9,9 +9,11 @@ use std::{
 use notary_core::{
     archive::{MAX_ARCHIVE_WIRE_BYTES, ValidatedTracePackageArchive, read_trace_package_archive},
     notarization::{trace_manifest_from_archive, verify_trace_package_archive},
+    public_safety::{
+        PublicPackageSafetyContext, validate_public_trace_package_with_context_and_force,
+    },
     registry::Registry,
 };
-use serde::Serialize;
 #[cfg(feature = "test-utils")]
 use tlsn::{
     attestation::CryptoProvider,
@@ -20,7 +22,10 @@ use tlsn::{
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
-pub(crate) const TRUST_SOURCE: &str = "hosted_registry";
+use super::process::{
+    MAX_REGISTRY_BYTES, MAX_WORKER_OUTPUT_BYTES, TRUST_SOURCE, VerificationPurpose,
+    VerifiedPackage, WORKER_REJECTED, WORKER_VERIFIED, WorkerMetadata,
+};
 
 // A near-limit package can use most of one 512 MiB API Machine while its ZIP
 // entries and TLSNotary proof are decoded. Admission and anonymous requests
@@ -43,104 +48,74 @@ pub(crate) fn try_acquire_verification_capacity() -> Option<OwnedSemaphorePermit
         .ok()
 }
 
-pub(crate) struct HostedVerifiedPackage {
-    pub source_trace_id: String,
-    pub authenticated_at_unix_ms: u64,
-    pub provider_name: String,
-    pub provider_host: String,
-    pub request_path: String,
-    pub notary_key_id: String,
-    pub registry_generation: u64,
-    pub package_sha256: String,
-    pub content_sha256: String,
-    pub trace: Vec<u8>,
-}
-
 struct PreparedPackage {
     validated: ValidatedTracePackageArchive,
     notary_key_id: String,
     trusted_key: Vec<u8>,
 }
 
-pub(crate) const WORKER_VERIFIED: u8 = b'V';
-pub(crate) const WORKER_REJECTED: u8 = b'R';
-pub(crate) const MAX_WORKER_OUTPUT_BYTES: u64 = MAX_ARCHIVE_WIRE_BYTES + 2 * 1024 * 1024;
-
-#[derive(Serialize)]
-struct HostedVerificationMetadata<'a> {
-    verified: bool,
-    source_trace_id: &'a str,
-    authenticated_at_unix_ms: u64,
-    provider: &'a str,
-    host: &'a str,
-    notary_key_id: &'a str,
-    registry_generation: u64,
-    trust_source: &'static str,
-    package_sha256: &'a str,
-    content_sha256: &'a str,
-}
-
 #[derive(Debug)]
-pub(crate) enum HostedVerificationError {
+enum HostedVerificationError {
     Malformed,
     Tampered,
     UnsupportedVersion,
     UntrustedNotary,
-    Service(anyhow::Error),
+    Service,
 }
 
 impl HostedVerificationError {
-    pub fn public_code(&self) -> &'static str {
+    fn public_code(&self) -> &'static str {
         match self {
             Self::Malformed => "malformed_package",
             Self::Tampered => "tampered_package",
             Self::UnsupportedVersion => "unsupported_version",
             Self::UntrustedNotary => "untrusted_notary",
-            Self::Service(_) => "verification_unavailable",
+            Self::Service => "verification_unavailable",
         }
     }
 
-    pub fn admission_code(&self) -> Option<&'static str> {
+    fn admission_code(&self) -> Option<&'static str> {
         match self {
             Self::Malformed => Some("archive_invalid"),
             Self::Tampered | Self::UnsupportedVersion => Some("package_invalid"),
             Self::UntrustedNotary => Some("notary_untrusted"),
-            Self::Service(_) => None,
+            Self::Service => None,
         }
     }
 }
 
-pub(crate) fn verify_package(
+fn verify_package(
     archive: &[u8],
-    directory: &Registry,
-) -> Result<HostedVerifiedPackage, HostedVerificationError> {
+    registry: &Registry,
+) -> Result<VerifiedPackage, HostedVerificationError> {
     let package_sha256 = notary_core::sha256_hex(archive);
-    let prepared = prepare_package(archive, directory)?;
+    let prepared = prepare_package(archive, registry)?;
     let verified =
         verify_trace_package_archive(prepared.validated, package_sha256, &prepared.trusted_key)
             .map_err(classify_package_error)?;
-    Ok(HostedVerifiedPackage {
+    Ok(VerifiedPackage {
         source_trace_id: verified.manifest.trace_id().to_owned(),
         authenticated_at_unix_ms: verified.manifest.created_at_unix_ms(),
         provider_name: verified.manifest.provider_name().to_owned(),
         provider_host: verified.manifest.provider_host().to_owned(),
         request_path: verified.request_path,
         notary_key_id: prepared.notary_key_id,
-        registry_generation: directory.generation,
+        registry_generation: registry.generation,
         package_sha256: verified.package_sha256,
         content_sha256: verified.trace_sha256,
         trace: verified.trace,
+        safety_override_applied: None,
     })
 }
 
 #[cfg(feature = "test-utils")]
 fn verify_fixture_package(
     archive: &[u8],
-    directory: &Registry,
+    registry: &Registry,
     crypto_provider: &CryptoProvider,
-) -> Result<HostedVerifiedPackage, HostedVerificationError> {
+) -> Result<VerifiedPackage, HostedVerificationError> {
     let package_sha256 = notary_core::sha256_hex(archive);
-    let prepared = prepare_package(archive, directory)?;
+    let prepared = prepare_package(archive, registry)?;
     let verified = notary_core::notarization::verify_trace_package_archive_with_provider_for_test(
         prepared.validated,
         package_sha256,
@@ -148,23 +123,24 @@ fn verify_fixture_package(
         crypto_provider,
     )
     .map_err(classify_package_error)?;
-    Ok(HostedVerifiedPackage {
+    Ok(VerifiedPackage {
         source_trace_id: verified.manifest.trace_id().to_owned(),
         authenticated_at_unix_ms: verified.manifest.created_at_unix_ms(),
         provider_name: verified.manifest.provider_name().to_owned(),
         provider_host: verified.manifest.provider_host().to_owned(),
         request_path: verified.request_path,
         notary_key_id: prepared.notary_key_id,
-        registry_generation: directory.generation,
+        registry_generation: registry.generation,
         package_sha256: verified.package_sha256,
         content_sha256: verified.trace_sha256,
         trace: verified.trace,
+        safety_override_applied: None,
     })
 }
 
 fn prepare_package(
     archive: &[u8],
-    directory: &Registry,
+    registry: &Registry,
 ) -> Result<PreparedPackage, HostedVerificationError> {
     let validated = read_trace_package_archive(archive).map_err(classify_archive_error)?;
     let manifest = trace_manifest_from_archive(&validated).map_err(classify_package_error)?;
@@ -172,7 +148,7 @@ fn prepare_package(
         .notary_public_key()
         .map_err(classify_package_error)?;
     let authenticated_at = manifest.created_at_unix_ms();
-    let record = directory
+    let record = registry
         .notaries
         .iter()
         .find(|record| {
@@ -186,7 +162,7 @@ fn prepare_package(
     }
     let trusted_key = record
         .public_key_bytes()
-        .map_err(HostedVerificationError::Service)?;
+        .map_err(|_| HostedVerificationError::Service)?;
     Ok(PreparedPackage {
         validated,
         notary_key_id: record.key_id.clone(),
@@ -200,20 +176,23 @@ pub(crate) fn run_worker() -> anyhow::Result<()> {
 
 fn run_worker_with<F>(verify: F) -> anyhow::Result<()>
 where
-    F: FnOnce(&[u8], &Registry) -> Result<HostedVerifiedPackage, HostedVerificationError>,
+    F: FnOnce(&[u8], &Registry) -> Result<VerifiedPackage, HostedVerificationError>,
 {
-    const MAX_DIRECTORY_BYTES: u64 = 1024 * 1024;
     let mut stdin = std::io::stdin().lock();
+    let mut purpose = [0u8; 1];
+    stdin.read_exact(&mut purpose)?;
+    let purpose = VerificationPurpose::from_wire(purpose[0])
+        .ok_or_else(|| anyhow::anyhow!("unsupported verification purpose"))?;
     let mut length = [0u8; 8];
     stdin.read_exact(&mut length)?;
-    let directory_length = u64::from_be_bytes(length);
+    let registry_length = u64::from_be_bytes(length);
     anyhow::ensure!(
-        directory_length <= MAX_DIRECTORY_BYTES,
-        "directory input is too large"
+        registry_length <= MAX_REGISTRY_BYTES,
+        "Registry input is too large"
     );
-    let mut directory = vec![0; usize::try_from(directory_length)?];
-    stdin.read_exact(&mut directory)?;
-    let directory: Registry = serde_json::from_slice(&directory)?;
+    let mut registry = vec![0; usize::try_from(registry_length)?];
+    stdin.read_exact(&mut registry)?;
+    let registry: Registry = serde_json::from_slice(&registry)?;
     stdin.read_exact(&mut length)?;
     let archive_length = u64::from_be_bytes(length);
     anyhow::ensure!(
@@ -226,14 +205,43 @@ where
     anyhow::ensure!(stdin.read(&mut trailing)? == 0, "unexpected worker input");
     let stdout = std::io::stdout();
     let mut stdout = stdout.lock();
-    match verify(&archive, &directory) {
+    match verify_for_purpose(&archive, &registry, purpose, verify) {
         Ok(package) => write_verified_response(&mut stdout, &package)?,
-        Err(error) => {
-            write_worker_frame(&mut stdout, WORKER_REJECTED, error.public_code().as_bytes())?;
-        }
+        Err(code) => write_worker_frame(&mut stdout, WORKER_REJECTED, code.as_bytes())?,
     }
     stdout.flush()?;
     Ok(())
+}
+
+fn verify_for_purpose<F>(
+    archive: &[u8],
+    registry: &Registry,
+    purpose: VerificationPurpose,
+    verify: F,
+) -> Result<VerifiedPackage, String>
+where
+    F: FnOnce(&[u8], &Registry) -> Result<VerifiedPackage, HostedVerificationError>,
+{
+    let mut package = verify(archive, registry).map_err(|error| match purpose {
+        VerificationPurpose::Anonymous => error.public_code().to_owned(),
+        VerificationPurpose::Hosted { .. } => error
+            .admission_code()
+            .unwrap_or_else(|| error.public_code())
+            .to_owned(),
+    })?;
+    if let VerificationPurpose::Hosted { allow_high_entropy } = purpose {
+        let safety = validate_public_trace_package_with_context_and_force(
+            archive,
+            PublicPackageSafetyContext {
+                provider_host: &package.provider_host,
+                request_path: &package.request_path,
+            },
+            allow_high_entropy,
+        )
+        .map_err(|error| error.admission_code())?;
+        package.safety_override_applied = Some(safety.high_entropy_override_applied);
+    }
+    Ok(package)
 }
 
 #[cfg(feature = "test-utils")]
@@ -245,34 +253,31 @@ pub(crate) fn run_fixture_worker() -> anyhow::Result<()> {
         cert: ServerCertVerifier::new(&roots)?,
         ..CryptoProvider::default()
     };
-    run_worker_with(|archive, directory| {
-        verify_fixture_package(archive, directory, &crypto_provider)
-    })
+    run_worker_with(|archive, registry| verify_fixture_package(archive, registry, &crypto_provider))
 }
 
 fn write_verified_response(
     output: &mut impl std::io::Write,
-    package: &HostedVerifiedPackage,
+    package: &VerifiedPackage,
 ) -> anyhow::Result<()> {
-    let metadata = HostedVerificationMetadata {
+    let metadata = WorkerMetadata {
         verified: true,
-        source_trace_id: &package.source_trace_id,
+        source_trace_id: package.source_trace_id.clone(),
         authenticated_at_unix_ms: package.authenticated_at_unix_ms,
-        provider: &package.provider_name,
-        host: &package.provider_host,
-        notary_key_id: &package.notary_key_id,
+        provider: package.provider_name.clone(),
+        host: package.provider_host.clone(),
+        request_path: package.request_path.clone(),
+        notary_key_id: package.notary_key_id.clone(),
         registry_generation: package.registry_generation,
-        trust_source: TRUST_SOURCE,
-        package_sha256: &package.package_sha256,
-        content_sha256: &package.content_sha256,
+        trust_source: TRUST_SOURCE.to_owned(),
+        package_sha256: package.package_sha256.clone(),
+        content_sha256: package.content_sha256.clone(),
+        safety_override_applied: package.safety_override_applied,
     };
-    let mut prefix = serde_json::to_vec(&metadata)?;
-    anyhow::ensure!(prefix.pop() == Some(b'}'), "invalid verification metadata");
-    let body_length = prefix
-        .len()
-        .checked_add(b",\"trace\":".len())
+    let metadata = serde_json::to_vec(&metadata)?;
+    let body_length = 8usize
+        .checked_add(metadata.len())
         .and_then(|length| length.checked_add(package.trace.len()))
-        .and_then(|length| length.checked_add(1))
         .ok_or_else(|| anyhow::anyhow!("verification response size overflow"))?;
     anyhow::ensure!(
         body_length as u64 <= MAX_WORKER_OUTPUT_BYTES,
@@ -280,10 +285,9 @@ fn write_verified_response(
     );
     output.write_all(&[WORKER_VERIFIED])?;
     output.write_all(&(body_length as u64).to_be_bytes())?;
-    output.write_all(&prefix)?;
-    output.write_all(b",\"trace\":")?;
+    output.write_all(&(metadata.len() as u64).to_be_bytes())?;
+    output.write_all(&metadata)?;
     output.write_all(&package.trace)?;
-    output.write_all(b"}")?;
     Ok(())
 }
 
@@ -323,6 +327,10 @@ fn classify_package_error(error: anyhow::Error) -> HostedVerificationError {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use notary_core::archive::{PACKAGE_FILES, build_trace_package_archive};
+
     use super::*;
 
     #[test]
@@ -347,7 +355,7 @@ mod tests {
 
     #[test]
     fn worker_success_body_embeds_trace_without_reencoding_it() {
-        let package = HostedVerifiedPackage {
+        let package = VerifiedPackage {
             source_trace_id: "trc-test".to_owned(),
             authenticated_at_unix_ms: 1_700_000_000_000,
             provider_name: "OpenAI".to_owned(),
@@ -358,15 +366,72 @@ mod tests {
             package_sha256: "a".repeat(64),
             content_sha256: "b".repeat(64),
             trace: br#"{"resourceSpans":[]}"#.to_vec(),
+            safety_override_applied: None,
         };
         let mut output = Vec::new();
         write_verified_response(&mut output, &package).unwrap();
         assert_eq!(output[0], WORKER_VERIFIED);
         let body_length = u64::from_be_bytes(output[1..9].try_into().unwrap()) as usize;
         assert_eq!(body_length, output.len() - 9);
-        let value: serde_json::Value = serde_json::from_slice(&output[9..]).unwrap();
-        assert_eq!(value["verified"], true);
-        assert_eq!(value["provider"], "OpenAI");
-        assert_eq!(value["trace"]["resourceSpans"], serde_json::json!([]));
+        let metadata_length = u64::from_be_bytes(output[9..17].try_into().unwrap()) as usize;
+        let trace_offset = 17 + metadata_length;
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&output[17..trace_offset]).unwrap();
+        assert_eq!(metadata["verified"], true);
+        assert_eq!(metadata["provider"], "OpenAI");
+        assert_eq!(&output[trace_offset..], package.trace);
+    }
+
+    #[test]
+    fn hosted_worker_performs_public_safety_validation() {
+        let trace = br#"{"resourceSpans":[]}"#.to_vec();
+        let package_dir = std::env::temp_dir().join(format!(
+            "notary-hosted-worker-safety-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir(&package_dir).unwrap();
+        for name in PACKAGE_FILES {
+            let bytes = match name {
+                "manifest.json" => br#"{"format":"notary/trace-evidence/v1"}"#.to_vec(),
+                "request.disclosed.http" => b"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: \0\0\0\0\r\n\r\n{\"model\":\"gpt-test\"}".to_vec(),
+                "response.disclosed.http" => b"HTTP/1.1 200 OK\r\nContent-Type: \0\0\0\r\n\r\n{\"id\":\"chatcmpl-7Qx9Za2Bc4De6Fg8Hi0Jk3Lm5Np\",\"choices\":[]}".to_vec(),
+                "trace.otlp.json" => trace.clone(),
+                _ => b"public TLSNotary evidence".to_vec(),
+            };
+            fs::write(package_dir.join(name), bytes).unwrap();
+        }
+        let archive = build_trace_package_archive(&package_dir).unwrap();
+        fs::remove_dir_all(package_dir).unwrap();
+        let registry: Registry = serde_json::from_value(serde_json::json!({
+            "format": "notary/registry/v1",
+            "generation": 0,
+            "active_key_id": "unused",
+            "notaries": []
+        }))
+        .unwrap();
+        let verified = verify_for_purpose(
+            &archive,
+            &registry,
+            VerificationPurpose::Hosted {
+                allow_high_entropy: false,
+            },
+            |_, _| {
+                Ok(VerifiedPackage {
+                    source_trace_id: "trc-test".to_owned(),
+                    authenticated_at_unix_ms: 1_700_000_000_000,
+                    provider_name: "OpenAI".to_owned(),
+                    provider_host: "api.openai.com".to_owned(),
+                    request_path: "/v1/chat/completions".to_owned(),
+                    notary_key_id: "sha256:test".to_owned(),
+                    registry_generation: 0,
+                    package_sha256: notary_core::sha256_hex(&archive),
+                    content_sha256: notary_core::sha256_hex(&trace),
+                    trace,
+                    safety_override_applied: None,
+                })
+            },
+        )
+        .unwrap();
+        assert_eq!(verified.safety_override_applied, Some(false));
     }
 }

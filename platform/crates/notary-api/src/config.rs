@@ -85,12 +85,12 @@ pub struct DatabaseConfig {
     pub max_connections: u32,
 }
 
-/// The verified notary directory advertised by the API.
+/// The verified Notary Registry advertised by the API.
 pub struct RegistryConfig {
     pub registry: Registry,
 }
 
-/// Publication intake and public-artifact storage configuration.
+/// Hosted Trace staging and public-artifact storage configuration.
 pub struct TraceStorageConfig {
     pub max_package_bytes: i64,
     pub upload_ttl_secs: i64,
@@ -820,7 +820,7 @@ mod tests {
     }
 
     #[test]
-    fn registry_configuration_has_no_inline_directory_fallback() {
+    fn registry_configuration_has_no_inline_registry_fallback() {
         let _lock = ENVIRONMENT.lock().unwrap();
         let _environment = EnvironmentGuard::set(&[
             ("NOTARY_API_REGISTRY_FILE", None),

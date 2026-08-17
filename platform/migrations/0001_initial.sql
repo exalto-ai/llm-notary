@@ -401,12 +401,19 @@ CREATE TABLE notary_api.admitted_operations (
     max_attestable_http_bytes BIGINT NOT NULL
         CHECK (max_attestable_http_bytes > 0),
     admitted_at BIGINT NOT NULL,
+    activation_deadline BIGINT NOT NULL,
+    activated_at BIGINT,
     terminal_outcome TEXT CHECK (
         terminal_outcome IN ('completed', 'client_failed', 'service_failed')
     ),
     settled_authenticated_bytes BIGINT
         CHECK (settled_authenticated_bytes >= 0),
     settled_at BIGINT,
+    CHECK (activation_deadline >= admitted_at),
+    CHECK (
+        activated_at IS NULL
+        OR (activated_at >= admitted_at AND activated_at <= activation_deadline)
+    ),
     CHECK (
         (
             mode = 'capture'
@@ -439,6 +446,9 @@ CREATE INDEX admitted_operations_account_idx
 CREATE INDEX admitted_operations_unsettled_idx
     ON notary_api.admitted_operations (admitted_at)
     WHERE terminal_outcome IS NULL;
+CREATE INDEX admitted_operations_pending_activation_idx
+    ON notary_api.admitted_operations (activation_deadline)
+    WHERE activated_at IS NULL AND terminal_outcome IS NULL;
 
 CREATE TABLE notary_api.account_billing_profiles (
     account_id TEXT PRIMARY KEY NOT NULL

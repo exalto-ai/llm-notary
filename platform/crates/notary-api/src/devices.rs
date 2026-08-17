@@ -569,8 +569,8 @@ pub(super) async fn device_me(
             device_name: principal.credential_name.clone(),
         }
     });
-    let credits = admissions::account_access(&state, &principal.account_id).await?;
-    let billing = admissions::account_billing_state(&state.database, &principal.account_id).await?;
+    let credits = credits::account_access(&state, &principal.account_id).await?;
+    let billing = credits::account_billing_state(&state.database, &principal.account_id).await?;
     Ok(Json(DeviceMeResponse {
         account: PublicUser {
             id: user.0,

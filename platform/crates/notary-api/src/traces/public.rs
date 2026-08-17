@@ -1,9 +1,9 @@
-use std::{net::SocketAddr, time::Instant};
+use std::net::SocketAddr;
 
 #[cfg(test)]
 use std::sync::Arc;
 
-use anyhow::{Context, Result, bail};
+use anyhow::Result;
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use axum::{
     Json,
@@ -19,35 +19,21 @@ use sha2::Sha256;
 use sqlx::FromRow;
 #[cfg(test)]
 use tokio::sync::Semaphore;
-use tracing::Span;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use notary_core::{
     pagination::{CursorScope, Page, PageQuery, decode_cursor},
-    public_safety::{
-        PUBLIC_PACKAGE_SAFETY_VERSION, PublicPackageSafetyContext,
-        validate_public_trace_package_with_context_and_force,
-    },
     sha256_hex,
 };
 
 use crate::{
     ApiError, ApiResult, NotaryApiState, database_error, pagination,
-    traces::owner::{
-        HostedTraceRow, MAX_SHARE_PASSWORD_BYTES, cleanup_object, enqueue_cleanup_direct,
-        run_share_password_work,
-    },
+    traces::owner::{MAX_SHARE_PASSWORD_BYTES, run_share_password_work},
     unix_timestamp,
-    verification::worker::{
-        HostedVerificationError, HostedVerifiedPackage, TRUST_SOURCE,
-        acquire_verification_capacity, verify_package,
-    },
 };
 
-const CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
-const LIBRARY_PREVIEW_CHARS: usize = 180;
 const SHARE_PASSWORD_HEADER: &str = "x-share-password";
 const MAX_REPORT_MESSAGE_CHARS: usize = 500;
 const SHARE_RATE_LIMIT_KEY_PURPOSE: &[u8] = b"llm-notary/share-rate-limit/v1";
@@ -221,29 +207,6 @@ struct ShareReportReceipt {
     received: bool,
 }
 
-struct VerifiedArtifacts {
-    verified: HostedVerifiedPackage,
-    archive: Vec<u8>,
-    model: String,
-    input_preview: Option<String>,
-    output_preview: Option<String>,
-    safety_override_applied: bool,
-}
-
-struct StoredPublicArtifacts {
-    content_object_key: String,
-    content_size_bytes: i64,
-    content_sha256: String,
-    package_object_key: String,
-    package_size_bytes: i64,
-    package_sha256: String,
-}
-
-enum AdmissionFailure {
-    Reject(String, anyhow::Error),
-    Retry(anyhow::Error),
-}
-
 pub fn router() -> OpenApiRouter<NotaryApiState> {
     OpenApiRouter::new()
         .routes(routes!(listed_shares))
@@ -270,9 +233,9 @@ async fn listed_shares(
     query: Result<Query<ListedSharesQuery>, axum::extract::rejection::QueryRejection>,
 ) -> ApiResult<Json<Page<ListedShareSummary>>> {
     let Query(query) = query.map_err(pagination::query_error)?;
-    let search = normalize_library_search(query.search)?;
-    let search_pattern = search.as_deref().map(library_search_regex);
-    let provider = normalize_library_filter(query.provider, 100, "provider is too long")?;
+    let search = normalize_listing_search(query.search)?;
+    let search_pattern = search.as_deref().map(listing_search_regex);
+    let provider = normalize_listing_filter(query.provider, 100, "provider is too long")?;
     let page_query = PageQuery {
         limit: query.limit,
         cursor: query.cursor,
@@ -371,7 +334,7 @@ async fn listed_shares(
     }))
 }
 
-fn normalize_library_filter(
+fn normalize_listing_filter(
     value: Option<String>,
     maximum: usize,
     error: &'static str,
@@ -384,8 +347,8 @@ fn normalize_library_filter(
     }
 }
 
-fn normalize_library_search(value: Option<String>) -> ApiResult<Option<String>> {
-    let value = normalize_library_filter(value, 200, "search is too long")?;
+fn normalize_listing_search(value: Option<String>) -> ApiResult<Option<String>> {
+    let value = normalize_listing_filter(value, 200, "search is too long")?;
     match value {
         Some(value) if !has_indexable_search_trigram(&value) => Err(ApiError::bad_request(
             "search must include 3 consecutive letters or numbers",
@@ -409,7 +372,7 @@ fn has_indexable_search_trigram(value: &str) -> bool {
     false
 }
 
-fn library_search_regex(value: &str) -> String {
+fn listing_search_regex(value: &str) -> String {
     let mut pattern = String::with_capacity(value.len());
     for character in value.chars() {
         if matches!(
@@ -597,680 +560,6 @@ async fn create_share_report(
     .await
     .map_err(database_error)?;
     Ok(Json(ShareReportReceipt { received: true }))
-}
-
-pub(super) async fn claim_next_job(
-    state: &NotaryApiState,
-) -> Result<Option<(HostedTraceRow, String)>> {
-    let claim = Uuid::new_v4().to_string();
-    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    let job = sqlx::query_as::<_, HostedTraceRow>(
-        "WITH next_job AS (
-                 SELECT trace_id FROM traces
-                 WHERE status = 'queued'
-                 ORDER BY queued_at, trace_id
-                 FOR UPDATE SKIP LOCKED
-                 LIMIT 1
-             )
-             UPDATE traces
-             SET status = 'verifying', verification_claim = $1, verification_started_at = $2,
-                 updated_at = $3, failure_code = NULL
-             FROM next_job
-             WHERE traces.trace_id = next_job.trace_id
-             RETURNING traces.*",
-    )
-    .bind(&claim)
-    .bind(now)
-    .bind(now)
-    .fetch_optional(&state.database)
-    .await?;
-    Ok(job.map(|job| (job, claim)))
-}
-
-#[tracing::instrument(
-    name = "share.admission",
-    skip_all,
-    fields(share.id = %job.trace_id, archive.size_bytes = tracing::field::Empty)
-)]
-pub(super) async fn process_claim(state: &NotaryApiState, job: HostedTraceRow, claim: String) {
-    let started = Instant::now();
-    let _capacity = acquire_verification_capacity().await;
-    let archive = match state
-        .traces
-        .storage
-        .get_object(
-            &job.committed_staging_object_key,
-            state
-                .traces
-                .max_package_bytes
-                .min(notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64) as usize,
-        )
-        .await
-    {
-        Ok(Some(bytes)) => bytes,
-        Ok(None) => {
-            reject_claim(state, &job, &claim, "object_missing", None).await;
-            finish_admission_metric("rejected", started);
-            return;
-        }
-        Err(error) => {
-            retry_claim(state, &job, &claim, error).await;
-            finish_admission_metric("retry", started);
-            return;
-        }
-    };
-    let actual_size = archive.len() as i64;
-    Span::current().record("archive.size_bytes", actual_size);
-    metrics::histogram!("notary_api_trace_package_bytes").record(actual_size as f64);
-    let admitted_package_sha256 = sha256_hex(&archive);
-    if actual_size != job.declared_package_size_bytes {
-        reject_claim(
-            state,
-            &job,
-            &claim,
-            "object_size_mismatch",
-            Some((actual_size, admitted_package_sha256)),
-        )
-        .await;
-        finish_admission_metric("rejected", started);
-        return;
-    }
-    if admitted_package_sha256 != job.declared_package_sha256 {
-        reject_claim(
-            state,
-            &job,
-            &claim,
-            "object_sha256_mismatch",
-            Some((actual_size, admitted_package_sha256)),
-        )
-        .await;
-        finish_admission_metric("rejected", started);
-        return;
-    }
-
-    let directory = state.registry.clone();
-    let allow_high_entropy = job.allow_high_entropy;
-    let parent = Span::current();
-    let result = tokio::task::spawn_blocking(move || {
-        parent.in_scope(|| verify_for_admission(archive, &directory, allow_high_entropy))
-    })
-    .await;
-    match result {
-        Ok(Ok(artifacts)) => {
-            if artifacts.verified.source_trace_id != job.source_trace_id {
-                reject_claim(
-                    state,
-                    &job,
-                    &claim,
-                    "source_trace_id_mismatch",
-                    Some((actual_size, admitted_package_sha256)),
-                )
-                .await;
-                finish_admission_metric("rejected", started);
-                return;
-            }
-            if let Err(error) = admit_claim(
-                state,
-                &job,
-                &claim,
-                actual_size,
-                &admitted_package_sha256,
-                artifacts,
-            )
-            .await
-            {
-                retry_claim(state, &job, &claim, error).await;
-                finish_admission_metric("retry", started);
-            } else {
-                finish_admission_metric("shared", started);
-            }
-        }
-        Ok(Err(AdmissionFailure::Reject(code, error))) => {
-            tracing::info!(share_id = %job.trace_id, failure_code = %code, %error, "share rejected");
-            reject_claim(
-                state,
-                &job,
-                &claim,
-                &code,
-                Some((actual_size, admitted_package_sha256)),
-            )
-            .await;
-            finish_admission_metric("rejected", started);
-        }
-        Ok(Err(AdmissionFailure::Retry(error))) => {
-            retry_claim(state, &job, &claim, error).await;
-            finish_admission_metric("retry", started);
-        }
-        Err(error) => {
-            retry_claim(state, &job, &claim, anyhow::anyhow!(error)).await;
-            finish_admission_metric("retry", started);
-        }
-    }
-}
-
-fn finish_admission_metric(outcome: &'static str, started: Instant) {
-    metrics::counter!("notary_api_trace_verifications_total", "outcome" => outcome).increment(1);
-    metrics::histogram!("notary_api_trace_verification_duration_seconds", "outcome" => outcome)
-        .record(started.elapsed().as_secs_f64());
-}
-
-fn verify_for_admission(
-    archive: Vec<u8>,
-    directory: &notary_core::registry::Registry,
-    allow_high_entropy: bool,
-) -> std::result::Result<VerifiedArtifacts, AdmissionFailure> {
-    let verified = verify_package(&archive, directory).map_err(|error| match error {
-        HostedVerificationError::Service(error) => AdmissionFailure::Retry(error),
-        error => AdmissionFailure::Reject(
-            error
-                .admission_code()
-                .expect("non-service errors have an admission code")
-                .to_owned(),
-            anyhow::anyhow!(error.public_code()),
-        ),
-    })?;
-    finish_trace_verification(archive, verified, allow_high_entropy)
-}
-
-fn finish_trace_verification(
-    archive: Vec<u8>,
-    verified: HostedVerifiedPackage,
-    allow_high_entropy: bool,
-) -> std::result::Result<VerifiedArtifacts, AdmissionFailure> {
-    let safety = validate_public_trace_package_with_context_and_force(
-        &archive,
-        PublicPackageSafetyContext {
-            provider_host: &verified.provider_host,
-            request_path: &verified.request_path,
-        },
-        allow_high_entropy,
-    )
-    .map_err(|error| AdmissionFailure::Reject(error.admission_code(), anyhow::anyhow!(error)))?;
-    let model = trace_model(&verified.trace)
-        .map_err(|error| AdmissionFailure::Reject("package_invalid".to_owned(), error))?;
-    let (input_preview, output_preview) = trace_previews(&verified.trace)
-        .map_err(|error| AdmissionFailure::Reject("package_invalid".to_owned(), error))?;
-    Ok(VerifiedArtifacts {
-        verified,
-        archive,
-        model,
-        input_preview,
-        output_preview,
-        safety_override_applied: safety.high_entropy_override_applied,
-    })
-}
-
-fn trace_model(trace: &[u8]) -> Result<String> {
-    let value: serde_json::Value = serde_json::from_slice(trace)?;
-    let spans = value
-        .pointer("/resourceSpans/0/scopeSpans/0/spans")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("public trace has no span array"))?;
-    let attributes = spans
-        .first()
-        .and_then(|span| span.get("attributes"))
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("public trace has no span attributes"))?;
-    attributes
-        .iter()
-        .find(|attribute| {
-            attribute.get("key").and_then(serde_json::Value::as_str) == Some("gen_ai.request.model")
-        })
-        .and_then(|attribute| attribute.pointer("/value/stringValue"))
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow::anyhow!("public trace has no request model"))
-}
-
-fn trace_previews(trace: &[u8]) -> Result<(Option<String>, Option<String>)> {
-    let value: serde_json::Value = serde_json::from_slice(trace)?;
-    Ok((
-        trace_message_preview(&value, "gen_ai.input.messages", "user"),
-        trace_message_preview(&value, "gen_ai.output.messages", "assistant"),
-    ))
-}
-
-fn trace_message_preview(
-    trace: &serde_json::Value,
-    attribute_key: &str,
-    preferred_role: &str,
-) -> Option<String> {
-    let resources = trace.get("resourceSpans")?.as_array()?;
-    for resource in resources {
-        let Some(scopes) = resource
-            .get("scopeSpans")
-            .and_then(serde_json::Value::as_array)
-        else {
-            continue;
-        };
-        for scope in scopes {
-            let Some(spans) = scope.get("spans").and_then(serde_json::Value::as_array) else {
-                continue;
-            };
-            for span in spans {
-                let Some(attributes) = span.get("attributes").and_then(serde_json::Value::as_array)
-                else {
-                    continue;
-                };
-                let Some(serialized_messages) = attributes.iter().find_map(|attribute| {
-                    (attribute.get("key").and_then(serde_json::Value::as_str)
-                        == Some(attribute_key))
-                    .then(|| attribute.pointer("/value/stringValue"))
-                    .flatten()
-                    .and_then(serde_json::Value::as_str)
-                }) else {
-                    continue;
-                };
-                let Ok(messages) = serde_json::from_str::<serde_json::Value>(serialized_messages)
-                else {
-                    continue;
-                };
-                let Some(messages) = messages.as_array() else {
-                    continue;
-                };
-                let preferred = messages.iter().find(|message| {
-                    message.get("role").and_then(serde_json::Value::as_str) == Some(preferred_role)
-                });
-                if let Some(preview) = preferred
-                    .and_then(message_text)
-                    .or_else(|| messages.iter().find_map(message_text))
-                    .and_then(compact_preview)
-                {
-                    return Some(preview);
-                }
-            }
-        }
-    }
-    None
-}
-
-fn message_text(message: &serde_json::Value) -> Option<&str> {
-    message
-        .get("parts")?
-        .as_array()?
-        .iter()
-        .find(|part| {
-            part.get("type").and_then(serde_json::Value::as_str) == Some("text")
-                && part
-                    .get("content")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some()
-        })
-        .and_then(|part| part.get("content"))
-        .and_then(serde_json::Value::as_str)
-}
-
-fn compact_preview(value: &str) -> Option<String> {
-    let normalized = value.split_whitespace().collect::<Vec<_>>().join(" ");
-    if normalized.is_empty() {
-        return None;
-    }
-    let mut characters = normalized.chars();
-    let mut preview = characters
-        .by_ref()
-        .take(LIBRARY_PREVIEW_CHARS)
-        .collect::<String>();
-    if characters.next().is_some() {
-        preview.push('…');
-    }
-    Some(preview)
-}
-
-async fn admit_claim(
-    state: &NotaryApiState,
-    job: &HostedTraceRow,
-    claim: &str,
-    actual_size: i64,
-    admitted_package_sha256: &str,
-    artifacts: VerifiedArtifacts,
-) -> Result<()> {
-    if artifacts.verified.package_sha256 != admitted_package_sha256 {
-        bail!("verified package hash changed before admission");
-    }
-    let stored = store_committed_artifacts(state, &job.trace_id, &artifacts).await?;
-    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    let update = sqlx::query(
-        "UPDATE traces
-         SET status = 'shared', admitted_package_size_bytes = $1, admitted_package_sha256 = $2,
-             verified_at = $3, updated_at = $4,
-             content_object_key = $5, content_size_bytes = $6,
-             content_sha256 = $7, package_object_key = $8,
-             package_size_bytes = $9, package_sha256 = $10,
-             disclosure_safety_version = $11,
-             disclosure_safety_override = $12,
-             provider = $13, provider_host = $14, model = $15,
-             input_preview = $16, output_preview = $17,
-             listing_search_text = LOWER(CONCAT_WS(
-                ' ', $13, $15,
-                (SELECT display_name FROM accounts WHERE account_id = traces.account_id),
-                $16, $17
-             )),
-             authenticated_provider_connection_unix_ms = $18,
-             verified_notary_key_id = $19,
-             verified_registry_generation = $20, verified_trust_source = $21,
-             verification_claim = NULL
-         WHERE trace_id = $22 AND status = 'verifying' AND verification_claim = $23
-           AND content_object_key IS NULL AND package_object_key IS NULL",
-    )
-    .bind(actual_size)
-    .bind(admitted_package_sha256)
-    .bind(now)
-    .bind(now)
-    .bind(&stored.content_object_key)
-    .bind(stored.content_size_bytes)
-    .bind(&stored.content_sha256)
-    .bind(&stored.package_object_key)
-    .bind(stored.package_size_bytes)
-    .bind(&stored.package_sha256)
-    .bind(PUBLIC_PACKAGE_SAFETY_VERSION)
-    .bind(artifacts.safety_override_applied)
-    .bind(&artifacts.verified.provider_name)
-    .bind(&artifacts.verified.provider_host)
-    .bind(&artifacts.model)
-    .bind(&artifacts.input_preview)
-    .bind(&artifacts.output_preview)
-    .bind(i64::try_from(artifacts.verified.authenticated_at_unix_ms)?)
-    .bind(&artifacts.verified.notary_key_id)
-    .bind(i64::try_from(artifacts.verified.registry_generation)?)
-    .bind(TRUST_SOURCE)
-    .bind(&job.trace_id)
-    .bind(claim)
-    .execute(&state.database)
-    .await;
-    match update {
-        Ok(result) if result.rows_affected() == 1 => {}
-        Ok(_) => {
-            let current = load_public_share_optional(state, &job.trace_id)
-                .await
-                .ok()
-                .flatten();
-            if !current
-                .as_ref()
-                .is_some_and(|current| current.matches(&stored))
-            {
-                cleanup_committed_artifacts(state, &job.trace_id, &stored).await?;
-                bail!("share claim was lost before admission");
-            }
-        }
-        Err(error) => {
-            cleanup_committed_artifacts(state, &job.trace_id, &stored).await?;
-            return Err(error.into());
-        }
-    }
-    purge_private_object(state, job).await;
-    Ok(())
-}
-
-async fn store_committed_artifacts(
-    state: &NotaryApiState,
-    share_id: &str,
-    artifacts: &VerifiedArtifacts,
-) -> Result<StoredPublicArtifacts> {
-    let content_sha256 = sha256_hex(&artifacts.verified.trace);
-    let package_sha256 = sha256_hex(&artifacts.archive);
-    if content_sha256 != artifacts.verified.content_sha256
-        || package_sha256 != artifacts.verified.package_sha256
-    {
-        bail!("verified artifacts changed before public storage");
-    }
-    let stored = StoredPublicArtifacts {
-        content_object_key: state.traces.storage.committed_artifact_key(
-            share_id,
-            "content",
-            &content_sha256,
-        )?,
-        content_size_bytes: artifacts.verified.trace.len().try_into()?,
-        content_sha256,
-        package_object_key: state.traces.storage.committed_artifact_key(
-            share_id,
-            "package",
-            &package_sha256,
-        )?,
-        package_size_bytes: artifacts.archive.len().try_into()?,
-        package_sha256,
-    };
-    let result = async {
-        write_public_artifact(
-            state,
-            &stored.content_object_key,
-            "content",
-            &stored.content_sha256,
-            &artifacts.verified.trace,
-        )
-        .await?;
-        write_public_artifact(
-            state,
-            &stored.package_object_key,
-            "package",
-            &stored.package_sha256,
-            &artifacts.archive,
-        )
-        .await?;
-
-        // Read through the same storage path used by recipients, then repeat
-        // size/hash, safety, and cryptographic verification before the row can
-        // atomically become reachable.
-        let downloaded = state
-            .traces
-            .storage
-            .get_object(&stored.package_object_key, artifacts.archive.len())
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("stored package disappeared before admission"))?;
-        if downloaded.len() as i64 != stored.package_size_bytes
-            || sha256_hex(&downloaded) != stored.package_sha256
-            || downloaded != artifacts.archive
-        {
-            bail!("stored package failed its pre-commit integrity check");
-        }
-        let directory = state.registry.clone();
-        let expected_trace = stored.content_sha256.clone();
-        let expected_package = stored.package_sha256.clone();
-        let expected_safety_override = artifacts.safety_override_applied;
-        tokio::task::spawn_blocking(move || -> Result<()> {
-            let verified = verify_package(&downloaded, &directory)
-                .map_err(|_| anyhow::anyhow!("stored package failed cryptographic verification"))?;
-            let safety = validate_public_trace_package_with_context_and_force(
-                &downloaded,
-                PublicPackageSafetyContext {
-                    provider_host: &verified.provider_host,
-                    request_path: &verified.request_path,
-                },
-                expected_safety_override,
-            )
-            .map_err(|error| anyhow::anyhow!(error))?;
-            if safety.high_entropy_override_applied != expected_safety_override {
-                bail!("stored package safety decision changed");
-            }
-            if verified.content_sha256 != expected_trace
-                || verified.package_sha256 != expected_package
-            {
-                bail!("stored package verification metadata changed");
-            }
-            Ok(())
-        })
-        .await??;
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-    if let Err(error) = result {
-        cleanup_committed_artifacts(state, share_id, &stored)
-            .await
-            .context("queueing incomplete committed artifacts for cleanup")?;
-        return Err(error);
-    }
-    Ok(stored)
-}
-
-async fn write_public_artifact(
-    state: &NotaryApiState,
-    object_key: &str,
-    kind: &str,
-    sha256: &str,
-    bytes: &[u8],
-) -> Result<()> {
-    state
-        .traces
-        .storage
-        .put_public_artifact(object_key, kind, sha256, bytes)
-        .await?;
-    let stored = state
-        .traces
-        .storage
-        .head_object(object_key)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("public artifact disappeared after upload"))?;
-    if !super::storage::TraceStorage::has_expected_public_metadata(
-        &stored,
-        kind,
-        sha256,
-        bytes.len().try_into()?,
-    ) {
-        bail!("public artifact metadata changed after upload");
-    }
-    Ok(())
-}
-
-async fn cleanup_committed_artifacts(
-    state: &NotaryApiState,
-    trace_id: &str,
-    artifacts: &StoredPublicArtifacts,
-) -> Result<()> {
-    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    for (object_key, artifact_kind) in [
-        (&artifacts.content_object_key, "content"),
-        (&artifacts.package_object_key, "package"),
-    ] {
-        enqueue_cleanup_direct(state, trace_id, object_key, artifact_kind, now).await?;
-    }
-    for object_key in [&artifacts.content_object_key, &artifacts.package_object_key] {
-        let _ = cleanup_object(state, object_key).await?;
-    }
-    Ok(())
-}
-
-impl PublicShareRow {
-    fn matches(&self, stored: &StoredPublicArtifacts) -> bool {
-        self.content_object_key == stored.content_object_key
-            && self.content_size_bytes == stored.content_size_bytes
-            && self.content_sha256 == stored.content_sha256
-            && self.package_object_key.as_deref() == Some(stored.package_object_key.as_str())
-            && self.package_size_bytes == Some(stored.package_size_bytes)
-            && self.package_sha256.as_deref() == Some(stored.package_sha256.as_str())
-    }
-}
-
-async fn reject_claim(
-    state: &NotaryApiState,
-    job: &HostedTraceRow,
-    claim: &str,
-    code: &str,
-    actual: Option<(i64, String)>,
-) {
-    let now = unix_timestamp().unwrap_or(job.updated_at);
-    let (actual_size, admitted_package_sha256) = actual
-        .map(|(size, sha256)| (Some(size), Some(sha256)))
-        .unwrap_or((None, None));
-    match sqlx::query(
-        "UPDATE traces
-         SET status = 'rejected', failure_code = $1, admitted_package_size_bytes = $2,
-             admitted_package_sha256 = $3, updated_at = $4, verification_claim = NULL
-         WHERE trace_id = $5 AND status = 'verifying' AND verification_claim = $6",
-    )
-    .bind(code)
-    .bind(actual_size)
-    .bind(admitted_package_sha256)
-    .bind(now)
-    .bind(&job.trace_id)
-    .bind(claim)
-    .execute(&state.database)
-    .await
-    {
-        Ok(result) if result.rows_affected() == 1 => purge_private_object(state, job).await,
-        Ok(_) => tracing::warn!(share_id = %job.trace_id, "share rejection lost its claim"),
-        Err(error) => {
-            tracing::error!(share_id = %job.trace_id, %error, "recording rejection failed")
-        }
-    }
-}
-
-async fn retry_claim(
-    state: &NotaryApiState,
-    job: &HostedTraceRow,
-    claim: &str,
-    error: anyhow::Error,
-) {
-    tracing::error!(share_id = %job.trace_id, %error, "share admission will retry");
-    let now = unix_timestamp().unwrap_or(job.updated_at);
-    if let Err(update_error) = sqlx::query(
-        "UPDATE traces
-         SET status = 'queued', updated_at = $1, verification_claim = NULL,
-             verification_started_at = NULL
-         WHERE trace_id = $2 AND status = 'verifying' AND verification_claim = $3",
-    )
-    .bind(now)
-    .bind(&job.trace_id)
-    .bind(claim)
-    .execute(&state.database)
-    .await
-    {
-        tracing::error!(share_id = %job.trace_id, %update_error, "requeueing share failed");
-    }
-}
-
-async fn purge_private_object(state: &NotaryApiState, job: &HostedTraceRow) {
-    match super::owner::purge_private_objects(state, job).await {
-        Ok(true) => {
-            let now = unix_timestamp().unwrap_or(job.updated_at);
-            if let Err(error) = sqlx::query(
-                "UPDATE traces SET staging_purged_at = $1, updated_at = $2
-                 WHERE trace_id = $3 AND staging_purged_at IS NULL",
-            )
-            .bind(now)
-            .bind(now)
-            .bind(&job.trace_id)
-            .execute(&state.database)
-            .await
-            {
-                tracing::error!(share_id = %job.trace_id, %error, "recording private purge failed");
-            }
-        }
-        Ok(false) => {
-            tracing::warn!(share_id = %job.trace_id, "private object purge remains queued")
-        }
-        Err(error) => {
-            tracing::error!(share_id = %job.trace_id, %error, "private object purge failed")
-        }
-    }
-}
-
-pub(super) async fn purge_verified_private_objects(state: &NotaryApiState) -> Result<()> {
-    let jobs = sqlx::query_as::<_, HostedTraceRow>(
-        "SELECT * FROM traces
-         WHERE status IN ('shared', 'rejected') AND staging_purged_at IS NULL
-         ORDER BY updated_at LIMIT 100",
-    )
-    .fetch_all(&state.database)
-    .await?;
-    for job in jobs {
-        purge_private_object(state, &job).await;
-    }
-    Ok(())
-}
-
-pub(super) async fn recover_stale_claims(state: &NotaryApiState) -> Result<()> {
-    let now = unix_timestamp().map_err(|error| anyhow::anyhow!(error.message))?;
-    sqlx::query(
-        "UPDATE traces
-         SET status = 'queued', verification_claim = NULL,
-             verification_started_at = NULL, updated_at = $1
-         WHERE status = 'verifying' AND verification_started_at < $2
-           AND content_object_key IS NULL AND package_object_key IS NULL",
-    )
-    .bind(now)
-    .bind(now - CLAIM_TIMEOUT_SECS)
-    .execute(&state.database)
-    .await?;
-    Ok(())
 }
 
 async fn load_public_share(
@@ -1580,40 +869,31 @@ fn public_bytes(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use notary_core::archive::{PACKAGE_FILES, build_trace_package_archive};
-    use url::Url;
-
     use super::*;
-    use crate::traces::{
-        owner::TraceService,
-        storage::{MockTraceStorage, StoredObject},
-    };
 
     #[test]
-    fn library_filters_are_normalized_and_bounded() {
+    fn listing_filters_are_normalized_and_bounded() {
         assert_eq!(
-            normalize_library_filter(Some("  OpenAI  ".to_owned()), 100, "too long").unwrap(),
+            normalize_listing_filter(Some("  OpenAI  ".to_owned()), 100, "too long").unwrap(),
             Some("openai".to_owned())
         );
         assert_eq!(
-            normalize_library_filter(Some("   ".to_owned()), 100, "too long").unwrap(),
+            normalize_listing_filter(Some("   ".to_owned()), 100, "too long").unwrap(),
             None
         );
-        assert!(normalize_library_filter(Some("x".repeat(101)), 100, "too long").is_err());
-        assert!(normalize_library_search(Some("ai".to_owned())).is_err());
-        assert!(normalize_library_search(Some("%%%".to_owned())).is_err());
-        assert!(normalize_library_search(Some("a-b-c".to_owned())).is_err());
+        assert!(normalize_listing_filter(Some("x".repeat(101)), 100, "too long").is_err());
+        assert!(normalize_listing_search(Some("ai".to_owned())).is_err());
+        assert!(normalize_listing_search(Some("%%%".to_owned())).is_err());
+        assert!(normalize_listing_search(Some("a-b-c".to_owned())).is_err());
         assert_eq!(
-            normalize_library_search(Some("  GPT  ".to_owned())).unwrap(),
+            normalize_listing_search(Some("  GPT  ".to_owned())).unwrap(),
             Some("gpt".to_owned())
         );
-        assert_eq!(library_search_regex("100%_safe!"), "100%_safe!");
-        assert_eq!(library_search_regex("a.b[c]"), "a\\.b\\[c\\]");
+        assert_eq!(listing_search_regex("100%_safe!"), "100%_safe!");
+        assert_eq!(listing_search_regex("a.b[c]"), "a\\.b\\[c\\]");
     }
 
-    async fn insert_library_share(
+    async fn insert_listed_trace(
         pool: &sqlx::PgPool,
         id: &str,
         visibility: &str,
@@ -1633,7 +913,7 @@ mod tests {
                  authenticated_provider_connection_unix_ms,
                  input_preview, output_preview, listing_search_text
              ) VALUES (
-                 $1, 'library-user', $1 || '-source', $1 || '-key', 'shared', $2,
+                 $1, 'listed-user', $1 || '-source', $1 || '-key', 'shared', $2,
                  1, $3, $1 || '-upload', $1 || '-intake', 10, 1, 1,
                  1, 1, $3, $1 || '-trace', 1, $4, $5,
                  $1 || '-package', 1, $6, 'notary/public-package-safety/v1',
@@ -1657,84 +937,10 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
-    async fn incomplete_committed_artifacts_are_durably_queued() {
-        let database = crate::fresh_database().await;
-        crate::insert_test_github_user(&database.pool, "library-user", 1, "publisher").await;
-        insert_library_share(
-            &database.pool,
-            "trc-cleanup-committed",
-            "unlisted",
-            "openai",
-            Some(100),
-            "openai cleanup",
-        )
-        .await;
-        let storage = MockTraceStorage::new();
-        let stored = StoredPublicArtifacts {
-            content_object_key: "test/content/trc-cleanup-committed/content.json".to_owned(),
-            content_size_bytes: 7,
-            content_sha256: "b".repeat(64),
-            package_object_key: "test/packages/trc-cleanup-committed/package.llmtrace".to_owned(),
-            package_size_bytes: 7,
-            package_sha256: "c".repeat(64),
-        };
-        for (object_key, sha256) in [
-            (&stored.content_object_key, &stored.content_sha256),
-            (&stored.package_object_key, &stored.package_sha256),
-        ] {
-            storage.objects.lock().unwrap().insert(
-                object_key.clone(),
-                StoredObject {
-                    size_bytes: 7,
-                    metadata: Default::default(),
-                },
-            );
-            storage.fail_delete(object_key);
-            assert_eq!(sha256.len(), 64);
-        }
-        let state = NotaryApiState {
-            database: database.pool.clone(),
-            _test_database: Some(database),
-            http: reqwest::Client::new(),
-            github_client_id: String::new(),
-            github_client_secret: String::new(),
-            github_callback_url: Url::parse("https://example.test/auth/github").unwrap(),
-            google_client_id: String::new(),
-            google_client_secret: String::new(),
-            google_callback_url: Url::parse("https://example.test/auth/google").unwrap(),
-            public_origin: Url::parse("https://example.test").unwrap(),
-            secure_cookies: true,
-            registry: crate::tests::directory_key(),
-            traces: TraceService::mock(storage),
-            admission: std::sync::Arc::new(crate::config::NotaryAdmissionConfig::for_test()),
-            billing: crate::billing::BillingService::disabled_for_test(),
-        };
-
-        cleanup_committed_artifacts(&state, "trc-cleanup-committed", &stored)
-            .await
-            .unwrap();
-        let queued: Vec<(String, String, i64)> = sqlx::query_as(
-            "SELECT object_key, artifact_kind, attempts
-             FROM storage_cleanup_queue ORDER BY artifact_kind",
-        )
-        .fetch_all(&state.database)
-        .await
-        .unwrap();
-        assert_eq!(
-            queued,
-            vec![
-                (stored.content_object_key, "content".to_owned(), 1),
-                (stored.package_object_key, "package".to_owned(), 1),
-            ]
-        );
-    }
-
-    #[tokio::test]
-    #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn listed_share_route_pages_ties_nulls_filters_and_concurrent_inserts() {
         let database = crate::fresh_database().await;
-        crate::insert_test_github_user(&database.pool, "library-user", 1, "publisher").await;
-        insert_library_share(
+        crate::insert_test_github_user(&database.pool, "listed-user", 1, "publisher").await;
+        insert_listed_trace(
             &database.pool,
             "share-c",
             "listed",
@@ -1743,7 +949,7 @@ mod tests {
             "openai publisher 100%_safe! prompt",
         )
         .await;
-        insert_library_share(
+        insert_listed_trace(
             &database.pool,
             "share-b",
             "listed",
@@ -1752,7 +958,7 @@ mod tests {
             "openai publisher 100xxsafe prompt",
         )
         .await;
-        insert_library_share(
+        insert_listed_trace(
             &database.pool,
             "share-a",
             "listed",
@@ -1761,7 +967,7 @@ mod tests {
             "anthropic publisher",
         )
         .await;
-        insert_library_share(
+        insert_listed_trace(
             &database.pool,
             "share-null",
             "listed",
@@ -1770,7 +976,7 @@ mod tests {
             "openai publisher without timestamp",
         )
         .await;
-        insert_library_share(
+        insert_listed_trace(
             &database.pool,
             "hidden",
             "unlisted",
@@ -1797,7 +1003,7 @@ mod tests {
             .unwrap(),
             public_origin: url::Url::parse("https://notary.exalto.ai").unwrap(),
             secure_cookies: true,
-            registry: crate::tests::directory_key(),
+            registry: crate::tests::test_registry(),
             traces: crate::traces::owner::TraceService::disabled_for_test(),
             admission: std::sync::Arc::new(crate::config::NotaryAdmissionConfig::for_test()),
             billing: crate::billing::BillingService::disabled_for_test(),
@@ -1825,7 +1031,7 @@ mod tests {
         );
         let cursor = first.next_cursor.unwrap();
 
-        insert_library_share(
+        insert_listed_trace(
             &state.database,
             "share-new",
             "listed",
@@ -1885,104 +1091,6 @@ mod tests {
         .0;
         assert_eq!(provider_filter.items.len(), 1);
         assert_eq!(provider_filter.items[0].id, "share-a");
-    }
-
-    fn package_with_openai_response_id(trace: &[u8]) -> Vec<u8> {
-        let directory = std::env::temp_dir().join(format!(
-            "llm-notary-hosted-admission-{}",
-            uuid::Uuid::new_v4()
-        ));
-        fs::create_dir(&directory).unwrap();
-        for name in PACKAGE_FILES {
-            let bytes = match name {
-                "manifest.json" => {
-                    br#"{"format":"notary/trace-evidence/v1"}"#.to_vec()
-                }
-                "request.disclosed.http" => b"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: \0\0\0\0\r\n\r\n{\"model\":\"gpt-test\"}".to_vec(),
-                "response.disclosed.http" => b"HTTP/1.1 200 OK\r\nContent-Type: \0\0\0\r\n\r\n{\"id\":\"chatcmpl-7Qx9Za2Bc4De6Fg8Hi0Jk3Lm5Np\",\"choices\":[]}".to_vec(),
-                "trace.otlp.json" => trace.to_vec(),
-                _ => b"public TLSNotary evidence".to_vec(),
-            };
-            fs::write(directory.join(name), bytes).unwrap();
-        }
-        let archive = build_trace_package_archive(&directory).unwrap();
-        fs::remove_dir_all(directory).unwrap();
-        archive
-    }
-
-    #[test]
-    fn extracts_the_model_without_materialized_library_fields() {
-        let trace = serde_json::to_vec(&serde_json::json!({
-            "resourceSpans": [{"scopeSpans": [{"spans": [{"attributes": [
-                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-test"}}
-            ]}]}]}]
-        }))
-        .unwrap();
-        assert_eq!(trace_model(&trace).unwrap(), "gpt-test");
-    }
-
-    #[test]
-    fn extracts_short_library_previews_from_disclosed_messages() {
-        let long_output = "answer ".repeat(50);
-        let trace = serde_json::to_vec(&serde_json::json!({
-            "resourceSpans": [{"scopeSpans": [{"spans": [{"attributes": [
-                {
-                    "key": "gen_ai.input.messages",
-                    "value": {"stringValue": serde_json::to_string(&serde_json::json!([
-                        {"role": "system", "parts": [{"type": "text", "content": "instructions"}]},
-                        {"role": "user", "parts": [{"type": "text", "content": "  Compare\nthese traces.  "}]}
-                    ])).unwrap()}
-                },
-                {
-                    "key": "gen_ai.output.messages",
-                    "value": {"stringValue": serde_json::to_string(&serde_json::json!([
-                        {"role": "assistant", "parts": [{"type": "text", "content": long_output}]}
-                    ])).unwrap()}
-                }
-            ]}]}]}]
-        }))
-        .unwrap();
-        let (input, output) = trace_previews(&trace).unwrap();
-        assert_eq!(input.as_deref(), Some("Compare these traces."));
-        let output = output.unwrap();
-        assert!(output.ends_with('…'));
-        assert_eq!(output.chars().count(), LIBRARY_PREVIEW_CHARS + 1);
-    }
-
-    #[test]
-    fn hosted_admission_accepts_a_verified_openai_root_response_id() {
-        let trace = serde_json::to_vec(&serde_json::json!({
-            "resourceSpans": [{"scopeSpans": [{"spans": [{"attributes": [
-                {"key": "gen_ai.request.model", "value": {"stringValue": "gpt-test"}}
-            ]}]}]}]
-        }))
-        .unwrap();
-        let archive = package_with_openai_response_id(&trace);
-        let verified = HostedVerifiedPackage {
-            source_trace_id: "trc-test".to_owned(),
-            authenticated_at_unix_ms: 1_700_000_000_000,
-            provider_name: "openai".to_owned(),
-            provider_host: "api.openai.com".to_owned(),
-            request_path: "/v1/chat/completions".to_owned(),
-            notary_key_id: "sha256:test".to_owned(),
-            registry_generation: 7,
-            package_sha256: sha256_hex(&archive),
-            content_sha256: sha256_hex(&trace),
-            trace,
-        };
-
-        let admitted = match finish_trace_verification(archive, verified, false) {
-            Ok(admitted) => admitted,
-            Err(AdmissionFailure::Reject(code, error)) => {
-                panic!("hosted Trace verification rejected {code}: {error}")
-            }
-            Err(AdmissionFailure::Retry(error)) => {
-                panic!("hosted Trace verification requested a retry: {error}")
-            }
-        };
-        assert_eq!(admitted.model, "gpt-test");
-        assert_eq!(admitted.verified.request_path, "/v1/chat/completions");
-        assert!(!admitted.safety_override_applied);
     }
 
     #[test]

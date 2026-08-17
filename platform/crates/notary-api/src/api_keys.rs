@@ -344,7 +344,7 @@ mod tests {
             .unwrap(),
             public_origin: url::Url::parse("https://notary.exalto.ai").unwrap(),
             secure_cookies: true,
-            registry: super::super::tests::directory_key(),
+            registry: super::super::tests::test_registry(),
             traces: super::super::traces::owner::TraceService::disabled_for_test(),
             admission: std::sync::Arc::new(super::super::config::NotaryAdmissionConfig::for_test()),
             billing: super::super::billing::BillingService::disabled_for_test(),

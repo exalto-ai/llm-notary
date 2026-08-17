@@ -1,47 +1,35 @@
 use axum::{
     Json,
-    extract::{ConnectInfo, Path, Query, State, rejection::JsonRejection},
+    extract::{ConnectInfo, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode, header},
 };
 use hmac::{Hmac, Mac};
 use k256::elliptic_curve::subtle::ConstantTimeEq as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-use sqlx::{FromRow, Postgres, Transaction};
-use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+use sqlx::FromRow;
+use std::{
+    net::{IpAddr, Ipv6Addr, SocketAddr},
+    time::Duration,
+};
+use tokio::sync::watch;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
-use uuid::Uuid;
 
 use super::{
     ApiError, ApiResult, ErrorResponse, NotaryApiState,
-    auth::{ApiScope, authenticated_web_user, optional_authenticated_principal},
+    auth::{ApiScope, optional_authenticated_principal},
     config::{AdmissionTierLimits, NotaryAdmissionConfig},
     database_error, random_secret, typed_id, unix_timestamp,
 };
-use crate::credits::{
-    AccountBillingState, BillingStatus, ClaimCreditOfferResponse, CreditBalanceSummary,
-    CreditHistoryEntry, CreditHistoryKind, CreditKind, CreditOffer, CreditOffersResponse,
-    CreditSummary, Plan,
-};
-#[cfg(test)]
-use crate::credits::{PlanEntitlements, plan_entitlements};
-use notary_core::{
-    pagination::{CursorScope, Page, PageQuery, decode_cursor},
-    sha256_hex,
-};
+use crate::credits::{self, BillingStatus, CreditKind, Plan};
+use notary_core::sha256_hex;
 
-const ADMISSION_LOCK_NAMESPACE: i32 = 151;
-const ADMISSION_LOCK_KEY: i32 = 1;
 const MAX_TICKET_BYTES: usize = 512;
 const MAX_INSTANCE_ID_BYTES: usize = 128;
-const SECS_PER_DAY: i64 = 24 * 60 * 60;
 const CLIENT_IP_HEADER: &str = "x-notary-client-ip";
 const PUBLIC_SUBJECT_PURPOSE: &str = "hosted-notarization-public-subject";
-const PROMOTIONAL_OFFER_ID: &str = "hosted-notarization-bonus-v1";
-const PROMOTIONAL_OFFER_AMOUNT_BYTES: i64 = 128 << 20;
-const PROMOTIONAL_OFFER_CLAIM_DEADLINE: i64 = 1_893_456_000; // 2030-01-01T00:00:00Z
-const PROMOTIONAL_GRANT_TTL_SECS: i64 = 90 * SECS_PER_DAY;
+const ACTIVATION_RECOVERY_INTERVAL_SECS: u64 = 15;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -87,13 +75,6 @@ pub struct AdmissionLimits {
     pub max_frame_bytes: i64,
     pub max_private_chunk_bytes: i64,
     pub max_private_chunk_commitments: i64,
-}
-
-#[derive(Deserialize, Serialize)]
-struct CreditHistoryPagePosition {
-    created_at: i64,
-    id: String,
-    kind: String,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -201,327 +182,62 @@ struct OperationRow {
 pub fn router() -> OpenApiRouter<NotaryApiState> {
     OpenApiRouter::new()
         .routes(routes!(issue_admission))
-        .routes(routes!(eligible_credit_offers))
-        .routes(routes!(credit_history))
-        .routes(routes!(claim_credit_offer))
         .routes(routes!(redeem_admission))
         .routes(routes!(settle_usage))
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/me/credits/history",
-    summary = "List the signed-in account's credit activity",
-    params(("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 100), ("cursor" = Option<String>, Query)),
-    responses(
-        (status = 200, body = Page<CreditHistoryEntry>),
-        (status = 400, body = ErrorResponse),
-        (status = 401, body = ErrorResponse),
-        (status = 500, body = ErrorResponse)
-    ),
-    security(("browserSession" = [])),
-    tag = "browser-auth"
-)]
-async fn credit_history(
-    State(state): State<NotaryApiState>,
-    jar: axum_extra::extract::cookie::CookieJar,
-    query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
-) -> ApiResult<Json<Page<CreditHistoryEntry>>> {
-    let Query(query) = query.map_err(super::pagination::query_error)?;
-    let user = authenticated_web_user(&state, &jar).await?;
-    ensure_account_monthly_grant(&state, &user.0).await?;
-    let limit = query
-        .limit(
-            super::pagination::DEFAULT_PAGE_LIMIT,
-            super::pagination::MAX_PAGE_LIMIT,
-        )
-        .map_err(super::pagination::api_error)?;
-    let scope = CursorScope::new(
-        "/api/me/credits/history",
-        &user.0,
-        "created_at desc, id desc, kind desc",
-    )
-    .map_err(super::pagination::api_error)?;
-    let position = query
-        .cursor
-        .as_deref()
-        .map(|cursor| decode_cursor::<CreditHistoryPagePosition>(&scope, cursor))
-        .transpose()
-        .map_err(super::pagination::api_error)?;
-    let credit_subject = account_credit_subject(&user.0);
-    let rows = sqlx::query_as::<
-        _,
-        (
-            String,
-            String,
-            String,
-            i64,
-            Option<String>,
-            String,
-            i64,
-            Option<i64>,
-        ),
-    >(
-        "SELECT id, kind, credit_kind, amount_bytes, source_kind, display_label, created_at, expires_at
-         FROM (
-             SELECT id, 'grant'::TEXT AS kind, credit_kind, amount_bytes,
-                    source_kind::TEXT AS source_kind,
-                    COALESCE(display_label, 'Credits') AS display_label,
-                    created_at, expires_at
-             FROM credit_grants
-             WHERE credit_subject = $1 AND source_kind <> 'operation_overage'
-             UNION ALL
-             SELECT id, 'debit'::TEXT AS kind, credit_kind, allowance_bytes AS amount_bytes,
-                    NULL::TEXT AS source_kind,
-                    CASE credit_kind WHEN 'capture' THEN 'Hosted capture'
-                         ELSE 'Hosted notarization' END AS display_label,
-                    created_at, NULL::BIGINT AS expires_at
-             FROM credit_debits WHERE credit_subject = $1
-             UNION ALL
-             SELECT id, 'adjustment'::TEXT AS kind, 'notarization'::TEXT AS credit_kind, amount_bytes,
-                    source_kind::TEXT AS source_kind, display_label,
-                    created_at, NULL::BIGINT AS expires_at
-             FROM credit_adjustments WHERE credit_subject = $1
-         ) AS history
-         WHERE ($2::TEXT IS NULL OR (created_at, id, kind) < ($3, $2, $4))
-         ORDER BY created_at DESC, id DESC, kind DESC
-         LIMIT $5",
-    )
-    .bind(&credit_subject)
-    .bind(position.as_ref().map(|position| &position.id))
-    .bind(position.as_ref().map(|position| position.created_at))
-    .bind(position.as_ref().map(|position| &position.kind))
-    .bind(i64::try_from(limit + 1).map_err(|error| ApiError::internal(anyhow::anyhow!(error)))?)
-    .fetch_all(&state.database)
-    .await
-    .map_err(database_error)?
-    .into_iter()
-    .map(
-        |(id, kind, credit_kind, amount_bytes, source_kind, display_label, created_at, expires_at)| {
-            CreditHistoryEntry {
-                id,
-                kind: match kind.as_str() {
-                    "grant" => CreditHistoryKind::Grant,
-                    "debit" => CreditHistoryKind::Debit,
-                    "adjustment" => CreditHistoryKind::Adjustment,
-                    _ => unreachable!("credit history query emits only known kinds"),
-                },
-                credit_kind: match credit_kind.as_str() {
-                    "capture" => CreditKind::Capture,
-                    "notarization" => CreditKind::Notarization,
-                    _ => unreachable!("credit history query emits only known credit kinds"),
-                },
-                amount_bytes,
-                source_kind,
-                display_label,
-                created_at,
-                expires_at,
+/// Settles operations that were redeemed but never activated by a notary-server.
+///
+/// A short activation lease is distinct from the much longer session lifetime:
+/// no protocol session may begin until the adapter has durably staged settlement
+/// state and activated the operation.
+pub(crate) async fn run_recovery_worker(
+    state: NotaryApiState,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let mut interval =
+        tokio::time::interval(Duration::from_secs(ACTIVATION_RECOVERY_INTERVAL_SECS));
+    loop {
+        tokio::select! {
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() {
+                    return;
+                }
             }
-        },
-    )
-    .collect::<Vec<_>>();
-    let page = Page::from_limit_plus_one(rows, limit, &scope, |entry| CreditHistoryPagePosition {
-        created_at: entry.created_at,
-        id: entry.id.clone(),
-        kind: match entry.kind {
-            CreditHistoryKind::Grant => "grant",
-            CreditHistoryKind::Debit => "debit",
-            CreditHistoryKind::Adjustment => "adjustment",
+            _ = interval.tick() => {}
         }
-        .to_owned(),
-    })
-    .map_err(super::pagination::api_error)?;
-    Ok(Json(page))
-}
-
-pub async fn account_access(state: &NotaryApiState, account_id: &str) -> ApiResult<CreditSummary> {
-    ensure_account_monthly_grant(state, account_id).await?;
-    let now = unix_timestamp()?;
-    credit_summary(&state.database, &account_credit_subject(account_id), now).await
-}
-
-pub async fn account_billing_state(
-    database: &super::DatabasePool,
-    account_id: &str,
-) -> ApiResult<AccountBillingState> {
-    let row = sqlx::query_as::<_, (String, String)>(
-        "SELECT plan, billing_status
-         FROM account_billing_profiles WHERE account_id = $1",
-    )
-    .bind(account_id)
-    .fetch_optional(database)
-    .await
-    .map_err(database_error)?;
-    match row {
-        Some((plan, status)) => Ok(AccountBillingState {
-            plan: parse_plan(&plan)?,
-            billing_status: parse_billing_status(&status)?,
-        }),
-        None => Ok(AccountBillingState {
-            plan: Plan::Free,
-            billing_status: BillingStatus::Active,
-        }),
+        if let Err(error) = recover_expired_activations(&state).await {
+            tracing::error!(?error, "recovering unactivated admitted operations failed");
+        }
     }
 }
 
-async fn account_admission_tier(
-    database: &super::DatabasePool,
-    account_id: &str,
-) -> ApiResult<AdmissionTier> {
-    Ok(
-        match account_billing_state(database, account_id).await?.plan {
-            Plan::Free => AdmissionTier::Free,
-            Plan::OneGb => AdmissionTier::OneGb,
-            Plan::TenGb => AdmissionTier::TenGb,
-        },
-    )
-}
-
-async fn ensure_account_monthly_grant(state: &NotaryApiState, account_id: &str) -> ApiResult<()> {
+async fn recover_expired_activations(state: &NotaryApiState) -> ApiResult<u64> {
     let now = unix_timestamp()?;
-    let pool = account_admission_tier(&state.database, account_id).await?;
     let mut transaction = state.database.begin().await.map_err(database_error)?;
-    admission_lock(&mut transaction).await?;
-    let policy = policy_for_pool(&state.admission, pool);
-    let credit_subject = account_credit_subject(account_id);
-    for credit_kind in [CreditKind::Capture, CreditKind::Notarization] {
-        ensure_monthly_grant(
-            &mut transaction,
-            &credit_subject,
-            Some(account_id),
-            pool,
-            policy,
-            credit_kind,
-            now,
+    credits::lock_ledger(&mut transaction).await?;
+    let recovered = sqlx::query_scalar::<_, String>(
+        "UPDATE admitted_operations
+         SET terminal_outcome = 'service_failed', settled_authenticated_bytes = 0,
+             settled_at = $1
+         WHERE activated_at IS NULL AND terminal_outcome IS NULL
+           AND activation_deadline <= $1
+         RETURNING mode",
+    )
+    .bind(now)
+    .fetch_all(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    transaction.commit().await.map_err(database_error)?;
+    for mode in &recovered {
+        metrics::counter!(
+            "notary_api_usage_settlements_total",
+            "mode" => mode.clone(),
+            "outcome" => "service_failed"
         )
-        .await?;
+        .increment(1);
     }
-    transaction.commit().await.map_err(database_error)?;
-    Ok(())
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/me/credit-offers",
-    summary = "List promotional credit offers eligible for the signed-in account",
-    responses(
-        (status = 200, body = CreditOffersResponse),
-        (status = 401, body = ErrorResponse),
-        (status = 500, body = ErrorResponse)
-    ),
-    security(("browserSession" = [])),
-    tag = "browser-auth"
-)]
-async fn eligible_credit_offers(
-    State(state): State<NotaryApiState>,
-    jar: axum_extra::extract::cookie::CookieJar,
-) -> ApiResult<Json<CreditOffersResponse>> {
-    let user = authenticated_web_user(&state, &jar).await?;
-    let now = unix_timestamp()?;
-    let claimed: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-             SELECT 1 FROM credit_grants
-             WHERE credit_subject = $1 AND source_kind = 'promotion'
-               AND source_reference = $2
-         )",
-    )
-    .bind(account_credit_subject(&user.0))
-    .bind(PROMOTIONAL_OFFER_ID)
-    .fetch_one(&state.database)
-    .await
-    .map_err(database_error)?;
-    let offers = if promotional_offer_eligible(claimed, now) {
-        vec![promotional_offer(now)]
-    } else {
-        Vec::new()
-    };
-    Ok(Json(CreditOffersResponse { offers }))
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/me/credit-offers/{offer_id}/claim",
-    summary = "Claim one server-defined promotional credit offer",
-    params(("offer_id" = String, Path)),
-    responses(
-        (status = 200, body = ClaimCreditOfferResponse),
-        (status = 401, body = ErrorResponse),
-        (status = 403, body = ErrorResponse),
-        (status = 409, body = ErrorResponse),
-        (status = 500, body = ErrorResponse)
-    ),
-    security(("browserSession" = [])),
-    tag = "browser-auth"
-)]
-async fn claim_credit_offer(
-    State(state): State<NotaryApiState>,
-    jar: axum_extra::extract::cookie::CookieJar,
-    Path(offer_id): Path<String>,
-) -> ApiResult<Json<ClaimCreditOfferResponse>> {
-    let user = authenticated_web_user(&state, &jar).await?;
-    let now = unix_timestamp()?;
-    let pool = account_admission_tier(&state.database, &user.0).await?;
-    let mut transaction = state.database.begin().await.map_err(database_error)?;
-    admission_lock(&mut transaction).await?;
-    let credit_subject = account_credit_subject(&user.0);
-    ensure_monthly_grant(
-        &mut transaction,
-        &credit_subject,
-        Some(&user.0),
-        pool,
-        policy_for_pool(&state.admission, pool),
-        CreditKind::Notarization,
-        now,
-    )
-    .await?;
-    let claimed: bool = sqlx::query_scalar(
-        "SELECT EXISTS(
-             SELECT 1 FROM credit_grants
-             WHERE credit_subject = $1 AND source_kind = 'promotion'
-               AND source_reference = $2
-         )",
-    )
-    .bind(&credit_subject)
-    .bind(PROMOTIONAL_OFFER_ID)
-    .fetch_one(&mut *transaction)
-    .await
-    .map_err(database_error)?;
-    if offer_id != PROMOTIONAL_OFFER_ID || !promotional_offer_eligible(claimed, now) {
-        if offer_id == PROMOTIONAL_OFFER_ID && claimed {
-            return Err(ApiError::coded(
-                StatusCode::CONFLICT,
-                "credit_offer_already_claimed",
-                "This credit offer has already been claimed",
-            ));
-        }
-        return Err(ApiError::coded(
-            StatusCode::FORBIDDEN,
-            "credit_offer_not_eligible",
-            "This account is not eligible for the credit offer",
-        ));
-    }
-    create_credit_grant(
-        &mut transaction,
-        CreditGrantSpec {
-            credit_subject: &credit_subject,
-            account_id: Some(&user.0),
-            credit_kind: CreditKind::Notarization,
-            amount_bytes: PROMOTIONAL_OFFER_AMOUNT_BYTES,
-            source_kind: "promotion",
-            source_reference: PROMOTIONAL_OFFER_ID,
-            idempotency_key: &format!("promotion:{PROMOTIONAL_OFFER_ID}"),
-            period_start: None,
-            period_end: None,
-            created_at: now,
-            available_at: now,
-            expires_at: Some(now + PROMOTIONAL_GRANT_TTL_SECS),
-            display_label: "Hosted notarization bonus",
-        },
-    )
-    .await?;
-    transaction.commit().await.map_err(database_error)?;
-    let credits = credit_summary(&state.database, &credit_subject, now).await?;
-    Ok(Json(ClaimCreditOfferResponse { offer_id, credits }))
+    Ok(recovered.len() as u64)
 }
 
 #[utoipa::path(
@@ -552,11 +268,12 @@ async fn issue_admission(
     };
     let identity = optional_authenticated_principal(&state, &headers, required_scope).await?;
     let now = unix_timestamp()?;
-    let period = monthly_credit_period(&state.database, now).await?;
+    let period = credits::monthly_credit_period(&state.database, now).await?;
     let (account_id, credit_subject, pool, billing_status) = match identity {
         Some(principal) => {
-            let billing = account_billing_state(&state.database, &principal.account_id).await?;
-            let credit_subject = account_credit_subject(&principal.account_id);
+            let billing =
+                credits::account_billing_state(&state.database, &principal.account_id).await?;
+            let credit_subject = credits::account_credit_subject(&principal.account_id);
             let pool = match billing.plan {
                 Plan::Free => AdmissionTier::Free,
                 Plan::OneGb => AdmissionTier::OneGb,
@@ -598,27 +315,31 @@ async fn issue_admission(
     let registry_generation = i64::try_from(state.registry.generation)
         .map_err(|_| ApiError::internal(anyhow::anyhow!("Registry generation is too large")))?;
     let mut transaction = state.database.begin().await.map_err(database_error)?;
-    admission_lock(&mut transaction).await?;
-    ensure_monthly_grant(
+    credits::lock_ledger(&mut transaction).await?;
+    credits::ensure_monthly_grant(
         &mut transaction,
         &credit_subject,
         account_id.as_deref(),
-        pool,
         policy,
         CreditKind::for_mode(request.mode),
         now,
     )
     .await?;
     let allowance = if request.mode == AdmissionMode::Capture {
-        bounded_capture_allowance(
+        credits::bounded_capture_allowance(
             requested_allowance,
-            available_credit_bytes(&mut transaction, &credit_subject, CreditKind::Capture, now)
-                .await?,
+            credits::available_credit_bytes(
+                &mut transaction,
+                &credit_subject,
+                CreditKind::Capture,
+                now,
+            )
+            .await?,
         )?
     } else {
         requested_allowance
     };
-    preflight_credits(
+    credits::preflight(
         &mut transaction,
         &credit_subject,
         CreditKind::for_mode(request.mode),
@@ -722,7 +443,7 @@ async fn redeem_one_operation(
     requested_generation: i64,
 ) -> ApiResult<RedeemedOperationResponse> {
     let mut transaction = state.database.begin().await.map_err(database_error)?;
-    admission_lock(&mut transaction).await?;
+    credits::lock_ledger(&mut transaction).await?;
     let ticket = sqlx::query_as::<_, OperationTicketRow>(
         "SELECT account_id, credit_subject, admission_tier, mode, registry_generation,
                 record_digest, notarization_allowance_bytes, max_attestable_http_bytes,
@@ -749,28 +470,16 @@ async fn redeem_one_operation(
     let pool = parse_pool(&ticket.admission_tier)?;
     let policy = policy_for_pool(&state.admission, pool);
     if let Some(account_id) = ticket.account_id.as_deref() {
-        let current_billing = sqlx::query_as::<_, (String, String)>(
-            "SELECT plan, billing_status
-             FROM account_billing_profiles WHERE account_id = $1
-             FOR SHARE",
-        )
-        .bind(account_id)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(database_error)?;
-        let (plan, billing_status) = current_billing
-            .as_ref()
-            .map(|(plan, status)| (plan.as_str(), status.as_str()))
-            .unwrap_or(("free", "active"));
-        if billing_status == "review" {
+        let billing = credits::locked_account_billing_state(&mut transaction, account_id).await?;
+        if billing.billing_status == BillingStatus::Review {
             return Err(ApiError::coded(
                 StatusCode::PAYMENT_REQUIRED,
                 "billing_review",
                 "Hosted capture and notarization are unavailable while billing is under review",
             ));
         }
-        if (pool == AdmissionTier::OneGb && plan != "one_gb")
-            || (pool == AdmissionTier::TenGb && plan != "ten_gb")
+        if (pool == AdmissionTier::OneGb && billing.plan != Plan::OneGb)
+            || (pool == AdmissionTier::TenGb && billing.plan != Plan::TenGb)
         {
             return Err(ApiError::coded(
                 StatusCode::PAYMENT_REQUIRED,
@@ -779,18 +488,17 @@ async fn redeem_one_operation(
             ));
         }
     }
-    ensure_monthly_grant(
+    credits::ensure_monthly_grant(
         &mut transaction,
         &ticket.credit_subject,
         ticket.account_id.as_deref(),
-        pool,
         policy,
         CreditKind::for_mode(request.mode),
         now,
     )
     .await?;
     let required_allowance = ticket.notarization_allowance_bytes.unwrap_or(1);
-    preflight_credits(
+    credits::preflight(
         &mut transaction,
         &ticket.credit_subject,
         CreditKind::for_mode(request.mode),
@@ -804,8 +512,8 @@ async fn redeem_one_operation(
         "INSERT INTO admitted_operations
              (operation_id, ticket_token_hash, notary_instance_id, account_id, credit_subject,
               admission_tier, mode, record_digest, notarization_allowance_bytes,
-              max_attestable_http_bytes, admitted_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+              max_attestable_http_bytes, admitted_at, activation_deadline, activated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11, $11)",
     )
     .bind(&operation_id)
     .bind(&ticket_token_hash)
@@ -882,7 +590,7 @@ async fn settle_usage(
     }
     let now = unix_timestamp()?;
     let mut transaction = state.database.begin().await.map_err(database_error)?;
-    admission_lock(&mut transaction).await?;
+    credits::lock_ledger(&mut transaction).await?;
     let operation = sqlx::query_as::<_, OperationRow>(
         "SELECT operation_id, notary_instance_id, account_id, credit_subject, mode,
                 notarization_allowance_bytes, max_attestable_http_bytes, admitted_at,
@@ -915,7 +623,16 @@ async fn settle_usage(
         };
     }
     if request.authenticated_bytes > 0 {
-        record_operation_debit(&mut transaction, &operation, request.authenticated_bytes).await?;
+        credits::record_operation_debit(
+            &mut transaction,
+            &operation.operation_id,
+            &operation.credit_subject,
+            operation.account_id.as_deref(),
+            request.mode,
+            request.authenticated_bytes,
+            operation.admitted_at,
+        )
+        .await?;
     }
     sqlx::query(
         "UPDATE admitted_operations
@@ -976,171 +693,6 @@ fn validate_settlement_bytes(
     Ok(())
 }
 
-async fn record_operation_debit(
-    transaction: &mut Transaction<'_, Postgres>,
-    operation: &OperationRow,
-    authenticated_bytes: i64,
-) -> ApiResult<()> {
-    let credit_kind = match operation.mode.as_str() {
-        "capture" => CreditKind::Capture,
-        "notarization" => CreditKind::Notarization,
-        _ => {
-            return Err(ApiError::internal(anyhow::anyhow!(
-                "invalid operation mode"
-            )));
-        }
-    };
-    let grants = settlement_grants(
-        transaction,
-        &operation.credit_subject,
-        credit_kind,
-        operation.admitted_at,
-    )
-    .await?;
-    if grants.is_empty() {
-        return Err(ApiError::internal(anyhow::anyhow!(
-            "admitted operation has no credit grant"
-        )));
-    }
-    let debit_id = Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO credit_debits
-             (id, credit_subject, account_id, credit_kind, allowance_bytes,
-              created_at, operation_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
-    )
-    .bind(&debit_id)
-    .bind(&operation.credit_subject)
-    .bind(operation.account_id.as_deref())
-    .bind(credit_kind.as_str())
-    .bind(authenticated_bytes)
-    .bind(operation.admitted_at)
-    .bind(&operation.operation_id)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    allocate_settled_usage(
-        transaction,
-        &debit_id,
-        authenticated_bytes,
-        &grants,
-        operation,
-        credit_kind,
-    )
-    .await
-}
-
-async fn settlement_grants(
-    transaction: &mut Transaction<'_, Postgres>,
-    credit_subject: &str,
-    credit_kind: CreditKind,
-    admitted_at: i64,
-) -> ApiResult<Vec<(String, i64, Option<i64>)>> {
-    sqlx::query_as::<_, (String, i64, Option<i64>)>(
-        "SELECT grants.id,
-                grants.amount_bytes - COALESCE((
-                    SELECT SUM(allocations.amount_bytes)
-                    FROM credit_debit_allocations AS allocations
-                    WHERE allocations.grant_id = grants.id
-                ), 0)::BIGINT AS remaining_bytes,
-                grants.expires_at
-         FROM credit_grants AS grants
-         WHERE grants.credit_subject = $1 AND grants.credit_kind = $2
-           AND grants.source_kind <> 'operation_overage'
-           AND grants.available_at <= $3
-           AND (grants.expires_at IS NULL OR grants.expires_at > $3)
-         ORDER BY grants.expires_at ASC NULLS LAST, grants.available_at,
-                  grants.created_at, grants.id
-         FOR UPDATE OF grants",
-    )
-    .bind(credit_subject)
-    .bind(credit_kind.as_str())
-    .bind(admitted_at)
-    .fetch_all(&mut **transaction)
-    .await
-    .map_err(database_error)
-}
-
-async fn allocate_settled_usage(
-    transaction: &mut Transaction<'_, Postgres>,
-    debit_id: &str,
-    authenticated_bytes: i64,
-    grants: &[(String, i64, Option<i64>)],
-    operation: &OperationRow,
-    credit_kind: CreditKind,
-) -> ApiResult<()> {
-    let mut remaining = authenticated_bytes;
-    let mut allocated_grants = Vec::new();
-    for (grant_id, available, _) in grants {
-        if remaining == 0 {
-            break;
-        }
-        let allocated = remaining.min((*available).max(0));
-        if allocated == 0 {
-            continue;
-        }
-        let order = i32::try_from(allocated_grants.len()).map_err(|_| {
-            ApiError::internal(anyhow::anyhow!("too many credit grant allocations"))
-        })?;
-        sqlx::query(
-            "INSERT INTO credit_debit_allocations
-                 (debit_id, grant_id, amount_bytes, allocation_order)
-             VALUES ($1, $2, $3, $4)",
-        )
-        .bind(debit_id)
-        .bind(grant_id)
-        .bind(allocated)
-        .bind(order)
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-        allocated_grants.push(grant_id.clone());
-        remaining -= allocated;
-    }
-    if remaining == 0 {
-        return Ok(());
-    }
-    let overage_expires_at = grants
-        .last()
-        .map(|(_, _, expires_at)| *expires_at)
-        .ok_or_else(|| ApiError::internal(anyhow::anyhow!("usage allocation has no grant")))?;
-    let overage_grant_id = Uuid::new_v4().to_string();
-    let overage_reference = format!("operation-overage:{}", operation.operation_id);
-    sqlx::query(
-        "INSERT INTO credit_grants
-             (id, credit_subject, account_id, credit_kind, amount_bytes, source_kind,
-              source_reference, idempotency_key, created_at, available_at, expires_at,
-              display_label)
-         VALUES ($1, $2, $3, $4, 0, 'operation_overage', $5, $5, $6, $6, $7,
-                 'Hosted usage overage')",
-    )
-    .bind(&overage_grant_id)
-    .bind(&operation.credit_subject)
-    .bind(operation.account_id.as_deref())
-    .bind(credit_kind.as_str())
-    .bind(&overage_reference)
-    .bind(operation.admitted_at)
-    .bind(overage_expires_at)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    let order = i32::try_from(allocated_grants.len())
-        .map_err(|_| ApiError::internal(anyhow::anyhow!("too many credit grant allocations")))?;
-    sqlx::query(
-        "INSERT INTO credit_debit_allocations
-             (debit_id, grant_id, amount_bytes, allocation_order)
-         VALUES ($1, $2, $3, $4)",
-    )
-    .bind(debit_id)
-    .bind(overage_grant_id)
-    .bind(remaining)
-    .bind(order)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    Ok(())
-}
-
 fn validate_ticket_request(
     request: &IssueAdmissionRequest,
     policy: &AdmissionTierLimits,
@@ -1197,587 +749,12 @@ fn authenticate_service(state: &NotaryApiState, headers: &HeaderMap) -> ApiResul
     Ok(())
 }
 
-async fn admission_lock(transaction: &mut Transaction<'_, Postgres>) -> ApiResult<()> {
-    sqlx::query("SELECT pg_advisory_xact_lock($1, $2)")
-        .bind(ADMISSION_LOCK_NAMESPACE)
-        .bind(ADMISSION_LOCK_KEY)
-        .execute(&mut **transaction)
-        .await
-        .map_err(database_error)?;
-    Ok(())
-}
-
-#[derive(Clone, Copy)]
-struct CreditPeriod {
-    start: i64,
-    end: i64,
-}
-
-struct CreditGrantSpec<'a> {
-    credit_subject: &'a str,
-    account_id: Option<&'a str>,
-    credit_kind: CreditKind,
-    amount_bytes: i64,
-    source_kind: &'a str,
-    source_reference: &'a str,
-    idempotency_key: &'a str,
-    period_start: Option<i64>,
-    period_end: Option<i64>,
-    created_at: i64,
-    available_at: i64,
-    expires_at: Option<i64>,
-    display_label: &'a str,
-}
-
-#[derive(FromRow)]
-struct ExistingGrantRow {
-    id: String,
-    account_id: Option<String>,
-    credit_kind: String,
-    amount_bytes: i64,
-    source_kind: String,
-    source_reference: String,
-    idempotency_key: String,
-    period_start: Option<i64>,
-    period_end: Option<i64>,
-    created_at: i64,
-    available_at: i64,
-    expires_at: Option<i64>,
-    display_label: Option<String>,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct PurchaseAdjustmentSpec<'a> {
-    pub account_id: &'a str,
-    pub purchase_id: &'a str,
-    pub amount_bytes: i64,
-    pub source_kind: &'a str,
-    pub source_reference: &'a str,
-    pub idempotency_key: &'a str,
-    pub display_label: &'a str,
-    pub created_at: i64,
-}
-
-#[derive(FromRow)]
-struct GrantBalanceRow {
-    source_kind: String,
-    expires_at: Option<i64>,
-    granted_bytes: i64,
-    used_bytes: i64,
-    remaining_bytes: i64,
-}
-
-async fn create_credit_grant(
-    transaction: &mut Transaction<'_, Postgres>,
-    spec: CreditGrantSpec<'_>,
-) -> ApiResult<String> {
-    if spec.amount_bytes <= 0
-        || spec.credit_subject.is_empty()
-        || spec.credit_subject.len() > 160
-        || spec.source_reference.is_empty()
-        || spec.source_reference.len() > 256
-        || spec.idempotency_key.is_empty()
-        || spec.idempotency_key.len() > 256
-        || spec.display_label.len() > 120
-        || spec
-            .account_id
-            .is_some_and(|account_id| account_credit_subject(account_id) != spec.credit_subject)
-        || spec
-            .expires_at
-            .is_some_and(|expires| expires <= spec.available_at)
-    {
-        return Err(ApiError::internal(anyhow::anyhow!(
-            "invalid server-authored credit grant"
-        )));
-    }
-    let existing = sqlx::query_as::<_, ExistingGrantRow>(
-        "SELECT id, account_id, credit_kind, amount_bytes, source_kind, source_reference, idempotency_key,
-                period_start, period_end, created_at, available_at, expires_at, display_label
-         FROM credit_grants
-         WHERE credit_subject = $1
-           AND ((source_kind = $2 AND source_reference = $3) OR idempotency_key = $4)
-         FOR UPDATE",
-    )
-    .bind(spec.credit_subject)
-    .bind(spec.source_kind)
-    .bind(spec.source_reference)
-    .bind(spec.idempotency_key)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    if let Some(existing) = existing {
-        if existing.account_id.as_deref() != spec.account_id
-            || existing.credit_kind != spec.credit_kind.as_str()
-            || existing.amount_bytes != spec.amount_bytes
-            || existing.source_kind != spec.source_kind
-            || existing.source_reference != spec.source_reference
-            || existing.idempotency_key != spec.idempotency_key
-            || existing.period_start != spec.period_start
-            || existing.period_end != spec.period_end
-            || existing.created_at != spec.created_at
-            || existing.available_at != spec.available_at
-            || existing.expires_at != spec.expires_at
-            || existing.display_label.as_deref() != Some(spec.display_label)
-        {
-            return Err(ApiError::conflict(
-                "credit grant idempotency key was already used for different grant data",
-            ));
-        }
-        return Ok(existing.id);
-    }
-    let id = Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO credit_grants
-         (id, credit_subject, account_id, credit_kind, amount_bytes, source_kind, source_reference,
-          idempotency_key, period_start, period_end, created_at, available_at, expires_at,
-          display_label)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)",
-    )
-    .bind(&id)
-    .bind(spec.credit_subject)
-    .bind(spec.account_id)
-    .bind(spec.credit_kind.as_str())
-    .bind(spec.amount_bytes)
-    .bind(spec.source_kind)
-    .bind(spec.source_reference)
-    .bind(spec.idempotency_key)
-    .bind(spec.period_start)
-    .bind(spec.period_end)
-    .bind(spec.created_at)
-    .bind(spec.available_at)
-    .bind(spec.expires_at)
-    .bind(spec.display_label)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    Ok(id)
-}
-
-pub(crate) async fn grant_external_purchase(
-    transaction: &mut Transaction<'_, Postgres>,
-    account_id: &str,
-    payment_reference: &str,
-    amount_bytes: i64,
-    created_at: i64,
-) -> ApiResult<String> {
-    let credit_subject = account_credit_subject(account_id);
-    let idempotency_key = format!("external-purchase:{payment_reference}");
-    create_credit_grant(
-        transaction,
-        CreditGrantSpec {
-            credit_subject: &credit_subject,
-            account_id: Some(account_id),
-            credit_kind: CreditKind::Notarization,
-            amount_bytes,
-            source_kind: "external_purchase",
-            source_reference: payment_reference,
-            idempotency_key: &idempotency_key,
-            period_start: None,
-            period_end: None,
-            created_at,
-            available_at: created_at,
-            expires_at: None,
-            display_label: "Purchased notarization credits",
-        },
-    )
-    .await
-}
-
-pub(crate) async fn set_account_billing_state(
-    transaction: &mut Transaction<'_, Postgres>,
-    account_id: &str,
-    plan: Plan,
-    billing_status: BillingStatus,
-    updated_at: i64,
-) -> ApiResult<()> {
-    sqlx::query(
-        "INSERT INTO account_billing_profiles
-             (account_id, plan, billing_status, updated_at)
-         VALUES ($1, $2, $3, $4)
-         ON CONFLICT (account_id) DO UPDATE
-         SET plan = EXCLUDED.plan,
-             billing_status = EXCLUDED.billing_status,
-             updated_at = GREATEST(account_billing_profiles.updated_at, EXCLUDED.updated_at)",
-    )
-    .bind(account_id)
-    .bind(plan.as_str())
-    .bind(billing_status.as_str())
-    .bind(updated_at)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    Ok(())
-}
-
-pub(crate) async fn apply_purchase_adjustment(
-    transaction: &mut Transaction<'_, Postgres>,
-    spec: PurchaseAdjustmentSpec<'_>,
-) -> ApiResult<String> {
-    let valid_kind_and_sign = matches!(
-        (spec.source_kind, spec.amount_bytes.signum()),
-        ("purchase_refund", -1) | ("purchase_dispute", -1) | ("dispute_reinstatement", 1)
-    );
-    if !valid_kind_and_sign
-        || spec.source_reference.is_empty()
-        || spec.source_reference.len() > 256
-        || spec.idempotency_key.is_empty()
-        || spec.idempotency_key.len() > 256
-        || spec.display_label.is_empty()
-        || spec.display_label.len() > 120
-    {
-        return Err(ApiError::internal(anyhow::anyhow!(
-            "invalid server-authored credit adjustment"
-        )));
-    }
-    let credit_subject = account_credit_subject(spec.account_id);
-    let existing = sqlx::query_as::<_, (String, String, i64, String, String, String, String, i64)>(
-        "SELECT id, purchase_id, amount_bytes, source_kind, source_reference,
-                idempotency_key, display_label, created_at
-         FROM credit_adjustments
-         WHERE credit_subject = $1
-           AND ((source_kind = $2 AND source_reference = $3) OR idempotency_key = $4)
-         FOR UPDATE",
-    )
-    .bind(&credit_subject)
-    .bind(spec.source_kind)
-    .bind(spec.source_reference)
-    .bind(spec.idempotency_key)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    if let Some((
-        id,
-        purchase_id,
-        amount_bytes,
-        source_kind,
-        source_reference,
-        idempotency_key,
-        label,
-        created_at,
-    )) = existing
-    {
-        if purchase_id != spec.purchase_id
-            || amount_bytes != spec.amount_bytes
-            || source_kind != spec.source_kind
-            || source_reference != spec.source_reference
-            || idempotency_key != spec.idempotency_key
-            || label != spec.display_label
-            || created_at != spec.created_at
-        {
-            return Err(ApiError::conflict(
-                "credit adjustment idempotency key was already used for different data",
-            ));
-        }
-        return Ok(id);
-    }
-    let id = Uuid::new_v4().to_string();
-    sqlx::query(
-        "INSERT INTO credit_adjustments
-             (id, credit_subject, account_id, purchase_id, amount_bytes, source_kind,
-              source_reference, idempotency_key, display_label, created_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
-    )
-    .bind(&id)
-    .bind(&credit_subject)
-    .bind(spec.account_id)
-    .bind(spec.purchase_id)
-    .bind(spec.amount_bytes)
-    .bind(spec.source_kind)
-    .bind(spec.source_reference)
-    .bind(spec.idempotency_key)
-    .bind(spec.display_label)
-    .bind(spec.created_at)
-    .execute(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    Ok(id)
-}
-
-async fn ensure_monthly_grant(
-    transaction: &mut Transaction<'_, Postgres>,
-    credit_subject: &str,
-    account_id: Option<&str>,
-    _pool: AdmissionTier,
-    policy: &AdmissionTierLimits,
-    credit_kind: CreditKind,
-    now: i64,
-) -> ApiResult<()> {
-    let period = monthly_credit_period(&mut **transaction, now).await?;
-    let monthly_bytes = match credit_kind {
-        CreditKind::Capture => policy.monthly_capture_bytes,
-        CreditKind::Notarization => policy.monthly_notarization_bytes,
-    };
-    let reference = format!("monthly:{}:{}", credit_kind.as_str(), period.start);
-    let existing = sqlx::query_as::<_, (String, i64)>(
-        "SELECT id, amount_bytes FROM credit_grants
-         WHERE credit_subject = $1 AND credit_kind = $2
-           AND source_kind = 'included_monthly' AND period_start = $3
-         FOR UPDATE",
-    )
-    .bind(credit_subject)
-    .bind(credit_kind.as_str())
-    .bind(period.start)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    if let Some((grant_id, current_amount)) = existing {
-        // Settled allocations may exceed a grant because admission does not
-        // reserve bytes. Keep the configured allowance authoritative so the
-        // resulting negative balance remains visible and blocks new tickets.
-        if monthly_bytes != current_amount {
-            sqlx::query("UPDATE credit_grants SET amount_bytes = $1 WHERE id = $2")
-                .bind(monthly_bytes)
-                .bind(grant_id)
-                .execute(&mut **transaction)
-                .await
-                .map_err(database_error)?;
-        }
-        return Ok(());
-    }
-    let label = match credit_kind {
-        CreditKind::Capture => "Monthly capture allowance",
-        CreditKind::Notarization => "Monthly notarization allowance",
-    };
-    create_credit_grant(
-        transaction,
-        CreditGrantSpec {
-            credit_subject,
-            account_id,
-            credit_kind,
-            amount_bytes: monthly_bytes,
-            source_kind: "included_monthly",
-            source_reference: &reference,
-            idempotency_key: &reference,
-            period_start: Some(period.start),
-            period_end: Some(period.end),
-            created_at: now,
-            available_at: period.start,
-            expires_at: Some(period.end),
-            display_label: label,
-        },
-    )
-    .await?;
-    Ok(())
-}
-
-async fn preflight_credits(
-    transaction: &mut Transaction<'_, Postgres>,
-    credit_subject: &str,
-    credit_kind: CreditKind,
-    allowance: i64,
-    now: i64,
-) -> ApiResult<()> {
-    let available = available_credit_bytes(transaction, credit_subject, credit_kind, now).await?;
-    if available < allowance {
-        return Err(ApiError::coded(
-            StatusCode::PAYMENT_REQUIRED,
-            credit_exhausted_code(credit_kind),
-            credit_exhausted_message(credit_kind),
-        ));
-    }
-    Ok(())
-}
-
-async fn available_credit_bytes(
-    transaction: &mut Transaction<'_, Postgres>,
-    credit_subject: &str,
-    credit_kind: CreditKind,
-    now: i64,
-) -> ApiResult<i64> {
-    let grant_balance: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(
-                    grants.amount_bytes - COALESCE((
-                        SELECT SUM(allocations.amount_bytes)
-                        FROM credit_debit_allocations AS allocations
-                        WHERE allocations.grant_id = grants.id
-                    ), 0)
-                ), 0)::BIGINT
-         FROM credit_grants AS grants
-         WHERE grants.credit_subject = $1 AND grants.credit_kind = $2
-           AND grants.available_at <= $3
-           AND (grants.expires_at IS NULL OR grants.expires_at > $3)",
-    )
-    .bind(credit_subject)
-    .bind(credit_kind.as_str())
-    .bind(now)
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(database_error)?;
-    Ok(
-        grant_balance.saturating_add(if credit_kind == CreditKind::Notarization {
-            credit_adjustment_total(&mut **transaction, credit_subject).await?
-        } else {
-            0
-        }),
-    )
-}
-
-fn bounded_capture_allowance(session_max: i64, available: i64) -> ApiResult<i64> {
-    let allowance = session_max.min(available);
-    if allowance <= 0 {
-        return Err(ApiError::coded(
-            StatusCode::PAYMENT_REQUIRED,
-            credit_exhausted_code(CreditKind::Capture),
-            credit_exhausted_message(CreditKind::Capture),
-        ));
-    }
-    Ok(allowance)
-}
-
-async fn credit_adjustment_total<'e, E>(executor: E, credit_subject: &str) -> ApiResult<i64>
-where
-    E: sqlx::Executor<'e, Database = Postgres>,
-{
-    sqlx::query_scalar(
-        "SELECT COALESCE(SUM(amount_bytes), 0)::BIGINT
-         FROM credit_adjustments WHERE credit_subject = $1",
-    )
-    .bind(credit_subject)
-    .fetch_one(executor)
-    .await
-    .map_err(database_error)
-}
-
-async fn credit_summary(
-    database: &super::DatabasePool,
-    credit_subject: &str,
-    now: i64,
-) -> ApiResult<CreditSummary> {
-    let period = monthly_credit_period(database, now).await?;
-    Ok(CreditSummary {
-        capture: credit_balance_summary(database, credit_subject, CreditKind::Capture, now).await?,
-        notarization: credit_balance_summary(
-            database,
-            credit_subject,
-            CreditKind::Notarization,
-            now,
-        )
-        .await?,
-        reset_at: period.end,
-    })
-}
-
-async fn credit_balance_summary(
-    database: &super::DatabasePool,
-    credit_subject: &str,
-    credit_kind: CreditKind,
-    now: i64,
-) -> ApiResult<CreditBalanceSummary> {
-    let balances = sqlx::query_as::<_, GrantBalanceRow>(
-        "SELECT grants.source_kind, grants.expires_at,
-                grants.amount_bytes AS granted_bytes,
-                COALESCE(SUM(allocations.amount_bytes), 0)::BIGINT AS used_bytes,
-                grants.amount_bytes - COALESCE(SUM(allocations.amount_bytes), 0)::BIGINT
-                    AS remaining_bytes
-         FROM credit_grants AS grants
-         LEFT JOIN credit_debit_allocations AS allocations
-           ON allocations.grant_id = grants.id
-         WHERE grants.credit_subject = $1 AND grants.credit_kind = $2
-           AND grants.available_at <= $3
-           AND (grants.expires_at IS NULL OR grants.expires_at > $3)
-         GROUP BY grants.id
-         ORDER BY grants.expires_at ASC NULLS LAST, grants.created_at, grants.id",
-    )
-    .bind(credit_subject)
-    .bind(credit_kind.as_str())
-    .bind(now)
-    .fetch_all(database)
-    .await
-    .map_err(database_error)?;
-    let gross_included_remaining_bytes = balances
-        .iter()
-        .filter(|grant| grant.source_kind == "included_monthly")
-        .map(|grant| grant.remaining_bytes)
-        .sum::<i64>();
-    let adjustment_bytes = if credit_kind == CreditKind::Notarization {
-        credit_adjustment_total(database, credit_subject).await?
-    } else {
-        0
-    };
-    let adjusted_supplemental_bytes = balances
-        .iter()
-        .filter(|grant| grant.source_kind != "included_monthly")
-        .map(|grant| grant.remaining_bytes)
-        .sum::<i64>()
-        .saturating_add(adjustment_bytes);
-    let (included_monthly_remaining_bytes, supplemental_remaining_bytes) =
-        if adjusted_supplemental_bytes >= 0 {
-            (gross_included_remaining_bytes, adjusted_supplemental_bytes)
-        } else {
-            (
-                gross_included_remaining_bytes.saturating_add(adjusted_supplemental_bytes),
-                0,
-            )
-        };
-    let total_remaining_bytes =
-        included_monthly_remaining_bytes.saturating_add(supplemental_remaining_bytes);
-    let next_grant_expiration = if total_remaining_bytes > 0 {
-        balances
-            .iter()
-            .filter(|grant| grant.remaining_bytes > 0)
-            .filter_map(|grant| grant.expires_at)
-            .min()
-    } else {
-        None
-    };
-    let total_granted_bytes = balances
-        .iter()
-        .map(|grant| grant.granted_bytes)
-        .sum::<i64>();
-    let total_used_bytes = balances.iter().map(|grant| grant.used_bytes).sum::<i64>();
-
-    Ok(CreditBalanceSummary {
-        total_granted_bytes,
-        total_used_bytes,
-        total_remaining_bytes,
-        included_monthly_remaining_bytes,
-        supplemental_remaining_bytes,
-        next_grant_expiration,
-    })
-}
-
-async fn monthly_credit_period<'e, E>(executor: E, now: i64) -> ApiResult<CreditPeriod>
-where
-    E: sqlx::Executor<'e, Database = Postgres>,
-{
-    let (start, end) = sqlx::query_as::<_, (i64, i64)>(
-        "SELECT EXTRACT(EPOCH FROM (
-                    date_trunc('month', to_timestamp($1) AT TIME ZONE 'UTC')
-                    AT TIME ZONE 'UTC'
-                ))::BIGINT,
-                EXTRACT(EPOCH FROM (
-                    (date_trunc('month', to_timestamp($1) AT TIME ZONE 'UTC')
-                     + interval '1 month')
-                    AT TIME ZONE 'UTC'
-                ))::BIGINT",
-    )
-    .bind(now as f64)
-    .fetch_one(executor)
-    .await
-    .map_err(database_error)?;
-    Ok(CreditPeriod { start, end })
-}
-
 fn policy_for_pool(config: &NotaryAdmissionConfig, pool: AdmissionTier) -> &AdmissionTierLimits {
     match pool {
         AdmissionTier::Public => &config.public,
         AdmissionTier::Free => &config.free,
         AdmissionTier::OneGb => &config.one_gb,
         AdmissionTier::TenGb => &config.ten_gb,
-    }
-}
-
-fn credit_exhausted_code(kind: CreditKind) -> &'static str {
-    match kind {
-        CreditKind::Capture => "capture_credits_exhausted",
-        CreditKind::Notarization => "notarization_credits_exhausted",
-    }
-}
-
-fn credit_exhausted_message(kind: CreditKind) -> &'static str {
-    match kind {
-        CreditKind::Capture => "The monthly hosted capture allowance is exhausted",
-        CreditKind::Notarization => "There are not enough hosted notarization credits",
     }
 }
 
@@ -1788,10 +765,6 @@ fn admission_limits(policy: &AdmissionTierLimits) -> AdmissionLimits {
         max_private_chunk_bytes: policy.max_private_chunk_bytes,
         max_private_chunk_commitments: policy.max_private_chunk_commitments,
     }
-}
-
-fn account_credit_subject(account_id: &str) -> String {
-    format!("account:{account_id}")
 }
 
 pub(crate) fn resolve_client_ip(
@@ -1872,22 +845,6 @@ fn public_credit_subject(
     ))
 }
 
-fn promotional_offer_eligible(claimed: bool, now: i64) -> bool {
-    !claimed && now < PROMOTIONAL_OFFER_CLAIM_DEADLINE
-}
-
-fn promotional_offer(now: i64) -> CreditOffer {
-    CreditOffer {
-        id: PROMOTIONAL_OFFER_ID.to_owned(),
-        title: "128 MiB hosted notarization bonus".to_owned(),
-        description: "Claim once for hosted notarization. The bonus expires after 90 days."
-            .to_owned(),
-        amount_bytes: PROMOTIONAL_OFFER_AMOUNT_BYTES,
-        claim_expires_at: PROMOTIONAL_OFFER_CLAIM_DEADLINE,
-        credit_expires_at: now + PROMOTIONAL_GRANT_TTL_SECS,
-    }
-}
-
 fn parse_pool(value: &str) -> ApiResult<AdmissionTier> {
     match value {
         "public" => Ok(AdmissionTier::Public),
@@ -1896,27 +853,6 @@ fn parse_pool(value: &str) -> ApiResult<AdmissionTier> {
         "ten_gb" => Ok(AdmissionTier::TenGb),
         _ => Err(ApiError::internal(anyhow::anyhow!(
             "invalid admission pool"
-        ))),
-    }
-}
-
-fn parse_plan(value: &str) -> ApiResult<Plan> {
-    match value {
-        "free" => Ok(Plan::Free),
-        "one_gb" => Ok(Plan::OneGb),
-        "ten_gb" => Ok(Plan::TenGb),
-        _ => Err(ApiError::internal(anyhow::anyhow!(
-            "invalid account service plan"
-        ))),
-    }
-}
-
-fn parse_billing_status(value: &str) -> ApiResult<BillingStatus> {
-    match value {
-        "active" => Ok(BillingStatus::Active),
-        "review" => Ok(BillingStatus::Review),
-        _ => Err(ApiError::internal(anyhow::anyhow!(
-            "invalid account billing status"
         ))),
     }
 }
@@ -1943,7 +879,6 @@ fn validate_opaque(value: &str, maximum: usize, message: &'static str) -> ApiRes
 
 #[cfg(test)]
 mod tests {
-    use axum_extra::extract::cookie::{Cookie, CookieJar};
     use url::Url;
 
     use super::*;
@@ -1964,35 +899,11 @@ mod tests {
                 .unwrap(),
             public_origin: Url::parse("https://example.test").unwrap(),
             secure_cookies: true,
-            registry: super::super::tests::directory_key(),
+            registry: super::super::tests::test_registry(),
             traces: super::super::traces::owner::TraceService::disabled_for_test(),
             admission: std::sync::Arc::new(NotaryAdmissionConfig::for_test()),
             billing: super::super::billing::BillingService::disabled_for_test(),
         }
-    }
-
-    #[tokio::test]
-    #[ignore = "requires Docker and a disposable PostgreSQL container"]
-    async fn credit_kind_columns_require_an_explicit_value() {
-        let state = test_state().await;
-        let columns: Vec<(String, Option<String>)> = sqlx::query_as(
-            "SELECT table_name, column_default
-             FROM information_schema.columns
-             WHERE table_schema = 'notary_api'
-               AND table_name IN ('credit_grants', 'credit_debits')
-               AND column_name = 'credit_kind'
-             ORDER BY table_name",
-        )
-        .fetch_all(&state.database)
-        .await
-        .unwrap();
-        assert_eq!(
-            columns,
-            vec![
-                ("credit_debits".to_owned(), None),
-                ("credit_grants".to_owned(), None),
-            ]
-        );
     }
 
     fn service_headers(state: &NotaryApiState) -> HeaderMap {
@@ -2015,146 +926,6 @@ mod tests {
             address.parse().expect("test peer IP"),
             4242,
         ))
-    }
-
-    #[tokio::test]
-    #[ignore = "requires Docker and a disposable PostgreSQL container"]
-    async fn credit_history_is_paginated_and_account_scoped() {
-        let state = test_state().await;
-        let now = unix_timestamp().unwrap();
-        super::super::insert_test_github_user(&state.database, "history-1", 101, "history-one")
-            .await;
-        super::super::insert_test_github_user(&state.database, "history-2", 102, "history-two")
-            .await;
-        for (token, account_id) in [
-            ("history-token-1", "history-1"),
-            ("history-token-2", "history-2"),
-        ] {
-            sqlx::query(
-                "INSERT INTO browser_sessions (token_hash, account_id, expires_at, created_at)
-                 VALUES ($1, $2, $3, $4)",
-            )
-            .bind(sha256_hex(token.as_bytes()))
-            .bind(account_id)
-            .bind(now + 600)
-            .bind(now)
-            .execute(&state.database)
-            .await
-            .unwrap();
-        }
-        let mut transaction = state.database.begin().await.unwrap();
-        create_credit_grant(
-            &mut transaction,
-            CreditGrantSpec {
-                credit_subject: "account:history-1",
-                account_id: Some("history-1"),
-                credit_kind: CreditKind::Notarization,
-                amount_bytes: 1,
-                source_kind: "manual_adjustment",
-                source_reference: "credit-history-pagination-fixture",
-                idempotency_key: "credit-history-pagination-fixture",
-                period_start: None,
-                period_end: None,
-                created_at: now - 1,
-                available_at: now - 1,
-                expires_at: None,
-                display_label: "Credit history pagination fixture",
-            },
-        )
-        .await
-        .unwrap();
-        transaction.commit().await.unwrap();
-        let jar = |token| CookieJar::new().add(Cookie::new(super::super::SESSION_COOKIE, token));
-        let first = credit_history(
-            State(state.clone()),
-            jar("history-token-1"),
-            Ok(Query(PageQuery {
-                limit: Some(1),
-                cursor: None,
-            })),
-        )
-        .await
-        .unwrap()
-        .0;
-        assert_eq!(first.items.len(), 1);
-        let cursor = first.next_cursor.expect("second credit-history page");
-        let second = credit_history(
-            State(state.clone()),
-            jar("history-token-1"),
-            Ok(Query(PageQuery {
-                limit: Some(1),
-                cursor: Some(cursor.clone()),
-            })),
-        )
-        .await
-        .unwrap()
-        .0;
-        assert_eq!(second.items.len(), 1);
-        assert_ne!(first.items[0].id, second.items[0].id);
-
-        let cross_account = credit_history(
-            State(state),
-            jar("history-token-2"),
-            Ok(Query(PageQuery {
-                limit: Some(1),
-                cursor: Some(cursor),
-            })),
-        )
-        .await;
-        assert!(matches!(
-            cross_account,
-            Err(ApiError {
-                code: "cursor_scope_mismatch",
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn plans_have_distinct_limits_and_exact_product_entitlements() {
-        let config = NotaryAdmissionConfig::for_test();
-        assert!(config.public.max_attestable_http_bytes < config.free.max_attestable_http_bytes);
-        assert_eq!(
-            config.public.monthly_notarization_bytes,
-            config.free.monthly_notarization_bytes
-        );
-        assert!(config.free.max_attestable_http_bytes < config.one_gb.max_attestable_http_bytes);
-        assert_eq!(
-            plan_entitlements(&config, Plan::Free),
-            PlanEntitlements {
-                monthly_capture_bytes: 50_000_000,
-                monthly_notarization_bytes: 50_000_000,
-                trace_storage_bytes: Some(1_000_000_000),
-            }
-        );
-        assert_eq!(
-            plan_entitlements(&config, Plan::OneGb),
-            PlanEntitlements {
-                monthly_capture_bytes: 1_000_000_000,
-                monthly_notarization_bytes: 1_000_000_000,
-                trace_storage_bytes: Some(10_000_000_000),
-            }
-        );
-        assert_eq!(
-            plan_entitlements(&config, Plan::TenGb),
-            PlanEntitlements {
-                monthly_capture_bytes: 10_000_000_000,
-                monthly_notarization_bytes: 10_000_000_000,
-                trace_storage_bytes: None,
-            }
-        );
-    }
-
-    #[test]
-    fn capture_tickets_use_the_last_partial_allowance() {
-        assert_eq!(
-            bounded_capture_allowance(8 << 20, 50_000_000).unwrap(),
-            8 << 20
-        );
-        assert_eq!(bounded_capture_allowance(8 << 20, 1_024).unwrap(), 1_024);
-        let exhausted = bounded_capture_allowance(8 << 20, 0).unwrap_err();
-        assert_eq!(exhausted.status, StatusCode::PAYMENT_REQUIRED);
-        assert_eq!(exhausted.code, "capture_credits_exhausted");
     }
 
     #[test]
@@ -2239,22 +1010,6 @@ mod tests {
             .unwrap(),
             "IPv4-mapped addresses use the individual IPv4 subject",
         );
-    }
-
-    #[test]
-    fn promotional_offer_eligibility_is_server_defined() {
-        assert!(promotional_offer_eligible(
-            false,
-            PROMOTIONAL_OFFER_CLAIM_DEADLINE - 1
-        ));
-        assert!(!promotional_offer_eligible(
-            true,
-            PROMOTIONAL_OFFER_CLAIM_DEADLINE - 1
-        ));
-        assert!(!promotional_offer_eligible(
-            false,
-            PROMOTIONAL_OFFER_CLAIM_DEADLINE
-        ));
     }
 
     #[test]
@@ -2418,15 +1173,55 @@ mod tests {
         assert_eq!(replay.status, StatusCode::CONFLICT);
         server.abort();
 
-        let (debits, operations): (i64, i64) = sqlx::query_as(
+        let (debits, operations, activated): (i64, i64, i64) = sqlx::query_as(
             "SELECT
                  (SELECT COUNT(*) FROM credit_debits),
-                 (SELECT COUNT(*) FROM admitted_operations)",
+                 (SELECT COUNT(*) FROM admitted_operations),
+                 (SELECT COUNT(*) FROM admitted_operations
+                  WHERE activated_at IS NOT NULL AND activation_deadline = admitted_at)",
         )
         .fetch_one(&state.database)
         .await
         .unwrap();
-        assert_eq!((debits, operations), (0, 3));
+        assert_eq!((debits, operations, activated), (0, 3, 3));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires Docker and a disposable PostgreSQL container"]
+    async fn expired_unactivated_operations_are_recovered_without_a_debit() {
+        let state = test_state().await;
+        let now = unix_timestamp().unwrap();
+        sqlx::query(
+            "INSERT INTO admitted_operations
+                 (operation_id, ticket_token_hash, notary_instance_id, credit_subject,
+                  admission_tier, mode, max_attestable_http_bytes, admitted_at,
+                  activation_deadline)
+             VALUES ('op-pending', 'pending-token-hash', 'notary-recovery', 'public:test',
+                     'public', 'capture', 1024, $1, $2)",
+        )
+        .bind(now - 61)
+        .bind(now - 1)
+        .execute(&state.database)
+        .await
+        .unwrap();
+
+        assert_eq!(recover_expired_activations(&state).await.unwrap(), 1);
+        let recovered: (Option<String>, Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT terminal_outcome, settled_authenticated_bytes, activated_at
+             FROM admitted_operations WHERE operation_id = 'op-pending'",
+        )
+        .fetch_one(&state.database)
+        .await
+        .unwrap();
+        assert_eq!(
+            recovered,
+            (Some("service_failed".to_owned()), Some(0), None)
+        );
+        let debits: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM credit_debits")
+            .fetch_one(&state.database)
+            .await
+            .unwrap();
+        assert_eq!(debits, 0);
     }
 
     #[tokio::test]
@@ -2530,9 +1325,10 @@ mod tests {
                 ("operation_overage".to_owned(), -1),
             ]
         );
-        let credits = credit_summary(&state.database, &credit_subject, unix_timestamp().unwrap())
-            .await
-            .unwrap();
+        let credits =
+            credits::credit_summary(&state.database, &credit_subject, unix_timestamp().unwrap())
+                .await
+                .unwrap();
         assert_eq!(credits.capture.total_remaining_bytes, -1);
 
         let mut conflicting = report();
@@ -2905,256 +1701,17 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires Docker and a disposable PostgreSQL container"]
-    async fn monthly_grants_are_idempotent_and_reset_on_utc_boundaries() {
-        let state = test_state().await;
-        let subject = "public:v1:monthly-grant-test";
-        let august = 1_786_797_296;
-        let mut transaction = state.database.begin().await.unwrap();
-        sqlx::query("SET LOCAL TIME ZONE 'America/Los_Angeles'")
-            .execute(&mut *transaction)
-            .await
-            .unwrap();
-        let period = monthly_credit_period(&mut *transaction, august)
-            .await
-            .unwrap();
-        assert_eq!(period.start, 1_785_542_400);
-        assert_eq!(period.end, 1_788_220_800);
-        let dst_period = monthly_credit_period(&mut *transaction, 1_794_744_000)
-            .await
-            .unwrap();
-        assert_eq!(dst_period.start, 1_793_491_200);
-        assert_eq!(dst_period.end, 1_796_083_200);
-        for _ in 0..2 {
-            ensure_monthly_grant(
-                &mut transaction,
-                subject,
-                None,
-                AdmissionTier::Public,
-                &state.admission.public,
-                CreditKind::Notarization,
-                august,
-            )
-            .await
-            .unwrap();
-        }
-        transaction.commit().await.unwrap();
-
-        let august_grants: (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*), SUM(amount_bytes)::BIGINT
-             FROM credit_grants
-             WHERE credit_subject = $1 AND period_start = $2",
-        )
-        .bind(subject)
-        .bind(period.start)
-        .fetch_one(&state.database)
-        .await
-        .unwrap();
-        assert_eq!(
-            august_grants,
-            (1, state.admission.public.monthly_notarization_bytes)
-        );
-
-        let mut transaction = state.database.begin().await.unwrap();
-        ensure_monthly_grant(
-            &mut transaction,
-            subject,
-            None,
-            AdmissionTier::OneGb,
-            &state.admission.one_gb,
-            CreditKind::Notarization,
-            august,
-        )
-        .await
-        .unwrap();
-        let upgraded: i64 = sqlx::query_scalar(
-            "SELECT amount_bytes FROM credit_grants
-             WHERE credit_subject = $1 AND period_start = $2",
-        )
-        .bind(subject)
-        .bind(period.start)
-        .fetch_one(&mut *transaction)
-        .await
-        .unwrap();
-        assert_eq!(upgraded, state.admission.one_gb.monthly_notarization_bytes);
-        ensure_monthly_grant(
-            &mut transaction,
-            subject,
-            None,
-            AdmissionTier::Public,
-            &state.admission.public,
-            CreditKind::Notarization,
-            august,
-        )
-        .await
-        .unwrap();
-        transaction.commit().await.unwrap();
-
-        let september = period.end;
-        let mut transaction = state.database.begin().await.unwrap();
-        ensure_monthly_grant(
-            &mut transaction,
-            subject,
-            None,
-            AdmissionTier::Public,
-            &state.admission.public,
-            CreditKind::Notarization,
-            september,
-        )
-        .await
-        .unwrap();
-        transaction.commit().await.unwrap();
-        let grants: Vec<(i64, i64, i64)> = sqlx::query_as(
-            "SELECT period_start, period_end, amount_bytes
-             FROM credit_grants WHERE credit_subject = $1
-             ORDER BY period_start",
-        )
-        .bind(subject)
-        .fetch_all(&state.database)
-        .await
-        .unwrap();
-        assert_eq!(
-            grants,
-            vec![
-                (
-                    1_785_542_400,
-                    1_788_220_800,
-                    state.admission.public.monthly_notarization_bytes,
-                ),
-                (
-                    1_788_220_800,
-                    1_790_812_800,
-                    state.admission.public.monthly_notarization_bytes,
-                ),
-            ]
-        );
-        let credits = credit_summary(&state.database, subject, september)
-            .await
-            .unwrap();
-        assert_eq!(
-            credits.notarization.total_remaining_bytes,
-            state.admission.public.monthly_notarization_bytes
-        );
-        assert_eq!(credits.reset_at, 1_790_812_800);
-    }
-
-    #[tokio::test]
-    #[ignore = "requires Docker and a disposable PostgreSQL container"]
-    async fn grant_creation_is_idempotent_by_source_reference_and_key() {
-        fn grant<'a>(
-            source_reference: &'a str,
-            idempotency_key: &'a str,
-            amount_bytes: i64,
-        ) -> CreditGrantSpec<'a> {
-            CreditGrantSpec {
-                credit_subject: "account:grant-idempotency-test",
-                account_id: None,
-                credit_kind: CreditKind::Notarization,
-                amount_bytes,
-                source_kind: "external_purchase",
-                source_reference,
-                idempotency_key,
-                period_start: None,
-                period_end: None,
-                created_at: 1_785_542_400,
-                available_at: 1_785_542_400,
-                expires_at: None,
-                display_label: "External credit grant",
-            }
-        }
-
-        let state = test_state().await;
-        let mut transaction = state.database.begin().await.unwrap();
-        let first = create_credit_grant(&mut transaction, grant("source-a", "key-a", 1024))
-            .await
-            .unwrap();
-        let replay = create_credit_grant(&mut transaction, grant("source-a", "key-a", 1024))
-            .await
-            .unwrap();
-        assert_eq!(first, replay);
-        let reused_source = create_credit_grant(&mut transaction, grant("source-a", "key-b", 1024))
-            .await
-            .unwrap_err();
-        assert_eq!(reused_source.status, StatusCode::CONFLICT);
-        let reused_key = create_credit_grant(&mut transaction, grant("source-b", "key-a", 1024))
-            .await
-            .unwrap_err();
-        assert_eq!(reused_key.status, StatusCode::CONFLICT);
-        transaction.commit().await.unwrap();
-        let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM credit_grants
-             WHERE credit_subject = 'account:grant-idempotency-test'",
-        )
-        .fetch_one(&state.database)
-        .await
-        .unwrap();
-        assert_eq!(count, 1);
-    }
-
-    #[tokio::test]
-    #[ignore = "requires Docker and a disposable PostgreSQL container"]
-    async fn concurrent_promotional_claims_create_one_server_authored_grant() {
-        let state = test_state().await;
-        let now = unix_timestamp().unwrap();
-        super::super::insert_test_github_user(&state.database, "promo-user", 44, "promo").await;
-        let session = "promo-browser-session";
-        sqlx::query(
-            "INSERT INTO browser_sessions (token_hash, account_id, expires_at, created_at)
-             VALUES ($1, 'promo-user', $2, $3)",
-        )
-        .bind(sha256_hex(session.as_bytes()))
-        .bind(now + 60)
-        .bind(now)
-        .execute(&state.database)
-        .await
-        .unwrap();
-        let jar = CookieJar::new().add(Cookie::new(super::super::SESSION_COOKIE, session));
-        let first = claim_credit_offer(
-            State(state.clone()),
-            jar.clone(),
-            Path(PROMOTIONAL_OFFER_ID.to_owned()),
-        );
-        let second = claim_credit_offer(
-            State(state.clone()),
-            jar,
-            Path(PROMOTIONAL_OFFER_ID.to_owned()),
-        );
-        let (first, second) = tokio::join!(first, second);
-        assert!(first.is_ok() ^ second.is_ok());
-        let successful = first
-            .as_ref()
-            .ok()
-            .or_else(|| second.as_ref().ok())
-            .unwrap();
-        assert_eq!(
-            successful.0.credits.notarization.total_remaining_bytes,
-            state.admission.free.monthly_notarization_bytes + PROMOTIONAL_OFFER_AMOUNT_BYTES
-        );
-        let rejected = first.err().or_else(|| second.err()).unwrap();
-        assert_eq!(rejected.code, "credit_offer_already_claimed");
-        let grant: (i64, i64) = sqlx::query_as(
-            "SELECT COUNT(*), COALESCE(SUM(amount_bytes), 0)::BIGINT
-             FROM credit_grants
-             WHERE credit_subject = 'account:promo-user' AND source_kind = 'promotion'",
-        )
-        .fetch_one(&state.database)
-        .await
-        .unwrap();
-        assert_eq!(grant, (1, PROMOTIONAL_OFFER_AMOUNT_BYTES));
-    }
-
-    #[tokio::test]
-    #[ignore = "requires Docker and a disposable PostgreSQL container"]
     async fn signed_in_accounts_default_to_free_and_subscriptions_select_paid_access() {
         let state = test_state().await;
         super::super::insert_test_github_user(&state.database, "user-1", 1, "octo").await;
-        let free_credits = account_access(&state, "user-1").await.unwrap();
+        let free_credits = credits::account_access(&state, "user-1").await.unwrap();
         assert_eq!(free_credits.notarization.total_remaining_bytes, 50_000_000);
         assert_eq!(
             free_credits.notarization.included_monthly_remaining_bytes,
             50_000_000
         );
         assert_eq!(free_credits.notarization.supplemental_remaining_bytes, 0);
-        let repeated_access = account_access(&state, "user-1").await.unwrap();
+        let repeated_access = credits::account_access(&state, "user-1").await.unwrap();
         assert_eq!(
             repeated_access.notarization.total_remaining_bytes,
             50_000_000
@@ -3222,10 +1779,10 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(
-            account_billing_state(&state.database, "user-1")
+            credits::account_billing_state(&state.database, "user-1")
                 .await
                 .unwrap(),
-            AccountBillingState {
+            credits::AccountBillingState {
                 plan: Plan::OneGb,
                 billing_status: BillingStatus::Active,
             }
@@ -3285,50 +1842,5 @@ mod tests {
         .expect_err("stale paid ticket should be rejected");
         assert_eq!(stale_paid_ticket.status, StatusCode::PAYMENT_REQUIRED);
         assert_eq!(stale_paid_ticket.code, "billing_plan_changed");
-    }
-
-    #[tokio::test]
-    #[ignore = "requires Docker and a disposable PostgreSQL container"]
-    async fn billing_adjustments_enforce_purchase_ownership_and_signs() {
-        let state = test_state().await;
-        super::super::insert_test_github_user(&state.database, "buyer", 3, "buyer").await;
-        super::super::insert_test_github_user(&state.database, "other", 4, "other").await;
-        let now = unix_timestamp().unwrap();
-        sqlx::query(
-            "INSERT INTO billing_purchases
-                 (id, account_id, client_idempotency_key, provider, state, currency,
-                  unit_amount_cents, quantity_gb, credit_bytes, expected_amount_cents,
-                  provider_price_id, livemode, created_at, updated_at)
-             VALUES ('purchase-1', 'buyer', 'checkout-1', 'stripe', 'paid', 'usd',
-                     1000, 1, 1000000000, 1000, 'price_test', FALSE, $1, $1)",
-        )
-        .bind(now)
-        .execute(&state.database)
-        .await
-        .unwrap();
-
-        let wrong_sign = sqlx::query(
-            "INSERT INTO credit_adjustments
-                 (id, credit_subject, account_id, purchase_id, amount_bytes, source_kind,
-                  source_reference, idempotency_key, display_label, created_at)
-             VALUES ('adjustment-sign', 'account:buyer', 'buyer', 'purchase-1', 1,
-                     'purchase_refund', 'refund-sign', 'refund-sign', 'Refund', $1)",
-        )
-        .bind(now)
-        .execute(&state.database)
-        .await;
-        assert!(wrong_sign.is_err());
-
-        let wrong_owner = sqlx::query(
-            "INSERT INTO credit_adjustments
-                 (id, credit_subject, account_id, purchase_id, amount_bytes, source_kind,
-                  source_reference, idempotency_key, display_label, created_at)
-             VALUES ('adjustment-owner', 'account:other', 'other', 'purchase-1', -1,
-                     'purchase_refund', 'refund-owner', 'refund-owner', 'Refund', $1)",
-        )
-        .bind(now)
-        .execute(&state.database)
-        .await;
-        assert!(wrong_owner.is_err());
     }
 }

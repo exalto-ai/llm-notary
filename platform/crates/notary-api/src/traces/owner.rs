@@ -264,7 +264,7 @@ async fn create_hosted_trace(
     let account_id = authenticated_principal(&state, &headers, ApiScope::TracesShare)
         .await?
         .account_id;
-    let billing = crate::admissions::account_billing_state(&state.database, &account_id).await?;
+    let billing = crate::credits::account_billing_state(&state.database, &account_id).await?;
     if billing.billing_status == crate::credits::BillingStatus::Review {
         return Err(ApiError::coded(
             axum::http::StatusCode::PAYMENT_REQUIRED,
@@ -516,7 +516,7 @@ async fn get_hosted_trace(
 #[utoipa::path(
     patch,
     path = "/api/shares/{share_id}",
-    summary = "Change a share's publication access settings",
+    summary = "Change a hosted Trace's sharing access settings",
     params(("share_id" = String, Path)),
     request_body = UpdateShareSettings,
     responses(
@@ -1303,7 +1303,7 @@ mod tests {
                 .expect("Google callback"),
             public_origin: Url::parse("https://notary.exalto.ai").expect("app"),
             secure_cookies: true,
-            registry: crate::tests::directory_key(),
+            registry: crate::tests::test_registry(),
             traces: TraceService::mock(storage.clone()),
             admission: std::sync::Arc::new(crate::config::NotaryAdmissionConfig::for_test()),
             billing: crate::billing::BillingService::disabled_for_test(),

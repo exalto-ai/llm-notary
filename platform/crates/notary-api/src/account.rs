@@ -128,8 +128,8 @@ pub(super) async fn me(
     .await
     .map_err(database_error)?
     .ok_or_else(ApiError::unauthorized)?;
-    let credits = admissions::account_access(&state, &user.0).await?;
-    let billing = admissions::account_billing_state(&state.database, &user.0).await?;
+    let credits = credits::account_access(&state, &user.0).await?;
+    let billing = credits::account_billing_state(&state.database, &user.0).await?;
     let notary_stats = account_notary_stats(&state.database, &user.0).await?;
     let (total, admitted, in_progress, stored_bytes) = sqlx::query_as::<_, (i64, i64, i64, i64)>(
         "SELECT COUNT(*)::BIGINT,

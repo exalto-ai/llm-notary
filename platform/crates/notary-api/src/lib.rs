@@ -310,6 +310,7 @@ fn hosted_router() -> OpenApiRouter<NotaryApiState> {
         .merge(traces::owner::router())
         .merge(traces::public::router())
         .merge(verification::api::router())
+        .merge(credits::router())
         .merge(admissions::router())
         .merge(billing::router())
 }
@@ -319,8 +320,8 @@ pub fn openapi_document() -> utoipa::openapi::OpenApi {
     hosted_router().into_openapi()
 }
 
-/// Runs the private, stdin/stdout verifier subprocess used to enforce a hard
-/// anonymous-verification timeout without retaining uploaded bytes.
+/// Runs the private stdin/stdout verifier used by both anonymous verification
+/// and hosted Trace admission without retaining uploaded bytes.
 #[doc(hidden)]
 pub fn run_verification_worker() -> Result<()> {
     verification::worker::run_worker()
@@ -430,6 +431,10 @@ where
         state.clone(),
         shutdown_rx.clone(),
     ));
+    workers.spawn(admissions::run_recovery_worker(
+        state.clone(),
+        shutdown_rx.clone(),
+    ));
     workers.spawn(traces::worker::run_worker(state, shutdown_rx));
     let worker_shutdown = shutdown_tx.clone();
     tracing::info!(%listen, "Notary platform API listening");
@@ -440,6 +445,7 @@ where
     .with_graceful_shutdown(async move {
         shutdown.await;
         let _ = worker_shutdown.send(true);
+        verification::process::shutdown_all().await;
     })
     .await;
     let _ = shutdown_tx.send(true);
@@ -857,7 +863,7 @@ mod tests {
         assert!(parse(&["verification-worker", "--help"]).is_err());
     }
 
-    pub(super) fn directory_key() -> Registry {
+    pub(super) fn test_registry() -> Registry {
         let signing = k256::ecdsa::SigningKey::from_slice(&[7; 32]).unwrap();
         let public_key = signing.verifying_key().to_sec1_bytes().to_vec();
         let key_id = key_id(&public_key);
@@ -966,21 +972,22 @@ mod tests {
             "INSERT INTO admitted_operations
                  (operation_id, ticket_token_hash, notary_instance_id, account_id, credit_subject,
                   admission_tier, mode, record_digest, notarization_allowance_bytes,
-                  max_attestable_http_bytes, admitted_at, terminal_outcome,
+                  max_attestable_http_bytes, admitted_at, activation_deadline, activated_at,
+                  terminal_outcome,
                   settled_authenticated_bytes, settled_at)
              VALUES
                  ('capture-completed', $1, 'notary-1', 'user-1', 'account:user-1',
-                  'free', 'capture', NULL, NULL, 1000, 1, 'completed', 100, 2),
+                  'free', 'capture', NULL, NULL, 1000, 1, 1, 1, 'completed', 100, 2),
                  ('notarization-completed', $2, 'notary-1', 'user-1', 'account:user-1',
-                  'free', 'notarization', $7, 200, 1000, 1, 'completed', 200, 2),
+                  'free', 'notarization', $7, 200, 1000, 1, 1, 1, 'completed', 200, 2),
                  ('capture-client-failed', $3, 'notary-1', 'user-1', 'account:user-1',
-                  'free', 'capture', NULL, NULL, 1000, 1, 'client_failed', 50, 2),
+                  'free', 'capture', NULL, NULL, 1000, 1, 1, 1, 'client_failed', 50, 2),
                  ('capture-unsettled', $4, 'notary-1', 'user-1', 'account:user-1',
-                  'free', 'capture', NULL, NULL, 1000, 1, NULL, NULL, NULL),
+                  'free', 'capture', NULL, NULL, 1000, 1, 1, 1, NULL, NULL, NULL),
                  ('notarization-service-failed', $5, 'notary-1', 'user-1', 'account:user-1',
-                  'free', 'notarization', $8, 300, 1000, 1, 'service_failed', 0, 2),
+                  'free', 'notarization', $8, 300, 1000, 1, 1, 1, 'service_failed', 0, 2),
                  ('other-capture-completed', $6, 'notary-1', 'user-2', 'account:user-2',
-                  'free', 'capture', NULL, NULL, 1000, 1, 'completed', 100, 2)",
+                  'free', 'capture', NULL, NULL, 1000, 1, 1, 1, 'completed', 100, 2)",
         )
         .bind("1".repeat(64))
         .bind("2".repeat(64))
@@ -1111,7 +1118,7 @@ mod tests {
                 .expect("Google callback URL"),
             public_origin: Url::parse("https://notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
-            registry: directory_key(),
+            registry: test_registry(),
             traces: traces::owner::TraceService::disabled_for_test(),
             admission: Arc::new(NotaryAdmissionConfig::for_test()),
             billing: billing::BillingService::disabled_for_test(),
@@ -1231,7 +1238,7 @@ mod tests {
                 .expect("Google callback URL"),
             public_origin: Url::parse("https://notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
-            registry: directory_key(),
+            registry: test_registry(),
             traces: traces::owner::TraceService::disabled_for_test(),
             admission: Arc::new(NotaryAdmissionConfig::for_test()),
             billing: billing::BillingService::disabled_for_test(),
@@ -1286,7 +1293,7 @@ mod tests {
                 .expect("Google callback URL"),
             public_origin: Url::parse("https://notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
-            registry: directory_key(),
+            registry: test_registry(),
             traces: traces::owner::TraceService::disabled_for_test(),
             admission: Arc::new(NotaryAdmissionConfig::for_test()),
             billing: billing::BillingService::disabled_for_test(),
@@ -1379,7 +1386,7 @@ mod tests {
                 .expect("Google callback URL"),
             public_origin: Url::parse("https://notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
-            registry: directory_key(),
+            registry: test_registry(),
             traces: traces::owner::TraceService::disabled_for_test(),
             admission: Arc::new(NotaryAdmissionConfig::for_test()),
             billing: billing::BillingService::disabled_for_test(),
@@ -1465,7 +1472,7 @@ mod tests {
                 .expect("Google callback URL"),
             public_origin: Url::parse("https://notary.exalto.ai").expect("app URL"),
             secure_cookies: true,
-            registry: directory_key(),
+            registry: test_registry(),
             traces: traces::owner::TraceService::disabled_for_test(),
             admission: Arc::new(NotaryAdmissionConfig::for_test()),
             billing: billing::BillingService::disabled_for_test(),
@@ -1616,7 +1623,7 @@ mod tests {
                 .unwrap(),
             public_origin: Url::parse("https://notary.exalto.ai").unwrap(),
             secure_cookies: true,
-            registry: directory_key(),
+            registry: test_registry(),
             traces: traces::owner::TraceService::disabled_for_test(),
             admission: Arc::new(NotaryAdmissionConfig::for_test()),
             billing: billing::BillingService::disabled_for_test(),

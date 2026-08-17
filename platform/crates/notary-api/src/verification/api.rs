@@ -4,7 +4,6 @@ use std::{
     collections::HashSet,
     future::Future,
     net::IpAddr,
-    process::Stdio,
     sync::{LazyLock, Mutex},
     time::Duration,
 };
@@ -15,20 +14,16 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
 };
-use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
-    process::{Child, Command},
-    sync::OwnedSemaphorePermit,
-};
+use tokio::sync::OwnedSemaphorePermit;
 use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
 use crate::{
     DatabasePool, ErrorResponse, NotaryApiState, unix_timestamp,
-    verification::worker::{
-        MAX_WORKER_OUTPUT_BYTES, WORKER_REJECTED, WORKER_VERIFIED,
-        try_acquire_verification_capacity,
+    verification::{
+        process::{VerificationError, VerifiedPackage, verify_anonymous},
+        worker::try_acquire_verification_capacity,
     },
 };
 use notary_core::{
@@ -39,8 +34,6 @@ use notary_core::{
 
 const EXTRACTION_TIMEOUT: Duration = Duration::from_secs(30);
 const LIMITER_TIMEOUT: Duration = Duration::from_secs(5);
-const WORKER_INPUT_TIMEOUT: Duration = Duration::from_secs(10);
-const VERIFICATION_TIMEOUT: Duration = Duration::from_secs(120);
 const VERIFICATION_LEASE_SECS: i64 = 5 * 60;
 static ANONYMOUS_IN_FLIGHT: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -200,7 +193,7 @@ async fn verify(State(state): State<NotaryApiState>, request: Request) -> Respon
 }
 
 async fn verify_request(state: NotaryApiState, request: Request) -> Response {
-    verify_request_with(state, request, run_worker_process).await
+    verify_request_with(state, request, verify_anonymous).await
 }
 
 async fn verify_request_with<F, Fut>(
@@ -210,7 +203,7 @@ async fn verify_request_with<F, Fut>(
 ) -> Response
 where
     F: FnOnce(Vec<u8>, Registry) -> Fut,
-    Fut: Future<Output = Result<Vec<u8>, WorkerError>>,
+    Fut: Future<Output = Result<VerifiedPackage, VerificationError>>,
 {
     if request
         .headers()
@@ -267,13 +260,19 @@ where
 
     let result = run_worker(archive, state.registry.clone()).await;
     permits.release().await;
-    let encoded = match result {
-        Ok(encoded) => encoded,
-        Err(WorkerError::Rejected(code)) => return rejected_response(&code),
-        Err(WorkerError::Timeout) => {
+    let package = match result {
+        Ok(package) => package,
+        Err(VerificationError::Rejected(code)) => return rejected_response(&code),
+        Err(VerificationError::Timeout) => {
             return error_response(StatusCode::SERVICE_UNAVAILABLE, "verification_timeout");
         }
-        Err(WorkerError::Unavailable) => {
+        Err(VerificationError::Cancelled | VerificationError::Unavailable) => {
+            return error_response(StatusCode::SERVICE_UNAVAILABLE, "verification_unavailable");
+        }
+    };
+    let encoded = match package.anonymous_response_body() {
+        Ok(encoded) => encoded,
+        Err(_) => {
             return error_response(StatusCode::SERVICE_UNAVAILABLE, "verification_unavailable");
         }
     };
@@ -287,135 +286,6 @@ where
         Body::from(encoded),
     )
         .into_response()
-}
-
-#[derive(Debug)]
-enum WorkerError {
-    Rejected(String),
-    Timeout,
-    Unavailable,
-}
-
-async fn run_worker_process(archive: Vec<u8>, directory: Registry) -> Result<Vec<u8>, WorkerError> {
-    let directory = serde_json::to_vec(&directory).map_err(|_| WorkerError::Unavailable)?;
-    let executable = std::env::current_exe().map_err(|_| WorkerError::Unavailable)?;
-    let mut command = Command::new(executable);
-    command.arg("verification-worker");
-    run_worker_command(
-        command,
-        archive,
-        directory,
-        WORKER_INPUT_TIMEOUT,
-        VERIFICATION_TIMEOUT,
-    )
-    .await
-}
-
-async fn run_worker_command(
-    mut command: Command,
-    archive: Vec<u8>,
-    directory: Vec<u8>,
-    input_timeout: Duration,
-    verification_timeout: Duration,
-) -> Result<Vec<u8>, WorkerError> {
-    if archive.len() as u64 > MAX_ARCHIVE_WIRE_BYTES {
-        return Err(WorkerError::Unavailable);
-    }
-    let mut child = command
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .kill_on_drop(true)
-        .spawn()
-        .map_err(|_| WorkerError::Unavailable)?;
-    let mut stdin = child.stdin.take().ok_or(WorkerError::Unavailable)?;
-    let mut stdout = child.stdout.take().ok_or(WorkerError::Unavailable)?;
-    let output_reader = tokio::spawn(async move {
-        let mut outcome = [0u8; 1];
-        stdout.read_exact(&mut outcome).await?;
-        let mut encoded_length = [0u8; 8];
-        stdout.read_exact(&mut encoded_length).await?;
-        let output_length = u64::from_be_bytes(encoded_length);
-        if output_length > MAX_WORKER_OUTPUT_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "worker output is too large",
-            ));
-        }
-        let mut output = vec![
-            0;
-            usize::try_from(output_length).map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "worker output is too large",
-                )
-            })?
-        ];
-        stdout.read_exact(&mut output).await?;
-        let mut trailing = [0u8; 1];
-        if stdout.read(&mut trailing).await? != 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "unexpected worker output",
-            ));
-        }
-        Ok::<_, std::io::Error>((outcome[0], output))
-    });
-    let input = async move {
-        stdin
-            .write_all(&(directory.len() as u64).to_be_bytes())
-            .await?;
-        stdin.write_all(&directory).await?;
-        stdin
-            .write_all(&(archive.len() as u64).to_be_bytes())
-            .await?;
-        stdin.write_all(&archive).await?;
-        stdin.shutdown().await
-    };
-    match tokio::time::timeout(input_timeout, input).await {
-        Ok(Ok(())) => {}
-        _ => {
-            terminate_worker(&mut child).await;
-            output_reader.abort();
-            let _ = output_reader.await;
-            return Err(WorkerError::Unavailable);
-        }
-    }
-    let status = match tokio::time::timeout(verification_timeout, child.wait()).await {
-        Ok(Ok(status)) => status,
-        Ok(Err(_)) => {
-            terminate_worker(&mut child).await;
-            output_reader.abort();
-            let _ = output_reader.await;
-            return Err(WorkerError::Unavailable);
-        }
-        Err(_) => {
-            terminate_worker(&mut child).await;
-            output_reader.abort();
-            let _ = output_reader.await;
-            return Err(WorkerError::Timeout);
-        }
-    };
-    let (outcome, output) = output_reader
-        .await
-        .map_err(|_| WorkerError::Unavailable)?
-        .map_err(|_| WorkerError::Unavailable)?;
-    if !status.success() || output.len() as u64 > MAX_WORKER_OUTPUT_BYTES {
-        return Err(WorkerError::Unavailable);
-    }
-    match outcome {
-        WORKER_VERIFIED => Ok(output),
-        WORKER_REJECTED if output.len() <= 64 => {
-            let code = String::from_utf8(output).map_err(|_| WorkerError::Unavailable)?;
-            Err(WorkerError::Rejected(code))
-        }
-        _ => Err(WorkerError::Unavailable),
-    }
-}
-
-async fn terminate_worker(child: &mut Child) {
-    let _ = child.kill().await;
-    let _ = child.wait().await;
 }
 
 fn rejected_response(code: &str) -> Response {
@@ -495,7 +365,7 @@ mod tests {
                 .unwrap(),
             public_origin: Url::parse("https://example.com").unwrap(),
             secure_cookies: true,
-            registry: crate::tests::directory_key(),
+            registry: crate::tests::test_registry(),
             traces: TraceService::disabled_for_test(),
             admission: std::sync::Arc::new(crate::config::NotaryAdmissionConfig::for_test()),
             billing: crate::billing::BillingService::disabled_for_test(),
@@ -608,35 +478,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn worker_termination_waits_until_the_child_is_reaped() {
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg("sleep 60")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap();
-        terminate_worker(&mut child).await;
-        assert!(child.try_wait().unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn worker_process_timeout_terminates_a_live_child() {
-        let mut command = Command::new("sh");
-        command.arg("-c").arg("cat >/dev/null; sleep 60");
-        let result = run_worker_command(
-            command,
-            b"not a package".to_vec(),
-            b"{}".to_vec(),
-            Duration::from_secs(1),
-            Duration::from_millis(25),
-        )
-        .await;
-        assert!(matches!(result, Err(WorkerError::Timeout)));
-    }
-
-    #[tokio::test]
     async fn successful_anonymous_verification_retains_no_content_or_activity() {
         let _serial = TEST_SERIAL.lock().await;
         let state = test_state().await;
@@ -644,20 +485,19 @@ mod tests {
         let database = state.database.clone();
         let package = b"sanitized valid package fixture".to_vec();
         let expected_package = package.clone();
-        let encoded = serde_json::to_vec(&serde_json::json!({
-            "verified": true,
-            "trace_id": "trc-sanitized",
-            "authenticated_at_unix_ms": 1_785_000_000_000_u64,
-            "provider": "fixture",
-            "host": "fixture.example",
-            "notary_key_id": "sha256:fixture",
-            "registry_generation": 7,
-            "trust_source": "hosted_registry",
-            "package_sha256": "a".repeat(64),
-            "content_sha256": "b".repeat(64),
-            "trace": { "resourceSpans": [] }
-        }))
-        .unwrap();
+        let verified = VerifiedPackage {
+            source_trace_id: "trc-sanitized".to_owned(),
+            authenticated_at_unix_ms: 1_785_000_000_000,
+            provider_name: "fixture".to_owned(),
+            provider_host: "fixture.example".to_owned(),
+            request_path: "/v1/messages".to_owned(),
+            notary_key_id: "sha256:fixture".to_owned(),
+            registry_generation: 7,
+            package_sha256: "a".repeat(64),
+            content_sha256: "b".repeat(64),
+            trace: br#"{"resourceSpans":[]}"#.to_vec(),
+            safety_override_applied: None,
+        };
         let request = Request::builder()
             .method("POST")
             .uri("/api/verify")
@@ -666,10 +506,10 @@ mod tests {
             .body(Body::from(package))
             .unwrap();
         let response = verify_request_with(state, request, move |archive, _directory| {
-            let encoded = encoded.clone();
+            let verified = verified.clone();
             async move {
                 assert_eq!(archive, expected_package);
-                Ok(encoded)
+                Ok(verified)
             }
         })
         .await;
