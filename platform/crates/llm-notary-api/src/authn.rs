@@ -142,7 +142,7 @@ async fn resolve_token(state: &AppState, token: &str) -> ApiResult<Authenticated
          WHERE cli_access_tokens.token_hash = $1 AND cli_access_tokens.expires_at > $2
            AND cli_sessions.revoked_at IS NULL AND cli_sessions.expires_at > $2",
     )
-    .bind(llm_notary_core::sha256_hex(token.as_bytes()))
+    .bind(notary_core::sha256_hex(token.as_bytes()))
     .bind(now)
     .fetch_optional(&state.database)
     .await

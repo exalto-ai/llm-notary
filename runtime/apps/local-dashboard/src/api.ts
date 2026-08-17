@@ -4,21 +4,21 @@ export type Status = components['schemas']['StatusResponse'];
 export type CaptureSetting = components['schemas']['CaptureSettingResponse'];
 export type Notaries = components['schemas']['NotariesResponse'];
 export type Notary = components['schemas']['NotaryResponse'];
-export type Capture = components['schemas']['CaptureResponse'];
-export type CaptureDetail = components['schemas']['CaptureDetailResponse'];
+export type TraceSummary = components['schemas']['CaptureResponse'];
+export type TraceDetail = components['schemas']['CaptureDetailResponse'];
 export type Operation = components['schemas']['OperationResponse'];
 export type OperationSummary = components['schemas']['OperationSummaryResponse'];
 export type Event = components['schemas']['EventResponse'];
-export type Trace = components['schemas']['TraceResponse'];
+export type TraceContent = components['schemas']['TraceResponse'];
 export type Verification = components['schemas']['VerificationResponse'];
 export type AccountConnection = components['schemas']['AccountConnectionResponse'];
 export type AccountConnectionStarted = components['schemas']['AccountConnectionStartedResponse'];
 export type Share = components['schemas']['ShareResponse'];
 export type ShareStatus = components['schemas']['ShareStatusResponse'];
 export type ShareVisibility = components['schemas']['ShareVisibility'];
-type CaptureList = paths['/v1/captures']['get']['responses'][200]['content']['application/json'];
-type FinalizationResult =
-  paths['/v1/captures/{capture_id}/finalizations']['post']['responses'][202]['content']['application/json'];
+type TraceList = paths['/v1/traces']['get']['responses'][200]['content']['application/json'];
+type NotarizationResult =
+  paths['/v1/traces/{trace_id}/notarizations']['post']['responses'][202]['content']['application/json'];
 type OperationList =
   paths['/v1/operations']['get']['responses'][200]['content']['application/json'];
 type EventList = paths['/v1/events']['get']['responses'][200]['content']['application/json'];
@@ -54,7 +54,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     method: options.method ?? 'GET',
     credentials: 'same-origin',
     headers: {
-      'x-llm-notary-request': 'dashboard',
+      'x-notary-request': 'dashboard',
       ...(options.basicAuth
         ? {
             authorization: basicAuthorization(
@@ -84,7 +84,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
 async function requestBlob(path: string): Promise<Blob> {
   const response = await fetch(path, {
     credentials: 'same-origin',
-    headers: { 'x-llm-notary-request': 'dashboard' },
+    headers: { 'x-notary-request': 'dashboard' },
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as {
@@ -123,12 +123,11 @@ export const localApi = {
       body: { enabled },
     }),
   notaries: () => request<Notaries>('/v1/notaries'),
-  captures: (filters: Record<string, string | number | boolean | undefined> = {}) =>
-    request<CaptureList>(`/v1/captures${queryString(filters)}`),
-  capture: (captureId: string) =>
-    request<CaptureDetail>(`/v1/captures/${encodeURIComponent(captureId)}`),
-  startFinalization: (captureId: string) =>
-    request<FinalizationResult>(`/v1/captures/${encodeURIComponent(captureId)}/finalizations`, {
+  traces: (filters: Record<string, string | number | boolean | undefined> = {}) =>
+    request<TraceList>(`/v1/traces${queryString(filters)}`),
+  trace: (traceId: string) => request<TraceDetail>(`/v1/traces/${encodeURIComponent(traceId)}`),
+  startNotarization: (traceId: string) =>
+    request<NotarizationResult>(`/v1/traces/${encodeURIComponent(traceId)}/notarizations`, {
       method: 'POST',
     }),
   operations: (filters: Record<string, string | number | boolean | undefined> = {}) =>
@@ -141,12 +140,12 @@ export const localApi = {
     }),
   events: (filters: Record<string, string | number | boolean | undefined> = {}) =>
     request<EventList>(`/v1/events${queryString(filters)}`),
-  trace: (captureId: string) =>
-    request<Trace>(`/v1/captures/${encodeURIComponent(captureId)}/trace`),
-  downloadPackage: (captureId: string) =>
-    requestBlob(`/v1/captures/${encodeURIComponent(captureId)}/package`),
-  verify: (captureId: string) =>
-    request<Verification>(`/v1/captures/${encodeURIComponent(captureId)}/trace:verify`, {
+  traceContent: (traceId: string) =>
+    request<TraceContent>(`/v1/traces/${encodeURIComponent(traceId)}/trace`),
+  downloadPackage: (traceId: string) =>
+    requestBlob(`/v1/traces/${encodeURIComponent(traceId)}/package`),
+  verify: (traceId: string) =>
+    request<Verification>(`/v1/traces/${encodeURIComponent(traceId)}/trace:verify`, {
       method: 'POST',
     }),
   account: () => request<AccountConnection>('/v1/account'),
@@ -158,8 +157,8 @@ export const localApi = {
   pollAccountConnection: (requestId: string) =>
     request<AccountConnection>(`/v1/account/${encodeURIComponent(requestId)}`),
   disconnectAccount: () => request<void>('/v1/account', { method: 'DELETE' }),
-  share: (captureId: string, visibility: ShareVisibility) =>
-    request<Share>(`/v1/captures/${encodeURIComponent(captureId)}/shares`, {
+  share: (traceId: string, visibility: ShareVisibility) =>
+    request<Share>(`/v1/traces/${encodeURIComponent(traceId)}/shares`, {
       method: 'POST',
       body: { visibility },
     }),

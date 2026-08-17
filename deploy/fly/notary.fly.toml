@@ -11,7 +11,7 @@ kill_timeout = "30s"
   LLM_NOTARY_METRICS_LISTEN = "0.0.0.0:9090"
   LLM_NOTARY_ADMISSION_API_ORIGIN = "http://llm-notary-prod-api.flycast"
   LLM_NOTARY_ADMISSION_SERVICE_TOKEN_FILE = "/run/secrets/admission_service_token"
-  LLM_NOTARY_NOTARY_DIRECTORY_GENERATION = "4"
+  LLM_NOTARY_REGISTRY_GENERATION = "4"
   LLM_NOTARY_USAGE_OUTBOX_DIR = "/data/usage-outbox"
 
 [processes]
@@ -61,7 +61,7 @@ app = "--profile-sessions"
 [[vm]]
   # Fly requires at least 2 GB for a performance VM.
   memory = "2gb"
-  # Deferred proof finalization is CPU-bound. A performance vCPU avoids the
+  # Deferred proof notarization is CPU-bound. A performance vCPU avoids the
   # quota throttling inherent in Fly's shared CPU class.
   cpu_kind = "performance"
   cpus = 1

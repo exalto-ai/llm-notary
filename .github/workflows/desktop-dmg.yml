@@ -150,9 +150,9 @@ jobs:
           spctl --assess --type execute --verbose=4 "$app"
           spctl --assess --type open --context context:primary-signature --verbose=4 "$dmg"
           test -x "$app/Contents/MacOS/llm-notary-desktop"
-          test -x "$app/Contents/MacOS/llm-notaryd"
+          test -x "$app/Contents/MacOS/notaryd"
           strings "$app/Contents/MacOS/llm-notary-desktop" | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
-          "$app/Contents/MacOS/llm-notaryd" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
+          "$app/Contents/MacOS/notaryd" --version | grep -F "$LLM_NOTARY_BUILD_ID" >/dev/null
       - uses: actions/upload-artifact@v7
         with:
           name: desktop-macos-arm64

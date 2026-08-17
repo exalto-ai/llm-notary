@@ -26,7 +26,7 @@ so cursor data is never used as SQL text and never grants access: every query
 still applies its full user and visibility predicates.
 
 The shared Rust types are `PageQuery`, `Page<T>`, `CursorScope`, and
-`PaginationError` in `llm_notary_core::pagination`. The `openapi` feature adds
+`PaginationError` in `notary_core::pagination`. The `openapi` feature adds
 schemas for the request and response shapes used by both HTTP services.
 
 ## Stability under writes

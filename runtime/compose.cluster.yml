@@ -5,15 +5,15 @@ x-daemon: &daemon
     context: .
     dockerfile: Dockerfile
     target: cluster
-  image: ${LLM_NOTARY_CLUSTER_IMAGE:-llm-notary-daemon-cluster:local}
+  image: ${NOTARYD_CLUSTER_IMAGE:-notaryd-cluster:local}
   user: "${CLUSTER_UID:-10001}:${CLUSTER_GID:-10001}"
   command: ["--config", "/etc/llm-notary/config.toml"]
   environment: &daemon-environment
-    LLM_NOTARY_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
-    LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID_FILE: /run/secrets/s3_access_key
-    LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_key
-    LLM_NOTARY_METADATA_DATABASE_URL_FILE: /run/secrets/postgres_url
-    LLM_NOTARY_CLUSTER_VAULT_KEY_FILE: /run/secrets/cluster_vault_key
+    NOTARYD_ADMIN_PASSWORD_FILE: /run/secrets/admin_password
+    NOTARYD_ARTIFACT_S3_ACCESS_KEY_ID_FILE: /run/secrets/s3_access_key
+    NOTARYD_ARTIFACT_S3_SECRET_ACCESS_KEY_FILE: /run/secrets/s3_secret_key
+    NOTARYD_METADATA_DATABASE_URL_FILE: /run/secrets/postgres_url
+    NOTARYD_CLUSTER_VAULT_KEY_FILE: /run/secrets/cluster_vault_key
   secrets: &daemon-secrets
     - admin_password
     - postgres_url
@@ -98,8 +98,8 @@ services:
     <<: *daemon
     command: ["migrate", "--config", "/etc/llm-notary/config.toml"]
     environment:
-      LLM_NOTARY_METADATA_DATABASE_URL_FILE: /run/secrets/postgres_url
-      LLM_NOTARY_CLUSTER_VAULT_KEY_FILE: /run/secrets/cluster_vault_key
+      NOTARYD_METADATA_DATABASE_URL_FILE: /run/secrets/postgres_url
+      NOTARYD_CLUSTER_VAULT_KEY_FILE: /run/secrets/cluster_vault_key
     secrets:
       - postgres_url
       - cluster_vault_key

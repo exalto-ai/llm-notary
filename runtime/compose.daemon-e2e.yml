@@ -1,11 +1,11 @@
 services:
   setup:
-    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    image: ${DAEMON_E2E_IMAGE:-notaryd-e2e:local}
     entrypoint: ["/bin/sh", "-ec"]
     command:
       - |
         umask 077
-        mkdir -p /state/secrets /state/bundles /state/traces
+        mkdir -p /state/secrets /state/capture-checkpoints /state/trace-packages
         mkdir -p /fixtures
         if ! test -f /state/secrets/vault-passphrase; then
           printf '%s' 'deterministic-daemon-e2e-passphrase' > /state/secrets/vault-passphrase
@@ -74,14 +74,14 @@ services:
       start_period: 2s
 
   migrator:
-    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    image: ${DAEMON_E2E_IMAGE:-notaryd-e2e:local}
     depends_on:
       postgres:
         condition: service_healthy
-    entrypoint: ["llm-notaryd"]
+    entrypoint: ["notaryd"]
     command: ["migrate", "--config", "/etc/llm-notary/config-postgres.toml"]
     environment:
-      LLM_NOTARY_METADATA_MIGRATION_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+      NOTARYD_METADATA_MIGRATION_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
     read_only: true
     tmpfs:
       - /tmp
@@ -117,7 +117,7 @@ services:
       minio:
         condition: service_healthy
     entrypoint: ["mc"]
-    command: ["mb", "--ignore-existing", "e2e/llm-notary-daemon-e2e"]
+    command: ["mb", "--ignore-existing", "e2e/notaryd-e2e"]
     environment:
       MC_HOST_e2e: http://daemon-e2e-access-key:synthetic-daemon-e2e-secret-key@minio:9000
       MC_CONFIG_DIR: /tmp/.mc
@@ -146,7 +146,7 @@ services:
     restart: "no"
 
   provider:
-    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    image: ${DAEMON_E2E_IMAGE:-notaryd-e2e:local}
     depends_on:
       setup:
         condition: service_completed_successfully
@@ -175,16 +175,16 @@ services:
       start_period: 1s
 
   notary:
-    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    image: ${DAEMON_E2E_IMAGE:-notaryd-e2e:local}
     depends_on:
       setup:
         condition: service_completed_successfully
       provider:
         condition: service_healthy
-    entrypoint: ["llm-notary-e2e-notary"]
+    entrypoint: ["notary-e2e-notary"]
     environment:
-      LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
-      LLM_NOTARY_DAEMON_E2E_SIGNING_KEY_FILE: /fixtures/notary-signing-key
+      NOTARYD_E2E_ROOT_CA_DER: /fixtures/ca.der
+      NOTARYD_E2E_SIGNING_KEY_FILE: /fixtures/notary-signing-key
     volumes:
       - fixture-state:/fixtures:ro
     read_only: true
@@ -203,7 +203,7 @@ services:
       start_period: 1s
 
   daemon:
-    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    image: ${DAEMON_E2E_IMAGE:-notaryd-e2e:local}
     build:
       context: .
       dockerfile: Dockerfile
@@ -217,11 +217,11 @@ services:
         condition: service_healthy
     command: ["--config", "/etc/llm-notary/config.toml"]
     environment:
-      LLM_NOTARY_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
-      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
-      LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
-      LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
-      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_FINALIZATION_PAUSE_MS:-0}
+      NOTARYD_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
+      NOTARYD_PLATFORM_API_ORIGIN: http://127.0.0.1:9797
+      NOTARYD_PLATFORM_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
+      NOTARYD_E2E_ROOT_CA_DER: /fixtures/ca.der
+      NOTARYD_E2E_PAUSE_AFTER_NOTARIZED_ARTIFACT_MS: ${DAEMON_E2E_NOTARIZATION_PAUSE_MS:-0}
       XDG_CONFIG_HOME: /state/xdg-config
       XDG_DATA_HOME: /state/xdg-data
     volumes:
@@ -243,7 +243,7 @@ services:
       start_period: 2s
 
   daemon-postgres:
-    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    image: ${DAEMON_E2E_IMAGE:-notaryd-e2e:local}
     depends_on:
       setup:
         condition: service_completed_successfully
@@ -257,12 +257,12 @@ services:
         condition: service_healthy
     command: ["--config", "/etc/llm-notary/config-postgres.toml"]
     environment:
-      LLM_NOTARY_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
-      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
-      LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
-      LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
-      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_FINALIZATION_PAUSE_MS:-0}
-      LLM_NOTARY_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+      NOTARYD_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
+      NOTARYD_PLATFORM_API_ORIGIN: http://127.0.0.1:9797
+      NOTARYD_PLATFORM_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
+      NOTARYD_E2E_ROOT_CA_DER: /fixtures/ca.der
+      NOTARYD_E2E_PAUSE_AFTER_NOTARIZED_ARTIFACT_MS: ${DAEMON_E2E_NOTARIZATION_PAUSE_MS:-0}
+      NOTARYD_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
       XDG_CONFIG_HOME: /state/xdg-config
       XDG_DATA_HOME: /state/xdg-data
     volumes:
@@ -284,7 +284,7 @@ services:
       start_period: 2s
 
   daemon-s3:
-    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    image: ${DAEMON_E2E_IMAGE:-notaryd-e2e:local}
     depends_on:
       setup:
         condition: service_completed_successfully
@@ -296,13 +296,13 @@ services:
         condition: service_healthy
     command: ["--config", "/etc/llm-notary/config-s3.toml"]
     environment:
-      LLM_NOTARY_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
-      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
-      LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
-      LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
-      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_FINALIZATION_PAUSE_MS:-0}
-      LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
-      LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
+      NOTARYD_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
+      NOTARYD_PLATFORM_API_ORIGIN: http://127.0.0.1:9797
+      NOTARYD_PLATFORM_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
+      NOTARYD_E2E_ROOT_CA_DER: /fixtures/ca.der
+      NOTARYD_E2E_PAUSE_AFTER_NOTARIZED_ARTIFACT_MS: ${DAEMON_E2E_NOTARIZATION_PAUSE_MS:-0}
+      NOTARYD_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
+      NOTARYD_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
       XDG_CONFIG_HOME: /state/xdg-config
       XDG_DATA_HOME: /state/xdg-data
     volumes:
@@ -324,7 +324,7 @@ services:
       start_period: 2s
 
   daemon-postgres-s3:
-    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    image: ${DAEMON_E2E_IMAGE:-notaryd-e2e:local}
     depends_on:
       setup:
         condition: service_completed_successfully
@@ -340,14 +340,14 @@ services:
         condition: service_healthy
     command: ["--config", "/etc/llm-notary/config-postgres-s3.toml"]
     environment:
-      LLM_NOTARY_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
-      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
-      LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
-      LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
-      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_FINALIZATION_PAUSE_MS:-0}
-      LLM_NOTARY_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
-      LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
-      LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
+      NOTARYD_VAULT_PASSPHRASE_FILE: /state/secrets/vault-passphrase
+      NOTARYD_PLATFORM_API_ORIGIN: http://127.0.0.1:9797
+      NOTARYD_PLATFORM_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
+      NOTARYD_E2E_ROOT_CA_DER: /fixtures/ca.der
+      NOTARYD_E2E_PAUSE_AFTER_NOTARIZED_ARTIFACT_MS: ${DAEMON_E2E_NOTARIZATION_PAUSE_MS:-0}
+      NOTARYD_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+      NOTARYD_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
+      NOTARYD_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
       XDG_CONFIG_HOME: /state/xdg-config
       XDG_DATA_HOME: /state/xdg-data
     volumes:
@@ -369,7 +369,7 @@ services:
       start_period: 2s
 
   daemon-a:
-    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    image: ${DAEMON_E2E_IMAGE:-notaryd-e2e:local}
     build:
       context: .
       dockerfile: Dockerfile
@@ -389,15 +389,15 @@ services:
         condition: service_healthy
     command: ["--config", "/state/config-cluster-a.toml"]
     environment:
-      LLM_NOTARY_CLUSTER_INSTANCE_ID: daemon-a
-      LLM_NOTARY_CLUSTER_VAULT_KEY_FILE: /state/secrets/cluster-vault.key
-      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
-      LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
-      LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
-      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS:-0}
-      LLM_NOTARY_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
-      LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
-      LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
+      NOTARYD_CLUSTER_INSTANCE_ID: daemon-a
+      NOTARYD_CLUSTER_VAULT_KEY_FILE: /state/secrets/cluster-vault.key
+      NOTARYD_PLATFORM_API_ORIGIN: http://127.0.0.1:9797
+      NOTARYD_PLATFORM_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
+      NOTARYD_E2E_ROOT_CA_DER: /fixtures/ca.der
+      NOTARYD_E2E_PAUSE_AFTER_NOTARIZED_ARTIFACT_MS: ${DAEMON_E2E_SERVER_NOTARIZATION_PAUSE_MS:-0}
+      NOTARYD_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+      NOTARYD_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
+      NOTARYD_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
       XDG_CONFIG_HOME: /state/xdg-config
       XDG_DATA_HOME: /state/xdg-data
     volumes:
@@ -419,7 +419,7 @@ services:
       start_period: 2s
 
   daemon-b:
-    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    image: ${DAEMON_E2E_IMAGE:-notaryd-e2e:local}
     depends_on:
       setup:
         condition: service_completed_successfully
@@ -435,15 +435,15 @@ services:
         condition: service_healthy
     command: ["--config", "/state/config-cluster-b.toml"]
     environment:
-      LLM_NOTARY_CLUSTER_INSTANCE_ID: daemon-b
-      LLM_NOTARY_CLUSTER_VAULT_KEY_FILE: /state/secrets/cluster-vault.key
-      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
-      LLM_NOTARY_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
-      LLM_NOTARY_DAEMON_E2E_ROOT_CA_DER: /fixtures/ca.der
-      LLM_NOTARY_DAEMON_E2E_PAUSE_AFTER_FINALIZED_ARTIFACT_MS: ${DAEMON_E2E_SERVER_FINALIZATION_PAUSE_MS:-0}
-      LLM_NOTARY_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
-      LLM_NOTARY_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
-      LLM_NOTARY_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
+      NOTARYD_CLUSTER_INSTANCE_ID: daemon-b
+      NOTARYD_CLUSTER_VAULT_KEY_FILE: /state/secrets/cluster-vault.key
+      NOTARYD_PLATFORM_API_ORIGIN: http://127.0.0.1:9797
+      NOTARYD_PLATFORM_API_KEY: llmn_v1_11111111111111111111111111111111_2222222222222222222222222222222222222222222222222222222222222222
+      NOTARYD_E2E_ROOT_CA_DER: /fixtures/ca.der
+      NOTARYD_E2E_PAUSE_AFTER_NOTARIZED_ARTIFACT_MS: ${DAEMON_E2E_SERVER_NOTARIZATION_PAUSE_MS:-0}
+      NOTARYD_METADATA_DATABASE_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+      NOTARYD_ARTIFACT_S3_ACCESS_KEY_ID: daemon-e2e-access-key
+      NOTARYD_ARTIFACT_S3_SECRET_ACCESS_KEY: synthetic-daemon-e2e-secret-key
       XDG_CONFIG_HOME: /state/xdg-config
       XDG_DATA_HOME: /state/xdg-data
     volumes:
@@ -465,18 +465,18 @@ services:
       start_period: 2s
 
   server-migrator:
-    image: ${DAEMON_E2E_IMAGE:-llm-notary-daemon-e2e:local}
+    image: ${DAEMON_E2E_IMAGE:-notaryd-e2e:local}
     depends_on:
       setup:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
-    entrypoint: ["llm-notaryd"]
+    entrypoint: ["notaryd"]
     command: ["migrate", "--config", "/state/config-cluster-a.toml"]
     environment:
-      LLM_NOTARY_API_ORIGIN: http://127.0.0.1:9797
-      LLM_NOTARY_METADATA_MIGRATION_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
-      LLM_NOTARY_CLUSTER_VAULT_KEY_FILE: /state/secrets/cluster-vault.key
+      NOTARYD_PLATFORM_API_ORIGIN: http://127.0.0.1:9797
+      NOTARYD_METADATA_MIGRATION_URL: postgresql://daemon_e2e:synthetic-daemon-e2e-password@postgres:5432/daemon_e2e
+      NOTARYD_CLUSTER_VAULT_KEY_FILE: /state/secrets/cluster-vault.key
     volumes:
       - daemon-state:/state:ro
     read_only: true

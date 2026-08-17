@@ -43,7 +43,7 @@ jobs:
         run: npm install --global opencode-ai@1.18.11
 
       - name: Build released LLM Notary binaries
-        run: cargo build --manifest-path runtime/Cargo.toml --target-dir target --release --locked -p llm-notary-cli --bin llm-notary -p llm-notary-daemon --bin llm-notaryd
+        run: cargo build --manifest-path runtime/Cargo.toml --target-dir target --release --locked -p llm-notary-cli --bin llm-notary -p notaryd --bin notaryd
 
       - name: Test canary parser and safety gates
         run: python3 runtime/benchmarks/opencode-e2e/test_runner.py -v
@@ -57,7 +57,7 @@ jobs:
             --model "$CANARY_MODEL" \
             --opencode "$(command -v opencode)" \
             --llm-notary "$GITHUB_WORKSPACE/target/release/llm-notary" \
-            --llm-notaryd "$GITHUB_WORKSPACE/target/release/llm-notaryd" \
+            --notaryd "$GITHUB_WORKSPACE/target/release/notaryd" \
             --result "$RUNNER_TEMP/opencode-e2e-result.json"
 
       - name: Post sanitized Slack summary

@@ -112,146 +112,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/captures": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Search local captures
-         * @description Lists the local capture catalog with opaque cursor pagination, punctuation-safe preview search, and exact metadata filters. The legacy offset parameter is rejected; restart traversal without a cursor instead.
-         */
-        get: operations["captures"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/captures/{capture_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get a capture
-         * @description Returns safe capture metadata, retained artifact digests, and finalization history for one capture.
-         */
-        get: operations["capture"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/captures/{capture_id}/finalizations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Queue capture finalization
-         * @description Queues durable proof generation for an eligible captured provider response or returns its existing finalization operation. Captures with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.
-         */
-        post: operations["start_finalization"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/captures/{capture_id}/package": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Download a finalized verified package
-         * @description Returns the exact stored canonical .llmtrace bytes as the primary portable verification artifact.
-         */
-        get: operations["download_package"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/captures/{capture_id}/shares": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Share a finalized verified session
-         * @description Verifies one finalized capture locally, applies the public disclosure safety policy, and uploads the exact package. Force overrides only unexplained high-entropy values.
-         */
-        post: operations["share_capture"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/captures/{capture_id}/trace": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Decode a finalized trace
-         * @description Returns the finalized package manifest and canonical OpenTelemetry trace for inspection.
-         */
-        get: operations["trace"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/v1/captures/{capture_id}/trace:verify": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Verify a finalized trace
-         * @description Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.
-         */
-        post: operations["verify_trace"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/v1/events": {
         parameters: {
             query?: never;
@@ -281,7 +141,7 @@ export interface paths {
         };
         /**
          * Get configured notary trust
-         * @description Returns a safe read-only projection of the local or server-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Directory membership describes allowed protocol use and does not report endpoint health.
+         * @description Returns a safe read-only projection of the local or server-shared pinned notary trust history, or the explicitly configured self-hosted endpoint and key. Registry membership describes allowed protocol use and does not report endpoint health.
          */
         get: operations["notaries"];
         put?: never;
@@ -440,6 +300,146 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/traces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search local traces
+         * @description Lists the local capture metadata with opaque cursor pagination, punctuation-safe preview search, and exact metadata filters. The legacy offset parameter is rejected; restart traversal without a cursor instead.
+         */
+        get: operations["traces"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/traces/{trace_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get a capture
+         * @description Returns safe capture metadata, retained artifact digests, and notarization history for one capture.
+         */
+        get: operations["trace"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/traces/{trace_id}/notarizations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Queue capture notarization
+         * @description Queues durable proof generation for an eligible captured provider response or returns its existing notarization operation. Traces with non-success provider HTTP responses are rejected before proof generation because the current normalizers only support successful response schemas.
+         */
+        post: operations["start_notarization"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/traces/{trace_id}/package": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download a notarized verified package
+         * @description Returns the exact stored canonical .llmtrace bytes as the primary portable verification artifact.
+         */
+        get: operations["download_package"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/traces/{trace_id}/shares": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Share a notarized verified session
+         * @description Verifies one notarized capture locally, applies the public disclosure safety policy, and uploads the exact package. Force overrides only unexplained high-entropy values.
+         */
+        post: operations["share_capture"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/traces/{trace_id}/trace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Decode a trace package
+         * @description Returns the trace package manifest and canonical OpenTelemetry trace for inspection.
+         */
+        get: operations["trace_content"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/traces/{trace_id}/trace:verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify a trace package
+         * @description Verifies the package evidence, disclosure, hashes, provider mapping, and canonical trace against the configured trust source.
+         */
+        post: operations["verify_trace"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/traces:verify": {
         parameters: {
             query?: never;
@@ -450,7 +450,7 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Verify a portable finalized trace
+         * Verify a portable trace package
          * @description Verifies uploaded .llmtrace bytes against an optional explicit notary key or the daemon's configured trust source. The package is processed in memory and is not retained.
          */
         post: operations["verify_uploaded_trace"];
@@ -513,11 +513,10 @@ export interface components {
         CaptureDetailResponse: {
             artifacts: components["schemas"]["ArtifactResponse"][];
             capture: components["schemas"]["CaptureResponse"];
-            finalizations: components["schemas"]["OperationResponse"][];
+            notarizations: components["schemas"]["OperationResponse"][];
         };
         CaptureResponse: {
-            capture_id: string;
-            capture_state: string;
+            capture_status: string;
             /** Format: int64 */
             completed_at_unix_ms?: number | null;
             /** Format: int64 */
@@ -525,11 +524,11 @@ export interface components {
             /** Format: int64 */
             duration_ms?: number | null;
             failure_code?: string | null;
-            finalization_eligible: boolean;
-            finalization_ineligibility_code?: string | null;
-            finalization_state: string;
             /** Format: int32 */
             http_status?: number | null;
+            notarization_eligible: boolean;
+            notarization_ineligibility_code?: string | null;
+            notarization_status: string;
             operation: string;
             output_preview: string;
             output_preview_truncated: boolean;
@@ -543,6 +542,7 @@ export interface components {
             response_bytes?: number | null;
             response_model?: string | null;
             streaming: boolean;
+            trace_id: string;
         };
         CaptureSettingResponse: {
             enabled: boolean;
@@ -555,11 +555,11 @@ export interface components {
             /** Format: int64 */
             failed: number;
             /** Format: int64 */
-            finalized: number;
+            notarized: number;
             /** Format: int64 */
-            ready_to_finalize: number;
+            ready_to_notarize: number;
             /** Format: int64 */
-            total_captures: number;
+            total_traces: number;
         };
         CreateShareRequest: {
             /** @description Accept only unexplained high-entropy false positives after review. */
@@ -600,7 +600,6 @@ export interface components {
             next_cursor?: string | null;
         };
         EventResponse: {
-            capture_id?: string | null;
             /** Format: int64 */
             created_at_unix_ms: number;
             /** Format: int64 */
@@ -609,10 +608,7 @@ export interface components {
             message: string;
             operation_id?: string | null;
             severity: string;
-        };
-        FinalizationResponse: {
-            deduplicated: boolean;
-            operation: components["schemas"]["OperationResponse"];
+            trace_id?: string | null;
         };
         HealthResponse: {
             api_version: string;
@@ -622,26 +618,30 @@ export interface components {
         };
         NotariesResponse: {
             /**
-             * @description Selected active directory key. Explicit configuration has no directory
+             * @description Selected active Registry key. Explicit configuration has no Registry
              *     lifecycle selection and therefore leaves this field unset.
              */
             active_key_id?: string | null;
-            /** @description Public URL from which the current pinned directory generation came. */
-            directory_source?: string | null;
             /** Format: int64 */
             generation?: number | null;
             notaries: components["schemas"]["NotaryResponse"][];
+            /** @description Public URL from which the current pinned Registry generation came. */
+            registry_source?: string | null;
             /**
-             * @description `directory` for the locally pinned trust store or
+             * @description `registry` for the locally pinned trust store or
              *     `explicit_configuration` for a self-hosted endpoint and key.
              */
             source: string;
         };
+        NotarizationResponse: {
+            deduplicated: boolean;
+            operation: components["schemas"]["OperationResponse"];
+        };
         NotaryResponse: {
             endpoint: string;
-            /** Format: int64 */
-            finalize_until_unix_ms?: number | null;
             key_id: string;
+            /** Format: int64 */
+            notarize_until_unix_ms?: number | null;
             /** @description One of `active`, `retiring`, `retired`, `revoked`, or `configured`. */
             status: string;
             transport: string;
@@ -663,7 +663,7 @@ export interface components {
         OperationProgressResponse: {
             /**
              * @description Current milestone: queued, preparing, proving, signing, packaging,
-             *     complete, or unknown for an operation migrated from an older catalog.
+             *     complete, or unknown for an operation migrated from an older metadata.
              */
             phase: string;
             proof?: null | components["schemas"]["OperationProofProgressResponse"];
@@ -684,7 +684,6 @@ export interface components {
             /** Format: int32 */
             attempt: number;
             attempt_history: components["schemas"]["OperationAttemptResponse"][];
-            capture_id?: string | null;
             /** Format: int64 */
             completed_at_unix_ms?: number | null;
             /** Format: int64 */
@@ -697,11 +696,11 @@ export interface components {
             /** Format: int64 */
             started_at_unix_ms?: number | null;
             state: string;
+            trace_id: string;
         };
         OperationSummaryResponse: {
             /** Format: int32 */
             attempt: number;
-            capture_id?: string | null;
             /** Format: int64 */
             completed_at_unix_ms?: number | null;
             /** Format: int64 */
@@ -713,6 +712,7 @@ export interface components {
             /** Format: int64 */
             started_at_unix_ms?: number | null;
             state: string;
+            trace_id: string;
         };
         /** @description Query fields shared by every paginated list route. */
         PageQuery: {
@@ -727,8 +727,7 @@ export interface components {
         /** @description Uniform response shape for every paginated list route. */
         Page_CaptureResponse: {
             items: {
-                capture_id: string;
-                capture_state: string;
+                capture_status: string;
                 /** Format: int64 */
                 completed_at_unix_ms?: number | null;
                 /** Format: int64 */
@@ -736,11 +735,11 @@ export interface components {
                 /** Format: int64 */
                 duration_ms?: number | null;
                 failure_code?: string | null;
-                finalization_eligible: boolean;
-                finalization_ineligibility_code?: string | null;
-                finalization_state: string;
                 /** Format: int32 */
                 http_status?: number | null;
+                notarization_eligible: boolean;
+                notarization_ineligibility_code?: string | null;
+                notarization_status: string;
                 operation: string;
                 output_preview: string;
                 output_preview_truncated: boolean;
@@ -754,6 +753,7 @@ export interface components {
                 response_bytes?: number | null;
                 response_model?: string | null;
                 streaming: boolean;
+                trace_id: string;
             }[];
             /** @description Cursor for the next page, or `null` when this page exhausts the query. */
             next_cursor?: string | null;
@@ -763,7 +763,6 @@ export interface components {
             items: {
                 /** Format: int32 */
                 attempt: number;
-                capture_id?: string | null;
                 /** Format: int64 */
                 completed_at_unix_ms?: number | null;
                 /** Format: int64 */
@@ -775,6 +774,7 @@ export interface components {
                 /** Format: int64 */
                 started_at_unix_ms?: number | null;
                 state: string;
+                trace_id: string;
             }[];
             /** @description Cursor for the next page, or `null` when this page exhausts the query. */
             next_cursor?: string | null;
@@ -786,12 +786,12 @@ export interface components {
             status: string;
         };
         ShareResponse: {
-            capture_id: string;
             package_url?: string | null;
             share_id: string;
             share_url?: string | null;
             state: string;
             status_url: string;
+            trace_id: string;
             visibility: components["schemas"]["ShareVisibility"];
         };
         ShareStatusResponse: {
@@ -827,9 +827,9 @@ export interface components {
             version: string;
         };
         TraceResponse: {
-            capture_id: string;
             manifest: unknown;
             trace: unknown;
+            trace_id: string;
         };
         UpdateCaptureSetting: {
             enabled: boolean;
@@ -844,8 +844,8 @@ export interface components {
             update_available: boolean;
         };
         VerificationResponse: {
-            capture_id: string;
             notary_key_id: string;
+            trace_id: string;
             trust_source: string;
             verified: boolean;
             /** Format: int64 */
@@ -1093,415 +1093,6 @@ export interface operations {
             };
         };
     };
-    captures: {
-        parameters: {
-            query?: {
-                query?: string;
-                model?: string;
-                provider?: string;
-                capture_state?: string;
-                finalization_state?: string;
-                streaming?: boolean;
-                created_after_unix_ms?: number;
-                /** @description Page size; defaults to 50 */
-                limit?: number;
-                cursor?: string;
-                offset?: number;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Page_CaptureResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    capture: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                capture_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CaptureDetailResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    start_finalization: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                capture_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["FinalizationResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    download_package: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                capture_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/vnd.llmnotary.trace-package+zip": number[];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    share_capture: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                capture_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateShareRequest"];
-            };
-        };
-        responses: {
-            202: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ShareResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    trace: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                capture_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TraceResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
-    verify_trace: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                capture_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["VerificationResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorEnvelope"];
-                };
-            };
-        };
-    };
     events: {
         parameters: {
             query?: {
@@ -1509,7 +1100,7 @@ export interface operations {
                 after?: string;
                 severity?: string;
                 event_type?: string;
-                capture_id?: string;
+                trace_id?: string;
                 operation_id?: string;
                 created_after_unix_ms?: number;
                 /** @description Page size; defaults to 50 */
@@ -1603,7 +1194,7 @@ export interface operations {
             query?: {
                 state?: string;
                 kind?: string;
-                capture_id?: string;
+                trace_id?: string;
                 /** @description Page size; defaults to 50 */
                 limit?: number;
                 cursor?: string;
@@ -1968,19 +1559,428 @@ export interface operations {
             };
         };
     };
+    traces: {
+        parameters: {
+            query?: {
+                query?: string;
+                model?: string;
+                provider?: string;
+                capture_status?: string;
+                notarization_status?: string;
+                streaming?: boolean;
+                created_after_unix_ms?: number;
+                /** @description Page size; defaults to 50 */
+                limit?: number;
+                cursor?: string;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_CaptureResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    trace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CaptureDetailResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    start_notarization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NotarizationResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    download_package: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.exalto.notary.trace-package+zip": number[];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    share_capture: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateShareRequest"];
+            };
+        };
+        responses: {
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ShareResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    trace_content: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TraceResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
+    verify_trace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerificationResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
+        };
+    };
     verify_uploaded_trace: {
         parameters: {
             query?: never;
             header?: {
                 /** @description Optional compressed SEC1 notary public key in hexadecimal */
-                "x-llm-notary-trusted-notary-key"?: string | null;
+                "x-notary-trusted-notary-key"?: string | null;
             };
             path?: never;
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/vnd.llmnotary.trace-package+zip": number[];
+                "application/vnd.exalto.notary.trace-package+zip": number[];
             };
         };
         responses: {

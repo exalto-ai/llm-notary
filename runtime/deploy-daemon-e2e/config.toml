@@ -1,4 +1,4 @@
-format = "llm-notary/agent-config/v1"
+format = "notary/notaryd-config/v1"
 
 [proxy]
 listen = "127.0.0.1:8787"
@@ -14,12 +14,12 @@ public_key = "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798
 
 [storage]
 backend = "filesystem"
-bundle_dir = "/state/bundles"
-finalized_dir = "/state/traces"
+checkpoint_dir = "/state/capture-checkpoints"
+package_dir = "/state/trace-packages"
 
-[catalog]
+[metadata]
 backend = "sqlite"
-path = "/state/catalog.db"
+path = "/state/metadata.db"
 prompt_preview_chars = 1000
 output_preview_chars = 1000
 full_text_search = true

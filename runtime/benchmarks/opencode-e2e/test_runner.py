@@ -1,7 +1,9 @@
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import notify
 import run
@@ -71,8 +73,14 @@ class EventParsingTests(unittest.TestCase):
 
 
 class GateAndClassificationTests(unittest.TestCase):
+    def test_parser_exposes_the_canonical_notaryd_option(self) -> None:
+        with patch.object(sys, "argv", ["run.py", "--notaryd", "/tmp/notaryd"]):
+            arguments = run.parse_arguments()
+        self.assertEqual(arguments.notaryd, "/tmp/notaryd")
+        self.assertFalse(hasattr(arguments, "llm_notaryd"))
+
     def test_canary_publications_are_listed(self) -> None:
-        self.assertEqual(run.PUBLICATION_VISIBILITY, "listed")
+        self.assertEqual(run.SHARE_VISIBILITY, "listed")
 
     def test_disclosure_scanner_reports_names_and_counts_only(self) -> None:
         value = {
@@ -116,16 +124,16 @@ class GateAndClassificationTests(unittest.TestCase):
             ("agent_task_failed", False),
         )
 
-    def test_retries_post_task_exit_only_for_an_eligible_capture_set(self) -> None:
+    def test_retries_post_task_exit_only_for_an_eligible_trace_set(self) -> None:
         self.assertEqual(
             run.classify_attempt_failure(
-                [{"http_status": 200, "finalization_eligible": True}], 1, 4, True
+                [{"http_status": 200, "notarization_eligible": True}], 1, 4, True
             ),
             ("agent_post_task_error", True),
         )
         self.assertEqual(
             run.classify_attempt_failure(
-                [{"http_status": 200, "finalization_eligible": False}], 1, 4, True
+                [{"http_status": 200, "notarization_eligible": False}], 1, 4, True
             ),
             ("agent_task_failed", False),
         )
@@ -161,7 +169,7 @@ class NotificationTests(unittest.TestCase):
                 "summary": {
                     "attempt_count": 1,
                     "model_turns": 2,
-                    "eligible_captures": 2,
+                    "eligible_traces": 2,
                     "tokens": {"input": 10, "output": 4},
                     "opencode_wall_ms": 1200,
                     "proof_wall_ms": 2300,
@@ -177,7 +185,7 @@ class NotificationTests(unittest.TestCase):
         )
         encoded = json.dumps(payload)
         self.assertIn("share-1", encoded)
-        self.assertNotIn("capture_id", encoded)
+        self.assertNotIn("trace_id", encoded)
         self.assertLess(len(encoded), 3000)
 
 

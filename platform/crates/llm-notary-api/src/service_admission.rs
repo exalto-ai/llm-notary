@@ -19,7 +19,7 @@ use super::{
     config::{AdmissionConfig, AdmissionPolicy},
     database_error, random_token, unix_timestamp,
 };
-use llm_notary_core::{
+use notary_core::{
     pagination::{CursorScope, Page, PageQuery, decode_cursor},
     sha256_hex,
 };

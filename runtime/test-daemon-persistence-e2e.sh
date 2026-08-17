@@ -68,9 +68,9 @@ fi
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repository_dir=$script_dir
 compose_file="$repository_dir/compose.daemon-e2e.yml"
-project_name="llm-notary-daemon-e2e-$$"
+project_name="notaryd-e2e-$$"
 compose=(docker compose --project-name "$project_name" --file "$compose_file")
-postgres_migration_files=("$repository_dir"/crates/llm-notary-daemon/migrations-postgres-daemon/*.sql)
+postgres_migration_files=("$repository_dir"/crates/notaryd/migrations-postgres-daemon/*.sql)
 expected_postgres_migration_count=${#postgres_migration_files[@]}
 
 cleanup() {
@@ -108,7 +108,7 @@ wait_for_daemon() {
     attempts=$((attempts + 1))
     sleep 1
   done
-  echo "llm-notaryd did not become healthy" >&2
+  echo "notaryd did not become healthy" >&2
   return 1
 }
 
@@ -117,29 +117,29 @@ daemon_cli() {
     llm-notary --config "$daemon_config" --json "$@"
 }
 
-wait_for_capture_ready() {
-  local capture_id=$1
+wait_for_trace_ready() {
+  local trace_id=$1
   local capture=""
   local state=""
   for _ in $(seq 1 40); do
-    capture=$(daemon_cli captures show "$capture_id")
+    capture=$(daemon_cli captures show "$trace_id")
     if printf '%s' "$capture" | "${compose[@]}" exec -T "$daemon_service" jq -e '
-      .capture.capture_state == "captured" and
-      any(.artifacts[]; .kind == "deferred_bundle")
+      .capture.capture_status == "captured" and
+      any(.artifacts[]; .kind == "capture_checkpoint")
     ' >/dev/null; then
       printf '%s\n' "$capture"
       return 0
     fi
     state=$(printf '%s' "$capture" | "${compose[@]}" exec -T "$daemon_service" jq -r \
-      '.capture.capture_state')
+      '.capture.capture_status')
     if [[ $state == failed ]]; then
-      echo "capture $capture_id failed before it became ready to finalize" >&2
+      echo "capture $trace_id failed before it became ready to notarize" >&2
       printf '%s\n' "$capture" >&2
       return 1
     fi
     sleep 0.25
   done
-  echo "capture $capture_id did not become ready to finalize" >&2
+  echo "capture $trace_id did not become ready to notarize" >&2
   printf '%s\n' "$capture" >&2
   return 1
 }
@@ -242,24 +242,26 @@ minio_mc() {
 }
 
 artifact_target() {
-  local capture_id=$1
+  local trace_id=$1
   local kind=$2
   local extension
-  if [[ $kind == deferred_bundle ]]; then
+  local directory
+  if [[ $kind == capture_checkpoint ]]; then
     extension=llmcapture
+    directory=capture-checkpoints
     if [[ $artifact_engine == filesystem ]]; then
-      printf '/state/bundles/%s.%s' "$capture_id" "$extension"
+      printf '/state/capture-checkpoints/%s.%s' "$trace_id" "$extension"
       return
     fi
   else
     extension=llmtrace
+    directory=trace-packages
     if [[ $artifact_engine == filesystem ]]; then
-      printf '/state/traces/%s.%s' "$capture_id" "$extension"
+      printf '/state/trace-packages/%s.%s' "$trace_id" "$extension"
       return
     fi
   fi
-  printf 'e2e/llm-notary-daemon-e2e/daemon-e2e/artifacts/daemon-private/%s/%s.%s' \
-    "$kind" "$capture_id" "$extension"
+  printf 'e2e/notaryd-e2e/notaryd/%s/%s.%s' "$directory" "$trace_id" "$extension"
 }
 
 artifact_exists() {
@@ -295,7 +297,7 @@ prepare_s3() {
   "${compose[@]}" up --detach minio
   wait_for_minio
   "${compose[@]}" run --rm --no-deps -T minio-init >/dev/null
-  minio_mc stat e2e/llm-notary-daemon-e2e >/dev/null
+  minio_mc stat e2e/notaryd-e2e >/dev/null
 }
 
 postgres_psql() {
@@ -315,7 +317,7 @@ expect_postgres_daemon_failure() {
   local status
   set +e
   output=$("${compose[@]}" run --rm --no-deps --entrypoint /usr/bin/timeout \
-    daemon-postgres 15s llm-notaryd --config /etc/llm-notary/config-postgres.toml 2>&1)
+    daemon-postgres 15s notaryd --config /etc/llm-notary/config-postgres.toml 2>&1)
   status=$?
   set -e
   if [[ $status -eq 0 || $status -eq 124 ]]; then
@@ -362,7 +364,7 @@ prepare_postgres() {
   run_migrator >/dev/null
   local migration_count
   migration_count=$(postgres_psql --tuples-only --no-align \
-    --command 'SELECT COUNT(*) FROM llm_notary_daemon.schema_migrations;')
+    --command 'SELECT COUNT(*) FROM notaryd.schema_migrations;')
   if [[ $migration_count != "$expected_postgres_migration_count" ]]; then
     echo "unexpected PostgreSQL daemon migration count: $migration_count (expected $expected_postgres_migration_count)" >&2
     return 1
@@ -372,7 +374,7 @@ prepare_postgres() {
     echo "verifying the PostgreSQL migration advisory-lock timeout"
     postgres_psql >/dev/null <<'SQL' &
 BEGIN;
-SELECT pg_advisory_xact_lock(hashtextextended('llm-notary/daemon-postgres-migrations/v1', 0));
+SELECT pg_advisory_xact_lock(hashtextextended('notary/notaryd-postgres-migrations/v1', 0));
 SELECT pg_sleep(4);
 COMMIT;
 SQL
@@ -401,7 +403,7 @@ SQL
   local migration_status
   set +e
   migration_output=$("${compose[@]}" run --rm --no-deps --entrypoint /usr/bin/timeout \
-    migrator 15s llm-notaryd migrate --config /etc/llm-notary/config-postgres.toml 2>&1)
+    migrator 15s notaryd migrate --config /etc/llm-notary/config-postgres.toml 2>&1)
   migration_status=$?
   set -e
   if [[ $migration_status -eq 0 || $migration_status -eq 124 ]]; then
@@ -494,7 +496,7 @@ wait_for_daemon
 
 health_json=$("${compose[@]}" exec -T "$daemon_service" \
   curl --fail --silent --show-error http://127.0.0.1:8788/healthz)
-assert_json "$health_json" '.service == "llm-notaryd" and .api_version == "v1"'
+assert_json "$health_json" '.service == "notaryd" and .api_version == "v1"'
 
 fresh_status=$(daemon_cli status)
 assert_json "$fresh_status" '
@@ -502,14 +504,14 @@ assert_json "$fresh_status" '
   .metadata_status == "ready" and
   .artifact_backend == $artifact and
   .artifact_status == "ready" and
-  .counts.total_captures == 0 and
+  .counts.total_traces == 0 and
   .counts.active_operations == 0
 ' --arg metadata "$metadata_engine" --arg artifact "$artifact_engine"
 
 if [[ $artifact_engine == s3 ]]; then
   "${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
     "grep -F 'endpoint = \"http://minio:9000\"' '$daemon_config' >/dev/null
-     grep -F 'prefix = \"daemon-e2e/artifacts\"' '$daemon_config' >/dev/null
+     grep -F 'prefix = \"notaryd\"' '$daemon_config' >/dev/null
      grep -F 'force_path_style = true' '$daemon_config' >/dev/null
      grep -F 'allow_insecure_http = true' '$daemon_config' >/dev/null"
 fi
@@ -524,63 +526,69 @@ fi
 echo "seeding deterministic offline persistence fixtures while the daemon is stopped"
 "${compose[@]}" stop "$daemon_service"
 if [[ $artifact_engine == filesystem ]]; then
-  fixture_locator=/state/bundles/cap-e2e-finalize.llmcapture
+  fixture_locator=artifact/v1/filesystem/L3N0YXRlL2NhcHR1cmUtY2hlY2twb2ludHMvdHJjLWUyZS1ub3Rhcml6ZS5sbG1jYXB0dXJl
   "${compose[@]}" run --rm --no-deps --entrypoint /bin/sh "$daemon_service" -ec '
     umask 077
-    mkdir -p /state/bundles
-    printf "%s" "encrypted-offline-e2e-fixture" > /state/bundles/cap-e2e-recovered.llmcapture
-    printf "%s" "encrypted-offline-e2e-fixture" > /state/bundles/cap-e2e-finalize.llmcapture
+    mkdir -p /state/capture-checkpoints
+    printf "%s" "encrypted-offline-e2e-fixture" > /state/capture-checkpoints/trc-e2e-recovered.llmcapture
+    printf "%s" "encrypted-offline-e2e-fixture" > /state/capture-checkpoints/trc-e2e-notarize.llmcapture
   '
 else
-  recovered_object=daemon-e2e/artifacts/daemon-private/deferred_bundle/cap-e2e-recovered.llmcapture
-  finalize_object=daemon-e2e/artifacts/daemon-private/deferred_bundle/cap-e2e-finalize.llmcapture
-  fixture_locator=artifact/v1/s3/ZGFlbW9uLWUyZS9hcnRpZmFjdHMvZGFlbW9uLXByaXZhdGUvZGVmZXJyZWRfYnVuZGxlL2NhcC1lMmUtZmluYWxpemUubGxtY2FwdHVyZQ
-  fixture_metadata='artifact-sha256=43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d;artifact-size=29;artifact-kind=deferred_bundle'
+  recovered_object=notaryd/capture-checkpoints/trc-e2e-recovered.llmcapture
+  notarize_object=notaryd/capture-checkpoints/trc-e2e-notarize.llmcapture
+  fixture_locator=artifact/v1/s3/bm90YXJ5ZC9jYXB0dXJlLWNoZWNrcG9pbnRzL3RyYy1lMmUtbm90YXJpemUubGxtY2FwdHVyZQ
+  fixture_metadata='artifact-sha256=43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d;artifact-size=29;artifact-kind=capture_checkpoint'
   printf '%s' 'encrypted-offline-e2e-fixture' | \
     minio_mc pipe --attr "$fixture_metadata" \
-      "e2e/llm-notary-daemon-e2e/$recovered_object" >/dev/null
+      "e2e/notaryd-e2e/$recovered_object" >/dev/null
   # Metadata intentionally describes the untampered digest. The same-size
   # replacement proves reads fail closed on object corruption.
   printf '%s' 'corrupted-offline-e2e-fixture' | \
     minio_mc pipe --attr "$fixture_metadata" \
-      "e2e/llm-notary-daemon-e2e/$finalize_object" >/dev/null
+      "e2e/notaryd-e2e/$notarize_object" >/dev/null
 fi
 if [[ $metadata_engine == sqlite ]]; then
-  "${compose[@]}" run --rm --no-deps --entrypoint sqlite3 "$daemon_service" /state/catalog.db >/dev/null <<SQL
+  "${compose[@]}" run --rm --no-deps --entrypoint sqlite3 "$daemon_service" /state/metadata.db >/dev/null <<SQL
 PRAGMA foreign_keys = ON;
 BEGIN IMMEDIATE;
-INSERT INTO captures (
-    capture_id, created_at_unix_ms, provider, operation, requested_model,
-    streaming, request_bytes, prompt_preview, prompt_preview_truncated,
-    config_fingerprint, capture_state, finalization_state
-) VALUES (
-    'cap-e2e-recovered', 1700000000000, 'openai', '/v1/responses', 'fixture-model',
-    0, 41, 'offline recovery fixture', 0,
-    'sha256:offline-fixture', 'capturing', 'not_requested'
-);
-INSERT INTO captures (
-    capture_id, created_at_unix_ms, completed_at_unix_ms, provider, operation,
+INSERT INTO traces (
+    trace_id, created_at_unix_ms, completed_at_unix_ms, provider, operation,
     requested_model, response_model, http_status, streaming, request_bytes,
     response_bytes, duration_ms, prompt_preview, prompt_preview_truncated,
     output_preview, output_preview_truncated, config_fingerprint,
-    capture_state, finalization_state
+    capture_status, notarization_status, expected_artifact_size_bytes,
+    expected_artifact_sha256
 ) VALUES (
-    'cap-e2e-finalize', 1700000001000, 1700000001005, 'openai', '/v1/responses',
+    'trc-e2e-recovered', 1700000000000, 1700000000005, 'openai', '/v1/responses',
+    'fixture-model', 'fixture-model', 200, 0, 41,
+    29, 5, 'offline recovery fixture', 0,
+    'offline recovered fixture', 0, 'sha256:offline-fixture',
+    'capturing', 'not_requested', 29,
+    '43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d'
+);
+INSERT INTO traces (
+    trace_id, created_at_unix_ms, completed_at_unix_ms, provider, operation,
+    requested_model, response_model, http_status, streaming, request_bytes,
+    response_bytes, duration_ms, prompt_preview, prompt_preview_truncated,
+    output_preview, output_preview_truncated, config_fingerprint,
+    capture_status, notarization_status
+) VALUES (
+    'trc-e2e-notarize', 1700000001000, 1700000001005, 'openai', '/v1/responses',
     'fixture-model', 'fixture-model', 200, 0, 43,
     29, 5, 'offline SQLite fixture', 0,
     'offline $artifact_engine fixture', 0, 'sha256:offline-fixture',
     'captured', 'not_requested'
 );
-INSERT INTO artifacts (capture_id, kind, path, size_bytes, sha256, state)
+INSERT INTO artifacts (trace_id, kind, locator, size_bytes, sha256, state)
 VALUES (
-    'cap-e2e-finalize', 'deferred_bundle',
+    'trc-e2e-notarize', 'capture_checkpoint',
     '$fixture_locator', 29,
     '43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d',
     'available'
 );
-INSERT INTO capture_search (capture_id, prompt_preview, output_preview)
+INSERT INTO trace_search (trace_id, prompt_preview, output_preview)
 VALUES (
-    'cap-e2e-finalize', 'offline SQLite fixture', 'offline $artifact_engine fixture'
+    'trc-e2e-notarize', 'offline SQLite fixture', 'offline $artifact_engine fixture'
 );
 COMMIT;
 PRAGMA wal_checkpoint(TRUNCATE);
@@ -588,41 +596,47 @@ SQL
 else
   postgres_psql >/dev/null <<SQL
 BEGIN;
-INSERT INTO llm_notary_daemon.captures (
-    capture_id, created_at_unix_ms, provider, operation, requested_model,
-    streaming, request_bytes, prompt_preview, prompt_preview_truncated,
-    config_fingerprint, capture_state, finalization_state
-) VALUES (
-    'cap-e2e-recovered', 1700000000000, 'openai', '/v1/responses', 'fixture-model',
-    FALSE, 41, 'offline recovery fixture', FALSE,
-    'sha256:offline-fixture', 'capturing', 'not_requested'
-);
-INSERT INTO llm_notary_daemon.captures (
-    capture_id, created_at_unix_ms, completed_at_unix_ms, provider, operation,
+INSERT INTO notaryd.traces (
+    trace_id, created_at_unix_ms, completed_at_unix_ms, provider, operation,
     requested_model, response_model, http_status, streaming, request_bytes,
     response_bytes, duration_ms, prompt_preview, prompt_preview_truncated,
     output_preview, output_preview_truncated, config_fingerprint,
-    capture_state, finalization_state
+    capture_status, notarization_status, expected_artifact_size_bytes,
+    expected_artifact_sha256
 ) VALUES (
-    'cap-e2e-finalize', 1700000001000, 1700000001005, 'openai', '/v1/responses',
+    'trc-e2e-recovered', 1700000000000, 1700000000005, 'openai', '/v1/responses',
+    'fixture-model', 'fixture-model', 200, FALSE, 41,
+    29, 5, 'offline recovery fixture', FALSE,
+    'offline recovered fixture', FALSE, 'sha256:offline-fixture',
+    'capturing', 'not_requested', 29,
+    '43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d'
+);
+INSERT INTO notaryd.traces (
+    trace_id, created_at_unix_ms, completed_at_unix_ms, provider, operation,
+    requested_model, response_model, http_status, streaming, request_bytes,
+    response_bytes, duration_ms, prompt_preview, prompt_preview_truncated,
+    output_preview, output_preview_truncated, config_fingerprint,
+    capture_status, notarization_status
+) VALUES (
+    'trc-e2e-notarize', 1700000001000, 1700000001005, 'openai', '/v1/responses',
     'fixture-model', 'fixture-model', 200, FALSE, 43,
     29, 5, 'offline PostgreSQL fixture', FALSE,
     'offline $artifact_engine fixture', FALSE, 'sha256:offline-fixture',
     'captured', 'not_requested'
 );
-INSERT INTO llm_notary_daemon.artifacts (
-    capture_id, kind, locator, size_bytes, sha256, state
+INSERT INTO notaryd.artifacts (
+    trace_id, kind, locator, size_bytes, sha256, state
 ) VALUES (
-    'cap-e2e-finalize', 'deferred_bundle',
+    'trc-e2e-notarize', 'capture_checkpoint',
     '$fixture_locator', 29,
     '43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d',
     'available'
 );
-INSERT INTO llm_notary_daemon.capture_search (
-    capture_id, prompt_document, output_document
+INSERT INTO notaryd.trace_search (
+    trace_id, prompt_document, output_document
 )
 VALUES (
-    'cap-e2e-finalize',
+    'trc-e2e-notarize',
     to_tsvector('simple', 'offline PostgreSQL fixture'),
     to_tsvector('simple', 'offline $artifact_engine fixture')
 );
@@ -632,25 +646,25 @@ fi
 
 if [[ $artifact_engine == s3 ]]; then
   if [[ $metadata_engine == sqlite ]]; then
-    "${compose[@]}" run --rm --no-deps --entrypoint sqlite3 "$daemon_service" /state/catalog.db >/dev/null <<'SQL'
-INSERT INTO captures (
-    capture_id, created_at_unix_ms, provider, operation, requested_model,
+    "${compose[@]}" run --rm --no-deps --entrypoint sqlite3 "$daemon_service" /state/metadata.db >/dev/null <<'SQL'
+INSERT INTO traces (
+    trace_id, created_at_unix_ms, provider, operation, requested_model,
     streaming, request_bytes, prompt_preview, prompt_preview_truncated,
-    config_fingerprint, capture_state, finalization_state
+    config_fingerprint, capture_status, notarization_status
 ) VALUES (
-    'cap-e2e-missing', 1700000002000, 'openai', '/v1/responses', 'fixture-model',
+    'trc-e2e-missing', 1700000002000, 'openai', '/v1/responses', 'fixture-model',
     0, 31, 'missing S3 recovery fixture', 0,
     'sha256:offline-fixture', 'capturing', 'not_requested'
 );
 SQL
   else
     postgres_psql >/dev/null <<'SQL'
-INSERT INTO llm_notary_daemon.captures (
-    capture_id, created_at_unix_ms, provider, operation, requested_model,
+INSERT INTO notaryd.traces (
+    trace_id, created_at_unix_ms, provider, operation, requested_model,
     streaming, request_bytes, prompt_preview, prompt_preview_truncated,
-    config_fingerprint, capture_state, finalization_state
+    config_fingerprint, capture_status, notarization_status
 ) VALUES (
-    'cap-e2e-missing', 1700000002000, 'openai', '/v1/responses', 'fixture-model',
+    'trc-e2e-missing', 1700000002000, 'openai', '/v1/responses', 'fixture-model',
     FALSE, 31, 'missing S3 recovery fixture', FALSE,
     'sha256:offline-fixture', 'capturing', 'not_requested'
 );
@@ -665,29 +679,29 @@ wait_for_daemon
 recovered_status=$(daemon_cli status)
 if [[ $artifact_engine == s3 ]]; then
   assert_json "$recovered_status" '
-    .counts.total_captures == 3 and
+    .counts.total_traces == 3 and
     .counts.capturing == 0 and
     .counts.failed == 1 and
-    .counts.ready_to_finalize == 1
+    .counts.ready_to_notarize == 2
   '
-  missing_capture=$(daemon_cli captures show cap-e2e-missing)
+  missing_capture=$(daemon_cli captures show trc-e2e-missing)
   assert_json "$missing_capture" '
-    .capture.capture_state == "failed" and
+    .capture.capture_status == "failed" and
     .capture.failure_code == "interrupted" and
     (.artifacts | length) == 0
   '
 else
   assert_json "$recovered_status" '
-    .counts.total_captures == 2 and
+    .counts.total_traces == 2 and
     .counts.capturing == 0 and
-    .counts.ready_to_finalize == 1
+    .counts.ready_to_notarize == 2
   '
 fi
 
-recovered_capture=$(daemon_cli captures show cap-e2e-recovered)
+recovered_capture=$(daemon_cli captures show trc-e2e-recovered)
 assert_json "$recovered_capture" '
-  .capture.capture_state == "captured" and
-  .artifacts[0].kind == "deferred_bundle" and
+  .capture.capture_status == "captured" and
+  .artifacts[0].kind == "capture_checkpoint" and
   .artifacts[0].size_bytes == 29 and
   .artifacts[0].sha256 == "43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d"
 '
@@ -699,30 +713,30 @@ fi
 capture_page=$(daemon_cli captures list --query "$capture_search_term" --metadata-only)
 assert_json "$capture_page" '
   (.items | length) == 1 and
-  .items[0].capture_id == "cap-e2e-finalize" and
+  .items[0].trace_id == "trc-e2e-notarize" and
   (.items[0] | has("prompt_preview") | not) and
   (.items[0] | has("output_preview") | not)
 '
 
-echo "queuing a finalization to exercise durable mutation and failure history"
-finalization=$(daemon_cli finalize cap-e2e-finalize --wait)
-expected_fixture_failure=finalization_error
+echo "queuing a notarization to exercise durable mutation and failure history"
+notarization=$(daemon_cli notarization trc-e2e-notarize --wait)
+expected_fixture_failure=notarization_error
 if [[ $artifact_engine == s3 ]]; then
   expected_fixture_failure=artifact_corrupt
 fi
-assert_json "$finalization" '
+assert_json "$notarization" '
   .deduplicated == false and
-  .operation.capture_id == "cap-e2e-finalize" and
+  .operation.trace_id == "trc-e2e-notarize" and
   .operation.state == "failed" and
   .operation.attempt == 1 and
   .operation.failure_code == $failure_code
 ' --arg failure_code "$expected_fixture_failure"
-operation_id=$(json_value "$finalization" '.operation.operation_id')
+operation_id=$(json_value "$notarization" '.operation.operation_id')
 
-events=$(daemon_cli events --capture-id cap-e2e-finalize --all)
+events=$(daemon_cli events --trace-id trc-e2e-notarize --all)
 assert_json "$events" '
-  any(.items[]; .event_type == "finalization_queued") and
-  any(.items[]; .event_type == "finalization_failed")
+  any(.items[]; .event_type == "notarization_queued") and
+  any(.items[]; .event_type == "notarization_failed")
 '
 
 if [[ $profile == full ]]; then
@@ -739,35 +753,35 @@ if [[ $profile == full ]]; then
     .model == "fixture-model" and
     .choices[0].message.content == "offline daemon E2E response"
   '
-  full_capture_id=$("${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
-    "awk 'tolower(\$1) == \"x-llm-notary-capture-id:\" {gsub(\"\\r\", \"\", \$2); print \$2}' /tmp/daemon-e2e-capture.headers")
-  if [[ $full_capture_id != cap-* ]]; then
-    echo "Proxy-TLS response omitted a valid capture ID" >&2
+  full_trace_id=$("${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
+    "awk 'tolower(\$1) == \"x-notary-trace-id:\" {gsub(\"\\r\", \"\", \$2); print \$2}' /tmp/daemon-e2e-capture.headers")
+  if [[ $full_trace_id != trc-* ]]; then
+    echo "Proxy-TLS response omitted a valid trace ID" >&2
     exit 1
   fi
 
-  full_capture=$(wait_for_capture_ready "$full_capture_id")
+  full_capture=$(wait_for_trace_ready "$full_trace_id")
   assert_json "$full_capture" '
-    .capture.capture_id == $capture_id and
+    .capture.trace_id == $trace_id and
     .capture.provider == "openai" and
     .capture.operation == "/v1/chat/completions" and
     .capture.requested_model == "fixture-model" and
     .capture.response_model == "fixture-model" and
     .capture.http_status == 200 and
-    .capture.capture_state == "captured" and
-    .capture.finalization_state == "not_requested" and
-    any(.artifacts[]; .kind == "deferred_bundle")
-  ' --arg capture_id "$full_capture_id"
+    .capture.capture_status == "captured" and
+    .capture.notarization_status == "not_requested" and
+    any(.artifacts[]; .kind == "capture_checkpoint")
+  ' --arg trace_id "$full_trace_id"
 
   full_page=$(daemon_cli captures list --query 'offline daemon E2E prompt')
   assert_json "$full_page" '
     any(.items[];
-      .capture_id == $capture_id and
+      .trace_id == $trace_id and
       .prompt_preview == "user: offline daemon E2E prompt" and
       .output_preview == "offline daemon E2E response")
-  ' --arg capture_id "$full_capture_id"
+  ' --arg trace_id "$full_trace_id"
 
-  full_bundle_target=$(artifact_target "$full_capture_id" deferred_bundle)
+  full_bundle_target=$(artifact_target "$full_trace_id" capture_checkpoint)
   artifact_exists "$full_bundle_target"
   if [[ $artifact_engine == filesystem ]]; then
     credential_exposed=$("${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
@@ -777,46 +791,46 @@ if [[ $profile == full ]]; then
       grep -a -F 'offline-daemon-e2e-secret' >/dev/null && printf yes || true)
   fi
   if [[ $credential_exposed == yes ]]; then
-    echo "encrypted deferred bundle exposed the provider credential" >&2
+    echo "encrypted capture checkpoint exposed the provider credential" >&2
     exit 1
   fi
 
-  echo "finalizing the captured checkpoint and building a verified package"
-  full_finalization=$(daemon_cli finalize "$full_capture_id" --wait)
-  assert_json "$full_finalization" '
+  echo "notarizing the captured checkpoint and building a verified package"
+  full_notarization=$(daemon_cli notarization "$full_trace_id" --wait)
+  assert_json "$full_notarization" '
     .deduplicated == false and
-    .operation.capture_id == $capture_id and
-    .operation.state == "finalized" and
+    .operation.trace_id == $trace_id and
+    .operation.state == "succeeded" and
     .operation.attempt == 1 and
     .operation.progress.phase == "complete"
-  ' --arg capture_id "$full_capture_id"
-  full_operation_id=$(json_value "$full_finalization" '.operation.operation_id')
+  ' --arg trace_id "$full_trace_id"
+  full_operation_id=$(json_value "$full_notarization" '.operation.operation_id')
 
-  full_trace=$(daemon_cli traces show "$full_capture_id")
+  full_trace=$(daemon_cli traces show "$full_trace_id")
   assert_json "$full_trace" '
-    .capture_id == $capture_id and
+    .trace_id == $trace_id and
     .manifest.source.provider.name == "openai" and
     .manifest.source.provider.host == "api.openai.com"
-  ' --arg capture_id "$full_capture_id"
+  ' --arg trace_id "$full_trace_id"
 
-  daemon_verification=$(daemon_cli traces verify "$full_capture_id")
+  daemon_verification=$(daemon_cli traces verify "$full_trace_id")
   assert_json "$daemon_verification" '
-    .capture_id == $capture_id and .verified == true
-  ' --arg capture_id "$full_capture_id"
+    .trace_id == $trace_id and .verified == true
+  ' --arg trace_id "$full_trace_id"
 
   "${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error \
       --output /tmp/daemon-e2e.llmtrace \
-      "http://127.0.0.1:8788/v1/captures/$full_capture_id/package"
+      "http://127.0.0.1:8788/v1/traces/$full_trace_id/package"
   full_package_sha=$("${compose[@]}" exec -T "$daemon_service" \
     sha256sum /tmp/daemon-e2e.llmtrace | awk '{print $1}')
   file_verification=$(daemon_cli traces verify /tmp/daemon-e2e.llmtrace \
     --trusted-notary-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)
   assert_json "$file_verification" '
-    .capture_id == $capture_id and
+    .trace_id == $trace_id and
     .verified == true and
     .trust_source == "explicit_key"
-  ' --arg capture_id "$full_capture_id"
+  ' --arg trace_id "$full_trace_id"
 
   echo "sharing the exact verified package through a loopback hosted-API fixture"
   "${compose[@]}" exec --detach "$daemon_service" \
@@ -834,13 +848,13 @@ if [[ $profile == full ]]; then
     echo "loopback share fixture did not become ready" >&2
     exit 1
   fi
-  full_share=$(daemon_cli share "$full_capture_id")
+  full_share=$(daemon_cli share "$full_trace_id")
   assert_json "$full_share" '
-    .capture_id == $capture_id and
+    .trace_id == $trace_id and
     .share_id == "share-e2e" and
     .state == "queued" and
     .visibility == "unlisted"
-  ' --arg capture_id "$full_capture_id"
+  ' --arg trace_id "$full_trace_id"
   uploaded_share=$("${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error http://127.0.0.1:9797/debug/upload)
   assert_json "$uploaded_share" '
@@ -848,12 +862,12 @@ if [[ $profile == full ]]; then
   ' --arg package_sha "$full_package_sha"
 
   if [[ $artifact_engine == s3 ]]; then
-    full_package_target=$(artifact_target "$full_capture_id" finalized_package)
+    full_package_target=$(artifact_target "$full_trace_id" trace_package)
     artifact_exists "$full_bundle_target"
     artifact_exists "$full_package_target"
-    object_paths=$(minio_mc find e2e/llm-notary-daemon-e2e)
+    object_paths=$(minio_mc find e2e/notaryd-e2e)
     while IFS= read -r object_path; do
-      [[ -z $object_path || $object_path == e2e/llm-notary-daemon-e2e/daemon-e2e/artifacts/daemon-private/* ]] && continue
+      [[ -z $object_path || $object_path == e2e/notaryd-e2e/notaryd/* ]] && continue
       echo "S3 object escaped the configured prefix/private namespace: $object_path" >&2
       exit 1
     done <<<"$object_paths"
@@ -871,64 +885,64 @@ if [[ $profile == full ]]; then
     echo "streaming provider response was incomplete" >&2
     exit 1
   fi
-  stream_capture_id=$("${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
-    "awk 'tolower(\$1) == \"x-llm-notary-capture-id:\" {gsub(\"\\r\", \"\", \$2); print \$2}' /tmp/daemon-e2e-stream.headers")
-  if [[ $stream_capture_id != cap-* ]]; then
-    echo "streaming Proxy-TLS response omitted a valid capture ID" >&2
+  stream_trace_id=$("${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
+    "awk 'tolower(\$1) == \"x-notary-trace-id:\" {gsub(\"\\r\", \"\", \$2); print \$2}' /tmp/daemon-e2e-stream.headers")
+  if [[ $stream_trace_id != trc-* ]]; then
+    echo "streaming Proxy-TLS response omitted a valid trace ID" >&2
     exit 1
   fi
-  stream_capture=$(wait_for_capture_ready "$stream_capture_id")
+  stream_capture=$(wait_for_trace_ready "$stream_trace_id")
   assert_json "$stream_capture" '
-    .capture.capture_id == $capture_id and
+    .capture.trace_id == $trace_id and
     .capture.streaming == true and
-    .capture.capture_state == "captured" and
+    .capture.capture_status == "captured" and
     .capture.prompt_preview == "user: offline streaming E2E prompt" and
     .capture.output_preview == "offline streaming response" and
-    any(.artifacts[]; .kind == "deferred_bundle")
-  ' --arg capture_id "$stream_capture_id"
-  stream_finalization=$(daemon_cli finalize "$stream_capture_id" --wait)
-  assert_json "$stream_finalization" '
-    .operation.capture_id == $capture_id and
-    .operation.state == "finalized" and
+    any(.artifacts[]; .kind == "capture_checkpoint")
+  ' --arg trace_id "$stream_trace_id"
+  stream_notarization=$(daemon_cli notarization "$stream_trace_id" --wait)
+  assert_json "$stream_notarization" '
+    .operation.trace_id == $trace_id and
+    .operation.state == "succeeded" and
     .operation.progress.phase == "complete"
-  ' --arg capture_id "$stream_capture_id"
-  stream_operation_id=$(json_value "$stream_finalization" '.operation.operation_id')
-  stream_trace=$(daemon_cli traces show "$stream_capture_id")
+  ' --arg trace_id "$stream_trace_id"
+  stream_operation_id=$(json_value "$stream_notarization" '.operation.operation_id')
+  stream_trace=$(daemon_cli traces show "$stream_trace_id")
   assert_json "$stream_trace" '
-    .capture_id == $capture_id and
+    .trace_id == $trace_id and
     .manifest.source.provider.name == "openai"
-  ' --arg capture_id "$stream_capture_id"
-  stream_verification=$(daemon_cli traces verify "$stream_capture_id")
+  ' --arg trace_id "$stream_trace_id"
+  stream_verification=$(daemon_cli traces verify "$stream_trace_id")
   assert_json "$stream_verification" '
-    .capture_id == $capture_id and .verified == true
-  ' --arg capture_id "$stream_capture_id"
+    .trace_id == $trace_id and .verified == true
+  ' --arg trace_id "$stream_trace_id"
   "${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error \
       --output /tmp/daemon-e2e-stream.llmtrace \
-      "http://127.0.0.1:8788/v1/captures/$stream_capture_id/package"
+      "http://127.0.0.1:8788/v1/traces/$stream_trace_id/package"
   stream_file_verification=$(daemon_cli traces verify /tmp/daemon-e2e-stream.llmtrace \
     --trusted-notary-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)
   assert_json "$stream_file_verification" '
-    .capture_id == $capture_id and .verified == true
-  ' --arg capture_id "$stream_capture_id"
+    .trace_id == $trace_id and .verified == true
+  ' --arg trace_id "$stream_trace_id"
   stream_package_sha=$("${compose[@]}" exec -T "$daemon_service" \
     sha256sum /tmp/daemon-e2e-stream.llmtrace | awk '{print $1}')
-  stream_share=$(daemon_cli share "$stream_capture_id")
+  stream_share=$(daemon_cli share "$stream_trace_id")
   assert_json "$stream_share" '
-    .capture_id == $capture_id and
+    .trace_id == $trace_id and
     .share_id == "share-e2e" and
     .state == "queued"
-  ' --arg capture_id "$stream_capture_id"
+  ' --arg trace_id "$stream_trace_id"
   uploaded_stream_share=$("${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error http://127.0.0.1:9797/debug/upload)
   assert_json "$uploaded_stream_share" '
     .size_bytes > 0 and .sha256 == $package_sha
   ' --arg package_sha "$stream_package_sha"
 
-  echo "injecting a crash after package publication and before metadata completion"
+  echo "injecting a crash after package commit and before metadata completion"
   "${compose[@]}" stop "$daemon_service"
   "${compose[@]}" rm --force "$daemon_service"
-  export DAEMON_E2E_FINALIZATION_PAUSE_MS=30000
+  export DAEMON_E2E_NOTARIZATION_PAUSE_MS=30000
   "${compose[@]}" up --detach --no-deps "$daemon_service"
   wait_for_daemon
 
@@ -940,16 +954,16 @@ if [[ $profile == full ]]; then
       --data '{"model":"fixture-model","messages":[{"role":"user","content":"offline crash-window prompt"}]}' \
       http://127.0.0.1:8787/openai/v1/chat/completions)
   assert_json "$crash_response" '.id == "chatcmpl-daemon-e2e"'
-  crash_capture_id=$("${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
-    "awk 'tolower(\$1) == \"x-llm-notary-capture-id:\" {gsub(\"\\r\", \"\", \$2); print \$2}' /tmp/daemon-e2e-crash.headers")
-  if [[ $crash_capture_id != cap-* ]]; then
-    echo "crash-window capture omitted a valid capture ID" >&2
+  crash_trace_id=$("${compose[@]}" exec -T "$daemon_service" /bin/sh -ec \
+    "awk 'tolower(\$1) == \"x-notary-trace-id:\" {gsub(\"\\r\", \"\", \$2); print \$2}' /tmp/daemon-e2e-crash.headers")
+  if [[ $crash_trace_id != trc-* ]]; then
+    echo "crash-window capture omitted a valid trace ID" >&2
     exit 1
   fi
-  crash_finalization=$(daemon_cli finalize "$crash_capture_id")
-  crash_operation_id=$(json_value "$crash_finalization" '.operation.operation_id')
+  crash_notarization=$(daemon_cli notarization "$crash_trace_id")
+  crash_operation_id=$(json_value "$crash_notarization" '.operation.operation_id')
 
-  crash_package_path=$(artifact_target "$crash_capture_id" finalized_package)
+  crash_package_path=$(artifact_target "$crash_trace_id" trace_package)
   crash_package_ready=0
   for _ in $(seq 1 90); do
     if artifact_exists "$crash_package_path"; then
@@ -959,7 +973,7 @@ if [[ $profile == full ]]; then
     sleep 1
   done
   if [[ $crash_package_ready != 1 ]]; then
-    echo "finalization did not reach the injected post-publication pause" >&2
+    echo "notarization did not reach the injected post-commit pause" >&2
     exit 1
   fi
   crash_package_sha=$(artifact_sha256 "$crash_package_path")
@@ -967,7 +981,7 @@ if [[ $profile == full ]]; then
   daemon_container=$("${compose[@]}" ps --quiet "$daemon_service")
   docker kill "$daemon_container" >/dev/null
 
-  unset DAEMON_E2E_FINALIZATION_PAUSE_MS
+  unset DAEMON_E2E_NOTARIZATION_PAUSE_MS
   "${compose[@]}" rm --force "$daemon_service"
   "${compose[@]}" up --detach --no-deps "$daemon_service"
   wait_for_daemon
@@ -981,7 +995,7 @@ if [[ $profile == full ]]; then
   for _ in $(seq 1 90); do
     crash_final_state=$(daemon_cli operations show "$crash_operation_id")
     state=$(json_value "$crash_final_state" '.state')
-    if [[ $state == finalized ]]; then
+    if [[ $state == succeeded ]]; then
       break
     fi
     if [[ $state == failed ]]; then
@@ -992,10 +1006,10 @@ if [[ $profile == full ]]; then
     sleep 1
   done
   assert_json "$crash_final_state" '
-    .state == "finalized" and
+    .state == "succeeded" and
     .attempt == 2 and
     (.attempt_history | length) == 2 and
-    .attempt_history[0].state == "finalized" and
+    .attempt_history[0].state == "succeeded" and
     .attempt_history[1].state == "interrupted"
   '
   retry_package_sha=$(artifact_sha256 "$crash_package_path")
@@ -1006,7 +1020,7 @@ if [[ $profile == full ]]; then
   fi
   crash_events=$(daemon_cli events --operation-id "$crash_operation_id" --all)
   assert_json "$crash_events" '
-    ([.items[] | select(.event_type == "finalization_completed")] | length) == 1
+    ([.items[] | select(.event_type == "notarization_completed")] | length) == 1
   '
 fi
 
@@ -1018,21 +1032,21 @@ wait_for_daemon
 
 restart_health=$("${compose[@]}" exec -T "$daemon_service" \
   curl --fail --silent --show-error http://127.0.0.1:8788/healthz)
-assert_json "$restart_health" '.service == "llm-notaryd" and .api_version == "v1"'
+assert_json "$restart_health" '.service == "notaryd" and .api_version == "v1"'
 
 restart_status=$(daemon_cli status)
 if [[ $profile == full ]]; then
   if [[ $artifact_engine == s3 ]]; then
     assert_json "$restart_status" '
-      .counts.total_captures == 6 and
-      .counts.finalized == 3 and
+      .counts.total_traces == 6 and
+      .counts.notarized == 3 and
       .counts.failed == 2 and
       .counts.active_operations == 0
     '
   else
     assert_json "$restart_status" '
-      .counts.total_captures == 5 and
-      .counts.finalized == 3 and
+      .counts.total_traces == 5 and
+      .counts.notarized == 3 and
       .counts.failed == 1 and
       .counts.active_operations == 0
     '
@@ -1040,13 +1054,13 @@ if [[ $profile == full ]]; then
 else
   if [[ $artifact_engine == s3 ]]; then
     assert_json "$restart_status" '
-      .counts.total_captures == 3 and
+      .counts.total_traces == 3 and
       .counts.failed == 2 and
       .counts.active_operations == 0
     '
   else
     assert_json "$restart_status" '
-      .counts.total_captures == 2 and
+      .counts.total_traces == 2 and
       .counts.failed == 1 and
       .counts.active_operations == 0
     '
@@ -1056,16 +1070,16 @@ fi
 persisted_operation=$(daemon_cli operations show "$operation_id")
 assert_json "$persisted_operation" '
   .operation_id == $operation_id and
-  .capture_id == "cap-e2e-finalize" and
+  .trace_id == "trc-e2e-notarize" and
   .state == "failed" and
   .attempt == 1 and
   .failure_code == $failure_code
 ' --arg operation_id "$operation_id" --arg failure_code "$expected_fixture_failure"
 
-persisted_capture=$(daemon_cli captures show cap-e2e-finalize)
+persisted_capture=$(daemon_cli captures show trc-e2e-notarize)
 assert_json "$persisted_capture" '
-  .capture.capture_state == "captured" and
-  .capture.finalization_state == "failed" and
+  .capture.capture_status == "captured" and
+  .capture.notarization_status == "failed" and
   .artifacts[0].sha256 == "43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d"
 '
 
@@ -1073,22 +1087,22 @@ if [[ $profile == full ]]; then
   persisted_full_operation=$(daemon_cli operations show "$full_operation_id")
   assert_json "$persisted_full_operation" '
     .operation_id == $operation_id and
-    .capture_id == $capture_id and
-    .state == "finalized" and
+    .trace_id == $trace_id and
+    .state == "succeeded" and
     .attempt == 1 and
     .progress.phase == "complete"
-  ' --arg operation_id "$full_operation_id" --arg capture_id "$full_capture_id"
+  ' --arg operation_id "$full_operation_id" --arg trace_id "$full_trace_id"
 
-  persisted_full_capture=$(daemon_cli captures show "$full_capture_id")
+  persisted_full_capture=$(daemon_cli captures show "$full_trace_id")
   assert_json "$persisted_full_capture" '
-    .capture.capture_state == "captured" and
-    .capture.finalization_state == "finalized" and
-    any(.artifacts[]; .kind == "finalized_package")
+    .capture.capture_status == "captured" and
+    .capture.notarization_status == "succeeded" and
+    any(.artifacts[]; .kind == "trace_package")
   '
   "${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error \
       --output /tmp/daemon-e2e-after-restart.llmtrace \
-      "http://127.0.0.1:8788/v1/captures/$full_capture_id/package"
+      "http://127.0.0.1:8788/v1/traces/$full_trace_id/package"
   restart_package_sha=$("${compose[@]}" exec -T "$daemon_service" \
     sha256sum /tmp/daemon-e2e-after-restart.llmtrace | awk '{print $1}')
   if [[ $restart_package_sha != "$full_package_sha" ]]; then
@@ -1098,24 +1112,24 @@ if [[ $profile == full ]]; then
   restart_verification=$(daemon_cli traces verify /tmp/daemon-e2e-after-restart.llmtrace \
     --trusted-notary-key 0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798)
   assert_json "$restart_verification" '
-    .capture_id == $capture_id and .verified == true
-  ' --arg capture_id "$full_capture_id"
+    .trace_id == $trace_id and .verified == true
+  ' --arg trace_id "$full_trace_id"
 
   persisted_stream_operation=$(daemon_cli operations show "$stream_operation_id")
   assert_json "$persisted_stream_operation" '
     .operation_id == $operation_id and
-    .capture_id == $capture_id and
-    .state == "finalized"
-  ' --arg operation_id "$stream_operation_id" --arg capture_id "$stream_capture_id"
-  persisted_stream_capture=$(daemon_cli captures show "$stream_capture_id")
+    .trace_id == $trace_id and
+    .state == "succeeded"
+  ' --arg operation_id "$stream_operation_id" --arg trace_id "$stream_trace_id"
+  persisted_stream_capture=$(daemon_cli captures show "$stream_trace_id")
   assert_json "$persisted_stream_capture" '
     .capture.streaming == true and
-    .capture.finalization_state == "finalized" and
-    any(.artifacts[]; .kind == "finalized_package")
+    .capture.notarization_status == "succeeded" and
+    any(.artifacts[]; .kind == "trace_package")
   '
 fi
 
-fixture_target=$(artifact_target cap-e2e-finalize deferred_bundle)
+fixture_target=$(artifact_target trc-e2e-notarize capture_checkpoint)
 artifact_sha=$(artifact_sha256 "$fixture_target")
 expected_artifact_sha=43a39c6489f21d8976477d52b4bb184c5a4166086d069450660d5754b93c6b7d
 if [[ $artifact_engine == s3 ]]; then
@@ -1127,14 +1141,14 @@ if [[ $artifact_sha != "$expected_artifact_sha" ]]; then
 fi
 
 if [[ $metadata_engine == sqlite ]]; then
-  integrity=$("${compose[@]}" exec -T "$daemon_service" sqlite3 /state/catalog.db 'PRAGMA integrity_check;')
+  integrity=$("${compose[@]}" exec -T "$daemon_service" sqlite3 /state/metadata.db 'PRAGMA integrity_check;')
   if [[ $integrity != ok ]]; then
     echo "SQLite integrity check failed: $integrity" >&2
     exit 1
   fi
 else
   persisted_count=$(postgres_psql --tuples-only --no-align \
-    --command 'SELECT COUNT(*) FROM llm_notary_daemon.captures;')
+    --command 'SELECT COUNT(*) FROM notaryd.traces;')
   expected_count=2
   if [[ $artifact_engine == s3 ]]; then
     expected_count=3
@@ -1146,11 +1160,11 @@ else
     fi
   fi
   if [[ $persisted_count != "$expected_count" ]]; then
-    echo "PostgreSQL capture count changed across daemon recreation: $persisted_count" >&2
+    echo "PostgreSQL trace count changed across daemon recreation: $persisted_count" >&2
     exit 1
   fi
   migration_count=$(postgres_psql --tuples-only --no-align \
-    --command 'SELECT COUNT(*) FROM llm_notary_daemon.schema_migrations;')
+    --command 'SELECT COUNT(*) FROM notaryd.schema_migrations;')
   if [[ $migration_count != "$expected_postgres_migration_count" ]]; then
     echo "PostgreSQL migration journal changed unexpectedly: $migration_count (expected $expected_postgres_migration_count)" >&2
     exit 1
@@ -1160,7 +1174,7 @@ fi
 echo "running bounded report-only artifact reconciliation while the daemon is stopped"
 "${compose[@]}" stop "$daemon_service"
 if [[ $artifact_engine == s3 ]]; then
-  orphan_target=$(artifact_target cap-e2e-unreferenced deferred_bundle)
+  orphan_target=$(artifact_target trc-e2e-unreferenced capture_checkpoint)
   printf 'young unreferenced reconciliation fixture' | minio_mc pipe "$orphan_target" >/dev/null
   young_reconciliation=$("${compose[@]}" run --rm --no-deps -T "$daemon_service" \
     reconcile-artifacts --config "$daemon_config")

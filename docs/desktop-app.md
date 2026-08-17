@@ -20,7 +20,7 @@ or file-format promise applies yet.
 
 ## What the app does
 
-The app provides a five-stage first run, supervises the bundled `llm-notaryd`
+The app provides a five-stage first run, supervises the bundled `notaryd`
 process, exposes its status from the menu bar, and contains the complete local
 capture workspace. Users do not need to open a localhost page in a browser.
 Closing the window removes the app from the Dock and leaves the menu-bar
@@ -143,7 +143,7 @@ Install the desktop dependencies once:
 npm --prefix js/desktop install
 ```
 
-Start the Tauri development app with a debug `llm-notaryd` sidecar:
+Start the Tauri development app with a debug `notaryd` sidecar:
 
 ```bash
 npm --prefix js/desktop run tauri:dev

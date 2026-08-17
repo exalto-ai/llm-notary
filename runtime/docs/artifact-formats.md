@@ -6,32 +6,30 @@ Do not describe them interchangeably.
 | Artifact | Location | Contains proof? | Shareable? |
 | --- | --- | --- | --- |
 | `.llmcapture` | local vault-backed storage | no, deferred private state | no |
-| `.llmtrace` | local finalized storage | yes, with an external trusted key | only after reviewing disclosed bodies |
+| `.llmtrace` | local notarized storage | yes, with an external trusted key | only after reviewing disclosed bodies |
 | Public `trace.otlp.json` | hosted Library | no portable evidence | yes, for inspection |
 
-## Encrypted deferred capture
+## Encrypted capture checkpoint
 
-Format: `llm-notary/deferred-bundle/v1` inside vault encryption.
+Format: `notary/capture-checkpoint/v1` inside the canonical vault envelope. Its
+signed receipt uses `notary/capture-receipt/v1`.
 
 The capture contains the client checkpoint and signed receipt required to
 complete private proof generation later. That checkpoint can reconstruct the
 original request, including credentials and cookie values. The file is
-therefore more sensitive than the finalized package.
+therefore more sensitive than the notarized package.
 
 A successful vault decrypt or capture parse proves only local structural
 usability. It does not authenticate the provider response to another party.
-Never upload, publish, or log a `.llmcapture`.
+Never upload, share, or log a `.llmcapture`. Pre-cutover `.llmbundle` and
+checkpoint formats are rejected rather than migrated.
 
-Existing `.llmbundle` files remain readable as legacy private captures. New
-captures use `.llmcapture`; renaming does not change the encrypted bytes or
-make either extension safe to share.
-
-## Finalized trace package
+## Notarized trace package
 
 The `.llmtrace` extension names one deterministic ZIP archive. Its archive
-format is `llmnotary.trace-package-archive/v2`, its verified-package manifest
-format is `llm-notary/verified-trace-package/v2`, and its media type is
-`application/vnd.llmnotary.trace-package+zip`.
+format is `notary/trace-package/v1`, its evidence manifest format is
+`notary/trace-evidence/v1`, and its media type is
+`application/vnd.exalto.notary.trace-package+zip`.
 
 The archive contains exactly six entries in this order:
 
@@ -58,9 +56,9 @@ container overhead.
 
 ### `archive-manifest.json`
 
-Declares the archive and verified-package formats, the ordered path, size, and
+Declares the trace-package and evidence formats, the ordered path, size, and
 SHA-256 of every package entry, and `package_sha256`. The package digest covers
-compact JSON containing the verified-package format and ordered file
+compact JSON containing the evidence format and ordered file
 declarations; it is independent of ZIP metadata. A separate outer SHA-256
 binds the complete archive during share intake.
 
@@ -72,7 +70,7 @@ evidence, not a human-readable receipt.
 
 ### `manifest.json`
 
-Uses `llm-notary/verified-trace-package/v2`. It records the source capture
+Uses `notary/trace-evidence/v1`. It records the Trace
 identifier, authenticated provider and host, authenticated provider-connection
 time, embedded notary key, source-artifact hashes, normalizer version, and
 trace SHA-256. The embedded key is not trusted merely because it appears here.
@@ -93,10 +91,10 @@ output, usage, finish reasons, and tool calls.
 
 ### `trace.otlp.json`
 
-Contains canonical UTF-8 JSON in `llm-notary/otlp-trace/v1`. Object keys are
+Contains canonical UTF-8 JSON in `notary/otlp-trace/v1`. Object keys are
 sorted by UTF-8 byte order, arrays retain input order, scalar values use compact
 JSON encoding, and the file ends in exactly one LF. This rule is identified as
-`llm-notary/json-lexicographic-v1`; it is intentionally not described as RFC
+`notary/json-lexicographic/v1`; it is intentionally not described as RFC
 8785.
 
 ## Canonical trace shape
@@ -105,10 +103,13 @@ The trace is a minimal OTLP JSON `resourceSpans` payload. It has one resource
 and instrumentation scope and one or more ordered `gen_ai.inference` client
 spans. The resource identifies:
 
-- `llmnotary.format = llm-notary/otlp-trace/v1`
-- `llmnotary.normalizer.version = llm-notary/normalizer/v1`
+- `notary.format = notary/otlp-trace/v1`
+- `notary.normalizer.version = notary/normalizer/v1`
 - `otel.semconv.version = 1.37.0`
-- `service.name = llm-notary`
+- `service.name = notary`
+
+The instrumentation scope is `notary.normalizer` at version
+`notary/normalizer/v1`.
 
 Supported span attributes are:
 
@@ -131,20 +132,20 @@ does not claim that a local runtime executed the tool.
 Verify a cataloged capture through the daemon:
 
 ```bash
-llm-notary traces verify cap-example
+llm-notary traces verify trc-example
 ```
 
 Verify a portable file through the daemon without importing or retaining it:
 
 ```bash
-llm-notary traces verify ./cap-example.llmtrace
+llm-notary traces verify ./trc-example.llmtrace
 ```
 
 Path-based verification selects a key from the daemon's configured or cached
 trust by default. For an explicit self-hosted trust anchor:
 
 ```bash
-llm-notary traces verify ./cap-example.llmtrace --trusted-notary-key 02...
+llm-notary traces verify ./trc-example.llmtrace --trusted-notary-key 02...
 ```
 
 Full verification checks canonical archive bytes, entry hashes, trust-key

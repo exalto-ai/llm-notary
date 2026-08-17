@@ -8,10 +8,10 @@ documentation update rules that protect LLM Notary's trust boundaries.
 | Path | Responsibility |
 | --- | --- |
 | `runtime/` | self-contained public Cargo/frontend workspace, docs, tests, containers, and vendored dependencies |
-| `runtime/crates/llm-notary-daemon/` | local proxy, catalog, vault integration, REST API, clustered operation, and embedded dashboard |
+| `runtime/crates/notaryd/` | local proxy, catalog, vault integration, REST API, clustered operation, and embedded dashboard |
 | `runtime/crates/llm-notary-cli/` | thin localhost REST command client |
 | `runtime/crates/llm-notary-updater/` | signed-update verification shared by CLI and desktop |
-| `runtime/crates/llm-notary-core/` | Proxy-TLS protocol, evidence contracts, normalization, trust directory, and verification |
+| `runtime/crates/notary-core/` | Proxy-TLS protocol, evidence contracts, normalization, trust directory, and verification |
 | `runtime/crates/llm-notary-server/` | coordinator-free remote notary runtime and generic admission/lifecycle seam |
 | `runtime/apps/local-dashboard/` | independently locked dashboard source, generated local API, tests, and assets |
 | `platform/crates/llm-notary-hosted-server/` | private hosted ticket redemption, durable usage outbox, and settlement adapter |
@@ -68,7 +68,7 @@ Run the checks relevant to edited code:
 ```bash
 cargo fmt --check
 cargo fmt --manifest-path runtime/Cargo.toml --check \
-  -p llm-notary-core -p llm-notary-daemon -p llm-notary-cli \
+  -p notary-core -p notaryd -p llm-notary-cli \
   -p llm-notary-updater -p llm-notary-server
 cargo clippy \
   -p llm-notary-api \
@@ -144,7 +144,7 @@ runtime/test-daemon-persistence-e2e.sh postgres s3 1 full
 runtime/test-daemon-persistence-e2e.sh postgres s3 2 full
 ```
 
-The smoke test builds and launches the real `llm-notaryd` and `llm-notary`
+The smoke test builds and launches the real `notaryd` and `llm-notary`
 binaries in Docker without publishing either loopback listener. It initializes
 the vault and schema, checks `/healthz`, and runs the REST-backed command client.
 It then uses deterministic synthetic rows and deliberately invalid encrypted
@@ -197,8 +197,8 @@ idempotency, and then runs the same REST, restart, artifact, and full Proxy-TLS
 assertions as SQLite. It also stops PostgreSQL beneath a running daemon and
 checks that `/healthz` remains live, `/readyz` returns `503`, and readiness
 recovers after the database restarts. Runtime receives only
-`LLM_NOTARY_METADATA_DATABASE_URL`; the one-shot migrator receives only
-`LLM_NOTARY_METADATA_MIGRATION_URL`. The daemon never applies PostgreSQL schema
+`NOTARYD_METADATA_DATABASE_URL`; the one-shot migrator receives only
+`NOTARYD_METADATA_MIGRATION_URL`. The daemon never applies PostgreSQL schema
 changes during normal service startup.
 
 Set `DAEMON_E2E_POSTGRES_SCENARIOS=extended` on a PostgreSQL matrix entry to
@@ -237,8 +237,8 @@ The hosted SPA is split by domain under `js/app/src/site/`, with
 `js/app/src/main.tsx` as the application shell and router. The public runtime
 dashboard lives independently under `runtime/apps/local-dashboard/`.
 
-`runtime/crates/llm-notary-daemon/dashboard/` is intentionally committed build
-output. `llm-notaryd` embeds that directory with `RustEmbed`, while source
+`runtime/crates/notaryd/dashboard/` is intentionally committed build
+output. `notaryd` embeds that directory with `RustEmbed`, while source
 installs, release builds, and desktop sidecar builds can invoke Cargo without
 Node. After changing the local dashboard, run
 `npm --prefix runtime/apps/local-dashboard run build` to regenerate the embedded

@@ -86,24 +86,24 @@ cargo run -p llm-notary-api --bin llm-notary-api-migrate
 ## Operate a PostgreSQL-backed local daemon
 
 The local daemon migrations live under
-`runtime/crates/llm-notary-daemon/migrations-postgres-daemon/`, use the
-`llm_notary_daemon` schema and migration journal, and take a daemon-specific
+`runtime/crates/notaryd/migrations-postgres-daemon/`, use the
+`notaryd` schema and migration journal, and take a daemon-specific
 advisory lock. They do not use the hosted platform's `platform/migrations/`
 directory or SQLx migration journal.
 
-Select `catalog.backend = "postgres"` and supply
-`LLM_NOTARY_METADATA_DATABASE_URL` (or its `_FILE` form), then run:
+Select `metadata.backend = "postgres"` and supply
+`NOTARYD_METADATA_DATABASE_URL` (or its `_FILE` form), then run:
 
 ```bash
-llm-notaryd migrate --config /etc/llm-notary/config.toml
-llm-notaryd --config /etc/llm-notary/config.toml
+notaryd migrate --config /etc/llm-notary/config.toml
+notaryd --config /etc/llm-notary/config.toml
 ```
 
 By default the migrate command uses the same URL. For least-privilege
 deployments, give the runtime role only data access and override migrations
-with `LLM_NOTARY_METADATA_MIGRATION_URL` or its `_FILE` form.
+with `NOTARYD_METADATA_MIGRATION_URL` or its `_FILE` form.
 
-Keep `catalog.postgres.ssl_mode = "verify_full"` for remote databases and
+Keep `metadata.postgres.ssl_mode = "verify_full"` for remote databases and
 provide the CA settings required by the PostgreSQL URL. `require` encrypts but
 does not validate the server hostname. `disable` is only for an explicitly
 trusted local test server.
@@ -120,18 +120,18 @@ grant the runtime role only the access it needs (replace the example role
 names with provisioned roles):
 
 ```sql
-GRANT CONNECT ON DATABASE llm_notary TO llm_notary_daemon_runtime;
-GRANT USAGE ON SCHEMA llm_notary_daemon TO llm_notary_daemon_runtime;
+GRANT CONNECT ON DATABASE llm_notary TO notaryd_runtime;
+GRANT USAGE ON SCHEMA notaryd TO notaryd_runtime;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES
-  IN SCHEMA llm_notary_daemon TO llm_notary_daemon_runtime;
+  IN SCHEMA notaryd TO notaryd_runtime;
 GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES
-  IN SCHEMA llm_notary_daemon TO llm_notary_daemon_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE llm_notary_daemon_migrator
-  IN SCHEMA llm_notary_daemon
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO llm_notary_daemon_runtime;
-ALTER DEFAULT PRIVILEGES FOR ROLE llm_notary_daemon_migrator
-  IN SCHEMA llm_notary_daemon
-  GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO llm_notary_daemon_runtime;
+  IN SCHEMA notaryd TO notaryd_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE notaryd_migrator
+  IN SCHEMA notaryd
+  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO notaryd_runtime;
+ALTER DEFAULT PRIVILEGES FOR ROLE notaryd_migrator
+  IN SCHEMA notaryd
+  GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO notaryd_runtime;
 ```
 
 The runtime role must not own the schema or have `CREATE`/DDL privileges.
@@ -145,12 +145,12 @@ confirming no capture or finalization is running, snapshot both stores, then
 restart it. For S3, enable object versioning or use a provider snapshot that can
 restore the complete managed prefix to the same point. After a restore, verify
 every advertised artifact locator, size, and SHA-256 before serving traffic by
-running `llm-notaryd reconcile-artifacts --config <path>` while the daemon is
+running `notaryd reconcile-artifacts --config <path>` while the daemon is
 stopped. Resolve every reported finding. The command is report-only and never
 deletes objects. No
 SQLite-to-PostgreSQL or filesystem-to-S3 importer is provided.
 
-Keep the sum of `catalog.postgres.max_connections` across running daemons plus
+Keep the sum of `metadata.postgres.max_connections` across running daemons plus
 one direct migrator connection within the provider's pool budget. PostgreSQL
 with filesystem artifacts remains single-process. Multiple daemon replicas are
 supported only by cluster mode with PostgreSQL and S3; see

@@ -12,7 +12,7 @@ metadata, and model output. It never receives an encrypted `.llmcapture`, vault
 key, or provider credential value.
 
 Before a share can become reachable, the worker applies the versioned
-`llm-notary/public-package-safety/v3` contract to the exact archive bytes. It:
+`notary/public-package-safety/v1` contract to the exact archive bytes. It:
 
 1. requires the strict canonical archive and manifest layout;
 2. rejects every visible request or response header value except the structural

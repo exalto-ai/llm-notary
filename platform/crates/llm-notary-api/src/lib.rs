@@ -21,12 +21,13 @@ use tracing::Instrument as _;
 use url::Url;
 use uuid::Uuid;
 
-use llm_notary_core::notary_directory::{
-    NotaryDirectory, NotaryDirectoryRecord, NotaryKeyStatus, NotaryTransport,
+use notary_core::pagination::{CursorScope, Page, PageQuery, decode_cursor};
+use notary_core::registry::{
+    NotaryKeyStatus, NotaryTransport, Registry as NotaryDirectory,
+    RegistryRecord as NotaryDirectoryRecord,
 };
-use llm_notary_core::pagination::{CursorScope, Page, PageQuery, decode_cursor};
-use llm_notary_core::sha256_hex;
-use llm_notary_core::telemetry;
+use notary_core::sha256_hex;
+use notary_core::telemetry;
 use opentelemetry::global;
 use opentelemetry_http::HeaderExtractor;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
@@ -320,6 +321,8 @@ struct NotaryDirectoryResponse {
 
 #[derive(Serialize, ToSchema)]
 struct NotaryDirectoryRecordResponse {
+    name: String,
+    operator: String,
     host: String,
     port: u16,
     transport: NotaryTransportResponse,
@@ -328,7 +331,7 @@ struct NotaryDirectoryRecordResponse {
     status: NotaryKeyStatusResponse,
     valid_from_unix_ms: u64,
     valid_until_unix_ms: Option<u64>,
-    finalize_until_unix_ms: Option<u64>,
+    notarize_until_unix_ms: Option<u64>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -361,6 +364,8 @@ impl From<NotaryDirectory> for NotaryDirectoryResponse {
 impl From<NotaryDirectoryRecord> for NotaryDirectoryRecordResponse {
     fn from(record: NotaryDirectoryRecord) -> Self {
         Self {
+            name: record.name,
+            operator: record.operator,
             host: record.host,
             port: record.port,
             transport: match record.transport {
@@ -377,7 +382,7 @@ impl From<NotaryDirectoryRecord> for NotaryDirectoryRecordResponse {
             },
             valid_from_unix_ms: record.valid_from_unix_ms,
             valid_until_unix_ms: record.valid_until_unix_ms,
-            finalize_until_unix_ms: record.finalize_until_unix_ms,
+            notarize_until_unix_ms: record.notarize_until_unix_ms,
         }
     }
 }
@@ -2376,8 +2381,9 @@ pub(crate) async fn insert_test_github_user(
 
 #[cfg(test)]
 mod tests {
-    use llm_notary_core::notary_directory::{
-        DIRECTORY_FORMAT_V3, NotaryDirectoryRecord, NotaryKeyStatus, NotaryTransport, key_id,
+    use notary_core::registry::{
+        NotaryKeyStatus, NotaryTransport, REGISTRY_FORMAT as DIRECTORY_FORMAT_V3,
+        RegistryRecord as NotaryDirectoryRecord, key_id, parse_registry,
     };
 
     use super::*;
@@ -3053,7 +3059,7 @@ mod tests {
                  'retained-package', 'legacy-user', 'retained-package', 'admitted', $1,
                  1, $2, 'retained-upload', 'retained-intake', 1, 1, 1, $2, 2,
                  'retained-trace', 1, $3, 'OpenAI', 'api.openai.com', 'gpt-test',
-                 'retained-package', 1, $4, 'llm-notary/public-package-safety/v1'
+                 'retained-package', 1, $4, 'notary/public-package-safety/v1'
              )",
         )
         .bind(crate::intake::ARCHIVE_FORMAT)
@@ -3100,6 +3106,8 @@ mod tests {
             generation: 1,
             active_key_id: key_id.clone(),
             notaries: vec![NotaryDirectoryRecord {
+                name: "Test notary".to_owned(),
+                operator: "Exalto".to_owned(),
                 host: "notary.example.com".to_owned(),
                 port: 7047,
                 transport: NotaryTransport::Tcp,
@@ -3108,9 +3116,20 @@ mod tests {
                 status: NotaryKeyStatus::Active,
                 valid_from_unix_ms: 0,
                 valid_until_unix_ms: None,
-                finalize_until_unix_ms: None,
+                notarize_until_unix_ms: None,
             }],
         }
+    }
+
+    #[test]
+    fn hosted_registry_response_is_the_canonical_runtime_contract() {
+        let response = NotaryDirectoryResponse::from(directory_key());
+        let encoded = serde_json::to_vec(&response).unwrap();
+        let registry = parse_registry(&encoded).unwrap();
+
+        assert_eq!(registry.format, DIRECTORY_FORMAT_V3);
+        assert_eq!(registry.notaries[0].name, "Test notary");
+        assert_eq!(registry.notaries[0].operator, "Exalto");
     }
 
     #[tokio::test]
@@ -3972,7 +3991,7 @@ mod tests {
              ('delete-trace', 'delete-user', 'delete-idempotency', 'admitted', 'listed', $1,
               1, $2, 'delete-upload', 'delete-intake', 2, 1, 1, 1,
               'delete-public-trace', 1, $3, 'openai', 'api.openai.com', 'gpt-test',
-              'delete-package', 1, $4, 'llm-notary/public-package-safety/v1')",
+              'delete-package', 1, $4, 'notary/public-package-safety/v1')",
         )
         .bind(crate::intake::ARCHIVE_FORMAT)
         .bind("a".repeat(64))

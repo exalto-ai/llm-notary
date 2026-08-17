@@ -24,9 +24,9 @@ public_key = "02..."
 
 Use `tls://notary.example:443` when a public-CA TLS endpoint protects the network transport. TLS authenticates the transport; the configured secp256k1 key remains the evidence trust anchor.
 
-The notary owns the upstream network connection, so every permitted hostname must be present in `--allow-host`. Keep the signing key outside the repository with owner-only permissions, encrypted backups, and restricted process access. Use `--finalize-only` during a planned key rotation so existing private captures can finish without admitting new capture sessions.
+The notary owns the upstream network connection, so every permitted hostname must be present in `--allow-host`. Keep the signing key outside the repository with owner-only permissions, encrypted backups, and restricted process access. Use `--notarize-only` during a planned key rotation so existing private captures can finish without admitting new capture sessions.
 
-Important hard limits include `--max-concurrent-captures`, `--max-concurrent-finalizations`, `--max-total-private-chunk-bytes`, `--max-private-chunk-bytes`, `--max-private-chunk-commitments`, `--max-frame-bytes`, and `--session-timeout-secs`. Keep the total-private-byte limit at least as large as the daemon's `proxy.max_attestable_http_bytes`.
+Important hard limits include `--max-concurrent-captures`, `--max-concurrent-notarizations`, `--max-total-private-chunk-bytes`, `--max-private-chunk-bytes`, `--max-private-chunk-commitments`, `--max-frame-bytes`, and `--session-timeout-secs`. Keep the total-private-byte limit at least as large as the daemon's `proxy.max_attestable_http_bytes`.
 
 The base server uses the runtime's ticketless admission policy. Product-specific account or billing admission belongs in a separate adapter implementing `AdmissionPolicy`; it is not part of the public runtime.
 

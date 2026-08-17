@@ -14,13 +14,13 @@ use async_trait::async_trait;
 use axum::{Router, http::header, response::IntoResponse, routing::get};
 use clap::Parser;
 use k256::ecdsa::SigningKey;
-use llm_notary_core::{
+use metrics::{counter, gauge, histogram};
+use notary_core::{
     AuthenticatedBytesRecorder, DEFAULT_MAX_ATTESTABLE_HTTP_BYTES, DEFAULT_NOTARY_MAX_FRAME_BYTES,
     NotaryAdmissionRejection, NotarySessionFailureKind, NotarySessionLimits, NotarySessionMode,
     read_notary_session_prelude, run_notary_session_with_limits_after_prelude,
     write_notary_admission,
 };
-use metrics::{counter, gauge, histogram};
 use tokio::{
     net::TcpListener,
     sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError, watch},
@@ -43,10 +43,10 @@ struct Args {
     #[arg(long)]
     signing_key: PathBuf,
 
-    /// Reject new capture sessions while continuing to finalize bundles that
+    /// Reject new capture sessions while continuing to notarize bundles that
     /// were captured before a planned key handoff.
     #[arg(long)]
-    finalize_only: bool,
+    notarize_only: bool,
 
     /// Exact provider hostnames this notary may connect to in Proxy-TLS mode.
     /// Supplying this explicitly is required in production; the development
@@ -82,18 +82,18 @@ struct Args {
 
     /// Maximum number of simultaneous live Proxy-TLS capture sessions.
     ///
-    /// This is independent from --max-concurrent-finalizations so deferred
+    /// This is independent from --max-concurrent-notarizations so deferred
     /// proofs cannot consume all capacity needed for live provider traffic.
     #[arg(long, default_value_t = 8)]
     max_concurrent_captures: usize,
 
-    /// Maximum number of simultaneous deferred private-proof finalizations.
+    /// Maximum number of simultaneous deferred private-proof notarizations.
     ///
-    /// This is independent from --max-concurrent-captures. Finalization is
+    /// This is independent from --max-concurrent-captures. Notarization is
     /// the CPU- and memory-intensive phase, while capture prioritizes live
     /// request latency.
     #[arg(long, default_value_t = 1)]
-    max_concurrent_finalizations: usize,
+    max_concurrent_notarizations: usize,
 
     /// Maximum number of sockets waiting to send a valid protocol prelude.
     #[arg(long, default_value_t = 128)]
@@ -227,14 +227,14 @@ struct LocalSessionLimits {
 #[derive(Clone)]
 struct SessionBudgets {
     captures: Arc<Semaphore>,
-    finalizations: Arc<Semaphore>,
+    notarizations: Arc<Semaphore>,
 }
 
 impl SessionBudgets {
-    fn new(captures: usize, finalizations: usize) -> Self {
+    fn new(captures: usize, notarizations: usize) -> Self {
         Self {
             captures: Arc::new(Semaphore::new(captures)),
-            finalizations: Arc::new(Semaphore::new(finalizations)),
+            notarizations: Arc::new(Semaphore::new(notarizations)),
         }
     }
 
@@ -244,14 +244,14 @@ impl SessionBudgets {
     ) -> Result<OwnedSemaphorePermit, TryAcquireError> {
         match mode {
             NotarySessionMode::Capture => Arc::clone(&self.captures).try_acquire_owned(),
-            NotarySessionMode::Finalize => Arc::clone(&self.finalizations).try_acquire_owned(),
+            NotarySessionMode::Notarization => Arc::clone(&self.notarizations).try_acquire_owned(),
         }
     }
 
     fn available_permits(&self, mode: NotarySessionMode) -> usize {
         match mode {
             NotarySessionMode::Capture => self.captures.available_permits(),
-            NotarySessionMode::Finalize => self.finalizations.available_permits(),
+            NotarySessionMode::Notarization => self.notarizations.available_permits(),
         }
     }
 }
@@ -669,13 +669,13 @@ pub async fn run_with_policy_factory<F>(admission: F) -> Result<()>
 where
     F: FnOnce() -> Result<Arc<dyn AdmissionPolicy>>,
 {
-    let _telemetry = llm_notary_core::telemetry::init("llm-notary-server")?;
+    let _telemetry = notary_core::telemetry::init("llm-notary-server")?;
     let args = Args::parse();
     if args.max_private_chunk_bytes == 0
         || args.max_total_private_chunk_bytes == 0
         || args.max_private_chunk_commitments == 0
         || args.max_concurrent_captures == 0
-        || args.max_concurrent_finalizations == 0
+        || args.max_concurrent_notarizations == 0
         || args.max_pending_connections == 0
         || args.prelude_timeout_secs == 0
         || args.session_timeout_secs == 0
@@ -710,11 +710,11 @@ where
     let listener = TcpListener::bind(args.listen).await?;
     let session_budgets = SessionBudgets::new(
         args.max_concurrent_captures,
-        args.max_concurrent_finalizations,
+        args.max_concurrent_notarizations,
     );
     let connection_permits = Arc::new(Semaphore::new(args.max_pending_connections));
     gauge!("llm_notary_notary_active_sessions", "mode" => "capture").set(0.0);
-    gauge!("llm_notary_notary_active_sessions", "mode" => "finalize").set(0.0);
+    gauge!("llm_notary_notary_active_sessions", "mode" => "notarization").set(0.0);
     gauge!("llm_notary_notary_pending_connections").set(0.0);
     if let Some(metrics_listen) = env::var("LLM_NOTARY_METRICS_LISTEN")
         .ok()
@@ -743,7 +743,7 @@ where
         address = %args.listen,
         public_key,
         max_concurrent_captures = args.max_concurrent_captures,
-        max_concurrent_finalizations = args.max_concurrent_finalizations,
+        max_concurrent_notarizations = args.max_concurrent_notarizations,
         "LLM Notary service listening"
     );
     println!("LLM Notary public key: {public_key}");
@@ -769,11 +769,11 @@ where
         let session_timeout = std::time::Duration::from_secs(args.session_timeout_secs);
         let connection_permits = Arc::clone(&connection_permits);
         let session_budgets = session_budgets.clone();
-        let finalize_only = args.finalize_only;
+        let notarize_only = args.notarize_only;
         let profile_sessions = args.profile_sessions;
         let max_pending_connections = args.max_pending_connections;
         let max_concurrent_captures = args.max_concurrent_captures;
-        let max_concurrent_finalizations = args.max_concurrent_finalizations;
+        let max_concurrent_notarizations = args.max_concurrent_notarizations;
         let admission = admission.clone();
         tokio::spawn(handle_connection(ConnectionTask {
             stream,
@@ -788,11 +788,11 @@ where
             session_timeout,
             connection_permits,
             session_budgets,
-            finalize_only,
+            notarize_only,
             profile_sessions,
             max_pending_connections,
             max_concurrent_captures,
-            max_concurrent_finalizations,
+            max_concurrent_notarizations,
             admission,
         }));
     }
@@ -811,11 +811,11 @@ struct ConnectionTask {
     session_timeout: Duration,
     connection_permits: Arc<Semaphore>,
     session_budgets: SessionBudgets,
-    finalize_only: bool,
+    notarize_only: bool,
     profile_sessions: bool,
     max_pending_connections: usize,
     max_concurrent_captures: usize,
-    max_concurrent_finalizations: usize,
+    max_concurrent_notarizations: usize,
     admission: Arc<dyn AdmissionPolicy>,
 }
 
@@ -833,11 +833,11 @@ async fn handle_connection(task: ConnectionTask) {
         session_timeout,
         connection_permits,
         session_budgets,
-        finalize_only,
+        notarize_only,
         profile_sessions,
         max_pending_connections,
         max_concurrent_captures,
-        max_concurrent_finalizations,
+        max_concurrent_notarizations,
         admission,
     } = task;
     let prelude = match timeout(prelude_timeout, read_notary_session_prelude(&mut stream)).await {
@@ -863,9 +863,9 @@ async fn handle_connection(task: ConnectionTask) {
     gauge!("llm_notary_notary_pending_connections")
         .set((max_pending_connections - connection_permits.available_permits()) as f64);
     let mode = prelude.mode();
-    if !session_mode_allowed(finalize_only, mode) {
-        counter!("llm_notary_notary_sessions_total", "mode" => session_mode_label(mode), "outcome" => "rejected_finalize_only").increment(1);
-        tracing::warn!("capture rejected by finalize-only notary");
+    if !session_mode_allowed(notarize_only, mode) {
+        counter!("llm_notary_notary_sessions_total", "mode" => session_mode_label(mode), "outcome" => "rejected_notarize_only").increment(1);
+        tracing::warn!("capture rejected by notarize-only notary");
         if let Err(error) = write_notary_admission(
             &mut stream,
             &prelude,
@@ -885,7 +885,7 @@ async fn handle_connection(task: ConnectionTask) {
         );
         let rejection = match mode {
             NotarySessionMode::Capture => NotaryAdmissionRejection::CaptureAtCapacity,
-            NotarySessionMode::Finalize => NotaryAdmissionRejection::FinalizeAtCapacity,
+            NotarySessionMode::Notarization => NotaryAdmissionRejection::NotarizationAtCapacity,
         };
         if let Err(error) = write_notary_admission(&mut stream, &prelude, Err(rejection)).await {
             tracing::debug!(%error, "could not send notary admission rejection");
@@ -949,7 +949,7 @@ async fn handle_connection(task: ConnectionTask) {
     }
     let max_concurrent_sessions = match mode {
         NotarySessionMode::Capture => max_concurrent_captures,
-        NotarySessionMode::Finalize => max_concurrent_finalizations,
+        NotarySessionMode::Notarization => max_concurrent_notarizations,
     };
     gauge!("llm_notary_notary_active_sessions", "mode" => session_mode_label(mode))
         .set((max_concurrent_sessions - session_budgets.available_permits(mode)) as f64);
@@ -1023,7 +1023,7 @@ async fn metrics() -> impl IntoResponse {
             header::CONTENT_TYPE,
             "text/plain; version=0.0.4; charset=utf-8",
         )],
-        llm_notary_core::telemetry::prometheus_metrics(),
+        notary_core::telemetry::prometheus_metrics(),
     )
 }
 
@@ -1075,12 +1075,12 @@ fn effective_session_limits(
 fn session_mode_label(mode: NotarySessionMode) -> &'static str {
     match mode {
         NotarySessionMode::Capture => "capture",
-        NotarySessionMode::Finalize => "finalize",
+        NotarySessionMode::Notarization => "notarization",
     }
 }
 
-fn session_mode_allowed(finalize_only: bool, mode: NotarySessionMode) -> bool {
-    !finalize_only || mode == NotarySessionMode::Finalize
+fn session_mode_allowed(notarize_only: bool, mode: NotarySessionMode) -> bool {
+    !notarize_only || mode == NotarySessionMode::Notarization
 }
 
 #[cfg(test)]
@@ -1164,11 +1164,11 @@ mod tests {
             session_timeout,
             connection_permits,
             session_budgets: SessionBudgets::new(1, 1),
-            finalize_only: false,
+            notarize_only: false,
             profile_sessions: false,
             max_pending_connections: 1,
             max_concurrent_captures: 1,
-            max_concurrent_finalizations: 1,
+            max_concurrent_notarizations: 1,
             admission,
         }));
         (client, task, outcomes)
@@ -1176,7 +1176,7 @@ mod tests {
 
     async fn write_capture_prelude(client: &mut tokio::net::TcpStream) {
         let ticket = b"opaque-ticket";
-        client.write_all(b"LLMN\0\0\0\x03").await.unwrap();
+        client.write_all(b"NTRY\0\0\0\x01").await.unwrap();
         client.write_all(&[2]).await.unwrap();
         client
             .write_all(&(ticket.len() as u16).to_be_bytes())
@@ -1194,25 +1194,31 @@ mod tests {
     }
 
     #[test]
-    fn finalize_only_rejects_capture_before_protocol_admission() {
+    fn notarize_only_rejects_capture_before_protocol_admission() {
         assert!(!session_mode_allowed(true, NotarySessionMode::Capture));
-        assert!(session_mode_allowed(true, NotarySessionMode::Finalize));
+        assert!(session_mode_allowed(true, NotarySessionMode::Notarization));
         assert!(session_mode_allowed(false, NotarySessionMode::Capture));
     }
 
     #[test]
-    fn capture_and_finalize_budgets_are_independent() {
+    fn capture_and_notarize_budgets_are_independent() {
         let budgets = SessionBudgets::new(1, 1);
         let capture = budgets.try_acquire(NotarySessionMode::Capture).unwrap();
         assert!(budgets.try_acquire(NotarySessionMode::Capture).is_err());
 
-        let finalize = budgets.try_acquire(NotarySessionMode::Finalize).unwrap();
-        assert!(budgets.try_acquire(NotarySessionMode::Finalize).is_err());
+        let notarize = budgets
+            .try_acquire(NotarySessionMode::Notarization)
+            .unwrap();
+        assert!(
+            budgets
+                .try_acquire(NotarySessionMode::Notarization)
+                .is_err()
+        );
 
         drop(capture);
         assert!(budgets.try_acquire(NotarySessionMode::Capture).is_ok());
-        drop(finalize);
-        assert!(budgets.try_acquire(NotarySessionMode::Finalize).is_ok());
+        drop(notarize);
+        assert!(budgets.try_acquire(NotarySessionMode::Notarization).is_ok());
     }
 
     #[tokio::test]

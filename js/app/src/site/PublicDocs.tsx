@@ -40,7 +40,7 @@ type DocNavigationGroup = { label: string; pages: Array<readonly [DocPageKey, st
 const installCommand = 'curl -fsSL https://notary.exalto.ai/install.sh | sh';
 const sourceInstallCommand = `git clone https://github.com/exalto-ai/notary-runtime.git
 cd notary-runtime
-cargo install --locked --path crates/llm-notary-daemon --bin llm-notaryd
+cargo install --locked --path crates/notaryd --bin notaryd
 cargo install --locked --path crates/llm-notary-cli --bin llm-notary`;
 
 const docPages: Record<DocPageKey, DocPage> = {
@@ -100,7 +100,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'A first successful run',
-        code: `${installCommand}\n\nllm-notaryd\n# Open http://127.0.0.1:8788 for the local dashboard.\n# Point an OpenAI client at http://127.0.0.1:8787/openai/v1.\n\nllm-notary status\nllm-notary captures list`,
+        code: `${installCommand}\n\nnotaryd\n# Open http://127.0.0.1:8788 for the local dashboard.\n# Point an OpenAI client at http://127.0.0.1:8787/openai/v1.\n\nllm-notary status\nllm-notary captures list`,
       },
       {
         heading: 'The claim',
@@ -195,7 +195,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'What the app manages',
-        body: 'The app configures capture protection, helps connect a provider or coding tool, starts and stops its bundled `llm-notaryd`, and embeds the local capture workspace. Provider credentials stay in the tool that sends the model request; the app does not ask for or store them.',
+        body: 'The app configures capture protection, helps connect a provider or coding tool, starts and stops its bundled `notaryd`, and embeds the local capture workspace. Provider credentials stay in the tool that sends the model request; the app does not ask for or store them.',
       },
       {
         heading: 'Install the CLI and local service',
@@ -209,14 +209,14 @@ const docPages: Record<DocPageKey, DocPage> = {
       },
       {
         heading: 'Programs',
-        body: '`llm-notaryd` is the long-running local service. `llm-notary` is its short-lived REST client. The website archive installs both together.',
+        body: '`notaryd` is the long-running local service. `llm-notary` is its short-lived REST client. The website archive installs both together.',
       },
       {
         heading: 'Install the agent skill',
         body: 'The CLI bundles portable instructions for finding captures, finalizing with approval, verifying traces, diagnosing operations, and protecting private evidence. Install them for Codex, Claude Code, or both. The command does not contact or start the daemon. Use `--skills-dir /path/to/agent/skills` for another Agent Skills compatible client; re-run with `--force` only after inspecting a different existing skill. Claude Code uses `$CLAUDE_CONFIG_DIR/skills` when that environment variable is nonempty and `~/.claude/skills` otherwise. It detects changes inside an existing personal skills directory; restart it if that directory did not exist when the current session started.',
         code: 'llm-notary skill install --target codex\nllm-notary skill install --target claude\nllm-notary skill install --target all',
       },
-      { heading: 'Start the service', code: 'llm-notaryd' },
+      { heading: 'Start the service', code: 'notaryd' },
       {
         heading: 'Open the local dashboard',
         body: 'Visit `http://127.0.0.1:8788` and use the tabs for captures, finalizations, trace verification, sharing, activity, and settings. The default loopback configuration opens directly. If `admin.auth` is enabled, sign in with its configured username and password; the dashboard exchanges them for an `HttpOnly` session and does not store the password.',
@@ -224,7 +224,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       {
         heading: 'Configuration file',
         body: 'The first service start creates an editable `config.toml` at the standard user location: `~/.config/llm-notary/config.toml` on Linux, `%APPDATA%\\llm-notary\\config.toml` on Windows, and `~/Library/Application Support/llm-notary/config.toml` on macOS. It is written once and never replaced. Start with an explicit file when needed:',
-        code: 'llm-notaryd --config /path/to/config.toml',
+        code: 'notaryd --config /path/to/config.toml',
       },
       {
         heading: 'Use the command client',
@@ -239,7 +239,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       {
         heading: 'Use an API key for unattended hosts',
         body: 'Create a deployment-specific, least-privilege key in hosted Account settings and inject it as `LLM_NOTARY_API_KEY` or through the private `LLM_NOTARY_API_KEY_FILE`. The complete key is shown once and never belongs in `config.toml`, logs, or artifacts. One daemon can use an injected API key or a browser-approved device session, never both; revoke API keys from hosted Settings.',
-        code: 'export LLM_NOTARY_API_KEY_FILE=/run/secrets/llm-notary-api-key\nllm-notaryd',
+        code: 'export LLM_NOTARY_API_KEY_FILE=/run/secrets/llm-notary-api-key\nnotaryd',
       },
       {
         heading: 'What it controls',
@@ -261,7 +261,7 @@ const docPages: Record<DocPageKey, DocPage> = {
       {
         heading: 'Optional passphrase mode',
         body: 'If you prefer a passphrase instead of the operating-system credential service, point `LLM_NOTARY_VAULT_PASSPHRASE_FILE` at a private UTF-8 file before the first service start. An empty passphrase is accepted for low-friction local testing, but it provides no meaningful protection if someone obtains both your captures and vault configuration.',
-        code: 'export LLM_NOTARY_VAULT_PASSPHRASE_FILE=/private/local/path/vault-passphrase\nllm-notaryd',
+        code: 'export LLM_NOTARY_VAULT_PASSPHRASE_FILE=/private/local/path/vault-passphrase\nnotaryd',
       },
       {
         heading: 'What happens online',

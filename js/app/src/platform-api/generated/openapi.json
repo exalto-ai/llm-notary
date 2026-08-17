@@ -2392,7 +2392,7 @@
           "200": {
             "description": "",
             "content": {
-              "application/vnd.llmnotary.trace-package+zip": {
+              "application/vnd.exalto.notary.trace-package+zip": {
                 "schema": {
                   "type": "array",
                   "items": {
@@ -3127,7 +3127,7 @@
         "operationId": "verify",
         "requestBody": {
           "content": {
-            "application/vnd.llmnotary.trace-package+zip": {
+            "application/vnd.exalto.notary.trace-package+zip": {
               "schema": {
                 "$ref": "#/components/schemas/TracePackageBody"
               }
@@ -4129,6 +4129,8 @@
       "NotaryDirectoryRecordResponse": {
         "type": "object",
         "required": [
+          "name",
+          "operator",
           "host",
           "port",
           "transport",
@@ -4138,7 +4140,16 @@
           "valid_from_unix_ms"
         ],
         "properties": {
-          "finalize_until_unix_ms": {
+          "host": {
+            "type": "string"
+          },
+          "key_id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "notarize_until_unix_ms": {
             "type": [
               "integer",
               "null"
@@ -4146,10 +4157,7 @@
             "format": "int64",
             "minimum": 0
           },
-          "host": {
-            "type": "string"
-          },
-          "key_id": {
+          "operator": {
             "type": "string"
           },
           "port": {

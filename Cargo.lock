@@ -4219,8 +4219,8 @@ dependencies = [
  "hmac 0.12.1",
  "ipnet",
  "k256",
- "llm-notary-core",
  "metrics",
+ "notary-core",
  "opentelemetry",
  "opentelemetry-http",
  "rand 0.9.5",
@@ -4243,57 +4243,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-notary-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "argon2",
- "base64 0.22.1",
- "bincode",
- "bytes",
- "chacha20poly1305",
- "directories",
- "futures",
- "hex",
- "http 1.4.2",
- "http-body 1.1.0",
- "http-body-util",
- "hyper 1.11.0",
- "hyper-util",
- "k256",
- "keyring",
- "metrics",
- "metrics-exporter-prometheus",
- "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
- "rand 0.9.5",
- "rpassword",
- "rustls 0.23.42",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tlsn",
- "tlsn-formats",
- "tokio",
- "tokio-rustls 0.26.4",
- "tokio-util",
- "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
- "url",
- "utoipa",
- "webpki-roots 1.0.9",
- "zeroize",
- "zip 8.6.0",
-]
-
-[[package]]
 name = "llm-notary-desktop"
 version = "0.1.0"
 dependencies = [
- "llm-notary-core",
  "llm-notary-updater",
+ "notary-core",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4315,9 +4269,9 @@ dependencies = [
  "async-trait",
  "axum",
  "hex",
- "llm-notary-core",
  "llm-notary-server",
  "metrics",
+ "notary-core",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
@@ -4337,8 +4291,8 @@ dependencies = [
  "clap",
  "hex",
  "k256",
- "llm-notary-core",
  "metrics",
+ "notary-core",
  "tokio",
  "tracing",
 ]
@@ -5026,6 +4980,52 @@ name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2bf50223579dc7cdcfb3bfcacf7069ff68243f8c363f62ffa99cf000a6b9c451"
+
+[[package]]
+name = "notary-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "argon2",
+ "base64 0.22.1",
+ "bincode",
+ "bytes",
+ "chacha20poly1305",
+ "directories",
+ "futures",
+ "hex",
+ "http 1.4.2",
+ "http-body 1.1.0",
+ "http-body-util",
+ "hyper 1.11.0",
+ "hyper-util",
+ "k256",
+ "keyring",
+ "metrics",
+ "metrics-exporter-prometheus",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
+ "rand 0.9.5",
+ "rpassword",
+ "rustls 0.23.42",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tlsn",
+ "tlsn-formats",
+ "tokio",
+ "tokio-rustls 0.26.4",
+ "tokio-util",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "url",
+ "utoipa",
+ "webpki-roots 1.0.9",
+ "zeroize",
+ "zip 8.6.0",
+]
 
 [[package]]
 name = "nu-ansi-term"

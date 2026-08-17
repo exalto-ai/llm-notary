@@ -8,10 +8,10 @@ import { createChannelEnvelope, createChannelPointer, createReleaseManifest } fr
 
 const version = '0.1.0';
 const names = [
-  `llm-notary-${version}-linux-x86_64.tar.gz`, 'llm-notary-linux-x86_64', 'llm-notaryd-linux-x86_64',
-  `llm-notary-${version}-linux-aarch64.tar.gz`, 'llm-notary-linux-aarch64', 'llm-notaryd-linux-aarch64',
-  `llm-notary-${version}-darwin-aarch64.tar.gz`, 'llm-notary-darwin-aarch64', 'llm-notaryd-darwin-aarch64',
-  `llm-notary-${version}-windows-x86_64.zip`, 'llm-notary-windows-x86_64.exe', 'llm-notaryd-windows-x86_64.exe',
+  `llm-notary-${version}-linux-x86_64.tar.gz`, 'llm-notary-linux-x86_64', 'notaryd-linux-x86_64',
+  `llm-notary-${version}-linux-aarch64.tar.gz`, 'llm-notary-linux-aarch64', 'notaryd-linux-aarch64',
+  `llm-notary-${version}-darwin-aarch64.tar.gz`, 'llm-notary-darwin-aarch64', 'notaryd-darwin-aarch64',
+  `llm-notary-${version}-windows-x86_64.zip`, 'llm-notary-windows-x86_64.exe', 'notaryd-windows-x86_64.exe',
   'LLM-Notary-macos-arm64.dmg', 'LLM-Notary-macos-arm64.app.tar.gz',
 ];
 const signatureText = 'untrusted comment: signature from minisign secret key\nRUTESTSIGNATURE\ntrusted comment: timestamp:1\nRUTESTTRUSTED';
@@ -39,6 +39,7 @@ test('release manifest is deterministic and binds every installable payload', as
   assert.deepEqual(first, second);
   assert.equal(first.platforms['darwin-aarch64'].signature, signature);
   assert.equal(first.artifacts['linux-x86_64'].llm_notary.name, 'llm-notary-linux-x86_64');
+  assert.equal(first.artifacts['linux-x86_64'].llm_notaryd.name, 'notaryd-linux-x86_64');
   assert.match(first.desktop['darwin-aarch64'].updater.url, /\/builds\/[a-f0-9-]+\//);
 });
 

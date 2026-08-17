@@ -13,7 +13,7 @@ generated hosted OpenAPI document remains the exact HTTP contract.
 | Hosted API | `platform/crates/llm-notary-api/` | PostgreSQL accounts, sessions, keys, credits, operations, shares, reports, and cleanup work | Authenticates public and account requests, issues admission tickets, verifies uploads, and owns hosted policy |
 | Generic notary | `runtime/crates/llm-notary-server/` | signing key and process-local capacity | Runs the public Proxy-TLS protocol and provider allowlist without account or billing semantics |
 | Hosted notary adapter | `platform/crates/llm-notary-hosted-server/` | private durable usage-settlement outbox | Injects ticket redemption and settlement through the generic `AdmissionPolicy` and `SessionLifecycle` seams |
-| Local runtime client | `runtime/crates/llm-notary-daemon/` | local vault, capture catalog, artifacts, account credential, and trust cache | Sees provider plaintext; requests hosted admission and sharing without exposing the provider credential to the platform or notary |
+| Local runtime client | `runtime/crates/notaryd/` | local vault, capture catalog, artifacts, account credential, and trust cache | Sees provider plaintext; requests hosted admission and sharing without exposing the provider credential to the platform or notary |
 | Hosted PostgreSQL | `platform/migrations/` | authoritative hosted relational state | Separate schema and migration journal from an optional daemon PostgreSQL backend |
 | Private object storage | hosted API configuration | intake objects, admitted exact packages, canonical traces | Receives a finalized disclosure only after an explicit verify or share action; never receives `.llmcapture` |
 

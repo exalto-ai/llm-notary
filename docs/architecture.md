@@ -13,7 +13,7 @@ convenience features.
 | Component | Holds plaintext? | Durable state | Main responsibility |
 | --- | --- | --- | --- |
 | Provider client | yes | provider credential | Sends an ordinary provider request to the local proxy |
-| `llm-notaryd` | yes | vault, catalog, operations, artifacts, trust cache | Runs the proxy, captures private state, finalizes, and verifies |
+| `notaryd` | yes | vault, catalog, operations, artifacts, trust cache | Runs the proxy, captures private state, finalizes, and verifies |
 | Generic remote notary | no application plaintext | signing key only | Resolves the provider, relays encrypted TLS records, witnesses the session, and completes proof work |
 | Hosted notary adapter | no application plaintext | durable usage-settlement outbox | Redeems one-operation tickets, tightens generic runtime limits, and reports authoritative usage |
 | Model provider | yes | provider-owned | Serves an ordinary HTTPS request without an LLM Notary integration |
@@ -35,7 +35,7 @@ for the server-side route and state ownership map.
 
 ## Runtime capture mode
 
-`llm-notaryd` owns one durable `capture_enabled` setting in its metadata
+`notaryd` owns one durable `capture_enabled` setting in its metadata
 backend. Each provider request snapshots that mode once after its fixed route
 is accepted. Changing the setting affects only later requests; an admitted
 capture or direct response stream stays on its original path.

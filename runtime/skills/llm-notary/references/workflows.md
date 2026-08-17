@@ -11,8 +11,8 @@ Check the service, then list captures using server-side filters:
 ```bash
 llm-notary --json status
 llm-notary --json captures list --metadata-only --provider openai --limit 20
-llm-notary --json captures list --metadata-only --finalization-state finalized --limit 20
-llm-notary captures show cap-example
+llm-notary --json captures list --metadata-only --notarization-state notarized --limit 20
+llm-notary captures show trc-example
 ```
 
 Use `--metadata-only` whenever structured capture-list output enters an agent
@@ -24,10 +24,10 @@ When selecting the newest or oldest result, do not infer list order. Follow all
 relevant pages and compare the returned timestamps unless the running daemon's
 contract explicitly guarantees an order.
 
-Verify a finalized capture without printing its disclosed bodies:
+Verify a notarized capture without printing its disclosed bodies:
 
 ```bash
-llm-notary --json traces verify cap-example
+llm-notary --json traces verify trc-example
 ```
 
 `traces show` prints the canonical disclosed request and response bodies. Run
@@ -35,7 +35,7 @@ it only after the user explicitly asks to place that content in the current
 agent transcript:
 
 ```bash
-llm-notary --json traces show cap-example
+llm-notary --json traces show trc-example
 ```
 
 For a portable file that is not cataloged by this daemon, the only supported
@@ -49,13 +49,13 @@ Never pass a `.llmcapture` or `.llmbundle` path. Those files are encrypted
 private retry state that can reconstruct the original credential-bearing
 request.
 
-## Finalize after approval
+## Notarize after approval
 
-Explain that finalization generates a proof, can take substantially longer
+Explain that notarization generates a proof, can take substantially longer
 than capture, and does not publish anything. After the user approves, run:
 
 ```bash
-llm-notary --json finalize cap-example --wait
+llm-notary --json notarize trc-example --wait
 ```
 
 Without `--wait`, save the returned `op-...` identifier and poll it:
@@ -64,7 +64,7 @@ Without `--wait`, save the returned `op-...` identifier and poll it:
 llm-notary --json operations show op-example
 ```
 
-Treat `finalized`, `failed`, and `interrupted` as terminal states. Use the
+Treat `notarized`, `failed`, and `interrupted` as terminal states. Use the
 operation's attempt history and redacted daemon events when explaining a
 failure:
 
@@ -78,14 +78,14 @@ Ask again before retrying a failed or interrupted operation:
 llm-notary --json operations retry op-example
 ```
 
-After finalization succeeds, verify the capture and report `verified`,
+After notarization succeeds, verify the capture and report `verified`,
 `verified_at_unix_ms`, `notary_key_id`, and `trust_source`. Do not infer a
 stronger claim than the returned verification result.
 
 ## Share only after separate approval
 
-Finalization is not sharing consent. Before sharing, explain that the exact
-finalized package will be verified and safety-scanned, and that its disclosed
+Notarization is not sharing consent. Before sharing, explain that the exact
+notarized package will be verified and safety-scanned, and that its disclosed
 request and response bodies can become visible to anyone with the resulting
 link. Confirm the visibility:
 
@@ -96,8 +96,8 @@ link. Confirm the visibility:
 After explicit approval, run one of:
 
 ```bash
-llm-notary --json share cap-example --visibility unlisted
-llm-notary --json share cap-example --visibility listed
+llm-notary --json share trc-example --visibility unlisted
+llm-notary --json share trc-example --visibility listed
 ```
 
 Do not use `--force` merely to bypass a warning. Review the reported disclosure
@@ -130,7 +130,7 @@ operation:
 
 1. Resolve the admin listener from the user's daemon configuration. Keep it on
    loopback.
-2. Check `GET /healthz` and require service `llm-notaryd` with API version
+2. Check `GET /healthz` and require service `notaryd` with API version
    `v1`.
 3. Fetch `GET /openapi.json`.
 4. Use only a method, path, parameters, body, and response fields described by

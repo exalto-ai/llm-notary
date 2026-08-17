@@ -30,15 +30,15 @@ const expectedOperations = {
   '/v1/status': { get: ['200', '401', '503'] },
   '/v1/settings/capture': { get: ['200', '401', '503'], put: ['200', '401', '503'] },
   '/v1/notaries': { get: ['200', '401', '500', '503'] },
-  '/v1/captures': { get: ['200', '400', '401', '503'] },
-  '/v1/captures/{capture_id}': { get: ['200', '401', '404', '503'] },
-  '/v1/captures/{capture_id}/finalizations': { post: ['202', '401', '404', '409', '503'] },
+  '/v1/traces': { get: ['200', '400', '401', '503'] },
+  '/v1/traces/{trace_id}': { get: ['200', '401', '404', '503'] },
+  '/v1/traces/{trace_id}/notarizations': { post: ['202', '401', '404', '409', '503'] },
   '/v1/operations': { get: ['200', '400', '401', '503'] },
   '/v1/operations/{operation_id}': { get: ['200', '401', '404', '503'] },
   '/v1/operations/{operation_id}/retry': { post: ['202', '401', '409', '503'] },
-  '/v1/captures/{capture_id}/package': { get: ['200', '401', '404', '409', '500', '503'] },
-  '/v1/captures/{capture_id}/trace': { get: ['200', '401', '404', '409', '500', '503'] },
-  '/v1/captures/{capture_id}/trace:verify': {
+  '/v1/traces/{trace_id}/package': { get: ['200', '401', '404', '409', '500', '503'] },
+  '/v1/traces/{trace_id}/trace': { get: ['200', '401', '404', '409', '500', '503'] },
+  '/v1/traces/{trace_id}/trace:verify': {
     post: ['200', '401', '404', '409', '422', '500', '503'],
   },
   '/v1/traces:verify': { post: ['200', '401', '422', '500', '503'] },
@@ -49,7 +49,7 @@ const expectedOperations = {
     delete: ['204', '401', '409', '503'],
   },
   '/v1/account/{request_id}': { get: ['200', '401', '404', '503'] },
-  '/v1/captures/{capture_id}/shares': { post: ['202', '401', '404', '409', '500', '503'] },
+  '/v1/traces/{trace_id}/shares': { post: ['202', '401', '404', '409', '500', '503'] },
   '/v1/shares/{share_id}': { get: ['200', '401', '404', '409', '503'] },
 };
 
@@ -92,11 +92,11 @@ function parameterNames(path, method) {
   return (openapi.paths[path][method].parameters ?? []).map((parameter) => parameter.name).sort();
 }
 const expectedParameters = {
-  'GET /v1/captures': [
-    'capture_state',
+  'GET /v1/traces': [
+    'capture_status',
     'created_after_unix_ms',
     'cursor',
-    'finalization_state',
+    'notarization_status',
     'limit',
     'model',
     'offset',
@@ -104,10 +104,10 @@ const expectedParameters = {
     'query',
     'streaming',
   ],
-  'GET /v1/operations': ['capture_id', 'cursor', 'kind', 'limit', 'state'],
+  'GET /v1/operations': ['trace_id', 'cursor', 'kind', 'limit', 'state'],
   'GET /v1/events': [
     'after',
-    'capture_id',
+    'trace_id',
     'created_after_unix_ms',
     'cursor',
     'event_type',
@@ -128,17 +128,17 @@ for (const [operation, expected] of Object.entries(expectedParameters)) {
 const expectedRequiredFields = {
   Page_CaptureResponse: ['items'],
   Page_OperationSummaryResponse: ['items'],
-  CaptureDetailResponse: ['artifacts', 'capture', 'finalizations'],
+  CaptureDetailResponse: ['artifacts', 'capture', 'notarizations'],
   CaptureResponse: [
-    'capture_id',
+    'trace_id',
     'created_at_unix_ms',
     'provider',
     'operation',
     'streaming',
     'request_bytes',
-    'capture_state',
-    'finalization_state',
-    'finalization_eligible',
+    'capture_status',
+    'notarization_status',
+    'notarization_eligible',
     'prompt_preview',
     'prompt_preview_truncated',
     'output_preview',
@@ -148,13 +148,14 @@ const expectedRequiredFields = {
   ErrorEnvelope: ['error'],
   EventResponse: ['event_id', 'created_at_unix_ms', 'event_type', 'severity', 'message'],
   EventListResponse: ['items'],
-  FinalizationResponse: ['operation', 'deduplicated'],
+  NotarizationResponse: ['operation', 'deduplicated'],
   NotariesResponse: ['source', 'notaries'],
   NotaryResponse: ['endpoint', 'transport', 'key_id', 'status'],
   OperationAttemptResponse: ['attempt', 'state', 'started_at_unix_ms'],
   OperationResponse: [
     'operation_id',
     'kind',
+    'trace_id',
     'state',
     'attempt',
     'attempt_history',
@@ -165,6 +166,7 @@ const expectedRequiredFields = {
   OperationSummaryResponse: [
     'operation_id',
     'kind',
+    'trace_id',
     'state',
     'attempt',
     'created_at_unix_ms',
@@ -185,11 +187,11 @@ const expectedRequiredFields = {
     'poll_interval_seconds',
     'state',
   ],
-  ShareResponse: ['capture_id', 'share_id', 'state', 'visibility', 'status_url'],
+  ShareResponse: ['trace_id', 'share_id', 'state', 'visibility', 'status_url'],
   ShareStatusResponse: ['share_id', 'state', 'visibility'],
-  TraceResponse: ['capture_id', 'manifest', 'trace'],
+  TraceResponse: ['trace_id', 'manifest', 'trace'],
   VerificationResponse: [
-    'capture_id',
+    'trace_id',
     'verified',
     'verified_at_unix_ms',
     'notary_key_id',
@@ -207,7 +209,7 @@ for (const term of [
   '202 Accepted',
   'deduplicated',
   'attempt_history',
-  'finalization_eligible',
+  'notarization_eligible',
   'retryable',
   'progress.proof',
   'bytes_completed',
@@ -225,7 +227,7 @@ for (const term of [
 const screenshots = [
   'overview-light.png',
   'captures-dark.png',
-  'finalization-retry.png',
+  'notarization-retry.png',
   'trace-verification.png',
   'share-preview.png',
   'share-confirmation.png',
@@ -261,7 +263,7 @@ const consistencySources = [
   ...markdown,
   resolve(appRoot, 'src/generated/openapi.json'),
   resolve(appRoot, 'src/generated/api.generated.d.ts'),
-  resolve(runtimeRoot, 'crates/llm-notary-daemon/src/lib.rs'),
+  resolve(runtimeRoot, 'crates/notaryd/src/lib.rs'),
 ];
 const obsoleteCommand =
   /llm-notary\s+(proxy|verify-trace|download|config|vault|list|show|verify|decode)\b/;
@@ -278,7 +280,7 @@ for (const file of consistencySources) {
 const inaccurateClaims = [
   /signed (?:production )?notary directory/i,
   /clients cache the signed notary directory/i,
-  /releases include `llm-notaryd`/i,
+  /releases include `notaryd`/i,
   /deploy the notary and check the v2 admission prelude/i,
   /download the public evidence attached/i,
   /durable human-readable result/i,
@@ -296,7 +298,7 @@ for (const file of consistencySources) {
 }
 
 for (const required of [
-  'llm-notaryd',
+  'notaryd',
   'llm-notary status',
   'llm-notary captures list',
   'llm-notary skill install',

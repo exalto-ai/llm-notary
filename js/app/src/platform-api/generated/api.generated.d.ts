@@ -982,10 +982,12 @@ export interface components {
             user: components["schemas"]["PublicUser"];
         };
         NotaryDirectoryRecordResponse: {
-            /** Format: int64 */
-            finalize_until_unix_ms?: number | null;
             host: string;
             key_id: string;
+            name: string;
+            /** Format: int64 */
+            notarize_until_unix_ms?: number | null;
+            operator: string;
             /** Format: int32 */
             port: number;
             public_key: string;
@@ -2976,7 +2978,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/vnd.llmnotary.trace-package+zip": number[];
+                    "application/vnd.exalto.notary.trace-package+zip": number[];
                 };
             };
             401: {
@@ -3500,7 +3502,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/vnd.llmnotary.trace-package+zip": components["schemas"]["TracePackageBody"];
+                "application/vnd.exalto.notary.trace-package+zip": components["schemas"]["TracePackageBody"];
             };
         };
         responses: {

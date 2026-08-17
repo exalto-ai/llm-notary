@@ -27,7 +27,7 @@ use utoipa::ToSchema;
 use utoipa_axum::{router::OpenApiRouter, routes};
 use uuid::Uuid;
 
-use llm_notary_core::{
+use notary_core::{
     pagination::{CursorScope, Page, PageQuery, decode_cursor},
     public_safety::{
         PUBLIC_PACKAGE_SAFETY_VERSION, PublicPackageSafetyContext,
@@ -529,7 +529,7 @@ async fn public_share_trace(
     summary = "Download the exact admitted portable proof package",
     params(("share_id" = String, Path), ("X-Share-Password" = Option<String>, Header, description = "Base64url-encoded UTF-8 password for a protected share")),
     responses(
-        (status = 200, body = Vec<u8>, content_type = "application/vnd.llmnotary.trace-package+zip"),
+        (status = 200, body = Vec<u8>, content_type = "application/vnd.exalto.notary.trace-package+zip"),
         (status = 401, body = super::ErrorResponse),
         (status = 404, body = super::ErrorResponse),
         (status = 429, body = super::ErrorResponse),
@@ -700,7 +700,7 @@ async fn process_claim(state: &AppState, job: PublishJobRow, claim: String) {
             state
                 .publish
                 .max_archive_bytes
-                .min(llm_notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64) as usize,
+                .min(notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64) as usize,
         )
         .await
     {
@@ -794,7 +794,7 @@ fn finish_admission_metric(outcome: &'static str, started: Instant) {
 
 fn verify_for_admission(
     archive: Vec<u8>,
-    directory: &llm_notary_core::notary_directory::NotaryDirectory,
+    directory: &notary_core::registry::Registry,
     force_publication: bool,
 ) -> std::result::Result<AdmittedArtifacts, AdmissionFailure> {
     let verified = verify_package(&archive, directory).map_err(|error| match error {
@@ -1597,7 +1597,7 @@ fn public_bytes(
 mod tests {
     use std::fs;
 
-    use llm_notary_core::archive::{PACKAGE_FILES, build_trace_package_archive};
+    use notary_core::archive::{PACKAGE_FILES, build_trace_package_archive};
 
     use super::*;
 
@@ -1646,7 +1646,7 @@ mod tests {
                  $1, 'library-user', $1 || '-key', 'admitted', $2,
                  1, $3, $1 || '-upload', $1 || '-intake', 10, 1, 1,
                  1, 1, $3, $1 || '-trace', 1, $4, $5,
-                 $1 || '-package', 1, $6, 'llm-notary/public-package-safety/v1',
+                 $1 || '-package', 1, $6, 'notary/public-package-safety/v1',
                  $7, $7 || '.example.com', 'model-' || $1, $8,
                  'input ' || $1, 'output ' || $1, $9
              )",
@@ -1832,7 +1832,7 @@ mod tests {
         for name in PACKAGE_FILES {
             let bytes = match name {
                 "manifest.json" => {
-                    br#"{"format":"llm-notary/verified-trace-package/v2"}"#.to_vec()
+                    br#"{"format":"notary/trace-evidence/v1"}"#.to_vec()
                 }
                 "request.disclosed.http" => b"POST /v1/chat/completions HTTP/1.1\r\nAuthorization: \0\0\0\0\r\n\r\n{\"model\":\"gpt-test\"}".to_vec(),
                 "response.disclosed.http" => b"HTTP/1.1 200 OK\r\nContent-Type: \0\0\0\r\n\r\n{\"id\":\"chatcmpl-7Qx9Za2Bc4De6Fg8Hi0Jk3Lm5Np\",\"choices\":[]}".to_vec(),
@@ -1895,7 +1895,7 @@ mod tests {
         .unwrap();
         let archive = package_with_openai_response_id(&trace);
         let verified = HostedVerifiedPackage {
-            capture_id: "cap-test".to_owned(),
+            capture_id: "trc-test".to_owned(),
             authenticated_at_unix_ms: 1_700_000_000_000,
             provider_name: "openai".to_owned(),
             provider_host: "api.openai.com".to_owned(),

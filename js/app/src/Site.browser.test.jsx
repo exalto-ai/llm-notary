@@ -919,6 +919,8 @@ describe('hosted site', () => {
     render(
       <HostedNotaryRecord
         record={{
+          name: 'Alice',
+          operator: 'Exalto',
           host: 'notary.example',
           port: 7047,
           transport: 'tls',
@@ -926,7 +928,7 @@ describe('hosted site', () => {
           key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           valid_from_unix_ms: 0,
           valid_until_unix_ms: null,
-          finalize_until_unix_ms: null,
+          notarize_until_unix_ms: null,
         }}
         activeKeyId="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         copiedKeyId={null}
@@ -1184,7 +1186,7 @@ describe('hosted site', () => {
       trace_sha256: 'b'.repeat(64),
       package_size_bytes: 4096,
       package_sha256: 'c'.repeat(64),
-      public_package_safety_version: 'llm-notary/public-package-safety/v1',
+      public_package_safety_version: 'notary/public-package-safety/v1',
       trace_url: '/api/public/shares/share-12/trace.otlp.json',
       package_url: '/api/public/shares/share-12/package.llmtrace',
       share_url: 'https://example.test/s/share-12',
@@ -1290,7 +1292,7 @@ describe('hosted site', () => {
         trace_sha256: 'b'.repeat(64),
         package_size_bytes: 2048,
         package_sha256: 'c'.repeat(64),
-        public_package_safety_version: 'llm-notary/public-package-safety/v1',
+        public_package_safety_version: 'notary/public-package-safety/v1',
         trace_url: '/api/public/shares/protected-share/trace.otlp.json',
         package_url: '/api/public/shares/protected-share/package.llmtrace',
         share_url: 'https://example.test/s/protected-share',
@@ -1444,7 +1446,7 @@ describe('hosted site', () => {
     const input = document.querySelector('input[type="file"]');
     expect(input.getAttribute('accept')).toBeNull();
     const file = new File(['sanitized fixture'], 'sanitized.llmtrace', {
-      type: 'application/vnd.llmnotary.trace-package+zip',
+      type: 'application/vnd.exalto.notary.trace-package+zip',
     });
     fireEvent.change(input, { target: { files: [file] } });
 

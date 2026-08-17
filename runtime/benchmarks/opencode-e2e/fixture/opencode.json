@@ -11,7 +11,7 @@
     "openrouter": {
       "options": {
         "apiKey": "{env:OPENROUTER_FREE_TIER_API_KEY}",
-        "baseURL": "{env:LLM_NOTARY_OPENROUTER_BASE_URL}",
+        "baseURL": "{env:NOTARYD_E2E_OPENROUTER_BASE_URL}",
         "timeout": 120000,
         "chunkTimeout": 30000
       },

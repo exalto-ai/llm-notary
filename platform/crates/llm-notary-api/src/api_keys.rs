@@ -17,7 +17,7 @@ use super::{
     authn::{API_KEY_VERSION_PREFIX, ApiScope},
     database_error, pagination, random_token, unix_timestamp,
 };
-use llm_notary_core::pagination::{CursorScope, Page, PageQuery, decode_cursor};
+use notary_core::pagination::{CursorScope, Page, PageQuery, decode_cursor};
 
 const MAX_API_KEY_NAME_BYTES: usize = 100;
 const DISPLAY_ID_BYTES: usize = 12;
@@ -319,7 +319,7 @@ mod tests {
                 "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
                  VALUES ($1, $2, $3, $4)",
             )
-            .bind(llm_notary_core::sha256_hex(token.as_bytes()))
+            .bind(notary_core::sha256_hex(token.as_bytes()))
             .bind(user_id)
             .bind(now + 600)
             .bind(now)

@@ -9,7 +9,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 #[test]
 fn worker_rejects_malformed_packages_with_a_stable_code() {
     let directory = serde_json::to_vec(&serde_json::json!({
-        "format": "llm-notary/notary-directory/v3",
+        "format": "notary/registry/v1",
         "generation": 0,
         "active_key_id": "unused",
         "notaries": []
@@ -50,12 +50,14 @@ fn worker_rejects_malformed_packages_with_a_stable_code() {
 #[test]
 fn sanitized_valid_package_traverses_the_isolated_worker() {
     const NOTARY_KEY: &str = "0256b328b30c8bf5839e24058747879408bdb36241dc9c2e7c619faa12b2920967";
-    let key_id = llm_notary_core::notary_directory::key_id(&hex::decode(NOTARY_KEY).unwrap());
+    let key_id = notary_core::registry::key_id(&hex::decode(NOTARY_KEY).unwrap());
     let directory = serde_json::to_vec(&serde_json::json!({
-        "format": "llm-notary/notary-directory/v3",
+        "format": "notary/registry/v1",
         "generation": 42,
         "active_key_id": key_id,
         "notaries": [{
+            "name": "Fixture notary",
+            "operator": "Exalto",
             "host": "fixture-notary.example",
             "port": 443,
             "transport": "tls",
@@ -64,7 +66,7 @@ fn sanitized_valid_package_traverses_the_isolated_worker() {
             "status": "active",
             "valid_from_unix_ms": 0,
             "valid_until_unix_ms": null,
-            "finalize_until_unix_ms": null
+            "notarize_until_unix_ms": null
         }]
     }))
     .unwrap();
@@ -109,7 +111,7 @@ fn sanitized_valid_package_traverses_the_isolated_worker() {
     assert_eq!(body_length, output.stdout.len() - 9);
     let body: serde_json::Value = serde_json::from_slice(&output.stdout[9..]).unwrap();
     assert_eq!(body["verified"], true);
-    assert_eq!(body["capture_id"], "cap-test");
+    assert_eq!(body["capture_id"], "trc-test");
     assert_eq!(body["provider"], "test-server.io");
     assert_eq!(body["host"], "test-server.io");
     assert_eq!(body["notary_key_id"], key_id);
@@ -117,11 +119,11 @@ fn sanitized_valid_package_traverses_the_isolated_worker() {
     assert_eq!(body["trust_source"], "hosted_notary_directory");
     assert_eq!(
         body["package_sha256"],
-        "08332885cddbeb56c1de73ef51d4235b26d429b479dc0fb208d7de32fee55ac7"
+        "c2b5159f0a7cbdc4a9a24e1fdec14b125e83ae32393704af20885796c86da3dd"
     );
     assert_eq!(
         body["trace_sha256"],
-        "fba27116746e356a3d42805e6a991c37c2abbb13dbf2c0c4d2d49f3aa1c53466"
+        "cf53f483fe8f438c2660323f1b0a4332394299aa2bb2b38beda24da0607342fa"
     );
     assert_eq!(
         body["trace"]["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"],

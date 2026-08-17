@@ -30,7 +30,7 @@ use super::{
     intake::{ARCHIVE_FORMAT, IntakeStorage},
     pagination, unix_timestamp,
 };
-use llm_notary_core::pagination::{CursorScope, Page, PageQuery, decode_cursor};
+use notary_core::pagination::{CursorScope, Page, PageQuery, decode_cursor};
 
 #[cfg(test)]
 use super::config::{DEFAULT_MAX_ARCHIVE_BYTES, DEFAULT_UPLOAD_TTL_SECS};
@@ -1054,7 +1054,7 @@ fn validate_request(service: &PublishService, request: &CreatePublishJob) -> Api
     }
     let max_archive_bytes = service
         .max_archive_bytes
-        .min(llm_notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64);
+        .min(notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64);
     if request.size_bytes <= 0 || request.size_bytes > max_archive_bytes {
         return Err(ApiError::bad_request(
             "size_bytes is outside the accepted range",
@@ -1510,7 +1510,7 @@ mod tests {
             "INSERT INTO sessions (token_hash, user_id, expires_at, created_at)
              VALUES ($1, 'user-1', $2, $3)",
         )
-        .bind(llm_notary_core::sha256_hex(web_token.as_bytes()))
+        .bind(notary_core::sha256_hex(web_token.as_bytes()))
         .bind(now + super::super::SESSION_TTL_SECS)
         .bind(now)
         .execute(&state.database)
