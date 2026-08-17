@@ -167,16 +167,23 @@ Each hosted capture requests a purpose-specific ticket without requesting a
 copy of the account balance or a byte grant. Each hosted notarization requests
 a separate ticket bound to the checkpoint's exact record digest and authenticated
 allowance. Tickets are neither cached nor renewed. Admission denial, exhausted
-allowance, expiry, and coordinator outages are returned as bounded errors that
+allowance, expiry, and platform API outages are returned as bounded errors that
 do not include the raw ticket or account credential.
 
 For local or self-hosted development, start a notary and explicitly pin its
 key:
 
 ```bash
+install -m 0600 /dev/null notary.dev.key
 openssl rand -hex 32 > notary.dev.key
-cargo run -p llm-notary-server --bin llm-notary-server -- \
-  --signing-key notary.dev.key
+cargo run -p notary-server --bin notary-server -- \
+  serve \
+  --signing-key-file notary.dev.key \
+  --allow-host api.openai.com \
+  --allow-host chatgpt.com \
+  --allow-host api.anthropic.com \
+  --allow-host api.deepseek.com \
+  --allow-host openrouter.ai
 ```
 
 The process prints its compressed SEC1 public key. Stop the local daemon, then
@@ -192,7 +199,7 @@ An explicit endpoint without its expected key is rejected. Restart the daemon
 after editing the file.
 
 For unattended or clustered use, configure an explicit notary endpoint and key
-so the runtime does not depend on a hosted account or coordinator.
+so the runtime does not depend on a hosted account or platform API.
 
 ## Capture one call
 

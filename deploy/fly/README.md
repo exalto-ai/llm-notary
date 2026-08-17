@@ -27,7 +27,7 @@ operation state that must survive restarts and Machine replacement:
 
 ```bash
 fly volumes create notary_data --region sjc --size 1 \
-  -a llm-notary-prod-notary
+  -a llm-notary-prod-server
 ```
 
 The notary's TLS handler can use Fly's shared IPv4 routing.
@@ -51,10 +51,10 @@ upload credential.
 The API uses base64-encoded Fly file secrets for every credential and for the
 canonical Registry document:
 
-- `NOTARY_SIGNING_KEY_B64` on the notary.
+- `NOTARY_SERVER_SIGNING_KEY_B64` on the notary.
 - `ADMISSION_SERVICE_TOKEN_B64` on both the API and notary. Use the same
   random value in both apps; it authenticates only the notary's narrow admission
-  coordinator calls and is never sent to local clients.
+  platform API calls and is never sent to local clients.
 - `ANONYMOUS_SUBJECT_HMAC_KEY_B64` on the API only. It derives period-scoped
   opaque Public credit subjects and must be independent of the admission and
   signing keys. Increment the configured key version when rotating it.
@@ -142,7 +142,7 @@ upgrade from prototype hosted schemas. Back up any prototype data that must be
 kept, provision a fresh database, and validate the baseline before directing
 traffic to this release. Keep the notary's `notary_data` volume:
 `/data/usage-outbox` retains measured usage until the private settlement
-endpoint acknowledges it, including across Machine restarts or coordinator
+endpoint acknowledges it, including across Machine restarts or platform API
 outages.
 
 Operation usage must be acknowledged in PostgreSQL or remain durably queued
@@ -174,13 +174,15 @@ legacy replica: the two schemas cannot share tickets, sessions, or settlements.
 
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private
-`llm-notary-prod-api.flycast` origin with the `one_operation_v1` contract before
-protocol work. New sessions fail closed if that control plane is unavailable,
-while an admitted one-operation session continues using only local notary
-limits and timeouts. The API rejects a redeem request that omits the
-one-operation contract or durable-settlement capability. Public and signed-in
-Free sessions share this path; their credit subjects determine which grants
-fund capture and notarization.
+`llm-notary-prod-api.flycast` origin with the `one_operation_v2` contract before
+protocol work. The V2 contract creates a pending operation with a 60-second
+activation window. The notary first stages that operation in its local durable
+usage outbox, validates the returned limits, and only then activates it. No
+protocol session starts before activation. New sessions fail closed if that
+control plane is unavailable, while an activated one-operation session
+continues using only local notary limits and timeouts. Public and signed-in Free
+sessions share this path; their credit subjects determine which grants fund
+capture and notarization.
 At the end of the operation, the notary reports the redeemed operation ID,
 mode, terminal outcome, instance, and authoritative authenticated bytes through
 the same service-authenticated private API. The redeem request advertises this
@@ -202,6 +204,37 @@ The TLS certificate authenticates the network endpoint but does not replace the
 notary signing key in the Registry. A self-hosted notary can advertise either
 `tcp` or `tls`; TLS termination need not be provided by Fly.
 
+## One-time notary-server cutover
+
+The checked-in server configuration intentionally targets the renamed
+`llm-notary-prod-server` app. Normal CI refuses to deploy until that app has a
+bootstrapped, digest-pinned Machine and all cutover prerequisites. Perform this
+one-time setup before merging or enabling the workflow:
+
+1. Create `llm-notary-prod-server` in the production organization and create
+   its `notary_data` volume in `sjc`.
+2. Re-stage `NOTARY_SERVER_SIGNING_KEY_B64` and
+   `ADMISSION_SERVICE_TOKEN_B64` on the new app. Fly does not reveal existing
+   secret values, so restore them from the authoritative secret manager; never
+   copy them through logs or shell arguments.
+3. Build one reviewed image, resolve it to a `sha256` digest, and deploy that
+   digest explicitly to bootstrap the first Machine.
+4. Run `fly certs setup alice.notary.exalto.ai -a llm-notary-prod-server`, add
+   the reported CNAME and `_fly-ownership` TXT records, and wait for the
+   certificate to report configured.
+5. Run `bash deploy/fly/preflight-notary-server.sh`. It verifies the app,
+   region/volume, secret names, single current digest-pinned image, and
+   certificate without printing secret values.
+6. Exercise the binary admission protocol against the new app's staging
+   hostname. Wait for active sessions and the usage-outbox pending metric on
+   the old app to reach zero, switch the public CNAME, and repeat the admission
+   check through `alice.notary.exalto.ai`.
+
+Keep the old app, volume, certificate, and DNS target intact for one rollback
+window. To roll back, drain the new server, restore the old CNAME, verify its
+certificate and admission path, then stop the new app. Do not destroy either
+volume until its outbox is empty and the rollback window has closed.
+
 ## Production rollout
 
 Production is deployed only by the `Production deployment` job in CI. A push
@@ -215,20 +248,29 @@ gives each image a tag unique to the commit and CI run. The rollout then uses
 that tag to resolve an immutable `sha256` digest and deploys only the digest.
 It therefore neither rebuilds nor promotes a different image:
 
-1. Deploy the operation-only notary. The API already accepts its contract, and
-   its durable usage outbox remains valid across the rolling change.
-2. Deploy the API and check it through the still-old web gateway. Any release
-   migration runs before the new API starts and must remain writable by the
-   recorded rollback image.
+1. Deploy the notary-server against the currently deployed dual-contract API.
+   The server begins redeeming and activating V2 operations while the API still
+   accepts both V1 and V2.
+2. Deploy the V2-only API and check it through the still-old web gateway. Any
+   release migration runs before the new API starts and must remain writable by
+   the recorded rollback image.
 3. Deploy the web gateway and check the public readiness route again.
 4. For a client-affecting change, build every CLI platform, upload and verify
    one immutable object set, then move the website's `latest` pointer.
+
+The deployment preflight sends an unauthenticated request to the V2 activation
+route and requires its exact `401` response before the server rollout begins.
+This proves that the preceding dual-contract API release is live; a rapid stack
+merge, skipped deployment, or failed prior rollout cannot jump directly from a
+V1-only API to the V2-only server/API pair.
 
 Before the first change, the workflow records every app's current Fly image.
 If a deploy or compatibility check fails, it restores each attempted app in
 reverse order. API rollback skips the old image's release command: PostgreSQL
 migrations are forward-only and the previous API must remain usable against
-the newly migrated schema.
+the newly migrated schema. If API restoration fails, rollback deliberately
+keeps the V2 server running because it is compatible with both API contracts;
+it never restores the V1 server against a possibly V2-only API.
 
 ### Rolling compatibility contract
 
@@ -251,23 +293,26 @@ hide it.
 
 For a break-glass, operator-driven deployment from the repository root, use the
 same build-then-deploy split and retain the previous image references for
-rollback. Deploy the operation-only notary before the API, as CI does.
+rollback. For this V2 cutover, deploy the notary-server first and the API
+second, as CI does. Roll back the API to its dual-contract image before rolling
+the server back to V1.
 Normal production changes must go through CI:
 
 ```bash
 label="manual-$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)"
-fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary.fly.toml
+fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary-server.fly.toml
 fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary-api.fly.toml
 fly deploy js/app --build-only --push --image-label "$label" \
   -c "$PWD/deploy/fly/web.fly.toml"
 
 fly auth docker
 notary_api_image="registry.fly.io/llm-notary-prod-api@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-api:$label")"
-notary_image="registry.fly.io/llm-notary-prod-notary@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-notary:$label")"
+notary_server_image="registry.fly.io/llm-notary-prod-server@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-server:$label")"
 web_image="registry.fly.io/llm-notary-prod-web@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-web:$label")"
 
-fly deploy --image "$notary_image" \
-  --ha=false -c deploy/fly/notary.fly.toml
+bash deploy/fly/preflight-notary-api.sh
+fly deploy --image "$notary_server_image" \
+  --ha=false -c deploy/fly/notary-server.fly.toml
 fly deploy --image "$notary_api_image" \
   --ha=true -c deploy/fly/notary-api.fly.toml
 fly deploy js/app --image "$web_image" \
@@ -289,6 +334,10 @@ generation. Add capacity with `fly scale count <n> -a llm-notary-prod-api`,
 keeping the total configured database pool size within the Neon connection
 budget.
 
+The notary's 30-second Fly stop timeout contains the 15-second shared-server
+drain and the platform adapter's final 10-second settlement flush. Keep those
+budgets bounded and leave headroom for process startup and task-group teardown.
+
 ## Metrics
 
 Fly scrapes the API's private `:8080/metrics` endpoint and the notary's
@@ -301,7 +350,7 @@ Create a short-lived, read-only organization token before querying the API;
 do not use a deploy token or commit this token to an environment file:
 
 ```bash
-fly tokens create readonly --org <org-slug> --expiry 1h --name llm-notary-metrics
+fly tokens create readonly --org <org-slug> --expiry 1h --name notary-metrics
 ```
 
 With that token in `FLY_METRICS_TOKEN`, query
@@ -315,17 +364,17 @@ sum(rate(fly_edge_http_responses_count{app="llm-notary-prod-web"}[5m])) by (stat
 # p95 API handler latency by route (application time, excluding Fly routing).
 histogram_quantile(0.95, sum(rate(notary_api_http_request_duration_seconds_bucket{app="llm-notary-prod-api"}[5m])) by (le, route))
 
-# Admission backlog and age of its oldest item.
+# Trace-verification backlog and age of its oldest item.
 max(notary_api_trace_verification_queue_depth{app="llm-notary-prod-api"})
 max(notary_api_trace_verification_oldest_queued_seconds{app="llm-notary-prod-api"})
 
-# Admission outcomes and p95 verification time.
+# Trace-verification outcomes and p95 verification time.
 sum(increase(notary_api_trace_verifications_total{app="llm-notary-prod-api"}[1h])) by (outcome)
 histogram_quantile(0.95, sum(rate(notary_api_trace_verification_duration_seconds_bucket{app="llm-notary-prod-api"}[15m])) by (le, outcome))
 
 # Raw TCP demand plus active notary protocol sessions.
-sum(increase(fly_edge_tcp_connects_count{app="llm-notary-prod-notary"}[5m]))
-sum(llm_notary_notary_active_sessions{app="llm-notary-prod-notary"}) by (mode)
+sum(increase(fly_edge_tcp_connects_count{app="llm-notary-prod-server"}[5m]))
+sum(notary_server_active_sessions{app="llm-notary-prod-server"}) by (mode)
 ```
 
 The binaries can also export OTLP traces when an

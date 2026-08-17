@@ -178,11 +178,11 @@ dependency. It applies pending migrations before any API replica starts. Deploy
 with the root-owned environment file outside the repository:
 
 ```bash
-docker compose --env-file /etc/llm-notary/compose.env up -d --scale api=3
+docker compose --env-file /etc/llm-notary/compose.env up -d --scale notary-api=3
 ```
 
 If a deployment tool updates an image without recreating services, include its
-equivalent of `--force-recreate migrate api` so the one-shot service runs the
+equivalent of `--force-recreate migrate notary-api` so the one-shot service runs the
 new image before the API is replaced.
 
 Watch `/api/readyz`, API error rate, queued-admission age, and Neon connection

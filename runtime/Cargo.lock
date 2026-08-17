@@ -3261,23 +3261,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-notary-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "clap",
- "hex",
- "k256",
- "metrics",
- "notary-core",
- "tempfile",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "llm-notary-updater"
 version = "0.1.0"
 dependencies = [
@@ -3954,6 +3937,24 @@ dependencies = [
  "webpki-roots 1.0.9",
  "zeroize",
  "zip",
+]
+
+[[package]]
+name = "notary-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "clap",
+ "hex",
+ "k256",
+ "libc",
+ "metrics",
+ "notary-core",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

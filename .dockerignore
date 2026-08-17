@@ -11,6 +11,8 @@ runtime/apps/local-dashboard/node_modules/
 runtime/apps/local-dashboard/.vitest-attachments/
 !platform/
 !platform/**
+!deploy/
+!deploy/notary-server-entrypoint.sh
 !js/
 !js/desktop/
 !js/desktop/src-tauri/

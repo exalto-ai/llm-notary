@@ -3,7 +3,7 @@
 ## Project map
 
 - `runtime/` is the self-contained public workspace. It owns core protocol/evidence contracts, the local daemon, thin REST CLI, generic remote notary, updater, local dashboard, runtime docs, and pinned TLSNotary sources.
-- `platform/crates/notary-api/` owns the hosted account, credit, billing, upload, and sharing API. `platform/crates/llm-notary-hosted-server/` is the private admission and settlement adapter around the generic notary.
+- `platform/crates/notary-api/` owns the hosted account, credit, billing, upload, and sharing API. `platform/crates/notary-server-platform-adapter/` is the private admission and settlement adapter around the generic notary.
 - `runtime/vendor/tlsn/` is a pinned, locally patched TLSNotary dependency. Treat it as third-party code; change it only when the protocol requires it and explain the patch.
 - `js/app/` is the hosted Vite/React website. `runtime/apps/local-dashboard/` is the daemon dashboard. Follow [`DESIGN.md`](DESIGN.md) for UI work.
 - `docs/README.md` indexes user, operator, and contributor documentation. `compose.yml`, `deploy/`, and `.github/workflows/` define the container configuration and Fly.io deployment.
@@ -23,8 +23,8 @@ Run the checks relevant to edited code before handing work off:
 cargo fmt --check
 cargo fmt --manifest-path runtime/Cargo.toml --check \
   -p notary-core -p notaryd -p llm-notary-cli \
-  -p llm-notary-updater -p llm-notary-server
-cargo test -p notary-api -p llm-notary-hosted-server --all-targets --all-features
+  -p llm-notary-updater -p notary-server
+cargo test -p notary-api -p notary-server-platform-adapter --all-targets --all-features
 cargo test --manifest-path runtime/Cargo.toml --workspace --all-targets --all-features
 npm --prefix runtime/apps/local-dashboard run build
 npm --prefix js/app run build

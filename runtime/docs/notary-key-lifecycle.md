@@ -88,32 +88,27 @@ rejected so transport can never be selected implicitly.
    and the previous key `retiring`. Set the old record's
    `valid_until_unix_ms` to the capture handoff and
    `notarize_until_unix_ms` to the end of the intended checkpoint-drain period.
-3. Restart the old instance with `--notarize-only`. New proxy sessions use the
+3. Restart the old instance with `notary-server serve --notarization-only`. New proxy sessions use the
    replacement; the old process rejects capture mode at the protocol boundary
    while existing bundles continue to notarize through it.
 4. After the drain period, publish the old key as `retired` and stop its
    endpoint. Previously notarized evidence remains verifiable within the
    recorded window.
 
-The API accepts the complete Registry document through
-`LLM_NOTARY_NOTARY_DIRECTORY_JSON`. In the colocated Compose deployment, the
-active record must match `LLM_NOTARY_NOTARY_PUBLIC_KEY`; the notary health
-check independently confirms that this public key matches the mounted private
-key. The existing single-key environment variables generate a canonical Registry;
-set `LLM_NOTARY_NOTARY_TRANSPORT=tls` only when the advertised endpoint
-terminates public-CA TLS. Clients require that transport to be explicit and
-validate TLS before sending the NTRY v1 prelude.
+The hosted API reads the complete Registry only from
+`NOTARY_API_REGISTRY_FILE`. In the colocated Compose deployment, the active
+record must match `NOTARY_SERVER_PUBLIC_KEY`; the notary health check uses
+`notary-server public-key --signing-key-file ...` to independently confirm that
+the public key matches the mounted private key. The platform policy adapter's
+required `NOTARY_SERVER_REGISTRY_GENERATION` must equal the generation in that
+canonical Registry file, so a ticket cannot be redeemed against different
+directory metadata.
 
-The fallback single-key configuration starts at generation 1; set
-`LLM_NOTARY_REGISTRY_GENERATION` explicitly if its directory metadata
-changes.
-
-Configure the optional `LLM_NOTARY_NOTARY_DIRECTORY_JSON`,
-`LLM_NOTARY_REGISTRY_GENERATION`, and
-`LLM_NOTARY_NOTARY_VALID_FROM_UNIX_MS` values in the deployment environment.
-Store directory JSON as one compact line. The active record must still match
-the signing key mounted in the colocated active notary; retiring notarize-only
-instances are operated separately until their drain deadlines.
+For every endpoint, transport, validity, status, or key change, edit the
+canonical Registry JSON, increment its `generation`, and deploy the matching
+`NOTARY_SERVER_REGISTRY_GENERATION`. Store the JSON as one compact line.
+Retiring notarization-only instances are operated separately until their drain
+deadlines. There is no single-key or inline Registry fallback.
 
 Before the handoff, back up the old 32-byte private signing-key file to
 encrypted offline storage and verify that the backup reproduces the advertised

@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -13,24 +14,25 @@ use notary_core::NotarySessionMode;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone)]
-pub(super) struct UsageOutbox {
+pub(super) struct UsageSettlementOutbox {
     pub(super) directory: Arc<PathBuf>,
     write_lock: Arc<Mutex<()>>,
     next_temp_id: Arc<AtomicU64>,
+    terminal_retries: Arc<Mutex<BTreeMap<String, TerminalUpdate>>>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum UsageMode {
     Capture,
-    Finalize,
+    Notarization,
 }
 
 impl UsageMode {
     pub(super) fn for_session(mode: NotarySessionMode) -> Self {
         match mode {
             NotarySessionMode::Capture => Self::Capture,
-            NotarySessionMode::Notarization => Self::Finalize,
+            NotarySessionMode::Notarization => Self::Notarization,
         }
     }
 }
@@ -52,6 +54,12 @@ pub(super) struct PendingUsageSettlement {
     pub(super) outcome: Option<UsageSettlementOutcome>,
 }
 
+#[derive(Clone, Copy)]
+struct TerminalUpdate {
+    outcome: UsageSettlementOutcome,
+    fallback_bytes: usize,
+}
+
 #[cfg(unix)]
 fn sync_directory(directory: &Path) -> Result<()> {
     fs::File::open(directory)?.sync_all()?;
@@ -63,7 +71,7 @@ fn sync_directory(_directory: &Path) -> Result<()> {
     Ok(())
 }
 
-impl UsageOutbox {
+impl UsageSettlementOutbox {
     pub(super) fn open(directory: impl Into<PathBuf>) -> Result<Self> {
         let directory = directory.into();
         if directory.as_os_str().is_empty() {
@@ -75,6 +83,7 @@ impl UsageOutbox {
             directory: Arc::new(directory),
             write_lock: Arc::new(Mutex::new(())),
             next_temp_id: Arc::new(AtomicU64::new(0)),
+            terminal_retries: Arc::new(Mutex::new(BTreeMap::new())),
         };
         outbox.cleanup_temporary_files()?;
         Ok(outbox)
@@ -133,31 +142,78 @@ impl UsageOutbox {
         outcome: UsageSettlementOutcome,
         fallback_bytes: usize,
     ) -> Result<()> {
+        let update = TerminalUpdate {
+            outcome,
+            fallback_bytes,
+        };
+        match self.finish_inner(operation_id, update) {
+            Ok(()) => {
+                self.terminal_retries
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("usage terminal-retry lock was poisoned"))?
+                    .remove(operation_id);
+                Ok(())
+            }
+            Err(error) => {
+                self.terminal_retries
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("usage terminal-retry lock was poisoned"))?
+                    .insert(operation_id.to_owned(), update);
+                Err(error)
+            }
+        }
+    }
+
+    fn finish_inner(&self, operation_id: &str, update: TerminalUpdate) -> Result<()> {
         let path = self.path(operation_id)?;
         let mut pending = self.read(&path)?;
-        let fallback_bytes =
-            i64::try_from(fallback_bytes).context("authenticated usage does not fit in i64")?;
+        let fallback_bytes = i64::try_from(update.fallback_bytes)
+            .context("authenticated usage does not fit in i64")?;
         if pending.authenticated_bytes == 0 {
             pending.authenticated_bytes = fallback_bytes;
         } else if fallback_bytes != 0 && pending.authenticated_bytes != fallback_bytes {
             bail!("terminal usage conflicts with its staged measurement");
         }
         if let Some(previous) = pending.outcome {
-            if previous == outcome {
+            if previous == update.outcome {
                 return Ok(());
             }
             bail!("usage outbox entry already has a different terminal outcome");
         }
-        pending.outcome = Some(outcome);
+        pending.outcome = Some(update.outcome);
         self.write(&pending)
     }
 
+    pub(super) fn retry_terminal_writes(&self) -> Result<usize> {
+        let updates = self
+            .terminal_retries
+            .lock()
+            .map_err(|_| anyhow::anyhow!("usage terminal-retry lock was poisoned"))?
+            .clone();
+        let mut completed = Vec::new();
+        for (operation_id, update) in updates {
+            if self.finish_inner(&operation_id, update).is_ok() {
+                completed.push(operation_id);
+            }
+        }
+        let mut retries = self
+            .terminal_retries
+            .lock()
+            .map_err(|_| anyhow::anyhow!("usage terminal-retry lock was poisoned"))?;
+        for operation_id in completed {
+            retries.remove(&operation_id);
+        }
+        Ok(retries.len())
+    }
+
     pub(super) fn ready(&self) -> Result<Vec<PendingUsageSettlement>> {
-        Ok(self
+        let mut entries = self
             .entries()?
             .into_iter()
             .filter(|pending| pending.outcome.is_some())
-            .collect())
+            .collect::<Vec<_>>();
+        entries.sort_by(|left, right| left.operation_id.cmp(&right.operation_id));
+        Ok(entries)
     }
 
     pub(super) fn entries(&self) -> Result<Vec<PendingUsageSettlement>> {

@@ -4224,42 +4224,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "llm-notary-hosted-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "hex",
- "llm-notary-server",
- "metrics",
- "notary-core",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "llm-notary-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "clap",
- "hex",
- "k256",
- "metrics",
- "notary-core",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "llm-notary-updater"
 version = "0.1.0"
 dependencies = [
@@ -5026,6 +4990,43 @@ dependencies = [
  "webpki-roots 1.0.9",
  "zeroize",
  "zip 8.6.0",
+]
+
+[[package]]
+name = "notary-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "clap",
+ "hex",
+ "k256",
+ "libc",
+ "metrics",
+ "notary-core",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "notary-server-platform-adapter"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "hex",
+ "metrics",
+ "notary-core",
+ "notary-server",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

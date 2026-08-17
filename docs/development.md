@@ -12,9 +12,9 @@ documentation update rules that protect LLM Notary's trust boundaries.
 | `runtime/crates/llm-notary-cli/` | thin localhost REST command client |
 | `runtime/crates/llm-notary-updater/` | signed-update verification shared by CLI and desktop |
 | `runtime/crates/notary-core/` | Proxy-TLS protocol, evidence contracts, normalization, trust directory, and verification |
-| `runtime/crates/llm-notary-server/` | coordinator-free remote notary runtime and generic admission/lifecycle seam |
+| `runtime/crates/notary-server/` | public ticketless remote notary runtime and generic admission/lifecycle seam |
 | `runtime/apps/local-dashboard/` | independently locked dashboard source, generated local API, tests, and assets |
-| `platform/crates/llm-notary-hosted-server/` | private hosted ticket redemption, durable usage outbox, and settlement adapter |
+| `platform/crates/notary-server-platform-adapter/` | private platform ticket redemption, durable usage outbox, and settlement policy |
 | `platform/crates/notary-api/` | hosted API, identity, admission tickets, sharing, verification, Library, and billing |
 | `platform/migrations/` | forward-only hosted schema migrations |
 | `js/app/` | private platform website |
@@ -69,16 +69,16 @@ Run the checks relevant to edited code:
 cargo fmt --check
 cargo fmt --manifest-path runtime/Cargo.toml --check \
   -p notary-core -p notaryd -p llm-notary-cli \
-  -p llm-notary-updater -p llm-notary-server
+  -p llm-notary-updater -p notary-server
 cargo clippy \
   -p notary-api \
-  -p llm-notary-hosted-server \
+  -p notary-server-platform-adapter \
   --all-targets --all-features -- -D warnings
 cargo clippy --manifest-path runtime/Cargo.toml \
   --workspace --all-targets --all-features -- -D warnings
 cargo test \
   -p notary-api \
-  -p llm-notary-hosted-server \
+  -p notary-server-platform-adapter \
   --all-targets --all-features
 cargo test --manifest-path runtime/Cargo.toml \
   --workspace --all-targets --all-features
@@ -109,7 +109,7 @@ cargo test -p notary-api \
 Large proof and real-provider checks are opt-in. The
 `proxy_tls_split_profile` test measures the production split process against a
 separate notary container without making a billable inference. Use
-`--profile-sessions` only in an isolated Linux cgroup with one measured session
+`notary-server serve --profile-sessions` only in an isolated Linux cgroup with one measured session
 at a time.
 
 ## Container validation

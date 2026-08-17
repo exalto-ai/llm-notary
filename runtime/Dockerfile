@@ -5,7 +5,7 @@ COPY . .
 RUN cargo build --locked --release \
     -p llm-notary-cli --bin llm-notary \
     -p notaryd --bin notaryd \
-    -p llm-notary-server --bin llm-notary-server
+    -p notary-server --bin notary-server
 
 FROM debian:bookworm-slim AS daemon
 
@@ -28,15 +28,16 @@ ENV XDG_CONFIG_HOME=/var/lib/llm-notary/config \
 USER 10001:10001
 EXPOSE 8787 8788
 
-FROM debian:bookworm-slim AS notary
+FROM debian:bookworm-slim AS notary-server
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
-COPY --from=builder /app/target/release/llm-notary-server /usr/local/bin/llm-notary-server
-RUN llm-notary-server --help >/dev/null
+COPY --from=builder /app/target/release/notary-server /usr/local/bin/notary-server
+RUN notary-server --help >/dev/null
 EXPOSE 7047
-ENTRYPOINT ["llm-notary-server"]
+ENTRYPOINT ["notary-server"]
+CMD ["serve"]
 
 FROM builder AS daemon-e2e-builder
 

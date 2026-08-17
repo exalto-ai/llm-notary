@@ -108,7 +108,6 @@ pub struct RedeemAdmissionRequest {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AdmissionRedemptionContract {
-    OneOperationV1,
     OneOperationV2,
 }
 
@@ -518,15 +517,12 @@ async fn redeem_one_operation(
     .await?;
     let ticket_token_hash = sha256_hex(request.ticket.as_bytes());
     let operation_id = typed_id("op-");
-    let (activation_deadline, activated_at) = match request.contract {
-        AdmissionRedemptionContract::OneOperationV1 => (now, Some(now)),
-        AdmissionRedemptionContract::OneOperationV2 => (
-            now.checked_add(ACTIVATION_WINDOW_SECS).ok_or_else(|| {
-                ApiError::internal(anyhow::anyhow!("activation deadline overflow"))
-            })?,
-            None,
-        ),
+    let activation_deadline = match request.contract {
+        AdmissionRedemptionContract::OneOperationV2 => now
+            .checked_add(ACTIVATION_WINDOW_SECS)
+            .ok_or_else(|| ApiError::internal(anyhow::anyhow!("activation deadline overflow")))?,
     };
+    let activated_at: Option<i64> = None;
     sqlx::query(
         "INSERT INTO admitted_operations
              (operation_id, ticket_token_hash, notary_instance_id, account_id, credit_subject,
@@ -1026,6 +1022,28 @@ mod tests {
         headers
     }
 
+    async fn activate_redeemed_operation(
+        state: &NotaryApiState,
+        operation_id: &str,
+        notary_instance_id: &str,
+        mode: AdmissionMode,
+    ) {
+        assert_eq!(
+            activate_operation(
+                State(state.clone()),
+                service_headers(state),
+                Ok(Json(ActivateOperationRequest {
+                    operation_id: operation_id.to_owned(),
+                    notary_instance_id: notary_instance_id.to_owned(),
+                    mode,
+                })),
+            )
+            .await
+            .unwrap(),
+            StatusCode::NO_CONTENT
+        );
+    }
+
     fn test_peer() -> ConnectInfo<SocketAddr> {
         test_peer_at("198.51.100.10")
     }
@@ -1035,6 +1053,23 @@ mod tests {
             address.parse().expect("test peer IP"),
             4242,
         ))
+    }
+
+    #[test]
+    fn redemption_contract_rejects_the_retired_v1_value() {
+        assert!(
+            serde_json::from_value::<AdmissionRedemptionContract>(serde_json::json!(
+                "one_operation_v1"
+            ))
+            .is_err()
+        );
+        assert_eq!(
+            serde_json::from_value::<AdmissionRedemptionContract>(serde_json::json!(
+                "one_operation_v2"
+            ))
+            .unwrap(),
+            AdmissionRedemptionContract::OneOperationV2
+        );
     }
 
     #[test]
@@ -1175,7 +1210,7 @@ mod tests {
                     notary_instance_id: instance.to_owned(),
                     mode: AdmissionMode::Capture,
                     registry_generation: state.registry.generation,
-                    contract: AdmissionRedemptionContract::OneOperationV1,
+                    contract: AdmissionRedemptionContract::OneOperationV2,
                     usage_settlement,
                 })),
             )
@@ -1282,17 +1317,17 @@ mod tests {
         assert_eq!(replay.status, StatusCode::CONFLICT);
         server.abort();
 
-        let (debits, operations, activated): (i64, i64, i64) = sqlx::query_as(
+        let (debits, operations, pending): (i64, i64, i64) = sqlx::query_as(
             "SELECT
                  (SELECT COUNT(*) FROM credit_debits),
                  (SELECT COUNT(*) FROM admitted_operations),
                  (SELECT COUNT(*) FROM admitted_operations
-                  WHERE activated_at IS NOT NULL AND activation_deadline = admitted_at)",
+                  WHERE activated_at IS NULL AND activation_deadline > admitted_at)",
         )
         .fetch_one(&state.database)
         .await
         .unwrap();
-        assert_eq!((debits, operations, activated), (0, 3, 3));
+        assert_eq!((debits, operations, pending), (0, 3, 3));
     }
 
     #[tokio::test]
@@ -1528,13 +1563,20 @@ mod tests {
                 notary_instance_id: "notary-overage".to_owned(),
                 mode: AdmissionMode::Capture,
                 registry_generation: ticket.registry_generation,
-                contract: AdmissionRedemptionContract::OneOperationV1,
+                contract: AdmissionRedemptionContract::OneOperationV2,
                 usage_settlement: true,
             })),
         )
         .await
         .unwrap();
         let operation_id = operation.operation_id;
+        activate_redeemed_operation(
+            &state,
+            &operation_id,
+            "notary-overage",
+            AdmissionMode::Capture,
+        )
+        .await;
         let report = || UsageSettlementRequest {
             operation_id: operation_id.clone(),
             notary_instance_id: "notary-overage".to_owned(),
@@ -1542,6 +1584,18 @@ mod tests {
             authenticated_bytes: 11,
             outcome: UsageSettlementOutcome::ClientFailed,
         };
+
+        let completed_oversize = settle_usage(
+            State(state.clone()),
+            service_headers(&state),
+            Json(UsageSettlementRequest {
+                outcome: UsageSettlementOutcome::Completed,
+                ..report()
+            }),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(completed_oversize.status, StatusCode::BAD_REQUEST);
 
         assert_eq!(
             settle_usage(
@@ -1766,13 +1820,20 @@ mod tests {
                 notary_instance_id: "notary-notarization".to_owned(),
                 mode: AdmissionMode::Notarization,
                 registry_generation: ticket.registry_generation,
-                contract: AdmissionRedemptionContract::OneOperationV1,
+                contract: AdmissionRedemptionContract::OneOperationV2,
                 usage_settlement: true,
             })),
         )
         .await
         .unwrap();
         let operation_id = operation.operation_id;
+        activate_redeemed_operation(
+            &state,
+            &operation_id,
+            "notary-notarization",
+            AdmissionMode::Notarization,
+        )
+        .await;
         let invalid = settle_usage(
             State(state.clone()),
             service_headers(&state),
@@ -1832,7 +1893,7 @@ mod tests {
             notary_instance_id: instance,
             mode,
             registry_generation: capture.registry_generation,
-            contract: AdmissionRedemptionContract::OneOperationV1,
+            contract: AdmissionRedemptionContract::OneOperationV2,
             usage_settlement: true,
         };
         let wrong_mode = match redeem_admission(
@@ -2109,7 +2170,7 @@ mod tests {
                 notary_instance_id: "notary-stale-plan".to_owned(),
                 mode: AdmissionMode::Capture,
                 registry_generation: paid_ticket.registry_generation,
-                contract: AdmissionRedemptionContract::OneOperationV1,
+                contract: AdmissionRedemptionContract::OneOperationV2,
                 usage_settlement: true,
             })),
         )

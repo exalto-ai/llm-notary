@@ -15,7 +15,7 @@ convenience features.
 | Provider client | yes | provider credential | Sends an ordinary provider request to the local proxy |
 | `notaryd` | yes | vault, catalog, operations, artifacts, trust cache | Runs the proxy, captures private state, finalizes, and verifies |
 | Generic remote notary | no application plaintext | signing key only | Resolves the provider, relays encrypted TLS records, witnesses the session, and completes proof work |
-| Hosted notary adapter | no application plaintext | durable usage-settlement outbox | Redeems one-operation tickets, tightens generic runtime limits, and reports authoritative usage |
+| Platform policy adapter | no application plaintext | durable usage-settlement outbox | Redeems one-operation tickets, tightens generic runtime limits, and reports authoritative usage |
 | Model provider | yes | provider-owned | Serves an ordinary HTTPS request without an LLM Notary integration |
 | Hosted platform | only explicitly uploaded disclosures | accounts, share intake, admitted traces and exact packages | Issues admission tickets, verifies uploads, serves stable links, and indexes Listed shares |
 | Independent verifier | disclosed package contents | chosen trust policy | Verifies a `.llmtrace` against a trusted notary key |

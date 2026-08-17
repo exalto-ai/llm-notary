@@ -11,13 +11,13 @@ generated hosted OpenAPI document remains the exact HTTP contract.
 | Stable web gateway | `deploy/gateway.Caddyfile` | none | Routes public site and API traffic; it is the only component allowed to supply the trusted client-address header |
 | Hosted website | `js/app/` | browser UI state | Renders public docs, verification, Library, sign-in, account, billing, device approval, and hosted Trace management |
 | Hosted API | `platform/crates/notary-api/` | PostgreSQL accounts, sessions, keys, credits, operations, Traces, reports, and cleanup work | Authenticates public and account requests, issues admission tickets, verifies uploads, and owns hosted policy |
-| Generic notary | `runtime/crates/llm-notary-server/` | signing key and process-local capacity | Runs the public Proxy-TLS protocol and provider allowlist without account or billing semantics |
-| Hosted notary adapter | `platform/crates/llm-notary-hosted-server/` | private durable usage-settlement outbox | Injects ticket redemption and settlement through the generic `AdmissionPolicy` and `SessionLifecycle` seams |
+| Generic notary | `runtime/crates/notary-server/` | signing key and process-local capacity | Runs the public Proxy-TLS protocol and provider allowlist without account or billing semantics |
+| Platform policy adapter | `platform/crates/notary-server-platform-adapter/` | private durable usage-settlement outbox | Injects ticket redemption and settlement through the generic `AdmissionPolicy` and `SessionLifecycle` seams |
 | Local runtime client | `runtime/crates/notaryd/` | local vault, Trace catalog, artifacts, account credential, and trust cache | Sees provider plaintext; requests hosted admission and sharing without exposing the provider credential to the platform or notary |
 | Hosted PostgreSQL | `platform/migrations/` | authoritative hosted relational state | Separate schema and migration journal from an optional daemon PostgreSQL backend |
 | Private object storage | hosted API configuration | intake objects, admitted exact packages, canonical traces | Receives a notarized disclosure only after an explicit verify or share action; never receives `.llmcapture` |
 
-The root Cargo workspace builds only the hosted API, hosted notary adapter, and
+The root Cargo workspace builds only the hosted API, platform policy adapter, and
 desktop wrapper. The public runtime is the excluded `runtime/` workspace and
 must pass `runtime/tooling/check-boundary.sh`; it cannot import platform,
 website, billing, or hosted-admission code.
@@ -62,7 +62,7 @@ allowances:
 3. The daemon places the short-lived ticket only in the protected v3 notary
    prelude. It does not persist the ticket or add it to evidence, logs, metrics,
    previews, or errors.
-4. The hosted notary adapter redeems the ticket through the private API before
+4. The platform policy adapter redeems the ticket through the private API before
    expensive protocol work. The API atomically consumes it, binds the operation
    to the notary instance, and returns limits that can only tighten the generic
    notary's process maxima.
@@ -73,7 +73,7 @@ allowances:
    mode, byte count, instance, and outcome. Identical retries are idempotent;
    conflicting reports fail without changing the ledger.
 
-The hosted adapter receives the opaque ticket and authenticated byte counts,
+The platform policy adapter receives the opaque ticket and authenticated byte counts,
 not the API key, prompt, response, or credential-bearing HTTP headers. The
 generic runtime assigns no account or billing meaning to the admission value.
 The completed lease-to-operation migration is summarized in

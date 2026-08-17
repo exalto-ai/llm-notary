@@ -101,19 +101,19 @@ fn otlp_traces_enabled() -> bool {
 
 fn describe_metrics() {
     describe_gauge!(
-        "llm_notary_notary_active_sessions",
+        "notary_server_active_sessions",
         "Currently active notary protocol sessions"
     );
     describe_gauge!(
-        "llm_notary_notary_pending_connections",
+        "notary_server_pending_connections",
         "Sockets awaiting a valid notary protocol prelude"
     );
     describe_counter!(
-        "llm_notary_notary_sessions_total",
+        "notary_server_sessions_total",
         "Notary protocol sessions by mode and outcome"
     );
     describe_histogram!(
-        "llm_notary_notary_session_duration_seconds",
+        "notary_server_session_duration_seconds",
         "Notary protocol session duration by mode and outcome"
     );
 }
