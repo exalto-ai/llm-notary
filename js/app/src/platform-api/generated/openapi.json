@@ -2392,7 +2392,7 @@
           "200": {
             "description": "",
             "content": {
-              "application/vnd.llmnotary.trace-package+zip": {
+              "application/vnd.exalto.notary.trace-package+zip": {
                 "schema": {
                   "type": "array",
                   "items": {
@@ -3127,7 +3127,7 @@
         "operationId": "verify",
         "requestBody": {
           "content": {
-            "application/vnd.llmnotary.trace-package+zip": {
+            "application/vnd.exalto.notary.trace-package+zip": {
               "schema": {
                 "$ref": "#/components/schemas/TracePackageBody"
               }

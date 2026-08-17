@@ -2976,7 +2976,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/vnd.llmnotary.trace-package+zip": number[];
+                    "application/vnd.exalto.notary.trace-package+zip": number[];
                 };
             };
             401: {
@@ -3500,7 +3500,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/vnd.llmnotary.trace-package+zip": components["schemas"]["TracePackageBody"];
+                "application/vnd.exalto.notary.trace-package+zip": components["schemas"]["TracePackageBody"];
             };
         };
         responses: {
