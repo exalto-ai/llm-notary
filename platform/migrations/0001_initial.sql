@@ -318,8 +318,9 @@ CREATE INDEX trace_reports_trace_page_idx
     ON notary_api.trace_reports (trace_id, created_at DESC);
 
 CREATE TABLE notary_api.public_trace_rate_limits (
-    trace_id TEXT NOT NULL
-        REFERENCES notary_api.traces(trace_id) ON DELETE CASCADE,
+    -- Missing public IDs must be rate-limited without turning a foreign-key
+    -- failure into an existence oracle. Bounded retention removes limiter rows.
+    trace_id TEXT NOT NULL,
     subject_key_sha256 TEXT NOT NULL,
     action TEXT NOT NULL CHECK (action IN ('password', 'report')),
     window_started_at BIGINT NOT NULL,
