@@ -30,8 +30,8 @@ services:
       migrate:
         condition: service_completed_successfully
     environment:
-      # Use Neon's pooled URL in shared deployments. It is intentionally
-      # external so every API replica shares one durable source of truth.
+      # Use a direct PostgreSQL URL. Transaction poolers do not preserve the
+      # API's connection-scoped canonical schema selection.
       NOTARY_API_DATABASE_URL: ${NOTARY_API_DATABASE_URL:?Set NOTARY_API_DATABASE_URL to the PostgreSQL connection URL}
       NOTARY_API_DATABASE_MAX_CONNECTIONS: ${NOTARY_API_DATABASE_MAX_CONNECTIONS:-5}
       # This reference deployment configures both providers so either account

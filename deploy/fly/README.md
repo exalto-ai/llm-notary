@@ -31,9 +31,10 @@ fly volumes create notary_data --region sjc --size 1 \
 ```
 
 The notary's TLS handler can use Fly's shared IPv4 routing.
-Create a Neon PostgreSQL database and stage its pooled connection URL as the
-`NOTARY_API_DATABASE_URL` Fly secret and its direct connection URL as the
-`NOTARY_API_MIGRATION_DATABASE_URL` Fly secret before deploying the API; staging avoids
+Create a Neon PostgreSQL database and stage its direct connection URL as both
+the `NOTARY_API_DATABASE_URL` and `NOTARY_API_MIGRATION_DATABASE_URL` Fly
+secrets before deploying the API. Neon's transaction pooler does not preserve
+the API's connection-scoped canonical schema selection; staging avoids
 restarting the previous API revision. The API deploy runs the supplied migrator
 once as Fly's release command before replacing Machines. Create a private
 Tigris bucket for the API, then map its bucket, endpoint, region, and scoped

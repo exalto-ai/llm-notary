@@ -7,29 +7,31 @@ migrator at the other's migration journal.
 
 ## Provision and configure Neon
 
-Create a Neon project in the API region and obtain both its pooled and direct
-connection URLs. Store them only in the deployment secret store:
+Create a Neon project in the API region and obtain its direct connection URL.
+Store it only in the deployment secret store:
 
-- `NOTARY_API_DATABASE_URL` is the pooled URL used by API replicas.
+- `NOTARY_API_DATABASE_URL` is the direct URL used by API replicas.
 - `NOTARY_API_MIGRATION_DATABASE_URL` is the direct URL used only by the migrator.
 
 Retain `sslmode=require`; remove Neon's optional `channel_binding=require`
-parameter, which SQLx does not use. SQLx migrations use a session advisory
-lock, which Neon’s transaction-mode pooler does not support, so the migrator
-must never use the pooled URL.
+parameter, which SQLx does not use. Do not use Neon's transaction-mode pooled
+URL for either setting. The API selects its canonical schema with a
+connection-scoped `search_path`, which a transaction pooler does not preserve,
+and SQLx migrations use a session advisory lock. Both processes therefore
+require direct connections.
 
 Budget the total of `NOTARY_API_DATABASE_MAX_CONNECTIONS` across API replicas,
 plus one transient migration connection, within the Neon plan's limit. The
 production configuration uses two API Machines with a five-connection pool per
-Machine, so reserve ten pooled connections plus one direct migration
-connection.
+Machine, so reserve ten direct runtime connections plus one transient direct
+migration connection.
 
 For Fly, stage the secret before merging. This records it without restarting
 the current API release:
 
 ```bash
 fly secrets set --stage \
-  NOTARY_API_DATABASE_URL='postgresql://…-pooler…?sslmode=require' \
+  NOTARY_API_DATABASE_URL='postgresql://…?sslmode=require' \
   NOTARY_API_MIGRATION_DATABASE_URL='postgresql://…?sslmode=require' \
   -a llm-notary-prod-api
 ```
