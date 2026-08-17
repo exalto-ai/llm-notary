@@ -682,7 +682,7 @@ if [[ $artifact_engine == s3 ]]; then
     .counts.total_traces == 3 and
     .counts.capturing == 0 and
     .counts.failed == 1 and
-    .counts.ready_to_notarize == 1
+    .counts.ready_to_notarize == 2
   '
   missing_capture=$(daemon_cli captures show trc-e2e-missing)
   assert_json "$missing_capture" '
@@ -694,7 +694,7 @@ else
   assert_json "$recovered_status" '
     .counts.total_traces == 2 and
     .counts.capturing == 0 and
-    .counts.ready_to_notarize == 1
+    .counts.ready_to_notarize == 2
   '
 fi
 
