@@ -592,7 +592,7 @@ fn event_from_row(row: &PgRow) -> anyhow::Result<Event> {
 fn trace_share_from_row(row: &PgRow) -> anyhow::Result<TraceShareRecord> {
     Ok(TraceShareRecord {
         trace_id: row.try_get("trace_id")?,
-        share_id: row.try_get("share_id")?,
+        hosted_trace_id: row.try_get("hosted_trace_id")?,
         progress: row.try_get("progress")?,
         visibility: row.try_get("visibility")?,
         access_enabled: row.try_get("access_enabled")?,
@@ -1327,7 +1327,7 @@ impl MetadataStore for PostgresMetadataStore {
     async fn trace_share(&self, trace_id: &str) -> MetadataResult<Option<TraceShareRecord>> {
         validate_trace_id(trace_id)?;
         sqlx::query(
-            "SELECT trace_id, share_id, progress, visibility, access_enabled,
+            "SELECT trace_id, hosted_trace_id, progress, visibility, access_enabled,
                     password_protected, expires_at_unix_ms, failure_code,
                     share_url, package_url, updated_at_unix_ms
              FROM notaryd.trace_shares WHERE trace_id = $1",
@@ -1351,11 +1351,11 @@ impl MetadataStore for PostgresMetadataStore {
         let updated_at = invalid_i64(share.updated_at_unix_ms, "timestamp_out_of_range")?;
         sqlx::query(
             "INSERT INTO notaryd.trace_shares (
-                trace_id, share_id, progress, visibility, access_enabled, password_protected,
+                trace_id, hosted_trace_id, progress, visibility, access_enabled, password_protected,
                 expires_at_unix_ms, failure_code, share_url, package_url, updated_at_unix_ms
              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
              ON CONFLICT(trace_id) DO UPDATE SET
-                share_id = EXCLUDED.share_id, progress = EXCLUDED.progress,
+                hosted_trace_id = EXCLUDED.hosted_trace_id, progress = EXCLUDED.progress,
                 visibility = EXCLUDED.visibility, access_enabled = EXCLUDED.access_enabled,
                 password_protected = EXCLUDED.password_protected,
                 expires_at_unix_ms = EXCLUDED.expires_at_unix_ms,
@@ -1364,7 +1364,7 @@ impl MetadataStore for PostgresMetadataStore {
                 updated_at_unix_ms = EXCLUDED.updated_at_unix_ms",
         )
         .bind(&share.trace_id)
-        .bind(&share.share_id)
+        .bind(&share.hosted_trace_id)
         .bind(&share.progress)
         .bind(&share.visibility)
         .bind(share.access_enabled)

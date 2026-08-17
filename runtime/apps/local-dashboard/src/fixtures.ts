@@ -1120,7 +1120,6 @@ export function createFixtureApi({
       shares.set(shareId, { captureId, progress: 'preparing', visibility });
       return {
         trace_id: captureId,
-        share_id: shareId,
         progress: 'preparing',
         visibility,
         access_enabled: true,
@@ -1139,7 +1138,6 @@ export function createFixtureApi({
       else if (progress === 'verifying') share.progress = 'shared';
       return {
         trace_id: captureId,
-        share_id: shareId,
         progress,
         visibility: share.visibility,
         access_enabled: true,

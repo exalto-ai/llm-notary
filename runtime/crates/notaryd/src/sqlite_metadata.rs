@@ -548,7 +548,7 @@ impl SqliteMetadata {
         let connection = self.connection.lock().expect("metadata mutex poisoned");
         connection
             .query_row(
-                "SELECT trace_id, share_id, progress, visibility, access_enabled,
+                "SELECT trace_id, hosted_trace_id, progress, visibility, access_enabled,
                         password_protected, expires_at_unix_ms, failure_code,
                         share_url, package_url, updated_at_unix_ms
                  FROM trace_shares WHERE trace_id = ?",
@@ -563,11 +563,11 @@ impl SqliteMetadata {
         let connection = self.connection.lock().expect("metadata mutex poisoned");
         connection.execute(
             "INSERT INTO trace_shares (
-                trace_id, share_id, progress, visibility, access_enabled, password_protected,
+                trace_id, hosted_trace_id, progress, visibility, access_enabled, password_protected,
                 expires_at_unix_ms, failure_code, share_url, package_url, updated_at_unix_ms
              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(trace_id) DO UPDATE SET
-                share_id = excluded.share_id, progress = excluded.progress,
+                hosted_trace_id = excluded.hosted_trace_id, progress = excluded.progress,
                 visibility = excluded.visibility, access_enabled = excluded.access_enabled,
                 password_protected = excluded.password_protected,
                 expires_at_unix_ms = excluded.expires_at_unix_ms,
@@ -576,7 +576,7 @@ impl SqliteMetadata {
                 updated_at_unix_ms = excluded.updated_at_unix_ms",
             params![
                 share.trace_id,
-                share.share_id,
+                share.hosted_trace_id,
                 share.progress,
                 share.visibility,
                 share.access_enabled,
@@ -1707,7 +1707,7 @@ fn trace_share_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TraceShareR
         })?;
     Ok(TraceShareRecord {
         trace_id: row.get("trace_id")?,
-        share_id: row.get("share_id")?,
+        hosted_trace_id: row.get("hosted_trace_id")?,
         progress: row.get("progress")?,
         visibility: row.get("visibility")?,
         access_enabled: row.get("access_enabled")?,

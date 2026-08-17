@@ -1738,7 +1738,7 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
                 if let Some(billing) = value.get("billing") {
                     output.push_str(&format!(
                         "\nplan {} ({}, purchase mode {})",
-                        value_string(billing, "/service_plan"),
+                        value_string(billing, "/plan"),
                         value_string(billing, "/billing_status"),
                         value_string(billing, "/purchase_mode"),
                     ));
@@ -1800,10 +1800,9 @@ fn human_output(command: &CliCommand, value: &Value) -> Result<String, CliError>
             "Disconnected from LLM Notary. Future hosted sessions use public access.".to_owned(),
         ),
         CliCommand::Share(_) => Ok(format!(
-            "{} {} share {} for Trace {}",
+            "{} {} share for Trace {}",
             value_string(value, "/progress"),
             value_string(value, "/visibility"),
-            value_string(value, "/share_id"),
             value_string(value, "/trace_id"),
         )),
         CliCommand::Events(_) => list_lines(value, "/items", |item| {
@@ -2309,7 +2308,7 @@ mod tests {
             "auth_provider": "google",
             "credential_kind": "cli_session",
             "credential_name": "workstation",
-            "billing": { "service_plan": "one_gb", "billing_status": "active", "purchase_mode": "live" },
+            "billing": { "plan": "one_gb", "billing_status": "active", "purchase_mode": "live" },
             "credits": {
                 "reset_at": 1_700_000_000,
                 "capture": { "total_granted_bytes": 10_000_000, "total_used_bytes": 1_000_000, "total_remaining_bytes": 9_000_000 },

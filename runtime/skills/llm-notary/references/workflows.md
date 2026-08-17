@@ -104,8 +104,8 @@ Do not use `--force` merely to bypass a warning. Review the reported disclosure
 finding with the user first. Concrete secret detections and verification
 failures remain blocked.
 
-Save the returned `share_id` and poll the owning Trace's canonical share
-resource through the loopback API. Do not claim the Trace is reachable until
+Poll the owning Trace's canonical share resource through the loopback API. Do
+not claim the Trace is reachable until
 `progress` is `shared`.
 
 ## Account and authentication changes

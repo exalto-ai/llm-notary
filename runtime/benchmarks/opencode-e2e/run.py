@@ -815,8 +815,7 @@ class Canary:
                 stage="publication",
                 code="publication_failed",
             )
-            share_id = share.get("share_id")
-            if not isinstance(share_id, str):
+            if share.get("trace_id") != trace_id:
                 raise CanaryFailure("publication", "publication_failed")
             deadline = time.monotonic() + self.arguments.publication_timeout
             status = share
@@ -865,7 +864,6 @@ class Canary:
             result["publications"].append(
                 {
                     "trace_id": trace_id,
-                    "share_id": share_id,
                     "visibility": SHARE_VISIBILITY,
                     "high_entropy_force_requested": True,
                     "admission_wall_ms": elapsed_ms(submitted_at),
@@ -970,7 +968,7 @@ def write_step_summary(result: dict[str, Any]) -> None:
             f"- Failure: `{result.get('failure_stage')}` / `{result.get('failure_code')}`"
         )
     for publication in result.get("publications", []):
-        lines.append(f"- [{publication['share_id']}]({publication['share_url']})")
+        lines.append(f"- [{publication['trace_id']}]({publication['share_url']})")
     with open(destination, "a", encoding="utf-8") as output:
         output.write("\n".join(lines) + "\n")
 

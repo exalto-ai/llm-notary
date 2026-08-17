@@ -1773,7 +1773,6 @@ function NotarizationsView({
     queryFn: ({ pageParam }) => api.operations({ limit: 50, cursor: pageParam }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor ?? undefined,
-    refetchInterval: 3_000,
   });
   const activeId = selectedId ?? operations.data?.pages[0]?.items[0]?.operation_id;
   const selectedOperation = useQuery({
@@ -2549,7 +2548,6 @@ function SharingView({
             <StatusLabel state={shareState ?? 'queued'} />
           </Group>
           <Text>{resultCopy}</Text>
-          <code>{submitted.share_id}</code>
           {share.data?.failure_code && (
             <Text>
               Failure code: <code>{share.data.failure_code}</code>

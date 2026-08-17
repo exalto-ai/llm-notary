@@ -109,11 +109,11 @@ def slack_payload(result: dict[str, Any]) -> dict[str, Any]:
             }
         )
     links = [
-        f"<{item['share_url']}|{item['share_id']}>"
+        f"<{item['share_url']}|{item['trace_id']}>"
         for item in result.get("publications", [])[:10]
         if isinstance(item, dict)
         and isinstance(item.get("share_url"), str)
-        and isinstance(item.get("share_id"), str)
+        and isinstance(item.get("trace_id"), str)
     ]
     if links:
         blocks.append(

@@ -714,7 +714,6 @@ export interface components {
             package_url?: string | null;
             password_protected: boolean;
             progress: components["schemas"]["ShareProgress"];
-            share_id: string;
             share_url?: string | null;
             trace_id: string;
             /** Format: int64 */

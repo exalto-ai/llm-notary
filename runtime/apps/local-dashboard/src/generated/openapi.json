@@ -2780,7 +2780,6 @@
         "type": "object",
         "required": [
           "trace_id",
-          "share_id",
           "progress",
           "visibility",
           "access_enabled",
@@ -2816,9 +2815,6 @@
           },
           "progress": {
             "$ref": "#/components/schemas/ShareProgress"
-          },
-          "share_id": {
-            "type": "string"
           },
           "share_url": {
             "type": [

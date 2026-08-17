@@ -1574,7 +1574,7 @@ async fn get_trace_share(
         .map_err(|_| ApiError::internal("metadata_query_failed"))?
         .ok_or_else(|| ApiError::not_found("trace_share_not_found"))?;
     let _credentials = state.account_credentials.lock().await;
-    let status = match sharing::share_status(&stored.share_id).await {
+    let status = match sharing::share_status(&stored.hosted_trace_id).await {
         Ok(status) => status,
         Err(sharing::ShareStatusError::NotFound) => {
             state
@@ -1623,7 +1623,7 @@ async fn put_trace_share(
     let mut created = false;
     let record = if let Some(existing) = existing {
         let status = sharing::update_share_settings(
-            &existing.share_id,
+            &existing.hosted_trace_id,
             Some(body.visibility.into()),
             Some(true),
             body.password.as_ref().map(SecretInput::expose),
@@ -1649,7 +1649,7 @@ async fn put_trace_share(
             return Err(ApiError::conflict("trace_package_identity_mismatch"));
         }
         let initial_status = sharing::ShareStatus {
-            share_id: share.share_id,
+            hosted_trace_id: share.hosted_trace_id,
             state: share.state,
             failure_code: None,
             share_url: share.share_url,
@@ -1671,7 +1671,7 @@ async fn put_trace_share(
             .map_err(|_| ApiError::internal("metadata_update_failed"))?;
         if body.password.is_some() || body.expires_in_days.is_some() {
             let status = sharing::update_share_settings(
-                &initial_record.share_id,
+                &initial_record.hosted_trace_id,
                 Some(body.visibility.into()),
                 Some(true),
                 body.password.as_ref().map(SecretInput::expose),
@@ -1717,7 +1717,9 @@ async fn delete_trace_share(
         return Ok(StatusCode::NO_CONTENT);
     };
     let _credentials = state.account_credentials.lock().await;
-    match sharing::update_share_settings(&stored.share_id, None, Some(false), None, None).await {
+    match sharing::update_share_settings(&stored.hosted_trace_id, None, Some(false), None, None)
+        .await
+    {
         Ok(_) | Err(sharing::ShareStatusError::NotFound) => {}
         Err(error) => return Err(share_status_api_error(error)),
     }
@@ -1765,7 +1767,7 @@ fn trace_share_record_from_status(
 ) -> Result<TraceShareRecord, ApiError> {
     Ok(TraceShareRecord {
         trace_id,
-        share_id: status.share_id,
+        hosted_trace_id: status.hosted_trace_id,
         progress: ShareProgress::from_hosted(&status.state).as_str().into(),
         visibility: status.visibility.as_str().into(),
         access_enabled: status.published,
@@ -2964,7 +2966,6 @@ impl ShareProgress {
 #[derive(Debug, Serialize, ToSchema)]
 struct TraceShare {
     trace_id: String,
-    share_id: String,
     progress: ShareProgress,
     visibility: ShareVisibility,
     access_enabled: bool,
@@ -2980,7 +2981,6 @@ impl TraceShare {
     fn from_record(record: TraceShareRecord) -> Self {
         Self {
             trace_id: record.trace_id,
-            share_id: record.share_id,
             progress: ShareProgress::from_hosted(&record.progress),
             visibility: if record.visibility == "listed" {
                 ShareVisibility::Listed
@@ -3564,6 +3564,12 @@ mod tests {
                 .unwrap();
         assert_eq!(body["openapi"], "3.1.0");
         assert!(body["components"]["securitySchemes"]["basicAuth"].is_object());
+        let trace_share_properties = body["components"]["schemas"]["TraceShare"]["properties"]
+            .as_object()
+            .expect("TraceShare must have object properties");
+        assert!(trace_share_properties.contains_key("trace_id"));
+        assert!(!trace_share_properties.contains_key("share_id"));
+        assert!(!trace_share_properties.contains_key("hosted_trace_id"));
         for path in [
             "/healthz",
             "/readyz",

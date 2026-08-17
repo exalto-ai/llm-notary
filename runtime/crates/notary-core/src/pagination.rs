@@ -295,7 +295,7 @@ mod tests {
 
     #[test]
     fn cursor_round_trip_preserves_tied_sort_position() {
-        let scope = scope("/v1/captures", Some("openai"));
+        let scope = scope("/v1/traces", Some("openai"));
         let position = Position {
             created_at_unix_ms: 42,
             id: "trc-b".into(),
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn cursor_rejects_changed_route_or_filters() {
-        let original = scope("/v1/captures", Some("openai"));
+        let original = scope("/v1/traces", Some("openai"));
         let cursor = encode_cursor(
             &original,
             &Position {
@@ -316,22 +316,22 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            decode_cursor::<Position>(&scope("/v1/operations", Some("openai")), &cursor),
+            decode_cursor::<Position>(&scope("/v1/activity", Some("openai")), &cursor),
             Err(PaginationError::CursorScope)
         );
         assert_eq!(
-            decode_cursor::<OtherPosition>(&scope("/v1/events", Some("openai")), &cursor),
+            decode_cursor::<OtherPosition>(&scope("/v1/providers", Some("openai")), &cursor),
             Err(PaginationError::CursorScope)
         );
         assert_eq!(
-            decode_cursor::<Position>(&scope("/v1/captures", Some("anthropic")), &cursor),
+            decode_cursor::<Position>(&scope("/v1/traces", Some("anthropic")), &cursor),
             Err(PaginationError::CursorScope)
         );
     }
 
     #[test]
     fn cursor_rejects_malformed_oversized_and_tampered_values() {
-        let scope = scope("/v1/captures", None);
+        let scope = scope("/v1/traces", None);
         assert_eq!(
             decode_cursor::<Position>(&scope, "not base64!"),
             Err(PaginationError::MalformedCursor)
@@ -360,7 +360,7 @@ mod tests {
 
     #[test]
     fn cursor_rejects_unknown_version() {
-        let scope = scope("/v1/captures", None);
+        let scope = scope("/v1/traces", None);
         let body = CursorBody {
             version: CURSOR_VERSION + 1,
             scope: hex::encode(scope.0),
@@ -385,7 +385,7 @@ mod tests {
 
     #[test]
     fn page_uses_limit_plus_one_and_last_returned_item() {
-        let scope = scope("/v1/captures", None);
+        let scope = scope("/v1/traces", None);
         let rows = vec![
             Position {
                 created_at_unix_ms: 3,
@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn exhausted_pages_have_no_cursor() {
-        let scope = scope("/v1/captures", None);
+        let scope = scope("/v1/traces", None);
         for rows in [Vec::new(), vec![1], vec![1, 2]] {
             let page = Page::from_limit_plus_one(rows, 2, &scope, |value| *value).unwrap();
             assert_eq!(page.next_cursor, None);

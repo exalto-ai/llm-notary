@@ -187,7 +187,6 @@ const expectedRequiredFields = {
   ],
   TraceShare: [
     'trace_id',
-    'share_id',
     'progress',
     'visibility',
     'access_enabled',

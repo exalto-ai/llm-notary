@@ -64,9 +64,8 @@ the endpoint and schema authority.
 8. Ask the user before sharing a notarized trace or changing service
    configuration. Notarization alone is not sharing consent. Confirm whether
    the public link should be Unlisted or Listed.
-9. After approval, save `share_id` and poll `GET /v1/traces/{trace_id}/share` through
-   the local admin API. Do not extract or reproduce the vault-held account
-   credential.
+9. After approval, poll `GET /v1/traces/{trace_id}/share` through the local
+   admin API. Do not extract or reproduce the vault-held account credential.
 
 Use safe error codes and redacted event messages for diagnosis. If the OpenAPI
 document does not describe an operation, stop and explain that the installed
@@ -169,7 +168,6 @@ share=$(curl --fail-with-body -X PUT \
   -H 'Content-Type: application/json' \
   --data '{"visibility":"unlisted"}' \
   "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/share")
-share_id=$(printf '%s' "$share" | jq -r '.share_id')
 
 curl --fail-with-body \
   "$NOTARYD_ADMIN_ORIGIN/v1/traces/$trace_id/share"

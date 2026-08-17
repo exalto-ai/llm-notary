@@ -28,6 +28,7 @@ function renderDashboard(hash = '/overview', api: LocalApi = createFixtureApi())
 beforeEach(() => localStorage.clear());
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -110,6 +111,24 @@ describe('local evidence dashboard', () => {
     await expect
       .element(page.getByRole('button', { name: `Inspect ${operation.operation_id}` }))
       .toBeVisible();
+  });
+
+  test('does not periodically refetch the projected notarization collection', async () => {
+    const fixture = createFixtureApi();
+    let collectionRequests = 0;
+    const api: LocalApi = {
+      ...fixture,
+      operations: async (filters = {}) => {
+        collectionRequests += 1;
+        return fixture.operations(filters);
+      },
+    };
+    vi.useFakeTimers();
+    renderDashboard('/notarizations', api);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(collectionRequests).toBe(1);
+    await vi.advanceTimersByTimeAsync(9_000);
+    expect(collectionRequests).toBe(1);
   });
 
   test('uses the authenticated provider for icons instead of a namespaced model slug', async () => {
@@ -521,7 +540,6 @@ describe('local evidence dashboard', () => {
         chosenVisibility = visibility;
         return {
           trace_id: captureId,
-          share_id: 'share-fixture',
           progress: 'preparing',
           visibility,
           access_enabled: true,
@@ -545,7 +563,6 @@ describe('local evidence dashboard', () => {
     await expect.element(page.getByText('approved-user')).toBeVisible();
     await page.getByRole('button', { name: 'Share trace' }).click();
     await page.getByRole('button', { name: 'Create share' }).click();
-    await expect.element(page.getByText('share-fixture')).toBeVisible();
     await expect.element(page.getByRole('button', { name: 'Refresh status' })).toBeVisible();
     expect(sharedCapture).toBe('trc-20260727-research-brief');
     expect(chosenVisibility).toBe('unlisted');

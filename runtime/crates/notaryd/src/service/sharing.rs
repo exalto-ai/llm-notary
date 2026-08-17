@@ -89,7 +89,7 @@ struct ApiErrorResponse {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ShareOutput {
-    pub(crate) share_id: String,
+    pub(crate) hosted_trace_id: String,
     pub(crate) state: String,
     pub(crate) status_url: String,
     pub(crate) visibility: ShareVisibility,
@@ -102,7 +102,7 @@ pub(crate) struct ShareOutput {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ShareStatus {
-    pub(crate) share_id: String,
+    pub(crate) hosted_trace_id: String,
     pub(crate) state: String,
     pub(crate) failure_code: Option<String>,
     pub(crate) share_url: Option<String>,
@@ -196,7 +196,7 @@ pub(crate) async fn share_package_bytes(
         .map(|value| absolute_same_origin_url(&authenticated.origin, value))
         .transpose()?;
     let output = ShareOutput {
-        share_id: share.id,
+        hosted_trace_id: share.id,
         state: share.state,
         status_url,
         visibility: share.visibility,
@@ -210,7 +210,7 @@ pub(crate) async fn share_package_bytes(
 }
 
 pub(crate) async fn share_status(
-    share_id: &str,
+    hosted_trace_id: &str,
 ) -> std::result::Result<ShareStatus, ShareStatusError> {
     let authenticated =
         auth::authenticate_for_sharing_status()
@@ -219,12 +219,12 @@ pub(crate) async fn share_status(
                 auth::SharingAuthenticationError::Required => ShareStatusError::Authentication,
                 auth::SharingAuthenticationError::Unavailable => ShareStatusError::Unavailable,
             })?;
-    share_status_with_authenticated(&authenticated, share_id).await
+    share_status_with_authenticated(&authenticated, hosted_trace_id).await
 }
 
 async fn share_status_with_authenticated(
     authenticated: &auth::AuthenticatedApi,
-    share_id: &str,
+    hosted_trace_id: &str,
 ) -> std::result::Result<ShareStatus, ShareStatusError> {
     let client = http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -234,7 +234,7 @@ async fn share_status_with_authenticated(
         .get(
             authenticated
                 .origin
-                .api_url(&format!("/api/shares/{share_id}")),
+                .api_url(&format!("/api/shares/{hosted_trace_id}")),
         )
         .bearer_auth(&authenticated.access_token)
         .send()
@@ -247,7 +247,7 @@ async fn share_status_with_authenticated(
         .json::<ShareJob>()
         .await
         .map_err(|_| ShareStatusError::Unavailable)?;
-    if share.id != share_id {
+    if share.id != hosted_trace_id {
         return Err(ShareStatusError::Unavailable);
     }
     share_job_status(&authenticated.origin, share).map_err(|_| ShareStatusError::Unavailable)
@@ -264,7 +264,7 @@ struct UpdateShareSettings<'a> {
 /// Changes only public access settings; the caller retains ownership of all
 /// secret input and this function never returns it.
 pub(crate) async fn update_share_settings(
-    share_id: &str,
+    hosted_trace_id: &str,
     visibility: Option<ShareVisibility>,
     published: Option<bool>,
     password: Option<&str>,
@@ -279,7 +279,7 @@ pub(crate) async fn update_share_settings(
             })?;
     update_share_settings_with_authenticated(
         &authenticated,
-        share_id,
+        hosted_trace_id,
         visibility,
         published,
         password,
@@ -290,7 +290,7 @@ pub(crate) async fn update_share_settings(
 
 async fn update_share_settings_with_authenticated(
     authenticated: &auth::AuthenticatedApi,
-    share_id: &str,
+    hosted_trace_id: &str,
     visibility: Option<ShareVisibility>,
     published: Option<bool>,
     password: Option<&str>,
@@ -304,7 +304,7 @@ async fn update_share_settings_with_authenticated(
         .patch(
             authenticated
                 .origin
-                .api_url(&format!("/api/shares/{share_id}")),
+                .api_url(&format!("/api/shares/{hosted_trace_id}")),
         )
         .bearer_auth(&authenticated.access_token)
         .json(&UpdateShareSettings {
@@ -323,7 +323,7 @@ async fn update_share_settings_with_authenticated(
         .json::<ShareJob>()
         .await
         .map_err(|_| ShareStatusError::Unavailable)?;
-    if share.id != share_id {
+    if share.id != hosted_trace_id {
         return Err(ShareStatusError::Unavailable);
     }
     share_job_status(&authenticated.origin, share).map_err(|_| ShareStatusError::Unavailable)
@@ -341,7 +341,7 @@ fn share_job_status(origin: &ApiOrigin, share: ShareJob) -> Result<ShareStatus> 
         .map(|value| absolute_same_origin_url(origin, value))
         .transpose()?;
     Ok(ShareStatus {
-        share_id: share.id,
+        hosted_trace_id: share.id,
         state: share.state,
         failure_code: share.failure_code,
         share_url,

@@ -177,15 +177,14 @@ class NotificationTests(unittest.TestCase):
                 "total_wall_ms": 5000,
                 "publications": [
                     {
-                        "share_id": "share-1",
+                        "trace_id": "trc-1",
                         "share_url": "https://example.test/s/share-1",
                     }
                 ],
             }
         )
         encoded = json.dumps(payload)
-        self.assertIn("share-1", encoded)
-        self.assertNotIn("trace_id", encoded)
+        self.assertIn("trc-1", encoded)
         self.assertLess(len(encoded), 3000)
 
 

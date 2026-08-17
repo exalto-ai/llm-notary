@@ -120,7 +120,7 @@ pub struct Event {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TraceShareRecord {
     pub trace_id: String,
-    pub share_id: String,
+    pub hosted_trace_id: String,
     pub progress: String,
     pub visibility: String,
     pub access_enabled: bool,
