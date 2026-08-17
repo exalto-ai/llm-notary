@@ -17,7 +17,7 @@ async function contractAssertions() {
   await typedClient.POST('/api/device-session/token');
 
   await typedClient.GET('/api/api-keys', { params: { query: { limit: 20 } } });
-  await typedClient.GET('/api/credits/history', { params: { query: { cursor: 'opaque' } } });
+  await typedClient.GET('/api/me/credits/history', { params: { query: { cursor: 'opaque' } } });
   await typedClient.GET('/api/billing/purchases');
   await typedClient.GET('/api/billing/purchases/{purchase_id}', {
     params: { path: { purchase_id: 'purchase-id' } },

@@ -242,7 +242,7 @@ export async function stopHostedTraceSharing(traceId: string) {
 }
 
 export async function getCreditHistory(options: PageOptions = {}) {
-  const { data, error, response } = await client.GET('/api/credits/history', {
+  const { data, error, response } = await client.GET('/api/me/credits/history', {
     params: { query: options },
   });
   if (!response.ok || !data) {
@@ -405,7 +405,7 @@ export async function getAuthProviders() {
 }
 
 export async function getCreditOffers() {
-  const { data, error, response } = await client.GET('/api/credit-offers');
+  const { data, error, response } = await client.GET('/api/me/credit-offers');
   if (!response.ok || !data) {
     throw new PlatformApiError(
       errorMessage(error, 'Could not load available credit offers.'),
@@ -416,7 +416,7 @@ export async function getCreditOffers() {
 }
 
 export async function claimCreditOffer(offerId: string) {
-  const { data, error, response } = await client.POST('/api/credit-offers/{offer_id}/claim', {
+  const { data, error, response } = await client.POST('/api/me/credit-offers/{offer_id}/claim', {
     params: { path: { offer_id: offerId } },
   });
   if (!response.ok || !data) {
