@@ -302,10 +302,10 @@ notary_api_image="registry.fly.io/llm-notary-prod-api@$(bash deploy/fly/resolve-
 notary_server_image="registry.fly.io/llm-notary-prod-server@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-server:$label")"
 web_image="registry.fly.io/llm-notary-prod-web@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-web:$label")"
 
-fly deploy --image "$notary_api_image" \
-  --ha=true -c deploy/fly/notary-api.fly.toml
 fly deploy --image "$notary_server_image" \
   --ha=false -c deploy/fly/notary-server.fly.toml
+fly deploy --image "$notary_api_image" \
+  --ha=true -c deploy/fly/notary-api.fly.toml
 fly deploy js/app --image "$web_image" \
   --ha=false -c "$PWD/deploy/fly/web.fly.toml"
 ```
