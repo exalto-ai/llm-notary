@@ -66,8 +66,6 @@ struct CompleteHostedTraceUpload<'a> {
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum HostedTraceStatus {
-    Uploading,
-    Queued,
     Verifying,
     Shared,
     Stopped,
@@ -693,7 +691,7 @@ mod tests {
 
     #[test]
     fn hosted_status_is_canonical_and_stopped_disables_access() {
-        for legacy in ["preparing", "admitted"] {
+        for legacy in ["preparing", "uploading", "queued", "admitted"] {
             assert!(
                 serde_json::from_value::<HostedTrace>(hosted_trace_json(legacy, "unlisted", false))
                     .is_err(),

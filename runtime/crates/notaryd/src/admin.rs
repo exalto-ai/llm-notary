@@ -2934,7 +2934,6 @@ impl ShareProgress {
         use sharing::HostedTraceStatus;
 
         match value {
-            HostedTraceStatus::Uploading | HostedTraceStatus::Queued => Self::Preparing,
             HostedTraceStatus::Verifying => Self::Verifying,
             HostedTraceStatus::Shared | HostedTraceStatus::Stopped => Self::Shared,
             HostedTraceStatus::Rejected => Self::Rejected,
@@ -3261,8 +3260,6 @@ mod tests {
         use sharing::HostedTraceStatus;
 
         for (hosted, expected) in [
-            (HostedTraceStatus::Uploading, "preparing"),
-            (HostedTraceStatus::Queued, "preparing"),
             (HostedTraceStatus::Verifying, "verifying"),
             (HostedTraceStatus::Shared, "shared"),
             (HostedTraceStatus::Stopped, "shared"),

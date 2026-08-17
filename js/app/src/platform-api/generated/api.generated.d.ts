@@ -356,7 +356,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Complete Device device authorization */
+        /** Complete Device authorization */
         post: operations["complete_device_authorization"];
         delete?: never;
         options?: never;

@@ -1482,7 +1482,7 @@
         "tags": [
           "devices"
         ],
-        "summary": "Complete Device device authorization",
+        "summary": "Complete Device authorization",
         "operationId": "complete_device_authorization",
         "parameters": [
           {
@@ -5511,7 +5511,8 @@
           "verification_key": {
             "type": "string"
           }
-        }
+        },
+        "additionalProperties": false
       },
       "RegistryResponse": {
         "type": "object",
@@ -5539,7 +5540,8 @@
               "$ref": "#/components/schemas/RegistryRecordResponse"
             }
           }
-        }
+        },
+        "additionalProperties": false
       },
       "SubscriptionPlan": {
         "type": "string",

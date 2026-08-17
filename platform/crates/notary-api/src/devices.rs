@@ -376,7 +376,7 @@ pub(super) async fn approve_device_authorization(
 #[utoipa::path(
     post,
     path = "/api/device-authorizations/{request_id}/token",
-    summary = "Complete Device device authorization",
+    summary = "Complete Device authorization",
     params(("request_id" = String, Path)),
     responses(
         (status = 200, body = DeviceCredentials),
