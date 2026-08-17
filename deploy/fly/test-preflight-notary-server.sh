@@ -6,6 +6,15 @@ test_dir="$(mktemp -d)"
 trap 'rm -rf "$test_dir"' EXIT
 mkdir "$test_dir/bin"
 
+python3 - "$script_dir/notary-server.fly.toml" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as source:
+    config = tomllib.load(source)
+assert config["env"]["NOTARY_SERVER_REGISTRY_GENERATION"] == "5"
+PY
+
 printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' >"$test_dir/bin/flyctl"
 printf '%s\n' '
 case "$1 $2" in
