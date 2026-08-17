@@ -147,7 +147,7 @@ pub(crate) fn merge_registry_snapshot(
         || !matches!(source_url.scheme(), "http" | "https")
         || !source_url.username().is_empty()
         || source_url.password().is_some()
-        || source_url.path() != "/api/registry"
+        || source_url.path() != "/api/notary"
         || source_url.query().is_some()
         || source_url.fragment().is_some()
     {
@@ -335,7 +335,7 @@ fn validate_registry_store(store: &RegistryStore) -> Result<()> {
             || !matches!(source_url.scheme(), "http" | "https")
             || !source_url.username().is_empty()
             || source_url.password().is_some()
-            || source_url.path() != "/api/registry"
+            || source_url.path() != "/api/notary"
             || source_url.query().is_some()
             || source_url.fragment().is_some()
         {
@@ -523,7 +523,7 @@ mod tests {
             format: REGISTRY_FORMAT.into(),
             generation: 2,
             registry_sha256: Some("registry-sha".into()),
-            registry_source: Some("https://example.test/api/registry".into()),
+            registry_source: Some("https://example.test/api/notary".into()),
             active_key_id: Some(active.key_id.clone()),
             records: vec![active],
         };
@@ -535,7 +535,7 @@ mod tests {
         assert_eq!(loaded.registry_sha256.as_deref(), Some("registry-sha"));
         assert_eq!(
             loaded.registry_source.as_deref(),
-            Some("https://example.test/api/registry")
+            Some("https://example.test/api/notary")
         );
     }
 
@@ -546,7 +546,7 @@ mod tests {
             format: REGISTRY_FORMAT.into(),
             generation: 2,
             registry_sha256: Some("registry-sha".into()),
-            registry_source: Some("https://user:secret@example.test/api/registry".into()),
+            registry_source: Some("https://user:secret@example.test/api/notary".into()),
             active_key_id: Some(active.key_id.clone()),
             records: vec![active],
         };
@@ -650,7 +650,7 @@ mod tests {
                             active_key_id: active.key_id.clone(),
                             notaries: vec![active],
                         },
-                        "https://example.test/api/registry",
+                        "https://example.test/api/notary",
                     )
                 })
             };

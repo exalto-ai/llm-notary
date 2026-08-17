@@ -3282,7 +3282,7 @@ mod tests {
         let retired = notary_record(3, NotaryKeyStatus::Retired, 80);
         let revoked = notary_record(4, NotaryKeyStatus::Revoked, 110);
         let response = registry_notaries_response(registry_service::PinnedRegistryState {
-            registry_source: Some("https://example.test/api/registry".into()),
+            registry_source: Some("https://example.test/api/notary".into()),
             generation: 7,
             active_key_id: active.key_id.clone(),
             records: vec![

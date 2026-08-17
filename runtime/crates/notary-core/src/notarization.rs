@@ -1,6 +1,6 @@
 //! Capture checkpoint notarization and offline-verifiable trace packages.
 
-#[cfg(all(test, feature = "cli"))]
+#[cfg(test)]
 use std::{fs, path::Path};
 #[cfg(all(feature = "cli", test))]
 use std::{fs::OpenOptions, io::Write as _, path::PathBuf};
@@ -289,7 +289,7 @@ pub fn verify_trace_package_bytes(
     )
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cli"))]
 fn verify_trace_package_bytes_with_provider(
     bytes: &[u8],
     trusted_notary_key: &[u8],

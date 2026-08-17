@@ -1176,7 +1176,7 @@ mod tests {
 
     async fn write_capture_prelude(client: &mut tokio::net::TcpStream) {
         let ticket = b"opaque-ticket";
-        client.write_all(b"LLMN\0\0\0\x03").await.unwrap();
+        client.write_all(b"NTRY\0\0\0\x01").await.unwrap();
         client.write_all(&[2]).await.unwrap();
         client
             .write_all(&(ticket.len() as u16).to_be_bytes())

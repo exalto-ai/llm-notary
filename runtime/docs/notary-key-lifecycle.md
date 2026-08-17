@@ -1,15 +1,15 @@
 # Notary key lifecycle
 
-`GET /api/notary` publishes a v3 directory of notary endpoints and secp256k1
+`GET /api/notary` publishes a versioned Registry of notary endpoints and secp256k1
 verification keys. The public origin authenticates the response with HTTPS;
 the JSON document is not separately signed. Clients cache successful responses
 so existing evidence remains verifiable when a deployment changes keys.
 
-## Directory format
+## Registry format
 
 ```json
 {
-  "format": "llm-notary/notary-directory/v3",
+  "format": "notary/registry/v1",
   "generation": 12,
   "active_key_id": "sha256:...",
   "notaries": [
@@ -31,22 +31,22 @@ so existing evidence remains verifiable when a deployment changes keys.
 The key ID is `sha256:` followed by the SHA-256 of the compressed SEC1 public
 key. The API rejects malformed keys, duplicate IDs, inverted validity windows,
 and an `active_key_id` that does not select an `active` record. Operators must
-increase `generation` for every changed directory. Clients reject older
+increase `generation` for every changed Registry. Clients reject older
 generations, reject conflicting documents at the same generation, and never
 restore a key ID once they have cached it as revoked.
 
 `transport` is either `tcp` or `tls`. A `tls` record retains `host` for DNS,
 SNI, and public-CA certificate validation; clients must validate TLS before
-sending the LLMN prelude. The notary receipt key remains the evidence trust
-anchor. Every v3 record must state its transport explicitly.
+sending the NTRY v1 prelude. The notary receipt key remains the evidence trust
+anchor. Every Registry record must state its transport explicitly.
 
 ## Compatibility
 
-Directory v1 and v2 are end of life. No local-service release or tag exists, so
-the pre-release platform API and local service accept and write v3 only. A
-development build with an old `notary-trust.json` cache must remove that cache
-and refresh the directory before use. This avoids silently downgrading an
-endpoint with an explicit TLS requirement to raw TCP.
+Pre-cutover directory formats are rejected. No local-service release or tag
+exists, so the platform API and local service accept and write
+`notary/registry/v1` only. A development build with an old `notary-trust.json`
+cache must remove that cache and refresh the Registry before use. This avoids
+silently downgrading an endpoint with an explicit TLS requirement to raw TCP.
 
 ## Status semantics
 
@@ -68,16 +68,16 @@ the key may sign. `notarize_until_unix_ms` is the later wall-clock drain
 deadline for already-created bundles. The authenticated provider-connection
 timestamp in a capture or notarized package selects the historical trust
 window. `POST /v1/traces/{trace_id}/trace:verify` remains offline and
-therefore uses the last cached directory. Sharing always refreshes the
-directory and enforces current revocation state before sending any bytes, even
+therefore uses the last cached Registry. Sharing always refreshes the Registry
+and enforces current revocation state before sending any bytes, even
 when a configured explicit key was used for the initial local verification.
 
 Setting `notary.endpoint` and `notary.public_key` together in the local
-service's `config.toml` is an operator override. It does not use directory
+service's `config.toml` is an operator override. It does not use Registry
 lifecycle policy. Start with `notaryd --config /path/to/config.toml` when
 that configuration is not in the standard user location. Explicit endpoints
-use `tls://host:port` or `tcp://host:port`; a bare `host:port` remains TCP for
-compatibility.
+use `tls://host:port` or `tcp://host:port`. Bare `host:port` values are
+rejected so transport can never be selected implicitly.
 
 ## Planned rotation
 
@@ -93,14 +93,14 @@ compatibility.
    endpoint. Previously notarized evidence remains verifiable within the
    recorded window.
 
-The API accepts the complete v3 document through
+The API accepts the complete Registry document through
 `LLM_NOTARY_NOTARY_DIRECTORY_JSON`. In the colocated Compose deployment, the
 active record must match `LLM_NOTARY_NOTARY_PUBLIC_KEY`; the notary health
 check independently confirms that this public key matches the mounted private
-key. The existing single-key environment variables generate a v3 directory;
+key. The existing single-key environment variables generate a canonical Registry;
 set `LLM_NOTARY_NOTARY_TRANSPORT=tls` only when the advertised endpoint
 terminates public-CA TLS. Clients require that transport to be explicit and
-validate TLS before sending the LLMN prelude.
+validate TLS before sending the NTRY v1 prelude.
 
 The fallback single-key configuration starts at generation 1; set
 `LLM_NOTARY_NOTARY_DIRECTORY_GENERATION` explicitly if its directory metadata

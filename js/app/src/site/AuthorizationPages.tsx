@@ -245,7 +245,7 @@ function normalizeHostedDirectory(payload: HostedDirectory): HostedDirectory {
   if (
     !payload ||
     typeof payload !== 'object' ||
-    payload.format !== 'llm-notary/notary-directory/v3' ||
+    payload.format !== 'notary/registry/v1' ||
     !Array.isArray(payload.notaries) ||
     !Number.isSafeInteger(payload.generation) ||
     payload.generation < 0 ||
@@ -261,6 +261,10 @@ function normalizeHostedDirectory(payload: HostedDirectory): HostedDirectory {
     if (
       !record ||
       typeof record !== 'object' ||
+      typeof record.name !== 'string' ||
+      !record.name ||
+      typeof record.operator !== 'string' ||
+      !record.operator ||
       typeof record.host !== 'string' ||
       !record.host ||
       !Number.isInteger(record.port) ||
@@ -272,7 +276,7 @@ function normalizeHostedDirectory(payload: HostedDirectory): HostedDirectory {
       !hostedNotaryStatuses.has(record.status) ||
       !Number.isSafeInteger(record.valid_from_unix_ms) ||
       record.valid_from_unix_ms < 0 ||
-      ![record.valid_until_unix_ms, record.finalize_until_unix_ms].every(
+      ![record.valid_until_unix_ms, record.notarize_until_unix_ms].every(
         (value) =>
           value === null ||
           value === undefined ||
@@ -354,7 +358,7 @@ export function HostedNotaryRecord({
             </div>
             <div>
               <dt>Finalization cutoff</dt>
-              <dd>{formatNotaryBoundary(record.finalize_until_unix_ms)}</dd>
+              <dd>{formatNotaryBoundary(record.notarize_until_unix_ms)}</dd>
             </div>
           </>
         )}

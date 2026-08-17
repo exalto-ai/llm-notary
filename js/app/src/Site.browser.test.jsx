@@ -919,6 +919,8 @@ describe('hosted site', () => {
     render(
       <HostedNotaryRecord
         record={{
+          name: 'Alice',
+          operator: 'Exalto',
           host: 'notary.example',
           port: 7047,
           transport: 'tls',
@@ -926,7 +928,7 @@ describe('hosted site', () => {
           key_id: 'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
           valid_from_unix_ms: 0,
           valid_until_unix_ms: null,
-          finalize_until_unix_ms: null,
+          notarize_until_unix_ms: null,
         }}
         activeKeyId="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         copiedKeyId={null}
@@ -1444,7 +1446,7 @@ describe('hosted site', () => {
     const input = document.querySelector('input[type="file"]');
     expect(input.getAttribute('accept')).toBeNull();
     const file = new File(['sanitized fixture'], 'sanitized.llmtrace', {
-      type: 'application/vnd.llmnotary.trace-package+zip',
+      type: 'application/vnd.exalto.notary.trace-package+zip',
     });
     fireEvent.change(input, { target: { files: [file] } });
 

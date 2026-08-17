@@ -3641,7 +3641,7 @@ mod tests {
         };
         let old = registry_record(9);
         let new = registry_record(10);
-        let source = "https://api.example/api/registry";
+        let source = "https://api.example/api/notary";
         let first_registry = Registry {
             format: REGISTRY_FORMAT.into(),
             generation: 1,
@@ -3690,7 +3690,7 @@ mod tests {
             NotaryKeyStatus::Retired
         );
 
-        let mirror_source = "https://mirror.example/api/registry";
+        let mirror_source = "https://mirror.example/api/notary";
         assert!(
             store
                 .pin_registry(second_registry.clone(), mirror_source)

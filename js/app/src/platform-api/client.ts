@@ -432,7 +432,7 @@ export async function verifyTracePackage(file: File): Promise<HostedVerification
     method: 'POST',
     credentials: 'omit',
     cache: 'no-store',
-    headers: { 'Content-Type': 'application/vnd.llmnotary.trace-package+zip' },
+    headers: { 'Content-Type': 'application/vnd.exalto.notary.trace-package+zip' },
     body: file,
   });
   let payload: unknown;

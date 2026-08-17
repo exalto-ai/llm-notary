@@ -99,12 +99,10 @@ impl FromStr for NotaryEndpoint {
     type Err = anyhow::Error;
 
     fn from_str(value: &str) -> Result<Self> {
-        let input = if value.contains("://") {
-            value.to_owned()
-        } else {
-            format!("tcp://{value}")
-        };
-        let url = url::Url::parse(&input).context("invalid notary endpoint")?;
+        if !value.contains("://") {
+            bail!("notary endpoint must explicitly use tcp:// or tls://");
+        }
+        let url = url::Url::parse(value).context("invalid notary endpoint")?;
         let transport = match url.scheme() {
             "tcp" => NotaryTransport::Tcp,
             "tls" => NotaryTransport::Tls,
@@ -411,14 +409,15 @@ mod tests {
     }
 
     #[test]
-    fn endpoint_overrides_are_explicit_about_tls_and_compatible_with_tcp() {
+    fn endpoint_overrides_require_an_explicit_supported_transport() {
         let tls = "tls://llm-notary-prod-notary.fly.dev:443"
             .parse::<NotaryEndpoint>()
             .unwrap();
         assert_eq!(tls.transport, NotaryTransport::Tls);
         assert_eq!(tls.host, "llm-notary-prod-notary.fly.dev");
-        let tcp = "127.0.0.1:7047".parse::<NotaryEndpoint>().unwrap();
+        let tcp = "tcp://127.0.0.1:7047".parse::<NotaryEndpoint>().unwrap();
         assert_eq!(tcp.transport, NotaryTransport::Tcp);
+        assert!("127.0.0.1:7047".parse::<NotaryEndpoint>().is_err());
         assert!(
             "https://notary.example:443"
                 .parse::<NotaryEndpoint>()

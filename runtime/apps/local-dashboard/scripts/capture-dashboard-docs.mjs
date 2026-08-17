@@ -90,7 +90,7 @@ try {
       file: 'captures-dark.png',
       scheme: 'dark',
       viewport: desktop,
-      route: 'view=captures&id=cap-20260728-safety-review',
+      route: 'view=captures&id=trc-20260728-safety-review',
     });
     await capture(browser, {
       file: 'notarization-retry.png',
@@ -102,7 +102,7 @@ try {
       file: 'trace-verification.png',
       scheme: 'dark',
       viewport: desktop,
-      route: 'view=traces&id=cap-20260727-research-brief',
+      route: 'view=traces&id=trc-20260727-research-brief',
       prepare: async (page) => {
         await page.getByRole('button', { name: 'Verify locally' }).click();
         await page.getByRole('tab', { name: 'Verification' }).click();
@@ -164,7 +164,7 @@ try {
       file: 'mobile-navigation.png',
       scheme: 'light',
       viewport: { width: 390, height: 844 },
-      route: 'view=captures&id=cap-20260728-knowledge-eval',
+      route: 'view=captures&id=trc-20260728-knowledge-eval',
       prepare: async (page) => {
         await page.getByRole('button', { name: 'Open navigation' }).click();
         await page.getByRole('navigation', { name: 'Local dashboard' }).last().waitFor();
@@ -174,7 +174,7 @@ try {
       file: 'mobile-capture-detail.png',
       scheme: 'light',
       viewport: { width: 390, height: 844 },
-      route: 'view=captures&id=cap-20260728-knowledge-eval',
+      route: 'view=captures&id=trc-20260728-knowledge-eval',
       prepare: async (page) => {
         await page.getByRole('button', { name: 'All captures' }).waitFor();
         await page.getByRole('heading', { name: 'gpt-5.2' }).waitFor();

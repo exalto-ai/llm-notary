@@ -321,6 +321,8 @@ struct NotaryDirectoryResponse {
 
 #[derive(Serialize, ToSchema)]
 struct NotaryDirectoryRecordResponse {
+    name: String,
+    operator: String,
     host: String,
     port: u16,
     transport: NotaryTransportResponse,
@@ -329,7 +331,7 @@ struct NotaryDirectoryRecordResponse {
     status: NotaryKeyStatusResponse,
     valid_from_unix_ms: u64,
     valid_until_unix_ms: Option<u64>,
-    finalize_until_unix_ms: Option<u64>,
+    notarize_until_unix_ms: Option<u64>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -362,6 +364,8 @@ impl From<NotaryDirectory> for NotaryDirectoryResponse {
 impl From<NotaryDirectoryRecord> for NotaryDirectoryRecordResponse {
     fn from(record: NotaryDirectoryRecord) -> Self {
         Self {
+            name: record.name,
+            operator: record.operator,
             host: record.host,
             port: record.port,
             transport: match record.transport {
@@ -378,7 +382,7 @@ impl From<NotaryDirectoryRecord> for NotaryDirectoryRecordResponse {
             },
             valid_from_unix_ms: record.valid_from_unix_ms,
             valid_until_unix_ms: record.valid_until_unix_ms,
-            finalize_until_unix_ms: record.notarize_until_unix_ms,
+            notarize_until_unix_ms: record.notarize_until_unix_ms,
         }
     }
 }
@@ -2379,7 +2383,7 @@ pub(crate) async fn insert_test_github_user(
 mod tests {
     use notary_core::registry::{
         NotaryKeyStatus, NotaryTransport, REGISTRY_FORMAT as DIRECTORY_FORMAT_V3,
-        RegistryRecord as NotaryDirectoryRecord, key_id,
+        RegistryRecord as NotaryDirectoryRecord, key_id, parse_registry,
     };
 
     use super::*;
@@ -3115,6 +3119,17 @@ mod tests {
                 notarize_until_unix_ms: None,
             }],
         }
+    }
+
+    #[test]
+    fn hosted_registry_response_is_the_canonical_runtime_contract() {
+        let response = NotaryDirectoryResponse::from(directory_key());
+        let encoded = serde_json::to_vec(&response).unwrap();
+        let registry = parse_registry(&encoded).unwrap();
+
+        assert_eq!(registry.format, DIRECTORY_FORMAT_V3);
+        assert_eq!(registry.notaries[0].name, "Test notary");
+        assert_eq!(registry.notaries[0].operator, "Exalto");
     }
 
     #[tokio::test]

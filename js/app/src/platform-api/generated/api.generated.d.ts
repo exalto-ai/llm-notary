@@ -982,10 +982,12 @@ export interface components {
             user: components["schemas"]["PublicUser"];
         };
         NotaryDirectoryRecordResponse: {
-            /** Format: int64 */
-            finalize_until_unix_ms?: number | null;
             host: string;
             key_id: string;
+            name: string;
+            /** Format: int64 */
+            notarize_until_unix_ms?: number | null;
+            operator: string;
             /** Format: int32 */
             port: number;
             public_key: string;

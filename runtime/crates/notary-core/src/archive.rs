@@ -66,10 +66,9 @@ impl ValidatedTracePackageArchive {
     /// paths because validation has already restricted the archive to the
     /// versioned entry set.
     pub fn file(&self, name: &str) -> Result<&[u8]> {
-        self.files
-            .get(name)
-            .map(Vec::as_slice)
-            .ok_or_else(|| anyhow!("trace package entry is not part of the v2 contract: {name}"))
+        self.files.get(name).map(Vec::as_slice).ok_or_else(|| {
+            anyhow!("trace package entry is not part of the current contract: {name}")
+        })
     }
 
     pub(crate) fn into_files(self) -> BTreeMap<String, Vec<u8>> {

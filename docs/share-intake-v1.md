@@ -11,8 +11,7 @@ storage, and the final reachability decision.
 
 ## Package contract
 
-The package uses the deterministic
-`llmnotary.trace-package-archive/v2` ZIP layout:
+The package uses the deterministic `notary/trace-package/v1` ZIP layout:
 
 ```text
 archive-manifest.json
@@ -37,7 +36,7 @@ Idempotency-Key: <16-200 safe ASCII characters>
 Content-Type: application/json
 
 {
-  "archive_format": "llmnotary.trace-package-archive/v2",
+  "archive_format": "notary/trace-package/v1",
   "size_bytes": 12345,
   "sha256": "<64 lowercase hexadecimal characters>",
   "visibility": "unlisted",
@@ -95,7 +94,7 @@ upload instructions:
     "url": "https://<private-presigned-url>",
     "headers": {
       "content-length": "12345",
-      "content-type": "application/vnd.llmnotary.trace-package+zip"
+      "content-type": "application/vnd.exalto.notary.trace-package+zip"
     },
     "expires_at": 1785294900
   }

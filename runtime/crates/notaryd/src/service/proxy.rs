@@ -865,7 +865,7 @@ pub(crate) async fn fetch_registry_from(api_origin: &ApiOrigin) -> Result<(Regis
 }
 
 fn registry_url(api_origin: &ApiOrigin) -> url::Url {
-    api_origin.api_url("/api/registry")
+    api_origin.api_url("/api/notary")
 }
 
 pub(crate) async fn resolve_notary(record: &RegistryRecord) -> Result<NotaryEndpoint> {
@@ -2689,7 +2689,7 @@ mod tests {
     fn registry_discovery_stays_on_the_configured_api_origin() {
         assert_eq!(
             registry_url(&ApiOrigin::parse("https://self-hosted.example").unwrap()).as_str(),
-            "https://self-hosted.example/api/registry"
+            "https://self-hosted.example/api/notary"
         );
         assert!(ApiOrigin::parse("file:///tmp/notary").is_err());
     }
