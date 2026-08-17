@@ -106,7 +106,7 @@ pub(crate) struct ShareOutput {
     pub(crate) visibility: ShareVisibility,
     pub(crate) share_url: Option<String>,
     pub(crate) package_url: Option<String>,
-    pub(crate) published: bool,
+    pub(crate) access_enabled: bool,
     pub(crate) password_protected: bool,
     pub(crate) expires_at: Option<i64>,
 }
@@ -119,7 +119,7 @@ pub(crate) struct ShareStatus {
     pub(crate) share_url: Option<String>,
     pub(crate) package_url: Option<String>,
     pub(crate) visibility: ShareVisibility,
-    pub(crate) published: bool,
+    pub(crate) access_enabled: bool,
     pub(crate) password_protected: bool,
     pub(crate) expires_at: Option<i64>,
 }
@@ -211,7 +211,7 @@ pub(crate) async fn share_package_bytes(
         .as_deref()
         .map(|value| absolute_same_origin_url(&authenticated.origin, value))
         .transpose()?;
-    let published = share.status != "stopped";
+    let access_enabled = share.status != "stopped";
     let output = ShareOutput {
         hosted_trace_id: share.trace_id,
         state: share.status,
@@ -219,7 +219,7 @@ pub(crate) async fn share_package_bytes(
         visibility: share.access.visibility,
         share_url,
         package_url,
-        published,
+        access_enabled,
         password_protected: share.access.password_protected,
         expires_at: share.access.expires_at,
     };
@@ -381,7 +381,7 @@ fn hosted_trace_status(origin: &ApiOrigin, trace: HostedTrace) -> Result<ShareSt
         .as_deref()
         .map(|value| absolute_same_origin_url(origin, value))
         .transpose()?;
-    let published = trace.status != "stopped";
+    let access_enabled = trace.status != "stopped";
     Ok(ShareStatus {
         hosted_trace_id: trace.trace_id,
         state: trace.status,
@@ -389,7 +389,7 @@ fn hosted_trace_status(origin: &ApiOrigin, trace: HostedTrace) -> Result<ShareSt
         share_url,
         package_url,
         visibility: trace.access.visibility,
-        published,
+        access_enabled,
         password_protected: trace.access.password_protected,
         expires_at: trace.access.expires_at,
     })

@@ -63,7 +63,7 @@ exit "$status"
 ```
 
 This deliberately consumes hosted notarization capacity and creates Listed
-public traces in the Library. The runner's `--force` publication decision cannot
+public Traces in the shared collection. The runner's `--force` sharing decision cannot
 override a known secret, credential field, disclosed header, malformed package,
 or failed verification. Unit tests do neither:
 

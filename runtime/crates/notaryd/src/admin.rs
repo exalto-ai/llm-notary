@@ -1656,7 +1656,7 @@ async fn put_trace_share(
             share_url: share.share_url,
             package_url: share.package_url,
             visibility: share.visibility,
-            published: share.published,
+            access_enabled: share.access_enabled,
             password_protected: share.password_protected,
             expires_at: share.expires_at,
         };
@@ -1756,7 +1756,7 @@ fn trace_share_record_from_status(
         hosted_trace_id: status.hosted_trace_id,
         progress: ShareProgress::from_hosted(&status.state).as_str().into(),
         visibility: status.visibility.as_str().into(),
-        access_enabled: status.published,
+        access_enabled: status.access_enabled,
         password_protected: status.password_protected,
         expires_at_unix_ms: match status.expires_at {
             Some(value) => Some(
