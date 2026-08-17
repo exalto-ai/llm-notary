@@ -28,7 +28,7 @@ ENV XDG_CONFIG_HOME=/var/lib/llm-notary/config \
 USER 10001:10001
 EXPOSE 8787 8788
 
-FROM debian:bookworm-slim AS notary
+FROM debian:bookworm-slim AS notary-server
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \

@@ -20,13 +20,17 @@ RUN ldd /usr/local/bin/notary-api >/dev/null
 EXPOSE 8080
 CMD ["notary-api", "serve"]
 
-FROM debian:bookworm-slim AS notary
+FROM debian:bookworm-slim AS notary-server
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=builder /app/target/release/notary-server /usr/local/bin/notary-server
-RUN notary-server --help >/dev/null
+COPY deploy/notary-server-entrypoint.sh /usr/local/bin/notary-server-entrypoint
+RUN mkdir -p /run/notary-private \
+    && chmod 0700 /run/notary-private \
+    && chmod 0755 /usr/local/bin/notary-server-entrypoint \
+    && notary-server --help >/dev/null
 EXPOSE 7047
-ENTRYPOINT ["notary-server"]
+ENTRYPOINT ["notary-server-entrypoint"]
 CMD ["serve"]

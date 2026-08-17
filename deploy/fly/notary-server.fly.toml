@@ -5,16 +5,16 @@ kill_timeout = "30s"
 
 [build]
   dockerfile = "../../Dockerfile"
-  build-target = "notary"
+  build-target = "notary-server"
 
 [env]
   NOTARY_SERVER_LISTEN = "0.0.0.0:7047"
-  NOTARY_SERVER_SIGNING_KEY_FILE = "/run/secrets/notary_signing_key"
+  NOTARY_SERVER_SIGNING_KEY_FILE = "/run/notary-private/notary_signing_key"
   NOTARY_SERVER_ALLOW_HOSTS = "api.openai.com,chatgpt.com,api.anthropic.com,api.deepseek.com,openrouter.ai"
   NOTARY_SERVER_METRICS_LISTEN = "0.0.0.0:9090"
   NOTARY_SERVER_PROFILE_SESSIONS = "true"
   NOTARY_SERVER_PLATFORM_API_ORIGIN = "http://llm-notary-prod-api.flycast"
-  NOTARY_SERVER_PLATFORM_SERVICE_TOKEN_FILE = "/run/secrets/admission_service_token"
+  NOTARY_SERVER_PLATFORM_SERVICE_TOKEN_FILE = "/run/notary-private/admission_service_token"
   NOTARY_SERVER_REGISTRY_GENERATION = "4"
   NOTARY_SERVER_INSTANCE_ID = "alice-production"
   NOTARY_SERVER_USAGE_OUTBOX_DIR = "/data/usage-outbox"

@@ -19,7 +19,7 @@ jobs:
     environment: production
     env:
       IMAGE_LABEL: ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
-      NOTARY_IMAGE_TAG: registry.fly.io/llm-notary-prod-server:ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+      NOTARY_SERVER_IMAGE_TAG: registry.fly.io/llm-notary-prod-server:ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
       NOTARY_API_IMAGE_TAG: registry.fly.io/llm-notary-prod-api:ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
       WEB_IMAGE_TAG: registry.fly.io/llm-notary-prod-web:ci-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -38,19 +38,24 @@ jobs:
           FLY_API_TOKEN: ${{ secrets.FLY_API_DEPLOY_TOKEN }}
         run: bash deploy/fly/preflight-notary-api.sh
 
+      - name: Verify notary-server cutover prerequisites
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
+        run: bash deploy/fly/preflight-notary-server.sh
+
       # Build every image before changing any Machine. A build failure is then
       # a no-op in production, and each deploy below uses the resolved digest.
-      - name: Build notary image on Fly
-        id: notary-image
+      - name: Build notary-server image on Fly
+        id: notary-server-image
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
         run: |
           set -euo pipefail
           flyctl deploy --remote-only --build-only --push \
-            --image-label "$IMAGE_LABEL" --config deploy/fly/notary.fly.toml
+            --image-label "$IMAGE_LABEL" --config deploy/fly/notary-server.fly.toml
           flyctl auth docker
-          digest="$(bash deploy/fly/resolve-image-digest.sh "$NOTARY_IMAGE_TAG")"
-          echo "ref=${NOTARY_IMAGE_TAG%:*}@$digest" >> "$GITHUB_OUTPUT"
+          digest="$(bash deploy/fly/resolve-image-digest.sh "$NOTARY_SERVER_IMAGE_TAG")"
+          echo "ref=${NOTARY_SERVER_IMAGE_TAG%:*}@$digest" >> "$GITHUB_OUTPUT"
       - name: Build notary-api image on Fly
         id: notary-api-image
         env:
@@ -78,7 +83,7 @@ jobs:
       - name: Record rollback images
         id: previous
         env:
-          NOTARY_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
+          NOTARY_SERVER_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
           NOTARY_API_TOKEN: ${{ secrets.FLY_API_DEPLOY_TOKEN }}
           WEB_TOKEN: ${{ secrets.FLY_WEB_DEPLOY_TOKEN }}
         run: |
@@ -103,22 +108,13 @@ jobs:
           }
 
           {
-            echo "notary=$(current_image llm-notary-prod-server "$NOTARY_TOKEN")"
+            echo "notary_server=$(current_image llm-notary-prod-server "$NOTARY_SERVER_TOKEN")"
             echo "notary_api=$(current_image llm-notary-prod-api "$NOTARY_API_TOKEN")"
             echo "web=$(current_image llm-notary-prod-web "$WEB_TOKEN")"
           } >> "$GITHUB_OUTPUT"
 
-      # Deploy the operation-only notary first while the current API accepts
-      # its contract. The API release command then installs any forward-only,
-      # rollback-compatible database migration before the new API starts.
-      - name: Deploy notary image
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
-          NOTARY_IMAGE: ${{ steps.notary-image.outputs.ref }}
-        run: |
-          touch "$RUNNER_TEMP/notary-rollout-attempted"
-          flyctl deploy --image "$NOTARY_IMAGE" --ha=false --strategy rolling \
-            --config deploy/fly/notary.fly.toml
+      # Deploy the backward-compatible activation API before the server begins
+      # redeeming the V2 contract. Rollback reverses this ordering below.
       - name: Deploy notary-api image
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_DEPLOY_TOKEN }}
@@ -127,6 +123,14 @@ jobs:
           touch "$RUNNER_TEMP/notary-api-rollout-attempted"
           flyctl deploy --image "$NOTARY_API_IMAGE" --ha=true --strategy rolling \
             --config deploy/fly/notary-api.fly.toml
+      - name: Deploy notary-server image
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
+          NOTARY_SERVER_IMAGE: ${{ steps.notary-server-image.outputs.ref }}
+        run: |
+          touch "$RUNNER_TEMP/notary-server-rollout-attempted"
+          flyctl deploy --image "$NOTARY_SERVER_IMAGE" --ha=false --strategy rolling \
+            --config deploy/fly/notary-server.fly.toml
       - name: Verify old web to new API compatibility
         run: >-
           curl --fail --retry 5 --retry-all-errors --retry-delay 2
@@ -217,10 +221,10 @@ jobs:
       - name: Restore previous images after a failed rollout
         if: ${{ failure() && steps.previous.outcome == 'success' }}
         env:
-          PREVIOUS_NOTARY_IMAGE: ${{ steps.previous.outputs.notary }}
+          PREVIOUS_NOTARY_SERVER_IMAGE: ${{ steps.previous.outputs.notary_server }}
           PREVIOUS_NOTARY_API_IMAGE: ${{ steps.previous.outputs.notary_api }}
           PREVIOUS_WEB_IMAGE: ${{ steps.previous.outputs.web }}
-          NOTARY_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
+          NOTARY_SERVER_TOKEN: ${{ secrets.FLY_NOTARY_DEPLOY_TOKEN }}
           NOTARY_API_TOKEN: ${{ secrets.FLY_API_DEPLOY_TOKEN }}
           WEB_TOKEN: ${{ secrets.FLY_WEB_DEPLOY_TOKEN }}
         run: |
@@ -234,17 +238,18 @@ jobs:
               --config "$GITHUB_WORKSPACE/deploy/fly/web.fly.toml" || rollback_failed=1
           fi
 
+          if test -e "$RUNNER_TEMP/notary-server-rollout-attempted"; then
+            FLY_API_TOKEN="$NOTARY_SERVER_TOKEN" flyctl deploy \
+              --image "$PREVIOUS_NOTARY_SERVER_IMAGE" --ha=false --strategy rolling \
+              --skip-release-command --config deploy/fly/notary-server.fly.toml || \
+              rollback_failed=1
+          fi
+
           if test -e "$RUNNER_TEMP/notary-api-rollout-attempted"; then
             FLY_API_TOKEN="$NOTARY_API_TOKEN" flyctl deploy \
               --image "$PREVIOUS_NOTARY_API_IMAGE" --ha=true --strategy rolling \
               --skip-release-command --config deploy/fly/notary-api.fly.toml || \
               rollback_failed=1
-          fi
-
-          if test -e "$RUNNER_TEMP/notary-rollout-attempted"; then
-            FLY_API_TOKEN="$NOTARY_TOKEN" flyctl deploy \
-              --image "$PREVIOUS_NOTARY_IMAGE" --ha=false --strategy rolling \
-              --skip-release-command --config deploy/fly/notary.fly.toml || rollback_failed=1
           fi
 
           exit "$rollback_failed"

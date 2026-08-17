@@ -174,13 +174,15 @@ legacy replica: the two schemas cannot share tickets, sessions, or settlements.
 
 Every hosted protocol connection first carries a short-lived one-time ticket
 obtained from the public API. The notary redeems it through the private
-`llm-notary-prod-api.flycast` origin with the `one_operation_v1` contract before
-protocol work. New sessions fail closed if that control plane is unavailable,
-while an admitted one-operation session continues using only local notary
-limits and timeouts. The API rejects a redeem request that omits the
-one-operation contract or durable-settlement capability. Public and signed-in
-Free sessions share this path; their credit subjects determine which grants
-fund capture and notarization.
+`llm-notary-prod-api.flycast` origin with the `one_operation_v2` contract before
+protocol work. The V2 contract creates a pending operation with a 60-second
+activation window. The notary first stages that operation in its local durable
+usage outbox, validates the returned limits, and only then activates it. No
+protocol session starts before activation. New sessions fail closed if that
+control plane is unavailable, while an activated one-operation session
+continues using only local notary limits and timeouts. Public and signed-in Free
+sessions share this path; their credit subjects determine which grants fund
+capture and notarization.
 At the end of the operation, the notary reports the redeemed operation ID,
 mode, terminal outcome, instance, and authoritative authenticated bytes through
 the same service-authenticated private API. The redeem request advertises this
@@ -202,6 +204,37 @@ The TLS certificate authenticates the network endpoint but does not replace the
 notary signing key in the Registry. A self-hosted notary can advertise either
 `tcp` or `tls`; TLS termination need not be provided by Fly.
 
+## One-time notary-server cutover
+
+The checked-in server configuration intentionally targets the renamed
+`llm-notary-prod-server` app. Normal CI refuses to deploy until that app has a
+bootstrapped, digest-pinned Machine and all cutover prerequisites. Perform this
+one-time setup before merging or enabling the workflow:
+
+1. Create `llm-notary-prod-server` in the production organization and create
+   its `notary_data` volume in `sjc`.
+2. Re-stage `NOTARY_SERVER_SIGNING_KEY_B64` and
+   `ADMISSION_SERVICE_TOKEN_B64` on the new app. Fly does not reveal existing
+   secret values, so restore them from the authoritative secret manager; never
+   copy them through logs or shell arguments.
+3. Build one reviewed image, resolve it to a `sha256` digest, and deploy that
+   digest explicitly to bootstrap the first Machine.
+4. Run `fly certs setup alice.notary.exalto.ai -a llm-notary-prod-server`, add
+   the reported CNAME and `_fly-ownership` TXT records, and wait for the
+   certificate to report configured.
+5. Run `bash deploy/fly/preflight-notary-server.sh`. It verifies the app,
+   region/volume, secret names, single current digest-pinned image, and
+   certificate without printing secret values.
+6. Exercise the binary admission protocol against the new app's staging
+   hostname. Wait for active sessions and the usage-outbox pending metric on
+   the old app to reach zero, switch the public CNAME, and repeat the admission
+   check through `alice.notary.exalto.ai`.
+
+Keep the old app, volume, certificate, and DNS target intact for one rollback
+window. To roll back, drain the new server, restore the old CNAME, verify its
+certificate and admission path, then stop the new app. Do not destroy either
+volume until its outbox is empty and the rollback window has closed.
+
 ## Production rollout
 
 Production is deployed only by the `Production deployment` job in CI. A push
@@ -215,11 +248,11 @@ gives each image a tag unique to the commit and CI run. The rollout then uses
 that tag to resolve an immutable `sha256` digest and deploys only the digest.
 It therefore neither rebuilds nor promotes a different image:
 
-1. Deploy the operation-only notary. The API already accepts its contract, and
-   its durable usage outbox remains valid across the rolling change.
-2. Deploy the API and check it through the still-old web gateway. Any release
+1. Deploy the API and check it through the still-old web gateway. Any release
    migration runs before the new API starts and must remain writable by the
    recorded rollback image.
+2. Deploy the notary-server after every API replica accepts the V2 activation
+   contract. Its durable usage outbox remains valid across the rolling change.
 3. Deploy the web gateway and check the public readiness route again.
 4. For a client-affecting change, build every CLI platform, upload and verify
    one immutable object set, then move the website's `latest` pointer.
@@ -251,25 +284,25 @@ hide it.
 
 For a break-glass, operator-driven deployment from the repository root, use the
 same build-then-deploy split and retain the previous image references for
-rollback. Deploy the operation-only notary before the API, as CI does.
+rollback. Deploy the API before the notary-server, as CI does.
 Normal production changes must go through CI:
 
 ```bash
 label="manual-$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%d%H%M%S)"
-fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary.fly.toml
+fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary-server.fly.toml
 fly deploy --build-only --push --image-label "$label" -c deploy/fly/notary-api.fly.toml
 fly deploy js/app --build-only --push --image-label "$label" \
   -c "$PWD/deploy/fly/web.fly.toml"
 
 fly auth docker
 notary_api_image="registry.fly.io/llm-notary-prod-api@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-api:$label")"
-notary_image="registry.fly.io/llm-notary-prod-server@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-server:$label")"
+notary_server_image="registry.fly.io/llm-notary-prod-server@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-server:$label")"
 web_image="registry.fly.io/llm-notary-prod-web@$(bash deploy/fly/resolve-image-digest.sh "registry.fly.io/llm-notary-prod-web:$label")"
 
-fly deploy --image "$notary_image" \
-  --ha=false -c deploy/fly/notary.fly.toml
 fly deploy --image "$notary_api_image" \
   --ha=true -c deploy/fly/notary-api.fly.toml
+fly deploy --image "$notary_server_image" \
+  --ha=false -c deploy/fly/notary-server.fly.toml
 fly deploy js/app --image "$web_image" \
   --ha=false -c "$PWD/deploy/fly/web.fly.toml"
 ```

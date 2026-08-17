@@ -301,6 +301,52 @@ jobs:
         run: bash deploy/fly/test-resolve-image-digest.sh
       - name: Test notary-api deployment preflight
         run: bash deploy/fly/test-preflight-notary-api.sh
+      - name: Test Fly notary-server preflight
+        run: bash deploy/fly/test-preflight-notary-server.sh
+      - name: Test notary-server secret materialization
+        run: |
+          set -euo pipefail
+          image="notary-server-entrypoint:${GITHUB_SHA}"
+          signing_key="$RUNNER_TEMP/notary-server-signing-key"
+          service_token="$RUNNER_TEMP/notary-server-service-token"
+          openssl rand -hex 32 > "$signing_key"
+          openssl rand -hex 32 > "$service_token"
+          chmod 0644 "$signing_key" "$service_token"
+          docker build --target notary-server --tag "$image" .
+          test -n "$(docker run --rm --read-only \
+            --tmpfs /run/notary-private:rw,mode=0700 \
+            --mount type=bind,src="$signing_key",dst=/run/secrets/notary_signing_key,readonly \
+            "$image" public-key)"
+          container="$(docker run --detach --read-only \
+            --publish 127.0.0.1::7047 \
+            --tmpfs /run/notary-private:rw,mode=0700 \
+            --tmpfs /data:rw,mode=0700 \
+            --tmpfs /tmp:rw \
+            --mount type=bind,src="$signing_key",dst=/run/secrets/notary_signing_key,readonly \
+            --mount type=bind,src="$service_token",dst=/run/secrets/admission_service_token,readonly \
+            --env NOTARY_SERVER_LISTEN=0.0.0.0:7047 \
+            --env NOTARY_SERVER_ALLOW_HOSTS=api.openai.com \
+            --env NOTARY_SERVER_PLATFORM_API_ORIGIN=http://127.0.0.1:9 \
+            --env NOTARY_SERVER_REGISTRY_GENERATION=1 \
+            --env NOTARY_SERVER_INSTANCE_ID=notary-ci \
+            --env NOTARY_SERVER_USAGE_OUTBOX_DIR=/data/usage-outbox \
+            "$image" serve)"
+          trap 'docker rm --force "$container" >/dev/null 2>&1 || true' EXIT
+          port="$(docker port "$container" 7047/tcp | sed 's/.*://')"
+          for _ in $(seq 1 30); do
+            if timeout 1 bash -c "</dev/tcp/127.0.0.1/$port" 2>/dev/null; then
+              break
+            fi
+            sleep 1
+          done
+          timeout 1 bash -c "</dev/tcp/127.0.0.1/$port"
+          docker exec "$container" sh -eu -c '
+            for file in /run/notary-private/notary_signing_key /run/notary-private/admission_service_token; do
+              test -f "$file"
+              test ! -L "$file"
+              test "$(stat -c %a "$file")" = 400
+            done
+          '
       - name: Validate Compose configuration
         run: |
           openssl rand -hex 32 > "$RUNNER_TEMP/notary-signing-key"
@@ -309,8 +355,8 @@ jobs:
           printf '%s\n' '{}' > "$RUNNER_TEMP/notary-registry.json"
           printf '%s\n' 'google-ci-secret' > "$RUNNER_TEMP/google-oauth-secret"
           printf '%s\n' 'github-ci-secret' > "$RUNNER_TEMP/github-oauth-secret"
-          NOTARY_SERVER_SIGNING_KEY_FILE="$RUNNER_TEMP/notary-signing-key" \
-            NOTARY_API_ADMISSION_SERVICE_TOKEN_FILE="$RUNNER_TEMP/admission-service-token" \
+          NOTARY_SERVER_SIGNING_KEY_SOURCE_FILE="$RUNNER_TEMP/notary-signing-key" \
+            NOTARY_ADMISSION_SERVICE_TOKEN_SOURCE_FILE="$RUNNER_TEMP/admission-service-token" \
             NOTARY_API_ADMISSION_ANONYMOUS_SUBJECT_HMAC_KEY_FILE="$RUNNER_TEMP/anonymous-subject-hmac-key" \
             NOTARY_API_REGISTRY_FILE="$RUNNER_TEMP/notary-registry.json" \
             NOTARY_API_GOOGLE_CLIENT_SECRET_FILE="$RUNNER_TEMP/google-oauth-secret" \
