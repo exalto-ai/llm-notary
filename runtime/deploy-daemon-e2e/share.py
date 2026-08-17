@@ -13,19 +13,21 @@ KEY_ID = "sha256:0f715baf5d4c2ed329785cef29e562f73488c8a2bb9dbc5700b361d54b9b055
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    expected_size = 0
-    expected_sha256 = ""
-    uploaded = b""
+    shares: dict[str, dict[str, object]] = {}
+    last_share_id = ""
 
     def do_GET(self) -> None:
         if self.path == "/healthz":
             self.respond_json({"status": "ready"})
             return
         if self.path == "/debug/upload":
+            share = type(self).shares.get(type(self).last_share_id, {})
+            uploaded = share.get("uploaded", b"")
+            assert isinstance(uploaded, bytes)
             self.respond_json(
                 {
-                    "size_bytes": len(type(self).uploaded),
-                    "sha256": hashlib.sha256(type(self).uploaded).hexdigest(),
+                    "size_bytes": len(uploaded),
+                    "sha256": hashlib.sha256(uploaded).hexdigest(),
                 }
             )
             return
@@ -53,10 +55,14 @@ class Handler(BaseHTTPRequestHandler):
                 }
             )
             return
-        if self.path == "/api/shares/share-e2e":
+        if self.path.startswith("/api/shares/"):
             if not self.authorized():
                 return
-            self.respond_json(self.share("queued"))
+            share_id = self.path.removeprefix("/api/shares/")
+            if share_id not in type(self).shares:
+                self.send_error(404)
+                return
+            self.respond_json(self.share(share_id, "queued"))
             return
         self.send_error(404)
 
@@ -68,16 +74,21 @@ class Handler(BaseHTTPRequestHandler):
             if request.get("archive_format") != "notary/trace-package/v1":
                 self.send_error(400)
                 return
-            type(self).expected_size = int(request["size_bytes"])
-            type(self).expected_sha256 = request["sha256"]
+            share_id = f"share-e2e-{len(type(self).shares) + 1}"
+            type(self).shares[share_id] = {
+                "expected_size": int(request["size_bytes"]),
+                "expected_sha256": request["sha256"],
+                "uploaded": b"",
+            }
+            type(self).last_share_id = share_id
             self.respond_json(
                 {
-                    "share": self.share("uploading"),
+                    "share": self.share(share_id, "uploading"),
                     "upload": {
                         "method": "PUT",
-                        "url": "http://127.0.0.1:9797/upload",
+                        "url": f"http://127.0.0.1:9797/upload/{share_id}",
                         "headers": {
-                            "content-length": str(type(self).expected_size),
+                            "content-length": str(request["size_bytes"]),
                             "content-type": "application/vnd.exalto.notary.trace-package+zip",
                         },
                     },
@@ -85,22 +96,33 @@ class Handler(BaseHTTPRequestHandler):
                 status=201,
             )
             return
-        if self.path == "/api/shares/share-e2e/complete":
-            uploaded = type(self).uploaded
-            if len(uploaded) != type(self).expected_size or hashlib.sha256(
+        if self.path.startswith("/api/shares/") and self.path.endswith("/complete"):
+            share_id = self.path.removeprefix("/api/shares/").removesuffix("/complete")
+            share = type(self).shares.get(share_id)
+            if share is None:
+                self.send_error(404)
+                return
+            uploaded = share["uploaded"]
+            assert isinstance(uploaded, bytes)
+            if len(uploaded) != share["expected_size"] or hashlib.sha256(
                 uploaded
-            ).hexdigest() != type(self).expected_sha256:
+            ).hexdigest() != share["expected_sha256"]:
                 self.send_error(409)
                 return
-            self.respond_json(self.share("queued"))
+            self.respond_json(self.share(share_id, "queued"))
             return
         self.send_error(404)
 
     def do_PUT(self) -> None:
-        if self.path != "/upload":
+        if not self.path.startswith("/upload/"):
             self.send_error(404)
             return
-        type(self).uploaded = self.read_body()
+        share_id = self.path.removeprefix("/upload/")
+        share = type(self).shares.get(share_id)
+        if share is None:
+            self.send_error(404)
+            return
+        share["uploaded"] = self.read_body()
         self.send_response(204)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -116,15 +138,15 @@ class Handler(BaseHTTPRequestHandler):
         return self.rfile.read(length)
 
     @staticmethod
-    def share(state: str) -> dict[str, object]:
+    def share(share_id: str, state: str) -> dict[str, object]:
         return {
-            "id": "share-e2e",
+            "id": share_id,
             "state": state,
             "visibility": "unlisted",
-            "status_url": "/api/shares/share-e2e",
+            "status_url": f"/api/shares/{share_id}",
             "failure_code": None,
-            "share_url": "/library/share-e2e",
-            "package_url": "/api/shares/share-e2e/package",
+            "share_url": f"/library/{share_id}",
+            "package_url": f"/api/shares/{share_id}/package",
         }
 
     def respond_json(self, value: object, status: int = 200) -> None:

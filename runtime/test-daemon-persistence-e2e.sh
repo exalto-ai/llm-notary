@@ -865,8 +865,8 @@ if [[ $profile == full ]]; then
   full_share=$(daemon_cli share "$full_trace_id")
   assert_json "$full_share" '
     .trace_id == $trace_id and
-    .share_id == "share-e2e" and
-    .progress == "queued" and
+    .share_id == "share-e2e-1" and
+    .progress == "preparing" and
     .visibility == "unlisted"
   ' --arg trace_id "$full_trace_id"
   uploaded_share=$("${compose[@]}" exec -T "$daemon_service" \
@@ -945,8 +945,8 @@ if [[ $profile == full ]]; then
   stream_share=$(daemon_cli share "$stream_trace_id")
   assert_json "$stream_share" '
     .trace_id == $trace_id and
-    .share_id == "share-e2e" and
-    .progress == "queued"
+    .share_id == "share-e2e-2" and
+    .progress == "preparing"
   ' --arg trace_id "$stream_trace_id"
   uploaded_stream_share=$("${compose[@]}" exec -T "$daemon_service" \
     curl --fail --silent --show-error http://127.0.0.1:9797/debug/upload)
