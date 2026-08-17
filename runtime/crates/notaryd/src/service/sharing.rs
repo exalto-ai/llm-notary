@@ -18,7 +18,7 @@ use crate::{
     },
     sha256_hex,
 };
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use clap::ValueEnum;
 use reqwest::{Method, Response, StatusCode, header};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -40,39 +40,50 @@ impl ShareVisibility {
 }
 
 #[derive(Serialize)]
-struct CreateShare<'a> {
-    archive_format: &'a str,
-    size_bytes: u64,
-    sha256: &'a str,
+struct CreateHostedTrace<'a> {
+    source_trace_id: &'a str,
+    package_format: &'a str,
+    package_size_bytes: u64,
+    package_sha256: &'a str,
     visibility: &'a str,
-    force: bool,
+    password: Option<&'a str>,
+    expires_in_days: Option<u32>,
+    allow_high_entropy: bool,
 }
 
 #[derive(Deserialize)]
-struct CreateShareResponse {
-    share: ShareJob,
+struct CreateHostedTraceResponse {
+    trace: HostedTrace,
     upload: Option<UploadInstructions>,
 }
 
+#[derive(Serialize)]
+struct CompleteHostedTraceUpload<'a> {
+    package_size_bytes: u64,
+    package_sha256: &'a str,
+}
+
 #[derive(Clone, Deserialize)]
-struct ShareJob {
-    id: String,
-    state: String,
-    visibility: ShareVisibility,
+struct HostedTrace {
+    trace_id: String,
+    status: String,
+    access: HostedTraceAccess,
+    verification: HostedTraceVerification,
     status_url: String,
-    failure_code: Option<String>,
-    share_url: Option<String>,
+    public_url: Option<String>,
     package_url: Option<String>,
-    #[serde(default = "default_true")]
-    published: bool,
-    #[serde(default)]
+}
+
+#[derive(Clone, Deserialize)]
+struct HostedTraceAccess {
+    visibility: ShareVisibility,
     password_protected: bool,
-    #[serde(default)]
     expires_at: Option<i64>,
 }
 
-fn default_true() -> bool {
-    true
+#[derive(Clone, Deserialize)]
+struct HostedTraceVerification {
+    failure_code: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -126,6 +137,8 @@ pub(crate) async fn share_package_bytes(
     trusted_key: Option<&str>,
     shared_trust: Option<&RegistrySnapshot>,
     visibility: ShareVisibility,
+    password: Option<&str>,
+    expires_in_days: Option<u32>,
     force: bool,
 ) -> Result<(ShareOutput, String, String)> {
     let embedded_key = trace_package_notary_key_bytes(archive)
@@ -175,18 +188,21 @@ pub(crate) async fn share_package_bytes(
         )
         .context("the package notary is no longer trusted; nothing was uploaded")?;
     }
-    let share = submit_archive(
-        &authenticated,
-        archive,
-        &archive_sha256,
-        &archive_idempotency_key(&archive_sha256, visibility, force),
-        visibility,
-        force,
-    )
-    .await?;
+    let idempotency_key = hosted_trace_idempotency_key(verified.manifest.trace_id());
+    let request = CreateHostedTrace {
+        source_trace_id: verified.manifest.trace_id(),
+        package_format: TRACE_PACKAGE_FORMAT,
+        package_size_bytes: archive.len() as u64,
+        package_sha256: &archive_sha256,
+        visibility: visibility.as_str(),
+        password,
+        expires_in_days,
+        allow_high_entropy: force,
+    };
+    let share = submit_archive(&authenticated, archive, &idempotency_key, &request).await?;
     let status_url = absolute_status_url(&authenticated.origin, &share.status_url)?;
     let share_url = share
-        .share_url
+        .public_url
         .as_deref()
         .map(|value| absolute_same_origin_url(&authenticated.origin, value))
         .transpose()?;
@@ -195,16 +211,17 @@ pub(crate) async fn share_package_bytes(
         .as_deref()
         .map(|value| absolute_same_origin_url(&authenticated.origin, value))
         .transpose()?;
+    let published = share.status != "stopped";
     let output = ShareOutput {
-        hosted_trace_id: share.id,
-        state: share.state,
+        hosted_trace_id: share.trace_id,
+        state: share.status,
         status_url,
-        visibility: share.visibility,
+        visibility: share.access.visibility,
         share_url,
         package_url,
-        published: share.published,
-        password_protected: share.password_protected,
-        expires_at: share.expires_at,
+        published,
+        password_protected: share.access.password_protected,
+        expires_at: share.access.expires_at,
     };
     Ok((output, verified.manifest.trace_id().to_owned(), key_id))
 }
@@ -234,7 +251,7 @@ async fn share_status_with_authenticated(
         .get(
             authenticated
                 .origin
-                .api_url(&format!("/api/shares/{hosted_trace_id}")),
+                .api_url(&format!("/api/traces/{hosted_trace_id}")),
         )
         .bearer_auth(&authenticated.access_token)
         .send()
@@ -243,20 +260,19 @@ async fn share_status_with_authenticated(
     if let Some(error) = share_status_http_error(response.status()) {
         return Err(error);
     }
-    let share = response
-        .json::<ShareJob>()
+    let trace = response
+        .json::<HostedTrace>()
         .await
         .map_err(|_| ShareStatusError::Unavailable)?;
-    if share.id != hosted_trace_id {
+    if trace.trace_id != hosted_trace_id {
         return Err(ShareStatusError::Unavailable);
     }
-    share_job_status(&authenticated.origin, share).map_err(|_| ShareStatusError::Unavailable)
+    hosted_trace_status(&authenticated.origin, trace).map_err(|_| ShareStatusError::Unavailable)
 }
 
 #[derive(Serialize)]
 struct UpdateShareSettings<'a> {
     visibility: Option<&'a str>,
-    published: Option<bool>,
     password: Option<&'a str>,
     expires_in_days: Option<u32>,
 }
@@ -266,7 +282,6 @@ struct UpdateShareSettings<'a> {
 pub(crate) async fn update_share_settings(
     hosted_trace_id: &str,
     visibility: Option<ShareVisibility>,
-    published: Option<bool>,
     password: Option<&str>,
     expires_in_days: Option<u32>,
 ) -> std::result::Result<ShareStatus, ShareStatusError> {
@@ -281,18 +296,45 @@ pub(crate) async fn update_share_settings(
         &authenticated,
         hosted_trace_id,
         visibility,
-        published,
         password,
         expires_in_days,
     )
     .await
 }
 
+pub(crate) async fn stop_sharing(
+    hosted_trace_id: &str,
+) -> std::result::Result<(), ShareStatusError> {
+    let authenticated =
+        auth::authenticate_for_sharing_status()
+            .await
+            .map_err(|error| match error {
+                auth::SharingAuthenticationError::Required => ShareStatusError::Authentication,
+                auth::SharingAuthenticationError::Unavailable => ShareStatusError::Unavailable,
+            })?;
+    let response = http_client_builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| ShareStatusError::Unavailable)?
+        .delete(
+            authenticated
+                .origin
+                .api_url(&format!("/api/traces/{hosted_trace_id}/share")),
+        )
+        .bearer_auth(&authenticated.access_token)
+        .send()
+        .await
+        .map_err(|_| ShareStatusError::Unavailable)?;
+    if let Some(error) = share_status_http_error(response.status()) {
+        return Err(error);
+    }
+    Ok(())
+}
+
 async fn update_share_settings_with_authenticated(
     authenticated: &auth::AuthenticatedApi,
     hosted_trace_id: &str,
     visibility: Option<ShareVisibility>,
-    published: Option<bool>,
     password: Option<&str>,
     expires_in_days: Option<u32>,
 ) -> std::result::Result<ShareStatus, ShareStatusError> {
@@ -304,12 +346,11 @@ async fn update_share_settings_with_authenticated(
         .patch(
             authenticated
                 .origin
-                .api_url(&format!("/api/shares/{hosted_trace_id}")),
+                .api_url(&format!("/api/traces/{hosted_trace_id}")),
         )
         .bearer_auth(&authenticated.access_token)
         .json(&UpdateShareSettings {
             visibility: visibility.map(ShareVisibility::as_str),
-            published,
             password,
             expires_in_days,
         })
@@ -319,37 +360,38 @@ async fn update_share_settings_with_authenticated(
     if let Some(error) = share_status_http_error(response.status()) {
         return Err(error);
     }
-    let share = response
-        .json::<ShareJob>()
+    let trace = response
+        .json::<HostedTrace>()
         .await
         .map_err(|_| ShareStatusError::Unavailable)?;
-    if share.id != hosted_trace_id {
+    if trace.trace_id != hosted_trace_id {
         return Err(ShareStatusError::Unavailable);
     }
-    share_job_status(&authenticated.origin, share).map_err(|_| ShareStatusError::Unavailable)
+    hosted_trace_status(&authenticated.origin, trace).map_err(|_| ShareStatusError::Unavailable)
 }
 
-fn share_job_status(origin: &ApiOrigin, share: ShareJob) -> Result<ShareStatus> {
-    let share_url = share
-        .share_url
+fn hosted_trace_status(origin: &ApiOrigin, trace: HostedTrace) -> Result<ShareStatus> {
+    let share_url = trace
+        .public_url
         .as_deref()
         .map(|value| absolute_same_origin_url(origin, value))
         .transpose()?;
-    let package_url = share
+    let package_url = trace
         .package_url
         .as_deref()
         .map(|value| absolute_same_origin_url(origin, value))
         .transpose()?;
+    let published = trace.status != "stopped";
     Ok(ShareStatus {
-        hosted_trace_id: share.id,
-        state: share.state,
-        failure_code: share.failure_code,
+        hosted_trace_id: trace.trace_id,
+        state: trace.status,
+        failure_code: trace.verification.failure_code,
         share_url,
         package_url,
-        visibility: share.visibility,
-        published: share.published,
-        password_protected: share.password_protected,
-        expires_at: share.expires_at,
+        visibility: trace.access.visibility,
+        published,
+        password_protected: trace.access.password_protected,
+        expires_at: trace.access.expires_at,
     })
 }
 
@@ -365,27 +407,19 @@ fn share_status_http_error(status: StatusCode) -> Option<ShareStatusError> {
 async fn submit_archive(
     authenticated: &auth::AuthenticatedApi,
     archive: &[u8],
-    archive_sha256: &str,
     idempotency_key: &str,
-    visibility: ShareVisibility,
-    force: bool,
-) -> Result<ShareJob> {
+    request: &CreateHostedTrace<'_>,
+) -> Result<HostedTrace> {
     let client = http_client_builder()
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .context("building share client")?;
-    let created = api_json::<CreateShareResponse>(
+    let created = api_json::<CreateHostedTraceResponse>(
         client
-            .post(authenticated.origin.api_url("/api/shares"))
+            .post(authenticated.origin.api_url("/api/traces"))
             .bearer_auth(&authenticated.access_token)
             .header("Idempotency-Key", idempotency_key)
-            .json(&CreateShare {
-                archive_format: TRACE_PACKAGE_FORMAT,
-                size_bytes: archive.len() as u64,
-                sha256: archive_sha256,
-                visibility: visibility.as_str(),
-                force,
-            })
+            .json(request)
             .send()
             .await
             .context("creating share")?,
@@ -393,35 +427,33 @@ async fn submit_archive(
     )
     .await?;
 
-    if created.share.state == "uploading" {
-        let upload = created
-            .upload
-            .ok_or_else(|| anyhow!("share API omitted upload instructions"))?;
+    if let Some(upload) = created.upload {
         upload_archive(&client, &authenticated.origin, upload, archive).await?;
-        api_json::<ShareJob>(
+        api_json::<HostedTrace>(
             client
-                .post(
-                    authenticated
-                        .origin
-                        .api_url(&format!("/api/shares/{}/complete", created.share.id)),
-                )
+                .post(authenticated.origin.api_url(&format!(
+                    "/api/traces/{}/upload-completion",
+                    created.trace.trace_id
+                )))
                 .bearer_auth(&authenticated.access_token)
+                .json(&CompleteHostedTraceUpload {
+                    package_size_bytes: archive.len() as u64,
+                    package_sha256: request.package_sha256,
+                })
                 .send()
                 .await
                 .context("completing share upload")?,
             "completing share upload",
         )
         .await?;
-    } else if created.upload.is_some() {
-        bail!("share API returned upload instructions for a non-uploading share");
     }
 
-    api_json::<ShareJob>(
+    api_json::<HostedTrace>(
         client
             .get(
                 authenticated
                     .origin
-                    .api_url(&format!("/api/shares/{}", created.share.id)),
+                    .api_url(&format!("/api/traces/{}", created.trace.trace_id)),
             )
             .bearer_auth(&authenticated.access_token)
             .send()
@@ -432,8 +464,8 @@ async fn submit_archive(
     .await
     .with_context(|| {
         format!(
-            "share {} was uploaded and completed, but status polling failed",
-            created.share.id
+            "hosted Trace {} was uploaded and completed, but status polling failed",
+            created.trace.trace_id
         )
     })
 }
@@ -496,13 +528,8 @@ async fn upload_archive(
     Ok(())
 }
 
-fn archive_idempotency_key(
-    archive_sha256: &str,
-    visibility: ShareVisibility,
-    force: bool,
-) -> String {
-    let base = format!("trace-package:{archive_sha256}:{}", visibility.as_str());
-    if force { format!("{base}:force") } else { base }
+fn hosted_trace_idempotency_key(source_trace_id: &str) -> String {
+    format!("hosted-trace:{source_trace_id}")
 }
 
 fn validated_upload_url(api_origin: &ApiOrigin, value: &str) -> Result<url::Url> {
@@ -610,6 +637,37 @@ mod tests {
         uploaded: Arc<Mutex<Vec<u8>>>,
     }
 
+    fn hosted_trace_json(
+        status: &str,
+        visibility: &str,
+        password_protected: bool,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "trace_id": "job-1",
+            "source_trace_id": "trc-source",
+            "status": status,
+            "access": {
+                "visibility": visibility,
+                "password_protected": password_protected,
+                "expires_at": null
+            },
+            "package": {
+                "format": TRACE_PACKAGE_FORMAT,
+                "declared_size_bytes": 21,
+                "declared_sha256": "a".repeat(64),
+                "admitted_size_bytes": null,
+                "admitted_sha256": null
+            },
+            "verification": {"verified_at": null, "failure_code": null},
+            "allow_high_entropy": true,
+            "created_at": 1,
+            "updated_at": 1,
+            "status_url": "/api/traces/job-1",
+            "public_url": null,
+            "package_url": null
+        })
+    }
+
     #[tokio::test]
     async fn submits_uploads_completes_and_polls() {
         async fn create(
@@ -620,12 +678,14 @@ mod tests {
             assert!(headers.contains_key("authorization"));
             assert!(headers.contains_key("idempotency-key"));
             assert_eq!(request["visibility"], "unlisted");
-            assert_eq!(request["force"], true);
-            let size = request["size_bytes"].as_u64().unwrap();
+            assert_eq!(request["allow_high_entropy"], true);
+            assert_eq!(request["source_trace_id"], "trc-source");
+            assert_eq!(request["package_format"], TRACE_PACKAGE_FORMAT);
+            let size = request["package_size_bytes"].as_u64().unwrap();
             (
                 StatusCode::CREATED,
                 Json(serde_json::json!({
-                    "share": {"id":"job-1","state":"uploading","visibility":"unlisted","status_url":"/api/shares/job-1"},
+                    "trace": hosted_trace_json("verifying", "unlisted", false),
                     "upload": {
                         "method":"PUT",
                         "url":format!("{origin}/upload"),
@@ -641,17 +701,21 @@ mod tests {
             *state.uploaded.lock().unwrap() = bytes.to_vec();
             StatusCode::NO_CONTENT
         }
-        async fn complete(Path(job_id): Path<String>) -> Json<serde_json::Value> {
+        async fn complete(
+            Path(job_id): Path<String>,
+            Json(request): Json<serde_json::Value>,
+        ) -> Json<serde_json::Value> {
             assert_eq!(job_id, "job-1");
-            Json(serde_json::json!({
-                "id":"job-1","state":"queued","visibility":"unlisted","status_url":"/api/shares/job-1"
-            }))
+            assert_eq!(request["package_size_bytes"], 21);
+            assert_eq!(
+                request["package_sha256"],
+                sha256_hex(b"deterministic archive")
+            );
+            Json(hosted_trace_json("verifying", "unlisted", false))
         }
         async fn status(Path(job_id): Path<String>) -> Json<serde_json::Value> {
             assert_eq!(job_id, "job-1");
-            Json(serde_json::json!({
-                "id":"job-1","state":"queued","visibility":"unlisted","status_url":"/api/shares/job-1"
-            }))
+            Json(hosted_trace_json("verifying", "unlisted", false))
         }
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -659,14 +723,14 @@ mod tests {
         let uploads = MockState::default();
         let app = Router::new()
             .route(
-                "/api/shares",
+                "/api/traces",
                 post({
                     let origin = origin.clone();
                     move |headers, body| create(State(origin.clone()), headers, body)
                 }),
             )
-            .route("/api/shares/{job_id}/complete", post(complete))
-            .route("/api/shares/{job_id}", get(status))
+            .route("/api/traces/{job_id}/upload-completion", post(complete))
+            .route("/api/traces/{job_id}", get(status))
             .route("/upload", put(upload))
             .with_state(uploads.clone());
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -676,18 +740,22 @@ mod tests {
             access_token: "access-token".to_owned(),
         };
         let archive = b"deterministic archive";
-        let result = submit_archive(
-            &authenticated,
-            archive,
-            &sha256_hex(archive),
-            "idempotency-key",
-            ShareVisibility::Unlisted,
-            true,
-        )
-        .await
-        .unwrap();
-        assert_eq!(result.id, "job-1");
-        assert_eq!(result.state, "queued");
+        let archive_sha256 = sha256_hex(archive);
+        let request = CreateHostedTrace {
+            source_trace_id: "trc-source",
+            package_format: TRACE_PACKAGE_FORMAT,
+            package_size_bytes: archive.len() as u64,
+            package_sha256: &archive_sha256,
+            visibility: "unlisted",
+            password: None,
+            expires_in_days: None,
+            allow_high_entropy: true,
+        };
+        let result = submit_archive(&authenticated, archive, "idempotency-key", &request)
+            .await
+            .unwrap();
+        assert_eq!(result.trace_id, "job-1");
+        assert_eq!(result.status, "verifying");
         assert_eq!(&*uploads.uploaded.lock().unwrap(), archive);
         server.abort();
     }
@@ -696,18 +764,7 @@ mod tests {
     async fn reads_and_updates_only_safe_share_access_state() {
         async fn status(headers: HeaderMap) -> Json<serde_json::Value> {
             assert_eq!(headers["authorization"], "Bearer access-token");
-            Json(serde_json::json!({
-                "id": "job-1",
-                "state": "verifying",
-                "visibility": "unlisted",
-                "status_url": "/api/shares/job-1",
-                "published": true,
-                "password_protected": false,
-                "expires_at": null,
-                "failure_code": null,
-                "share_url": null,
-                "package_url": null
-            }))
+            Json(hosted_trace_json("verifying", "unlisted", false))
         }
         async fn update(
             headers: HeaderMap,
@@ -715,26 +772,19 @@ mod tests {
         ) -> Json<serde_json::Value> {
             assert_eq!(headers["authorization"], "Bearer access-token");
             assert_eq!(request["visibility"], "listed");
-            assert_eq!(request["published"], true);
+            assert!(request.get("published").is_none());
             assert_eq!(request["password"], "reviewed-password");
             assert_eq!(request["expires_in_days"], 30);
-            Json(serde_json::json!({
-                "id": "job-1",
-                "state": "admitted",
-                "visibility": "listed",
-                "status_url": "/api/shares/job-1",
-                "published": true,
-                "password_protected": true,
-                "expires_at": 2_000_000_000,
-                "failure_code": null,
-                "share_url": "/traces/job-1",
-                "package_url": "/api/public/traces/job-1/package.llmtrace"
-            }))
+            let mut trace = hosted_trace_json("shared", "listed", true);
+            trace["access"]["expires_at"] = serde_json::json!(2_000_000_000);
+            trace["public_url"] = serde_json::json!("/s/job-1");
+            trace["package_url"] = serde_json::json!("/api/public/traces/job-1/package.llmtrace");
+            Json(trace)
         }
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}", listener.local_addr().unwrap());
-        let app = Router::new().route("/api/shares/job-1", get(status).merge(patch(update)));
+        let app = Router::new().route("/api/traces/job-1", get(status).merge(patch(update)));
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let authenticated = auth::AuthenticatedApi {
             origin: ApiOrigin::parse(&origin).unwrap(),
@@ -750,17 +800,16 @@ mod tests {
             &authenticated,
             "job-1",
             Some(ShareVisibility::Listed),
-            Some(true),
             Some("reviewed-password"),
             Some(30),
         )
         .await
         .unwrap();
-        assert_eq!(updated.state, "admitted");
+        assert_eq!(updated.state, "shared");
         assert_eq!(updated.visibility, ShareVisibility::Listed);
         assert!(updated.password_protected);
         assert_eq!(updated.expires_at, Some(2_000_000_000));
-        let expected_share_url = format!("{origin}/traces/job-1");
+        let expected_share_url = format!("{origin}/s/job-1");
         let expected_package_url = format!("{origin}/api/public/traces/job-1/package.llmtrace");
         assert_eq!(
             updated.share_url.as_deref(),
@@ -782,14 +831,9 @@ mod tests {
             )
             .is_err()
         );
-        let digest = "a".repeat(64);
         assert_eq!(
-            archive_idempotency_key(&digest, ShareVisibility::Listed, false),
-            format!("trace-package:{digest}:listed")
-        );
-        assert_eq!(
-            archive_idempotency_key(&digest, ShareVisibility::Listed, true),
-            format!("trace-package:{digest}:listed:force")
+            hosted_trace_idempotency_key("trc-source"),
+            "hosted-trace:trc-source"
         );
         assert!(
             validated_upload_url(

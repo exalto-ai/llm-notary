@@ -20,21 +20,23 @@ import {
 import { Textarea } from '@/components/ui/textarea';
 import { ProviderIdentity } from '../ProviderIdentity';
 import {
-  downloadSharedPackage,
-  getListedShares,
-  getPublicShare,
-  getSharedTrace,
-  reportPublicShare,
+  accessPublicTrace,
+  downloadPublicTracePackage,
+  getListedTraces,
+  getPublicTrace,
+  getPublicTraceOtlp,
+  PlatformApiError,
+  reportPublicTrace,
   verifyTracePackage,
 } from '../platform-api/client';
 import { binaryFileSize, sessionDate } from './format';
 
-type ListedSharesResponse = Awaited<ReturnType<typeof getListedShares>>;
-type ListedShare = ListedSharesResponse['items'][number];
+type ListedTracesResponse = Awaited<ReturnType<typeof getListedTraces>>;
+type ListedTrace = ListedTracesResponse['items'][number];
 type VerificationResult = Awaited<ReturnType<typeof verifyTracePackage>>;
-type PublicShare = Awaited<ReturnType<typeof getPublicShare>>;
-type SharedTrace = Awaited<ReturnType<typeof getSharedTrace>>;
-type ReportReason = Parameters<typeof reportPublicShare>[1]['reason'];
+type PublicTrace = Awaited<ReturnType<typeof getPublicTrace>>;
+type PublicTraceOtlp = Awaited<ReturnType<typeof getPublicTraceOtlp>>;
+type ReportReason = Parameters<typeof reportPublicTrace>[1]['reason'];
 
 type TraceMessagePart = {
   type: string;
@@ -75,19 +77,12 @@ function errorMessage(error: unknown, fallback: string): string {
   return fallback;
 }
 
-function errorCode(error: unknown): string | undefined {
-  if (error && typeof error === 'object' && 'code' in error && typeof error.code === 'string') {
-    return error.code;
-  }
-  return undefined;
-}
-
-export function ListedSharesPreview({
-  loadShares = getListedShares,
+export function ListedTracesPreview({
+  loadShares = getListedTraces,
 }: {
-  loadShares?: typeof getListedShares;
+  loadShares?: typeof getListedTraces;
 }) {
-  const [shares, setShares] = useState<ListedShare[] | null>(null);
+  const [shares, setShares] = useState<ListedTrace[] | null>(null);
   const [loadError, setLoadError] = useState(false);
   useEffect(() => {
     let cancelled = false;
@@ -124,7 +119,7 @@ export function ListedSharesPreview({
       ) : visible.length ? (
         <section className="preview-share-list" aria-label="Featured public traces">
           {visible.map((share) => (
-            <a href={`/s/${encodeURIComponent(share.id)}`} key={share.id}>
+            <a href={`/s/${encodeURIComponent(share.trace_id)}`} key={share.trace_id}>
               <header>
                 <b>{share.model}</b>
                 <ProviderIdentity
@@ -279,7 +274,7 @@ export function VerificationPage({
   const [status, setStatus] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle');
   const [errorCode, setErrorCode] = useState<string | null>(null);
   const [result, setResult] = useState<VerificationResult | null>(null);
-  const trace = result ? parseSharedTrace(result.trace) : [];
+  const trace = result ? parsePublicTraceOtlp(result.trace) : [];
   const chooseFile = (nextFile: File | null) => {
     requestGeneration.current += 1;
     setConsent(false);
@@ -676,7 +671,7 @@ function parseTraceMessages(value: unknown): TraceMessage[] {
   }
 }
 
-function parseSharedTrace(trace: SharedTrace | VerificationResult['trace']): ParsedSpan[] {
+function parsePublicTraceOtlp(trace: PublicTraceOtlp | VerificationResult['trace']): ParsedSpan[] {
   const spans = recordArray(trace, 'resourceSpans').flatMap((resource) =>
     recordArray(resource, 'scopeSpans').flatMap((scope) => recordArray(scope, 'spans')),
   );
@@ -734,7 +729,7 @@ function formatLibraryDate(unixMilliseconds?: number | null) {
   return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(date);
 }
 
-function LibraryShareRow({ share }: { share: ListedShare }) {
+function LibraryShareRow({ share }: { share: ListedTrace }) {
   const captureDate = formatLibraryDate(share.authenticated_at_unix_ms);
   const authenticatedAt = share.authenticated_at_unix_ms;
   const inputPreview = share.input_preview;
@@ -742,7 +737,7 @@ function LibraryShareRow({ share }: { share: ListedShare }) {
   return (
     <a
       className={`share-index-row${share.password_protected ? ' share-index-row--protected' : ''}`}
-      href={`/s/${encodeURIComponent(share.id)}`}
+      href={`/s/${encodeURIComponent(share.trace_id)}`}
     >
       <header>
         <div className="share-index-heading">
@@ -785,8 +780,8 @@ function LibraryShareRow({ share }: { share: ListedShare }) {
   );
 }
 
-export function Library({ loadShares = getListedShares }: { loadShares?: typeof getListedShares }) {
-  const [shares, setShares] = useState<ListedShare[] | null>(null);
+export function Library({ loadShares = getListedTraces }: { loadShares?: typeof getListedTraces }) {
+  const [shares, setShares] = useState<ListedTrace[] | null>(null);
   const [loadingPage, setLoadingPage] = useState(true);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -953,7 +948,7 @@ export function Library({ loadShares = getListedShares }: { loadShares?: typeof 
         <>
           <section className="share-index" aria-label="Public traces">
             {visibleShares.map((share) => (
-              <LibraryShareRow share={share} key={share.id} />
+              <LibraryShareRow share={share} key={share.trace_id} />
             ))}
           </section>
           {loadError && (
@@ -1072,15 +1067,13 @@ function SharedConversation({ spans }: { spans: ParsedSpan[] }) {
 function ShareReportDialog({
   open,
   onOpenChange,
-  shareId,
-  password,
+  traceId,
   sendReport,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  shareId: string;
-  password: string;
-  sendReport: typeof reportPublicShare;
+  traceId: string;
+  sendReport: typeof reportPublicTrace;
 }) {
   const [reason, setReason] = useState<ReportReason>('sensitive_information');
   const [message, setMessage] = useState('');
@@ -1092,7 +1085,7 @@ function ShareReportDialog({
     setSending(true);
     setError('');
     try {
-      await sendReport(shareId, { reason, message: message.trim() || undefined }, password);
+      await sendReport(traceId, { reason, message: message.trim() || undefined });
       setReceived(true);
     } catch (failure) {
       setError(errorMessage(failure, 'Could not send this report.'));
@@ -1170,25 +1163,26 @@ function ShareReportDialog({
   );
 }
 
-export function SharePage({
-  shareId,
-  loadShare = getPublicShare,
-  loadTrace = getSharedTrace,
-  downloadPackage = downloadSharedPackage,
-  sendReport = reportPublicShare,
+export function PublicTracePage({
+  traceId,
+  loadShare = getPublicTrace,
+  loadTrace = getPublicTraceOtlp,
+  downloadPackage = downloadPublicTracePackage,
+  sendReport = reportPublicTrace,
+  accessTrace = accessPublicTrace,
 }: {
-  shareId: string;
-  loadShare?: typeof getPublicShare;
-  loadTrace?: typeof getSharedTrace;
-  downloadPackage?: typeof downloadSharedPackage;
-  sendReport?: typeof reportPublicShare;
+  traceId: string;
+  loadShare?: typeof getPublicTrace;
+  loadTrace?: typeof getPublicTraceOtlp;
+  downloadPackage?: typeof downloadPublicTracePackage;
+  sendReport?: typeof reportPublicTrace;
+  accessTrace?: typeof accessPublicTrace;
 }) {
-  const [share, setShare] = useState<PublicShare | null>(null);
+  const [share, setShare] = useState<PublicTrace | null>(null);
   const [spans, setSpans] = useState<ParsedSpan[] | null>(null);
   const [loadError, setLoadError] = useState('');
   const [passwordRequired, setPasswordRequired] = useState(false);
   const [password, setPassword] = useState('');
-  const [activePassword, setActivePassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [checkingPassword, setCheckingPassword] = useState(false);
   const [packageError, setPackageError] = useState('');
@@ -1200,24 +1194,23 @@ export function SharePage({
     setLoadError('');
     setPasswordRequired(false);
     setPassword('');
-    setActivePassword('');
     setPasswordError('');
-    Promise.all([loadShare(shareId), loadTrace(shareId)])
+    Promise.all([loadShare(traceId), loadTrace(traceId)])
       .then(([detail, trace]) => {
         if (!cancelled) {
           setShare(detail);
-          setSpans(parseSharedTrace(trace));
+          setSpans(parsePublicTraceOtlp(trace));
         }
       })
       .catch((error) => {
         if (cancelled) return;
-        if (errorCode(error) === 'share_password_required') setPasswordRequired(true);
+        if (error instanceof PlatformApiError && error.status === 404) setPasswordRequired(true);
         else setLoadError(errorMessage(error, 'Could not load this shared session.'));
       });
     return () => {
       cancelled = true;
     };
-  }, [loadShare, loadTrace, shareId]);
+  }, [loadShare, loadTrace, traceId]);
   useEffect(() => {
     if (!share && !passwordRequired) return undefined;
     if (share) document.title = `${share.model} · LLM Notary`;
@@ -1244,17 +1237,13 @@ export function SharePage({
     setCheckingPassword(true);
     setPasswordError('');
     try {
-      const [detail, trace] = await Promise.all([
-        loadShare(shareId, password),
-        loadTrace(shareId, password),
-      ]);
+      await accessTrace(traceId, password);
+      const [detail, trace] = await Promise.all([loadShare(traceId), loadTrace(traceId)]);
       setShare(detail);
-      setSpans(parseSharedTrace(trace));
-      setActivePassword(password);
+      setSpans(parsePublicTraceOtlp(trace));
       setPasswordRequired(false);
     } catch (error) {
-      const code = errorCode(error);
-      if (code === 'share_password_invalid' || code === 'share_password_required')
+      if (error instanceof PlatformApiError && error.status === 404)
         setPasswordError('That password did not open this trace.');
       else setPasswordError(errorMessage(error, 'Could not open this trace.'));
     } finally {
@@ -1264,11 +1253,11 @@ export function SharePage({
   const saveProtectedPackage = async () => {
     setPackageError('');
     try {
-      const blob = await downloadPackage(shareId, activePassword);
+      const blob = await downloadPackage(traceId);
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `llm-notary-${shareId}.llmtrace`;
+      link.download = `${traceId}.llmtrace`;
       link.click();
       window.setTimeout(() => URL.revokeObjectURL(url), 0);
     } catch (error) {
@@ -1503,8 +1492,7 @@ export function SharePage({
       <ShareReportDialog
         open={reportOpen}
         onOpenChange={setReportOpen}
-        shareId={shareId}
-        password={activePassword}
+        traceId={traceId}
         sendReport={sendReport}
       />
     </main>

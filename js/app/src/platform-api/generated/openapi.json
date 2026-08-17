@@ -1,15 +1,332 @@
 {
   "openapi": "3.1.0",
   "info": {
-    "title": "LLM Notary hosted platform API",
-    "description": "Public website, account, Device authorization, verified-session sharing, and Listed-share catalog API for the hosted LLM Notary platform. This contract is separate from the loopback local administration API.",
+    "title": "Notary platform API",
+    "description": "Account, Device, hosted Trace, public Trace, Registry, verification, admission, usage, credits, and billing API for Notary by Exalto. This contract is separate from the loopback local administration API.",
     "license": {
       "name": "MIT OR Apache-2.0",
       "identifier": "MIT OR Apache-2.0"
     },
     "version": "1.0.0"
   },
+  "servers": [
+    {
+      "url": "https://notary.exalto.ai",
+      "description": "Notary by Exalto"
+    }
+  ],
   "paths": {
+    "/api/account": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Get the current Notary account",
+        "operationId": "account",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Delete the current Notary account and hosted data",
+        "operationId": "delete_account",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeleteAccountRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Account deleted",
+            "headers": {
+              "Set-Cookie": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/api-keys": {
+      "get": {
+        "tags": [
+          "api-keys"
+        ],
+        "summary": "List account API keys",
+        "operationId": "list_api_keys",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size; defaults to 50",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_ApiKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "api-keys"
+        ],
+        "summary": "Create an account API key",
+        "operationId": "create_api_key",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateApiKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateApiKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/api-keys/{api_key_id}": {
+      "delete": {
+        "tags": [
+          "api-keys"
+        ],
+        "summary": "Revoke an account API key",
+        "operationId": "revoke_api_key",
+        "parameters": [
+          {
+            "name": "api_key_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "API key revoked"
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
     "/api/auth/github": {
       "get": {
         "tags": [
@@ -356,6 +673,270 @@
         }
       }
     },
+    "/api/billing/checkout-sessions": {
+      "post": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "Create a Stripe-hosted credit purchase",
+        "operationId": "create_checkout_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCheckoutSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateCheckoutSessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/billing/portal-sessions": {
+      "post": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "Create a Stripe Billing Portal session",
+        "operationId": "create_portal_session",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreatePortalSessionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/billing/purchases": {
+      "get": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "List recent hosted-credit purchases",
+        "operationId": "list_purchases",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingPurchasesResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/billing/purchases/{purchase_id}": {
+      "get": {
+        "tags": [
+          "billing"
+        ],
+        "summary": "Get one hosted-credit purchase",
+        "operationId": "get_purchase",
+        "parameters": [
+          {
+            "name": "purchase_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BillingPurchase"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
     "/api/billing/stripe/webhook": {
       "post": {
         "tags": [
@@ -410,12 +991,98 @@
         }
       }
     },
-    "/api/cli/authorizations": {
+    "/api/billing/subscription-checkout-sessions": {
       "post": {
         "tags": [
-          "cli-auth"
+          "billing"
         ],
-        "summary": "Start Device device authorization",
+        "summary": "Create a Stripe-hosted subscription Checkout session",
+        "operationId": "create_subscription_checkout_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSubscriptionCheckoutRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateSubscriptionCheckoutResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/device-authorizations": {
+      "post": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Start Device authorization",
         "operationId": "start_device_authorization",
         "requestBody": {
           "content": {
@@ -461,10 +1128,10 @@
         }
       }
     },
-    "/api/cli/authorizations/{request_id}/approval": {
+    "/api/device-authorizations/{request_id}/approval": {
       "get": {
         "tags": [
-          "cli-auth"
+          "devices"
         ],
         "summary": "Get browser approval details",
         "operationId": "device_approval_details",
@@ -478,8 +1145,8 @@
             }
           },
           {
-            "name": "approval_secret",
-            "in": "query",
+            "name": "X-Notary-Approval-Secret",
+            "in": "header",
             "required": true,
             "schema": {
               "type": "string"
@@ -492,7 +1159,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ApprovalDetails"
+                  "$ref": "#/components/schemas/DeviceAuthorizationApproval"
                 }
               }
             }
@@ -546,9 +1213,9 @@
       },
       "post": {
         "tags": [
-          "cli-auth"
+          "devices"
         ],
-        "summary": "Approve a Device device authorization",
+        "summary": "Approve Device authorization",
         "operationId": "approve_device_authorization",
         "parameters": [
           {
@@ -560,8 +1227,8 @@
             }
           },
           {
-            "name": "approval_secret",
-            "in": "query",
+            "name": "X-Notary-Approval-Secret",
+            "in": "header",
             "required": true,
             "schema": {
               "type": "string"
@@ -570,7 +1237,7 @@
         ],
         "responses": {
           "204": {
-            "description": "Device device authorized"
+            "description": "Device authorized"
           },
           "401": {
             "description": "",
@@ -610,10 +1277,10 @@
         ]
       }
     },
-    "/api/cli/authorizations/{request_id}/token": {
+    "/api/device-authorizations/{request_id}/token": {
       "post": {
         "tags": [
-          "cli-auth"
+          "devices"
         ],
         "summary": "Complete Device device authorization",
         "operationId": "complete_device_authorization",
@@ -633,7 +1300,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DeviceTokens"
+                  "$ref": "#/components/schemas/DeviceCredentials"
                 }
               }
             }
@@ -686,44 +1353,10 @@
         ]
       }
     },
-    "/api/cli/logout": {
-      "post": {
-        "tags": [
-          "cli-auth"
-        ],
-        "summary": "Revoke a Device session by refresh token",
-        "operationId": "logout_device_session",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RefreshRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "204": {
-            "description": "Device session revoked"
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/cli/me": {
+    "/api/device-session": {
       "get": {
         "tags": [
-          "cli-auth"
+          "devices"
         ],
         "summary": "Get the Device access-token identity",
         "operationId": "device_me",
@@ -733,7 +1366,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/DeviceMeResponse"
+                  "$ref": "#/components/schemas/DeviceSessionIdentity"
                 }
               }
             }
@@ -774,14 +1407,97 @@
             "bearerAuth": []
           }
         ]
+      },
+      "delete": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Revoke a Device session by refresh token",
+        "operationId": "logout_device_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Device session revoked"
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
-    "/api/cli/sessions": {
+    "/api/device-session/token": {
+      "post": {
+        "tags": [
+          "devices"
+        ],
+        "summary": "Rotate Device access and refresh tokens",
+        "operationId": "refresh_device_tokens",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeviceRefreshRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeviceCredentials"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/devices": {
       "get": {
         "tags": [
-          "cli-auth"
+          "devices"
         ],
-        "summary": "List the browser user's active Device sessions",
+        "summary": "List the account's Connected devices",
         "operationId": "list_devices",
         "parameters": [
           {
@@ -811,7 +1527,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_WebDeviceSession"
+                  "$ref": "#/components/schemas/Page_ConnectedDevice"
                 }
               }
             }
@@ -854,16 +1570,16 @@
         ]
       }
     },
-    "/api/cli/sessions/{session_id}": {
+    "/api/devices/{device_id}": {
       "delete": {
         "tags": [
-          "cli-auth"
+          "devices"
         ],
-        "summary": "Revoke one of the browser user's Device sessions",
+        "summary": "Revoke one Connected device",
         "operationId": "revoke_web_device_session",
         "parameters": [
           {
-            "name": "session_id",
+            "name": "device_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -911,57 +1627,6 @@
             "browserSession": []
           }
         ]
-      }
-    },
-    "/api/cli/token": {
-      "post": {
-        "tags": [
-          "cli-auth"
-        ],
-        "summary": "Rotate Device access and refresh tokens",
-        "operationId": "refresh_device_tokens",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RefreshRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeviceTokens"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/healthz": {
@@ -1170,647 +1835,6 @@
         ]
       }
     },
-    "/api/me": {
-      "get": {
-        "tags": [
-          "browser-auth"
-        ],
-        "summary": "Get the signed-in browser user",
-        "operationId": "me",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MeResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "browserSession": []
-          }
-        ]
-      },
-      "delete": {
-        "tags": [
-          "browser-auth"
-        ],
-        "summary": "Delete the current account and all associated hosted data",
-        "operationId": "delete_account",
-        "responses": {
-          "204": {
-            "description": "Account deleted",
-            "headers": {
-              "Set-Cookie": {
-                "schema": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "browserSession": []
-          }
-        ]
-      }
-    },
-    "/api/me/api-keys": {
-      "get": {
-        "tags": [
-          "browser-auth"
-        ],
-        "summary": "List account API keys",
-        "operationId": "list_api_keys",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Page size; defaults to 50",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int32",
-              "maximum": 100,
-              "minimum": 1
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Page_ApiKeyResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "browserSession": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "browser-auth"
-        ],
-        "summary": "Create an account API key",
-        "operationId": "create_api_key",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateApiKeyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreateApiKeyResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "browserSession": []
-          }
-        ]
-      }
-    },
-    "/api/me/api-keys/{api_key_id}": {
-      "delete": {
-        "tags": [
-          "browser-auth"
-        ],
-        "summary": "Revoke an account API key",
-        "operationId": "revoke_api_key",
-        "parameters": [
-          {
-            "name": "api_key_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "API key revoked"
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "browserSession": []
-          }
-        ]
-      }
-    },
-    "/api/me/billing/checkout-sessions": {
-      "post": {
-        "tags": [
-          "billing"
-        ],
-        "summary": "Create a Stripe-hosted credit purchase",
-        "operationId": "create_checkout_session",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateCheckoutSessionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreateCheckoutSessionResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "browserSession": []
-          }
-        ]
-      }
-    },
-    "/api/me/billing/portal-sessions": {
-      "post": {
-        "tags": [
-          "billing"
-        ],
-        "summary": "Create a Stripe Billing Portal session",
-        "operationId": "create_portal_session",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreatePortalSessionResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "browserSession": []
-          }
-        ]
-      }
-    },
-    "/api/me/billing/purchases": {
-      "get": {
-        "tags": [
-          "billing"
-        ],
-        "summary": "List recent hosted-credit purchases",
-        "operationId": "list_purchases",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BillingPurchasesResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "browserSession": []
-          }
-        ]
-      }
-    },
-    "/api/me/billing/purchases/{purchase_id}": {
-      "get": {
-        "tags": [
-          "billing"
-        ],
-        "summary": "Get one hosted-credit purchase",
-        "operationId": "get_purchase",
-        "parameters": [
-          {
-            "name": "purchase_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BillingPurchase"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "browserSession": []
-          }
-        ]
-      }
-    },
-    "/api/me/billing/subscription-checkout-sessions": {
-      "post": {
-        "tags": [
-          "billing"
-        ],
-        "summary": "Create a Stripe-hosted subscription Checkout session",
-        "operationId": "create_subscription_checkout_session",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateSubscriptionCheckoutRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreateSubscriptionCheckoutResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "503": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "browserSession": []
-          }
-        ]
-      }
-    },
     "/api/me/credit-offers": {
       "get": {
         "tags": [
@@ -2011,105 +2035,6 @@
         ]
       }
     },
-    "/api/me/shares": {
-      "get": {
-        "tags": [
-          "sharing"
-        ],
-        "summary": "List the browser user's shares",
-        "operationId": "list_web_traces",
-        "parameters": [
-          {
-            "name": "limit",
-            "in": "query",
-            "description": "Page size; defaults to 50",
-            "required": false,
-            "schema": {
-              "type": "integer",
-              "format": "int32",
-              "maximum": 100,
-              "minimum": 1
-            }
-          },
-          {
-            "name": "cursor",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Page_ShareResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "browserSession": []
-          }
-        ]
-      }
-    },
-    "/api/notary": {
-      "get": {
-        "tags": [
-          "health"
-        ],
-        "summary": "Get the versioned Notary Registry",
-        "operationId": "notary",
-        "responses": {
-          "200": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/RegistryResponse"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/notary/admissions": {
       "post": {
         "tags": [
@@ -2197,13 +2122,13 @@
         ]
       }
     },
-    "/api/public/shares": {
+    "/api/public/traces": {
       "get": {
         "tags": [
-          "library"
+          "public-traces"
         ],
-        "summary": "List Listed verified-session shares",
-        "operationId": "listed_shares",
+        "summary": "List Listed verified-session traces",
+        "operationId": "list_public_traces",
         "parameters": [
           {
             "name": "limit",
@@ -2248,7 +2173,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Page_ListedShareSummary"
+                  "$ref": "#/components/schemas/Page_PublicTraceSummary"
                 }
               }
             }
@@ -2276,32 +2201,20 @@
         }
       }
     },
-    "/api/public/shares/{share_id}": {
+    "/api/public/traces/{trace_id}": {
       "get": {
         "tags": [
-          "sharing"
+          "public-traces"
         ],
-        "summary": "Get one verified-session share by its stable ID",
-        "operationId": "public_share_detail",
+        "summary": "Get one admitted public Trace",
+        "operationId": "public_trace_detail",
         "parameters": [
           {
-            "name": "share_id",
+            "name": "trace_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
-            }
-          },
-          {
-            "name": "X-Share-Password",
-            "in": "header",
-            "description": "Base64url-encoded UTF-8 password for a protected share",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
             }
           }
         ],
@@ -2311,12 +2224,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PublicShareDetail"
+                  "$ref": "#/components/schemas/PublicTraceDetail"
                 }
               }
             }
           },
-          "401": {
+          "404": {
             "description": "",
             "content": {
               "application/json": {
@@ -2325,6 +2238,50 @@
                 }
               }
             }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/public/traces/{trace_id}/access": {
+      "post": {
+        "tags": [
+          "public-traces"
+        ],
+        "summary": "Establish narrowly scoped access to a protected public Trace",
+        "operationId": "access_public_trace",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublicTraceAccessRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Access established"
           },
           "404": {
             "description": "",
@@ -2359,32 +2316,20 @@
         }
       }
     },
-    "/api/public/shares/{share_id}/package.llmtrace": {
+    "/api/public/traces/{trace_id}/content": {
       "get": {
         "tags": [
-          "sharing"
+          "public-traces"
         ],
-        "summary": "Download the exact verified portable proof package",
-        "operationId": "public_share_package",
+        "summary": "Get the bounded disclosed conversation from one public Trace",
+        "operationId": "public_trace_content",
         "parameters": [
           {
-            "name": "share_id",
+            "name": "trace_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
-            }
-          },
-          {
-            "name": "X-Share-Password",
-            "in": "header",
-            "description": "Base64url-encoded UTF-8 password for a protected share",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
             }
           }
         ],
@@ -2392,39 +2337,14 @@
           "200": {
             "description": "",
             "content": {
-              "application/vnd.exalto.notary.trace-package+zip": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "type": "integer",
-                    "format": "int32",
-                    "minimum": 0
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "",
-            "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
+                  "$ref": "#/components/schemas/PublicTraceContent"
                 }
               }
             }
           },
           "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "429": {
             "description": "",
             "content": {
               "application/json": {
@@ -2457,32 +2377,86 @@
         }
       }
     },
-    "/api/public/shares/{share_id}/reports": {
-      "post": {
+    "/api/public/traces/{trace_id}/package.llmtrace": {
+      "get": {
         "tags": [
-          "sharing"
+          "public-traces"
         ],
-        "summary": "Report a published share",
-        "operationId": "create_share_report",
+        "summary": "Download the exact verified portable proof package",
+        "operationId": "public_trace_package",
         "parameters": [
           {
-            "name": "share_id",
+            "name": "trace_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
             }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/vnd.exalto.notary.trace-package+zip": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "format": "int32",
+                    "minimum": 0
+                  }
+                }
+              }
+            }
           },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/public/traces/{trace_id}/reports": {
+      "post": {
+        "tags": [
+          "public-traces"
+        ],
+        "summary": "Report a public Trace",
+        "operationId": "create_trace_report",
+        "parameters": [
           {
-            "name": "X-Share-Password",
-            "in": "header",
-            "description": "Base64url-encoded UTF-8 password for a protected share",
-            "required": false,
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
             "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
+              "type": "string"
             }
           }
         ],
@@ -2490,7 +2464,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/CreateShareReport"
+                "$ref": "#/components/schemas/CreateTraceReport"
               }
             }
           },
@@ -2502,22 +2476,12 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShareReportReceipt"
+                  "$ref": "#/components/schemas/TraceReportReceipt"
                 }
               }
             }
           },
           "400": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "401": {
             "description": "",
             "content": {
               "application/json": {
@@ -2560,32 +2524,20 @@
         }
       }
     },
-    "/api/public/shares/{share_id}/trace.otlp.json": {
+    "/api/public/traces/{trace_id}/trace.otlp.json": {
       "get": {
         "tags": [
-          "sharing"
+          "public-traces"
         ],
         "summary": "Download the verified canonical OpenTelemetry trace",
-        "operationId": "public_share_trace",
+        "operationId": "public_trace_otlp",
         "parameters": [
           {
-            "name": "share_id",
+            "name": "trace_id",
             "in": "path",
             "required": true,
             "schema": {
               "type": "string"
-            }
-          },
-          {
-            "name": "X-Share-Password",
-            "in": "header",
-            "description": "Base64url-encoded UTF-8 password for a protected share",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
             }
           }
         ],
@@ -2598,27 +2550,7 @@
               }
             }
           },
-          "401": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
           "404": {
-            "description": "",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            }
-          },
-          "429": {
             "description": "",
             "content": {
               "application/json": {
@@ -2682,18 +2614,120 @@
         }
       }
     },
-    "/api/shares": {
+    "/api/registry": {
+      "get": {
+        "tags": [
+          "registry"
+        ],
+        "summary": "Get the versioned Registry of Official Notaries",
+        "operationId": "notary",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegistryResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/traces": {
+      "get": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "List the current account's hosted Traces",
+        "operationId": "list_web_traces",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "Page size; defaults to 50",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "format": "int32",
+              "maximum": 100,
+              "minimum": 1
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page_HostedTrace"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          },
+          {
+            "bearerAuth": [
+              "traces:read"
+            ]
+          }
+        ]
+      },
       "post": {
         "tags": [
-          "sharing"
+          "traces"
         ],
-        "summary": "Create or resume a share",
+        "summary": "Create, resume, or safely re-share one hosted Trace",
         "operationId": "create_hosted_trace",
         "parameters": [
           {
             "name": "Idempotency-Key",
             "in": "header",
-            "description": "Stable key for this share attempt",
+            "description": "Stable key for this hosted Trace request",
             "required": true,
             "schema": {
               "type": "string"
@@ -2712,21 +2746,21 @@
         },
         "responses": {
           "200": {
-            "description": "Existing share",
+            "description": "Existing hosted Trace",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CreateShareResponse"
+                  "$ref": "#/components/schemas/CreateHostedTraceResponse"
                 }
               }
             }
           },
           "201": {
-            "description": "New or reopened share",
+            "description": "New or reopened hosted Trace",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/CreateShareResponse"
+                  "$ref": "#/components/schemas/CreateHostedTraceResponse"
                 }
               }
             }
@@ -2809,16 +2843,16 @@
         ]
       }
     },
-    "/api/shares/{share_id}": {
+    "/api/traces/{trace_id}": {
       "get": {
         "tags": [
-          "sharing"
+          "traces"
         ],
-        "summary": "Get a share's admission state",
+        "summary": "Get one hosted Trace",
         "operationId": "get_hosted_trace",
         "parameters": [
           {
-            "name": "share_id",
+            "name": "trace_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -2832,7 +2866,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShareResponse"
+                  "$ref": "#/components/schemas/HostedTrace"
                 }
               }
             }
@@ -2890,19 +2924,24 @@
         },
         "security": [
           {
-            "bearerAuth": []
+            "bearerAuth": [
+              "traces:read"
+            ]
+          },
+          {
+            "browserSession": []
           }
         ]
       },
       "patch": {
         "tags": [
-          "sharing"
+          "traces"
         ],
-        "summary": "Change a hosted Trace's sharing access settings",
-        "operationId": "update_share_settings",
+        "summary": "Change hosted Trace access settings",
+        "operationId": "update_trace_access",
         "parameters": [
           {
-            "name": "share_id",
+            "name": "trace_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -2914,7 +2953,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/UpdateShareSettings"
+                "$ref": "#/components/schemas/UpdateTraceAccessSettings"
               }
             }
           },
@@ -2926,7 +2965,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShareResponse"
+                  "$ref": "#/components/schemas/HostedTrace"
                 }
               }
             }
@@ -3012,16 +3051,16 @@
         ]
       }
     },
-    "/api/shares/{share_id}/complete": {
-      "post": {
+    "/api/traces/{trace_id}/share": {
+      "delete": {
         "tags": [
-          "sharing"
+          "traces"
         ],
-        "summary": "Complete the upload for a share",
-        "operationId": "complete_hosted_trace_upload",
+        "summary": "Stop public access to one hosted Trace",
+        "operationId": "stop_hosted_trace_sharing",
         "parameters": [
           {
-            "name": "share_id",
+            "name": "trace_id",
             "in": "path",
             "required": true,
             "schema": {
@@ -3030,12 +3069,106 @@
           }
         ],
         "responses": {
+          "204": {
+            "description": "Sharing stopped; the owner record and package remain"
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": [
+              "traces:share"
+            ]
+          },
+          {
+            "browserSession": []
+          }
+        ]
+      }
+    },
+    "/api/traces/{trace_id}/upload-completion": {
+      "post": {
+        "tags": [
+          "traces"
+        ],
+        "summary": "Complete one hosted Trace package upload",
+        "operationId": "complete_hosted_trace_upload",
+        "parameters": [
+          {
+            "name": "trace_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompleteHostedTraceUploadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
           "200": {
             "description": "",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ShareResponse"
+                  "$ref": "#/components/schemas/HostedTrace"
                 }
               }
             }
@@ -3114,6 +3247,67 @@
         "security": [
           {
             "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/usage": {
+      "get": {
+        "tags": [
+          "account"
+        ],
+        "summary": "Get capture, notarization, and hosted Trace usage",
+        "operationId": "usage",
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "browserSession": []
+          },
+          {
+            "bearerAuth": [
+              "account:read"
+            ]
           }
         ]
       }
@@ -3236,6 +3430,48 @@
           },
           "subscriptions_configured": {
             "type": "boolean"
+          }
+        }
+      },
+      "AccountLinks": {
+        "type": "object",
+        "required": [
+          "usage",
+          "billing",
+          "devices",
+          "api_keys"
+        ],
+        "properties": {
+          "api_keys": {
+            "type": "string"
+          },
+          "billing": {
+            "type": "string"
+          },
+          "devices": {
+            "type": "string"
+          },
+          "usage": {
+            "type": "string"
+          }
+        }
+      },
+      "AccountResponse": {
+        "type": "object",
+        "required": [
+          "account",
+          "billing",
+          "links"
+        ],
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/PublicUser"
+          },
+          "billing": {
+            "$ref": "#/components/schemas/AccountBillingResponse"
+          },
+          "links": {
+            "$ref": "#/components/schemas/AccountLinks"
           }
         }
       },
@@ -3366,26 +3602,6 @@
           "capture:request",
           "notarization:request"
         ]
-      },
-      "ApprovalDetails": {
-        "type": "object",
-        "required": [
-          "user_code",
-          "device_name",
-          "expires_at"
-        ],
-        "properties": {
-          "device_name": {
-            "type": "string"
-          },
-          "expires_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "user_code": {
-            "type": "string"
-          }
-        }
       },
       "AuthProvidersResponse": {
         "type": "object",
@@ -3520,6 +3736,60 @@
           }
         }
       },
+      "CompleteHostedTraceUploadRequest": {
+        "type": "object",
+        "required": [
+          "package_size_bytes",
+          "package_sha256"
+        ],
+        "properties": {
+          "package_sha256": {
+            "type": "string"
+          },
+          "package_size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ConnectedDevice": {
+        "type": "object",
+        "required": [
+          "device_id",
+          "device_name",
+          "created_at",
+          "last_used_at",
+          "expires_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "device_id": {
+            "type": "string"
+          },
+          "device_name": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_used_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "revoked_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
       "CreateApiKeyRequest": {
         "type": "object",
         "required": [
@@ -3595,9 +3865,16 @@
       "CreateDeviceAuthorization": {
         "type": "object",
         "required": [
-          "device_name"
+          "device_name",
+          "capabilities"
         ],
         "properties": {
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceCapability"
+            }
+          },
           "device_name": {
             "type": "string"
           }
@@ -3608,8 +3885,8 @@
         "required": [
           "source_trace_id",
           "package_format",
-          "size_bytes",
-          "sha256",
+          "package_size_bytes",
+          "package_sha256",
           "visibility"
         ],
         "properties": {
@@ -3617,24 +3894,62 @@
             "type": "boolean",
             "description": "Accept unexplained high-entropy values after reviewing the disclosure."
           },
+          "expires_in_days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Optional initial access expiry in days.",
+            "maximum": 365,
+            "minimum": 0
+          },
           "package_format": {
             "type": "string"
           },
-          "sha256": {
+          "package_sha256": {
             "type": "string"
           },
-          "size_bytes": {
+          "package_size_bytes": {
             "type": "integer",
             "format": "int64"
+          },
+          "password": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional initial access password. The value is accepted only in this body."
           },
           "source_trace_id": {
             "type": "string"
           },
           "visibility": {
-            "$ref": "#/components/schemas/ShareVisibility"
+            "$ref": "#/components/schemas/TraceVisibility"
           }
         },
         "additionalProperties": false
+      },
+      "CreateHostedTraceResponse": {
+        "type": "object",
+        "required": [
+          "trace"
+        ],
+        "properties": {
+          "trace": {
+            "$ref": "#/components/schemas/HostedTrace"
+          },
+          "upload": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/HostedTraceUpload"
+              }
+            ]
+          }
+        }
       },
       "CreatePortalSessionResponse": {
         "type": "object",
@@ -3644,46 +3959,6 @@
         "properties": {
           "portal_url": {
             "type": "string"
-          }
-        }
-      },
-      "CreateShareReport": {
-        "type": "object",
-        "required": [
-          "reason"
-        ],
-        "properties": {
-          "message": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "maxLength": 500
-          },
-          "reason": {
-            "$ref": "#/components/schemas/ShareReportReason"
-          }
-        },
-        "additionalProperties": false
-      },
-      "CreateShareResponse": {
-        "type": "object",
-        "required": [
-          "share"
-        ],
-        "properties": {
-          "share": {
-            "$ref": "#/components/schemas/ShareResponse"
-          },
-          "upload": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/UploadInstructions"
-              }
-            ]
           }
         }
       },
@@ -3712,6 +3987,25 @@
             "type": "string"
           }
         }
+      },
+      "CreateTraceReport": {
+        "type": "object",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          },
+          "reason": {
+            "$ref": "#/components/schemas/TraceReportReason"
+          }
+        },
+        "additionalProperties": false
       },
       "CredentialKind": {
         "type": "string",
@@ -3888,6 +4182,57 @@
           }
         }
       },
+      "CurrentDevice": {
+        "type": "object",
+        "required": [
+          "device_name"
+        ],
+        "properties": {
+          "device_name": {
+            "type": "string"
+          }
+        }
+      },
+      "DeleteAccountRequest": {
+        "type": "object",
+        "required": [
+          "confirmation"
+        ],
+        "properties": {
+          "confirmation": {
+            "type": "string",
+            "description": "Must be exactly `DELETE` after the user confirms local traces remain local."
+          }
+        },
+        "additionalProperties": false
+      },
+      "DeviceAuthorizationApproval": {
+        "type": "object",
+        "required": [
+          "user_code",
+          "device_name",
+          "capabilities",
+          "expires_at"
+        ],
+        "properties": {
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DeviceCapability"
+            }
+          },
+          "device_name": {
+            "type": "string"
+          },
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "user_code": {
+            "type": "string"
+          }
+        }
+      },
       "DeviceAuthorizationStarted": {
         "type": "object",
         "required": [
@@ -3921,6 +4266,14 @@
           }
         }
       },
+      "DeviceCapability": {
+        "type": "string",
+        "enum": [
+          "hosted_notarization",
+          "consume_credits",
+          "share_notarized_traces"
+        ]
+      },
       "DeviceCredentialResponse": {
         "type": "object",
         "required": [
@@ -3940,7 +4293,38 @@
           }
         }
       },
-      "DeviceMeResponse": {
+      "DeviceCredentials": {
+        "type": "object",
+        "required": [
+          "access_token",
+          "refresh_token",
+          "expires_in"
+        ],
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "expires_in": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "refresh_token": {
+            "type": "string"
+          }
+        }
+      },
+      "DeviceRefreshRequest": {
+        "type": "object",
+        "required": [
+          "refresh_token"
+        ],
+        "properties": {
+          "refresh_token": {
+            "type": "string"
+          }
+        }
+      },
+      "DeviceSessionIdentity": {
         "type": "object",
         "required": [
           "account",
@@ -3961,46 +4345,15 @@
           "credits": {
             "$ref": "#/components/schemas/CreditSummary"
           },
-          "session": {
+          "device": {
             "oneOf": [
               {
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/DeviceSessionResponse"
+                "$ref": "#/components/schemas/CurrentDevice"
               }
             ]
-          }
-        }
-      },
-      "DeviceSessionResponse": {
-        "type": "object",
-        "required": [
-          "device_name"
-        ],
-        "properties": {
-          "device_name": {
-            "type": "string"
-          }
-        }
-      },
-      "DeviceTokens": {
-        "type": "object",
-        "required": [
-          "access_token",
-          "refresh_token",
-          "expires_in"
-        ],
-        "properties": {
-          "access_token": {
-            "type": "string"
-          },
-          "expires_in": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "refresh_token": {
-            "type": "string"
           }
         }
       },
@@ -4030,6 +4383,185 @@
           }
         }
       },
+      "HostedTrace": {
+        "type": "object",
+        "required": [
+          "trace_id",
+          "source_trace_id",
+          "status",
+          "access",
+          "package",
+          "verification",
+          "allow_high_entropy",
+          "created_at",
+          "updated_at",
+          "status_url"
+        ],
+        "properties": {
+          "access": {
+            "$ref": "#/components/schemas/TraceAccessSettings"
+          },
+          "allow_high_entropy": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "package": {
+            "$ref": "#/components/schemas/HostedTracePackage"
+          },
+          "package_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "source_trace_id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HostedTraceStatus"
+          },
+          "status_url": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/HostedTraceVerification"
+          }
+        }
+      },
+      "HostedTracePackage": {
+        "type": "object",
+        "required": [
+          "format",
+          "declared_size_bytes",
+          "declared_sha256"
+        ],
+        "properties": {
+          "admitted_sha256": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "admitted_size_bytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "declared_sha256": {
+            "type": "string"
+          },
+          "declared_size_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "format": {
+            "type": "string"
+          }
+        }
+      },
+      "HostedTraceStatus": {
+        "type": "string",
+        "enum": [
+          "verifying",
+          "shared",
+          "stopped",
+          "rejected",
+          "failed"
+        ]
+      },
+      "HostedTraceUpload": {
+        "type": "object",
+        "required": [
+          "method",
+          "url",
+          "headers",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "headers": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "method": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          }
+        }
+      },
+      "HostedTraceUsage": {
+        "type": "object",
+        "required": [
+          "total",
+          "shared",
+          "verifying",
+          "stored_bytes"
+        ],
+        "properties": {
+          "shared": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "stored_bytes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "total": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "verifying": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "HostedTraceVerification": {
+        "type": "object",
+        "properties": {
+          "failure_code": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verified_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
       "IssueAdmissionRequest": {
         "type": "object",
         "required": [
@@ -4051,83 +4583,6 @@
               "null"
             ],
             "format": "int64"
-          }
-        }
-      },
-      "ListedShareSummary": {
-        "type": "object",
-        "required": [
-          "id",
-          "provider",
-          "model",
-          "publisher",
-          "password_protected",
-          "share_url"
-        ],
-        "properties": {
-          "authenticated_at_unix_ms": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "id": {
-            "type": "string"
-          },
-          "input_preview": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "model": {
-            "type": "string"
-          },
-          "output_preview": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "password_protected": {
-            "type": "boolean"
-          },
-          "provider": {
-            "type": "string"
-          },
-          "publisher": {
-            "type": "string"
-          },
-          "share_url": {
-            "type": "string"
-          }
-        }
-      },
-      "MeResponse": {
-        "type": "object",
-        "required": [
-          "account",
-          "billing",
-          "credits",
-          "notary_stats",
-          "share_stats"
-        ],
-        "properties": {
-          "account": {
-            "$ref": "#/components/schemas/PublicUser"
-          },
-          "billing": {
-            "$ref": "#/components/schemas/AccountBillingResponse"
-          },
-          "credits": {
-            "$ref": "#/components/schemas/CreditSummary"
-          },
-          "notary_stats": {
-            "$ref": "#/components/schemas/NotaryStats"
-          },
-          "share_stats": {
-            "$ref": "#/components/schemas/ShareStats"
           }
         }
       },
@@ -4237,6 +4692,62 @@
           }
         }
       },
+      "Page_ConnectedDevice": {
+        "type": "object",
+        "description": "Uniform response shape for every paginated list route.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "device_id",
+                "device_name",
+                "created_at",
+                "last_used_at",
+                "expires_at"
+              ],
+              "properties": {
+                "created_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "device_id": {
+                  "type": "string"
+                },
+                "device_name": {
+                  "type": "string"
+                },
+                "expires_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "last_used_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "revoked_at": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "format": "int64"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor for the next page, or `null` when this page exhausts the query."
+          }
+        }
+      },
       "Page_CreditHistoryEntry": {
         "type": "object",
         "description": "Uniform response shape for every paginated list route.",
@@ -4302,7 +4813,7 @@
           }
         }
       },
-      "Page_ListedShareSummary": {
+      "Page_HostedTrace": {
         "type": "object",
         "description": "Uniform response shape for every paginated list route.",
         "required": [
@@ -4314,12 +4825,92 @@
             "items": {
               "type": "object",
               "required": [
-                "id",
+                "trace_id",
+                "source_trace_id",
+                "status",
+                "access",
+                "package",
+                "verification",
+                "allow_high_entropy",
+                "created_at",
+                "updated_at",
+                "status_url"
+              ],
+              "properties": {
+                "access": {
+                  "$ref": "#/components/schemas/TraceAccessSettings"
+                },
+                "allow_high_entropy": {
+                  "type": "boolean"
+                },
+                "created_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "package": {
+                  "$ref": "#/components/schemas/HostedTracePackage"
+                },
+                "package_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "public_url": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "source_trace_id": {
+                  "type": "string"
+                },
+                "status": {
+                  "$ref": "#/components/schemas/HostedTraceStatus"
+                },
+                "status_url": {
+                  "type": "string"
+                },
+                "trace_id": {
+                  "type": "string"
+                },
+                "updated_at": {
+                  "type": "integer",
+                  "format": "int64"
+                },
+                "verification": {
+                  "$ref": "#/components/schemas/HostedTraceVerification"
+                }
+              }
+            }
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor for the next page, or `null` when this page exhausts the query."
+          }
+        }
+      },
+      "Page_PublicTraceSummary": {
+        "type": "object",
+        "description": "Uniform response shape for every paginated list route.",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "trace_id",
                 "provider",
                 "model",
                 "publisher",
                 "password_protected",
-                "share_url"
+                "public_url"
               ],
               "properties": {
                 "authenticated_at_unix_ms": {
@@ -4328,9 +4919,6 @@
                     "null"
                   ],
                   "format": "int64"
-                },
-                "id": {
-                  "type": "string"
                 },
                 "input_preview": {
                   "type": [
@@ -4353,156 +4941,20 @@
                 "provider": {
                   "type": "string"
                 },
+                "public_url": {
+                  "type": "string"
+                },
                 "publisher": {
                   "type": "string"
                 },
-                "share_url": {
-                  "type": "string"
-                }
-              }
-            }
-          },
-          "next_cursor": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Cursor for the next page, or `null` when this page exhausts the query."
-          }
-        }
-      },
-      "Page_ShareResponse": {
-        "type": "object",
-        "description": "Uniform response shape for every paginated list route.",
-        "required": [
-          "items"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": [
-                "id",
-                "state",
-                "visibility",
-                "published",
-                "password_protected",
-                "allow_high_entropy",
-                "created_at",
-                "updated_at",
-                "status_url"
-              ],
-              "properties": {
-                "allow_high_entropy": {
-                  "type": "boolean"
-                },
-                "created_at": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "expires_at": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "format": "int64"
-                },
-                "failure_code": {
+                "title": {
                   "type": [
                     "string",
                     "null"
                   ]
                 },
-                "id": {
+                "trace_id": {
                   "type": "string"
-                },
-                "package_url": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "password_protected": {
-                  "type": "boolean"
-                },
-                "published": {
-                  "type": "boolean"
-                },
-                "share_url": {
-                  "type": [
-                    "string",
-                    "null"
-                  ]
-                },
-                "state": {
-                  "type": "string"
-                },
-                "status_url": {
-                  "type": "string"
-                },
-                "updated_at": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "verified_at": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "format": "int64"
-                },
-                "visibility": {
-                  "$ref": "#/components/schemas/ShareVisibility"
-                }
-              }
-            }
-          },
-          "next_cursor": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Cursor for the next page, or `null` when this page exhausts the query."
-          }
-        }
-      },
-      "Page_WebDeviceSession": {
-        "type": "object",
-        "description": "Uniform response shape for every paginated list route.",
-        "required": [
-          "items"
-        ],
-        "properties": {
-          "items": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": [
-                "id",
-                "device_name",
-                "created_at",
-                "last_used_at",
-                "expires_at"
-              ],
-              "properties": {
-                "created_at": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "device_name": {
-                  "type": "string"
-                },
-                "expires_at": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "id": {
-                  "type": "string"
-                },
-                "last_used_at": {
-                  "type": "integer",
-                  "format": "int64"
                 }
               }
             }
@@ -4549,18 +5001,54 @@
           }
         }
       },
-      "PublicShareDetail": {
+      "PublicTraceAccessRequest": {
         "type": "object",
         "required": [
-          "id",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string",
+            "maxLength": 128,
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "PublicTraceContent": {
+        "type": "object",
+        "required": [
+          "trace_id",
+          "input_messages",
+          "output_messages"
+        ],
+        "properties": {
+          "input_messages": {
+            "type": "array",
+            "items": {}
+          },
+          "output_messages": {
+            "type": "array",
+            "items": {}
+          },
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      },
+      "PublicTraceDetail": {
+        "type": "object",
+        "required": [
+          "trace_id",
           "visibility",
           "password_protected",
           "publisher",
-          "verified_at",
+          "shared_at",
           "provider",
           "host",
           "model",
-          "verification_state",
+          "notarized_state",
+          "hosted_verification",
           "content_sha256",
           "package_size_bytes",
           "package_sha256",
@@ -4568,7 +5056,7 @@
           "disclosure_safety_override",
           "trace_url",
           "package_url",
-          "share_url"
+          "public_url"
         ],
         "properties": {
           "authenticated_at_unix_ms": {
@@ -4597,10 +5085,13 @@
           "host": {
             "type": "string"
           },
-          "id": {
+          "hosted_verification": {
             "type": "string"
           },
           "model": {
+            "type": "string"
+          },
+          "notarized_state": {
             "type": "string"
           },
           "notary_key_id": {
@@ -4625,6 +5116,9 @@
           "provider": {
             "type": "string"
           },
+          "public_url": {
+            "type": "string"
+          },
           "publisher": {
             "type": "string"
           },
@@ -4635,7 +5129,17 @@
             ],
             "format": "int64"
           },
-          "share_url": {
+          "shared_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trace_id": {
             "type": "string"
           },
           "trace_url": {
@@ -4647,14 +5151,63 @@
               "null"
             ]
           },
-          "verification_state": {
+          "visibility": {
             "type": "string"
-          },
-          "verified_at": {
-            "type": "integer",
+          }
+        }
+      },
+      "PublicTraceSummary": {
+        "type": "object",
+        "required": [
+          "trace_id",
+          "provider",
+          "model",
+          "publisher",
+          "password_protected",
+          "public_url"
+        ],
+        "properties": {
+          "authenticated_at_unix_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
             "format": "int64"
           },
-          "visibility": {
+          "input_preview": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "model": {
+            "type": "string"
+          },
+          "output_preview": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "password_protected": {
+            "type": "boolean"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "public_url": {
+            "type": "string"
+          },
+          "publisher": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trace_id": {
             "type": "string"
           }
         }
@@ -4777,17 +5330,6 @@
           }
         }
       },
-      "RefreshRequest": {
-        "type": "object",
-        "required": [
-          "refresh_token"
-        ],
-        "properties": {
-          "refresh_token": {
-            "type": "string"
-          }
-        }
-      },
       "RegistryRecordResponse": {
         "type": "object",
         "required": [
@@ -4797,7 +5339,7 @@
           "port",
           "transport",
           "key_id",
-          "public_key",
+          "verification_key",
           "status",
           "valid_from_unix_ms"
         ],
@@ -4827,9 +5369,6 @@
             "format": "int32",
             "minimum": 0
           },
-          "public_key": {
-            "type": "string"
-          },
           "status": {
             "$ref": "#/components/schemas/NotaryKeyStatusResponse"
           },
@@ -4848,6 +5387,9 @@
             ],
             "format": "int64",
             "minimum": 0
+          },
+          "verification_key": {
+            "type": "string"
           }
         }
       },
@@ -4879,7 +5421,40 @@
           }
         }
       },
-      "ShareReportReason": {
+      "SubscriptionPlan": {
+        "type": "string",
+        "enum": [
+          "one_gb",
+          "ten_gb"
+        ]
+      },
+      "TraceAccessSettings": {
+        "type": "object",
+        "required": [
+          "visibility",
+          "password_protected"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "password_protected": {
+            "type": "boolean"
+          },
+          "visibility": {
+            "$ref": "#/components/schemas/TraceVisibility"
+          }
+        }
+      },
+      "TracePackageBody": {
+        "type": "string",
+        "format": "binary"
+      },
+      "TraceReportReason": {
         "type": "string",
         "enum": [
           "sensitive_information",
@@ -4889,7 +5464,7 @@
           "other"
         ]
       },
-      "ShareReportReceipt": {
+      "TraceReportReceipt": {
         "type": "object",
         "required": [
           "received"
@@ -4900,129 +5475,14 @@
           }
         }
       },
-      "ShareResponse": {
-        "type": "object",
-        "required": [
-          "id",
-          "state",
-          "visibility",
-          "published",
-          "password_protected",
-          "allow_high_entropy",
-          "created_at",
-          "updated_at",
-          "status_url"
-        ],
-        "properties": {
-          "allow_high_entropy": {
-            "type": "boolean"
-          },
-          "created_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "expires_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "failure_code": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
-          "package_url": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "password_protected": {
-            "type": "boolean"
-          },
-          "published": {
-            "type": "boolean"
-          },
-          "share_url": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "state": {
-            "type": "string"
-          },
-          "status_url": {
-            "type": "string"
-          },
-          "updated_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "verified_at": {
-            "type": [
-              "integer",
-              "null"
-            ],
-            "format": "int64"
-          },
-          "visibility": {
-            "$ref": "#/components/schemas/ShareVisibility"
-          }
-        }
-      },
-      "ShareStats": {
-        "type": "object",
-        "required": [
-          "total",
-          "admitted",
-          "in_progress",
-          "stored_bytes"
-        ],
-        "properties": {
-          "admitted": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "in_progress": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "stored_bytes": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "total": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
-      },
-      "ShareVisibility": {
+      "TraceVisibility": {
         "type": "string",
         "enum": [
           "unlisted",
           "listed"
         ]
       },
-      "SubscriptionPlan": {
-        "type": "string",
-        "enum": [
-          "one_gb",
-          "ten_gb"
-        ]
-      },
-      "TracePackageBody": {
-        "type": "string",
-        "format": "binary"
-      },
-      "UpdateShareSettings": {
+      "UpdateTraceAccessSettings": {
         "type": "object",
         "properties": {
           "expires_in_days": {
@@ -5042,52 +5502,35 @@
             ],
             "description": "A new password, or an empty string to remove the current password."
           },
-          "published": {
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
           "visibility": {
             "oneOf": [
               {
                 "type": "null"
               },
               {
-                "$ref": "#/components/schemas/ShareVisibility"
+                "$ref": "#/components/schemas/TraceVisibility"
               }
             ]
           }
         },
         "additionalProperties": false
       },
-      "UploadInstructions": {
+      "UsageResponse": {
         "type": "object",
         "required": [
-          "method",
-          "url",
-          "headers",
-          "expires_at"
+          "credits",
+          "operations",
+          "hosted_traces"
         ],
         "properties": {
-          "expires_at": {
-            "type": "integer",
-            "format": "int64"
+          "credits": {
+            "$ref": "#/components/schemas/CreditSummary"
           },
-          "headers": {
-            "type": "object",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
+          "hosted_traces": {
+            "$ref": "#/components/schemas/HostedTraceUsage"
           },
-          "method": {
-            "type": "string"
-          },
-          "url": {
-            "type": "string"
+          "operations": {
+            "$ref": "#/components/schemas/NotaryStats"
           }
         }
       },
@@ -5179,36 +5622,6 @@
             "type": "boolean"
           }
         }
-      },
-      "WebDeviceSession": {
-        "type": "object",
-        "required": [
-          "id",
-          "device_name",
-          "created_at",
-          "last_used_at",
-          "expires_at"
-        ],
-        "properties": {
-          "created_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "device_name": {
-            "type": "string"
-          },
-          "expires_at": {
-            "type": "integer",
-            "format": "int64"
-          },
-          "id": {
-            "type": "string"
-          },
-          "last_used_at": {
-            "type": "integer",
-            "format": "int64"
-          }
-        }
       }
     },
     "securitySchemes": {
@@ -5241,35 +5654,51 @@
   "tags": [
     {
       "name": "health",
-      "description": "Hosted API health and discovery"
+      "description": "Notary platform health"
     },
     {
       "name": "browser-auth",
-      "description": "Google- or GitHub-backed browser sessions"
+      "description": "Google- or GitHub-backed browser authentication"
     },
     {
-      "name": "cli-auth",
-      "description": "Local service authorization and Device sessions"
+      "name": "account",
+      "description": "Current Account identity and usage"
+    },
+    {
+      "name": "devices",
+      "description": "Connected devices and Device authorization"
+    },
+    {
+      "name": "api-keys",
+      "description": "Scoped unattended API credentials"
+    },
+    {
+      "name": "traces",
+      "description": "Authenticated hosted Trace intake and access settings"
+    },
+    {
+      "name": "public-traces",
+      "description": "Listed discovery and stable public Trace access"
+    },
+    {
+      "name": "registry",
+      "description": "Versioned Registry of Official Notaries"
     },
     {
       "name": "notary-admission",
-      "description": "One-operation hosted notary admission tickets"
+      "description": "One-operation Notary admission tickets"
     },
     {
       "name": "billing",
       "description": "Stripe-hosted subscriptions and additional notarization purchases"
     },
     {
+      "name": "credits",
+      "description": "Credit offers and history"
+    },
+    {
       "name": "verification",
       "description": "Anonymous, retention-free portable package verification"
-    },
-    {
-      "name": "sharing",
-      "description": "Authenticated share intake and stable direct links"
-    },
-    {
-      "name": "library",
-      "description": "Small catalog of Listed shares"
     }
   ]
 }

@@ -234,7 +234,7 @@ pub fn router() -> OpenApiRouter<NotaryApiState> {
 
 #[utoipa::path(
     post,
-    path = "/api/me/billing/subscription-checkout-sessions",
+    path = "/api/billing/subscription-checkout-sessions",
     summary = "Create a Stripe-hosted subscription Checkout session",
     request_body = CreateSubscriptionCheckoutRequest,
     responses(
@@ -436,7 +436,7 @@ async fn create_subscription_checkout_session(
 
 #[utoipa::path(
     post,
-    path = "/api/me/billing/portal-sessions",
+    path = "/api/billing/portal-sessions",
     summary = "Create a Stripe Billing Portal session",
     responses(
         (status = 200, body = CreatePortalSessionResponse),
@@ -479,7 +479,7 @@ async fn create_portal_session(
 
 #[utoipa::path(
     post,
-    path = "/api/me/billing/checkout-sessions",
+    path = "/api/billing/checkout-sessions",
     summary = "Create a Stripe-hosted credit purchase",
     request_body = CreateCheckoutSessionRequest,
     responses(
@@ -586,7 +586,7 @@ async fn create_checkout_session(
 
 #[utoipa::path(
     get,
-    path = "/api/me/billing/purchases",
+    path = "/api/billing/purchases",
     summary = "List recent hosted-credit purchases",
     responses(
         (status = 200, body = BillingPurchasesResponse),
@@ -618,7 +618,7 @@ async fn list_purchases(
 
 #[utoipa::path(
     get,
-    path = "/api/me/billing/purchases/{purchase_id}",
+    path = "/api/billing/purchases/{purchase_id}",
     summary = "Get one hosted-credit purchase",
     params(("purchase_id" = String, Path)),
     responses(

@@ -860,12 +860,35 @@ pub(crate) async fn fetch_registry_from(api_origin: &ApiOrigin) -> Result<(Regis
         .bytes()
         .await
         .context("reading notary registry from LLM Notary API")?;
-    let registry = parse_registry(&bytes)?;
+    let registry = parse_hosted_registry(&bytes)?;
     Ok((registry, registry_source_url))
 }
 
+fn parse_hosted_registry(bytes: &[u8]) -> Result<Registry> {
+    let mut document: serde_json::Value =
+        serde_json::from_slice(bytes).context("decoding hosted Notary Registry")?;
+    let notaries = document
+        .get_mut("notaries")
+        .and_then(serde_json::Value::as_array_mut)
+        .context("hosted Notary Registry is missing its notaries")?;
+    for notary in notaries {
+        let notary = notary
+            .as_object_mut()
+            .context("hosted Notary Registry contains an invalid notary")?;
+        if notary.contains_key("public_key") {
+            bail!("hosted Notary Registry uses a retired public_key field");
+        }
+        let verification_key = notary
+            .remove("verification_key")
+            .context("hosted Notary Registry is missing a verification_key")?;
+        notary.insert("public_key".to_owned(), verification_key);
+    }
+    let internal = serde_json::to_vec(&document).context("adapting hosted Notary Registry")?;
+    parse_registry(&internal)
+}
+
 fn registry_url(api_origin: &ApiOrigin) -> url::Url {
-    api_origin.api_url("/api/notary")
+    api_origin.api_url("/api/registry")
 }
 
 pub(crate) async fn resolve_notary(record: &RegistryRecord) -> Result<NotaryEndpoint> {
@@ -2689,9 +2712,42 @@ mod tests {
     fn registry_discovery_stays_on_the_configured_api_origin() {
         assert_eq!(
             registry_url(&ApiOrigin::parse("https://self-hosted.example").unwrap()).as_str(),
-            "https://self-hosted.example/api/notary"
+            "https://self-hosted.example/api/registry"
         );
         assert!(ApiOrigin::parse("file:///tmp/notary").is_err());
+    }
+
+    #[test]
+    fn hosted_registry_uses_the_canonical_verification_key_field() {
+        let document = serde_json::json!({
+            "format": "notary/registry/v1",
+            "generation": 1,
+            "active_key_id": "sha256:0f715baf5d4c2ed329785cef29e562f73488c8a2bb9dbc5700b361d54b9b0554",
+            "notaries": [{
+                "name": "Test Notary",
+                "operator": "Exalto",
+                "host": "notary.example.com",
+                "port": 7047,
+                "transport": "tcp",
+                "key_id": "sha256:0f715baf5d4c2ed329785cef29e562f73488c8a2bb9dbc5700b361d54b9b0554",
+                "verification_key": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+                "status": "active",
+                "valid_from_unix_ms": 0,
+                "valid_until_unix_ms": null,
+                "notarize_until_unix_ms": null
+            }]
+        });
+        let registry = parse_hosted_registry(&serde_json::to_vec(&document).unwrap()).unwrap();
+        assert_eq!(
+            registry.notaries[0].public_key,
+            "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+        );
+
+        let mut retired = document;
+        let record = retired["notaries"][0].as_object_mut().unwrap();
+        let key = record.remove("verification_key").unwrap();
+        record.insert("public_key".to_owned(), key);
+        assert!(parse_hosted_registry(&serde_json::to_vec(&retired).unwrap()).is_err());
     }
 
     #[tokio::test]

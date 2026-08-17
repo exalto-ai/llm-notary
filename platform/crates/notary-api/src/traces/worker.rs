@@ -19,7 +19,7 @@ use crate::{
     },
 };
 
-use super::public::purge_expired_share_rate_limits;
+use super::public::purge_expired_trace_rate_limits;
 
 const CLAIM_TIMEOUT_SECS: i64 = 15 * 60;
 const LISTING_PREVIEW_CHARS: usize = 180;
@@ -142,8 +142,8 @@ pub(crate) async fn run_worker(state: NotaryApiState, mut shutdown: watch::Recei
             tracing::error!(%error, "updating Trace verification metrics failed");
         }
         if Instant::now() >= next_rate_limit_cleanup {
-            if let Err(error) = purge_expired_share_rate_limits(&state).await {
-                tracing::error!(%error, "purging expired share rate limits failed");
+            if let Err(error) = purge_expired_trace_rate_limits(&state).await {
+                tracing::error!(%error, "purging expired Trace rate limits failed");
             }
             next_rate_limit_cleanup =
                 Instant::now() + Duration::from_secs(RATE_LIMIT_CLEANUP_INTERVAL_SECS);

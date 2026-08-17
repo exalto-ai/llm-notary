@@ -62,3 +62,4 @@ tlsn = { path = "../../../runtime/vendor/tlsn/crates/tlsn", features = ["mozilla
 [dev-dependencies]
 base64 = "0.22"
 testcontainers-modules = { version = "0.15", default-features = false, features = ["postgres"] }
+tower = { version = "0.5", features = ["util"] }

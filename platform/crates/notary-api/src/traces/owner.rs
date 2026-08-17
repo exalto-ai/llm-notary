@@ -37,15 +37,15 @@ use crate::config::{DEFAULT_MAX_PACKAGE_BYTES, DEFAULT_UPLOAD_TTL_SECS};
 const IDEMPOTENCY_KEY_HEADER: &str = "idempotency-key";
 const CLEANUP_INTERVAL_SECS: u64 = 10 * 60;
 const OBJECTS_PER_CLEANUP: i64 = 32;
-const MAX_SHARE_EXPIRY_DAYS: u32 = 365;
-const MIN_SHARE_PASSWORD_BYTES: usize = 8;
-pub(super) const MAX_SHARE_PASSWORD_BYTES: usize = 128;
-const SHARE_PASSWORD_CHANGE_LIMIT: i64 = 5;
-const SHARE_PASSWORD_CHANGE_WINDOW_SECS: i64 = 60;
-const SHARE_PASSWORD_WORK_CAPACITY: usize = 4;
+const MAX_TRACE_ACCESS_EXPIRY_DAYS: u32 = 365;
+const MIN_TRACE_PASSWORD_BYTES: usize = 8;
+pub(super) const MAX_TRACE_PASSWORD_BYTES: usize = 128;
+const TRACE_PASSWORD_CHANGE_LIMIT: i64 = 5;
+const TRACE_PASSWORD_CHANGE_WINDOW_SECS: i64 = 60;
+const TRACE_PASSWORD_WORK_CAPACITY: usize = 4;
 
-static SHARE_PASSWORD_CAPACITY: LazyLock<Arc<Semaphore>> =
-    LazyLock::new(|| Arc::new(Semaphore::new(SHARE_PASSWORD_WORK_CAPACITY)));
+static TRACE_PASSWORD_CAPACITY: LazyLock<Arc<Semaphore>> =
+    LazyLock::new(|| Arc::new(Semaphore::new(TRACE_PASSWORD_WORK_CAPACITY)));
 
 #[derive(Clone)]
 pub struct TraceService {
@@ -59,22 +59,34 @@ pub struct TraceService {
 pub struct CreateHostedTraceRequest {
     source_trace_id: String,
     package_format: String,
-    size_bytes: i64,
-    sha256: String,
-    visibility: ShareVisibility,
+    package_size_bytes: i64,
+    package_sha256: String,
+    visibility: TraceVisibility,
+    /// Optional initial access password. The value is accepted only in this body.
+    password: Option<String>,
+    /// Optional initial access expiry in days.
+    #[schema(maximum = 365)]
+    expires_in_days: Option<u32>,
     /// Accept unexplained high-entropy values after reviewing the disclosure.
     #[serde(default)]
     allow_high_entropy: bool,
 }
 
+#[derive(Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+struct CompleteHostedTraceUploadRequest {
+    package_size_bytes: i64,
+    package_sha256: String,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
-pub enum ShareVisibility {
+pub enum TraceVisibility {
     Unlisted,
     Listed,
 }
 
-impl ShareVisibility {
+impl TraceVisibility {
     fn as_str(self) -> &'static str {
         match self {
             Self::Unlisted => "unlisted",
@@ -84,22 +96,21 @@ impl ShareVisibility {
 }
 
 #[derive(Serialize, ToSchema)]
-struct CreateShareResponse {
-    share: ShareResponse,
-    upload: Option<UploadInstructions>,
+struct CreateHostedTraceResponse {
+    trace: HostedTrace,
+    upload: Option<HostedTraceUpload>,
 }
 
 #[derive(Deserialize, Serialize)]
-struct SharePagePosition {
+struct HostedTracePagePosition {
     created_at: i64,
     id: String,
 }
 
 #[derive(Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
-struct UpdateShareSettings {
-    visibility: Option<ShareVisibility>,
-    published: Option<bool>,
+struct UpdateTraceAccessSettings {
+    visibility: Option<TraceVisibility>,
     /// A new password, or an empty string to remove the current password.
     password: Option<String>,
     /// Days from now until expiry. Zero removes the current expiry.
@@ -108,28 +119,58 @@ struct UpdateShareSettings {
 }
 
 #[derive(Serialize, ToSchema)]
-struct UploadInstructions {
+struct HostedTraceUpload {
     method: String,
     url: String,
     headers: BTreeMap<String, String>,
     expires_at: i64,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum HostedTraceStatus {
+    Verifying,
+    Shared,
+    Stopped,
+    Rejected,
+    Failed,
+}
+
 #[derive(Serialize, ToSchema)]
-struct ShareResponse {
-    id: String,
-    state: String,
-    visibility: ShareVisibility,
-    published: bool,
+struct TraceAccessSettings {
+    visibility: TraceVisibility,
     password_protected: bool,
     expires_at: Option<i64>,
+}
+
+#[derive(Serialize, ToSchema)]
+struct HostedTracePackage {
+    format: String,
+    declared_size_bytes: i64,
+    declared_sha256: String,
+    admitted_size_bytes: Option<i64>,
+    admitted_sha256: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+struct HostedTraceVerification {
+    verified_at: Option<i64>,
+    failure_code: Option<String>,
+}
+
+#[derive(Serialize, ToSchema)]
+struct HostedTrace {
+    trace_id: String,
+    source_trace_id: String,
+    status: HostedTraceStatus,
+    access: TraceAccessSettings,
+    package: HostedTracePackage,
+    verification: HostedTraceVerification,
     allow_high_entropy: bool,
     created_at: i64,
     updated_at: i64,
-    verified_at: Option<i64>,
-    failure_code: Option<String>,
     status_url: String,
-    share_url: Option<String>,
+    public_url: Option<String>,
     package_url: Option<String>,
 }
 
@@ -155,6 +196,8 @@ pub(super) struct HostedTraceRow {
     pub(super) failure_code: Option<String>,
     pub(super) verified_at: Option<i64>,
     pub(super) package_object_key: Option<String>,
+    pub(super) admitted_package_size_bytes: Option<i64>,
+    pub(super) admitted_package_sha256: Option<String>,
 }
 
 impl TraceService {
@@ -197,9 +240,10 @@ impl TraceService {
 pub fn router() -> OpenApiRouter<NotaryApiState> {
     OpenApiRouter::new()
         .routes(routes!(create_hosted_trace))
-        .routes(routes!(get_hosted_trace, update_share_settings))
+        .routes(routes!(get_hosted_trace, update_trace_access))
         .routes(routes!(list_web_traces))
         .routes(routes!(complete_hosted_trace_upload))
+        .routes(routes!(stop_hosted_trace_sharing))
 }
 
 pub(crate) async fn run_cleanup_worker(state: NotaryApiState, mut shutdown: watch::Receiver<bool>) {
@@ -236,13 +280,13 @@ pub(crate) async fn run_cleanup_worker(state: NotaryApiState, mut shutdown: watc
 
 #[utoipa::path(
     post,
-    path = "/api/shares",
-    summary = "Create or resume a share",
-    params(("Idempotency-Key" = String, Header, description = "Stable key for this share attempt")),
+    path = "/api/traces",
+    summary = "Create, resume, or safely re-share one hosted Trace",
+    params(("Idempotency-Key" = String, Header, description = "Stable key for this hosted Trace request")),
     request_body = CreateHostedTraceRequest,
     responses(
-        (status = 200, body = CreateShareResponse, description = "Existing share"),
-        (status = 201, body = CreateShareResponse, description = "New or reopened share"),
+        (status = 200, body = CreateHostedTraceResponse, description = "Existing hosted Trace"),
+        (status = 201, body = CreateHostedTraceResponse, description = "New or reopened hosted Trace"),
         (status = 400, body = crate::ErrorResponse),
         (status = 401, body = crate::ErrorResponse),
         (status = 402, body = crate::ErrorResponse),
@@ -252,7 +296,7 @@ pub(crate) async fn run_cleanup_worker(state: NotaryApiState, mut shutdown: watc
         (status = 503, body = crate::ErrorResponse)
     ),
     security(("bearerAuth" = [])),
-    tag = "sharing"
+    tag = "traces"
 )]
 async fn create_hosted_trace(
     State(state): State<NotaryApiState>,
@@ -276,6 +320,11 @@ async fn create_hosted_trace(
         crate::credits::plan_entitlements(&state.admission, billing.plan).trace_storage_bytes;
     let idempotency_key = idempotency_key(&headers)?;
     let now = unix_timestamp()?;
+    let access_expires_at = expires_at_from_days(request.expires_in_days, now)?;
+    let access_password_hash = match request.password.as_deref() {
+        Some("") | None => None,
+        Some(_) => Some(hash_trace_access_password(request.password.clone().unwrap()).await?),
+    };
     let job_id = typed_id("trc-");
     let staging_object_key = state
         .traces
@@ -294,6 +343,23 @@ async fn create_hosted_trace(
         .execute(&mut *transaction)
         .await
         .map_err(database_error)?;
+    let idempotent_source: Option<String> = sqlx::query_scalar(
+        "SELECT source_trace_id FROM traces
+         WHERE account_id = $1 AND idempotency_key = $2",
+    )
+    .bind(&account_id)
+    .bind(&idempotency_key)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(database_error)?;
+    if idempotent_source
+        .as_deref()
+        .is_some_and(|source| source != request.source_trace_id.as_str())
+    {
+        return Err(ApiError::conflict(
+            "idempotency key was already used for a different hosted Trace",
+        ));
+    }
     let existing: bool = sqlx::query_scalar(
         "SELECT EXISTS(
              SELECT 1 FROM traces WHERE account_id = $1 AND source_trace_id = $2
@@ -314,17 +380,22 @@ async fn create_hosted_trace(
         .fetch_one(&mut *transaction)
         .await
         .map_err(database_error)?;
-        if !trace_storage_allows(Some(storage_limit), stored_bytes, request.size_bytes) {
+        if !trace_storage_allows(
+            Some(storage_limit),
+            stored_bytes,
+            request.package_size_bytes,
+        ) {
             return Err(trace_storage_quota_error());
         }
     }
     let inserted = sqlx::query(
         "INSERT INTO traces
-         (trace_id, account_id, source_trace_id, idempotency_key, status, visibility, allow_high_entropy,
+         (trace_id, account_id, source_trace_id, idempotency_key, status, visibility,
+          access_expires_at, access_password_hash, allow_high_entropy,
           package_format, declared_package_size_bytes,
           declared_package_sha256, staging_object_key, committed_staging_object_key, upload_expires_at,
           created_at, updated_at)
-         VALUES ($1, $2, $3, $4, 'uploading', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+         VALUES ($1, $2, $3, $4, 'uploading', $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
          ON CONFLICT (account_id, source_trace_id) DO NOTHING",
     )
     .bind(&job_id)
@@ -332,10 +403,12 @@ async fn create_hosted_trace(
     .bind(&request.source_trace_id)
     .bind(&idempotency_key)
     .bind(request.visibility.as_str())
+    .bind(access_expires_at)
+    .bind(&access_password_hash)
     .bind(request.allow_high_entropy)
     .bind(&request.package_format)
-    .bind(request.size_bytes)
-    .bind(&request.sha256)
+    .bind(request.package_size_bytes)
+    .bind(&request.package_sha256)
     .bind(staging_object_key)
     .bind(committed_staging_object_key)
     .bind(upload_expires_at)
@@ -348,9 +421,8 @@ async fn create_hosted_trace(
 
     let mut job = load_trace_by_source(&state, &account_id, &request.source_trace_id).await?;
     if job.package_format != request.package_format
-        || job.declared_package_size_bytes != request.size_bytes
-        || job.declared_package_sha256 != request.sha256
-        || job.visibility != request.visibility.as_str()
+        || job.declared_package_size_bytes != request.package_size_bytes
+        || job.declared_package_sha256 != request.package_sha256
         || job.allow_high_entropy != request.allow_high_entropy
     {
         return Err(ApiError::conflict(
@@ -359,6 +431,25 @@ async fn create_hosted_trace(
     }
     if job.status == "uploading" && job.upload_expires_at <= now {
         expire_upload(&state, &job, now).await?;
+        job = load_trace_by_source(&state, &account_id, &request.source_trace_id).await?;
+    }
+    if job.status == "stopped" && job.package_object_key.is_some() {
+        sqlx::query(
+            "UPDATE traces
+             SET status = 'shared', visibility = $1, access_expires_at = $2,
+                 access_password_hash = $3, updated_at = $4
+             WHERE trace_id = $5 AND account_id = $6 AND status = 'stopped'
+               AND content_object_key IS NOT NULL AND package_object_key IS NOT NULL",
+        )
+        .bind(request.visibility.as_str())
+        .bind(access_expires_at)
+        .bind(access_password_hash)
+        .bind(now)
+        .bind(&job.trace_id)
+        .bind(&account_id)
+        .execute(&state.database)
+        .await
+        .map_err(database_error)?;
         job = load_trace_by_source(&state, &account_id, &request.source_trace_id).await?;
     }
     let mut reopened = false;
@@ -443,7 +534,7 @@ async fn create_hosted_trace(
             )
             .await
             .map_err(ApiError::internal)?;
-        Some(UploadInstructions {
+        Some(HostedTraceUpload {
             method: presigned.method,
             url: presigned.url,
             headers: presigned.headers,
@@ -459,8 +550,8 @@ async fn create_hosted_trace(
     };
     Ok((
         status,
-        Json(CreateShareResponse {
-            share: share_response(&job, &state.public_origin),
+        Json(CreateHostedTraceResponse {
+            trace: hosted_trace_response(&job, &state.public_origin),
             upload,
         }),
     )
@@ -481,46 +572,51 @@ fn trace_storage_quota_error() -> ApiError {
 
 #[utoipa::path(
     get,
-    path = "/api/shares/{share_id}",
-    summary = "Get a share's admission state",
-    params(("share_id" = String, Path)),
+    path = "/api/traces/{trace_id}",
+    summary = "Get one hosted Trace",
+    params(("trace_id" = String, Path)),
     responses(
-        (status = 200, body = ShareResponse),
+        (status = 200, body = HostedTrace),
         (status = 401, body = crate::ErrorResponse),
         (status = 403, body = crate::ErrorResponse),
         (status = 404, body = crate::ErrorResponse),
         (status = 500, body = crate::ErrorResponse),
         (status = 503, body = crate::ErrorResponse)
     ),
-    security(("bearerAuth" = [])),
-    tag = "sharing"
+    security(("bearerAuth" = ["traces:read"]), ("browserSession" = [])),
+    tag = "traces"
 )]
 async fn get_hosted_trace(
     State(state): State<NotaryApiState>,
     headers: HeaderMap,
-    Path(job_id): Path<String>,
-) -> ApiResult<Json<ShareResponse>> {
+    jar: CookieJar,
+    Path(trace_id): Path<String>,
+) -> ApiResult<Json<HostedTrace>> {
     require_enabled(&state)?;
-    let account_id = authenticated_principal(&state, &headers, ApiScope::TracesRead)
-        .await?
-        .account_id;
-    let mut job = load_owned_trace(&state, &account_id, &job_id).await?;
+    let account_id = if headers.contains_key(axum::http::header::AUTHORIZATION) {
+        authenticated_principal(&state, &headers, ApiScope::TracesRead)
+            .await?
+            .account_id
+    } else {
+        authenticated_web_user(&state, &jar).await?.0
+    };
+    let mut job = load_owned_trace(&state, &account_id, &trace_id).await?;
     let now = unix_timestamp()?;
     if job.status == "uploading" && job.upload_expires_at <= now {
         expire_upload(&state, &job, now).await?;
-        job = load_owned_trace(&state, &account_id, &job_id).await?;
+        job = load_owned_trace(&state, &account_id, &trace_id).await?;
     }
-    Ok(Json(share_response(&job, &state.public_origin)))
+    Ok(Json(hosted_trace_response(&job, &state.public_origin)))
 }
 
 #[utoipa::path(
     patch,
-    path = "/api/shares/{share_id}",
-    summary = "Change a hosted Trace's sharing access settings",
-    params(("share_id" = String, Path)),
-    request_body = UpdateShareSettings,
+    path = "/api/traces/{trace_id}",
+    summary = "Change hosted Trace access settings",
+    params(("trace_id" = String, Path)),
+    request_body = UpdateTraceAccessSettings,
     responses(
-        (status = 200, body = ShareResponse),
+        (status = 200, body = HostedTrace),
         (status = 400, body = crate::ErrorResponse),
         (status = 401, body = crate::ErrorResponse),
         (status = 403, body = crate::ErrorResponse),
@@ -530,15 +626,15 @@ async fn get_hosted_trace(
         (status = 503, body = crate::ErrorResponse)
     ),
     security(("bearerAuth" = []), ("browserSession" = [])),
-    tag = "sharing"
+    tag = "traces"
 )]
-async fn update_share_settings(
+async fn update_trace_access(
     State(state): State<NotaryApiState>,
     headers: HeaderMap,
     jar: CookieJar,
-    Path(share_id): Path<String>,
-    Json(request): Json<UpdateShareSettings>,
-) -> ApiResult<Json<ShareResponse>> {
+    Path(trace_id): Path<String>,
+    Json(request): Json<UpdateTraceAccessSettings>,
+) -> ApiResult<Json<HostedTrace>> {
     require_enabled(&state)?;
     let account_id = if headers.contains_key(axum::http::header::AUTHORIZATION) {
         authenticated_principal(&state, &headers, ApiScope::TracesShare)
@@ -549,115 +645,101 @@ async fn update_share_settings(
     };
     let now = unix_timestamp()?;
     if request.visibility.is_none()
-        && request.published.is_none()
         && request.password.is_none()
         && request.expires_in_days.is_none()
     {
         return Err(ApiError::bad_request(
-            "at least one share setting is required",
+            "at least one access setting is required",
         ));
     }
     // Resolve ownership before accepting any request that can schedule costly
     // password hashing work.
-    load_owned_trace(&state, &account_id, &share_id).await?;
-    let visibility = request.visibility.map(ShareVisibility::as_str);
+    load_owned_trace(&state, &account_id, &trace_id).await?;
+    let visibility = request.visibility.map(TraceVisibility::as_str);
     let expires_at_changed = request.expires_in_days.is_some();
-    let expires_at = match request.expires_in_days {
-        Some(0) => None,
-        Some(days) if days <= MAX_SHARE_EXPIRY_DAYS => Some(
-            now.checked_add(i64::from(days) * 24 * 60 * 60)
-                .ok_or_else(|| {
-                    ApiError::bad_request("share expiry is outside the accepted range")
-                })?,
-        ),
-        Some(_) => {
-            return Err(ApiError::bad_request(
-                "expires_in_days must be between 0 and 365",
-            ));
-        }
-        None => None,
-    };
+    let expires_at = expires_at_from_days(request.expires_in_days, now)?;
     let password_changed = request.password.is_some();
     if password_changed {
         enforce_password_change_limit(&state, &account_id, now).await?;
     }
     let password_hash = match request.password {
         Some(password) if password.is_empty() => None,
-        Some(password) => Some(hash_share_password(password).await?),
+        Some(password) => Some(hash_trace_access_password(password).await?),
         None => None,
     };
     let updated = sqlx::query(
         "UPDATE traces
          SET visibility = COALESCE($1, visibility),
-             status = CASE
-                 WHEN $2 = TRUE AND status = 'stopped' THEN 'shared'
-                 WHEN $2 = FALSE AND status = 'shared' THEN 'stopped'
-                 ELSE status
-             END,
-             access_expires_at = CASE WHEN $3 THEN $4 ELSE access_expires_at END,
-             access_password_hash = CASE WHEN $5 THEN $6 ELSE access_password_hash END,
-             updated_at = $7
-         WHERE trace_id = $8 AND account_id = $9",
+             access_expires_at = CASE WHEN $2 THEN $3 ELSE access_expires_at END,
+             access_password_hash = CASE WHEN $4 THEN $5 ELSE access_password_hash END,
+             updated_at = $6
+         WHERE trace_id = $7 AND account_id = $8",
     )
     .bind(visibility)
-    .bind(request.published)
     .bind(expires_at_changed)
     .bind(expires_at)
     .bind(password_changed)
     .bind(password_hash)
     .bind(now)
-    .bind(&share_id)
+    .bind(&trace_id)
     .bind(&account_id)
     .execute(&state.database)
     .await
     .map_err(database_error)?;
     if updated.rows_affected() == 0 {
-        return Err(ApiError::not_found("share was not found"));
+        return Err(ApiError::not_found("hosted Trace was not found"));
     }
-    let share = load_owned_trace(&state, &account_id, &share_id).await?;
-    Ok(Json(share_response(&share, &state.public_origin)))
+    let trace = load_owned_trace(&state, &account_id, &trace_id).await?;
+    Ok(Json(hosted_trace_response(&trace, &state.public_origin)))
 }
 
 #[utoipa::path(
     get,
-    path = "/api/me/shares",
-    summary = "List the browser user's shares",
+    path = "/api/traces",
+    summary = "List the current account's hosted Traces",
     params(("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 100), ("cursor" = Option<String>, Query)),
     responses(
-        (status = 200, body = Page<ShareResponse>),
+        (status = 200, body = Page<HostedTrace>),
         (status = 400, body = crate::ErrorResponse),
         (status = 401, body = crate::ErrorResponse),
         (status = 500, body = crate::ErrorResponse)
     ),
-    security(("browserSession" = [])),
-    tag = "sharing"
+    security(("browserSession" = []), ("bearerAuth" = ["traces:read"])),
+    tag = "traces"
 )]
 async fn list_web_traces(
     State(state): State<NotaryApiState>,
+    headers: HeaderMap,
     jar: CookieJar,
     query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
-) -> ApiResult<Json<Page<ShareResponse>>> {
+) -> ApiResult<Json<Page<HostedTrace>>> {
     let Query(query) = query.map_err(pagination::query_error)?;
-    let user = authenticated_web_user(&state, &jar).await?;
+    let account_id = if headers.contains_key(axum::http::header::AUTHORIZATION) {
+        authenticated_principal(&state, &headers, ApiScope::TracesRead)
+            .await?
+            .account_id
+    } else {
+        authenticated_web_user(&state, &jar).await?.0
+    };
     let limit = query
         .limit(pagination::DEFAULT_PAGE_LIMIT, pagination::MAX_PAGE_LIMIT)
         .map_err(pagination::api_error)?;
-    let scope = CursorScope::new("/api/me/shares", &user.0, "created_at desc, trace_id desc")
+    let scope = CursorScope::new("/api/traces", &account_id, "created_at desc, trace_id desc")
         .map_err(pagination::api_error)?;
     let position = query
         .cursor
         .as_deref()
-        .map(|cursor| decode_cursor::<SharePagePosition>(&scope, cursor))
+        .map(|cursor| decode_cursor::<HostedTracePagePosition>(&scope, cursor))
         .transpose()
         .map_err(pagination::api_error)?;
-    let shares = sqlx::query_as::<_, HostedTraceRow>(
+    let traces = sqlx::query_as::<_, HostedTraceRow>(
         "SELECT * FROM traces
          WHERE account_id = $1
            AND ($2::TEXT IS NULL OR (created_at, trace_id) < ($3, $2))
          ORDER BY created_at DESC, trace_id DESC
          LIMIT $4",
     )
-    .bind(&user.0)
+    .bind(&account_id)
     .bind(position.as_ref().map(|position| &position.id))
     .bind(position.as_ref().map(|position| position.created_at))
     .bind(i64::try_from(limit + 1).map_err(|error| ApiError::internal(error.into()))?)
@@ -665,11 +747,11 @@ async fn list_web_traces(
     .await
     .map_err(database_error)?
     .into_iter()
-    .map(|share| share_response(&share, &state.public_origin))
+    .map(|trace| hosted_trace_response(&trace, &state.public_origin))
     .collect();
-    let page = Page::from_limit_plus_one(shares, limit, &scope, |share| SharePagePosition {
-        created_at: share.created_at,
-        id: share.id.clone(),
+    let page = Page::from_limit_plus_one(traces, limit, &scope, |trace| HostedTracePagePosition {
+        created_at: trace.created_at,
+        id: trace.trace_id.clone(),
     })
     .map_err(pagination::api_error)?;
     Ok(Json(page))
@@ -677,11 +759,12 @@ async fn list_web_traces(
 
 #[utoipa::path(
     post,
-    path = "/api/shares/{share_id}/complete",
-    summary = "Complete the upload for a share",
-    params(("share_id" = String, Path)),
+    path = "/api/traces/{trace_id}/upload-completion",
+    summary = "Complete one hosted Trace package upload",
+    params(("trace_id" = String, Path)),
+    request_body = CompleteHostedTraceUploadRequest,
     responses(
-        (status = 200, body = ShareResponse),
+        (status = 200, body = HostedTrace),
         (status = 401, body = crate::ErrorResponse),
         (status = 403, body = crate::ErrorResponse),
         (status = 404, body = crate::ErrorResponse),
@@ -691,28 +774,38 @@ async fn list_web_traces(
         (status = 503, body = crate::ErrorResponse)
     ),
     security(("bearerAuth" = [])),
-    tag = "sharing"
+    tag = "traces"
 )]
 async fn complete_hosted_trace_upload(
     State(state): State<NotaryApiState>,
     headers: HeaderMap,
-    Path(job_id): Path<String>,
-) -> ApiResult<Json<ShareResponse>> {
+    Path(trace_id): Path<String>,
+    Json(request): Json<CompleteHostedTraceUploadRequest>,
+) -> ApiResult<Json<HostedTrace>> {
     require_enabled(&state)?;
     let account_id = authenticated_principal(&state, &headers, ApiScope::TracesShare)
         .await?
         .account_id;
-    let job = load_owned_trace(&state, &account_id, &job_id).await?;
+    let job = load_owned_trace(&state, &account_id, &trace_id).await?;
+    if request.package_size_bytes != job.declared_package_size_bytes
+        || request.package_sha256 != job.declared_package_sha256
+    {
+        return Err(ApiError::conflict(
+            "upload completion does not match the declared package",
+        ));
+    }
     if job.status == "queued" {
-        return Ok(Json(share_response(&job, &state.public_origin)));
+        return Ok(Json(hosted_trace_response(&job, &state.public_origin)));
     }
     if job.status != "uploading" {
-        return Err(ApiError::conflict("share is not accepting an upload"));
+        return Err(ApiError::conflict(
+            "hosted Trace is not accepting an upload",
+        ));
     }
     let now = unix_timestamp()?;
     if job.upload_expires_at <= now {
         expire_upload(&state, &job, now).await?;
-        return Err(ApiError::gone("share upload expired"));
+        return Err(ApiError::gone("hosted Trace upload expired"));
     }
     let uploaded = state
         .traces
@@ -720,7 +813,7 @@ async fn complete_hosted_trace_upload(
         .head_object(&job.staging_object_key)
         .await
         .map_err(ApiError::internal)?
-        .ok_or_else(|| ApiError::conflict("share upload was not found"))?;
+        .ok_or_else(|| ApiError::conflict("hosted Trace upload was not found"))?;
     if uploaded.size_bytes != job.declared_package_size_bytes {
         return Err(ApiError::conflict(
             "uploaded object size does not match the declared size",
@@ -728,7 +821,7 @@ async fn complete_hosted_trace_upload(
     }
     if !TraceStorage::has_expected_metadata(&uploaded, &job.declared_package_sha256) {
         return Err(ApiError::conflict(
-            "uploaded object metadata does not match the share",
+            "uploaded object metadata does not match the hosted Trace",
         ));
     }
 
@@ -740,11 +833,11 @@ async fn complete_hosted_trace_upload(
     {
         let current = load_owned_trace(&state, &account_id, &job.trace_id).await?;
         if current.status == "queued" && current.upload_generation == job.upload_generation {
-            return Ok(Json(share_response(&current, &state.public_origin)));
+            return Ok(Json(hosted_trace_response(&current, &state.public_origin)));
         }
         if current.upload_generation != job.upload_generation || current.status != "uploading" {
             return Err(ApiError::conflict(
-                "share upload attempt was superseded while completing",
+                "hosted Trace upload attempt was superseded while completing",
             ));
         }
         return Err(ApiError::internal(error));
@@ -779,7 +872,60 @@ async fn complete_hosted_trace_upload(
     }
 
     let job = queue_completed_attempt(&state, &account_id, &job, now).await?;
-    Ok(Json(share_response(&job, &state.public_origin)))
+    Ok(Json(hosted_trace_response(&job, &state.public_origin)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/api/traces/{trace_id}/share",
+    summary = "Stop public access to one hosted Trace",
+    params(("trace_id" = String, Path)),
+    responses(
+        (status = 204, description = "Sharing stopped; the owner record and package remain"),
+        (status = 401, body = crate::ErrorResponse),
+        (status = 403, body = crate::ErrorResponse),
+        (status = 404, body = crate::ErrorResponse),
+        (status = 409, body = crate::ErrorResponse),
+        (status = 500, body = crate::ErrorResponse)
+    ),
+    security(("bearerAuth" = ["traces:share"]), ("browserSession" = [])),
+    tag = "traces"
+)]
+async fn stop_hosted_trace_sharing(
+    State(state): State<NotaryApiState>,
+    headers: HeaderMap,
+    jar: CookieJar,
+    Path(trace_id): Path<String>,
+) -> ApiResult<StatusCode> {
+    let account_id = if headers.contains_key(axum::http::header::AUTHORIZATION) {
+        authenticated_principal(&state, &headers, ApiScope::TracesShare)
+            .await?
+            .account_id
+    } else {
+        authenticated_web_user(&state, &jar).await?.0
+    };
+    let now = unix_timestamp()?;
+    let result = sqlx::query(
+        "UPDATE traces SET status = 'stopped', updated_at = $1
+         WHERE trace_id = $2 AND account_id = $3 AND status = 'shared'",
+    )
+    .bind(now)
+    .bind(&trace_id)
+    .bind(&account_id)
+    .execute(&state.database)
+    .await
+    .map_err(database_error)?;
+    if result.rows_affected() == 1 {
+        return Ok(StatusCode::NO_CONTENT);
+    }
+    let trace = load_owned_trace(&state, &account_id, &trace_id).await?;
+    if trace.status == "stopped" {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::conflict(
+            "hosted Trace sharing can be stopped only after verification",
+        ))
+    }
 }
 
 async fn queue_completed_attempt(
@@ -828,7 +974,7 @@ async fn queue_completed_attempt(
             let _ = cleanup_object(state, &job.committed_staging_object_key).await;
             let _ = cleanup_object(state, &job.staging_object_key).await;
             return Err(ApiError::conflict(
-                "share changed while the upload was completing",
+                "hosted Trace changed while the upload was completing",
             ));
         }
         return Ok(current);
@@ -861,7 +1007,7 @@ async fn load_owned_trace(
         .fetch_optional(&state.database)
         .await
         .map_err(database_error)?
-        .ok_or_else(|| ApiError::not_found("share was not found"))
+        .ok_or_else(|| ApiError::not_found("hosted Trace was not found"))
 }
 
 async fn expire_upload(state: &NotaryApiState, job: &HostedTraceRow, now: i64) -> ApiResult<bool> {
@@ -1093,19 +1239,19 @@ fn validate_request(service: &TraceService, request: &CreateHostedTraceRequest) 
     let max_package_bytes = service
         .max_package_bytes
         .min(notary_core::archive::MAX_ARCHIVE_WIRE_BYTES as i64);
-    if request.size_bytes <= 0 || request.size_bytes > max_package_bytes {
+    if request.package_size_bytes <= 0 || request.package_size_bytes > max_package_bytes {
         return Err(ApiError::bad_request(
-            "size_bytes is outside the accepted range",
+            "package_size_bytes is outside the accepted range",
         ));
     }
-    if request.sha256.len() != 64
+    if request.package_sha256.len() != 64
         || !request
-            .sha256
+            .package_sha256
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         return Err(ApiError::bad_request(
-            "sha256 must be 64 lowercase hexadecimal characters",
+            "package_sha256 must be 64 lowercase hexadecimal characters",
         ));
     }
     Ok(())
@@ -1128,46 +1274,77 @@ fn idempotency_key(headers: &HeaderMap) -> ApiResult<String> {
     Ok(value.to_owned())
 }
 
-fn share_response(job: &HostedTraceRow, public_origin: &url::Url) -> ShareResponse {
+fn hosted_trace_response(job: &HostedTraceRow, public_origin: &url::Url) -> HostedTrace {
     let visibility = match job.visibility.as_str() {
-        "listed" => ShareVisibility::Listed,
-        _ => ShareVisibility::Unlisted,
+        "listed" => TraceVisibility::Listed,
+        _ => TraceVisibility::Unlisted,
     };
-    let live = job.status == "shared"
-        && job
-            .access_expires_at
-            .is_none_or(|expires_at| expires_at > unix_timestamp().unwrap_or(i64::MAX));
-    ShareResponse {
-        id: job.trace_id.clone(),
-        state: job.status.clone(),
-        visibility,
-        published: job.status == "shared",
-        password_protected: job.access_password_hash.is_some(),
-        expires_at: job.access_expires_at,
+    let access_active = job
+        .access_expires_at
+        .is_none_or(|expires_at| unix_timestamp().is_ok_and(|now| expires_at > now));
+    let live = job.status == "shared" && access_active;
+    let status = match job.status.as_str() {
+        "shared" => HostedTraceStatus::Shared,
+        "stopped" => HostedTraceStatus::Stopped,
+        "rejected" => HostedTraceStatus::Rejected,
+        "failed" => HostedTraceStatus::Failed,
+        _ => HostedTraceStatus::Verifying,
+    };
+    HostedTrace {
+        trace_id: job.trace_id.clone(),
+        source_trace_id: job.source_trace_id.clone(),
+        status,
+        access: TraceAccessSettings {
+            visibility,
+            password_protected: job.access_password_hash.is_some(),
+            expires_at: job.access_expires_at,
+        },
+        package: HostedTracePackage {
+            format: job.package_format.clone(),
+            declared_size_bytes: job.declared_package_size_bytes,
+            declared_sha256: job.declared_package_sha256.clone(),
+            admitted_size_bytes: job.admitted_package_size_bytes,
+            admitted_sha256: job.admitted_package_sha256.clone(),
+        },
+        verification: HostedTraceVerification {
+            verified_at: job.verified_at,
+            failure_code: job.failure_code.clone(),
+        },
         allow_high_entropy: job.allow_high_entropy,
         created_at: job.created_at,
         updated_at: job.updated_at,
-        verified_at: job.verified_at,
-        failure_code: job.failure_code.clone(),
-        status_url: format!("/api/shares/{}", job.trace_id),
-        share_url: live.then(|| {
+        status_url: format!("/api/traces/{}", job.trace_id),
+        public_url: live.then(|| {
             public_origin
                 .join(&format!("/s/{}", job.trace_id))
-                .expect("share path is a valid same-origin URL")
+                .expect("public Trace path is a valid same-origin URL")
                 .to_string()
         }),
         package_url: (live && job.package_object_key.is_some())
-            .then(|| format!("/api/public/shares/{}/package.llmtrace", job.trace_id)),
+            .then(|| format!("/api/public/traces/{}/package.llmtrace", job.trace_id)),
     }
 }
 
-async fn hash_share_password(password: String) -> ApiResult<String> {
-    if !(MIN_SHARE_PASSWORD_BYTES..=MAX_SHARE_PASSWORD_BYTES).contains(&password.len()) {
+fn expires_at_from_days(days: Option<u32>, now: i64) -> ApiResult<Option<i64>> {
+    match days {
+        Some(0) | None => Ok(None),
+        Some(days) if days <= MAX_TRACE_ACCESS_EXPIRY_DAYS => now
+            .checked_add(i64::from(days) * 24 * 60 * 60)
+            .map(Some)
+            .ok_or_else(|| ApiError::bad_request("Trace expiry is outside the accepted range")),
+        Some(_) => Err(ApiError::bad_request(
+            "expires_in_days must be between 0 and 365",
+        )),
+    }
+}
+
+async fn hash_trace_access_password(password: String) -> ApiResult<String> {
+    if !(MIN_TRACE_PASSWORD_BYTES..=MAX_TRACE_PASSWORD_BYTES).contains(&password.len()) {
         return Err(ApiError::bad_request(
             "password must contain between 8 and 128 bytes",
         ));
     }
-    run_share_password_work(move || {
+    run_password_work(move || {
         let salt = SaltString::generate(&mut OsRng);
         Argon2::default()
             .hash_password(password.as_bytes(), &salt)
@@ -1177,15 +1354,15 @@ async fn hash_share_password(password: String) -> ApiResult<String> {
     .await?
 }
 
-pub(super) async fn run_share_password_work<T, F>(work: F) -> ApiResult<T>
+pub(super) async fn run_password_work<T, F>(work: F) -> ApiResult<T>
 where
     T: Send + 'static,
     F: FnOnce() -> T + Send + 'static,
 {
-    run_share_password_work_with_capacity(SHARE_PASSWORD_CAPACITY.clone(), work).await
+    run_password_work_with_capacity(TRACE_PASSWORD_CAPACITY.clone(), work).await
 }
 
-pub(super) async fn run_share_password_work_with_capacity<T, F>(
+pub(super) async fn run_password_work_with_capacity<T, F>(
     capacity: Arc<Semaphore>,
     work: F,
 ) -> ApiResult<T>
@@ -1196,7 +1373,7 @@ where
     let _capacity = capacity.try_acquire_owned().map_err(|_| {
         ApiError::coded(
             StatusCode::TOO_MANY_REQUESTS,
-            "share_password_capacity",
+            "trace_password_capacity",
             "Password processing is busy; try again shortly",
         )
     })?;
@@ -1210,7 +1387,7 @@ async fn enforce_password_change_limit(
     account_id: &str,
     now: i64,
 ) -> ApiResult<()> {
-    let window_reset_before = now - SHARE_PASSWORD_CHANGE_WINDOW_SECS;
+    let window_reset_before = now - TRACE_PASSWORD_CHANGE_WINDOW_SECS;
     let request_count = sqlx::query_scalar::<_, i64>(
         "INSERT INTO trace_access_change_limits
              (account_id, window_started_at, request_count, updated_at)
@@ -1232,14 +1409,14 @@ async fn enforce_password_change_limit(
     .bind(account_id)
     .bind(now)
     .bind(window_reset_before)
-    .bind(SHARE_PASSWORD_CHANGE_LIMIT)
+    .bind(TRACE_PASSWORD_CHANGE_LIMIT)
     .fetch_optional(&state.database)
     .await
     .map_err(database_error)?;
     if request_count.is_none() {
         return Err(ApiError::coded(
             StatusCode::TOO_MANY_REQUESTS,
-            "share_password_change_rate_limited",
+            "trace_password_change_rate_limited",
             "Too many password changes were requested for this account",
         ));
     }
@@ -1320,10 +1497,19 @@ mod tests {
         CreateHostedTraceRequest {
             source_trace_id: "trc-source-test".to_owned(),
             package_format: PACKAGE_FORMAT.to_owned(),
-            size_bytes: 1234,
-            sha256: SHA256.to_owned(),
-            visibility: ShareVisibility::Unlisted,
+            package_size_bytes: 1234,
+            package_sha256: SHA256.to_owned(),
+            visibility: TraceVisibility::Unlisted,
+            password: None,
+            expires_in_days: None,
             allow_high_entropy: false,
+        }
+    }
+
+    fn completion_request(job: &HostedTraceRow) -> CompleteHostedTraceUploadRequest {
+        CompleteHostedTraceUploadRequest {
+            package_size_bytes: job.declared_package_size_bytes,
+            package_sha256: job.declared_package_sha256.clone(),
         }
     }
 
@@ -1380,10 +1566,14 @@ mod tests {
         );
         storage.fail_delete(&job.staging_object_key);
 
-        let _ =
-            complete_hosted_trace_upload(State(state.clone()), headers, Path(job.trace_id.clone()))
-                .await
-                .expect("complete despite deferred cleanup");
+        let _ = complete_hosted_trace_upload(
+            State(state.clone()),
+            headers,
+            Path(job.trace_id.clone()),
+            Json(completion_request(&job)),
+        )
+        .await
+        .expect("complete despite deferred cleanup");
         let queued: (String, i64) = sqlx::query_as(
             "SELECT artifact_kind, attempts FROM storage_cleanup_queue
              WHERE object_key = $1",
@@ -1476,6 +1666,21 @@ mod tests {
                 .await
                 .expect("idempotent create");
         assert_eq!(second.status(), StatusCode::OK);
+        let mut different_source = request();
+        different_source.source_trace_id = "trc-different-source".to_owned();
+        let key_conflict = create_hosted_trace(
+            State(state.clone()),
+            headers_one.clone(),
+            Json(different_source),
+        )
+        .await;
+        assert!(matches!(
+            key_conflict,
+            Err(ApiError {
+                status: StatusCode::CONFLICT,
+                ..
+            })
+        ));
         let mut forced = request();
         forced.allow_high_entropy = true;
         let force_conflict =
@@ -1488,7 +1693,7 @@ mod tests {
             })
         ));
         let mut changed = request();
-        changed.size_bytes += 1;
+        changed.package_size_bytes += 1;
         let conflict = create_hosted_trace(State(state.clone()), headers_one, Json(changed)).await;
         assert!(matches!(
             conflict,
@@ -1571,6 +1776,7 @@ mod tests {
 
         let first = list_web_traces(
             State(state.clone()),
+            HeaderMap::new(),
             jar.clone(),
             Ok(Query(PageQuery {
                 limit: Some(2),
@@ -1604,6 +1810,7 @@ mod tests {
 
         let second = list_web_traces(
             State(state),
+            HeaderMap::new(),
             jar,
             Ok(Query(PageQuery {
                 limit: Some(2),
@@ -1619,7 +1826,7 @@ mod tests {
             .items
             .into_iter()
             .chain(second.0.items)
-            .map(|share| share.id)
+            .map(|trace| trace.trace_id)
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(actual_ids, expected_ids);
     }
@@ -1644,10 +1851,11 @@ mod tests {
             State(state.clone()),
             headers.clone(),
             Path(job.trace_id.clone()),
+            Json(completion_request(&job)),
         )
         .await
         .expect("complete");
-        assert_eq!(completed.0.state, "queued");
+        assert_eq!(completed.0.status, HostedTraceStatus::Verifying);
         assert!(
             storage
                 .objects
@@ -1663,10 +1871,16 @@ mod tests {
                 .contains_key(&job.staging_object_key)
         );
 
-        let retried = complete_hosted_trace_upload(State(state), headers, Path(job.trace_id))
-            .await
-            .expect("idempotent complete");
-        assert_eq!(retried.0.state, "queued");
+        let completion = completion_request(&job);
+        let retried = complete_hosted_trace_upload(
+            State(state),
+            headers,
+            Path(job.trace_id),
+            Json(completion),
+        )
+        .await
+        .expect("idempotent complete");
+        assert_eq!(retried.0.status, HostedTraceStatus::Verifying);
     }
 
     #[tokio::test]
@@ -1683,6 +1897,7 @@ mod tests {
             State(state.clone()),
             headers.clone(),
             Path(job.trace_id.clone()),
+            Json(completion_request(&job)),
         )
         .await;
         assert!(matches!(
@@ -1699,9 +1914,13 @@ mod tests {
                 metadata: BTreeMap::new(),
             },
         );
-        let mismatched =
-            complete_hosted_trace_upload(State(state.clone()), headers, Path(job.trace_id.clone()))
-                .await;
+        let mismatched = complete_hosted_trace_upload(
+            State(state.clone()),
+            headers,
+            Path(job.trace_id.clone()),
+            Json(completion_request(&job)),
+        )
+        .await;
         assert!(matches!(
             mismatched,
             Err(ApiError {
@@ -1731,10 +1950,22 @@ mod tests {
         let read = get_hosted_trace(
             State(state.clone()),
             headers_two.clone(),
+            CookieJar::new(),
             Path(job_id.clone()),
         )
         .await;
-        let complete = complete_hosted_trace_upload(State(state), headers_two, Path(job_id)).await;
+        let job: HostedTraceRow = sqlx::query_as("SELECT * FROM traces WHERE trace_id = $1")
+            .bind(&job_id)
+            .fetch_one(&state.database)
+            .await
+            .expect("hosted Trace");
+        let complete = complete_hosted_trace_upload(
+            State(state),
+            headers_two,
+            Path(job_id),
+            Json(completion_request(&job)),
+        )
+        .await;
         assert!(matches!(
             read,
             Err(ApiError {
@@ -1974,23 +2205,27 @@ mod tests {
         unsupported.package_format = "future/v2".to_owned();
         assert!(validate_request(&service, &unsupported).is_err());
         let mut too_large = request();
-        too_large.size_bytes = DEFAULT_MAX_PACKAGE_BYTES + 1;
+        too_large.package_size_bytes = DEFAULT_MAX_PACKAGE_BYTES + 1;
         assert!(validate_request(&service, &too_large).is_err());
         let mut uppercase_hash = request();
-        uppercase_hash.sha256 = SHA256.to_uppercase();
+        uppercase_hash.package_sha256 = SHA256.to_uppercase();
         assert!(validate_request(&service, &uppercase_hash).is_err());
     }
 
     #[tokio::test]
     async fn access_password_hashes_are_salted_and_bounded() {
-        let first = hash_share_password("long-enough-password".to_owned())
+        let first = hash_trace_access_password("long-enough-password".to_owned())
             .await
             .unwrap();
-        let second = hash_share_password("long-enough-password".to_owned())
+        let second = hash_trace_access_password("long-enough-password".to_owned())
             .await
             .unwrap();
         assert_ne!(first, second);
-        assert!(hash_share_password("short".to_owned()).await.is_err());
-        assert!(hash_share_password("x".repeat(129)).await.is_err());
+        assert!(
+            hash_trace_access_password("short".to_owned())
+                .await
+                .is_err()
+        );
+        assert!(hash_trace_access_password("x".repeat(129)).await.is_err());
     }
 }

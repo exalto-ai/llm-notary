@@ -36,9 +36,18 @@ import {
   Dashboard,
   DeleteAccountPanel,
 } from './site/AccountDashboard';
-import { CliApproval, HostedNotaryRecord, NotariesPage } from './site/AuthorizationPages';
+import {
+  DeviceAuthorizationApproval,
+  HostedNotaryRecord,
+  NotariesPage,
+} from './site/AuthorizationPages';
 import { Docs } from './site/PublicDocs';
-import { Library, ListedSharesPreview, SharePage, VerificationPage } from './site/PublicTracePages';
+import {
+  Library,
+  ListedTracesPreview,
+  PublicTracePage,
+  VerificationPage,
+} from './site/PublicTracePages';
 
 const loadCreditUtilizationChart = () => import('./CreditUtilizationChart');
 const appleLogoUrl = new URL('./assets/platforms/apple.svg', import.meta.url).href;
@@ -786,7 +795,7 @@ export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) 
         </div>
       </section>
       <PricingSection />
-      <ListedSharesPreview />
+      <ListedTracesPreview />
       <section className="section verify" id="verify">
         <div>
           <span className="eyebrow">Independent verification</span>
@@ -849,13 +858,13 @@ export function Landing({ loadLatestPointer: loadPointer = loadLatestPointer }) 
 export {
   AccountSettings,
   ApiKeysPanel,
-  CliApproval,
   Dashboard,
   DeleteAccountPanel,
+  DeviceAuthorizationApproval,
   HostedNotaryRecord,
   Library,
-  ListedSharesPreview,
-  SharePage,
+  ListedTracesPreview,
+  PublicTracePage,
   VerificationPage,
 };
 
@@ -955,7 +964,7 @@ export function App({
   };
   const path = route.replace(/^#\/?/, '');
   const directShare = window.location.pathname.match(/^\/s\/([^/]+)\/?$/);
-  const directShareId = directShare ? decodeURIComponent(directShare[1]) : null;
+  const directTraceId = directShare ? decodeURIComponent(directShare[1]) : null;
   const routePath = path.split('?')[0];
   const [section, page] = routePath.split('/');
   const sectionAnchor = new URLSearchParams(path.split('?')[1] || '').get('section');
@@ -969,10 +978,10 @@ export function App({
         hideSignIn={section === 'authorize' || section === 'signin'}
         authPending={authPending}
       />
-      {directShareId ? (
-        <SharePage shareId={directShareId} />
+      {directTraceId ? (
+        <PublicTracePage traceId={directTraceId} />
       ) : section === 'authorize' ? (
-        <CliApproval route={path} user={user} />
+        <DeviceAuthorizationApproval route={path} user={user} />
       ) : section === 'signin' ? (
         <SignInPage route={path} user={user} />
       ) : section === 'verify' ? (

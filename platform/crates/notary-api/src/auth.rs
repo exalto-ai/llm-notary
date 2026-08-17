@@ -194,7 +194,8 @@ async fn resolve_token(state: &NotaryApiState, token: &str) -> ApiResult<Authent
 }
 
 async fn resolve_api_key(state: &NotaryApiState, token: &str) -> ApiResult<AuthenticatedPrincipal> {
-    let (key_id, secret) = parse_api_key(token).ok_or_else(ApiError::unauthorized)?;
+    let (credential_id, secret) = parse_api_key(token).ok_or_else(ApiError::unauthorized)?;
+    let key_id = format!("key-{credential_id}");
     let now = unix_timestamp()?;
     let row = sqlx::query_as::<_, (String, String, Vec<u8>, Vec<String>)>(
         "SELECT account_id, name, secret_hash, scopes
@@ -202,7 +203,7 @@ async fn resolve_api_key(state: &NotaryApiState, token: &str) -> ApiResult<Authe
          WHERE key_id = $1 AND revoked_at IS NULL
            AND (expires_at IS NULL OR expires_at > $2)",
     )
-    .bind(key_id)
+    .bind(&key_id)
     .bind(now)
     .fetch_optional(&state.database)
     .await
@@ -230,22 +231,22 @@ async fn resolve_api_key(state: &NotaryApiState, token: &str) -> ApiResult<Authe
          WHERE key_id = $2 AND (last_used_at IS NULL OR last_used_at <= $3)",
     )
     .bind(now)
-    .bind(key_id)
+    .bind(&key_id)
     .bind(now - LAST_USED_UPDATE_INTERVAL_SECS)
     .execute(&state.database)
     .await
     .map_err(database_error)?;
 
-    AuthenticatedPrincipal::api_key(account_id, key_id.to_owned(), name, scopes)
+    AuthenticatedPrincipal::api_key(account_id, key_id, name, scopes)
 }
 
 pub(crate) fn parse_api_key(token: &str) -> Option<(&str, &str)> {
     let value = token.strip_prefix(API_KEY_VERSION_PREFIX)?;
-    let (key_id, secret) = value.split_once('_')?;
-    if is_lower_hex(key_id.strip_prefix("key-")?, API_KEY_ID_HEX_BYTES)
+    let (credential_id, secret) = value.split_once('_')?;
+    if is_lower_hex(credential_id, API_KEY_ID_HEX_BYTES)
         && is_lower_hex(secret, API_KEY_SECRET_HEX_BYTES)
     {
-        Some((key_id, secret))
+        Some((credential_id, secret))
     } else {
         None
     }
@@ -264,7 +265,7 @@ mod tests {
 
     #[test]
     fn parses_only_the_versioned_bounded_key_shape() {
-        let id = format!("key-{}", "a".repeat(API_KEY_ID_HEX_BYTES));
+        let id = "a".repeat(API_KEY_ID_HEX_BYTES);
         let secret = "b".repeat(API_KEY_SECRET_HEX_BYTES);
         let token = format!("{API_KEY_VERSION_PREFIX}{id}_{secret}");
         assert_eq!(parse_api_key(&token), Some((id.as_str(), secret.as_str())));
@@ -272,7 +273,8 @@ mod tests {
         for invalid in [
             format!("{API_KEY_VERSION_PREFIX}{id}"),
             format!("{API_KEY_VERSION_PREFIX}{id}_short"),
-            format!("{API_KEY_VERSION_PREFIX}key-{}_{secret}", "A".repeat(32)),
+            format!("{API_KEY_VERSION_PREFIX}{}_{secret}", "A".repeat(32)),
+            format!("{API_KEY_VERSION_PREFIX}key-{id}_{secret}"),
             format!("other_v1_{id}_{secret}"),
         ] {
             assert!(parse_api_key(&invalid).is_none(), "accepted {invalid}");

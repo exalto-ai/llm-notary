@@ -1625,7 +1625,6 @@ async fn put_trace_share(
         let status = sharing::update_share_settings(
             &existing.hosted_trace_id,
             Some(body.visibility.into()),
-            Some(true),
             body.password.as_ref().map(SecretInput::expose),
             body.expires_in_days,
         )
@@ -1641,6 +1640,8 @@ async fn put_trace_share(
             state.config.notary.public_key.as_deref(),
             shared_trust.as_ref(),
             body.visibility.into(),
+            body.password.as_ref().map(SecretInput::expose),
+            body.expires_in_days,
             body.force,
         )
         .await
@@ -1669,20 +1670,7 @@ async fn put_trace_share(
             .put_trace_share(initial_record.clone())
             .await
             .map_err(|_| ApiError::internal("metadata_update_failed"))?;
-        if body.password.is_some() || body.expires_in_days.is_some() {
-            let status = sharing::update_share_settings(
-                &initial_record.hosted_trace_id,
-                Some(body.visibility.into()),
-                Some(true),
-                body.password.as_ref().map(SecretInput::expose),
-                body.expires_in_days,
-            )
-            .await
-            .map_err(share_status_api_error)?;
-            trace_share_record_from_status(trace_id.clone(), status)?
-        } else {
-            initial_record
-        }
+        initial_record
     };
     state
         .persistence
@@ -1717,9 +1705,7 @@ async fn delete_trace_share(
         return Ok(StatusCode::NO_CONTENT);
     };
     let _credentials = state.account_credentials.lock().await;
-    match sharing::update_share_settings(&stored.hosted_trace_id, None, Some(false), None, None)
-        .await
-    {
+    match sharing::stop_sharing(&stored.hosted_trace_id).await {
         Ok(_) | Err(sharing::ShareStatusError::NotFound) => {}
         Err(error) => return Err(share_status_api_error(error)),
     }
@@ -3808,7 +3794,7 @@ mod tests {
         let retired = notary_record(3, NotaryKeyStatus::Retired, 80);
         let revoked = notary_record(4, NotaryKeyStatus::Revoked, 110);
         let response = registry_notaries_response(registry_service::PinnedRegistryState {
-            registry_source: Some("https://example.test/api/notary".into()),
+            registry_source: Some("https://example.test/api/registry".into()),
             generation: 7,
             active_key_id: active.key_id.clone(),
             records: vec![

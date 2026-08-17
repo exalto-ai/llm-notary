@@ -56,7 +56,7 @@ impl TraceStorage {
             storage.secret_access_key.clone(),
             None,
             None,
-            "llm-notary-platform-config",
+            "notary-api-config",
         );
         let config = aws_sdk_s3::Config::builder()
             .behavior_version(BehaviorVersion::latest())

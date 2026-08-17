@@ -34,7 +34,7 @@ SENSITIVE_ENV_NAME = re.compile(
 )
 DISCLOSURE_RULES = {
     "api_key": re.compile(
-        r"\b(?:sk-(?:or-)?v?\d?[-_A-Za-z0-9]{16,}|llmn_v1_[A-Za-z0-9_]{24,})\b",
+        r"\b(?:sk-(?:or-)?v?\d?[-_A-Za-z0-9]{16,}|(?:llmn_v1_|notary_key_)[A-Za-z0-9_]{24,})\b",
         re.IGNORECASE,
     ),
     "authorization_value": re.compile(

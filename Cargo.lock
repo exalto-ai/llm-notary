@@ -4973,6 +4973,7 @@ dependencies = [
  "tls-server-fixture",
  "tlsn",
  "tokio",
+ "tower",
  "tracing",
  "tracing-opentelemetry",
  "url",

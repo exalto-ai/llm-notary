@@ -4,6 +4,59 @@
  */
 
 export interface paths {
+    "/api/account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the current Notary account */
+        get: operations["account"];
+        put?: never;
+        post?: never;
+        /** Delete the current Notary account and hosted data */
+        delete: operations["delete_account"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/api-keys": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List account API keys */
+        get: operations["list_api_keys"];
+        put?: never;
+        /** Create an account API key */
+        post: operations["create_api_key"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/api-keys/{api_key_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke an account API key */
+        delete: operations["revoke_api_key"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/auth/github": {
         parameters: {
             query?: never;
@@ -106,6 +159,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/billing/checkout-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a Stripe-hosted credit purchase */
+        post: operations["create_checkout_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/billing/portal-sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create a Stripe Billing Portal session */
+        post: operations["create_portal_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/billing/purchases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List recent hosted-credit purchases */
+        get: operations["list_purchases"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/billing/purchases/{purchase_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get one hosted-credit purchase */
+        get: operations["get_purchase"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/billing/stripe/webhook": {
         parameters: {
             query?: never;
@@ -123,7 +244,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cli/authorizations": {
+    "/api/billing/subscription-checkout-sessions": {
         parameters: {
             query?: never;
             header?: never;
@@ -132,7 +253,24 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Start Device device authorization */
+        /** Create a Stripe-hosted subscription Checkout session */
+        post: operations["create_subscription_checkout_session"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/device-authorizations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Device authorization */
         post: operations["start_device_authorization"];
         delete?: never;
         options?: never;
@@ -140,7 +278,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cli/authorizations/{request_id}/approval": {
+    "/api/device-authorizations/{request_id}/approval": {
         parameters: {
             query?: never;
             header?: never;
@@ -150,7 +288,7 @@ export interface paths {
         /** Get browser approval details */
         get: operations["device_approval_details"];
         put?: never;
-        /** Approve a Device device authorization */
+        /** Approve Device authorization */
         post: operations["approve_device_authorization"];
         delete?: never;
         options?: never;
@@ -158,7 +296,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cli/authorizations/{request_id}/token": {
+    "/api/device-authorizations/{request_id}/token": {
         parameters: {
             query?: never;
             header?: never;
@@ -175,24 +313,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/cli/logout": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Revoke a Device session by refresh token */
-        post: operations["logout_device_session"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/cli/me": {
+    "/api/device-session": {
         parameters: {
             query?: never;
             header?: never;
@@ -203,47 +324,14 @@ export interface paths {
         get: operations["device_me"];
         put?: never;
         post?: never;
-        delete?: never;
+        /** Revoke a Device session by refresh token */
+        delete: operations["logout_device_session"];
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/cli/sessions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List the browser user's active Device sessions */
-        get: operations["list_devices"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/cli/sessions/{session_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** Revoke one of the browser user's Device sessions */
-        delete: operations["revoke_web_device_session"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/cli/token": {
+    "/api/device-session/token": {
         parameters: {
             query?: never;
             header?: never;
@@ -255,6 +343,40 @@ export interface paths {
         /** Rotate Device access and refresh tokens */
         post: operations["refresh_device_tokens"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/devices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the account's Connected devices */
+        get: operations["list_devices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/devices/{device_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Revoke one Connected device */
+        delete: operations["revoke_web_device_session"];
         options?: never;
         head?: never;
         patch?: never;
@@ -305,144 +427,6 @@ export interface paths {
         put?: never;
         /** Settle authoritative byte usage for one admitted operation */
         post: operations["settle_usage"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/me": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get the signed-in browser user */
-        get: operations["me"];
-        put?: never;
-        post?: never;
-        /** Delete the current account and all associated hosted data */
-        delete: operations["delete_account"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/me/api-keys": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List account API keys */
-        get: operations["list_api_keys"];
-        put?: never;
-        /** Create an account API key */
-        post: operations["create_api_key"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/me/api-keys/{api_key_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        post?: never;
-        /** Revoke an account API key */
-        delete: operations["revoke_api_key"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/me/billing/checkout-sessions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create a Stripe-hosted credit purchase */
-        post: operations["create_checkout_session"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/me/billing/portal-sessions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create a Stripe Billing Portal session */
-        post: operations["create_portal_session"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/me/billing/purchases": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List recent hosted-credit purchases */
-        get: operations["list_purchases"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/me/billing/purchases/{purchase_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get one hosted-credit purchase */
-        get: operations["get_purchase"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/me/billing/subscription-checkout-sessions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create a Stripe-hosted subscription Checkout session */
-        post: operations["create_subscription_checkout_session"];
         delete?: never;
         options?: never;
         head?: never;
@@ -500,40 +484,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/me/shares": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List the browser user's shares */
-        get: operations["list_web_traces"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/notary": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get the versioned Notary Registry */
-        get: operations["notary"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/notary/admissions": {
         parameters: {
             query?: never;
@@ -551,15 +501,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/public/shares": {
+    "/api/public/traces": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** List Listed verified-session shares */
-        get: operations["listed_shares"];
+        /** List Listed verified-session traces */
+        get: operations["list_public_traces"];
         put?: never;
         post?: never;
         delete?: never;
@@ -568,15 +518,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/public/shares/{share_id}": {
+    "/api/public/traces/{trace_id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get one verified-session share by its stable ID */
-        get: operations["public_share_detail"];
+        /** Get one admitted public Trace */
+        get: operations["public_trace_detail"];
         put?: never;
         post?: never;
         delete?: never;
@@ -585,24 +535,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/public/shares/{share_id}/package.llmtrace": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Download the exact verified portable proof package */
-        get: operations["public_share_package"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/public/shares/{share_id}/reports": {
+    "/api/public/traces/{trace_id}/access": {
         parameters: {
             query?: never;
             header?: never;
@@ -611,15 +544,66 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Report a published share */
-        post: operations["create_share_report"];
+        /** Establish narrowly scoped access to a protected public Trace */
+        post: operations["access_public_trace"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/api/public/shares/{share_id}/trace.otlp.json": {
+    "/api/public/traces/{trace_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get the bounded disclosed conversation from one public Trace */
+        get: operations["public_trace_content"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/public/traces/{trace_id}/package.llmtrace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download the exact verified portable proof package */
+        get: operations["public_trace_package"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/public/traces/{trace_id}/reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Report a public Trace */
+        post: operations["create_trace_report"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/public/traces/{trace_id}/trace.otlp.json": {
         parameters: {
             query?: never;
             header?: never;
@@ -627,7 +611,7 @@ export interface paths {
             cookie?: never;
         };
         /** Download the verified canonical OpenTelemetry trace */
-        get: operations["public_share_trace"];
+        get: operations["public_trace_otlp"];
         put?: never;
         post?: never;
         delete?: never;
@@ -653,16 +637,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/shares": {
+    "/api/registry": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** Get the versioned Registry of Official Notaries */
+        get: operations["notary"];
         put?: never;
-        /** Create or resume a share */
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/traces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List the current account's hosted Traces */
+        get: operations["list_web_traces"];
+        put?: never;
+        /** Create, resume, or safely re-share one hosted Trace */
         post: operations["create_hosted_trace"];
         delete?: never;
         options?: never;
@@ -670,25 +672,25 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/shares/{share_id}": {
+    "/api/traces/{trace_id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get a share's admission state */
+        /** Get one hosted Trace */
         get: operations["get_hosted_trace"];
         put?: never;
         post?: never;
         delete?: never;
         options?: never;
         head?: never;
-        /** Change a hosted Trace's sharing access settings */
-        patch: operations["update_share_settings"];
+        /** Change hosted Trace access settings */
+        patch: operations["update_trace_access"];
         trace?: never;
     };
-    "/api/shares/{share_id}/complete": {
+    "/api/traces/{trace_id}/share": {
         parameters: {
             query?: never;
             header?: never;
@@ -697,8 +699,42 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Complete the upload for a share */
+        post?: never;
+        /** Stop public access to one hosted Trace */
+        delete: operations["stop_hosted_trace_sharing"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/traces/{trace_id}/upload-completion": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Complete one hosted Trace package upload */
         post: operations["complete_hosted_trace_upload"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/usage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get capture, notarization, and hosted Trace usage */
+        get: operations["usage"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -732,6 +768,17 @@ export interface components {
             plan: components["schemas"]["Plan"];
             purchase_mode: components["schemas"]["BillingPurchaseMode"];
             subscriptions_configured: boolean;
+        };
+        AccountLinks: {
+            api_keys: string;
+            billing: string;
+            devices: string;
+            usage: string;
+        };
+        AccountResponse: {
+            account: components["schemas"]["PublicUser"];
+            billing: components["schemas"]["AccountBillingResponse"];
+            links: components["schemas"]["AccountLinks"];
         };
         AdmissionLimits: {
             /** Format: int64 */
@@ -771,12 +818,6 @@ export interface components {
         };
         /** @enum {string} */
         ApiScope: "account:read" | "traces:read" | "traces:share" | "capture:request" | "notarization:request";
-        ApprovalDetails: {
-            device_name: string;
-            /** Format: int64 */
-            expires_at: number;
-            user_code: string;
-        };
         AuthProvidersResponse: {
             github: boolean;
             google: boolean;
@@ -816,6 +857,23 @@ export interface components {
             credits: components["schemas"]["CreditSummary"];
             offer_id: string;
         };
+        CompleteHostedTraceUploadRequest: {
+            package_sha256: string;
+            /** Format: int64 */
+            package_size_bytes: number;
+        };
+        ConnectedDevice: {
+            /** Format: int64 */
+            created_at: number;
+            device_id: string;
+            device_name: string;
+            /** Format: int64 */
+            expires_at: number;
+            /** Format: int64 */
+            last_used_at: number;
+            /** Format: int64 */
+            revoked_at?: number | null;
+        };
         CreateApiKeyRequest: {
             /** Format: int64 */
             expires_at?: number | null;
@@ -836,28 +894,32 @@ export interface components {
             purchase: components["schemas"]["BillingPurchase"];
         };
         CreateDeviceAuthorization: {
+            capabilities: components["schemas"]["DeviceCapability"][];
             device_name: string;
         };
         CreateHostedTraceRequest: {
             /** @description Accept unexplained high-entropy values after reviewing the disclosure. */
             allow_high_entropy?: boolean;
+            /**
+             * Format: int32
+             * @description Optional initial access expiry in days.
+             */
+            expires_in_days?: number | null;
             package_format: string;
-            sha256: string;
+            package_sha256: string;
             /** Format: int64 */
-            size_bytes: number;
+            package_size_bytes: number;
+            /** @description Optional initial access password. The value is accepted only in this body. */
+            password?: string | null;
             source_trace_id: string;
-            visibility: components["schemas"]["ShareVisibility"];
+            visibility: components["schemas"]["TraceVisibility"];
+        };
+        CreateHostedTraceResponse: {
+            trace: components["schemas"]["HostedTrace"];
+            upload?: null | components["schemas"]["HostedTraceUpload"];
         };
         CreatePortalSessionResponse: {
             portal_url: string;
-        };
-        CreateShareReport: {
-            message?: string | null;
-            reason: components["schemas"]["ShareReportReason"];
-        };
-        CreateShareResponse: {
-            share: components["schemas"]["ShareResponse"];
-            upload?: null | components["schemas"]["UploadInstructions"];
         };
         CreateSubscriptionCheckoutRequest: {
             idempotency_key: string;
@@ -865,6 +927,10 @@ export interface components {
         };
         CreateSubscriptionCheckoutResponse: {
             checkout_url: string;
+        };
+        CreateTraceReport: {
+            message?: string | null;
+            reason: components["schemas"]["TraceReportReason"];
         };
         /** @enum {string} */
         CredentialKind: "device_session" | "api_key";
@@ -919,6 +985,20 @@ export interface components {
             /** Format: int64 */
             reset_at: number;
         };
+        CurrentDevice: {
+            device_name: string;
+        };
+        DeleteAccountRequest: {
+            /** @description Must be exactly `DELETE` after the user confirms local traces remain local. */
+            confirmation: string;
+        };
+        DeviceAuthorizationApproval: {
+            capabilities: components["schemas"]["DeviceCapability"][];
+            device_name: string;
+            /** Format: int64 */
+            expires_at: number;
+            user_code: string;
+        };
         DeviceAuthorizationStarted: {
             /** Format: int64 */
             expires_in: number;
@@ -929,26 +1009,28 @@ export interface components {
             user_code: string;
             verification_uri_complete: string;
         };
+        /** @enum {string} */
+        DeviceCapability: "hosted_notarization" | "consume_credits" | "share_notarized_traces";
         DeviceCredentialResponse: {
             id: string;
             kind: components["schemas"]["CredentialKind"];
             name: string;
         };
-        DeviceMeResponse: {
-            account: components["schemas"]["PublicUser"];
-            billing: components["schemas"]["AccountBillingResponse"];
-            credential: components["schemas"]["DeviceCredentialResponse"];
-            credits: components["schemas"]["CreditSummary"];
-            session?: null | components["schemas"]["DeviceSessionResponse"];
-        };
-        DeviceSessionResponse: {
-            device_name: string;
-        };
-        DeviceTokens: {
+        DeviceCredentials: {
             access_token: string;
             /** Format: int64 */
             expires_in: number;
             refresh_token: string;
+        };
+        DeviceRefreshRequest: {
+            refresh_token: string;
+        };
+        DeviceSessionIdentity: {
+            account: components["schemas"]["PublicUser"];
+            billing: components["schemas"]["AccountBillingResponse"];
+            credential: components["schemas"]["DeviceCredentialResponse"];
+            credits: components["schemas"]["CreditSummary"];
+            device?: null | components["schemas"]["CurrentDevice"];
         };
         ErrorResponse: {
             error: string;
@@ -957,30 +1039,62 @@ export interface components {
         Health: {
             status: string;
         };
+        HostedTrace: {
+            access: components["schemas"]["TraceAccessSettings"];
+            allow_high_entropy: boolean;
+            /** Format: int64 */
+            created_at: number;
+            package: components["schemas"]["HostedTracePackage"];
+            package_url?: string | null;
+            public_url?: string | null;
+            source_trace_id: string;
+            status: components["schemas"]["HostedTraceStatus"];
+            status_url: string;
+            trace_id: string;
+            /** Format: int64 */
+            updated_at: number;
+            verification: components["schemas"]["HostedTraceVerification"];
+        };
+        HostedTracePackage: {
+            admitted_sha256?: string | null;
+            /** Format: int64 */
+            admitted_size_bytes?: number | null;
+            declared_sha256: string;
+            /** Format: int64 */
+            declared_size_bytes: number;
+            format: string;
+        };
+        /** @enum {string} */
+        HostedTraceStatus: "verifying" | "shared" | "stopped" | "rejected" | "failed";
+        HostedTraceUpload: {
+            /** Format: int64 */
+            expires_at: number;
+            headers: {
+                [key: string]: string;
+            };
+            method: string;
+            url: string;
+        };
+        HostedTraceUsage: {
+            /** Format: int64 */
+            shared: number;
+            /** Format: int64 */
+            stored_bytes: number;
+            /** Format: int64 */
+            total: number;
+            /** Format: int64 */
+            verifying: number;
+        };
+        HostedTraceVerification: {
+            failure_code?: string | null;
+            /** Format: int64 */
+            verified_at?: number | null;
+        };
         IssueAdmissionRequest: {
             mode: components["schemas"]["AdmissionMode"];
             record_digest?: string | null;
             /** Format: int64 */
             requested_allowance_bytes?: number | null;
-        };
-        ListedShareSummary: {
-            /** Format: int64 */
-            authenticated_at_unix_ms?: number | null;
-            id: string;
-            input_preview?: string | null;
-            model: string;
-            output_preview?: string | null;
-            password_protected: boolean;
-            provider: string;
-            publisher: string;
-            share_url: string;
-        };
-        MeResponse: {
-            account: components["schemas"]["PublicUser"];
-            billing: components["schemas"]["AccountBillingResponse"];
-            credits: components["schemas"]["CreditSummary"];
-            notary_stats: components["schemas"]["NotaryStats"];
-            share_stats: components["schemas"]["ShareStats"];
         };
         /** @enum {string} */
         NotaryKeyStatusResponse: "active" | "retiring" | "retired" | "revoked";
@@ -1018,6 +1132,23 @@ export interface components {
             next_cursor?: string | null;
         };
         /** @description Uniform response shape for every paginated list route. */
+        Page_ConnectedDevice: {
+            items: {
+                /** Format: int64 */
+                created_at: number;
+                device_id: string;
+                device_name: string;
+                /** Format: int64 */
+                expires_at: number;
+                /** Format: int64 */
+                last_used_at: number;
+                /** Format: int64 */
+                revoked_at?: number | null;
+            }[];
+            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
+            next_cursor?: string | null;
+        };
+        /** @description Uniform response shape for every paginated list route. */
         Page_CreditHistoryEntry: {
             items: {
                 /** Format: int64 */
@@ -1036,58 +1167,40 @@ export interface components {
             next_cursor?: string | null;
         };
         /** @description Uniform response shape for every paginated list route. */
-        Page_ListedShareSummary: {
+        Page_HostedTrace: {
+            items: {
+                access: components["schemas"]["TraceAccessSettings"];
+                allow_high_entropy: boolean;
+                /** Format: int64 */
+                created_at: number;
+                package: components["schemas"]["HostedTracePackage"];
+                package_url?: string | null;
+                public_url?: string | null;
+                source_trace_id: string;
+                status: components["schemas"]["HostedTraceStatus"];
+                status_url: string;
+                trace_id: string;
+                /** Format: int64 */
+                updated_at: number;
+                verification: components["schemas"]["HostedTraceVerification"];
+            }[];
+            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
+            next_cursor?: string | null;
+        };
+        /** @description Uniform response shape for every paginated list route. */
+        Page_PublicTraceSummary: {
             items: {
                 /** Format: int64 */
                 authenticated_at_unix_ms?: number | null;
-                id: string;
                 input_preview?: string | null;
                 model: string;
                 output_preview?: string | null;
                 password_protected: boolean;
                 provider: string;
+                public_url: string;
                 publisher: string;
-                share_url: string;
-            }[];
-            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
-            next_cursor?: string | null;
-        };
-        /** @description Uniform response shape for every paginated list route. */
-        Page_ShareResponse: {
-            items: {
-                allow_high_entropy: boolean;
-                /** Format: int64 */
-                created_at: number;
-                /** Format: int64 */
-                expires_at?: number | null;
-                failure_code?: string | null;
-                id: string;
-                package_url?: string | null;
-                password_protected: boolean;
-                published: boolean;
-                share_url?: string | null;
-                state: string;
-                status_url: string;
-                /** Format: int64 */
-                updated_at: number;
-                /** Format: int64 */
-                verified_at?: number | null;
-                visibility: components["schemas"]["ShareVisibility"];
-            }[];
-            /** @description Cursor for the next page, or `null` when this page exhausts the query. */
-            next_cursor?: string | null;
-        };
-        /** @description Uniform response shape for every paginated list route. */
-        Page_WebDeviceSession: {
-            items: {
-                /** Format: int64 */
-                created_at: number;
-                device_name: string;
-                /** Format: int64 */
-                expires_at: number;
-                id: string;
-                /** Format: int64 */
-                last_used_at: number;
+                title?: string | null;
+                trace_id: string;
             }[];
             /** @description Cursor for the next page, or `null` when this page exhausts the query. */
             next_cursor?: string | null;
@@ -1105,7 +1218,15 @@ export interface components {
              */
             trace_storage_bytes?: number | null;
         };
-        PublicShareDetail: {
+        PublicTraceAccessRequest: {
+            password: string;
+        };
+        PublicTraceContent: {
+            input_messages: unknown[];
+            output_messages: unknown[];
+            trace_id: string;
+        };
+        PublicTraceDetail: {
             /** Format: int64 */
             authenticated_at_unix_ms?: number | null;
             content_sha256: string;
@@ -1114,8 +1235,9 @@ export interface components {
             /** Format: int64 */
             expires_at?: number | null;
             host: string;
-            id: string;
+            hosted_verification: string;
             model: string;
+            notarized_state: string;
             notary_key_id?: string | null;
             package_sha256: string;
             /** Format: int64 */
@@ -1123,16 +1245,30 @@ export interface components {
             package_url: string;
             password_protected: boolean;
             provider: string;
+            public_url: string;
             publisher: string;
             /** Format: int64 */
             registry_generation?: number | null;
-            share_url: string;
+            /** Format: int64 */
+            shared_at: number;
+            title?: string | null;
+            trace_id: string;
             trace_url: string;
             trust_source?: string | null;
-            verification_state: string;
-            /** Format: int64 */
-            verified_at: number;
             visibility: string;
+        };
+        PublicTraceSummary: {
+            /** Format: int64 */
+            authenticated_at_unix_ms?: number | null;
+            input_preview?: string | null;
+            model: string;
+            output_preview?: string | null;
+            password_protected: boolean;
+            provider: string;
+            public_url: string;
+            publisher: string;
+            title?: string | null;
+            trace_id: string;
         };
         PublicUser: {
             auth_provider: components["schemas"]["BrowserAuthProvider"];
@@ -1170,9 +1306,6 @@ export interface components {
             operation_id: string;
             record_digest?: string | null;
         };
-        RefreshRequest: {
-            refresh_token: string;
-        };
         RegistryRecordResponse: {
             host: string;
             key_id: string;
@@ -1182,13 +1315,13 @@ export interface components {
             operator: string;
             /** Format: int32 */
             port: number;
-            public_key: string;
             status: components["schemas"]["NotaryKeyStatusResponse"];
             transport: components["schemas"]["NotaryTransportResponse"];
             /** Format: int64 */
             valid_from_unix_ms: number;
             /** Format: int64 */
             valid_until_unix_ms?: number | null;
+            verification_key: string;
         };
         RegistryResponse: {
             active_key_id: string;
@@ -1198,47 +1331,23 @@ export interface components {
             notaries: components["schemas"]["RegistryRecordResponse"][];
         };
         /** @enum {string} */
-        ShareReportReason: "sensitive_information" | "harassment" | "illegal_content" | "spam" | "other";
-        ShareReportReceipt: {
-            received: boolean;
-        };
-        ShareResponse: {
-            allow_high_entropy: boolean;
-            /** Format: int64 */
-            created_at: number;
+        SubscriptionPlan: "one_gb" | "ten_gb";
+        TraceAccessSettings: {
             /** Format: int64 */
             expires_at?: number | null;
-            failure_code?: string | null;
-            id: string;
-            package_url?: string | null;
             password_protected: boolean;
-            published: boolean;
-            share_url?: string | null;
-            state: string;
-            status_url: string;
-            /** Format: int64 */
-            updated_at: number;
-            /** Format: int64 */
-            verified_at?: number | null;
-            visibility: components["schemas"]["ShareVisibility"];
+            visibility: components["schemas"]["TraceVisibility"];
         };
-        ShareStats: {
-            /** Format: int64 */
-            admitted: number;
-            /** Format: int64 */
-            in_progress: number;
-            /** Format: int64 */
-            stored_bytes: number;
-            /** Format: int64 */
-            total: number;
-        };
-        /** @enum {string} */
-        ShareVisibility: "unlisted" | "listed";
-        /** @enum {string} */
-        SubscriptionPlan: "one_gb" | "ten_gb";
         /** Format: binary */
         TracePackageBody: string;
-        UpdateShareSettings: {
+        /** @enum {string} */
+        TraceReportReason: "sensitive_information" | "harassment" | "illegal_content" | "spam" | "other";
+        TraceReportReceipt: {
+            received: boolean;
+        };
+        /** @enum {string} */
+        TraceVisibility: "unlisted" | "listed";
+        UpdateTraceAccessSettings: {
             /**
              * Format: int32
              * @description Days from now until expiry. Zero removes the current expiry.
@@ -1246,17 +1355,12 @@ export interface components {
             expires_in_days?: number | null;
             /** @description A new password, or an empty string to remove the current password. */
             password?: string | null;
-            published?: boolean | null;
-            visibility?: null | components["schemas"]["ShareVisibility"];
+            visibility?: null | components["schemas"]["TraceVisibility"];
         };
-        UploadInstructions: {
-            /** Format: int64 */
-            expires_at: number;
-            headers: {
-                [key: string]: string;
-            };
-            method: string;
-            url: string;
+        UsageResponse: {
+            credits: components["schemas"]["CreditSummary"];
+            hosted_traces: components["schemas"]["HostedTraceUsage"];
+            operations: components["schemas"]["NotaryStats"];
         };
         /** @enum {string} */
         UsageSettlementOutcome: "completed" | "client_failed" | "service_failed";
@@ -1283,16 +1387,6 @@ export interface components {
             trust_source: string;
             verified: boolean;
         };
-        WebDeviceSession: {
-            /** Format: int64 */
-            created_at: number;
-            device_name: string;
-            /** Format: int64 */
-            expires_at: number;
-            id: string;
-            /** Format: int64 */
-            last_used_at: number;
-        };
     };
     responses: never;
     parameters: never;
@@ -1302,6 +1396,226 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    delete_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteAccountRequest"];
+            };
+        };
+        responses: {
+            /** @description Account deleted */
+            204: {
+                headers: {
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_api_keys: {
+        parameters: {
+            query?: {
+                /** @description Page size; defaults to 50 */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_ApiKeyResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_api_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateApiKeyRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateApiKeyResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    revoke_api_key: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                api_key_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description API key revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     start_github_login: {
         parameters: {
             query?: {
@@ -1530,816 +1844,6 @@ export interface operations {
             };
         };
     };
-    stripe_webhook: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": string;
-            };
-        };
-        responses: {
-            /** @description Event processed or safely ignored */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            502: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    start_device_authorization: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateDeviceAuthorization"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeviceAuthorizationStarted"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    device_approval_details: {
-        parameters: {
-            query: {
-                approval_secret: string;
-            };
-            header?: never;
-            path: {
-                request_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApprovalDetails"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    approve_device_authorization: {
-        parameters: {
-            query: {
-                approval_secret: string;
-            };
-            header?: never;
-            path: {
-                request_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Device device authorized */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    complete_device_authorization: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                request_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeviceTokens"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            428: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    logout_device_session: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RefreshRequest"];
-            };
-        };
-        responses: {
-            /** @description Device session revoked */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    device_me: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeviceMeResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    list_devices: {
-        parameters: {
-            query?: {
-                /** @description Page size; defaults to 50 */
-                limit?: number;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Page_WebDeviceSession"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    revoke_web_device_session: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                session_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Device session revoked */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    refresh_device_tokens: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RefreshRequest"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeviceTokens"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    health: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Health"];
-                };
-            };
-        };
-    };
-    redeem_admission: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RedeemAdmissionRequest"];
-            };
-        };
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RedeemedOperationResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            402: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    settle_usage: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UsageSettlementRequest"];
-            };
-        };
-        responses: {
-            /** @description Usage settled or identical report already applied */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            410: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    me: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MeResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    delete_account: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Account deleted */
-            204: {
-                headers: {
-                    "Set-Cookie"?: string;
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    list_api_keys: {
-        parameters: {
-            query?: {
-                /** @description Page size; defaults to 50 */
-                limit?: number;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Page_ApiKeyResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    create_api_key: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateApiKeyRequest"];
-            };
-        };
-        responses: {
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CreateApiKeyResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    revoke_api_key: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                api_key_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description API key revoked */
-            204: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
     create_checkout_session: {
         parameters: {
             query?: never;
@@ -2534,6 +2038,52 @@ export interface operations {
             };
         };
     };
+    stripe_webhook: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": string;
+            };
+        };
+        responses: {
+            /** @description Event processed or safely ignored */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     create_subscription_checkout_session: {
         parameters: {
             query?: never;
@@ -2588,6 +2138,562 @@ export interface operations {
                 };
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    start_device_authorization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDeviceAuthorization"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceAuthorizationStarted"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    device_approval_details: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Notary-Approval-Secret": string;
+            };
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceAuthorizationApproval"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    approve_device_authorization: {
+        parameters: {
+            query?: never;
+            header: {
+                "X-Notary-Approval-Secret": string;
+            };
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Device authorized */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    complete_device_authorization: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceCredentials"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    device_me: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceSessionIdentity"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    logout_device_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeviceRefreshRequest"];
+            };
+        };
+        responses: {
+            /** @description Device session revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    refresh_device_tokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeviceRefreshRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeviceCredentials"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_devices: {
+        parameters: {
+            query?: {
+                /** @description Page size; defaults to 50 */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_ConnectedDevice"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    revoke_web_device_session: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                device_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Device session revoked */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    health: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Health"];
+                };
+            };
+        };
+    };
+    redeem_admission: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RedeemAdmissionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RedeemedOperationResponse"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    settle_usage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UsageSettlementRequest"];
+            };
+        };
+        responses: {
+            /** @description Usage settled or identical report already applied */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2732,72 +2838,6 @@ export interface operations {
             };
         };
     };
-    list_web_traces: {
-        parameters: {
-            query?: {
-                /** @description Page size; defaults to 50 */
-                limit?: number;
-                cursor?: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Page_ShareResponse"];
-                };
-            };
-            400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
-    };
-    notary: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["RegistryResponse"];
-                };
-            };
-        };
-    };
     issue_admission: {
         parameters: {
             query?: never;
@@ -2861,7 +2901,7 @@ export interface operations {
             };
         };
     };
-    listed_shares: {
+    list_public_traces: {
         parameters: {
             query?: {
                 /** @description Page size; defaults to 50 */
@@ -2881,7 +2921,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["Page_ListedShareSummary"];
+                    "application/json": components["schemas"]["Page_PublicTraceSummary"];
                 };
             };
             400: {
@@ -2902,15 +2942,12 @@ export interface operations {
             };
         };
     };
-    public_share_detail: {
+    public_trace_detail: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Base64url-encoded UTF-8 password for a protected share */
-                "X-Share-Password"?: string | null;
-            };
+            header?: never;
             path: {
-                share_id: string;
+                trace_id: string;
             };
             cookie?: never;
         };
@@ -2921,16 +2958,48 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PublicShareDetail"];
+                    "application/json": components["schemas"]["PublicTraceDetail"];
                 };
             };
-            401: {
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    access_public_trace: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PublicTraceAccessRequest"];
+            };
+        };
+        responses: {
+            /** @description Access established */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
             };
             404: {
                 headers: {
@@ -2958,15 +3027,12 @@ export interface operations {
             };
         };
     };
-    public_share_package: {
+    public_trace_content: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Base64url-encoded UTF-8 password for a protected share */
-                "X-Share-Password"?: string | null;
-            };
+            header?: never;
             path: {
-                share_id: string;
+                trace_id: string;
             };
             cookie?: never;
         };
@@ -2977,26 +3043,10 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/vnd.exalto.notary.trace-package+zip": number[];
-                };
-            };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
+                    "application/json": components["schemas"]["PublicTraceContent"];
                 };
             };
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3022,21 +3072,63 @@ export interface operations {
             };
         };
     };
-    create_share_report: {
+    public_trace_package: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Base64url-encoded UTF-8 password for a protected share */
-                "X-Share-Password"?: string | null;
-            };
+            header?: never;
             path: {
-                share_id: string;
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/vnd.exalto.notary.trace-package+zip": number[];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_trace_report: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateShareReport"];
+                "application/json": components["schemas"]["CreateTraceReport"];
             };
         };
         responses: {
@@ -3045,18 +3137,10 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ShareReportReceipt"];
+                    "application/json": components["schemas"]["TraceReportReceipt"];
                 };
             };
             400: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            401: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3090,15 +3174,12 @@ export interface operations {
             };
         };
     };
-    public_share_trace: {
+    public_trace_otlp: {
         parameters: {
             query?: never;
-            header?: {
-                /** @description Base64url-encoded UTF-8 password for a protected share */
-                "X-Share-Password"?: string | null;
-            };
+            header?: never;
             path: {
-                share_id: string;
+                trace_id: string;
             };
             cookie?: never;
         };
@@ -3112,23 +3193,7 @@ export interface operations {
                     "application/json": unknown;
                 };
             };
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
             404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            429: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3181,11 +3246,77 @@ export interface operations {
             };
         };
     };
+    notary: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegistryResponse"];
+                };
+            };
+        };
+    };
+    list_web_traces: {
+        parameters: {
+            query?: {
+                /** @description Page size; defaults to 50 */
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Page_HostedTrace"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     create_hosted_trace: {
         parameters: {
             query?: never;
             header: {
-                /** @description Stable key for this share attempt */
+                /** @description Stable key for this hosted Trace request */
                 "Idempotency-Key": string;
             };
             path?: never;
@@ -3197,22 +3328,22 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Existing share */
+            /** @description Existing hosted Trace */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CreateShareResponse"];
+                    "application/json": components["schemas"]["CreateHostedTraceResponse"];
                 };
             };
-            /** @description New or reopened share */
+            /** @description New or reopened hosted Trace */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CreateShareResponse"];
+                    "application/json": components["schemas"]["CreateHostedTraceResponse"];
                 };
             };
             400: {
@@ -3278,7 +3409,7 @@ export interface operations {
             query?: never;
             header?: never;
             path: {
-                share_id: string;
+                trace_id: string;
             };
             cookie?: never;
         };
@@ -3289,7 +3420,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ShareResponse"];
+                    "application/json": components["schemas"]["HostedTrace"];
                 };
             };
             401: {
@@ -3334,18 +3465,18 @@ export interface operations {
             };
         };
     };
-    update_share_settings: {
+    update_trace_access: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                share_id: string;
+                trace_id: string;
             };
             cookie?: never;
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["UpdateShareSettings"];
+                "application/json": components["schemas"]["UpdateTraceAccessSettings"];
             };
         };
         responses: {
@@ -3354,7 +3485,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ShareResponse"];
+                    "application/json": components["schemas"]["HostedTrace"];
                 };
             };
             400: {
@@ -3415,23 +3546,87 @@ export interface operations {
             };
         };
     };
+    stop_hosted_trace_sharing: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                trace_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Sharing stopped; the owner record and package remain */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     complete_hosted_trace_upload: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                share_id: string;
+                trace_id: string;
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CompleteHostedTraceUploadRequest"];
+            };
+        };
         responses: {
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ShareResponse"];
+                    "application/json": components["schemas"]["HostedTrace"];
                 };
             };
             401: {
@@ -3483,6 +3678,49 @@ export interface operations {
                 };
             };
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    usage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UsageResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

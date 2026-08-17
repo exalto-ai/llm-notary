@@ -19,7 +19,7 @@ struct RegistryRecordResponse {
     port: u16,
     transport: NotaryTransportResponse,
     key_id: String,
-    public_key: String,
+    verification_key: String,
     status: NotaryKeyStatusResponse,
     valid_from_unix_ms: u64,
     valid_until_unix_ms: Option<u64>,
@@ -65,7 +65,7 @@ impl From<RegistryRecord> for RegistryRecordResponse {
                 NotaryTransport::Tls => NotaryTransportResponse::Tls,
             },
             key_id: record.key_id,
-            public_key: record.public_key,
+            verification_key: record.public_key,
             status: match record.status {
                 NotaryKeyStatus::Active => NotaryKeyStatusResponse::Active,
                 NotaryKeyStatus::Retiring => NotaryKeyStatusResponse::Retiring,
@@ -85,10 +85,10 @@ pub(super) fn router() -> OpenApiRouter<NotaryApiState> {
 
 #[utoipa::path(
     get,
-    path = "/api/notary",
-    summary = "Get the versioned Notary Registry",
+    path = "/api/registry",
+    summary = "Get the versioned Registry of Official Notaries",
     responses((status = 200, body = RegistryResponse)),
-    tag = "health"
+    tag = "registry"
 )]
 pub(super) async fn notary(State(state): State<NotaryApiState>) -> Json<RegistryResponse> {
     Json(state.registry.into())

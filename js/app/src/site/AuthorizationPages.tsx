@@ -7,16 +7,16 @@ import {
   orderNotaries,
 } from '../notaryLifecycle';
 import {
-  approveCli,
-  getCliApproval,
+  approveDeviceAuthorization,
   type getCurrentUser,
+  getDeviceAuthorizationApproval,
   getNotaryDirectory,
 } from '../platform-api/client';
 import { sessionDate } from './format';
 
 type CurrentUser = NonNullable<Awaited<ReturnType<typeof getCurrentUser>>>;
 type AccountIdentity = Pick<CurrentUser, 'display_name' | 'provider_display_name'>;
-type CliApprovalDetails = Awaited<ReturnType<typeof getCliApproval>>;
+type DeviceAuthorizationDetails = Awaited<ReturnType<typeof getDeviceAuthorizationApproval>>;
 type HostedDirectory = Awaited<ReturnType<typeof getNotaryDirectory>>;
 type HostedNotary = HostedDirectory['notaries'][number];
 type AuthorizationTone = 'neutral' | 'attention' | 'success' | 'ready';
@@ -85,21 +85,21 @@ function AuthorizationPage({
   );
 }
 
-export function CliApproval({
+export function DeviceAuthorizationApproval({
   route,
   user,
-  loadApproval = getCliApproval,
-  approveRequest = approveCli,
+  loadApproval = getDeviceAuthorizationApproval,
+  approveRequest = approveDeviceAuthorization,
 }: {
   route: string;
   user: AccountIdentity | null;
-  loadApproval?: typeof getCliApproval;
-  approveRequest?: typeof approveCli;
+  loadApproval?: typeof getDeviceAuthorizationApproval;
+  approveRequest?: typeof approveDeviceAuthorization;
 }) {
   const query = new URLSearchParams(route.split('?')[1] || '');
   const requestId = query.get('request_id');
   const approvalSecret = query.get('approval_secret');
-  const [details, setDetails] = useState<CliApprovalDetails | null>(null);
+  const [details, setDetails] = useState<DeviceAuthorizationDetails | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [approved, setApproved] = useState(false);
   useEffect(() => {
@@ -273,6 +273,8 @@ function normalizeHostedDirectory(payload: HostedDirectory): HostedDirectory {
       !['tcp', 'tls'].includes(record.transport) ||
       typeof record.key_id !== 'string' ||
       !record.key_id ||
+      typeof record.verification_key !== 'string' ||
+      !record.verification_key ||
       !hostedNotaryStatuses.has(record.status) ||
       !Number.isSafeInteger(record.valid_from_unix_ms) ||
       record.valid_from_unix_ms < 0 ||

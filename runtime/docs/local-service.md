@@ -357,7 +357,7 @@ links, and credit balances. Human output is intended for quick inspection;
 inspection includes the same total, monthly, additional, reset, and expiration
 values returned by the hosted account API.
 The account dashboard retrieves credit activity separately from the paginated
-`GET /api/me/credits/history` route. These fields affect hosted notarization
+`GET /api/credits/history` route. These fields affect hosted notarization
 only; they do not enter local captures or notarized evidence.
 
 Exit code `2` is invalid input, `3` means the daemon is unavailable, `4` is an

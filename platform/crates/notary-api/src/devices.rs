@@ -7,12 +7,13 @@ use crate::browser_auth::BrowserAuthProvider;
 use serde::Deserialize;
 
 #[derive(Serialize, ToSchema)]
-pub(super) struct WebDeviceSession {
-    pub(super) id: String,
+pub(super) struct ConnectedDevice {
+    pub(super) device_id: String,
     pub(super) device_name: String,
     created_at: i64,
     last_used_at: i64,
     expires_at: i64,
+    pub(super) revoked_at: Option<i64>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -24,6 +25,23 @@ struct DeviceSessionPagePosition {
 #[derive(Deserialize, ToSchema)]
 pub(super) struct CreateDeviceAuthorization {
     device_name: String,
+    capabilities: Vec<DeviceCapability>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ToSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum DeviceCapability {
+    HostedNotarization,
+    ConsumeCredits,
+    ShareNotarizedTraces,
+}
+
+impl DeviceCapability {
+    const ALL: [Self; 3] = [
+        Self::HostedNotarization,
+        Self::ConsumeCredits,
+        Self::ShareNotarizedTraces,
+    ];
 }
 
 #[derive(Serialize, ToSchema)]
@@ -36,32 +54,28 @@ pub(super) struct DeviceAuthorizationStarted {
     poll_secret: String,
 }
 
-#[derive(Deserialize, ToSchema)]
-pub(super) struct ApprovalQuery {
-    approval_secret: String,
-}
-
-#[derive(Serialize, ToSchema)]
-pub(super) struct ApprovalDetails {
+#[derive(Deserialize, Serialize, ToSchema)]
+pub(super) struct DeviceAuthorizationApproval {
     user_code: String,
     device_name: String,
+    capabilities: Vec<DeviceCapability>,
     expires_at: i64,
 }
 
 #[derive(Serialize, ToSchema)]
-pub(super) struct DeviceTokens {
+pub(super) struct DeviceCredentials {
     pub(super) access_token: String,
     pub(super) refresh_token: String,
     expires_in: i64,
 }
 
 #[derive(Deserialize, ToSchema)]
-pub(super) struct RefreshRequest {
+pub(super) struct DeviceRefreshRequest {
     pub(super) refresh_token: String,
 }
 
 #[derive(Serialize, ToSchema)]
-struct DeviceSessionResponse {
+struct CurrentDevice {
     device_name: String,
 }
 
@@ -73,10 +87,10 @@ struct DeviceCredentialResponse {
 }
 
 #[derive(Serialize, ToSchema)]
-pub(super) struct DeviceMeResponse {
+pub(super) struct DeviceSessionIdentity {
     account: PublicUser,
     credential: DeviceCredentialResponse,
-    session: Option<DeviceSessionResponse>,
+    device: Option<CurrentDevice>,
     billing: AccountBillingResponse,
     credits: credits::CreditSummary,
 }
@@ -98,30 +112,29 @@ pub(super) fn router() -> OpenApiRouter<NotaryApiState> {
 
 #[utoipa::path(
     get,
-    path = "/api/cli/sessions",
-    summary = "List the browser user's active Device sessions",
+    path = "/api/devices",
+    summary = "List the account's Connected devices",
     params(("limit" = Option<u32>, Query, description = "Page size; defaults to 50", minimum = 1, maximum = 100), ("cursor" = Option<String>, Query)),
     responses(
-        (status = 200, body = Page<WebDeviceSession>),
+        (status = 200, body = Page<ConnectedDevice>),
         (status = 400, body = ErrorResponse),
         (status = 401, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "cli-auth"
+    tag = "devices"
 )]
 pub(super) async fn list_devices(
     State(state): State<NotaryApiState>,
     jar: CookieJar,
     query: Result<Query<PageQuery>, axum::extract::rejection::QueryRejection>,
-) -> ApiResult<Json<Page<WebDeviceSession>>> {
+) -> ApiResult<Json<Page<ConnectedDevice>>> {
     let Query(query) = query.map_err(pagination::query_error)?;
     let user = authenticated_web_user(&state, &jar).await?;
-    let now = unix_timestamp()?;
     let limit = query
         .limit(pagination::DEFAULT_PAGE_LIMIT, pagination::MAX_PAGE_LIMIT)
         .map_err(pagination::api_error)?;
-    let scope = CursorScope::new("/api/cli/sessions", &user.0, "created_at desc, id desc")
+    let scope = CursorScope::new("/api/devices", &user.0, "created_at desc, id desc")
         .map_err(pagination::api_error)?;
     let position = query
         .cursor
@@ -129,16 +142,15 @@ pub(super) async fn list_devices(
         .map(|cursor| decode_cursor::<DeviceSessionPagePosition>(&scope, cursor))
         .transpose()
         .map_err(pagination::api_error)?;
-    let sessions = sqlx::query_as::<_, (String, String, i64, i64, i64)>(
-        "SELECT device_id, device_name, created_at, last_used_at, expires_at
+    let sessions = sqlx::query_as::<_, (String, String, i64, i64, i64, Option<i64>)>(
+        "SELECT device_id, device_name, created_at, last_used_at, expires_at, revoked_at
          FROM devices
-         WHERE account_id = $1 AND revoked_at IS NULL AND expires_at > $2
-           AND ($3::TEXT IS NULL OR (created_at, device_id) < ($4, $3))
+         WHERE account_id = $1
+           AND ($2::TEXT IS NULL OR (created_at, device_id) < ($3, $2))
          ORDER BY created_at DESC, device_id DESC
-         LIMIT $5",
+         LIMIT $4",
     )
     .bind(&user.0)
-    .bind(now)
     .bind(position.as_ref().map(|position| &position.id))
     .bind(position.as_ref().map(|position| position.created_at))
     .bind(i64::try_from(limit + 1).map_err(|error| ApiError::internal(anyhow!(error)))?)
@@ -146,18 +158,19 @@ pub(super) async fn list_devices(
     .await
     .map_err(database_error)?
     .into_iter()
-    .map(|session| WebDeviceSession {
-        id: session.0,
+    .map(|session| ConnectedDevice {
+        device_id: session.0,
         device_name: session.1,
         created_at: session.2,
         last_used_at: session.3,
         expires_at: session.4,
+        revoked_at: session.5,
     })
     .collect();
     let page = Page::from_limit_plus_one(sessions, limit, &scope, |session| {
         DeviceSessionPagePosition {
             created_at: session.created_at,
-            id: session.id.clone(),
+            id: session.device_id.clone(),
         }
     })
     .map_err(pagination::api_error)?;
@@ -166,9 +179,9 @@ pub(super) async fn list_devices(
 
 #[utoipa::path(
     delete,
-    path = "/api/cli/sessions/{session_id}",
-    summary = "Revoke one of the browser user's Device sessions",
-    params(("session_id" = String, Path)),
+    path = "/api/devices/{device_id}",
+    summary = "Revoke one Connected device",
+    params(("device_id" = String, Path)),
     responses(
         (status = 204, description = "Device session revoked"),
         (status = 401, body = ErrorResponse),
@@ -176,12 +189,12 @@ pub(super) async fn list_devices(
         (status = 500, body = ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "cli-auth"
+    tag = "devices"
 )]
 pub(super) async fn revoke_web_device_session(
     State(state): State<NotaryApiState>,
     jar: CookieJar,
-    Path(session_id): Path<String>,
+    Path(device_id): Path<String>,
 ) -> ApiResult<StatusCode> {
     let user = authenticated_web_user(&state, &jar).await?;
     let now = unix_timestamp()?;
@@ -190,29 +203,29 @@ pub(super) async fn revoke_web_device_session(
          WHERE device_id = $2 AND account_id = $3 AND revoked_at IS NULL AND expires_at > $4",
     )
     .bind(now)
-    .bind(session_id)
+    .bind(device_id)
     .bind(user.0)
     .bind(now)
     .execute(&state.database)
     .await
     .map_err(database_error)?;
     if revoked.rows_affected() != 1 {
-        return Err(ApiError::not_found("Device session was not found"));
+        return Err(ApiError::not_found("Connected device was not found"));
     }
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[utoipa::path(
     post,
-    path = "/api/cli/authorizations",
-    summary = "Start Device device authorization",
+    path = "/api/device-authorizations",
+    summary = "Start Device authorization",
     request_body = CreateDeviceAuthorization,
     responses(
         (status = 200, body = DeviceAuthorizationStarted),
         (status = 400, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
-    tag = "cli-auth"
+    tag = "devices"
 )]
 pub(super) async fn start_device_authorization(
     State(state): State<NotaryApiState>,
@@ -222,6 +235,15 @@ pub(super) async fn start_device_authorization(
     if device_name.is_empty() || device_name.len() > 120 {
         return Err(ApiError::bad_request(
             "device_name must be between 1 and 120 characters",
+        ));
+    }
+    if request.capabilities.len() != DeviceCapability::ALL.len()
+        || !DeviceCapability::ALL
+            .iter()
+            .all(|capability| request.capabilities.contains(capability))
+    {
+        return Err(ApiError::bad_request(
+            "capabilities must request hosted_notarization, consume_credits, and share_notarized_traces",
         ));
     }
     let now = unix_timestamp()?;
@@ -237,8 +259,8 @@ pub(super) async fn start_device_authorization(
     for _ in 0..10 {
         let request_id = typed_id("dva-");
         let user_code = user_code();
-        let poll_secret = random_secret("notary_access_");
-        let approval_secret = random_secret("notary_access_");
+        let poll_secret = random_secret("notary_poll_");
+        let approval_secret = random_secret("notary_approval_");
         let inserted = sqlx::query(
             "INSERT INTO device_authorizations
              (authorization_id, user_code, poll_secret_hash, approval_secret_hash, device_name, created_at, expires_at)
@@ -277,53 +299,55 @@ pub(super) async fn start_device_authorization(
 
 #[utoipa::path(
     get,
-    path = "/api/cli/authorizations/{request_id}/approval",
+    path = "/api/device-authorizations/{request_id}/approval",
     summary = "Get browser approval details",
-    params(("request_id" = String, Path), ("approval_secret" = String, Query)),
+    params(("request_id" = String, Path), ("X-Notary-Approval-Secret" = String, Header)),
     responses(
-        (status = 200, body = ApprovalDetails),
+        (status = 200, body = DeviceAuthorizationApproval),
         (status = 401, body = ErrorResponse),
         (status = 404, body = ErrorResponse),
         (status = 410, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "cli-auth"
+    tag = "devices"
 )]
 pub(super) async fn device_approval_details(
     State(state): State<NotaryApiState>,
     jar: CookieJar,
     Path(request_id): Path<String>,
-    Query(query): Query<ApprovalQuery>,
-) -> ApiResult<Json<ApprovalDetails>> {
+    headers: HeaderMap,
+) -> ApiResult<Json<DeviceAuthorizationApproval>> {
     authenticated_web_user(&state, &jar).await?;
-    let request = approval_request(&state, &request_id, &query.approval_secret).await?;
-    Ok(Json(ApprovalDetails {
+    let approval_secret = approval_secret(&headers)?.to_owned();
+    let request = approval_request(&state, &request_id, &approval_secret).await?;
+    Ok(Json(DeviceAuthorizationApproval {
         user_code: request.0,
         device_name: request.1,
+        capabilities: DeviceCapability::ALL.to_vec(),
         expires_at: request.2,
     }))
 }
 
 #[utoipa::path(
     post,
-    path = "/api/cli/authorizations/{request_id}/approval",
-    summary = "Approve a Device device authorization",
-    params(("request_id" = String, Path), ("approval_secret" = String, Query)),
+    path = "/api/device-authorizations/{request_id}/approval",
+    summary = "Approve Device authorization",
+    params(("request_id" = String, Path), ("X-Notary-Approval-Secret" = String, Header)),
     responses(
-        (status = 204, description = "Device device authorized"),
+        (status = 204, description = "Device authorized"),
         (status = 401, body = ErrorResponse),
         (status = 410, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
     security(("browserSession" = [])),
-    tag = "cli-auth"
+    tag = "devices"
 )]
 pub(super) async fn approve_device_authorization(
     State(state): State<NotaryApiState>,
     jar: CookieJar,
     Path(request_id): Path<String>,
-    Query(query): Query<ApprovalQuery>,
+    headers: HeaderMap,
 ) -> ApiResult<StatusCode> {
     let user = authenticated_web_user(&state, &jar).await?;
     let now = unix_timestamp()?;
@@ -336,7 +360,7 @@ pub(super) async fn approve_device_authorization(
     .bind(user.0)
     .bind(now)
     .bind(request_id)
-    .bind(sha256_hex(query.approval_secret.as_bytes()))
+    .bind(sha256_hex(approval_secret(&headers)?.as_bytes()))
     .bind(now)
     .execute(&state.database)
     .await
@@ -351,24 +375,24 @@ pub(super) async fn approve_device_authorization(
 
 #[utoipa::path(
     post,
-    path = "/api/cli/authorizations/{request_id}/token",
+    path = "/api/device-authorizations/{request_id}/token",
     summary = "Complete Device device authorization",
     params(("request_id" = String, Path)),
     responses(
-        (status = 200, body = DeviceTokens),
+        (status = 200, body = DeviceCredentials),
         (status = 401, body = ErrorResponse),
         (status = 410, body = ErrorResponse),
         (status = 428, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
     security(("pollSecret" = [])),
-    tag = "cli-auth"
+    tag = "devices"
 )]
 pub(super) async fn complete_device_authorization(
     State(state): State<NotaryApiState>,
     headers: HeaderMap,
     Path(request_id): Path<String>,
-) -> ApiResult<Json<DeviceTokens>> {
+) -> ApiResult<Json<DeviceCredentials>> {
     let poll_secret = headers
         .get("X-Notary-Poll-Secret")
         .and_then(|value| value.to_str().ok())
@@ -416,20 +440,20 @@ pub(super) async fn complete_device_authorization(
 
 #[utoipa::path(
     post,
-    path = "/api/cli/token",
+    path = "/api/device-session/token",
     summary = "Rotate Device access and refresh tokens",
-    request_body = RefreshRequest,
+    request_body = DeviceRefreshRequest,
     responses(
-        (status = 200, body = DeviceTokens),
+        (status = 200, body = DeviceCredentials),
         (status = 401, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
-    tag = "cli-auth"
+    tag = "devices"
 )]
 pub(super) async fn refresh_device_tokens(
     State(state): State<NotaryApiState>,
-    Json(request): Json<RefreshRequest>,
-) -> ApiResult<Json<DeviceTokens>> {
+    Json(request): Json<DeviceRefreshRequest>,
+) -> ApiResult<Json<DeviceCredentials>> {
     let now = unix_timestamp()?;
     let old_hash = sha256_hex(request.refresh_token.as_bytes());
     let mut transaction = state.database.begin().await.map_err(database_error)?;
@@ -494,7 +518,7 @@ pub(super) async fn refresh_device_tokens(
     .map_err(database_error)?;
     let access_token = issue_access_token_in_transaction(&mut transaction, &device_id, now).await?;
     transaction.commit().await.map_err(database_error)?;
-    Ok(Json(DeviceTokens {
+    Ok(Json(DeviceCredentials {
         access_token,
         refresh_token,
         expires_in: DEVICE_ACCESS_TOKEN_TTL_SECS,
@@ -502,19 +526,19 @@ pub(super) async fn refresh_device_tokens(
 }
 
 #[utoipa::path(
-    post,
-    path = "/api/cli/logout",
+    delete,
+    path = "/api/device-session",
     summary = "Revoke a Device session by refresh token",
-    request_body = RefreshRequest,
+    request_body = DeviceRefreshRequest,
     responses(
         (status = 204, description = "Device session revoked"),
         (status = 500, body = ErrorResponse)
     ),
-    tag = "cli-auth"
+    tag = "devices"
 )]
 pub(super) async fn logout_device_session(
     State(state): State<NotaryApiState>,
-    Json(request): Json<RefreshRequest>,
+    Json(request): Json<DeviceRefreshRequest>,
 ) -> ApiResult<StatusCode> {
     let now = unix_timestamp()?;
     sqlx::query(
@@ -530,21 +554,21 @@ pub(super) async fn logout_device_session(
 
 #[utoipa::path(
     get,
-    path = "/api/cli/me",
+    path = "/api/device-session",
     summary = "Get the Device access-token identity",
     responses(
-        (status = 200, body = DeviceMeResponse),
+        (status = 200, body = DeviceSessionIdentity),
         (status = 401, body = ErrorResponse),
         (status = 403, body = ErrorResponse),
         (status = 500, body = ErrorResponse)
     ),
     security(("bearerAuth" = [])),
-    tag = "cli-auth"
+    tag = "devices"
 )]
 pub(super) async fn device_me(
     State(state): State<NotaryApiState>,
     headers: HeaderMap,
-) -> ApiResult<Json<DeviceMeResponse>> {
+) -> ApiResult<Json<DeviceSessionIdentity>> {
     let principal =
         auth::authenticated_principal(&state, &headers, auth::ApiScope::AccountRead).await?;
     let user = sqlx::query_as::<_, (String, String, String, Option<String>, String)>(
@@ -564,14 +588,13 @@ pub(super) async fn device_me(
     .fetch_one(&state.database)
     .await
     .map_err(database_error)?;
-    let session = (principal.credential_kind == auth::CredentialKind::DeviceSession).then(|| {
-        DeviceSessionResponse {
+    let session =
+        (principal.credential_kind == auth::CredentialKind::DeviceSession).then(|| CurrentDevice {
             device_name: principal.credential_name.clone(),
-        }
-    });
+        });
     let credits = credits::account_access(&state, &principal.account_id).await?;
     let billing = credits::account_billing_state(&state.database, &principal.account_id).await?;
-    Ok(Json(DeviceMeResponse {
+    Ok(Json(DeviceSessionIdentity {
         account: PublicUser {
             id: user.0,
             provider_display_name: user.2,
@@ -584,7 +607,7 @@ pub(super) async fn device_me(
             id: principal.credential_id,
             name: principal.credential_name,
         },
-        session,
+        device: session,
         billing: AccountBillingResponse::new(
             billing,
             state.billing.purchase_mode(),
@@ -619,18 +642,26 @@ async fn approval_request(
     Ok((request.0, request.1, request.2))
 }
 
+fn approval_secret(headers: &HeaderMap) -> ApiResult<&str> {
+    headers
+        .get("X-Notary-Approval-Secret")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| value.starts_with("notary_approval_") && value.len() <= 256)
+        .ok_or_else(ApiError::unauthorized)
+}
+
 #[cfg(test)]
 pub(super) async fn issue_device_session(
     database: &DatabasePool,
     account_id: &str,
     device_name: &str,
     now: i64,
-) -> ApiResult<DeviceTokens> {
+) -> ApiResult<DeviceCredentials> {
     let mut transaction = database.begin().await.map_err(database_error)?;
-    let tokens =
+    let credentials =
         issue_device_session_in_transaction(&mut transaction, account_id, device_name, now).await?;
     transaction.commit().await.map_err(database_error)?;
-    Ok(tokens)
+    Ok(credentials)
 }
 
 async fn issue_device_session_in_transaction(
@@ -638,7 +669,7 @@ async fn issue_device_session_in_transaction(
     account_id: &str,
     device_name: &str,
     now: i64,
-) -> ApiResult<DeviceTokens> {
+) -> ApiResult<DeviceCredentials> {
     let device_id = typed_id("dev-");
     let refresh_token = random_secret("notary_refresh_");
     sqlx::query(
@@ -657,7 +688,7 @@ async fn issue_device_session_in_transaction(
     .await
     .map_err(database_error)?;
     let access_token = issue_access_token_in_transaction(transaction, &device_id, now).await?;
-    Ok(DeviceTokens {
+    Ok(DeviceCredentials {
         access_token,
         refresh_token,
         expires_in: DEVICE_ACCESS_TOKEN_TTL_SECS,

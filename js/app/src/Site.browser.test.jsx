@@ -6,21 +6,21 @@ import {
   AccountSettings,
   ApiKeysPanel,
   App,
-  CliApproval,
   Dashboard,
   DeleteAccountPanel,
+  DeviceAuthorizationApproval,
   Footer,
   Header,
   HostedNotaryRecord,
   Landing,
   Library,
-  ListedSharesPreview,
-  SharePage,
+  ListedTracesPreview,
+  PublicTracePage,
   SignInPage,
   VerificationPage,
 } from './main';
 import { ProviderIdentity } from './ProviderIdentity';
-import { encodeSharePassword } from './platform-api/client';
+import { PlatformApiError } from './platform-api/client';
 import { latestMacosDownloadHref } from './releaseDownloads';
 import { initialThemePreference } from './theme';
 
@@ -32,14 +32,14 @@ afterEach(async () => {
 });
 
 const libraryShares = Array.from({ length: 20 }, (_, index) => ({
-  id: `share-${index + 1}`,
+  trace_id: `share-${index + 1}`,
   provider: index === 11 ? 'anthropic' : 'openai',
   model: index === 11 ? 'claude-sonnet-4-6' : 'gpt-5.2',
   publisher: 'fixture-user',
   authenticated_at_unix_ms: 1_786_000_000_000 - index,
   input_preview: `Prompt for share-${index + 1}`,
   output_preview: `Response for share-${index + 1}`,
-  share_url: `https://example.test/s/share-${index + 1}`,
+  public_url: `https://example.test/s/share-${index + 1}`,
 }));
 
 const loadLibrary = async ({ limit = 20, cursor, search, provider } = {}) => {
@@ -123,10 +123,6 @@ const billingFixture = (overrides = {}) => ({
 });
 
 describe('hosted site', () => {
-  test('encodes every UTF-8 share password as an HTTP-safe value', () => {
-    expect(encodeSharePassword('пароль\n🔐123')).toBe('0L_QsNGA0L7Qu9GMCvCflJAxMjM');
-  });
-
   test('makes the current macOS app the primary landing action', async () => {
     expect(latestMacosDownloadHref('build-123 0.1.0')).toBe(
       '/downloads/cli/builds/build-123/LLM-Notary-macos-arm64.dmg',
@@ -343,8 +339,8 @@ describe('hosted site', () => {
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
-        loadCliSessions={async () => ({ items: [], next_cursor: null })}
-        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadConnectedDevices={async () => ({ items: [], next_cursor: null })}
+        loadHostedTraces={async () => ({ items: [], next_cursor: null })}
         loadCreditOffers={async () => []}
         loadCreditHistory={async () => ({ items: [], next_cursor: null })}
         loadBillingPurchases={async () => []}
@@ -377,8 +373,8 @@ describe('hosted site', () => {
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
-        loadCliSessions={async () => ({ items: [], next_cursor: null })}
-        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadConnectedDevices={async () => ({ items: [], next_cursor: null })}
+        loadHostedTraces={async () => ({ items: [], next_cursor: null })}
         loadCreditOffers={async () => []}
         loadCreditHistory={async () => ({ items: [], next_cursor: null })}
         loadBillingPurchases={async () => []}
@@ -435,8 +431,8 @@ describe('hosted site', () => {
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
-        loadCliSessions={async () => ({ items: [], next_cursor: null })}
-        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadConnectedDevices={async () => ({ items: [], next_cursor: null })}
+        loadHostedTraces={async () => ({ items: [], next_cursor: null })}
         loadCreditOffers={async () => [
           {
             id: 'offer-1',
@@ -483,8 +479,8 @@ describe('hosted site', () => {
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
-        loadCliSessions={async () => ({ items: [], next_cursor: null })}
-        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadConnectedDevices={async () => ({ items: [], next_cursor: null })}
+        loadHostedTraces={async () => ({ items: [], next_cursor: null })}
         loadCreditOffers={async () => []}
         loadCreditHistory={async () => ({ items: [], next_cursor: null })}
         loadBillingPurchases={async () => []}
@@ -513,8 +509,8 @@ describe('hosted site', () => {
       theme: 'light',
       onThemeChange: () => {},
       onAccountDeleted: () => {},
-      loadCliSessions: async () => ({ items: [], next_cursor: null }),
-      loadMyShares: async () => ({ items: [], next_cursor: null }),
+      loadConnectedDevices: async () => ({ items: [], next_cursor: null }),
+      loadHostedTraces: async () => ({ items: [], next_cursor: null }),
       loadCreditOffers: async () => [],
       loadCreditHistory: async () => ({ items: [], next_cursor: null }),
       loadBillingPurchases: async () => [],
@@ -572,8 +568,8 @@ describe('hosted site', () => {
       theme: 'light',
       onThemeChange: () => {},
       onAccountDeleted: () => {},
-      loadCliSessions: async () => ({ items: [], next_cursor: null }),
-      loadMyShares: async () => ({ items: [], next_cursor: null }),
+      loadConnectedDevices: async () => ({ items: [], next_cursor: null }),
+      loadHostedTraces: async () => ({ items: [], next_cursor: null }),
       loadCreditOffers: async () => [],
       loadCreditHistory: async () => ({ items: [], next_cursor: null }),
       loadBillingPurchases: async () => [],
@@ -645,8 +641,8 @@ describe('hosted site', () => {
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
-        loadCliSessions={async () => ({ items: [], next_cursor: null })}
-        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadConnectedDevices={async () => ({ items: [], next_cursor: null })}
+        loadHostedTraces={async () => ({ items: [], next_cursor: null })}
         loadCreditOffers={async () => []}
         loadCreditHistory={async () => ({ items: [], next_cursor: null })}
         loadBillingPurchases={() =>
@@ -693,8 +689,8 @@ describe('hosted site', () => {
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
-        loadCliSessions={async () => ({ items: [], next_cursor: null })}
-        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadConnectedDevices={async () => ({ items: [], next_cursor: null })}
+        loadHostedTraces={async () => ({ items: [], next_cursor: null })}
         loadCreditOffers={async () => []}
         loadCreditHistory={async () => ({ items: [], next_cursor: null })}
         loadBillingPurchases={async () => []}
@@ -741,8 +737,8 @@ describe('hosted site', () => {
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
-        loadCliSessions={async () => ({ items: [], next_cursor: null })}
-        loadMyShares={async () => ({ items: [], next_cursor: null })}
+        loadConnectedDevices={async () => ({ items: [], next_cursor: null })}
+        loadHostedTraces={async () => ({ items: [], next_cursor: null })}
         loadCreditOffers={async () => []}
         loadCreditHistory={async () => ({ items: [], next_cursor: null })}
         loadBillingPurchases={async () => []}
@@ -790,14 +786,14 @@ describe('hosted site', () => {
         loadShares={async () => ({
           items: [
             {
-              id: 'routed-share',
+              trace_id: 'routed-share',
               provider: 'openrouter',
               model: 'openai/gpt-5-mini',
               publisher: 'fixture-user',
               authenticated_at_unix_ms: 1_786_000_000_000,
               input_preview: 'Compare these records.',
               output_preview: 'The second record is stronger.',
-              share_url: 'https://example.test/s/routed-share',
+              public_url: 'https://example.test/s/routed-share',
             },
           ],
           next_cursor: null,
@@ -816,7 +812,7 @@ describe('hosted site', () => {
     render(
       <>
         <Header user={null} hideSignIn />
-        <CliApproval
+        <DeviceAuthorizationApproval
           route="authorize?request_id=request-123&approval_secret=secret-456"
           user={null}
         />
@@ -839,7 +835,7 @@ describe('hosted site', () => {
     });
     let approved;
     render(
-      <CliApproval
+      <DeviceAuthorizationApproval
         route="authorize?request_id=request-123&approval_secret=secret-456"
         user={{ provider_display_name: 'fixture-user' }}
         loadApproval={loadApproval}
@@ -864,7 +860,7 @@ describe('hosted site', () => {
   });
 
   test('shows a new API key once and revokes it from the account list', async () => {
-    const secret = `llmn_v1_${'a'.repeat(32)}_${'b'.repeat(64)}`;
+    const secret = `notary_key_${'a'.repeat(32)}_${'b'.repeat(64)}`;
     let createRequest;
     let revokedId;
     render(
@@ -876,7 +872,7 @@ describe('hosted site', () => {
             secret,
             api_key: {
               id: 'a'.repeat(32),
-              prefix: `llmn_v1_${'a'.repeat(12)}`,
+              prefix: `notary_key_${'a'.repeat(12)}`,
               name: request.name,
               scopes: request.scopes,
               created_at: 1_786_000_000,
@@ -958,7 +954,7 @@ describe('hosted site', () => {
   test('shows provider marks in the landing Library preview', async () => {
     let request;
     render(
-      <ListedSharesPreview
+      <ListedTracesPreview
         loadShares={async (options) => {
           request = options;
           return { items: [libraryShares[0], libraryShares[11]], next_cursor: null };
@@ -1021,7 +1017,11 @@ describe('hosted site', () => {
   test('keeps Library filters while loading the next page', async () => {
     const requests = [];
     const first = libraryShares[11];
-    const second = { ...libraryShares[11], id: 'share-continued', model: 'claude-haiku-4-5' };
+    const second = {
+      ...libraryShares[11],
+      trace_id: 'share-continued',
+      model: 'claude-haiku-4-5',
+    };
     const loadShares = async (options) => {
       requests.push(options);
       return options.cursor
@@ -1050,7 +1050,11 @@ describe('hosted site', () => {
     });
     const initial = libraryShares[0];
     const filtered = libraryShares[11];
-    const stale = { ...libraryShares[0], id: 'stale-share', output_preview: 'Stale continuation' };
+    const stale = {
+      ...libraryShares[0],
+      trace_id: 'stale-share',
+      output_preview: 'Stale continuation',
+    };
     const loadShares = async (options) => {
       if (options.cursor) {
         markLoadStarted();
@@ -1083,7 +1087,7 @@ describe('hosted site', () => {
   test('loads older API keys without replacing the current page', async () => {
     const key = (id, name) => ({
       id,
-      prefix: `llmn_v1_${id.slice(0, 12)}`,
+      prefix: `notary_key_${id.slice(0, 12)}`,
       name,
       scopes: ['account:read'],
       created_at: 1_786_000_000,
@@ -1121,12 +1125,12 @@ describe('hosted site', () => {
         loadShares={async () => ({
           items: [
             {
-              id: 'legacy-share',
+              trace_id: 'legacy-share',
               provider: 'openai',
               model: 'gpt-4.1',
               publisher: 'fixture-user',
               authenticated_at_unix_ms: 1_786_000_000_000,
-              share_url: 'https://example.test/s/legacy-share',
+              public_url: 'https://example.test/s/legacy-share',
             },
           ],
           next_cursor: null,
@@ -1171,15 +1175,19 @@ describe('hosted site', () => {
 
   test('puts the disclosed conversation before collapsible evidence and tools', async () => {
     const loadShare = async () => ({
-      id: 'share-12',
+      trace_id: 'share-12',
+      title: 'Compare these two evidence trails.',
       visibility: 'unlisted',
+      password_protected: false,
+      expires_at: null,
       publisher: 'fixture-user',
-      verified_at: 1_786_000_000,
+      shared_at: 1_786_000_001,
       authenticated_at_unix_ms: 1_786_000_000_000,
       provider: 'anthropic',
       host: 'api.anthropic.com',
       model: 'claude-sonnet-4-6',
-      verification_state: 'verified',
+      notarized_state: 'notarized',
+      hosted_verification: 'passed',
       notary_key_id: 'sha256:abc',
       registry_generation: 42,
       trust_source: 'hosted_registry',
@@ -1187,9 +1195,10 @@ describe('hosted site', () => {
       package_size_bytes: 4096,
       package_sha256: 'c'.repeat(64),
       disclosure_safety_version: 'notary/public-package-safety/v1',
-      trace_url: '/api/public/shares/share-12/trace.otlp.json',
-      package_url: '/api/public/shares/share-12/package.llmtrace',
-      share_url: 'https://example.test/s/share-12',
+      disclosure_safety_override: false,
+      trace_url: '/api/public/traces/share-12/trace.otlp.json',
+      package_url: '/api/public/traces/share-12/package.llmtrace',
+      public_url: 'https://example.test/s/share-12',
     });
     const loadTrace = async () => ({
       resourceSpans: [
@@ -1246,7 +1255,7 @@ describe('hosted site', () => {
         },
       ],
     });
-    render(<SharePage shareId="share-12" loadShare={loadShare} loadTrace={loadTrace} />);
+    render(<PublicTracePage traceId="share-12" loadShare={loadShare} loadTrace={loadTrace} />);
     await expect.element(page.getByRole('heading', { name: 'Conversation' })).toBeVisible();
     await expect.element(page.getByText('Compare these two evidence trails.')).toBeVisible();
     await expect.element(page.getByText('The second trail is stronger.')).toBeVisible();
@@ -1266,25 +1275,26 @@ describe('hosted site', () => {
   });
 
   test('opens a protected trace in memory and submits a bounded report', async () => {
+    let unlocked = false;
     const required = () => {
-      const error = new Error('This share requires a password');
-      error.code = 'share_password_required';
-      throw error;
+      throw new PlatformApiError('Public Trace is unavailable', 404, 'trace_unavailable');
     };
-    const loadShare = async (_id, password) => {
-      if (password !== 'evidence-pass') required();
+    const loadShare = async () => {
+      if (!unlocked) required();
       return {
-        id: 'protected-share',
+        trace_id: 'protected-share',
+        title: 'Prompt for protected-share',
         visibility: 'listed',
         password_protected: true,
         expires_at: 4_102_444_800,
         publisher: 'fixture-user',
-        verified_at: 1_786_000_000,
+        shared_at: 1_786_000_000,
         authenticated_at_unix_ms: 1_786_000_000_000,
         provider: 'openai',
         host: 'api.openai.com',
         model: 'gpt-5.2',
-        verification_state: 'verified',
+        notarized_state: 'notarized',
+        hosted_verification: 'passed',
         notary_key_id: 'sha256:abc',
         registry_generation: 42,
         trust_source: 'hosted_registry',
@@ -1292,21 +1302,26 @@ describe('hosted site', () => {
         package_size_bytes: 2048,
         package_sha256: 'c'.repeat(64),
         disclosure_safety_version: 'notary/public-package-safety/v1',
-        trace_url: '/api/public/shares/protected-share/trace.otlp.json',
-        package_url: '/api/public/shares/protected-share/package.llmtrace',
-        share_url: 'https://example.test/s/protected-share',
+        disclosure_safety_override: false,
+        trace_url: '/api/public/traces/protected-share/trace.otlp.json',
+        package_url: '/api/public/traces/protected-share/package.llmtrace',
+        public_url: 'https://example.test/s/protected-share',
       };
     };
-    const loadTrace = async (id, password) => {
-      if (password !== 'evidence-pass') required();
+    const loadTrace = async (id) => {
+      if (!unlocked) required();
       return loadLibraryTrace(id);
     };
     let report;
     render(
-      <SharePage
-        shareId="protected-share"
+      <PublicTracePage
+        traceId="protected-share"
         loadShare={loadShare}
         loadTrace={loadTrace}
+        accessTrace={async (_id, password) => {
+          if (password !== 'evidence-pass') required();
+          unlocked = true;
+        }}
         sendReport={async (...args) => {
           report = args;
           return { received: true };
@@ -1335,26 +1350,40 @@ describe('hosted site', () => {
     expect(report).toEqual([
       'protected-share',
       { reason: 'spam', message: 'The listing misrepresents the disclosed response.' },
-      'evidence-pass',
     ]);
     await expect.element(page.getByRole('heading', { name: 'Report received' })).toBeVisible();
   });
 
   test('manages access and unpublishes an admitted trace from the account', async () => {
     let current = {
-      id: 'share-managed',
-      state: 'admitted',
-      visibility: 'listed',
-      published: true,
-      password_protected: false,
-      expires_at: null,
-      verified_at: 1_786_000_000,
+      trace_id: 'share-managed',
+      source_trace_id: 'local-trace-managed',
+      status: 'shared',
+      access: {
+        visibility: 'listed',
+        password_protected: false,
+        expires_at: null,
+      },
+      allow_high_entropy: false,
+      created_at: 1_786_000_000,
       updated_at: 1_786_000_000,
-      failure_code: null,
-      share_url: 'https://example.test/s/share-managed',
+      verification: {
+        verified_at: 1_786_000_000,
+        failure_code: null,
+      },
+      package: {
+        format: 'notary/trace-package/v1',
+        declared_size_bytes: 4096,
+        declared_sha256: 'a'.repeat(64),
+        admitted_size_bytes: 4096,
+        admitted_sha256: 'a'.repeat(64),
+      },
+      status_url: '/api/traces/share-managed',
+      public_url: 'https://example.test/s/share-managed',
       package_url: '/package.llmtrace',
     };
     const updates = [];
+    let stopped = false;
     render(
       <Dashboard
         user={{
@@ -1366,21 +1395,26 @@ describe('hosted site', () => {
         theme="light"
         onThemeChange={() => {}}
         onAccountDeleted={() => {}}
-        loadCliSessions={async () => ({ items: [], next_cursor: null })}
-        loadMyShares={async () => ({ items: [current], next_cursor: null })}
+        loadConnectedDevices={async () => ({ items: [], next_cursor: null })}
+        loadHostedTraces={async () => ({ items: [current], next_cursor: null })}
         loadCreditOffers={async () => []}
         loadCreditHistory={async () => ({ items: [], next_cursor: null })}
         loadBillingPurchases={async () => []}
-        updateShareRequest={async (_id, settings) => {
+        updateTraceRequest={async (_id, settings) => {
           updates.push(settings);
           current = {
             ...current,
-            ...settings,
-            password_protected: settings.password ? true : current.password_protected,
+            access: {
+              ...current.access,
+              visibility: settings.visibility ?? current.access.visibility,
+              password_protected: settings.password ? true : current.access.password_protected,
+            },
           };
-          if (settings.published === false)
-            current = { ...current, share_url: null, package_url: null };
           return current;
+        }}
+        stopSharingRequest={async () => {
+          stopped = true;
+          current = { ...current, status: 'stopped', public_url: null };
         }}
       />,
     );
@@ -1413,16 +1447,16 @@ describe('hosted site', () => {
     await page.getByRole('button', { name: 'Save changes' }).click();
     expect(updates[0]).toEqual({ visibility: 'listed', password: 'eight-characters' });
 
-    await page.getByRole('button', { name: 'Unpublish' }).click();
-    await page.getByRole('button', { name: 'Unpublish trace' }).click();
-    expect(updates[1]).toEqual({ published: false });
-    await expect.element(page.getByText('Unpublished', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Stop sharing' }).click();
+    await page.getByRole('alertdialog').getByRole('button', { name: 'Stop sharing' }).click();
+    expect(stopped).toBe(true);
+    await expect.element(page.getByText('Stopped', { exact: true })).toBeVisible();
   });
 
   test('requires disclosure consent before hosted package verification', async () => {
     const verified = {
       verified: true,
-      source_trace_id: 'sanitized-capture',
+      trace_id: 'sanitized-capture',
       provider: 'openai',
       host: 'api.openai.com',
       authenticated_at_unix_ms: 1_786_000_000_000,
